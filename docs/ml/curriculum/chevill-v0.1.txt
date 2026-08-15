@@ -1,0 +1,107 @@
+# ARG-DECK-01 | Chevill v0.1 | Argentum-Friendly
+# Audit source commit: 31853cfe91b52718dc3fb67f159e6267d9c5fcc1
+# Pinned upstream SHA: d66a5d7f1b46b0ed8891c34ccfe163d491c4ff3d
+# Exact Commander singleton list: 100 cards including commander
+# Columns: slot\tprimary_role\tsecondary_roles\tcard_name
+# Commander: Chevill, Bane of Monsters
+#
+001	COMMANDER	SYNERGY_ENGINE	Chevill, Bane of Monsters
+002	LAND	-	Forest
+003	LAND	-	Forest
+004	LAND	-	Forest
+005	LAND	-	Forest
+006	LAND	-	Forest
+007	LAND	-	Forest
+008	LAND	-	Forest
+009	LAND	-	Forest
+010	LAND	-	Forest
+011	LAND	-	Forest
+012	LAND	-	Forest
+013	LAND	-	Forest
+014	LAND	-	Forest
+015	LAND	-	Forest
+016	LAND	-	Swamp
+017	LAND	-	Swamp
+018	LAND	-	Swamp
+019	LAND	-	Swamp
+020	LAND	-	Swamp
+021	LAND	-	Swamp
+022	LAND	-	Swamp
+023	LAND	-	Swamp
+024	LAND	-	Swamp
+025	LAND	-	Swamp
+026	LAND	-	Command Tower
+027	LAND	-	Overgrown Tomb
+028	LAND	-	Woodland Cemetery
+029	LAND	-	Llanowar Wastes
+030	LAND	-	Temple of Malady
+031	LAND	-	Forest
+032	LAND	-	Golgari Rot Farm
+033	LAND	-	Swamp
+034	LAND	-	Swamp
+035	LAND	-	Barren Moor
+036	LAND	-	War Room
+037	LAND	-	Swamp
+038	CREATURE_THREAT	COMBAT|REMOVAL|DEATHTOUCH	Bounty Hunter
+039	CREATURE_THREAT	COMBAT|REMOVAL|DEATHTOUCH	Termination Facilitator
+040	CREATURE_THREAT	COMBAT|RAMP|DEATHTOUCH	Leyline Prowler
+041	CREATURE_THREAT	COMBAT|REMOVAL|DEATHTOUCH	Royal Assassin
+042	CREATURE_THREAT	COMBAT|REMOVAL|DEATHTOUCH	Hooded Blightfang
+043	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Morbid Opportunist
+044	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Harvester of Souls
+045	CREATURE_THREAT	COMBAT	Viscera Seer
+046	CREATURE_THREAT	COMBAT|REMOVAL	Fleshbag Marauder
+047	CREATURE_THREAT	COMBAT|REMOVAL	Plaguecrafter
+048	CREATURE_THREAT	COMBAT|REMOVAL	Ravenous Chupacabra
+049	CREATURE_THREAT	COMBAT|REMOVAL	Reclamation Sage
+050	CREATURE_THREAT	COMBAT|REMOVAL|DEATHTOUCH	Acidic Slime
+051	CREATURE_THREAT	COMBAT|RECURSION	Eternal Witness
+052	CREATURE_THREAT	COMBAT|RAMP	Sakura-Tribe Elder
+053	CREATURE_THREAT	COMBAT|RAMP	Llanowar Elves
+054	CREATURE_THREAT	COMBAT|RAMP	Elvish Mystic
+055	CREATURE_THREAT	COMBAT|RAMP	Wood Elves
+056	CREATURE_THREAT	COMBAT	Scavenging Ooze
+057	CREATURE_THREAT	COMBAT	Tireless Tracker
+058	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Toski, Bearer of Secrets
+059	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE|DEATHTOUCH	Ohran Frostfang
+060	CREATURE_THREAT	COMBAT|RECURSION|DEATHTOUCH	Glissa, the Traitor
+061	REMOVAL	-	Naturalize
+062	CREATURE_THREAT	COMBAT|REMOVAL	Outland Liberator // Frenzied Trapbreaker
+063	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Garruk's Packleader
+064	SYNERGY_ENGINE	EQUIPMENT|REMOVAL	Viridian Longbow
+065	RAMP	-	Arcane Signet
+066	RAMP	-	Golgari Signet
+067	RAMP	-	Talisman of Resilience
+068	RAMP	-	Mind Stone
+069	RAMP	-	Nature's Lore
+070	RAMP	-	Farseek
+071	RAMP	-	Rampant Growth
+072	CARD_ADVANTAGE	CARD_SELECTION	Sign in Blood
+073	CARD_ADVANTAGE	CARD_SELECTION	Night's Whisper
+074	CARD_ADVANTAGE	CARD_SELECTION	Read the Bones
+075	CARD_ADVANTAGE	CARD_SELECTION	Phyrexian Arena
+076	CARD_ADVANTAGE	CARD_SELECTION	Deathreap Ritual
+077	CARD_ADVANTAGE	CARD_SELECTION	Moldervine Reclamation
+078	UTILITY	-	Garruk Relentless // Garruk, the Veil-Cursed
+079	CARD_ADVANTAGE	CARD_SELECTION	Plumb the Forbidden
+080	CARD_ADVANTAGE	CARD_SELECTION	Guardian Project
+081	CARD_ADVANTAGE	CARD_SELECTION	Garruk's Uprising
+082	REMOVAL	-	Assassin's Trophy
+083	REMOVAL	-	Putrefy
+084	REMOVAL	-	Beast Within
+085	REMOVAL	-	Abrupt Decay
+086	REMOVAL	-	Go for the Throat
+087	REMOVAL	-	Bite Down
+088	REMOVAL	-	Tear Asunder
+089	REMOVAL	-	Maelstrom Pulse
+090	REMOVAL	-	Diabolic Edict
+091	REMOVAL	-	Nature's Claim
+092	BOARD_WIPE	-	Damnation
+093	BOARD_WIPE	-	Infest
+094	PROTECTION	-	Tamiyo's Safekeeping
+095	PROTECTION	-	Snakeskin Veil
+096	PROTECTION	-	Golgari Charm
+097	PROTECTION	-	Undying Malice
+098	TUTOR	-	Diabolic Intent
+099	RECURSION	-	Regrowth
+100	RECURSION	-	Unearth
