@@ -1216,7 +1216,10 @@ Atomic effect factories. For library/zone manipulation, prefer the pipelines in 
   Add a new one to both `enum class CounterType` and `object Counters` (SDK) plus the client's passive-counter
   wiring (`PASSIVE_COUNTER_TYPES`, `passiveCounterBadgeStyle`, `counterManaClass`, `CounterTypeDisplayNames`);
   keep it out of `StateProjector.KEYWORD_COUNTER_MAP` since it grants no keyword. Recent examples:
-  `Counters.LANDMARK` (Treasure Map — three flip it into Treasure Cove), `Counters.DREAD` (Grasping Shadows —
+  `Counters.LANDMARK` (Treasure Map — three flip it into Treasure Cove), `Counters.BOUNTY` (Chevill, Bane of
+  Monsters — a future death trigger will match the marked permanent through the generic
+  `GameObjectFilter.withCounter(Counters.BOUNTY)` filter and its frozen battlefield-exit LKI),
+  `Counters.DREAD` (Grasping Shadows —
   three flip it into Shadows' Lair), `Counters.BORE` (Brass's Tunnel-Grinder — three flip it into Tecutlan),
   `Counters.REVIVAL` (Nine-Lives Familiar — a "lives left" counter: it enters with eight if you cast it and its
   dies trigger reads the last-known count to come back with one fewer),
@@ -1237,6 +1240,13 @@ Atomic effect factories. For library/zone manipulation, prefer the pipelines in 
   `Counters.INVASION` (Alien Invasion — a tally its begin-combat trigger reads via
   `DynamicAmounts.countersOnSelf(CounterTypeFilter.Named(Counters.INVASION))` to size the +1/+1 counters
   on the Alien token it just made, then increments).
+- **Named-counter LKI filters** — a zone-change trigger for a marked permanent composes the same
+  `GameObjectFilter` path: `GameObjectFilter.Permanent.opponentControls().withCounter(Counters.BOUNTY)`.
+  For a battlefield exit, `TriggerMatcher` reads only the counter map frozen in
+  `ZoneChangeEvent.lastKnown` immediately before the zone change (CR 603.10 / 608.2h); it does not
+  consult the new-zone object or remember that the object had the counter at an earlier time. If
+  the event has no relevant LKI snapshot, the predicate fails closed. The named counter is the mark,
+  so no source-relative cross-zone tracker is needed.
 - `DistributeCountersFromSelf(type?, count?)` — split source's counters among creatures you control.
 - `DistributeCountersAmongTargets(total, type?, minPerTarget?)` — divvy N counters among chosen
   targets. `total` is a `DynamicAmount` (an `Int` overload wraps it in `Fixed`), evaluated once at
