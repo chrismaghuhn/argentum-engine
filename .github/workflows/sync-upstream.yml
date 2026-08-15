@@ -1,0 +1,107 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    # Upstream moves quickly; avoid the top of the hour when scheduled Actions are busiest.
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    if: github.repository == 'chrismaghuhn/argentum-engine'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout fork main
+        uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Configure Git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream main
+        run: |
+          git remote add upstream https://github.com/wingedsheep/argentum-engine.git
+          git fetch --prune upstream main
+
+      - name: Check whether a sync is needed
+        id: sync_check
+        shell: bash
+        run: |
+          FORK_SHA="$(git rev-parse HEAD)"
+          UPSTREAM_SHA="$(git rev-parse upstream/main)"
+          BEHIND_COUNT="$(git rev-list --count HEAD..upstream/main)"
+
+          echo "fork_sha=${FORK_SHA}" >> "$GITHUB_OUTPUT"
+          echo "upstream_sha=${UPSTREAM_SHA}" >> "$GITHUB_OUTPUT"
+          echo "behind_count=${BEHIND_COUNT}" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "needs_sync=false" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Upstream sync"
+              echo
+              echo "Fork main already contains upstream/main."
+              echo
+              echo "- Fork: \`${FORK_SHA}\`"
+              echo "- Upstream: \`${UPSTREAM_SHA}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "needs_sync=true" >> "$GITHUB_OUTPUT"
+            {
+              echo "## Upstream sync"
+              echo
+              echo "Upstream has ${BEHIND_COUNT} commit(s) not yet contained in fork main."
+              echo
+              echo "- Fork before merge: \`${FORK_SHA}\`"
+              echo "- Upstream: \`${UPSTREAM_SHA}\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Merge upstream into fork main
+        if: steps.sync_check.outputs.needs_sync == 'true'
+        run: |
+          # Intentionally use a normal merge. Any conflict fails this job and nothing is pushed.
+          # Never add --force, reset to upstream, or auto-resolve conflicts here.
+          git merge --no-edit -m "chore: sync upstream main" upstream/main
+
+      - name: Push synchronized main
+        if: steps.sync_check.outputs.needs_sync == 'true'
+        run: |
+          # A concurrent main update causes a normal non-fast-forward rejection, which is safer
+          # than overwriting another agent's work. The next run can retry from the new main.
+          git push origin HEAD:main
+
+      - name: Run CI on synchronized main
+        if: steps.sync_check.outputs.needs_sync == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Pushes made with GITHUB_TOKEN do not recursively trigger ordinary push workflows.
+          # Dispatch CI explicitly so every automated upstream merge is validated.
+          gh workflow run ci.yml --repo chrismaghuhn/argentum-engine --ref main
+
+      - name: Record synchronized revision
+        if: steps.sync_check.outputs.needs_sync == 'true'
+        run: |
+          {
+            echo
+            echo "Merge pushed successfully."
+            echo
+            echo "- Fork after merge: \`$(git rev-parse HEAD)\`"
+            echo "- CI: dispatched on \`main\`"
+            echo "- Conflict policy: fail closed; no force push or automatic conflict resolution"
+          } >> "$GITHUB_STEP_SUMMARY"
