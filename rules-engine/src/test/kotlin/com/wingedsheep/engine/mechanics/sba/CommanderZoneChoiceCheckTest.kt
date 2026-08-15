@@ -84,12 +84,20 @@ class CommanderZoneChoiceCheckTest : FunSpec({
         frame.currentZone shouldBe Zone.GRAVEYARD
     }
 
-    test("pauses for a commander in exile, hand, or library too") {
-        for (zone in listOf(Zone.EXILE, Zone.HAND, Zone.LIBRARY)) {
+    test("pauses for a commander in exile too") {
+        for (zone in listOf(Zone.EXILE)) {
             val result = check.check(stateWithCommanderIn(zone))
             result.isPaused shouldBe true
             (result.state.continuationStack.last() as CommanderZoneChoiceContinuation)
                 .currentZone shouldBe zone
+        }
+    }
+
+    test("does not run the 903.9a SBA for a commander already in hand or library") {
+        for (zone in listOf(Zone.HAND, Zone.LIBRARY)) {
+            val result = check.check(stateWithCommanderIn(zone))
+            result.isPaused shouldBe false
+            result.state.continuationStack shouldBe emptyList()
         }
     }
 
