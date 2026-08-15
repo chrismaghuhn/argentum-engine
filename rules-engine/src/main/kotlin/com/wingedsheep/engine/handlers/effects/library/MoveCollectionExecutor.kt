@@ -194,7 +194,10 @@ class MoveCollectionExecutor(
         noRegenerate: Boolean = false,
         storeMovedAs: String? = null,
         underOwnersControl: Boolean = false,
-        revealToSelf: Boolean = true
+        revealToSelf: Boolean = true,
+        startCardIndex: Int = 0,
+        completedCardIds: List<EntityId> = emptyList(),
+        completedLibraryOwnerIds: List<EntityId> = emptyList(),
     ): EffectResult {
         val destPlayerId = resolvePlayer(destination.player, context, state)
             ?: return EffectResult.error(state, "Could not resolve destination player for MoveCollection")
@@ -367,80 +370,6 @@ class MoveCollectionExecutor(
     ): EffectResult {
         val destZone = destination.zone
 
-        // A collection move can contain several player-visible hand/library
-        // transitions. Resolve Commander 903.9b one card at a time before the
-        // collection's physical loop, then re-enter with the completed id marked
-        // so the same card is not moved twice after a pause.
-        if (destZone == Zone.HAND || destZone == Zone.LIBRARY) {
-            val commanderId = cards.firstOrNull { cardId ->
-                cardId !in context.preResolvedZoneChangeIds &&
-                    state.format.usesCommanders &&
-                    state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
-            }
-            if (commanderId != null) {
-                val ownerId = state.getEntity(commanderId)?.get<OwnerComponent>()?.playerId
-                    ?: state.getEntity(commanderId)?.get<CardComponent>()?.ownerId
-                val fromZone = ownerId?.let { findCurrentZone(state, commanderId, it) }
-                if (ownerId != null && fromZone != null) {
-                    val actualDestPlayerId = if (fromZone == Zone.BATTLEFIELD) ownerId else destPlayerId
-                    val libraryPlacement = when (destination.placement) {
-                        ZonePlacement.Bottom -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
-                        // The collection shuffles once after all cards are placed;
-                        // a per-card replacement transition must therefore use the
-                        // eventual bottom insertion, not shuffle prematurely.
-                        ZonePlacement.Shuffled -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
-                        else -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
-                    }
-                    val resumedContext = context.copy(
-                        preResolvedZoneChangeIds = context.preResolvedZoneChangeIds + commanderId,
-                    )
-                    val pendingResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
-                        .moveToZoneWithReplacements(
-                            state = state,
-                            entityId = commanderId,
-                            destinationZone = destZone,
-                            options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
-                                controllerId = actualDestPlayerId,
-                                libraryPlacement = libraryPlacement,
-                            ),
-                            fromZoneKey = ZoneKey(ownerId, fromZone),
-                            context = context,
-                            completion = com.wingedsheep.engine.replacement.PendingGameEvent
-                                .MoveCollectionZoneChangeCompletion(
-                                    context = resumedContext,
-                                    cards = cards,
-                                    destination = destination,
-                                    destPlayerId = destPlayerId,
-                                    revealed = revealed,
-                                    moveType = moveType,
-                                    faceDown = faceDown,
-                                    noRegenerate = noRegenerate,
-                                    storeMovedAs = storeMovedAs,
-                                    underOwnersControl = underOwnersControl,
-                                    revealToSelf = revealToSelf,
-                                ),
-                        )
-                    if (pendingResult.isPaused) return pendingResult
-                    if (!pendingResult.isSuccess) return pendingResult
-                    val resumed = moveCardsToZone(
-                        state = pendingResult.state,
-                        context = resumedContext,
-                        cards = cards,
-                        destination = destination,
-                        destPlayerId = destPlayerId,
-                        revealed = revealed,
-                        moveType = moveType,
-                        faceDown = faceDown,
-                        noRegenerate = noRegenerate,
-                        storeMovedAs = storeMovedAs,
-                        underOwnersControl = underOwnersControl,
-                        revealToSelf = revealToSelf,
-                    )
-                    return resumed.copy(events = pendingResult.events + resumed.events)
-                }
-            }
-        }
-
         // When moving to battlefield, detect auras that need target selection (Rule 303.4f)
         if (destZone == Zone.BATTLEFIELD && targetFinder != null) {
             val auraCards = mutableListOf<EntityId>()
@@ -491,7 +420,23 @@ class MoveCollectionExecutor(
             }
         }
 
-        return moveCardsToZoneInternal(state, context, cards, destination, destPlayerId, revealed, moveType, faceDown, noRegenerate, storeMovedAs, underOwnersControl, revealToSelf)
+        return moveCardsToZoneInternal(
+            state = state,
+            context = context,
+            cards = cards,
+            destination = destination,
+            destPlayerId = destPlayerId,
+            revealed = revealed,
+            moveType = moveType,
+            faceDown = faceDown,
+            noRegenerate = noRegenerate,
+            storeMovedAs = storeMovedAs,
+            underOwnersControl = underOwnersControl,
+            revealToSelf = revealToSelf,
+            startCardIndex = startCardIndex,
+            completedCardIds = completedCardIds,
+            completedLibraryOwnerIds = completedLibraryOwnerIds,
+        )
     }
 
     /**
@@ -702,7 +647,10 @@ class MoveCollectionExecutor(
         noRegenerate: Boolean = false,
         storeMovedAs: String? = null,
         underOwnersControl: Boolean = false,
-        revealToSelf: Boolean = true
+        revealToSelf: Boolean = true,
+        startCardIndex: Int = 0,
+        completedCardIds: List<EntityId> = emptyList(),
+        completedLibraryOwnerIds: List<EntityId> = emptyList(),
     ): EffectResult {
         val destZone = destination.zone
         val events = mutableListOf<GameEvent>()
@@ -717,11 +665,13 @@ class MoveCollectionExecutor(
             state
         }
 
-        val movedIds = mutableListOf<EntityId>()
+        val movedIds = completedCardIds.toMutableList()
         // Track every library that received at least one card so per-card owner routing
         // (e.g., a permanent owned by another player going to its owner's library) shuffles
         // and reveal-marks every affected library, not just the destination's nominal owner.
-        val librariesReceivingCards = linkedSetOf<EntityId>()
+        val librariesReceivingCards = linkedSetOf<EntityId>().apply {
+            addAll(completedLibraryOwnerIds)
+        }
 
         // Determine library placement for ZoneTransitionService
         val libraryPlacement = when (destination.placement) {
@@ -731,8 +681,74 @@ class MoveCollectionExecutor(
             else -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
         }
 
-        for (cardId in cards) {
+        for ((cardIndex, cardId) in cards.withIndex()) {
+            if (cardIndex < startCardIndex) continue
+
             val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId ?: destPlayerId
+
+            // Commander 903.9b is part of this card's physical move, not a collection-wide
+            // preflight. The ordered list is already the physical insertion plan (top moves
+            // back-to-front, bottom moves front-to-back), so stopping here preserves every card
+            // before and after a paused Commander exactly where the player selected it.
+            if (destZone == Zone.HAND || destZone == Zone.LIBRARY) {
+                val isCommander = state.format.usesCommanders &&
+                    newState.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
+                val fromZone = ownerId?.let { findCurrentZone(newState, cardId, it) }
+                if (isCommander && fromZone != null) {
+                    val actualDestPlayerId = if (fromZone == Zone.BATTLEFIELD) ownerId else destPlayerId
+                    val libraryPlacement = when (destination.placement) {
+                        ZonePlacement.Bottom -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
+                        // The collection shuffles once after all cards are placed; a per-card
+                        // replacement transition therefore uses bottom insertion here.
+                        ZonePlacement.Shuffled -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
+                        else -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
+                    }
+                    val pendingResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                        .moveToZoneWithReplacements(
+                            state = newState,
+                            entityId = cardId,
+                            destinationZone = destZone,
+                            options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
+                                controllerId = actualDestPlayerId,
+                                libraryPlacement = libraryPlacement,
+                            ),
+                            fromZoneKey = ZoneKey(ownerId, fromZone),
+                            context = context,
+                            completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                                .MoveCollectionZoneChangeCompletion(
+                                    context = context,
+                                    cards = cards,
+                                    destination = destination,
+                                    destPlayerId = destPlayerId,
+                                    revealed = revealed,
+                                    moveType = moveType,
+                                    faceDown = faceDown,
+                                    noRegenerate = noRegenerate,
+                                    storeMovedAs = storeMovedAs,
+                                    underOwnersControl = underOwnersControl,
+                                    revealToSelf = revealToSelf,
+                                    nextCardIndex = cardIndex + 1,
+                                    completedCardIds = movedIds.toList(),
+                                    completedLibraryOwnerIds = librariesReceivingCards.toList(),
+                                ),
+                        )
+                    if (pendingResult.isPaused) {
+                        return pendingResult.copy(events = events + pendingResult.events)
+                    }
+                    if (!pendingResult.isSuccess) {
+                        return pendingResult.copy(events = events + pendingResult.events)
+                    }
+                    newState = pendingResult.state
+                    events.addAll(pendingResult.events)
+                    movedIds.add(cardId)
+                    if (destZone == Zone.LIBRARY &&
+                        findCurrentZone(newState, cardId, ownerId) == Zone.LIBRARY
+                    ) {
+                        librariesReceivingCards.add(ownerId)
+                    }
+                    continue
+                }
+            }
 
             // A Commander hand/library move may already have completed through
             // the pending replacement adapter. Keep it in the collection-level

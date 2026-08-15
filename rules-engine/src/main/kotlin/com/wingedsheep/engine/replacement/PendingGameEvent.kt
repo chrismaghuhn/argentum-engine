@@ -257,6 +257,12 @@ sealed interface PendingGameEvent {
         val storeMovedAs: String? = null,
         val underOwnersControl: Boolean = false,
         val revealToSelf: Boolean = true,
+        /** Next card in the already ordered physical movement plan. */
+        val nextCardIndex: Int = 0,
+        /** Cards whose physical transitions completed before this pending move. */
+        val completedCardIds: List<EntityId> = emptyList(),
+        /** Libraries that already received a card before this pending move. */
+        val completedLibraryOwnerIds: List<EntityId> = emptyList(),
     ) : ZoneChangeCompletion
 
     /**

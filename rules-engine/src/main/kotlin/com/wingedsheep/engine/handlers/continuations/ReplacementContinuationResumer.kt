@@ -268,6 +268,9 @@ class ReplacementContinuationResumer(
                     storeMovedAs = completion.storeMovedAs,
                     underOwnersControl = completion.underOwnersControl,
                     revealToSelf = completion.revealToSelf,
+                    startCardIndex = completion.nextCardIndex,
+                    completedCardIds = completion.completedCardIds,
+                    completedLibraryOwnerIds = completion.completedLibraryOwnerIds,
                 )
                 if (result.isPaused) {
                     return result.toExecutionResult().copy(

@@ -7,6 +7,7 @@ import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.ContinuationFrame
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.OptionalReplacementContinuation
 import com.wingedsheep.engine.core.ReorderLibraryDecision
@@ -27,6 +28,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.identity.SelfZoneRedirectComponent
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
 import com.wingedsheep.engine.state.components.battlefield.ExileOnLeaveBattlefieldComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -39,6 +41,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.CommanderZoneReplacement
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
 import com.wingedsheep.sdk.scripting.RedirectZoneChangeWithEffect
 import com.wingedsheep.sdk.scripting.effects.GainLifeEffect
@@ -51,6 +54,7 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.encodeToString
@@ -66,6 +70,9 @@ class CommanderZoneReplacementTest : FunSpec({
     val opponentId = EntityId.generate()
     val commanderId = EntityId.generate()
     val libraryCardId = EntityId.generate()
+    val secondLibraryCardId = EntityId.generate()
+    val normalAId = EntityId.generate()
+    val normalBId = EntityId.generate()
     val executor = MoveToZoneEffectExecutor(CardRegistry())
 
     fun stateWithCommanderIn(
@@ -130,6 +137,18 @@ class CommanderZoneReplacementTest : FunSpec({
         ),
     )
 
+    fun moveThroughReplacementPipeline(
+        state: GameState,
+        destination: Zone,
+    ): EffectResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+        .moveToZoneWithReplacements(
+            state = state,
+            entityId = commanderId,
+            destinationZone = destination,
+            fromZoneKey = ZoneKey(playerId, Zone.BATTLEFIELD),
+            context = EffectContext(sourceId = null, controllerId = playerId),
+        )
+
     fun resumeYesNo(services: EngineServices, initial: EffectResult, choice: Boolean): ExecutionResult {
         val decision = initial.pendingDecision as YesNoDecision
         return services.continuationHandler.resume(
@@ -146,11 +165,11 @@ class CommanderZoneReplacementTest : FunSpec({
         )
     }
 
-    fun addLibrarySentinel(state: GameState): GameState {
-        val sentinel = ComponentContainer.of(
+    fun addLibraryCard(state: GameState, cardId: EntityId, name: String): GameState {
+        val card = ComponentContainer.of(
             CardComponent(
-                cardDefinitionId = "Library Sentinel",
-                name = "Library Sentinel",
+                cardDefinitionId = name,
+                name = name,
                 manaCost = ManaCost.ZERO,
                 typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
                 ownerId = playerId,
@@ -158,8 +177,255 @@ class CommanderZoneReplacementTest : FunSpec({
             OwnerComponent(playerId),
         )
         return state
-            .withEntity(libraryCardId, sentinel)
-            .addToZone(ZoneKey(playerId, Zone.LIBRARY), libraryCardId)
+            .withEntity(cardId, card)
+            .addToZone(ZoneKey(playerId, Zone.LIBRARY), cardId)
+    }
+
+    fun addLibrarySentinel(state: GameState): GameState =
+        addLibraryCard(state, libraryCardId, "Library Sentinel")
+
+    fun progenitusLikeRedirect() = RedirectZoneChange(
+        newDestination = Zone.LIBRARY,
+        appliesTo = EventPattern.ZoneChangeEvent(
+            from = Zone.BATTLEFIELD,
+            to = Zone.GRAVEYARD,
+        ),
+        selfOnly = true,
+        shuffleIntoLibrary = true,
+        reveal = true,
+    )
+
+    fun stateWithProgenitusLikeCommander(): GameState {
+        val redirect = progenitusLikeRedirect()
+        return addLibraryCard(
+            addLibrarySentinel(
+                stateWithCommanderIn(Zone.BATTLEFIELD).updateEntity(commanderId) {
+                    it.with(ControllerComponent(playerId))
+                        .with(SelfZoneRedirectComponent(listOf(redirect)))
+                        .with(ReplacementEffectSourceComponent(listOf(redirect)))
+                }
+            ),
+            secondLibraryCardId,
+            "Second Library Card",
+        )
+    }
+
+    test("RC-01: a Progenitus-shaped Commander redirect to COMMAND still shuffles the library") {
+        val services = EngineServices(CardRegistry())
+        val initial = moveThroughReplacementPipeline(stateWithProgenitusLikeCommander(), Zone.GRAVEYARD)
+
+        initial.isPaused shouldBe true
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)).contains(commanderId) shouldBe false
+        resumed.events.filterIsInstance<LibraryShuffledEvent>().count { it.playerId == playerId } shouldBe 1
+        resumed.state.rng shouldNotBe initial.state.rng
+        resumed.events.filterIsInstance<ZoneChangeEvent>().count { it.entityId == commanderId } shouldBe 1
+    }
+
+    test("RC-02: a Progenitus-shaped Commander redirect declined to library shuffles normally") {
+        val services = EngineServices(CardRegistry())
+        val initial = moveThroughReplacementPipeline(stateWithProgenitusLikeCommander(), Zone.GRAVEYARD)
+
+        val resumed = resumeYesNo(services, initial, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe emptyList()
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)).contains(commanderId) shouldBe true
+        resumed.events.filterIsInstance<LibraryShuffledEvent>().count { it.playerId == playerId } shouldBe 1
+        resumed.state.rng shouldNotBe initial.state.rng
+        resumed.events.filterIsInstance<ZoneChangeEvent>().count { it.entityId == commanderId } shouldBe 1
+    }
+
+    test("RC-03: an ordinary Commander library redirect does not create a phantom shuffle") {
+        val services = EngineServices(CardRegistry())
+        val initial = moveWithServices(
+            services,
+            addLibrarySentinel(stateWithCommanderIn(Zone.BATTLEFIELD)),
+            Zone.LIBRARY,
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
+        )
+
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.events.filterIsInstance<LibraryShuffledEvent>() shouldBe emptyList()
+        resumed.state.rng shouldBe initial.state.rng
+    }
+
+    test("RC-04: pending zone changes retain a generic shuffle obligation after a later destination change") {
+        val services = EngineServices(CardRegistry())
+        val state = stateWithProgenitusLikeCommander()
+        val pending = PendingGameEvent.ZoneChangePending(
+            entityId = commanderId,
+            ownerId = playerId,
+            fromZoneKey = ZoneKey(playerId, Zone.BATTLEFIELD),
+            destinationZone = Zone.GRAVEYARD,
+        )
+        val first = pending.applyReplacement(progenitusLikeRedirect(), state)
+            .shouldBeInstanceOf<com.wingedsheep.engine.replacement.ReplacementOutcome.Modified>()
+            .modifiedEvent.shouldBeInstanceOf<PendingGameEvent.ZoneChangePending>()
+        val finalPending = first.applyReplacement(CommanderZoneReplacement, state)
+            .shouldBeInstanceOf<com.wingedsheep.engine.replacement.ReplacementOutcome.Modified>()
+            .modifiedEvent.shouldBeInstanceOf<PendingGameEvent.ZoneChangePending>()
+
+        finalPending.destinationZone shouldBe Zone.COMMAND
+        finalPending.redirectResult?.shuffleIntoLibrary shouldBe true
+
+        val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+            .performPendingZoneChange(state, finalPending)
+        transition.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        transition.state.getZone(ZoneKey(playerId, Zone.LIBRARY)).contains(commanderId) shouldBe false
+        transition.events.filterIsInstance<LibraryShuffledEvent>().count { it.playerId == playerId } shouldBe 1
+        transition.state.rng shouldNotBe state.rng
+    }
+
+    fun addNormalCard(state: GameState, cardId: EntityId, name: String): GameState {
+        val card = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = name,
+                name = name,
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                ownerId = playerId,
+            ),
+            OwnerComponent(playerId),
+        )
+        return state
+            .withEntity(cardId, card)
+            .addToZone(ZoneKey(playerId, Zone.BATTLEFIELD), cardId)
+    }
+
+    fun orderedMovePrompt(
+        services: EngineServices,
+        state: GameState,
+        cards: List<EntityId>,
+        placement: com.wingedsheep.sdk.scripting.effects.ZonePlacement,
+    ): EffectResult {
+        val effect = MoveCollectionEffect(
+            from = "cards",
+            destination = CardDestination.ToZone(
+                zone = Zone.LIBRARY,
+                placement = placement,
+            ),
+            order = CardOrder.ControllerChooses,
+        )
+        val context = EffectContext(
+            sourceId = null,
+            controllerId = playerId,
+            pipeline = PipelineState.EMPTY.copy(
+                storedCollections = mapOf("cards" to cards),
+            ),
+        )
+        return services.effectExecutorRegistry.execute(state, effect, context)
+    }
+
+    fun resumeOrderedMove(
+        services: EngineServices,
+        orderPrompt: EffectResult,
+        orderedCards: List<EntityId>,
+    ): ExecutionResult {
+        val decision = orderPrompt.pendingDecision.shouldBeInstanceOf<ReorderLibraryDecision>()
+        return services.continuationHandler.resume(
+            orderPrompt.state.clearPendingDecision(),
+            OrderedResponse(decision.id, orderedCards),
+        )
+    }
+
+    test("MC-ORDER-01: top order keeps Commander intended first when owner says NO") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal Card")
+        )
+        val orderPrompt = orderedMovePrompt(
+            services,
+            state,
+            listOf(commanderId, normalAId),
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+        )
+        val commanderPrompt = resumeOrderedMove(services, orderPrompt, listOf(commanderId, normalAId))
+        val resumed = resumeExecutionYesNo(services, commanderPrompt, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
+            listOf(commanderId, normalAId, libraryCardId)
+    }
+
+    test("MC-ORDER-02: top order keeps ordinary cards relative when Commander chooses COMMAND") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(
+                addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal A"),
+                normalBId,
+                "Normal B",
+            )
+        )
+        val orderPrompt = orderedMovePrompt(
+            services,
+            state,
+            listOf(commanderId, normalAId, normalBId),
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+        )
+        val commanderPrompt = resumeOrderedMove(
+            services,
+            orderPrompt,
+            listOf(commanderId, normalAId, normalBId),
+        )
+        val resumed = resumeExecutionYesNo(services, commanderPrompt, choice = true)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
+            listOf(normalAId, normalBId, libraryCardId)
+    }
+
+    test("MC-ORDER-03: bottom order keeps Commander intended last when owner says NO") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal Card")
+        )
+        val orderPrompt = orderedMovePrompt(
+            services,
+            state,
+            listOf(normalAId, commanderId),
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
+        )
+        val commanderPrompt = resumeOrderedMove(services, orderPrompt, listOf(normalAId, commanderId))
+        val resumed = resumeExecutionYesNo(services, commanderPrompt, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
+            listOf(libraryCardId, normalAId, commanderId)
+    }
+
+    test("MC-ORDER-04: ordinary cards around Commander retain the selected sequence") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(
+                addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal A"),
+                normalBId,
+                "Normal B",
+            )
+        )
+        val orderPrompt = orderedMovePrompt(
+            services,
+            state,
+            listOf(normalAId, commanderId, normalBId),
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+        )
+        val commanderPrompt = resumeOrderedMove(
+            services,
+            orderPrompt,
+            listOf(normalAId, commanderId, normalBId),
+        )
+        val resumed = resumeExecutionYesNo(services, commanderPrompt, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
+            listOf(normalAId, commanderId, normalBId, libraryCardId)
     }
 
     test("commander from battlefield to hand pauses before moving") {
