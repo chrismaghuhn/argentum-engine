@@ -1,6 +1,6 @@
 # ARG-02.1 Commander Zone-Movement Conformance
 
-**Status:** Proposed
+**Status:** Approved with required corrections
 **Date:** 2026-08-15
 **Branch:** `agent/a2-1-commander-zone-conformance`
 
@@ -22,8 +22,9 @@ deterministic `alwaysDivertToCommand` shortcut. The existing serializable
 right reusable seam, but it currently has no zone-change pending-event adapter.
 This is classified as `REUSABLE_REPLACEMENT_DECISION_GAP`.
 
-The official rules snapshot used for this design is the Wizards Comprehensive
-Rules text effective August 7, 2026:
+The official rules snapshot used for this design is the current TXT linked from
+the Wizards rules page. The live page currently links the `20260808` filename;
+the document itself says it is effective August 7, 2026:
 <https://media.wizards.com/2026/downloads/MagicCompRules%2020260808.txt>.
 
 ## Goals
@@ -75,14 +76,18 @@ true:
 - the event's moving object has the real `CommanderComponent`;
 - the format uses commanders;
 - the requested destination is the owner's hand or library;
-- the move is not already from the command zone; and
 - `alwaysDivertToCommand` has not already selected the deterministic shortcut.
 
-The candidate redirects to the command zone when accepted. Declining stamps
-only this candidate as applied for the current event and continues the same
-replacement chain, so other valid replacements and CR 614.5/616 processing are
-not skipped. The candidate is a rules-level input to the generic processor, not
-a card-facing callback or a second Commander decision subsystem.
+There is deliberately no source-zone exclusion: CR 903.9b says “from
+anywhere”, including a command-zone-to-hand/library move.
+
+The candidate redirects to the command zone when accepted. Declining does not
+turn 903.9b into an ordinary once-per-event replacement: the explicit CR 903.9b
+exception to CR 614.5 must be preserved. The bookkeeping records a decline only
+for the current unchanged event shape, so the same unchanged hand/library move
+does not immediately re-prompt, while a later replacement-modified event may
+make 903.9b eligible again. The candidate is a rules-level input to the generic
+processor, not a card-facing callback or a second Commander decision subsystem.
 
 ### 3. Put the decision before the physical transition
 
@@ -106,9 +111,11 @@ library will no longer be treated as SBA locations. The existing marker remains
 the per-zone-entry guard for a declined 903.9a choice and is still stripped by
 the canonical zone transition.
 
-`alwaysDivertToCommand` remains an explicit deterministic mode. Its shortcut is
-limited to the same Commander identity and relevant zone-change destinations;
-it must not create a second prompt or alter ordinary non-Commander objects or
+`alwaysDivertToCommand` remains an explicit deterministic mode. It is an
+automatic YES for the Commander replacement choice inside the replacement
+pipeline; it must not bypass CR 616 ordering when other replacement effects are
+applicable. It is limited to the same Commander identity and relevant
+zone-change destinations and must not alter ordinary non-Commander objects or
 token copies.
 
 ## Verification shape
@@ -124,4 +131,3 @@ The documented final verification will use the repository's `just` gates. If
 the local environment still lacks `just`, the equivalent locked Gradle-wrapper
 fallback will be recorded explicitly as a tooling limitation rather than
 reported as a `just` run.
-
