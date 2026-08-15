@@ -147,7 +147,7 @@
                     },
                     "id": "target creature card with mana value less than or equal to Alesha's power in your graveyard"
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -1295,7 +1295,7 @@
                     "count": 1,
                     "target": "Self"
                 },
-                "triggerCondition": "CreatureDiedThisTurn"
+                "interveningIf": "CreatureDiedThisTurn"
             }
         ]
     },
@@ -1830,7 +1830,7 @@
                         }
                     ]
                 },
-                "triggerCondition": {
+                "triggerRestriction": {
                     "type": "Exists",
                     "player": "You",
                     "zone": "Battlefield",
@@ -1929,7 +1929,7 @@
                     },
                     "target": "Self"
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "Count",
@@ -3891,7 +3891,7 @@
                     "type": "TargetPlayer",
                     "id": "target player"
                 },
-                "triggerCondition": "WasKicked"
+                "interveningIf": "WasKicked"
             }
         ]
     },
@@ -4113,7 +4113,7 @@
                     "type": "AnyTarget",
                     "id": "any target"
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -4323,7 +4323,7 @@
                         }
                     ]
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -4936,7 +4936,7 @@
                         }
                     ]
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Not",
                     "condition": {
                         "type": "TriggeringEntityHadSubtype",
@@ -5648,20 +5648,23 @@
                 "id": "ability_2",
                 "trigger": "AttackEvent",
                 "effect": {
-                    "type": "CreateToken",
-                    "power": 8,
-                    "toughness": 8,
-                    "colors": [
-                        "BLUE"
-                    ],
-                    "creatureTypes": [
-                        "Octopus"
-                    ],
-                    "imageUri": "https://cards.scryfall.io/normal/front/2/6/26c478f7-b426-4055-8d06-e5782226c826.jpg?1740922203",
-                    "legendary": true
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "CreateToken",
+                        "power": 8,
+                        "toughness": 8,
+                        "colors": [
+                            "BLUE"
+                        ],
+                        "creatureTypes": [
+                            "Octopus"
+                        ],
+                        "imageUri": "https://cards.scryfall.io/normal/front/2/6/26c478f7-b426-4055-8d06-e5782226c826.jpg?1740922203",
+                        "legendary": true
+                    }
                 },
-                "optional": true,
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "Count",
@@ -6131,7 +6134,7 @@
                     "type": "CreatePredefinedToken",
                     "tokenType": "Food"
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -6341,7 +6344,7 @@
                     },
                     "id": "target"
                 },
-                "triggerCondition": "CreatureDiedThisTurn"
+                "interveningIf": "CreatureDiedThisTurn"
             }
         ]
     },
@@ -6410,7 +6413,7 @@
                         ]
                     }
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "LastKnownSourceCounters",
@@ -6668,7 +6671,7 @@
                         }
                     }
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -6914,7 +6917,7 @@
                     },
                     "target": "TriggeringEntity"
                 },
-                "triggerCondition": "IsYourTurn"
+                "triggerRestriction": "IsYourTurn"
             }
         ],
         "staticAbilities": [
@@ -7451,7 +7454,7 @@
                     ],
                     "imageUri": "https://cards.scryfall.io/normal/front/7/0/70f8a1de-cd4c-4afa-bf03-0245d375d42e.jpg?1782727474"
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -7748,7 +7751,7 @@
                         "amount": 1
                     }
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -7804,7 +7807,7 @@
                     "target": "Self",
                     "tap": false
                 },
-                "triggerCondition": "CreatureDiedThisTurn"
+                "interveningIf": "CreatureDiedThisTurn"
             }
         ]
     },
@@ -8095,50 +8098,53 @@
                 },
                 "binding": "OTHER",
                 "effect": {
-                    "type": "Composite",
-                    "effects": [
-                        {
-                            "type": "GatherUntilMatch",
-                            "filter": "creature",
-                            "storeMatch": "ignored",
-                            "storeRevealed": "revealed"
-                        },
-                        {
-                            "type": "RevealCollection",
-                            "from": "revealed"
-                        },
-                        {
-                            "type": "FilterCollection",
-                            "from": "revealed",
-                            "filter": {
-                                "type": "MatchesFilter",
-                                "filter": "creature"
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "Composite",
+                        "effects": [
+                            {
+                                "type": "GatherUntilMatch",
+                                "filter": "creature",
+                                "storeMatch": "ignored",
+                                "storeRevealed": "revealed"
                             },
-                            "storeMatching": "matchedToHand",
-                            "storeNonMatching": "rest"
-                        },
-                        {
-                            "type": "MoveCollection",
-                            "from": "matchedToHand",
-                            "destination": {
-                                "type": "ToZone",
-                                "zone": "Hand"
+                            {
+                                "type": "RevealCollection",
+                                "from": "revealed"
                             },
-                            "revealed": true
-                        },
-                        {
-                            "type": "MoveCollection",
-                            "from": "rest",
-                            "destination": {
-                                "type": "ToZone",
-                                "zone": "Library",
-                                "placement": "Bottom"
+                            {
+                                "type": "FilterCollection",
+                                "from": "revealed",
+                                "filter": {
+                                    "type": "MatchesFilter",
+                                    "filter": "creature"
+                                },
+                                "storeMatching": "matchedToHand",
+                                "storeNonMatching": "rest"
                             },
-                            "order": "Random"
-                        }
-                    ]
-                },
-                "optional": true
+                            {
+                                "type": "MoveCollection",
+                                "from": "matchedToHand",
+                                "destination": {
+                                    "type": "ToZone",
+                                    "zone": "Hand"
+                                },
+                                "revealed": true
+                            },
+                            {
+                                "type": "MoveCollection",
+                                "from": "rest",
+                                "destination": {
+                                    "type": "ToZone",
+                                    "zone": "Library",
+                                    "placement": "Bottom"
+                                },
+                                "order": "Random"
+                            }
+                        ]
+                    }
+                }
             }
         ]
     },
@@ -8565,7 +8571,7 @@
                         }
                     ]
                 },
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": {
                         "type": "TurnTracking",
@@ -8637,7 +8643,7 @@
                     },
                     "id": "target"
                 },
-                "triggerCondition": "WasKicked"
+                "interveningIf": "WasKicked"
             }
         ]
     },
@@ -9461,7 +9467,7 @@
                         }
                     ]
                 },
-                "triggerCondition": "CreatureDiedThisTurn"
+                "interveningIf": "CreatureDiedThisTurn"
             }
         ]
     },

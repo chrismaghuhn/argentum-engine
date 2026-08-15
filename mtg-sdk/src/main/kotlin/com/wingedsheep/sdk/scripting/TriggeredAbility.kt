@@ -1,6 +1,7 @@
 package com.wingedsheep.sdk.scripting
 
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.scripting.conditions.AllConditions
 import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
@@ -22,11 +23,28 @@ data class TriggeredAbility(
     val id: AbilityId,
     val trigger: EventPattern,
     val binding: TriggerBinding = TriggerBinding.SELF,
+    /**
+     * What the ability does.
+     *
+     * **A printed "you may" lives here, as a [com.wingedsheep.sdk.scripting.effects.Gate.MayDecide]
+     * around the effect** — there is no `optional` flag beside it. There used to be one, and it was
+     * the same fact written twice: the engine read it and *built* this gate before the ability
+     * reached the stack, so every game lowered one spelling into the other. The DSL still writes
+     * `optional = true` (see `TriggeredAbilityBuilder.optional`); that is a shorthand the builder
+     * lowers, not a second field on the model.
+     */
     val effect: Effect,
-    val optional: Boolean = false,
     val targetRequirement: TargetRequirement? = null,
     /** Additional target requirements for multi-target triggered abilities (e.g., exchange control). */
     val additionalTargetRequirements: List<TargetRequirement> = emptyList(),
+    /**
+     * The branch taken when target selection produces nothing — a declined "up to N" slot, or a
+     * mandatory slot with no legal target (CR 603.3d).
+     *
+     * Not the same position as a consent gate's `otherwise`, which is the branch taken when the
+     * controller *declines* at resolution. A "you may … If you don't, …" ability carries its else
+     * inside the gate; this field is the announcement-time one.
+     */
     val elseEffect: Effect? = null,
     /**
      * The zones this ability's trigger condition functions in (CR 113.6b — "an ability that states
@@ -42,11 +60,47 @@ data class TriggeredAbility(
      */
     val activeZones: Set<Zone> = setOf(Zone.BATTLEFIELD),
     /**
-     * Intervening-if condition (Rule 603.4): checked when the trigger would fire. The engine does
-     * not re-check it at resolution — an ability that needs CR 603.4's second half gates its own
-     * effect on the same condition instead (see Edgar Markov's eminence ability).
+     * The intervening-"if" clause of CR 603.4 — an `if` that *immediately follows the trigger
+     * event*: "When/Whenever/At [event], **if** [condition], [effect]."
+     *
+     * **It is checked twice.** Once when the trigger event occurs, and the ability triggers only
+     * if it is true then; and again as the ability resolves, where a false condition removes the
+     * ability from the stack and it does nothing. CR 603.4 calls the second check a mirror of the
+     * check for legal targets, and [com.wingedsheep.engine.mechanics.stack.StackResolver] performs
+     * it in the same place, emitting an `AbilityFizzledEvent`.
+     *
+     * The rule's own parenthetical is the boundary: *"the word 'if' has only its normal English
+     * meaning anywhere else in the text of a card; this rule only applies to an 'if' that
+     * immediately follows a trigger condition."* So an `if` printed **after** the effect —
+     * "Whenever this creature attacks, create a token *if* you control a creature with power 4 or
+     * greater" — is not this field. That ability triggers unconditionally and checks only as it
+     * resolves, which is a [com.wingedsheep.sdk.scripting.effects.ConditionalEffect], not a
+     * condition on the trigger.
+     *
+     * For a restriction on *when the ability triggers at all*, use [triggerRestriction]. The two
+     * are separate fields rather than one flagged condition because there is no safe default: a
+     * restriction re-checked on resolution fizzles abilities that should resolve, and an
+     * intervening-"if" not re-checked resolves abilities that should do nothing.
      */
-    val triggerCondition: Condition? = null,
+    val interveningIf: Condition? = null,
+    /**
+     * A CR 603.2 restriction on the ability's *trigger event*, checked when the trigger would fire
+     * and **never again**. Distinct from [interveningIf], which CR 603.4 checks a second time.
+     *
+     * Three printed shapes land here:
+     *
+     *  - a **"while"** clause — "Whenever this creature attacks **while you control a Dinosaur**",
+     *    "Whenever this creature attacks **while saddled**", "When this creature dies **while its
+     *    power is 4 or greater**". The condition qualifies the event, not the resolution: a
+     *    Dinosaur that leaves in response does not stop the pump.
+     *  - a **"during"** clause or any other adverbial narrowing of the event — "Whenever you cast
+     *    a spell **during an opponent's turn**", "Whenever a card leaves your graveyard **during
+     *    your turn**".
+     *  - a gate that no printed word states because it belongs to a **mechanic**: whether an
+     *    Offspring cost was paid, which mode a card was cast for, whether a Spacecraft has reached
+     *    its Station threshold, whether a Class has the level whose ability this is.
+     */
+    val triggerRestriction: Condition? = null,
     /** When true, the triggered ability is controlled by the triggering entity's controller
      * instead of the source permanent's controller. Used for cards like Death Match. */
     val controlledByTriggeringEntityController: Boolean = false,
@@ -101,6 +155,23 @@ data class TriggeredAbility(
     /** Optional human-readable description that overrides the auto-generated one. */
     val descriptionOverride: String? = null
 ) : TextReplaceable<TriggeredAbility> {
+    /**
+     * Every condition checked *when the trigger event occurs* — both kinds, since CR 603.2 and
+     * CR 603.4 agree on the first check and differ only on whether there is a second one. This is
+     * what the trigger detector filters on; [interveningIf] alone is what the stack resolver
+     * re-checks.
+     *
+     * It is a read-only derivation on purpose. The two halves are set separately, so a card that
+     * means "if" can no longer reach the trigger-time-only path by writing to the name it used to
+     * share with "while".
+     */
+    val triggerCondition: Condition?
+        get() = when {
+            interveningIf == null -> triggerRestriction
+            triggerRestriction == null -> interveningIf
+            else -> AllConditions(listOf(interveningIf, triggerRestriction))
+        }
+
     /** All target requirements for this ability (primary + additional). */
     val allTargetRequirements: List<TargetRequirement>
         get() = listOfNotNull(targetRequirement) + additionalTargetRequirements
@@ -108,11 +179,10 @@ data class TriggeredAbility(
     val description: String
         get() = descriptionOverride ?: buildString {
             append(trigger.description)
-            if (triggerCondition != null) {
+            triggerCondition?.let {
                 append(", ")
-                append(triggerCondition.description)
+                append(it.description)
             }
-            if (optional) append(", you may")
             append(", ")
             if (targetRequirement != null) {
                 append(targetRequirement.description)
@@ -142,15 +212,18 @@ data class TriggeredAbility(
             n
         }
         val newElseEffect = elseEffect?.applyTextReplacement(replacer)
-        val newTriggerCondition = triggerCondition?.applyTextReplacement(replacer)
+        val newInterveningIf = interveningIf?.applyTextReplacement(replacer)
+        val newRestriction = triggerRestriction?.applyTextReplacement(replacer)
         return if (newTrigger !== trigger || newEffect !== effect ||
                    newTargetReq !== targetRequirement || addlChanged ||
-                   newElseEffect !== elseEffect || newTriggerCondition !== triggerCondition)
+                   newElseEffect !== elseEffect || newInterveningIf !== interveningIf ||
+                   newRestriction !== triggerRestriction)
             copy(trigger = newTrigger, effect = newEffect,
                  targetRequirement = newTargetReq,
                  additionalTargetRequirements = newAddlTargetReqs,
                  elseEffect = newElseEffect,
-                 triggerCondition = newTriggerCondition) else this
+                 interveningIf = newInterveningIf,
+                 triggerRestriction = newRestriction) else this
     }
 
     companion object {
@@ -158,12 +231,12 @@ data class TriggeredAbility(
             trigger: EventPattern,
             binding: TriggerBinding = TriggerBinding.SELF,
             effect: Effect,
-            optional: Boolean = false,
             targetRequirement: TargetRequirement? = null,
             additionalTargetRequirements: List<TargetRequirement> = emptyList(),
             elseEffect: Effect? = null,
             activeZones: Set<Zone> = setOf(Zone.BATTLEFIELD),
-            triggerCondition: Condition? = null,
+            interveningIf: Condition? = null,
+            triggerRestriction: Condition? = null,
             controlledByTriggeringEntityController: Boolean = false,
             oncePerTurn: Boolean = false,
             effectOncePerTurn: Boolean = false,
@@ -175,12 +248,12 @@ data class TriggeredAbility(
                 trigger = trigger,
                 binding = binding,
                 effect = effect,
-                optional = optional,
                 targetRequirement = targetRequirement,
                 additionalTargetRequirements = additionalTargetRequirements,
                 elseEffect = elseEffect,
                 activeZones = activeZones,
-                triggerCondition = triggerCondition,
+                interveningIf = interveningIf,
+                triggerRestriction = triggerRestriction,
                 controlledByTriggeringEntityController = controlledByTriggeringEntityController,
                 oncePerTurn = oncePerTurn,
                 effectOncePerTurn = effectOncePerTurn,

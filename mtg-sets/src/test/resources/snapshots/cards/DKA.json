@@ -851,7 +851,7 @@
                 },
                 "binding": "ANY",
                 "effect": "Transform",
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": "SpellsCastLastTurn",
                     "operator": "EQ",
@@ -945,7 +945,7 @@
                     },
                     "binding": "ANY",
                     "effect": "Transform",
-                    "triggerCondition": {
+                    "interveningIf": {
                         "type": "Compare",
                         "left": "SpellsCastLastTurn",
                         "operator": "GTE",
@@ -1153,13 +1153,16 @@
                 "id": "ability_1",
                 "trigger": "AttackEvent",
                 "effect": {
-                    "type": "TapUntap",
-                    "target": {
-                        "type": "BoundVariable",
-                        "name": "target"
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "TapUntap",
+                        "target": {
+                            "type": "BoundVariable",
+                            "name": "target"
+                        }
                     }
                 },
-                "optional": true,
                 "targetRequirement": {
                     "type": "TargetObject",
                     "filter": {
@@ -1297,7 +1300,7 @@
                 },
                 "binding": "ANY",
                 "effect": "Transform",
-                "triggerCondition": {
+                "interveningIf": {
                     "type": "Compare",
                     "left": "SpellsCastLastTurn",
                     "operator": "EQ",
@@ -1344,7 +1347,7 @@
                     },
                     "binding": "ANY",
                     "effect": "Transform",
-                    "triggerCondition": {
+                    "interveningIf": {
                         "type": "Compare",
                         "left": "SpellsCastLastTurn",
                         "operator": "GTE",
