@@ -1,6 +1,8 @@
 name: CI
 
 on:
+  workflow_dispatch:
+    # Allows the upstream-sync workflow to validate bot-created merge commits on main.
   push:
     branches: [ "main" ]
   pull_request:
