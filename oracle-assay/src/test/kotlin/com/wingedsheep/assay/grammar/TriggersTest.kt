@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.dsl.Triggers as SdkTriggers
 import io.kotest.core.spec.style.StringSpec
 import io.kotest.matchers.shouldBe
@@ -101,16 +102,16 @@ class TriggersTest : StringSpec({
             "At the beginning of each upkeep, draw a card."
     }
 
-    // "You may …" is not unspellable content: a triggered ability's `optional` flag and a spell's
-    // `MayEffect` are two SDK spellings of one sentence, and `Triggers.abilityFor` lowers between
-    // them so the printed form is the same either way.
-    "the optional flag is the trigger's spelling of \"you may\"" {
+    // "You may …" is one sentence with one model. A triggered ability used to spell it with an
+    // `optional` flag where a spell used a `MayEffect`, and `Triggers.abilityFor` had to lower
+    // between the two; the flag is gone from the SDK and a trigger's consent is the same gate a
+    // spell's is, so this now asserts that nothing special happens at all.
+    "a trigger's \"you may\" is the same consent gate a spell's is" {
         val optional = TriggeredAbility(
             id = AbilityId("trigger"),
             trigger = SdkTriggers.EntersBattlefield.event,
             binding = SdkTriggers.EntersBattlefield.binding,
-            effect = Effects.DrawCards(1),
-            optional = true,
+            effect = MayEffect(Effects.DrawCards(1)),
         )
 
         Grammar.abilityLine.printLine(
@@ -121,8 +122,8 @@ class TriggersTest : StringSpec({
     }
 
     // An intervening-if (CR 603.4) *is* spellable: it is the clause between the event and the
-    // effect, and `triggerCondition` is the SDK's slot for it. `Triggers.abilityFor` lifts the
-    // clause's own gate into that slot rather than leaving a copy in the effect, which is what 478
+    // effect, and `interveningIf` is the SDK's slot for it. `Triggers.abilityFor` lifts the
+    // clause's own gate into that slot rather than leaving a copy in the effect, which is what the
     // hand-written cards do and what keeps one printed form for one model.
     "an intervening-if is the trigger's own condition, not a second gate in the effect" {
         val conditioned = TriggeredAbility(
@@ -130,7 +131,7 @@ class TriggersTest : StringSpec({
             trigger = SdkTriggers.EntersBattlefield.event,
             binding = SdkTriggers.EntersBattlefield.binding,
             effect = Effects.DrawCards(1),
-            triggerCondition = Conditions.OpponentControlsMoreLands,
+            interveningIf = Conditions.OpponentControlsMoreLands,
         )
 
         fragment("When ~ enters, if an opponent controls more lands than you, draw a card.") shouldBe
@@ -138,6 +139,24 @@ class TriggersTest : StringSpec({
         Grammar.abilityLine.printLine(
             CardFragment(script = CardScript(triggeredAbilities = listOf(conditioned)))
         ) shouldBe "When ~ enters, if an opponent controls more lands than you, draw a card."
+    }
+
+    // The other half of the split (CR 603.2 vs CR 603.4). A `triggerRestriction` is a different
+    // printed shape — "Whenever this creature attacks *while* you control a Dinosaur" — that the
+    // engine reads only when the trigger fires. No trigger rule spells it, so an ability carrying
+    // one must decline rather than print the "if" sentence, whose model differs.
+    "a trigger restriction is not printable as an intervening-if" {
+        val restricted = TriggeredAbility(
+            id = AbilityId("trigger"),
+            trigger = SdkTriggers.EntersBattlefield.event,
+            binding = SdkTriggers.EntersBattlefield.binding,
+            effect = Effects.DrawCards(1),
+            triggerRestriction = Conditions.OpponentControlsMoreLands,
+        )
+
+        Grammar.abilityLine.printLine(
+            CardFragment(script = CardScript(triggeredAbilities = listOf(restricted)))
+        ) shouldBe null
     }
 
     // Fail-closed, the same rule the step matchers follow: an ability carrying anything the sentence

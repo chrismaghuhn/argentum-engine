@@ -541,6 +541,8 @@ data class EffectContext(
             triggerCounterCount = ability.triggerCounterCount,
             triggerTotalCounterCount = ability.triggerTotalCounterCount,
             triggerLastKnownCounters = ability.triggerLastKnownCounters,
+            triggerLastKnownSubtypes = ability.triggerLastKnownSubtypes,
+            triggerLastKnownCardTypes = ability.triggerLastKnownCardTypes,
             triggerLastKnownDamageDealtByPlayers = ability.triggerLastKnownDamageDealtByPlayers,
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,

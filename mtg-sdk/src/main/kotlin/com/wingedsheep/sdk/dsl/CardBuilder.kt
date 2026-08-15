@@ -20,6 +20,8 @@ import com.wingedsheep.sdk.scripting.effects.CreateTokenEffect
 import com.wingedsheep.sdk.scripting.effects.ManaExpiry
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.GrantKeywordEffect
+import com.wingedsheep.sdk.scripting.effects.MayEffect
+import com.wingedsheep.sdk.scripting.effects.ownsConsentGate
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.AttachEquipmentEffect
@@ -1474,6 +1476,24 @@ class TriggeredAbilityBuilder {
 
     var effect: Effect? = null
     var target: TargetRequirement? = null
+
+    /**
+     * `you may …` — authoring shorthand for wrapping [effect] in a [Gate.MayDecide].
+     *
+     * **The model has no `optional` flag; [build] lowers this one.** `TriggeredAbility.optional`
+     * used to exist beside the gate and the engine read it and built the gate anyway, so the two
+     * spellings were one fact and a card could be written either way. The shorthand survives because
+     * `optional = true` beside `effect = Effects.Destroy(…)` reads better than nesting the effect,
+     * but it produces exactly one model: `MayEffect(effect, otherwise = elseEffect)`.
+     *
+     * Consequences of it being a lowering rather than a flag:
+     *
+     *  - [elseEffect] moves *inside* the gate, becoming the branch taken when the controller
+     *    declines. That is where a "you may … If you don't, …" ability's else belongs; the field
+     *    itself stays for the announcement-time decline (see [TriggeredAbility.elseEffect]).
+     *  - Setting this on an effect that already owns a consent gate is rejected here rather than
+     *    silently double-prompting.
+     */
     var optional: Boolean = false
     var elseEffect: Effect? = null
     /**
@@ -1492,11 +1512,23 @@ class TriggeredAbilityBuilder {
         set(value) { triggerZones = setOf(value) }
 
     /**
-     * Intervening-if condition (Rule 603.4): checked when the trigger would fire. Note the engine
-     * does not yet re-check it at resolution — an ability that needs the second half of CR 603.4
-     * has to gate its own effect on the same condition (`ConditionalEffect`).
+     * The intervening-"if" of CR 603.4 — an `if` printed immediately after the trigger event:
+     * "When/Whenever/At [event], **if** [condition], [effect]." Checked when the trigger would
+     * fire *and* again as the ability resolves, where a false condition removes it from the stack.
+     *
+     * See [com.wingedsheep.sdk.scripting.TriggeredAbility.interveningIf]; for a "while" clause or
+     * any other trigger-time-only gate use [triggerRestriction].
      */
-    var triggerCondition: Condition? = null
+    var interveningIf: Condition? = null
+
+    /**
+     * A CR 603.2 restriction on the trigger event, checked when the trigger would fire and never
+     * again — a "while" clause, a "during your turn" narrowing, or a mechanic's own gate.
+     *
+     * See [com.wingedsheep.sdk.scripting.TriggeredAbility.triggerRestriction]; for an "if" clause
+     * printed straight after the trigger event use [interveningIf].
+     */
+    var triggerRestriction: Condition? = null
     /** When true, the triggered ability is controlled by the triggering entity's controller. */
     var controlledByTriggeringEntityController: Boolean = false
     /** When true, this triggered ability triggers at most once each turn ("This ability triggers
@@ -1530,7 +1562,12 @@ class TriggeredAbilityBuilder {
     }
 
     fun build(): TriggeredAbility {
-        requireNotNull(effect) { "Triggered ability must have an effect" }
+        val declared = requireNotNull(effect) { "Triggered ability must have an effect" }
+        require(!optional || !declared.ownsConsentGate()) {
+            "Triggered ability sets optional = true on an effect that already asks — the lowering " +
+                "would wrap a second 'you may' around it and prompt twice. Drop one of them. " +
+                "Effect: $declared"
+        }
         val allTargets = if (namedTargets.isNotEmpty()) {
             namedTargets.map { it.second }
         } else {
@@ -1541,13 +1578,13 @@ class TriggeredAbilityBuilder {
         return TriggeredAbility.create(
             trigger = trigger.event,
             binding = trigger.binding,
-            effect = effect!!,
-            optional = optional,
+            effect = if (optional) MayEffect(declared, otherwise = elseEffect) else declared,
             targetRequirement = primaryTarget,
             additionalTargetRequirements = additionalTargets,
-            elseEffect = elseEffect,
+            elseEffect = if (optional) null else elseEffect,
             activeZones = triggerZones,
-            triggerCondition = triggerCondition,
+            interveningIf = interveningIf,
+            triggerRestriction = triggerRestriction,
             controlledByTriggeringEntityController = controlledByTriggeringEntityController,
             oncePerTurn = oncePerTurn,
             effectOncePerTurn = effectOncePerTurn,
