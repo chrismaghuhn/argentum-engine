@@ -20,8 +20,12 @@ and those are the two sentences on it. The **aura band** followed: `Enchant <fil
 attached-permanent statics, which opened `staticAbilities` — the largest `CardScript` slot the
 differential could not see into, and the one every later static family lands in.
 
-The most recent is the **Legions band**, and it is the second set read end to end and the first
-*hard* one: `just assay-gate --set LGN` reads **145 of Legions' 145 cards**. Legions is every-card-a-
+The most recent work is the **counters band**, and it is the first one picked by *ranking the
+backlog* rather than by picking a set: `just assay-report --implemented` says 656 cards with a
+hand-written golden decline on nothing but a counter sentence, which is the largest sole-blocked
+family in that population. See [the counters band](#the-counters-band) below.
+
+Before that came the **Legions band**, the second set read end to end and the first *hard* one: `just assay-gate --set LGN` reads **145 of Legions' 145 cards**. Legions is every-card-a-
 creature, so it is a set made almost entirely of the things Portal had none of — morph payoffs,
 tribal lords, granted abilities, amplify, counted variables — and reading all of it took nine new
 families rather than nine new rules. See [the Legions band](#the-legions-band) below.
@@ -39,13 +43,17 @@ coverage went from 3,004 cards to 4,287 in the same change, which is the argumen
 as the target rather than picking the number.
 
 Nothing here changes `:mtgish-tooling`, which stays authoritative until a per-set cutover replaces it
-(Phase 5). Assay is **not a runtime card loader** and never will be.
+(Phase 5). Assay is **not a runtime card loader** and never will be — with one carved-out exception,
+the [custom-card sandbox](#the-compiler-and-the-custom-card-sandbox), which compiles a *pasted* card
+for a dev-gated Scenario Builder session and never touches the corpus.
 
 ## Commands
 
 ```bash
 just assay parse "Serra Angel"      # normalized lines + the SDK model each parses to
 just assay explain "Wall of Omens"  # the same, with a caret on the token a decline died on
+just assay compile "Serra Angel"    # the reading as a whole CardDefinition (JSON on stdout)
+just assay compile --file card.json # …from a pasted Scryfall object — the custom-card path
 just assay-gate                     # the touchstone over the whole corpus; exit 1 on a bug
 just assay-report --top 40          # the same numbers, always exit 0
 just assay-report --scope           # restricted to Phase 1's own target class
@@ -88,8 +96,9 @@ grammar/    the rules, by topic — Primitives, Keywords, Cardinals, Conditions,
             ability slot; Restrictions is the three "when may this happen" vocabularies;
             Continuations and SelfSteps are the two anaphors ("that creature" / "it")
 gate/       the touchstone, the fineness report, the differential
+compile/    a whole reading as a CardDefinition — the custom-card sandbox's engine
 explore/    the browser UI — a loopback HTTP server over the live grammar and both gates
-cli/        assay parse | explain | gate | report | differential | explore | corpus
+cli/        assay parse | explain | compile | gate | report | differential | explore | corpus
 ```
 
 ## The three things that make this different
@@ -127,15 +136,16 @@ non-zero on. Declines are not failures.
 Cards assayed                    34882
 Ability lines                    66793  (38943 unique)
 
-Round-trips byte-exact           22464   336.3‰ (33.6%)
-Alternate spelling normalized    1018
-Declined                         43311
+Round-trips byte-exact           22940   343.4‰ (34.3%)
+Alternate spelling normalized    1114
+Declined                         42739
 Ambiguous — distinct readings    0
 Print mismatch                   0
 Normalization not invertible     0
 Full inverse not reproduced      0
+Redundant readings (same model)  0
 
-Cards fully covered              6157 / 34882   176.5‰ (17.7%)
+Cards fully covered              6335 / 34882   181.6‰ (18.2%)
 Vanilla + keyword-only cards     1444 / 1712   843.5‰ (84.3%)   <- Phase 1 target
 Portal (set POR)                 200 / 200     1000.0‰ (100%)   <- the Portal band's target
 Legions (set LGN)                145 / 145     1000.0‰ (100%)   <- the Legions band's target
@@ -223,6 +233,82 @@ Whole-corpus coverage went from 4,287 cards to 6,157 in the same change, and the
 compared population from 1,636 to 2,387 — which is again the argument for picking a set as the target
 rather than picking the number.
 
+## The counters band
+
+Four sentences — "Put a +1/+1 counter on target creature.", the same clause aimed at the source
+("…on ~.") and at the target an earlier clause chose ("…on it."), and the entry replacement
+"~ enters with two +1/+1 counters on it." Whole-corpus coverage went 6,157 → **6,335 cards**, the
+differential's compared population 2,387 → **2,431**, and its confirmed count 2,383 → **2,425**.
+
+**It is the first band chosen by ranking the backlog rather than by picking a set, and the ranking is
+the part worth reading.** The token table's top row was `you` at 595 implemented cards — a trigger
+*subject*, which the step triggers already proved over-promises: 410 cards declined on "At the
+beginning of…" and adding every prefix moved whole-card coverage by 23, because a line dies on its
+first unknown token and a trigger's real blocker is usually after the comma. So the ranking that
+decides work is **cards whose line dies at the verb**, where everything before it already read, and
+by that measure counters are the largest family in the corpus: **1,025 implemented cards carry a
+counter line the grammar could not read, and 656 of them decline on nothing else**. The verb also multiplies rather than adds —
+`Triggers`, `Activated` and the modal rules all slot `Steps.step` whole, so one clause vocabulary
+arrives in every context already wired. That is the opposite trade from a prefix, and the two
+worked examples now sit either side of it.
+
+**Two leaves, and both of them own a spelling no rule above them can see.** `Primitives.counterKind`
+reads the noun and is gated on `CounterType.fromName` — the SDK's own answer to "is this a counter",
+the same function `StatePredicate.HasCounter` parses with — because the model field is a bare
+`String` and an ungated leaf would read *any* word as a kind and round-trip a counter Magic does not
+have. That is `creatureSubtype`'s argument, and the "Elves" → `Elve` failure it exists to prevent.
+
+The second leaf is the **indefinite article**, and it is inside the leaf for `statModifiers`' reason:
+English picks "a" or "an" from the sound of the next word, so two rules — one per article — would
+leave printing undetermined by the model, which is invariant 2 rather than a preference. It can be
+one leaf because the corpus states the rule without an exception: across all 34,882 Oracle texts
+**no counter kind is ever spelled both ways** — 223 kinds take "a", 38 take "an", disjoint. The
+letter rule predicts all but three ("an hour", "an hourglass", "a unity"), only `hourglass` is a kind
+the SDK names, and `token` re-reads what it writes on every call, so a wrong article could not
+survive a corpus run.
+
+**A two-word kind needed a lookahead, and the reason is a kernel property rather than a grammar
+one.** "first strike" and "double strike" are counter kinds, and a leaf reads exactly *one* regex
+match — `token` does not retry a shorter one when the gate rejects — so a greedy second word swallows
+the template's own "counter" and declines every single-word kind. The noun's pattern therefore spells
+out what it cannot be. Worth knowing before writing any leaf that can span a space.
+
+**The band's real risk was the anaphor, and the machinery for it already existed.** "Put a +1/+1
+counter on it" means the source in "Whenever ~ attacks, put a +1/+1 counter on it" and the *target*
+in "Tap target creature an opponent controls and put a stun counter on it" — both readings round-trip
+byte-perfectly, so nothing but the split could tell them apart. `SelfSteps.putCountersOnSelf` and
+`Continuations.putCountersOnThatPermanent` are reachable from disjoint positions, exactly as
+`SelfSteps.anaphoric` and `Continuations` have been since the differential caught "Untap target
+creature. It gets +2/+4" meaning the wrong creature. This is the second sentence to need both, which
+is the evidence that split generalized rather than patched one card.
+
+**What the gate found: 44 newly-compared cards, 42 of them confirmed, and 2 divergences that are one
+finding.** Landing on top of the divergence sweep is what makes that legible — against a baseline of
+4 the band's own contribution is readable directly, where against 122 it would have been noise.
+
+- **A card says "another" where its text says "an" — 8 cards.** Donatello, Way with Machines and
+  Mm'menon, Uthros Exile both print "Whenever **an** artifact you control enters" and are authored
+  with `binding = OTHER`, which excludes the source. The corpus maps the two spellings correctly
+  almost everywhere — 33 cards print "an" and bind `ANY`, 40 print "another" and bind `OTHER` — so
+  these are the exceptions rather than a convention, and a grep finds six more: Rimefire Torque,
+  Airbender Ascension, Path of Discovery, Gossip's Talent, Death Match and Mana Echoes.
+  **It is unobservable on all eight today**, and saying so is the honest half: every one of them is
+  an enchantment or artifact triggering on a creature entering, so the source can never *be* the
+  entering permanent and the binding never gets to matter. It is latent rather than harmless — an
+  effect that makes Donatello an artifact as it enters is all it takes — and it is **not folded**,
+  because folding would stop the gate noticing the first card where the binding is observable.
+
+That is the whole of it: both new divergences are that one finding, and nothing else the band
+brought into the population disagreed. A third — Invigorating Boon, the "you may on a triggered
+ability" spelling — was divergent when the band was written against the pre-sweep baseline and is
+not any more, because the sweep fixed that family while this was in flight.
+
+**No new bug in a hand-written card**, and that is worth recording beside the aura band's same
+result. Every bug this gate has found — Meteor Golem, Voltaic Construct, Dwarven Miner, Recollect
+and Eternal Witness, and the 22 the sweep turned up — was a clause lost *inside a filter on a longer
+sentence*. A counter sentence is short and has one filter, which is the same reason the auras added
+none: there is very little in it to drop.
+
 ## What Phase 1 already found
 
 The report is two documents at once, and the second one is about `mtg-sdk`:
@@ -267,17 +353,68 @@ named population bucket instead and the denominator stays visible.
 
 ```
   Hand-written cards                 9123
-    compared                         2387
-    not yet covered by the grammar   6104
-    script slot not modelled yet      79
-    lines do not fold into one card   49
+    compared                         2431
+    not yet covered by the grammar   6056
+    script slot not modelled yet      82
+    lines do not fold into one card   50
     multi-face (out of scope)        301
     Oracle text differs from golden  203
     golden would not decode            0
 
-  Confirmed — models agree           2265   948.9‰ (94.9%)
-  DIVERGENT — read every one          122
+  Confirmed — models agree           2425   997.5‰ (99.8%)
+  DIVERGENT — read every one            6
 ```
+
+Four of those six are what the **sweep** left standing, and the other two are the counters band's,
+classified in its own section above. The sweep took the count from 122 to 4: every divergence the
+gate had accumulated was read, classified as parser bug / card bug / fold, and acted on. What it
+found, by kind:
+
+- **A bug in the gate itself, and a flaky one.** `AbilityId.generate()` is a global counter and
+  `encodeDefaults` is false, so kotlinx re-evaluates the default to decide whether to emit an `id` —
+  meaning a golden holding `ability_2` is omitted from the JSON exactly when the counter next returns
+  `ability_2`. Two encodes of the same card differed, and the comparison was over the serialized
+  *string*, so Blasting Station reported as divergent on some runs and confirmed on others.
+  `Differential.sortKeys` compares objects as objects and closes the whole class.
+- **22 hand-written cards that were wrong**, all but three of them unreviewed mtgish drafts, and all
+  of them wrong in the way this gate is built to see — a clause dropped inside a filter. Fiery
+  Cannonade hit every creature rather than every non-Pirate; Eyeblight Massacre every creature rather
+  than every non-Elf; Magnetic Flux pumped artifacts *or* creatures rather than artifact creatures;
+  Kangee's block trigger pumped every flier rather than every *blocking* flier; Joust Through gained
+  3 life where the card says 1; Visara never stopped regeneration at all. Seven more read "sacrifice
+  it unless you pay {G}{G}" as `PayCost.OwnManaCost` — the card's *printed* cost, which for the two
+  lands among them is `{0}`, i.e. a sacrifice that never happens.
+- **Four parser bugs**, each of the reversible-but-wrong class the touchstone cannot see: an
+  intervening-if left duplicated in the effect as well as lifted into `triggerCondition`; Chromatic
+  Sphere read as an instant-speed ability because the mana effect sat under a composite (CR 605.1a
+  says "could add mana", not "does nothing else"); a two-pass reading of "creatures you control get
+  +3/+3 **and** gain trample"; and two sentences printed in a spelling the corpus never uses.
+- **One SDK finding acted on, one filed.** Acted on: `manaAbility = true` now derives
+  `timing = TimingRule.ManaAbility` in `CardBuilder`, so the two spellings of one fact can no longer
+  drift (24 cards carried only one, and the AI's `ExpiringGrantWindow` branches on `timing`).
+- **Filed: the engine never performs CR 603.4's second intervening-if check.**
+  `triggerCondition` is filtered at trigger *detection* and read nowhere else, so Beastbond
+  Outcaster draws its card even when the 4-power creature was killed in response — against the
+  ruling quoted in its own card file. Eight cards (Lavaborn Muse, Farsight Mask, Bloodhall Priest,
+  Asylum Visitor, Heir of the Wilds, Convalescent Care, Oversold Cemetery) have noticed and
+  hand-written a redundant resolution-time gate to compensate.
+
+  A uniform recheck was implemented and **reverted**, because the field turns out to be overloaded
+  three ways: 340 abilities use `triggerCondition` for an intervening-"if" (two checks), 47 for a
+  "**while**" clause — "Whenever this creature attacks *while* you control a Dinosaur" is
+  trigger-time only, and Burning Sun Cavalry and Seasoned Warrenguard have scenario tests asserting
+  exactly that — and ~100 for other trigger-time restrictions. Rechecking all of them fails those
+  two tests. The engine fix needs "if" and "while" separated in the SDK first, which is its own
+  change with a corpus migration behind it.
+
+The four that remain are classified, not unexplained:
+
+| Card | Classification |
+|---|---|
+| Zombie Master | The bare-tribal-noun approximation, **measured**: "Zombies" means every Zombie *permanent*, and reading it that way costs 80 other cards (45 → 127 divergences). The one card in the corpus where the distinction is observable, because its granted ability says "Regenerate this permanent". |
+| Lavaborn Muse | Carries the redundant resolution-time gate above. Correct under today's engine and divergent from the grammar; both stop being true when the "if"/"while" split lands. |
+| Tattered Ratter | Parser bug. "it" inside a *filtered* trigger means the triggering creature, not the source — the third anaphor position. Fixing it needs a clause vocabulary reachable only from `filteredTriggerRule`, since `Primitives.self` and `SelfSteps.anaphoric` both build `EffectTarget.Self` today. |
+| Kalastria Highborn | Parser bug. "You may pay {B}. If you do, A **and** B." — the outer clause-sequence rule takes the " and " join before the gate can, so B lands outside the gate. Fixing it by alternation order is what the design says never to do; the gate's scope has to run to the end of the sentence. |
 
 The divergence count is not meant to stay at zero — it rises every time the grammar reaches a new
 class of card, and each rise is the gate earning its keep. The five it opened with, the eight the
@@ -537,6 +674,49 @@ de-pluralized to `Subtype("Plain")` — the "Elves" → `Elve` failure, live on 
 round-tripping perfectly the whole time. `Primitives.pluralSubtype` now ranks candidate readings
 against the SDK's own type lists instead of guessing. Running it then surfaced the join and
 slot-completeness holes above, each of which was the gate finding a way it could have lied.
+
+## The compiler and the custom-card sandbox
+
+`assay compile` takes a reading the whole way: Scryfall JSON in, a `CardDefinition` out.
+
+```bash
+just assay compile "Serra Angel"       # a corpus card
+just assay compile --file card.json    # a card that has no Scryfall entry at all
+```
+
+The Scenario Builder is where that becomes useful. Its **Custom cards** panel (dev endpoints only)
+takes a pasted card object, shows what Assay read — each printed line with its verdict, the
+canonical spelling where the author wrote a legal variant, and the caret on the token a decline died
+on — and then lets you put the compiled card into any zone and *play* it. The question Assay was
+built to answer becomes something you can hold: **is this card expressible in Argentum's vocabulary,
+and what exactly does it say?**
+
+Four constraints keep this from being the card loader this module refuses to be, and all four are in
+code rather than in a convention:
+
+- **Dev-gated.** `AssayCardService` reads `game.dev-endpoints.enabled`, and the player-facing
+  `/api/scenarios` is gated by the same service rather than by a second check.
+- **Session-scoped.** The compiled card goes into a `CardRegistry` overlay for that one scenario —
+  never the live corpus, never a deck, never another game. Drop the source and the name stops
+  resolving, which the tests pin.
+- **Whole cards only.** A card any of whose lines Assay cannot read is *refused*, with the line that
+  stopped it. Nothing here can produce a card missing an ability, which would look right on the
+  board and test green.
+- **The corpus is still hand-written.** Ground truth stays a `cardDef` with a passing scenario test.
+  Nothing loads `mtg-sets` through this, and the module's own dependency is still `:mtg-sdk` alone.
+
+Two things the compiler does that the grammar deliberately does not. It reads the **header** —
+mana cost, type line, power/toughness, loyalty, defense — which is not Oracle text and which no rule
+touches; a `*` power declines rather than becoming 0, because mapping a characteristic-defining
+ability into the stat slot is grammar work nobody has done. And it **re-mints ability ids**: the
+grammar mints one fixed constant per family (no printed word determines an id, and the differential
+normalizes by position), but a played card is dispatched on those ids, so two abilities sharing one
+would activate the wrong ability.
+
+At today's fineness — the "cards fully covered" line in `just assay-report`, well under a fifth of
+the corpus — pasting a *random* real card more often declines than compiles. That is the tool working: the decline names the missing capability, and it
+is the same ranked backlog `assay-report` produces. A custom card written in canonical templating
+inside a covered family compiles, and one that does not is usually a card to reword.
 
 ## The explorer
 
