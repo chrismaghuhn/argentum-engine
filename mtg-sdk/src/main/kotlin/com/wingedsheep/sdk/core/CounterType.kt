@@ -84,6 +84,7 @@ enum class CounterType {
     INCUBATION,
     FELLOWSHIP,
     BAIT,
+    BOUNTY,
     BORE,
     POINT,
     WISH,
@@ -294,6 +295,14 @@ object Counters {
      * untapped" trigger spends one to reel in a Fish token. No inherent rule.
      */
     const val BAIT = "bait"
+
+    /**
+     * Bounty counter (Chevill, Bane of Monsters). Passive named marker with no inherent rule;
+     * a future Chevill definition places it on an opponent-controlled permanent and gates its
+     * death trigger through the generic `GameObjectFilter.withCounter` LKI path. It is deliberately
+     * not a keyword counter and is absent from `StateProjector.KEYWORD_COUNTER_MAP`.
+     */
+    const val BOUNTY = "bounty"
 
     /**
      * Rev counter (DSK — Chainsaw). Passive storage counter with no inherent rule; the card's own

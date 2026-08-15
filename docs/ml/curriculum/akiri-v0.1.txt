@@ -1,0 +1,107 @@
+# ARG-DECK-01 | Akiri v0.1 | Argentum-Friendly
+# Audit source commit: 31853cfe91b52718dc3fb67f159e6267d9c5fcc1
+# Pinned upstream SHA: d66a5d7f1b46b0ed8891c34ccfe163d491c4ff3d
+# Exact Commander singleton list: 100 cards including commander
+# Columns: slot\tprimary_role\tsecondary_roles\tcard_name
+# Commander: Akiri, Fearless Voyager
+#
+001	COMMANDER	SYNERGY_ENGINE	Akiri, Fearless Voyager
+002	LAND	-	Plains
+003	LAND	-	Plains
+004	LAND	-	Plains
+005	LAND	-	Plains
+006	LAND	-	Plains
+007	LAND	-	Plains
+008	LAND	-	Plains
+009	LAND	-	Plains
+010	LAND	-	Plains
+011	LAND	-	Plains
+012	LAND	-	Plains
+013	LAND	-	Plains
+014	LAND	-	Plains
+015	LAND	-	Plains
+016	LAND	-	Mountain
+017	LAND	-	Mountain
+018	LAND	-	Mountain
+019	LAND	-	Mountain
+020	LAND	-	Mountain
+021	LAND	-	Mountain
+022	LAND	-	Mountain
+023	LAND	-	Mountain
+024	LAND	-	Command Tower
+025	LAND	-	Clifftop Retreat
+026	LAND	-	Battlefield Forge
+027	LAND	-	Inspiring Vantage
+028	LAND	-	Sacred Foundry
+029	LAND	-	Plains
+030	LAND	-	Mountain
+031	LAND	-	Temple of Triumph
+032	LAND	-	Boros Garrison
+033	LAND	-	Sunhome, Fortress of the Legion
+034	LAND	-	Slayers' Stronghold
+035	LAND	-	Plains
+036	LAND	-	Mountain
+037	LAND	-	Plains
+038	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Sram, Senior Edificer
+039	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Puresteel Paladin
+040	CREATURE_THREAT	COMBAT|TUTOR	Stoneforge Mystic
+041	CREATURE_THREAT	COMBAT|EQUIPMENT	Ardenn, Intrepid Archaeologist
+042	CREATURE_THREAT	COMBAT|EQUIPMENT	Bruenor Battlehammer
+043	CREATURE_THREAT	COMBAT|EQUIPMENT	Danitha Capashen, Paragon
+044	CREATURE_THREAT	COMBAT|EQUIPMENT	Armored Skyhunter
+045	CREATURE_THREAT	COMBAT|CARD_ADVANTAGE	Wyleth, Soul of Steel
+046	CREATURE_THREAT	COMBAT|EQUIPMENT	Reyav, Master Smith
+047	CREATURE_THREAT	COMBAT|EQUIPMENT	Fervent Champion
+048	CREATURE_THREAT	COMBAT|EQUIPMENT	Kor Blademaster
+049	CREATURE_THREAT	COMBAT|EQUIPMENT	Leonin Shikari
+050	CREATURE_THREAT	COMBAT|EQUIPMENT	Brass Squire
+051	CREATURE_THREAT	COMBAT|EQUIPMENT	Stone Haven Outfitter
+052	CREATURE_THREAT	COMBAT|EQUIPMENT	Auriok Steelshaper
+053	CREATURE_THREAT	COMBAT|EQUIPMENT	Kemba, Kha Regent
+054	CREATURE_THREAT	COMBAT|EQUIPMENT	Balan, Wandering Knight
+055	CREATURE_THREAT	COMBAT|EQUIPMENT	Astor, Bearer of Blades
+056	CREATURE_THREAT	COMBAT	Mirran Crusader
+057	CREATURE_THREAT	COMBAT|PROTECTION	Selfless Spirit
+058	CREATURE_THREAT	COMBAT|PROTECTION	Mother of Runes
+059	CREATURE_THREAT	COMBAT|REMOVAL	Skyclave Apparition
+060	CREATURE_THREAT	COMBAT|REMOVAL	Loran of the Third Path
+061	CREATURE_THREAT	COMBAT|RECURSION	Sun Titan
+062	EQUIPMENT	COMBAT	Bonesplitter
+063	EQUIPMENT	COMBAT	Swiftfoot Boots
+064	EQUIPMENT	COMBAT	Lightning Greaves
+065	EQUIPMENT	COMBAT	Sword of the Animist
+066	EQUIPMENT	COMBAT	Mask of Memory
+067	EQUIPMENT	COMBAT	Vulshok Morningstar
+068	EQUIPMENT	COMBAT	Basilisk Collar
+069	EQUIPMENT	COMBAT	Fireshrieker
+070	EQUIPMENT	COMBAT	Shadowspear
+071	EQUIPMENT	COMBAT	Loxodon Warhammer
+072	EQUIPMENT	COMBAT	Vulshok Battlegear
+073	EQUIPMENT	COMBAT	Prowler's Helm
+074	EQUIPMENT	COMBAT	Embercleave
+075	RAMP	-	Arcane Signet
+076	RAMP	-	Boros Signet
+077	RAMP	-	Talisman of Conviction
+078	RAMP	-	Mind Stone
+079	RAMP	-	Commander's Sphere
+080	RAMP	-	Wayfarer's Bauble
+081	RAMP	-	Fire Diamond
+082	CARD_ADVANTAGE	CARD_SELECTION	Faithless Looting
+083	CARD_ADVANTAGE	CARD_SELECTION	Thrilling Discovery
+084	CARD_ADVANTAGE	CARD_SELECTION	Reckless Impulse
+085	CARD_ADVANTAGE	CARD_SELECTION	Mentor of the Meek
+086	CARD_ADVANTAGE	CARD_SELECTION	Welcoming Vampire
+087	REMOVAL	-	Swords to Plowshares
+088	REMOVAL	-	Path to Exile
+089	REMOVAL	-	Generous Gift
+090	REMOVAL	-	Disenchant
+091	REMOVAL	-	Chaos Warp
+092	REMOVAL	-	Abrade
+093	PROTECTION	-	Boros Charm
+094	PROTECTION	-	Loran's Escape
+095	BOARD_WIPE	-	Wrath of God
+096	BOARD_WIPE	-	Blasphemous Act
+097	RECURSION	-	Sevinne's Reclamation
+098	TUTOR	-	Open the Armory
+099	TUTOR	-	Steelshaper's Gift
+100	CARD_ADVANTAGE	CARD_SELECTION	Outpost Siege

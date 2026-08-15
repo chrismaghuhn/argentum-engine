@@ -130,6 +130,7 @@ export const counterManaClass: Record<string, string> = {
   INCUBATION: 'counter-slime',
   FELLOWSHIP: 'counter-devotion',
   BAIT: 'counter-fungus',
+  BOUNTY: 'counter-charge',
   BORE: 'counter-mining',
   POINT: 'counter-charge',
   WISH: 'counter-charge',
