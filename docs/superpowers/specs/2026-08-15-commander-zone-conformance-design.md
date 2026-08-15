@@ -1,6 +1,6 @@
 # ARG-02.1 Commander Zone-Movement Conformance
 
-**Status:** Approved with required corrections
+**Status:** Hardened after ARG-02.1R review
 **Date:** 2026-08-15
 **Branch:** `agent/a2-1-commander-zone-conformance`
 
@@ -17,7 +17,7 @@ state-based-action choice. That is not the current Comprehensive Rules shape:
 
 The current `CommanderZoneChoiceCheck` scans graveyard, exile, hand, and library,
 while `ZoneTransitionService` is synchronous and `ZoneMovementUtils` only has a
-deterministic `alwaysDivertToCommand` shortcut. The existing serializable
+deterministic `alwaysDivertToCommand` preference. The existing serializable
 `PendingGameEvent` / `ReplacementEffectProcessor` / continuation machinery is the
 right reusable seam, but it currently has no zone-change pending-event adapter.
 This is classified as `REUSABLE_REPLACEMENT_DECISION_GAP`.
@@ -30,14 +30,15 @@ the document itself says it is effective August 7, 2026:
 ## Goals
 
 1. Make the 903.9a and 903.9b timing distinction observable in the engine.
-2. Keep the 903.9b choice optional, owner-controlled, externally supplied, and
-   deterministic; never auto-answer it with AI or randomness.
+2. Keep the normal 903.9b choice optional and owner-controlled. A dedicated
+   deterministic/headless preference may answer it with YES, but only inside
+   the normal replacement pipeline, never by bypassing CR 616.
 3. Reuse the central replacement and continuation pipeline rather than adding a
    Commander-only decision stack.
 4. Keep the canonical zone-transition atom responsible for cleanup, LKI,
    actual-destination events, triggers, ownership, and command-zone identity.
-5. Preserve `alwaysDivertToCommand` as a deterministic/headless shortcut without
-   making the normal Commander path deterministic.
+5. Preserve `alwaysDivertToCommand` as a deterministic/headless answer policy
+   without making the normal Commander path deterministic.
 6. Leave combat ordering, damage assignment, gym/AI/observation code, and card
    pools outside the change.
 
@@ -112,12 +113,30 @@ library will no longer be treated as SBA locations. The existing marker remains
 the per-zone-entry guard for a declined 903.9a choice and is still stripped by
 the canonical zone transition.
 
-`alwaysDivertToCommand` remains an explicit deterministic mode. It is an
-automatic YES for the Commander replacement choice inside the replacement
-pipeline; it must not bypass CR 616 ordering when other replacement effects are
-applicable. It is limited to the same Commander identity and relevant
-zone-change destinations and must not alter ordinary non-Commander objects or
-token copies.
+`alwaysDivertToCommand` remains an explicit deterministic mode. For hand/library
+events it is an automatic YES for the Commander replacement choice inside the
+replacement pipeline; it must not bypass CR 616 ordering when other replacement
+effects are applicable. For graveyard/exile it is an automatic YES only after
+the requested physical move, through the 903.9a SBA path. It is limited to the
+same Commander identity and relevant zone-change destinations and must not alter
+ordinary non-Commander objects or token copies.
+
+### 5. ARG-02.1R hardening corrections
+
+- External `CastSpell` and `ActivateAbility` actions reject all serialized
+  internal resume markers. Only trusted continuation resumers may re-enter the
+  handlers with those fields populated.
+- CR 616 ordering uses the moving object's projected controller, falling back
+  to its owner; the 903.9b YES/NO choice remains with the Commander owner.
+- Optional 903.9b continuations retain the actual ordinary replacement identity
+  set already applied in the current chain. A decline is state-local, while the
+  explicit 903.9b exception still permits reapplication after an event change.
+- Ordered `MoveCollection` resumes retain the original effect context and route
+  every physical card movement through `MoveCollectionExecutor` and
+  `ZoneTransitionService`.
+- Stack-to-hand/library resolution keeps stack components and stack membership
+  coherent until the final physical transition; cleanup is performed by the
+  canonical transition atom.
 
 ## Verification shape
 

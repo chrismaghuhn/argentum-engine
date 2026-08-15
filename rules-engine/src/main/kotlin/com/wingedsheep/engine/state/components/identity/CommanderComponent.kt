@@ -16,8 +16,9 @@ import kotlinx.serialization.Serializable
  * - CR 903.9a state-based action: when the card sits in graveyard or exile after entering that
  *   zone, the owner is prompted to put it into the command zone (see
  *   `CommanderZoneChoiceCheck`). A hand/library move is instead handled before the move by the
- *   CR 903.9b replacement pipeline. The `Format.alwaysDivertToCommand` flag
- *   answers either applicable Commander choice with YES inside that pipeline.
+ *   CR 903.9b replacement pipeline. The `Format.alwaysDivertToCommand` flag answers the
+ *   903.9b replacement with YES in that pipeline and answers the 903.9a post-move choice with
+ *   YES after the card has entered graveyard or exile.
  * - commander-damage tracking — combat damage dealt by this entity contributes to the
  *   `commanderDamage` map, gated by absence of `TokenComponent` (CR 903.10a — token copies are
  *   not the commander)

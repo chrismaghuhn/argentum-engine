@@ -31,6 +31,9 @@ import com.wingedsheep.engine.state.components.identity.MadnessExiledComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownModeComponent
 import com.wingedsheep.sdk.scripting.effects.FaceDownMode
 import com.wingedsheep.engine.state.components.identity.PlayWithFixedAlternativeManaCostComponent
+import com.wingedsheep.engine.state.components.identity.PlayWithoutPayingCostComponent
+import com.wingedsheep.engine.state.components.identity.PlayWithCostIncreaseComponent
+import com.wingedsheep.engine.state.components.identity.ExileAfterResolveComponent
 import com.wingedsheep.engine.state.components.identity.MorphDataComponent
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
@@ -55,6 +58,7 @@ import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.state.permissions.removeMayPlayPermissionsForCard
 import kotlinx.serialization.Serializable
 
 
@@ -530,7 +534,12 @@ object ZoneTransitionService {
             newState = newState.updateEntity(entityId) { c ->
                 c.without<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
                     .without<com.wingedsheep.engine.state.components.stack.TargetsComponent>()
+                    .without<PlayWithoutPayingCostComponent>()
+                    .without<PlayWithCostIncreaseComponent>()
+                    .without<PlayWithFixedAlternativeManaCostComponent>()
+                    .without<ExileAfterResolveComponent>()
             }
+            newState = newState.removeMayPlayPermissionsForCard(entityId)
         }
 
         // Drop any remaining linked-exile reference held by a granter still on the

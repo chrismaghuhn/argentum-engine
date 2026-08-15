@@ -876,8 +876,10 @@ class StackResolver(
         // Pop from stack
         val (_, poppedState) = state.popFromStack()
 
-        // Determine what type of item this is
-        return when {
+        // Determine what type of item this is. A resolving spell stays a coherent stack object
+        // while a resolution-time choice is pending; the zone-transition atom removes it from
+        // the stack only when the physical move actually completes.
+        val result = when {
             container.has<SpellOnStackComponent>() ->
                 resolveSpell(poppedState, topId, container)
 
@@ -890,6 +892,21 @@ class StackResolver(
             else ->
                 ExecutionResult.error(state, "Unknown stack item type")
         }
+
+        // Ordinary resolution choices (for example an as-enters number/type choice) resume
+        // through their own spell continuation and must keep the historical popped-stack shape.
+        // Only replacement ordering/optional-replacement prompts need the spell to remain a
+        // coherent stack object: their continuation will perform the final zone transition.
+        val pendingContinuation = result.state.peekContinuation()
+        val replacementDecisionPending = pendingContinuation is OptionalReplacementContinuation ||
+            pendingContinuation is ReplacementChoiceContinuation
+        if (result.isPaused && replacementDecisionPending && container.has<SpellOnStackComponent>() &&
+            result.state.getEntity(topId)?.has<SpellOnStackComponent>() == true &&
+            topId !in result.state.stack
+        ) {
+            return result.copy(state = result.state.copy(stack = result.state.stack + topId))
+        }
+        return result
     }
 
     /**
@@ -2191,9 +2208,8 @@ class StackResolver(
                 // the completion restores that same decision instead of silently auto-completing
                 // the spell's paused effect.
                 if (pausedOmenFaceShuffle) {
-                    val preparedState = prepareResolvingSpellForZoneChange(effectResult.state, spellId)
                     val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
-                        state = preparedState,
+                        state = effectResult.state,
                         entityId = spellId,
                         destinationZone = Zone.LIBRARY,
                         options = ZoneEntryOptions(libraryPlacement = LibraryPlacement.Shuffled),
@@ -2227,6 +2243,40 @@ class StackResolver(
                 )
                 val pausedDestZone = pausedRedirect.destinationZone
                 val pausedDestZoneKey = ZoneKey(ownerId, pausedDestZone)
+
+                // A resolving spell can still be redirected into hand/library while an earlier
+                // resolution decision is pending. Keep the stack object coherent until the
+                // canonical transition completes: CR 903.9b may pause again before the physical
+                // move, and ResumePendingDecisionZoneChangeCompletion restores the original
+                // resolution decision only after that move is finished.
+                if (pausedDestZone == Zone.HAND || pausedDestZone == Zone.LIBRARY) {
+                    val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                        state = effectResult.state,
+                        entityId = spellId,
+                        destinationZone = pausedIntended,
+                        fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                        context = EffectContext(
+                            sourceId = spellId,
+                            controllerId = spellComponent.casterId,
+                        ),
+                        completion = PendingGameEvent.ResumePendingDecisionZoneChangeCompletion(
+                            pendingDecision = effectResult.pendingDecision!!,
+                        ),
+                    )
+                    if (pendingMove.isPaused) {
+                        return ExecutionResult.paused(
+                            pendingMove.state,
+                            pendingMove.pendingDecision!!,
+                            events + effectResult.events + pendingMove.events,
+                        )
+                    }
+                    if (pendingMove.error != null) return pendingMove.toExecutionResult()
+                    return ExecutionResult.paused(
+                        pendingMove.state,
+                        effectResult.pendingDecision,
+                        events + effectResult.events + pendingMove.events,
+                    )
+                }
 
                 // Move spell to graveyard/exile even though effect is paused
                 var pausedState = effectResult.state.updateEntity(spellId) { c ->
@@ -2375,9 +2425,8 @@ class StackResolver(
         // 903.9b choice available for a commander cast from any zone and lets the canonical zone
         // transition atom perform the library shuffle only after replacement processing finishes.
         if (omenFaceShuffle) {
-            val preparedState = prepareResolvingSpellForZoneChange(newState, spellId)
             val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
-                state = preparedState,
+                state = newState,
                 entityId = spellId,
                 destinationZone = Zone.LIBRARY,
                 options = ZoneEntryOptions(libraryPlacement = LibraryPlacement.Shuffled),
@@ -2410,9 +2459,8 @@ class StackResolver(
         // event is re-evaluated by the serializable pipeline so Commander 903.9b participates in
         // CR 616 ordering instead of being hidden behind the old direct mutation path.
         if (redirect.destinationZone == Zone.HAND || redirect.destinationZone == Zone.LIBRARY) {
-            val preparedState = prepareResolvingSpellForZoneChange(newState, spellId)
             val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
-                state = preparedState,
+                state = newState,
                 entityId = spellId,
                 destinationZone = intendedDestination,
                 fromZoneKey = ZoneKey(ownerId, Zone.STACK),
@@ -2538,26 +2586,6 @@ class StackResolver(
         )
 
         return ExecutionResult.success(newState, events)
-    }
-
-    /**
-     * Strip stack-only and one-shot cast permissions before a resolved spell enters a new zone.
-     * The physical transition removes the stack components itself; these permissions are the
-     * resolution-owned state that the old StackResolver path also cleared before placement.
-     */
-    private fun prepareResolvingSpellForZoneChange(
-        state: GameState,
-        spellId: EntityId,
-    ): GameState {
-        val stripped = state.updateEntity(spellId) { c ->
-            c.without<SpellOnStackComponent>()
-                .without<TargetsComponent>()
-                .without<com.wingedsheep.engine.state.components.identity.PlayWithoutPayingCostComponent>()
-                .without<com.wingedsheep.engine.state.components.identity.PlayWithCostIncreaseComponent>()
-                .without<com.wingedsheep.engine.state.components.identity.PlayWithFixedAlternativeManaCostComponent>()
-                .without<ExileAfterResolveComponent>()
-        }
-        return stripped.removeMayPlayPermissionsForCard(spellId)
     }
 
     /**

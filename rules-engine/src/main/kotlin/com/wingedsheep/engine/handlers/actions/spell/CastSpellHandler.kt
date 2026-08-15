@@ -210,6 +210,13 @@ class CastSpellHandler(
     )
 
     override fun validate(state: GameState, action: CastSpell): String? {
+        if (
+            action.preResolvedZoneChangeIds.isNotEmpty() ||
+            action.preResolvedSneakAttackDefenderId != null ||
+            action.preResolvedWebSlingReturnedManaValue != null
+        ) {
+            return "Internal resume state cannot be set by a player"
+        }
         if (state.priorityPlayerId != action.playerId) {
             return "You don't have priority"
         }

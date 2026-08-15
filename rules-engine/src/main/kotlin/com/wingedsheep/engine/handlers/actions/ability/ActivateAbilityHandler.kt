@@ -135,6 +135,9 @@ class ActivateAbilityHandler(
         if (action.opponentTargetsChosen) {
             return "Internal resume flag cannot be set by a player"
         }
+        if (action.preResolvedZoneChangeIds.isNotEmpty()) {
+            return "Internal resume state cannot be set by a player"
+        }
         // CR 605.3a — a mana ability may also be activated "whenever a rule or effect asks for a
         // mana payment". While such a window is open the paying player holds no priority, so defer
         // the priority verdict until the ability is known to be a mana ability (checked below).

@@ -207,7 +207,22 @@ class MoveCollectionExecutor(
             // For top placement: always pause (even for 1 card, so player can see it)
             // For bottom placement: only pause when there are multiple cards to order
             if (!isBottom || cards.size > 1) {
-                return pauseForOrderDecision(state, context, cards, destZone, destPlayerId, destination.placement)
+                return pauseForOrderDecision(
+                    state = state,
+                    context = context,
+                    cards = cards,
+                    destZone = destZone,
+                    destPlayerId = destPlayerId,
+                    placement = destination.placement,
+                    destinationPlayer = destination.player,
+                    revealed = revealed,
+                    moveType = moveType,
+                    faceDown = faceDown,
+                    noRegenerate = noRegenerate,
+                    storeMovedAs = storeMovedAs,
+                    underOwnersControl = underOwnersControl,
+                    revealToSelf = revealToSelf,
+                )
             }
         }
 
@@ -245,7 +260,15 @@ class MoveCollectionExecutor(
         cards: List<EntityId>,
         destZone: Zone,
         destPlayerId: EntityId,
-        placement: ZonePlacement = ZonePlacement.Top
+        placement: ZonePlacement = ZonePlacement.Top,
+        destinationPlayer: com.wingedsheep.sdk.scripting.references.Player,
+        revealed: Boolean,
+        moveType: MoveType,
+        faceDown: FaceDownMode?,
+        noRegenerate: Boolean,
+        storeMovedAs: String?,
+        underOwnersControl: Boolean,
+        revealToSelf: Boolean,
     ): EffectResult {
         val playerId = context.controllerId
 
@@ -295,7 +318,16 @@ class MoveCollectionExecutor(
             cards = cards,
             destinationZone = destZone,
             destinationPlayerId = destPlayerId,
-            placement = placement
+            placement = placement,
+            context = context,
+            destinationPlayer = destinationPlayer,
+            revealed = revealed,
+            moveType = moveType,
+            faceDown = faceDown,
+            noRegenerate = noRegenerate,
+            storeMovedAs = storeMovedAs,
+            underOwnersControl = underOwnersControl,
+            revealToSelf = revealToSelf,
         )
 
         val stateWithDecision = state.withPendingDecision(decision)

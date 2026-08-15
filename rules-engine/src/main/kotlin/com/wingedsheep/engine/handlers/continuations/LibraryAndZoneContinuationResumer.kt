@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.effects.library.CascadeExecutor
 import com.wingedsheep.engine.handlers.effects.library.ChooseOnePerCategoryExecutor
 import com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithoutPayingCostExecutor
 import com.wingedsheep.engine.handlers.effects.library.ExileFromTopRepeatingExecutor
+import com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -33,6 +34,9 @@ class LibraryAndZoneContinuationResumer(
 
     private val castSpellHandler: CastSpellHandler by lazy { CastSpellHandler.create(services) }
     private val targetFinder = TargetFinder()
+    private val moveCollectionExecutor by lazy {
+        MoveCollectionExecutor(cardRegistry = services.cardRegistry, targetFinder = targetFinder)
+    }
     private val cascadeExecutor by lazy {
         CascadeExecutor(cardRegistry = services.cardRegistry)
     }
@@ -150,7 +154,8 @@ class LibraryAndZoneContinuationResumer(
      * Resume after player ordered cards for a MoveCollection with ControllerChooses order.
      *
      * The response contains the card IDs in the new order (first = new top of library).
-     * We remove the cards from their current zones and place them on top in the chosen order.
+     * Re-enter MoveCollectionExecutor so every actual cross-zone move uses the canonical
+     * ZoneTransitionService/replacement pipeline, including Commander 903.9b.
      */
     fun resumeMoveCollectionOrder(
         state: GameState,
@@ -163,47 +168,49 @@ class LibraryAndZoneContinuationResumer(
         }
 
         val orderedCards = response.orderedObjects
-        val destPlayerId = continuation.destinationPlayerId
-        val libraryZone = ZoneKey(destPlayerId, Zone.LIBRARY)
-
-        var newState = state
-        val events = mutableListOf<GameEvent>()
-
-        // Remove all cards from their current zones
-        for (cardId in orderedCards) {
-            val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId ?: destPlayerId
-            for (zone in Zone.entries) {
-                val zoneKey = ZoneKey(ownerId, zone)
-                if (cardId in newState.getZone(zoneKey)) {
-                    newState = newState.removeFromZone(zoneKey, cardId)
-                    break
-                }
-            }
+        if (orderedCards.toSet() != continuation.cards.toSet() || orderedCards.size != continuation.cards.size) {
+            return ExecutionResult.error(state, "Ordered response does not match the cards being moved")
         }
 
-        // Place cards in library in the chosen order
-        val currentLibrary = newState.getZone(libraryZone)
-        newState = if (continuation.placement == ZonePlacement.Bottom) {
-            // Bottom: append ordered cards at the end
-            newState.copy(
-                zones = newState.zones + (libraryZone to currentLibrary + orderedCards)
-            )
+        val context = continuation.context
+            ?: EffectContext(sourceId = continuation.sourceId, controllerId = continuation.playerId)
+        val destination = com.wingedsheep.sdk.scripting.effects.CardDestination.ToZone(
+            zone = continuation.destinationZone,
+            player = continuation.destinationPlayer,
+            placement = continuation.placement,
+        )
+        // ZoneTransitionService inserts one card at a time. Top insertion prepends, so process
+        // the player's chosen order back-to-front to preserve "first = new top" semantics.
+        val cardsForMovement = if (continuation.placement == ZonePlacement.Bottom) {
+            orderedCards
         } else {
-            // Top (default): prepend ordered cards at the beginning
-            newState.copy(
-                zones = newState.zones + (libraryZone to orderedCards + currentLibrary)
-            )
+            orderedCards.asReversed()
         }
+        val result = moveCollectionExecutor.moveCardsToZone(
+            state = state,
+            context = context,
+            cards = cardsForMovement,
+            destination = destination,
+            destPlayerId = continuation.destinationPlayerId,
+            revealed = continuation.revealed,
+            moveType = continuation.moveType,
+            faceDown = continuation.faceDown,
+            noRegenerate = continuation.noRegenerate,
+            storeMovedAs = continuation.storeMovedAs,
+            underOwnersControl = continuation.underOwnersControl,
+            revealToSelf = continuation.revealToSelf,
+        )
+        if (result.isPaused) return result.toExecutionResult()
+        if (!result.isSuccess) return result.toExecutionResult()
 
-        events.add(
-            LibraryReorderedEvent(
+        return checkForMore(
+            result.state,
+            result.events + LibraryReorderedEvent(
                 playerId = continuation.playerId,
                 cardCount = orderedCards.size,
-                source = continuation.sourceName
-            )
+                source = continuation.sourceName,
+            ),
         )
-
-        return checkForMore(newState, events)
     }
 
     /**

@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.core.Zone
@@ -44,6 +45,14 @@ sealed interface PendingGameEvent {
      * between multiple competing replacement effects (CR 616.1).
      */
     val affectedPlayerId: EntityId
+
+    /**
+     * The player who chooses the order of competing CR 616 replacement effects.
+     * Most events use [affectedPlayerId]. Zone changes override this because an
+     * object can be controlled by a player other than its owner, while the
+     * Commander 903.9b choice still belongs to [ZoneChangePending.ownerId].
+     */
+    fun replacementOrderingPlayerId(state: GameState): EntityId = affectedPlayerId
 
     /**
      * Check whether the given [pattern] describes this event.
@@ -123,7 +132,8 @@ sealed interface PendingGameEvent {
         decisionId: String,
         gathered: GatheredReplacement,
         state: GameState,
-        context: EffectContext?
+        context: EffectContext?,
+        alreadyApplied: Set<ReplacementEffectIdentity> = emptySet(),
     ): OptionalPromptResult? = null
 
     /**
@@ -265,6 +275,11 @@ sealed interface PendingGameEvent {
     ) : PendingGameEvent {
         override val affectedPlayerId: EntityId get() = ownerId
 
+        override fun replacementOrderingPlayerId(state: GameState): EntityId =
+            state.projectedState.getController(entityId)
+                ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
+                ?: ownerId
+
         private val fromZone: Zone get() = fromZoneKey.zoneType
 
         /** CR 903.9b candidate gate: destination is hand/library, source is unrestricted. */
@@ -315,7 +330,12 @@ sealed interface PendingGameEvent {
         }
 
         override fun applyReplacement(effect: ReplacementEffect, state: GameState): ReplacementOutcome =
-            applyReplacementInternal(effect, state, sourceEntityId = null)
+            applyReplacementInternal(
+                effect,
+                state,
+                sourceEntityId = null,
+                sourceControllerId = null,
+            )
 
         override fun applyReplacement(
             gathered: GatheredReplacement,
@@ -323,13 +343,15 @@ sealed interface PendingGameEvent {
         ): ReplacementOutcome = applyReplacementInternal(
             gathered.effect,
             state,
-            sourceEntityId = gathered.sourceEntityId(state)
+            sourceEntityId = gathered.sourceEntityId(state),
+            sourceControllerId = gathered.sourceControllerId,
         )
 
         private fun applyReplacementInternal(
             effect: ReplacementEffect,
             state: GameState,
-            sourceEntityId: EntityId?
+            sourceEntityId: EntityId?,
+            sourceControllerId: EntityId?,
         ): ReplacementOutcome {
             return when (effect) {
                 is CommanderZoneReplacement -> {
@@ -374,7 +396,7 @@ sealed interface PendingGameEvent {
                     val redirect = com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult(
                         destinationZone = effect.newDestination,
                         additionalEffect = effect.additionalEffect,
-                        effectControllerId = sourceEntityId,
+                        effectControllerId = sourceControllerId,
                         linkSourceId = if (effect.linkToSource && effect.newDestination == Zone.EXILE) {
                             sourceEntityId
                         } else null,
@@ -402,7 +424,8 @@ sealed interface PendingGameEvent {
             decisionId: String,
             gathered: GatheredReplacement,
             state: GameState,
-            context: EffectContext?
+            context: EffectContext?,
+            alreadyApplied: Set<ReplacementEffectIdentity>,
         ): OptionalPromptResult? {
             if (gathered.effect !is CommanderZoneReplacement) return null
 
@@ -426,7 +449,7 @@ sealed interface PendingGameEvent {
                     decisionId = decisionId,
                     pendingEvent = this,
                     gathered = gathered,
-                    alreadyApplied = emptySet(),
+                    alreadyApplied = alreadyApplied,
                     context = context,
                 )
             )
@@ -499,7 +522,8 @@ sealed interface PendingGameEvent {
             decisionId: String,
             gathered: GatheredReplacement,
             state: GameState,
-            context: EffectContext?
+            context: EffectContext?,
+            alreadyApplied: Set<ReplacementEffectIdentity>,
         ): OptionalPromptResult? {
             val replaceEffect = gathered.effect as? ReplaceDrawWithEffect ?: return null
             val sourceEntityId = gathered.sourceEntityId(state)

@@ -45,7 +45,6 @@ import com.wingedsheep.engine.state.components.combat.DamageAssignmentOrderCompo
 import com.wingedsheep.engine.state.components.combat.DealtFirstStrikeDamageComponent
 import com.wingedsheep.engine.state.components.combat.RequiresManualDamageAssignmentComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.MorphDataComponent
@@ -106,23 +105,6 @@ data class ZoneChangeRedirectResult(
 object ZoneMovementUtils {
 
     private val predicateEvaluator = PredicateEvaluator()
-
-    /**
-     * Destinations that the commander zone-change replacement can intercept (CR 903.9).
-     * Battlefield, stack, and command itself are intentionally excluded — commanders enter
-     * the battlefield like any other permanent, can sit on the stack while resolving, and
-     * "moving to the command zone" while already there is a no-op.
-     */
-    /**
-     * Destinations covered by the legacy explicit auto-divert preference.
-     * Hand/library moves are always decided by the serializable 903.9b
-     * pipeline; this compatibility path is only for the post-move 903.9a
-     * graveyard/exile choice.
-     */
-    private val COMMANDER_DIVERT_DESTINATIONS = setOf(
-        Zone.GRAVEYARD,
-        Zone.EXILE,
-    )
 
     /**
      * Apply Saga entry setup to an entity entering the battlefield (Rule 714.3a).
@@ -708,25 +690,6 @@ object ZoneMovementUtils {
             container.has<ExileOnLeaveBattlefieldComponent>()
         ) {
             return ZoneChangeRedirectResult(Zone.EXILE)
-        }
-
-        // Legacy explicit auto-YES compatibility path for the post-move 903.9a
-        // graveyard/exile choice. Hand/library moves must never use this physical
-        // shortcut: CR 903.9b is an optional replacement inside CR 616 and is
-        // surfaced by the pending-event pipeline before this atom runs. Token
-        // copies of a commander aren't the commander itself (CR 903.10a) and
-        // never carry CommanderComponent.
-        //
-        // The default path leaves the destination unchanged — the commander reaches the
-        // intended zone and the CR 903.9a state-based action (see CommanderZoneChoiceCheck)
-        // prompts the owner before priority is granted.
-        if (!skipExternalReplacementEffects && container.has<CommanderComponent>() &&
-            toZone in COMMANDER_DIVERT_DESTINATIONS
-        ) {
-            val format = state.format
-            if (format.usesCommanders && format.alwaysDivertToCommand) {
-                return ZoneChangeRedirectResult(Zone.COMMAND)
-            }
         }
 
         // Check for finality counter — if a permanent with a finality counter

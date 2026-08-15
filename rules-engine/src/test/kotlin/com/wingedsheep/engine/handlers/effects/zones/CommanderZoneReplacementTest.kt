@@ -6,13 +6,19 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.core.OptionalReplacementContinuation
+import com.wingedsheep.engine.core.ReorderLibraryDecision
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.replacement.PendingGameEvent
 import com.wingedsheep.engine.replacement.ProcessorResult
+import com.wingedsheep.engine.replacement.GatheredReplacement
 import com.wingedsheep.engine.replacement.ReplacementEffectProcessor
+import com.wingedsheep.engine.replacement.ReplacementEffectIdentity
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -34,6 +40,9 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
+import com.wingedsheep.sdk.scripting.RedirectZoneChangeWithEffect
+import com.wingedsheep.sdk.scripting.effects.GainLifeEffect
+import com.wingedsheep.sdk.scripting.effects.CardOrder
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.CardDestination
@@ -295,6 +304,81 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
     }
 
+    test("ControllerChooses library entry runs Commander replacement before physical movement") {
+        val services = EngineServices(CardRegistry())
+        val effect = MoveCollectionEffect(
+            from = "cards",
+            destination = CardDestination.ToZone(Zone.LIBRARY),
+            order = CardOrder.ControllerChooses,
+        )
+        val context = EffectContext(
+            sourceId = null,
+            controllerId = playerId,
+            pipeline = PipelineState.EMPTY.copy(
+                storedCollections = mapOf("cards" to listOf(commanderId)),
+            ),
+        )
+        val orderPrompt = services.effectExecutorRegistry.execute(
+            stateWithCommanderIn(Zone.BATTLEFIELD), effect, context
+        )
+        orderPrompt.pendingDecision.shouldBeInstanceOf<ReorderLibraryDecision>()
+
+        val orderDecision = orderPrompt.pendingDecision as ReorderLibraryDecision
+        val replacementPrompt = services.continuationHandler.resume(
+            orderPrompt.state.clearPendingDecision(),
+            OrderedResponse(orderDecision.id, listOf(commanderId)),
+        )
+
+        replacementPrompt.isPaused shouldBe true
+        replacementPrompt.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
+        replacementPrompt.state.getZone(ZoneKey(playerId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
+        replacementPrompt.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
+    }
+
+    test("RedirectZoneChangeWithEffect riders use the replacement controller") {
+        val replacementSourceId = EntityId.generate()
+        val replacementSource = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = "Life Redirect",
+                name = "Life Redirect",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+                ownerId = playerId,
+            ),
+            OwnerComponent(playerId),
+            ControllerComponent(opponentId),
+        )
+        val state = stateWithCommanderIn(Zone.BATTLEFIELD, controllerId = opponentId)
+            .withEntity(replacementSourceId, replacementSource)
+        val pending = PendingGameEvent.ZoneChangePending(
+            entityId = commanderId,
+            ownerId = playerId,
+            fromZoneKey = ZoneKey(playerId, Zone.BATTLEFIELD),
+            destinationZone = Zone.GRAVEYARD,
+        )
+        val effect = RedirectZoneChangeWithEffect(
+            newDestination = Zone.EXILE,
+            additionalEffect = GainLifeEffect(2),
+            appliesTo = EventPattern.ZoneChangeEvent(
+                filter = GameObjectFilter.Any,
+                from = Zone.BATTLEFIELD,
+                to = Zone.GRAVEYARD,
+            ),
+        )
+        val gathered = GatheredReplacement(
+            identity = ReplacementEffectIdentity.BattlefieldIdentity(replacementSourceId, 0),
+            effect = effect,
+            sourceControllerId = opponentId,
+            description = effect.description,
+        )
+
+        val modified = pending.applyReplacement(gathered, state)
+            .shouldBeInstanceOf<com.wingedsheep.engine.replacement.ReplacementOutcome.Modified>()
+            .modifiedEvent.shouldBeInstanceOf<PendingGameEvent.ZoneChangePending>()
+
+        modified.redirectResult?.effectControllerId shouldBe opponentId
+    }
+
     test("Discover bottoming its non-hit Commander uses the 903.9b pipeline") {
         val services = EngineServices(CardRegistry())
         val initial = services.effectExecutorRegistry.execute(
@@ -363,6 +447,82 @@ class CommanderZoneReplacementTest : FunSpec({
 
         val decision = initial.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         decision.playerId shouldBe playerId
+    }
+
+    test("CR 616 ordering choice belongs to the current commander controller") {
+        val replacementSourceId = EntityId.generate()
+        val replacementSource = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = "Controlled Redirect",
+                name = "Controlled Redirect",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+                ownerId = opponentId,
+            ),
+            OwnerComponent(opponentId),
+            ControllerComponent(opponentId),
+            ReplacementEffectSourceComponent(
+                listOf(
+                    RedirectZoneChange(
+                        newDestination = Zone.EXILE,
+                        appliesTo = EventPattern.ZoneChangeEvent(
+                            filter = GameObjectFilter.Any,
+                            from = Zone.BATTLEFIELD,
+                            to = Zone.HAND,
+                        ),
+                    )
+                )
+            ),
+        )
+        val state = stateWithCommanderIn(Zone.BATTLEFIELD, controllerId = opponentId)
+            .withEntity(replacementSourceId, replacementSource)
+            .addToZone(ZoneKey(opponentId, Zone.BATTLEFIELD), replacementSourceId)
+        val initial = moveWithServices(EngineServices(CardRegistry()), state, Zone.HAND)
+
+        val decision = initial.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+        decision.playerId shouldBe opponentId
+    }
+
+    test("optional Commander YES preserves ordinary replacement identities already applied") {
+        val replacementSourceId = EntityId.generate()
+        val ordinaryReplacement = RedirectZoneChange(
+            newDestination = Zone.LIBRARY,
+            appliesTo = EventPattern.ZoneChangeEvent(
+                filter = GameObjectFilter.Any,
+                from = Zone.BATTLEFIELD,
+            ),
+        )
+        val replacementSource = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = "Prior Redirect",
+                name = "Prior Redirect",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+                ownerId = playerId,
+            ),
+            OwnerComponent(playerId),
+            ControllerComponent(playerId),
+            ReplacementEffectSourceComponent(listOf(ordinaryReplacement)),
+        )
+        val state = stateWithCommanderIn(Zone.BATTLEFIELD)
+            .withEntity(replacementSourceId, replacementSource)
+            .addToZone(ZoneKey(playerId, Zone.BATTLEFIELD), replacementSourceId)
+        val pending = PendingGameEvent.ZoneChangePending(
+            entityId = commanderId,
+            ownerId = playerId,
+            fromZoneKey = ZoneKey(playerId, Zone.BATTLEFIELD),
+            destinationZone = Zone.HAND,
+        )
+        val processor = ReplacementEffectProcessor()
+        val gathered = processor.gatherReplacements(state, pending)
+            .first { it.effect == ordinaryReplacement }
+
+        val result = processor.applySingle(state, gathered, pending, emptySet())
+        val paused = result.shouldBeInstanceOf<ProcessorResult.Paused>()
+        val continuation = paused.state.continuationStack.last()
+            .shouldBeInstanceOf<OptionalReplacementContinuation>()
+
+        continuation.alreadyApplied shouldBe setOf(gathered.identity)
     }
 
     test("pending Commander replacement state is serializable and fork-safe") {

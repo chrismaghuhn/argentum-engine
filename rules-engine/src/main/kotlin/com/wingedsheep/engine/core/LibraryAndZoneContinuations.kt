@@ -3,7 +3,11 @@ package com.wingedsheep.engine.core
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ExileFromTopRepeatingEffect
+import com.wingedsheep.sdk.scripting.effects.FaceDownMode
+import com.wingedsheep.sdk.scripting.effects.MoveType
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
+import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.references.Player
 import kotlinx.serialization.Serializable
 
 /**
@@ -64,7 +68,18 @@ data class MoveCollectionOrderContinuation(
     val cards: List<EntityId>,
     val destinationZone: com.wingedsheep.sdk.core.Zone,
     val destinationPlayerId: EntityId,
-    val placement: com.wingedsheep.sdk.scripting.effects.ZonePlacement = com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top
+    val placement: ZonePlacement = ZonePlacement.Top,
+    /** The original effect context, retained so the ordered resume has the same controller and pipeline state. */
+    val context: EffectContext? = null,
+    /** The symbolic destination player from the original MoveCollectionEffect. */
+    val destinationPlayer: Player = Player.You,
+    val revealed: Boolean = false,
+    val moveType: MoveType = MoveType.Default,
+    val faceDown: FaceDownMode? = null,
+    val noRegenerate: Boolean = false,
+    val storeMovedAs: String? = null,
+    val underOwnersControl: Boolean = false,
+    val revealToSelf: Boolean = true
 ) : ContinuationFrame
 
 /**

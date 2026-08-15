@@ -19,11 +19,10 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
 /**
- * `ZoneMovementUtils.checkZoneChangeRedirect` retains the legacy automatic diversion for the
- * post-move graveyard/exile preference. Hand/library moves are deliberately excluded: even with
- * `alwaysDivertToCommand = true`, CR 903.9b is answered inside the pending replacement pipeline.
- * With the default preference off, graveyard/exile reach their destination and CR 903.9a prompts
- * the owner (see `CommanderZoneChoiceCheckTest`).
+ * `ZoneMovementUtils.checkZoneChangeRedirect` does not implement the post-move 903.9a choice.
+ * Graveyard/exile transitions always reach their requested zone first; the SBA then prompts the
+ * owner or answers YES automatically when `alwaysDivertToCommand` is enabled. Hand/library moves
+ * remain inside the pending 903.9b replacement pipeline.
  */
 class CommanderZoneRedirectTest : FunSpec({
 
@@ -59,28 +58,28 @@ class CommanderZoneRedirectTest : FunSpec({
             .copy(turnOrder = listOf(ownerId))
     }
 
-    test("destroyed commander diverts to the command zone in Commander format") {
+    test("destroyed commander reaches graveyard before the 903.9a SBA") {
         val state = stateWithCommander(alwaysDivertCommander, Zone.BATTLEFIELD)
         val result = ZoneMovementUtils.checkZoneChangeRedirect(
             state, cmdrId, Zone.BATTLEFIELD, Zone.GRAVEYARD,
         )
-        result.destinationZone shouldBe Zone.COMMAND
+        result.destinationZone shouldBe Zone.GRAVEYARD
     }
 
-    test("milled commander diverts to the command zone (library → graveyard)") {
+    test("milled commander reaches graveyard before the 903.9a SBA") {
         val state = stateWithCommander(alwaysDivertCommander, Zone.LIBRARY)
         val result = ZoneMovementUtils.checkZoneChangeRedirect(
             state, cmdrId, Zone.LIBRARY, Zone.GRAVEYARD,
         )
-        result.destinationZone shouldBe Zone.COMMAND
+        result.destinationZone shouldBe Zone.GRAVEYARD
     }
 
-    test("exiled commander diverts to the command zone (battlefield → exile)") {
+    test("exiled commander reaches exile before the 903.9a SBA") {
         val state = stateWithCommander(alwaysDivertCommander, Zone.BATTLEFIELD)
         val result = ZoneMovementUtils.checkZoneChangeRedirect(
             state, cmdrId, Zone.BATTLEFIELD, Zone.EXILE,
         )
-        result.destinationZone shouldBe Zone.COMMAND
+        result.destinationZone shouldBe Zone.EXILE
     }
 
     test("bounced commander is decided by the 903.9b replacement pipeline") {

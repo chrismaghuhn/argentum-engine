@@ -356,7 +356,7 @@ class ReplacementEffectProcessor {
         context: EffectContext?,
         declineOptional: List<GatheredReplacement> = emptyList(),
     ): ProcessorResult.Paused {
-        val playerId = event.affectedPlayerId
+        val playerId = event.replacementOrderingPlayerId(state)
         val decisionId = UUID.randomUUID().toString()
 
         val decision = ChooseOptionDecision(
@@ -407,7 +407,13 @@ class ReplacementEffectProcessor {
         context: EffectContext?
     ): ProcessorResult {
         val decisionId = UUID.randomUUID().toString()
-        val promptResult = event.createOptionalPrompt(decisionId, gathered, state, context)
+        val promptResult = event.createOptionalPrompt(
+            decisionId = decisionId,
+            gathered = gathered,
+            state = state,
+            context = context,
+            alreadyApplied = alreadyApplied,
+        )
             ?: // Event doesn't support optional prompts — treat as mandatory
             return applySingle(state, gathered, event, alreadyApplied)
 
