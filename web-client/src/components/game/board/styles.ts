@@ -2218,6 +2218,7 @@ const passiveCounterPalette: Record<string, CounterBadgePalette> = {
   INCUBATION: { bg: 'rgba(20, 45, 65, 0.95)', border: 'rgba(110, 190, 220, 0.65)', color: '#a0d4e8', glow: 'rgba(110, 190, 220, 0.5)' },
   FELLOWSHIP: { bg: 'rgba(58, 44, 20, 0.95)', border: 'rgba(214, 178, 96, 0.65)', color: '#e8d3a0', glow: 'rgba(214, 178, 96, 0.5)' },
   BAIT: { bg: 'rgba(18, 48, 62, 0.95)', border: 'rgba(96, 186, 214, 0.65)', color: '#9ed4e8', glow: 'rgba(96, 186, 214, 0.5)' },
+  BOUNTY: { bg: 'rgba(42, 34, 18, 0.95)', border: 'rgba(230, 190, 90, 0.72)', color: '#f0d078', glow: 'rgba(230, 190, 90, 0.55)' },
   BORE: { bg: 'rgba(44, 40, 34, 0.95)', border: 'rgba(190, 172, 140, 0.7)', color: '#ddd0b8', glow: 'rgba(190, 172, 140, 0.5)' },
   POINT: { bg: 'rgba(20, 55, 35, 0.95)', border: 'rgba(110, 210, 150, 0.7)', color: '#9ce0b8', glow: 'rgba(110, 210, 150, 0.55)' },
   WISH: { bg: 'rgba(35, 22, 48, 0.95)', border: 'rgba(170, 130, 210, 0.7)', color: '#c8a8e0', glow: 'rgba(170, 130, 210, 0.55)' },

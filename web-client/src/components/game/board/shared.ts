@@ -809,6 +809,7 @@ export const PASSIVE_COUNTER_TYPES: readonly CounterType[] = [
   CounterType.INCUBATION,
   CounterType.FELLOWSHIP,
   CounterType.BAIT,
+  CounterType.BOUNTY,
   CounterType.BORE,
   CounterType.POINT,
   CounterType.WISH,
