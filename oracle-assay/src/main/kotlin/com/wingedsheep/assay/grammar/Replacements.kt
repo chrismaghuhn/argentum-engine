@@ -6,7 +6,9 @@ import com.wingedsheep.assay.syntax.bind
 import com.wingedsheep.assay.syntax.constant
 import com.wingedsheep.assay.syntax.oneOf
 import com.wingedsheep.assay.syntax.phrase
+import com.wingedsheep.sdk.scripting.ChoiceType
 import com.wingedsheep.sdk.scripting.EntersTapped
+import com.wingedsheep.sdk.scripting.EntersWithChoice
 import com.wingedsheep.sdk.scripting.ReplacementEffect
 
 /**
@@ -48,9 +50,13 @@ object Replacements {
      * The same type with one field set, which is why it is a row beside the plain rule rather than
      * a family of its own. The digit is [Primitives.cardinal] because Oracle spells a quantity of
      * life as a numeral, the convention [Steps] takes both leaves for.
+     *
+     * The template spells its second sentence mid-sentence ("if you don't") for the reason every
+     * template here is written mid-sentence: a full stop is a sentence start, and
+     * [com.wingedsheep.assay.syntax.SentenceCase] owns the capital at every one of them.
      */
     private val shockLand: Phrase<ReplacementEffect> = phrase(
-        "as ${Normalizer.SELF} enters, you may pay {n} life. If you don't, it enters tapped.",
+        "as ${Normalizer.SELF} enters, you may pay {n} life. if you don't, it enters tapped.",
         name = "enters tapped unless you pay life",
     ) {
         slot("n", Primitives.cardinal)
@@ -62,5 +68,23 @@ object Replacements {
         }
     }
 
-    val replacement: Phrase<ReplacementEffect> = oneOf("a replacement effect", entersTapped, shockLand)
+    /**
+     * "As ~ enters, choose a color." — Ward Sliver, and the whole choose-as-it-enters family.
+     *
+     * A replacement rather than a triggered ability because "as … enters" happens *during* the
+     * entry, not after it, which is what `EntersWithChoice` models. The kind of choice is a rule
+     * parameter rather than a slot: each is a different English noun phrase ("a color", "a creature
+     * type") rather than a different word in one, the same argument [Library.search] makes about its
+     * destinations.
+     */
+    private fun entersWithChoice(noun: String, choice: ChoiceType): Phrase<ReplacementEffect> =
+        constant("as ${Normalizer.SELF} enters, choose $noun.", EntersWithChoice(choice))
+
+    val replacement: Phrase<ReplacementEffect> = oneOf(
+        "a replacement effect",
+        entersTapped,
+        shockLand,
+        entersWithChoice("a color", ChoiceType.COLOR),
+        entersWithChoice("a creature type", ChoiceType.CREATURE_TYPE),
+    )
 }

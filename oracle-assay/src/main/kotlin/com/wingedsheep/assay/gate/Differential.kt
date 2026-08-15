@@ -279,7 +279,7 @@ class Differential(private val touchstone: Touchstone = Touchstone()) {
         val tree = CardSerialization.json.parseToJsonElement(json)
         return CardSerialization.json.encodeToString(
             JsonElement.serializer(),
-            canonicalizeAbilities(normalizeSlots(tree)),
+            Folds.flattenComposites(canonicalizeGrantedAbilities(canonicalizeAbilities(normalizeSlots(tree)))),
         )
     }
 
@@ -384,6 +384,37 @@ class Differential(private val touchstone: Touchstone = Touchstone()) {
     }
 
     /**
+     * …and the ability a **static hands out**, which is nested one level further in.
+     *
+     * `GrantTriggeredAbility` and `GrantActivatedAbility` carry a whole ability inside the static,
+     * and its id is generated exactly as a top-level one is — `AbilityId.generate()` on the card, a
+     * fixed constant in the grammar. Leaving it out of [canonicalizeAbilities] made the gate report
+     * six Sliver lords as divergent over a counter: a difference in neither model, and the same
+     * class of self-deception as the slot-name and per-owner numbering bugs before it. Found the way
+     * all of those were, by running the gate on a card class it had never reached.
+     *
+     * One fixed token rather than a position, because a static holds exactly one granted ability —
+     * there is no list to index into.
+     */
+    private fun canonicalizeGrantedAbilities(element: JsonElement): JsonElement = when (element) {
+        is JsonObject -> JsonObject(
+            element.mapValues { (key, value) ->
+                if (key == "ability" && value is JsonObject && "id" in value) {
+                    JsonObject(
+                        (canonicalizeGrantedAbilities(value) as JsonObject) +
+                            ("id" to JsonPrimitive("granted")),
+                    )
+                } else {
+                    canonicalizeGrantedAbilities(value)
+                }
+            }
+        )
+
+        is JsonArray -> JsonArray(element.map(::canonicalizeGrantedAbilities))
+        else -> element
+    }
+
+    /**
      * **Fold: a positional target reference is a named one.**
      *
      * `ContextTarget(i)` and `BoundVariable(id-of-requirement-i)` are the SDK's two ways of saying
@@ -454,6 +485,51 @@ internal object Folds {
         if (parameterized.isEmpty()) return abilities
         return abilities.filterNot { it is KeywordAbility.Simple && it.keyword in parameterized }.toSet()
     }
+
+    /**
+     * **A plain `CompositeEffect` nested inside another is the same sequence as its flattening.**
+     *
+     * `CompositeEffect` is an ordered run of effects and nothing else: with `stopOnError` false and
+     * no `descriptionOverride`, the executor runs its members in order, so `[a, [b, c]]` and
+     * `[a, b, c]` are the same value written two ways. The corpus writes it both ways for one
+     * sentence — Cruel Tutor nests `Patterns.Library.searchLibrary` inside its outer composite while
+     * Bitter Revelation splices the same recipe's steps into a flat one, and Angelic Blessing's
+     * "gets +2/+2 and gains flying" is a two-element composite on its own and three flat elements
+     * when a "Scry 1." follows it.
+     *
+     * The fold is narrow on purpose. A composite carrying `stopOnError`, a `descriptionOverride` or
+     * description amounts says something about how its members run or read, so it is left alone and
+     * a difference in one still diverges. Ordering is untouched: `[a, [c, b]]` flattens to
+     * `[a, c, b]` and still disagrees with `[a, b, c]`, which is the difference worth catching.
+     */
+    fun flattenComposites(element: JsonElement): JsonElement = when (element) {
+        is JsonObject -> {
+            val walked = JsonObject(element.mapValues { flattenComposites(it.value) })
+            if (isPlainComposite(walked)) {
+                JsonObject(walked + ("effects" to JsonArray(spliceMembers(walked))))
+            } else {
+                walked
+            }
+        }
+
+        is JsonArray -> JsonArray(element.map(::flattenComposites))
+        else -> element
+    }
+
+    /** A composite with nothing said about how it runs or reads — the only shape safe to splice. */
+    private fun isPlainComposite(element: JsonObject): Boolean =
+        (element["type"] as? JsonPrimitive)?.content == "Composite" &&
+            element["effects"] is JsonArray &&
+            element.keys.none { it == "stopOnError" || it == "descriptionOverride" || it == "descriptionAmounts" }
+
+    private fun spliceMembers(composite: JsonObject): List<JsonElement> =
+        (composite.getValue("effects") as JsonArray).flatMap { member ->
+            if (member is JsonObject && isPlainComposite(member)) {
+                (member.getValue("effects") as JsonArray).toList()
+            } else {
+                listOf(member)
+            }
+        }
 }
 
 /** Why a hand-written card was or was not compared. The denominator is never hidden. */

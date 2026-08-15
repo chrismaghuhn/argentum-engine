@@ -8,8 +8,11 @@ import com.wingedsheep.sdk.scripting.targets.AnyTarget
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetOpponent
+import com.wingedsheep.sdk.scripting.targets.TargetOpponentOrPlaneswalker
 import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 import com.wingedsheep.sdk.scripting.targets.TargetPlayer
+import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 
 /**
@@ -43,6 +46,23 @@ object Targets {
     const val SLOT = "target"
 
     /**
+     * The name of the [index]-th slot, for the rules that declare more than one.
+     *
+     * Slot 0 keeps the bare [SLOT] so every existing single-target rule is untouched, and the rest
+     * are numbered. The names are as arbitrary as [SLOT] itself — the differential compares slots by
+     * *position* — so all this has to do is be distinct, which is precisely what
+     * [Steps.merge] refuses to invent when two clauses each declare one.
+     */
+    fun slot(index: Int): String = if (index == 0) SLOT else "$SLOT $index"
+
+    /** …and the reference half, for an effect reading the [index]-th slot. */
+    fun bound(index: Int): EffectTarget = EffectTarget.BoundVariable(slot(index))
+
+    /** "target creature you control and target creature an opponent controls" — one of several. */
+    fun permanent(filter: GameObjectFilter, index: Int): TargetRequirement =
+        TargetPermanent(filter = TargetFilter(filter), id = slot(index))
+
+    /**
      * "target player" — the requirement half.
      *
      * Constructed directly rather than through `dsl.Targets.Player`, which is the facade for this
@@ -51,6 +71,15 @@ object Targets {
      * it. Worth an `id` parameter on the facade; noted rather than changed here.
      */
     fun player(): TargetRequirement = TargetPlayer(id = SLOT)
+
+    /** "target opponent" — the requirement half, constructed directly for the reason [player] is. */
+    fun opponent(): TargetRequirement = TargetOpponent(id = SLOT)
+
+    /** "target opponent or planeswalker" — the modern damage-redirection wording (CR 115.7b). */
+    fun opponentOrPlaneswalker(): TargetRequirement = TargetOpponentOrPlaneswalker(id = SLOT)
+
+    /** …and its any-player sibling, which older burn spells print instead. */
+    fun playerOrPlaneswalker(): TargetRequirement = TargetPlayerOrPlaneswalker(id = SLOT)
 
     /**
      * "any target" — the burn-spell requirement, covering any creature, player or planeswalker.
