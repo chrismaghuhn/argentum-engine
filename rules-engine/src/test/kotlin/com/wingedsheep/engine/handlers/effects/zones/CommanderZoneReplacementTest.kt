@@ -302,6 +302,39 @@ class CommanderZoneReplacementTest : FunSpec({
             .addToZone(ZoneKey(playerId, Zone.BATTLEFIELD), cardId)
     }
 
+    fun stateWithCommanderOnControllerBattlefield(): GameState =
+        stateWithCommanderIn(Zone.BATTLEFIELD, controllerId = opponentId).copy(
+            zones = mapOf(
+                ZoneKey(playerId, Zone.BATTLEFIELD) to emptyList(),
+                ZoneKey(opponentId, Zone.BATTLEFIELD) to listOf(commanderId),
+                ZoneKey(playerId, Zone.LIBRARY) to emptyList(),
+            ),
+        )
+
+    fun moveControlledCommanderToLibrary(
+        services: EngineServices,
+        state: GameState,
+    ): EffectResult {
+        val effect = MoveCollectionEffect(
+            from = "cards",
+            destination = CardDestination.ToZone(
+                zone = Zone.LIBRARY,
+                placement = com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
+            ),
+        )
+        return services.effectExecutorRegistry.execute(
+            state,
+            effect,
+            EffectContext(
+                sourceId = null,
+                controllerId = opponentId,
+                pipeline = PipelineState.EMPTY.copy(
+                    storedCollections = mapOf("cards" to listOf(commanderId)),
+                ),
+            ),
+        )
+    }
+
     fun orderedMovePrompt(
         services: EngineServices,
         state: GameState,
@@ -798,6 +831,44 @@ class CommanderZoneReplacementTest : FunSpec({
 
         val decision = initial.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         decision.playerId shouldBe playerId
+    }
+
+    test("MC-CONTROL-01: a Commander stored on its controller's battlefield still pauses for its owner") {
+        val services = EngineServices(CardRegistry())
+        val initial = moveControlledCommanderToLibrary(
+            services,
+            stateWithCommanderOnControllerBattlefield(),
+        )
+
+        initial.isPaused shouldBe true
+        initial.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe playerId
+        initial.state.getZone(ZoneKey(opponentId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
+        initial.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
+
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
+    }
+
+    test("MC-CONTROL-02: declining the choice moves the controlled Commander to its owner's library") {
+        val services = EngineServices(CardRegistry())
+        val initial = moveControlledCommanderToLibrary(
+            services,
+            stateWithCommanderOnControllerBattlefield(),
+        )
+
+        initial.isPaused shouldBe true
+        initial.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe playerId
+        initial.state.getZone(ZoneKey(opponentId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
+        initial.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
+
+        val resumed = resumeYesNo(services, initial, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe emptyList()
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe listOf(commanderId)
     }
 
     test("CR 616 ordering choice belongs to the current commander controller") {

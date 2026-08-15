@@ -179,8 +179,8 @@ class MoveCollectionExecutor(
         val sourceId = context.sourceId ?: return result
         var newState = result.state
         for (cardId in cards) {
-            val zone = findCurrentZone(newState, cardId, newState.getEntity(cardId)?.get<CardComponent>()?.ownerId ?: continue)
-            if (zone != Zone.BATTLEFIELD) continue
+            val zoneKey = findCurrentZone(newState, cardId, newState.getEntity(cardId)?.get<CardComponent>()?.ownerId ?: continue)
+            if (zoneKey?.zoneType != Zone.BATTLEFIELD) continue
             newState = newState.updateEntity(cardId) { c ->
                 c.with(com.wingedsheep.engine.state.components.battlefield.EnteredViaAbilityComponent(sourceId))
             }
@@ -669,9 +669,9 @@ class MoveCollectionExecutor(
         val cardName = newState.getEntity(auraId)?.get<CardComponent>()?.name ?: "Unknown"
 
         // Find and remove from current zone
-        val fromZone = findCurrentZone(newState, auraId, ownerId)
-        if (fromZone != null) {
-            newState = newState.removeFromZone(ZoneKey(ownerId, fromZone), auraId)
+        val fromZoneKey = findCurrentZone(newState, auraId, ownerId)
+        if (fromZoneKey != null) {
+            newState = newState.removeFromZone(fromZoneKey, auraId)
         }
 
         // Add to battlefield
@@ -702,12 +702,12 @@ class MoveCollectionExecutor(
             targetContainer.with(AttachmentsComponent(updatedIds))
         }
 
-        if (fromZone != null) {
+        if (fromZoneKey != null) {
             events.add(
                 ZoneChangeEvent(
                     entityId = auraId,
                     entityName = cardName,
-                    fromZone = fromZone,
+                    fromZone = fromZoneKey.zoneType,
                     toZone = Zone.BATTLEFIELD,
                     ownerId = ownerId
                 )
@@ -775,7 +775,7 @@ class MoveCollectionExecutor(
                     ?.get<OwnerComponent>()
                     ?.playerId
                     ?: return@forEach
-                if (findCurrentZone(newState, completedCardId, completedOwnerId) == Zone.LIBRARY) {
+                if (findCurrentZone(newState, completedCardId, completedOwnerId)?.zoneType == Zone.LIBRARY) {
                     add(completedOwnerId)
                 }
             }
@@ -801,8 +801,9 @@ class MoveCollectionExecutor(
             if (destZone == Zone.HAND || destZone == Zone.LIBRARY) {
                 val isCommander = state.format.usesCommanders &&
                     newState.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
-                val fromZone = findCurrentZone(newState, cardId, ownerId)
-                if (isCommander && fromZone != null) {
+                val fromZoneKey = findCurrentZone(newState, cardId, ownerId)
+                val fromZone = fromZoneKey?.zoneType
+                if (isCommander && fromZoneKey != null) {
                     val actualDestPlayerId = if (fromZone == Zone.BATTLEFIELD) ownerId else destPlayerId
                     val libraryPlacement = when (destination.placement) {
                         ZonePlacement.Bottom -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
@@ -820,7 +821,7 @@ class MoveCollectionExecutor(
                                 controllerId = actualDestPlayerId,
                                 libraryPlacement = libraryPlacement,
                             ),
-                            fromZoneKey = ZoneKey(ownerId, fromZone),
+                            fromZoneKey = fromZoneKey,
                             context = context,
                             completion = com.wingedsheep.engine.replacement.PendingGameEvent
                                 .MoveCollectionZoneChangeCompletion(
@@ -856,7 +857,7 @@ class MoveCollectionExecutor(
                     events.addAll(pendingResult.events)
                     movedIds.add(cardId)
                     if (destZone == Zone.LIBRARY &&
-                        findCurrentZone(newState, cardId, ownerId) == Zone.LIBRARY
+                        findCurrentZone(newState, cardId, ownerId)?.zoneType == Zone.LIBRARY
                     ) {
                         librariesReceivingCards.add(ownerId)
                     }
@@ -870,7 +871,7 @@ class MoveCollectionExecutor(
             if (cardId in context.preResolvedZoneChangeIds) {
                 movedIds.add(cardId)
                 if (destZone == Zone.LIBRARY &&
-                    findCurrentZone(newState, cardId, ownerId) == Zone.LIBRARY
+                    findCurrentZone(newState, cardId, ownerId)?.zoneType == Zone.LIBRARY
                 ) {
                     librariesReceivingCards.add(ownerId)
                 }
@@ -902,7 +903,8 @@ class MoveCollectionExecutor(
             }
 
             // Find current zone for controller override logic
-            val fromZone = findCurrentZone(newState, cardId, ownerId)
+            val fromZoneKey = findCurrentZone(newState, cardId, ownerId)
+            val fromZone = fromZoneKey?.zoneType
 
             // Determine actual destination player based on moveType and zones.
             // A permanent leaving the battlefield always goes to its owner's hand/library/exile/
@@ -943,7 +945,6 @@ class MoveCollectionExecutor(
             )
 
             // Delegate to ZoneTransitionService for full cleanup + entry
-            val fromZoneKey = if (fromZone != null) ZoneKey(ownerId, fromZone) else null
             val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
                 newState, cardId, destZone, entryOptions, fromZoneKey
             )
@@ -991,7 +992,7 @@ class MoveCollectionExecutor(
                 ?.get<OwnerComponent>()
                 ?.playerId
                 ?: return@filter false
-            findCurrentZone(newState, movedId, movedOwnerId) == Zone.LIBRARY
+            findCurrentZone(newState, movedId, movedOwnerId)?.zoneType == Zone.LIBRARY
         }
         if (destZone == Zone.LIBRARY &&
             destination.placement != ZonePlacement.Shuffled &&
@@ -1053,7 +1054,7 @@ class MoveCollectionExecutor(
             // pulse on whatever permanent the card became — wrong for tutor-and-play effects.
             val sourceZones = cards.mapNotNull { cardId ->
                 val ownerId = state.getEntity(cardId)?.get<OwnerComponent>()?.playerId
-                if (ownerId != null) findCurrentZone(state, cardId, ownerId) else null
+                if (ownerId != null) findCurrentZone(state, cardId, ownerId)?.zoneType else null
             }
             val sharedFromZone = sourceZones.distinct().singleOrNull()
             events.add(
@@ -1094,16 +1095,17 @@ class MoveCollectionExecutor(
     }
 
     /**
-     * Find which zone a card currently lives in.
+     * Find the actual keyed zone containing a card. Battlefield permanents are keyed by their
+     * controller, while other zones are keyed by their owner; reconstructing a key from the
+     * owner's identity therefore loses valid control-changing battlefield states.
      */
-    private fun findCurrentZone(state: GameState, cardId: EntityId, ownerId: EntityId): Zone? {
-        for (zone in Zone.entries) {
-            val zoneKey = ZoneKey(ownerId, zone)
-            if (cardId in state.getZone(zoneKey)) {
-                return zone
+    private fun findCurrentZone(state: GameState, cardId: EntityId, ownerId: EntityId): ZoneKey? {
+        for ((zoneKey, entities) in state.zones) {
+            if (cardId in entities) {
+                return zoneKey
             }
         }
-        if (cardId in state.stack) return Zone.STACK
+        if (cardId in state.stack) return ZoneKey(ownerId, Zone.STACK)
         return null
     }
 
