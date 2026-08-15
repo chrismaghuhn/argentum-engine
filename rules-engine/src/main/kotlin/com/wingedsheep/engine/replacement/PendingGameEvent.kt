@@ -3,6 +3,7 @@ package com.wingedsheep.engine.replacement
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
@@ -174,6 +175,80 @@ sealed interface PendingGameEvent {
         val context: EffectContext
     ) : ZoneChangeCompletion
 
+    /** Resume an activated ability after a cost permanent's hand move completes. */
+    @Serializable
+    data class ActivateAbilityZoneChangeCompletion(
+        val action: ActivateAbility,
+        val resolvedEntityId: EntityId
+    ) : ZoneChangeCompletion
+
+    /** Resume a spell cast after a Sneak/web-slinging/additional-cost hand move completes. */
+    @Serializable
+    data class CastSpellZoneChangeCompletion(
+        val action: CastSpell,
+        val resolvedEntityId: EntityId
+    ) : ZoneChangeCompletion
+
+    /** Mark a publicly ordered card after the physical library transition completes. */
+    @Serializable
+    data object LibraryRevealZoneChangeCompletion : ZoneChangeCompletion
+
+    /** Emit the legacy spell-return event after a stack spell enters its library. */
+    @Serializable
+    data object StackSpellToLibraryZoneChangeCompletion : ZoneChangeCompletion
+
+    /**
+     * Finish a stack spell's fizzle/counter disposition after its zone transition resolves.
+     * The disposition event is deliberately emitted only after the physical transition, so a
+     * paused 903.9b choice cannot report a spell as countered while it is still on the stack.
+     */
+    @Serializable
+    data class StackSpellDispositionZoneChangeCompletion(
+        val fizzled: Boolean,
+        val cardName: String,
+        val reason: String? = null,
+    ) : ZoneChangeCompletion
+
+    /**
+     * Preserve an already-pending spell-resolution decision while a stack-to-library move asks
+     * the commander owner about 903.9b. The original decision frame remains below the replacement
+     * frames; once the physical move finishes, the same decision is exposed again.
+     */
+    @Serializable
+    data class ResumePendingDecisionZoneChangeCompletion(
+        val pendingDecision: PendingDecision,
+    ) : ZoneChangeCompletion
+
+    /**
+     * Resume a generic [PayCost] payment after one or more selected permanents have crossed the
+     * 903.9b hand boundary. The selected Commander cards are already physically moved by the
+     * time this completion runs; the payment atom must therefore receive only the remaining
+     * selections so it cannot move them a second time.
+     */
+    @Serializable
+    data class CostPaymentZoneChangeCompletion(
+        val continuation: CostPaymentContinuation,
+        val nonCommanderSelectedCards: List<EntityId>,
+        val remainingCommanderIds: List<EntityId>,
+    ) : ZoneChangeCompletion
+
+    /** Resume the remaining bookkeeping of a MoveCollection after one card's 903.9b choice. */
+    @Serializable
+    data class MoveCollectionZoneChangeCompletion(
+        val context: EffectContext,
+        val cards: List<EntityId>,
+        val destination: com.wingedsheep.sdk.scripting.effects.CardDestination.ToZone,
+        val destPlayerId: EntityId,
+        val revealed: Boolean = false,
+        val moveType: com.wingedsheep.sdk.scripting.effects.MoveType =
+            com.wingedsheep.sdk.scripting.effects.MoveType.Default,
+        val faceDown: com.wingedsheep.sdk.scripting.effects.FaceDownMode? = null,
+        val noRegenerate: Boolean = false,
+        val storeMovedAs: String? = null,
+        val underOwnersControl: Boolean = false,
+        val revealToSelf: Boolean = true,
+    ) : ZoneChangeCompletion
+
     /**
      * A serializable zone-change event that is still hypothetical. Physical
      * mutation is deferred until the replacement processor has finished.
@@ -264,7 +339,11 @@ sealed interface PendingGameEvent {
                     ReplacementOutcome.Modified(
                         copy(
                             destinationZone = Zone.COMMAND,
-                            redirectResult = redirectResult?.copy(destinationZone = Zone.COMMAND)
+                            // Preserve the accepted destination through the physical atom even
+                            // when no ordinary zone replacement had supplied a redirect result.
+                            // Otherwise intrinsic leave-battlefield redirects would be re-read
+                            // after the pending 903.9b choice and could turn YES into EXILE.
+                            redirectResult = ZoneChangeRedirectResult(Zone.COMMAND)
                         )
                     )
                 }

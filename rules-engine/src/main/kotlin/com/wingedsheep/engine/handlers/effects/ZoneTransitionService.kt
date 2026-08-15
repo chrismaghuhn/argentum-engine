@@ -274,7 +274,7 @@ object ZoneTransitionService {
             ?: return ZoneTransitionResult(state, emptyList())
 
         val currentZoneKey = fromZoneKey ?: findEntityZone(state, entityId)
-            ?: return ZoneTransitionResult(state, emptyList())
+            ?: if (entityId in state.stack) ZoneKey(ownerId, Zone.STACK) else return ZoneTransitionResult(state, emptyList())
 
         val fromZone = currentZoneKey.zoneType
         val leavingBattlefield = fromZone == Zone.BATTLEFIELD
@@ -518,7 +518,20 @@ object ZoneTransitionService {
         // Don't derive from ControllerComponent, as the card may be on a different
         // player's battlefield zone (e.g., control-changed permanents in some zone layouts).
         val removeZoneKey = currentZoneKey
-        newState = newState.removeFromZone(removeZoneKey, entityId)
+        newState = if (fromZone == Zone.STACK) {
+            // Spells live in GameState.stack rather than the zone map. Treat the
+            // stack as a real source zone for pending hand/library moves and strip
+            // stack-only state at the same canonical transition atom.
+            newState.removeFromStack(entityId)
+        } else {
+            newState.removeFromZone(removeZoneKey, entityId)
+        }
+        if (fromZone == Zone.STACK) {
+            newState = newState.updateEntity(entityId) { c ->
+                c.without<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
+                    .without<com.wingedsheep.engine.state.components.stack.TargetsComponent>()
+            }
+        }
 
         // Drop any remaining linked-exile reference held by a granter still on the
         // battlefield (e.g. Maralen, Fae Ascendant). The card has just left exile by

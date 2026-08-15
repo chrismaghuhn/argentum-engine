@@ -336,6 +336,10 @@ class MoveToZoneEffectExecutor(
                 return zoneKey
             }
         }
+        if (entityId in state.stack) {
+            val ownerId = state.getEntity(entityId)?.get<CardComponent>()?.ownerId
+            if (ownerId != null) return com.wingedsheep.engine.state.ZoneKey(ownerId, Zone.STACK)
+        }
         return null
     }
 }

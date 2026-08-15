@@ -152,51 +152,58 @@ class ReplacementEffectProcessor {
             return ProcessorResult.Pass
         }
 
-        // 3. Separate optional replacements — they need a yes/no prompt before
-        //    entering the standard CR 616.1 pipeline.
-        val (optional, mandatory) = fresh.partition {
-            event.isOptionalReplacement(it, state)
-        }
-        if (optional.isNotEmpty()) {
-            // Present the optional prompt via the event's domain-specific handler.
-            // If the event doesn't support optional prompts, treat as mandatory.
-            //
-            // Known simplification: CR 616.1 puts optional and mandatory effects in one pool and
-            // orders the whole pool by priority group, so a mandatory 616.1a self-replacement
-            // should be applied before an optional 616.1e one. Prompting optionals first is only
-            // observable when both are applicable to the same event, which needs a card that
-            // classifies above ANY — nothing does yet.
-            return presentOptionalReplacement(state, event, optional.first(), alreadyApplied, context)
-        }
-
-        // 4. If only one mandatory match, apply it directly
-        if (mandatory.size == 1) {
-            return applySingle(state, mandatory[0], event, alreadyApplied)
-        }
-
-        // 5. Multiple mandatory matches — group by priority order (CR 616.1a-e)
-        val byGroup = mandatory.groupBy { it.effect.priorityGroup }
+        // 3. CR 616.1 orders the complete applicable pool before asking an optional
+        // replacement question. Do not prompt a 903.9b candidate in group ANY while a
+        // higher-priority mandatory replacement is still applicable.
+        val byGroup = fresh.groupBy { it.effect.priorityGroup }
 
         for (group in enumEntries<ReplacementPriorityGroup>()) {
             val groupEffects = byGroup[group] ?: continue
             if (groupEffects.isEmpty()) continue
 
-            if (groupEffects.size > 1) {
+            val (optional, mandatory) = groupEffects.partition {
+                event.isOptionalReplacement(it, state)
+            }
+
+            // A lone optional candidate is a yes/no question. If an optional effect has no
+            // domain-specific prompt, it is treated as mandatory by the helper below.
+            if (mandatory.isEmpty() && optional.isNotEmpty()) {
+                return presentOptionalReplacement(state, event, optional.first(), alreadyApplied, context)
+            }
+
+            // An optional and a mandatory effect in the same priority group are both part of the
+            // CR 616 choice set. Include explicit decline options for the optional candidates;
+            // choosing a mandatory effect applies it first, while choosing a decline leaves the
+            // mandatory candidate available for the next pass.
+            if (mandatory.isNotEmpty() && optional.isNotEmpty()) {
+                return presentChoice(
+                    state = state,
+                    event = event,
+                    options = groupEffects,
+                    alreadyApplied = alreadyApplied,
+                    context = context,
+                    declineOptional = optional,
+                )
+            }
+
+            // If only one mandatory match remains, apply it directly.
+            if (mandatory.size == 1) {
+                return applySingle(state, mandatory[0], event, alreadyApplied)
+            }
+
+            if (mandatory.size > 1) {
                 // CR 616.1a–e: when multiple effects share the same priority group, the affected
                 // player chooses which to apply. Skip the prompt when the choice is unobservable.
-                val first = groupEffects.first()
-                if (isChoiceUnobservable(groupEffects, first, event, state)) {
+                val first = mandatory.first()
+                if (isChoiceUnobservable(mandatory, first, event, state)) {
                     return applySingle(state, first, event, alreadyApplied)
                 }
                 // The order is observable — the player must choose (CR 616.1).
-                return presentChoice(state, event, groupEffects, alreadyApplied, context)
+                return presentChoice(state, event, mandatory, alreadyApplied, context)
             }
-
-            // Single effect — auto-apply
-            return applySingle(state, groupEffects.first(), event, alreadyApplied)
         }
 
-        // Unreachable: mandatory was non-empty, so at least one group matched.
+        // Unreachable: fresh was non-empty, so at least one priority group matched.
         error("unreachable: mandatory effects exist but no priority group matched")
     }
 
@@ -346,7 +353,8 @@ class ReplacementEffectProcessor {
         event: PendingGameEvent,
         options: List<GatheredReplacement>,
         alreadyApplied: Set<ReplacementEffectIdentity>,
-        context: EffectContext?
+        context: EffectContext?,
+        declineOptional: List<GatheredReplacement> = emptyList(),
     ): ProcessorResult.Paused {
         val playerId = event.affectedPlayerId
         val decisionId = UUID.randomUUID().toString()
@@ -360,7 +368,10 @@ class ReplacementEffectProcessor {
                 sourceName = "Replacement effect choice",
                 phase = DecisionPhase.RESOLUTION
             ),
-            options = disambiguate(options.map { it.description }),
+            options = disambiguate(
+                options.map { it.description } +
+                    declineOptional.map { "Decline: ${it.description}" }
+            ),
             canCancel = false
         )
 
@@ -368,6 +379,7 @@ class ReplacementEffectProcessor {
             decisionId = decisionId,
             pendingEvent = event,
             options = options,
+            declineOptional = declineOptional,
             alreadyApplied = alreadyApplied,
             context = context
         )

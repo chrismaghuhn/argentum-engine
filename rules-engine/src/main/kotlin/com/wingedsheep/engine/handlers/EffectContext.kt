@@ -375,6 +375,12 @@ data class EffectContext(
     val castFromZone: Zone? = null,
     /** Replacement-resolved zone change being completed after a decision. */
     val resolvedZoneChange: ResolvedZoneChange? = null,
+    /**
+     * Zone changes already resolved by a resumable collection move. This is an
+     * execution-detail marker: it lets the collection finish its normal
+     * bookkeeping without physically moving the same card a second time.
+     */
+    val preResolvedZoneChangeIds: Set<EntityId> = emptySet(),
     // --- Projection state ---
     /** The entity being modified during continuous effect projection (for DynamicAmount evaluation) */
     val affectedEntityId: EntityId? = null,

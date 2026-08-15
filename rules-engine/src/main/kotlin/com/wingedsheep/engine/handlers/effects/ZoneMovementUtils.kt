@@ -115,15 +115,13 @@ object ZoneMovementUtils {
      */
     /**
      * Destinations covered by the legacy explicit auto-divert preference.
-     * Hand/library moves normally enter the serializable 903.9b pipeline;
-     * this set remains for direct physical transition callers and the
-     * post-move 903.9a compatibility path.
+     * Hand/library moves are always decided by the serializable 903.9b
+     * pipeline; this compatibility path is only for the post-move 903.9a
+     * graveyard/exile choice.
      */
     private val COMMANDER_DIVERT_DESTINATIONS = setOf(
         Zone.GRAVEYARD,
         Zone.EXILE,
-        Zone.HAND,
-        Zone.LIBRARY,
     )
 
     /**
@@ -712,11 +710,12 @@ object ZoneMovementUtils {
             return ZoneChangeRedirectResult(Zone.EXILE)
         }
 
-        // Legacy explicit auto-YES compatibility path (CR 903.9). Player-facing hand/library
-        // moves use the serializable CommanderZoneReplacement candidate above the physical atom;
-        // direct internal callers still need the preference to mean the same choice. Token copies
-        // of a commander aren't the commander itself (CR 903.10a) and never carry
-        // CommanderComponent, so the TokenComponent guard is implicit.
+        // Legacy explicit auto-YES compatibility path for the post-move 903.9a
+        // graveyard/exile choice. Hand/library moves must never use this physical
+        // shortcut: CR 903.9b is an optional replacement inside CR 616 and is
+        // surfaced by the pending-event pipeline before this atom runs. Token
+        // copies of a commander aren't the commander itself (CR 903.10a) and
+        // never carry CommanderComponent.
         //
         // The default path leaves the destination unchanged — the commander reaches the
         // intended zone and the CR 903.9a state-based action (see CommanderZoneChoiceCheck)

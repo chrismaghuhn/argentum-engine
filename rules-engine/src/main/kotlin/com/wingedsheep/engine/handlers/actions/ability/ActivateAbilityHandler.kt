@@ -41,6 +41,7 @@ import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedEverC
 import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.TextReplacementComponent
@@ -1064,6 +1065,35 @@ class ActivateAbilityHandler(
             }
         }
 
+        // CR 903.9b replaces a permanent's hand-bound cost move before the rest of the
+        // activation pays. CostHandler is intentionally synchronous, so this action-level seam
+        // preflights each Commander bounce through the serializable zone-change adapter. The
+        // resumed action carries the completed id and the payment code below omits that one move.
+        val handMoveTargets = commanderHandMoveTargets(effectiveCost, action)
+        val commanderBounceId = handMoveTargets.firstOrNull { id ->
+            id !in action.preResolvedZoneChangeIds &&
+                state.format.usesCommanders &&
+                state.getEntity(id)?.has<CommanderComponent>() == true
+        }
+        if (commanderBounceId != null) {
+            val resumedAction = action.copy(
+                preResolvedZoneChangeIds = action.preResolvedZoneChangeIds + commanderBounceId
+            )
+            val zoneResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                .moveToZoneWithReplacements(
+                    state = state,
+                    entityId = commanderBounceId,
+                    destinationZone = Zone.HAND,
+                    context = EffectContext(sourceId = action.sourceId, controllerId = action.playerId),
+                    completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                        .ActivateAbilityZoneChangeCompletion(resumedAction, commanderBounceId),
+                )
+            if (zoneResult.isPaused) return zoneResult.toExecutionResult()
+            if (!zoneResult.isSuccess) return zoneResult.toExecutionResult()
+            val resumed = executeActivation(zoneResult.state, resumedAction)
+            return resumed.copy(events = zoneResult.events + resumed.events)
+        }
+
         val executeAbilityContext = buildAbilityPaymentContext(cardComponent, state.projectedState, action.sourceId)
 
         var currentState = state
@@ -1198,7 +1228,8 @@ class ActivateAbilityHandler(
             exileChoices = action.costPayment?.exiledCards ?: emptyList(),
             variablePermanentChoices = action.costPayment?.variableCostPermanents ?: emptyList(),
             tapChoices = firstTapSlice,
-            bounceChoices = action.costPayment?.bouncedPermanents ?: emptyList(),
+            bounceChoices = (action.costPayment?.bouncedPermanents ?: emptyList())
+                .filterNot { it in action.preResolvedZoneChangeIds },
             xValue = xValue,
             distributedCounterRemovals = action.costPayment?.distributedCounterRemovals ?: emptyList(),
             blightChoices = action.costPayment?.blightTargets ?: emptyList(),
@@ -1279,20 +1310,26 @@ class ActivateAbilityHandler(
         // When using Explicit payment, mana sources were already tapped above —
         // strip the Mana portion so payAbilityCost doesn't try to deduct from the pool.
         // When convoke was applied, replace the mana portion with the reduced cost.
+        val effectiveCostAfterPreResolvedMoves = removePreResolvedHandMoves(
+            effectiveCost,
+            sourceId = action.sourceId,
+            resolvedIds = action.preResolvedZoneChangeIds.toSet(),
+            bounceChoices = action.costPayment?.bouncedPermanents ?: emptyList(),
+        )
         val costForPayment = if (action.paymentStrategy is PaymentStrategy.Explicit) {
-            stripManaCost(effectiveCost)
+            stripManaCost(effectiveCostAfterPreResolvedMoves)
         } else if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && !action.alternativePayment.isEmpty && manaCost != null) {
             // Convoke/waterbend reduced the mana cost — update the cost structure so payAbilityCost
             // deducts the reduced amount from the pool instead of the original full amount
-            when (effectiveCost) {
+            when (effectiveCostAfterPreResolvedMoves) {
                 is AbilityCost.Atom -> AbilityCost.Atom(CostAtom.Mana(manaCost))
-                is AbilityCost.Composite -> AbilityCost.Composite(effectiveCost.costs.map { subCost ->
+                is AbilityCost.Composite -> AbilityCost.Composite(effectiveCostAfterPreResolvedMoves.costs.map { subCost ->
                     if (subCost.manaCostOrNull != null) AbilityCost.Atom(CostAtom.Mana(manaCost)) else subCost
                 })
-                else -> effectiveCost
+                else -> effectiveCostAfterPreResolvedMoves
             }
         } else {
-            effectiveCost
+            effectiveCostAfterPreResolvedMoves
         }
 
         // Pay the cost (using effective cost with text replacements applied)
@@ -3139,6 +3176,50 @@ class ActivateAbilityHandler(
             (it as? AbilityCost.Atom)?.atom as? CostAtom.VariablePermanents
         }
         else -> null
+    }
+
+    /** Return the permanents whose payment instruction would put them into an owner's hand. */
+    private fun commanderHandMoveTargets(
+        cost: AbilityCost,
+        action: ActivateAbility,
+    ): List<EntityId> = when (cost) {
+        AbilityCost.ReturnSelfToHand -> listOf(action.sourceId)
+        is AbilityCost.Atom -> {
+            val atom = cost.atom
+            if (atom is CostAtom.ReturnToHand) {
+                action.costPayment?.bouncedPermanents?.take(atom.count) ?: emptyList()
+            } else emptyList()
+        }
+        is AbilityCost.Composite -> cost.costs.flatMap { commanderHandMoveTargets(it, action) }
+        else -> emptyList()
+    }
+
+    /**
+     * Remove hand moves already completed by the asynchronous Commander preflight from the
+     * synchronous cost representation. Other cost atoms remain unchanged.
+     */
+    private fun removePreResolvedHandMoves(
+        cost: AbilityCost,
+        sourceId: EntityId,
+        resolvedIds: Set<EntityId>,
+        bounceChoices: List<EntityId>,
+    ): AbilityCost = when (cost) {
+        AbilityCost.ReturnSelfToHand ->
+            if (sourceId in resolvedIds) AbilityCost.Free else cost
+        is AbilityCost.Atom -> when (val atom = cost.atom) {
+            is CostAtom.ReturnToHand -> {
+                val resolvedBounceCount = bounceChoices.count { it in resolvedIds }
+                val remaining = (atom.count - resolvedBounceCount).coerceAtLeast(0)
+                if (remaining == 0) AbilityCost.Free else AbilityCost.Atom(atom.copy(count = remaining))
+            }
+            else -> cost
+        }
+        is AbilityCost.Composite -> AbilityCost.Composite(
+            cost.costs.map {
+                removePreResolvedHandMoves(it, sourceId, resolvedIds, bounceChoices)
+            }
+        )
+        else -> cost
     }
 
     /**

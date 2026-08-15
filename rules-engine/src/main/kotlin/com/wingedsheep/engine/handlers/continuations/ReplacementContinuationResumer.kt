@@ -19,6 +19,22 @@ class ReplacementContinuationResumer(
     private val services: EngineServices
 ) : ContinuationResumerModule, AutoResumerModule {
 
+    private val castSpellHandler by lazy {
+        com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler.create(services)
+    }
+    private val activateAbilityHandler by lazy {
+        com.wingedsheep.engine.handlers.actions.ability.ActivateAbilityHandler.create(services)
+    }
+    private val moveCollectionExecutor by lazy {
+        com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor(
+            cardRegistry = services.cardRegistry,
+            targetFinder = com.wingedsheep.engine.handlers.TargetFinder(),
+        )
+    }
+    private val costPaymentContinuationResumer by lazy {
+        CostPaymentContinuationResumer(services)
+    }
+
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
         resumer(ReplacementChoiceContinuation::class, ::resumeReplacementChoice),
         resumer(OptionalReplacementContinuation::class, ::resumeOptionalReplacement)
@@ -161,6 +177,105 @@ class ReplacementContinuationResumer(
                 }
                 checkForMore(result.state, events + result.events)
             }
+            is PendingGameEvent.ActivateAbilityZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                val result = activateAbilityHandler.execute(transition.state, completion.action)
+                if (result.isPaused) {
+                    return result.copy(events = events + transition.events + result.events)
+                }
+                checkForMore(result.state, events + transition.events + result.events)
+            }
+            is PendingGameEvent.CastSpellZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                val result = castSpellHandler.execute(transition.state, completion.action)
+                if (result.isPaused) {
+                    return result.copy(events = events + transition.events + result.events)
+                }
+                checkForMore(result.state, events + transition.events + result.events)
+            }
+            PendingGameEvent.LibraryRevealZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                val revealed = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+                    .markRevealed(transition.state, listOf(pending.entityId), transition.state.turnOrder.toSet())
+                checkForMore(revealed, events + transition.events)
+            }
+            PendingGameEvent.StackSpellToLibraryZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                val spellName = transition.state.getEntity(pending.entityId)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name
+                    ?: "Unknown"
+                val revealed = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+                    .markRevealed(transition.state, listOf(pending.entityId), transition.state.turnOrder.toSet())
+                checkForMore(
+                    revealed,
+                    events + SpellCounteredEvent(pending.entityId, spellName) + transition.events,
+                )
+            }
+            is PendingGameEvent.StackSpellDispositionZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                val disposition = if (completion.fizzled) {
+                    SpellFizzledEvent(
+                        spellEntityId = pending.entityId,
+                        cardName = completion.cardName,
+                        reason = completion.reason ?: "All targets are invalid",
+                    )
+                } else {
+                    SpellCounteredEvent(
+                        spellEntityId = pending.entityId,
+                        cardName = completion.cardName,
+                    )
+                }
+                checkForMore(transition.state, events + disposition + transition.events)
+            }
+            is PendingGameEvent.ResumePendingDecisionZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                ExecutionResult.paused(
+                    transition.state,
+                    completion.pendingDecision,
+                    events + transition.events,
+                )
+            }
+            is PendingGameEvent.CostPaymentZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                costPaymentContinuationResumer.resumeAfterCommanderZoneChange(
+                    state = transition.state,
+                    completion = completion,
+                    priorEvents = events + transition.events,
+                    checkForMore = checkForMore,
+                )
+            }
+            is PendingGameEvent.MoveCollectionZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                val result = moveCollectionExecutor.moveCardsToZone(
+                    state = transition.state,
+                    context = completion.context,
+                    cards = completion.cards,
+                    destination = completion.destination,
+                    destPlayerId = completion.destPlayerId,
+                    revealed = completion.revealed,
+                    moveType = completion.moveType,
+                    faceDown = completion.faceDown,
+                    noRegenerate = completion.noRegenerate,
+                    storeMovedAs = completion.storeMovedAs,
+                    underOwnersControl = completion.underOwnersControl,
+                    revealToSelf = completion.revealToSelf,
+                )
+                if (result.isPaused) {
+                    return result.toExecutionResult().copy(
+                        events = events + transition.events + result.events,
+                    )
+                }
+                checkForMore(result.state, events + transition.events + result.events)
+            }
         }
     }
 
@@ -183,8 +298,34 @@ class ReplacementContinuationResumer(
         }
 
         val chosenIndex = response.optionIndex
-        if (chosenIndex < 0 || chosenIndex >= continuation.options.size) {
+        if (chosenIndex < 0 || chosenIndex >= continuation.options.size + continuation.declineOptional.size) {
             return ExecutionResult.error(state, "Invalid replacement choice index: $chosenIndex")
+        }
+
+        // A mixed-priority-group choice can explicitly decline an optional
+        // replacement. The mandatory candidates remain applicable and are
+        // reconsidered by the normal processor pass.
+        if (chosenIndex >= continuation.options.size) {
+            val declineIndex = chosenIndex - continuation.options.size
+            val declined = continuation.declineOptional.getOrNull(declineIndex)
+                ?: return ExecutionResult.error(state, "Invalid optional replacement decline index: $declineIndex")
+            val stateWithRemaining = continuation.pendingEvent.remainderContinuation(state)
+                ?.let { state.pushContinuation(it) }
+                ?: state
+            val result = processor.processAfterOptionalDecline(
+                state = stateWithRemaining,
+                event = continuation.pendingEvent,
+                gathered = declined,
+                context = continuation.context,
+                alreadyApplied = continuation.alreadyApplied,
+            )
+            return handleOptionalProcessorResult(
+                result = result,
+                event = continuation.pendingEvent,
+                state = stateWithRemaining,
+                context = continuation.context,
+                checkForMore = checkForMore,
+            )
         }
 
         val chosen = continuation.options[chosenIndex]

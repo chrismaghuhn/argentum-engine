@@ -335,6 +335,80 @@ class MoveCollectionExecutor(
     ): EffectResult {
         val destZone = destination.zone
 
+        // A collection move can contain several player-visible hand/library
+        // transitions. Resolve Commander 903.9b one card at a time before the
+        // collection's physical loop, then re-enter with the completed id marked
+        // so the same card is not moved twice after a pause.
+        if (destZone == Zone.HAND || destZone == Zone.LIBRARY) {
+            val commanderId = cards.firstOrNull { cardId ->
+                cardId !in context.preResolvedZoneChangeIds &&
+                    state.format.usesCommanders &&
+                    state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
+            }
+            if (commanderId != null) {
+                val ownerId = state.getEntity(commanderId)?.get<OwnerComponent>()?.playerId
+                    ?: state.getEntity(commanderId)?.get<CardComponent>()?.ownerId
+                val fromZone = ownerId?.let { findCurrentZone(state, commanderId, it) }
+                if (ownerId != null && fromZone != null) {
+                    val actualDestPlayerId = if (fromZone == Zone.BATTLEFIELD) ownerId else destPlayerId
+                    val libraryPlacement = when (destination.placement) {
+                        ZonePlacement.Bottom -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
+                        // The collection shuffles once after all cards are placed;
+                        // a per-card replacement transition must therefore use the
+                        // eventual bottom insertion, not shuffle prematurely.
+                        ZonePlacement.Shuffled -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
+                        else -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
+                    }
+                    val resumedContext = context.copy(
+                        preResolvedZoneChangeIds = context.preResolvedZoneChangeIds + commanderId,
+                    )
+                    val pendingResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                        .moveToZoneWithReplacements(
+                            state = state,
+                            entityId = commanderId,
+                            destinationZone = destZone,
+                            options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
+                                controllerId = actualDestPlayerId,
+                                libraryPlacement = libraryPlacement,
+                            ),
+                            fromZoneKey = ZoneKey(ownerId, fromZone),
+                            context = context,
+                            completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                                .MoveCollectionZoneChangeCompletion(
+                                    context = resumedContext,
+                                    cards = cards,
+                                    destination = destination,
+                                    destPlayerId = destPlayerId,
+                                    revealed = revealed,
+                                    moveType = moveType,
+                                    faceDown = faceDown,
+                                    noRegenerate = noRegenerate,
+                                    storeMovedAs = storeMovedAs,
+                                    underOwnersControl = underOwnersControl,
+                                    revealToSelf = revealToSelf,
+                                ),
+                        )
+                    if (pendingResult.isPaused) return pendingResult
+                    if (!pendingResult.isSuccess) return pendingResult
+                    val resumed = moveCardsToZone(
+                        state = pendingResult.state,
+                        context = resumedContext,
+                        cards = cards,
+                        destination = destination,
+                        destPlayerId = destPlayerId,
+                        revealed = revealed,
+                        moveType = moveType,
+                        faceDown = faceDown,
+                        noRegenerate = noRegenerate,
+                        storeMovedAs = storeMovedAs,
+                        underOwnersControl = underOwnersControl,
+                        revealToSelf = revealToSelf,
+                    )
+                    return resumed.copy(events = pendingResult.events + resumed.events)
+                }
+            }
+        }
+
         // When moving to battlefield, detect auras that need target selection (Rule 303.4f)
         if (destZone == Zone.BATTLEFIELD && targetFinder != null) {
             val auraCards = mutableListOf<EntityId>()
@@ -628,6 +702,19 @@ class MoveCollectionExecutor(
         for (cardId in cards) {
             val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId ?: destPlayerId
 
+            // A Commander hand/library move may already have completed through
+            // the pending replacement adapter. Keep it in the collection-level
+            // bookkeeping, but never issue a second physical move after resume.
+            if (cardId in context.preResolvedZoneChangeIds) {
+                movedIds.add(cardId)
+                if (destZone == Zone.LIBRARY &&
+                    findCurrentZone(newState, cardId, ownerId) == Zone.LIBRARY
+                ) {
+                    librariesReceivingCards.add(ownerId)
+                }
+                continue
+            }
+
             // For MoveType.Destroy, check indestructible and regeneration before moving
             if (moveType == MoveType.Destroy) {
                 if (newState.projectedState.hasKeyword(cardId, Keyword.INDESTRUCTIBLE)) {
@@ -844,6 +931,7 @@ class MoveCollectionExecutor(
                 return zone
             }
         }
+        if (cardId in state.stack) return Zone.STACK
         return null
     }
 

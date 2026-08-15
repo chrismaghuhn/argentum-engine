@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.handlers.effects.zones
 
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
@@ -21,7 +22,9 @@ import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
+import com.wingedsheep.engine.state.components.battlefield.ExileOnLeaveBattlefieldComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.ManaCost
@@ -32,6 +35,10 @@ import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
+import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
+import com.wingedsheep.sdk.scripting.effects.CardDestination
+import com.wingedsheep.sdk.scripting.effects.DiscoverEffect
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -122,6 +129,14 @@ class CommanderZoneReplacementTest : FunSpec({
         )
     }
 
+    fun resumeExecutionYesNo(services: EngineServices, initial: ExecutionResult, choice: Boolean): ExecutionResult {
+        val decision = initial.pendingDecision as YesNoDecision
+        return services.continuationHandler.resume(
+            initial.state.clearPendingDecision(),
+            YesNoResponse(decision.id, choice),
+        )
+    }
+
     fun addLibrarySentinel(state: GameState): GameState {
         val sentinel = ComponentContainer.of(
             CardComponent(
@@ -197,6 +212,128 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.events.filterIsInstance<ZoneChangeEvent>().map { it.toZone } shouldBe listOf(Zone.COMMAND)
     }
 
+    test("library YES also applies when an intrinsic leave-battlefield replacement is present") {
+        val services = EngineServices(CardRegistry())
+        val state = stateWithCommanderIn(Zone.BATTLEFIELD).updateEntity(commanderId) {
+            it.with(ExileOnLeaveBattlefieldComponent)
+        }
+        val initial = moveWithServices(
+            services,
+            addLibrarySentinel(state),
+            Zone.LIBRARY,
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
+        )
+
+        initial.isPaused shouldBe true
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.pendingDecision shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.EXILE)) shouldBe emptyList()
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe listOf(libraryCardId)
+    }
+
+    test("COMMAND to library also exposes the 903.9b choice") {
+        val services = EngineServices(CardRegistry())
+        val initial = moveWithServices(
+            services,
+            addLibrarySentinel(stateWithCommanderIn(Zone.COMMAND)),
+            Zone.LIBRARY,
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Bottom,
+        )
+
+        initial.isPaused shouldBe true
+        initial.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        val resumed = resumeYesNo(services, initial, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe emptyList()
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe listOf(libraryCardId, commanderId)
+    }
+
+    test("a commander spell moving from the stack to hand also uses 903.9b") {
+        val services = EngineServices(CardRegistry())
+        val stackState = stateWithCommanderIn(Zone.COMMAND)
+            .removeFromZone(ZoneKey(playerId, Zone.COMMAND), commanderId)
+            .copy(stack = listOf(commanderId))
+            .updateEntity(commanderId) { it.with(SpellOnStackComponent(playerId)) }
+        val initial = moveWithServices(services, stackState, Zone.HAND)
+
+        initial.isPaused shouldBe true
+        initial.state.stack shouldBe listOf(commanderId)
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.state.stack shouldBe emptyList()
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getEntity(commanderId)?.has<SpellOnStackComponent>() shouldBe false
+    }
+
+    test("MoveCollection hand entry pauses before its Commander is physically moved") {
+        val services = EngineServices(CardRegistry())
+        val state = stateWithCommanderIn(Zone.BATTLEFIELD)
+        val effect = MoveCollectionEffect(
+            from = "cards",
+            destination = CardDestination.ToZone(Zone.HAND),
+        )
+        val context = EffectContext(
+            sourceId = null,
+            controllerId = playerId,
+            pipeline = PipelineState.EMPTY.copy(
+                storedCollections = mapOf("cards" to listOf(commanderId)),
+            ),
+        )
+        val initial = services.effectExecutorRegistry.execute(state, effect, context)
+
+        initial.isPaused shouldBe true
+        initial.state.getZone(ZoneKey(playerId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
+    }
+
+    test("Discover bottoming its non-hit Commander uses the 903.9b pipeline") {
+        val services = EngineServices(CardRegistry())
+        val initial = services.effectExecutorRegistry.execute(
+            stateWithCommanderIn(Zone.LIBRARY),
+            DiscoverEffect(DynamicAmount.Fixed(0)),
+            EffectContext(sourceId = null, controllerId = playerId),
+        )
+
+        initial.isPaused shouldBe true
+        initial.state.getZone(ZoneKey(playerId, Zone.EXILE)) shouldBe listOf(commanderId)
+        initial.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
+
+        val resumed = resumeYesNo(services, initial, choice = true)
+
+        resumed.error shouldBe null
+        resumed.pendingDecision shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe emptyList()
+    }
+
+    test("Discover bottoming an exiled Commander before its hit remains pause-safe") {
+        val services = EngineServices(CardRegistry())
+        val initial = services.effectExecutorRegistry.execute(
+            addLibrarySentinel(stateWithCommanderIn(Zone.LIBRARY)),
+            DiscoverEffect(DynamicAmount.Fixed(0)),
+            EffectContext(sourceId = null, controllerId = playerId),
+        )
+
+        initial.isPaused shouldBe true
+        val afterMayCast = resumeYesNo(services, initial, choice = false)
+        afterMayCast.isPaused shouldBe true
+        val resumed = resumeExecutionYesNo(services, afterMayCast, choice = true)
+
+        resumed.error shouldBe null
+        resumed.pendingDecision shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)
+        resumed.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe listOf(libraryCardId)
+    }
+
     test("library NO preserves the requested placement and does not invoke SBA") {
         val services = EngineServices(CardRegistry())
         val initial = moveWithServices(
@@ -239,7 +376,10 @@ class CommanderZoneReplacementTest : FunSpec({
         val decoded = json.decodeFromString<ContinuationFrame>(encoded)
         decoded shouldBe frame
 
-        val resumed = resumeYesNo(services, initial, choice = true)
+        val decodedState = pausedState.copy(
+            continuationStack = pausedState.continuationStack.dropLast(1) + decoded,
+        )
+        val resumed = resumeYesNo(services, initial.copy(state = decodedState), choice = true)
         pausedState.getZone(ZoneKey(playerId, Zone.BATTLEFIELD)) shouldBe listOf(commanderId)
         pausedState.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
         resumed.state.getZone(ZoneKey(playerId, Zone.COMMAND)) shouldBe listOf(commanderId)

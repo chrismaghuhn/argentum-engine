@@ -12,12 +12,16 @@ import com.wingedsheep.engine.handlers.effects.LibraryPlacement
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CascadeEffect
+import com.wingedsheep.sdk.scripting.effects.CardDestination
+import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.references.Player
 import kotlin.reflect.KClass
 
 /**
@@ -42,7 +46,8 @@ import kotlin.reflect.KClass
  *    here and no spell is offered.
  */
 class CascadeExecutor(
-    private val decisionHandler: DecisionHandler = DecisionHandler()
+    private val decisionHandler: DecisionHandler = DecisionHandler(),
+    private val cardRegistry: CardRegistry = CardRegistry(),
 ) : EffectExecutor<CascadeEffect> {
 
     override val effectType: KClass<CascadeEffect> = CascadeEffect::class
@@ -107,11 +112,22 @@ class CascadeExecutor(
         if (cascadeCard == null) {
             // Library exhausted without a qualifying card — bottom-randomize everything
             // exiled this way and finish, no may-cast offered.
-            val bottomEvents = bottomRandomize(currentState, controllerId, exiledCards) { newState ->
-                currentState = newState
+            val bottomResult = bottomRandomizeWithReplacements(
+                state = currentState,
+                playerId = controllerId,
+                cards = exiledCards,
+                context = context,
+                cardRegistry = cardRegistry,
+            )
+            if (bottomResult.isPaused) {
+                return EffectResult.paused(
+                    bottomResult.state,
+                    bottomResult.pendingDecision!!,
+                    allEvents + bottomResult.events,
+                )
             }
-            allEvents.addAll(bottomEvents)
-            return EffectResult.success(currentState, allEvents)
+            if (!bottomResult.isSuccess) return bottomResult
+            return EffectResult.success(bottomResult.state, allEvents + bottomResult.events)
         }
 
         val cascadeName = currentState.getEntity(cascadeCard)
@@ -146,6 +162,42 @@ class CascadeExecutor(
     }
 
     companion object {
+        /**
+         * Bottom-randomize a cascade remainder through MoveCollectionExecutor when a Commander
+         * is among the cards. That executor owns the serializable per-card pending-zone adapter;
+         * the old synchronous helper remains for discover's non-pausing legacy path.
+         */
+        fun bottomRandomizeWithReplacements(
+            state: GameState,
+            playerId: EntityId,
+            cards: List<EntityId>,
+            context: EffectContext,
+            cardRegistry: CardRegistry = CardRegistry(),
+        ): EffectResult {
+            val hasCommander = state.format.usesCommanders && cards.any { cardId ->
+                state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
+            }
+            if (!hasCommander) {
+                var updatedState = state
+                val events = bottomRandomize(state, playerId, cards) { updatedState = it }
+                return EffectResult.success(updatedState, events)
+            }
+
+            val (shuffledCards, shuffledState) = state.nextRandom { shuffle(cards) }
+            val destination = CardDestination.ToZone(
+                zone = Zone.LIBRARY,
+                player = Player.You,
+                placement = ZonePlacement.Bottom,
+            )
+            return MoveCollectionExecutor(cardRegistry).moveCardsToZone(
+                state = shuffledState,
+                context = context,
+                cards = shuffledCards,
+                destination = destination,
+                destPlayerId = playerId,
+            )
+        }
+
         /**
          * Move [cards] (each currently in exile) to the bottom of [playerId]'s library
          * in a random order. Returns the emitted zone-change events; the caller wires

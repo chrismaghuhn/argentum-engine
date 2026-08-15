@@ -6,9 +6,12 @@ import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.library.CascadeExecutor
 import com.wingedsheep.engine.handlers.effects.library.ChooseOnePerCategoryExecutor
 import com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithoutPayingCostExecutor
+import com.wingedsheep.engine.handlers.effects.library.ExileFromTopRepeatingExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -26,10 +29,13 @@ import com.wingedsheep.sdk.scripting.effects.ZonePlacement
 
 class LibraryAndZoneContinuationResumer(
     private val services: com.wingedsheep.engine.core.EngineServices
-) : ContinuationResumerModule {
+) : ContinuationResumerModule, AutoResumerModule {
 
     private val castSpellHandler: CastSpellHandler by lazy { CastSpellHandler.create(services) }
     private val targetFinder = TargetFinder()
+    private val cascadeExecutor by lazy {
+        CascadeExecutor(cardRegistry = services.cardRegistry)
+    }
     private val effectRunner: EffectContinuationRunner by lazy {
         EffectContinuationRunner(services.effectExecutorRegistry)
     }
@@ -50,6 +56,30 @@ class LibraryAndZoneContinuationResumer(
         resumer(DiscoverMayCastContinuation::class, ::resumeDiscoverMayCast),
         resumer(CastFromCollectionTargetsContinuation::class, ::resumeCastFromCollectionTargets),
         resumer(CastAnyNumberFromCollectionContinuation::class, ::resumeCastAnyNumberFromCollection)
+    )
+
+    override fun autoResumers(): List<AutoResumer<*>> = listOf(
+        autoResumer(CascadeAfterBottomContinuation::class) { state, continuation, events, checkForMore ->
+            continueCascadeAfterBottom(state, continuation, events, checkForMore)
+        },
+        autoResumer(DiscoverAfterBottomContinuation::class) { state, continuation, events, checkForMore ->
+            continueDiscoverAfterBottom(state, continuation, events, checkForMore)
+        },
+        autoResumer(DiscoverNoHitBottomContinuation::class) { state, continuation, events, checkForMore ->
+            continueDiscoverNoHitBottom(state, continuation, events, checkForMore)
+        },
+        autoResumer(ExileFromTopRepeatingContinuation::class) { state, continuation, events, checkForMore ->
+            val result = ExileFromTopRepeatingExecutor().resumeAfterMatch(state, continuation)
+            if (result.isPaused) {
+                ExecutionResult.paused(
+                    result.state,
+                    result.pendingDecision!!,
+                    events + result.events,
+                )
+            } else {
+                checkForMore(result.state, events + result.events)
+            }
+        }
     )
 
     fun resumeReturnFromGraveyard(
@@ -84,12 +114,34 @@ class LibraryAndZoneContinuationResumer(
             else -> return ExecutionResult.error(state, "Unsupported destination: ${continuation.destination}")
         }
 
-        // Delegate zone movement to ZoneTransitionService for full cleanup + entry setup
-        val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
-            state, cardId, destZone,
-            com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(controllerId = playerId),
-            ZoneKey(playerId, Zone.GRAVEYARD)
-        )
+        // Hand entry is a CR 903.9b replacement boundary. Battlefield entry remains a plain
+        // transition because Commander replacement does not apply to it.
+        val transitionResult = if (destZone == Zone.HAND) {
+            ZoneTransitionService.moveToZoneWithReplacements(
+                state = state,
+                entityId = cardId,
+                destinationZone = destZone,
+                options = ZoneEntryOptions(controllerId = playerId),
+                fromZoneKey = ZoneKey(playerId, Zone.GRAVEYARD),
+                context = EffectContext(sourceId = continuation.sourceId, controllerId = playerId),
+                completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                    .PlainZoneChangeCompletion,
+            ).let { result ->
+                if (result.isPaused) return result.toExecutionResult()
+                com.wingedsheep.engine.handlers.effects.ZoneTransitionResult(
+                    state = result.state,
+                    events = result.events,
+                    actualDestination = result.state.zones.entries
+                        .firstOrNull { (_, cards) -> cardId in cards }?.key?.zoneType,
+                )
+            }
+        } else {
+            ZoneTransitionService.moveToZone(
+                state, cardId, destZone,
+                ZoneEntryOptions(controllerId = playerId),
+                ZoneKey(playerId, Zone.GRAVEYARD)
+            )
+        }
 
         return checkForMore(transitionResult.state, transitionResult.events)
     }
@@ -719,20 +771,36 @@ class LibraryAndZoneContinuationResumer(
         val currentZone = state.zones.entries.firstOrNull { (_, entities) -> cardId in entities }?.key
             ?: return checkForMore(state, emptyList()) // Card no longer exists in any zone
 
-        val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
-            state, cardId, Zone.LIBRARY,
-            com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
-                controllerId = continuation.ownerId,
-                libraryPlacement = placement
-            ),
-            currentZone
-        )
+        val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+            .moveToZoneWithReplacements(
+                state = state,
+                entityId = cardId,
+                destinationZone = Zone.LIBRARY,
+                options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
+                    controllerId = continuation.ownerId,
+                    libraryPlacement = placement,
+                ),
+                fromZoneKey = currentZone,
+                context = EffectContext(
+                    sourceId = continuation.sourceId,
+                    controllerId = continuation.ownerId,
+                ),
+                completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                    .LibraryRevealZoneChangeCompletion,
+            )
+
+        if (transitionResult.isPaused) return transitionResult.toExecutionResult()
+        if (!transitionResult.isSuccess) return transitionResult.toExecutionResult()
 
         // The card was visible to everyone before the move (battlefield or stack) and the owner's
         // choice of position was public, so all players know where it ended up. Mark it revealed
         // to every player so each library viewer shows the card face-up at its new slot.
-        val finalState = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-            .markRevealed(transitionResult.state, listOf(cardId), transitionResult.state.turnOrder.toSet())
+        val finalState = if (cardId in transitionResult.state.getZone(ZoneKey(continuation.ownerId, Zone.LIBRARY))) {
+            com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+                .markRevealed(transitionResult.state, listOf(cardId), transitionResult.state.turnOrder.toSet())
+        } else {
+            transitionResult.state
+        }
 
         return checkForMore(finalState, transitionResult.events)
     }
@@ -754,43 +822,26 @@ class LibraryAndZoneContinuationResumer(
         val spellContainer = state.getEntity(spellId)
             ?: return checkForMore(state, emptyList())
         val spellName = spellContainer.get<CardComponent>()?.name ?: "Unknown"
-
-        var newState = state.removeFromStack(spellId)
-        newState = newState.updateEntity(spellId) { c ->
-            c.without<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
-                .without<com.wingedsheep.engine.state.components.stack.TargetsComponent>()
-        }
-
-        val libZoneKey = ZoneKey(ownerId, Zone.LIBRARY)
-        val currentLibrary = newState.getZone(libZoneKey)
-        val newLibrary = when (placement) {
-            com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top ->
-                listOf(spellId) + currentLibrary
-            com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom ->
-                currentLibrary + spellId
-            is com.wingedsheep.engine.handlers.effects.LibraryPlacement.NthFromTop -> {
-                val insertIndex = placement.position.coerceAtMost(currentLibrary.size)
-                currentLibrary.toMutableList().apply { add(insertIndex, spellId) }
-            }
-            else -> currentLibrary + spellId
-        }
-        newState = newState.copy(zones = newState.zones + (libZoneKey to newLibrary))
-
-        // Both players watched the spell get placed at this position — mark it revealed to all
-        // so each side's library viewer shows it face-up at the new slot.
-        newState = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-            .markRevealed(newState, listOf(spellId), newState.turnOrder.toSet())
-
-        val events = listOf(
-            SpellCounteredEvent(spellId, spellName),
-            ZoneChangeEvent(
+        val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+            .moveToZoneWithReplacements(
+                state = state,
                 entityId = spellId,
-                entityName = spellName,
-                fromZone = Zone.STACK,
-                toZone = Zone.LIBRARY,
-                ownerId = ownerId
+                destinationZone = Zone.LIBRARY,
+                options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
+                    controllerId = ownerId,
+                    libraryPlacement = placement,
+                ),
+                fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                context = EffectContext(sourceId = null, controllerId = ownerId),
+                completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                    .StackSpellToLibraryZoneChangeCompletion,
             )
-        )
+        if (transitionResult.isPaused) return transitionResult.toExecutionResult()
+        if (!transitionResult.isSuccess) return transitionResult.toExecutionResult()
+
+        val newState = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+            .markRevealed(transitionResult.state, listOf(spellId), transitionResult.state.turnOrder.toSet())
+        val events = listOf(SpellCounteredEvent(spellId, spellName)) + transitionResult.events
         return checkForMore(newState, events)
     }
 
@@ -822,49 +873,101 @@ class LibraryAndZoneContinuationResumer(
         }
 
         if (!response.choice) {
-            var newState = state
-            val events = CascadeExecutor.bottomRandomize(
+            val result = CascadeExecutor.bottomRandomizeWithReplacements(
                 state = state,
                 playerId = continuation.playerId,
-                cards = continuation.exiledCards
-            ) { newState = it }
-            return checkForMore(newState, events)
+                cards = continuation.exiledCards,
+                context = EffectContext(
+                    sourceId = continuation.sourceId,
+                    controllerId = continuation.playerId,
+                ),
+                cardRegistry = services.cardRegistry,
+            )
+            if (result.isPaused) {
+                return ExecutionResult.paused(result.state, result.pendingDecision!!, result.events)
+            }
+            if (!result.isSuccess) return result.toExecutionResult()
+            return checkForMore(result.state, result.events)
         }
 
         // Yes — bottom the other exiled cards now, then attempt the free cast.
         val others = continuation.exiledCards.filter { it != continuation.cascadeCardId }
-        var afterBottom = state
-        val bottomEvents = CascadeExecutor.bottomRandomize(
-            state = state,
+        val afterBottomContinuation = CascadeAfterBottomContinuation(
+            decisionId = "pending",
             playerId = continuation.playerId,
-            cards = others
-        ) { afterBottom = it }
-
-        // A non-modal targeted spell can't carry targets through the synthesized CastSpell —
-        // surface the ChooseTargetsDecision first, exactly as
-        // CastFromCollectionWithoutPayingCostExecutor does. If a required slot has no legal
-        // targets the cast can't initiate (CR 601.2c) and the cascade card is bottomed. Checked
-        // *before* granting so the bottomed card carries no lingering free-cast grant.
-        val targetPrep = CastFromCollectionWithoutPayingCostExecutor.prepareTargetSelection(
+            sourceId = continuation.sourceId,
+            cascadeCardId = continuation.cascadeCardId,
+        )
+        val hasCommanderRemainder = state.format.usesCommanders && others.any { cardId ->
+            state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
+        }
+        val bottomInputState = if (hasCommanderRemainder) {
+            state.pushContinuation(afterBottomContinuation)
+        } else state
+        val bottomResult = CascadeExecutor.bottomRandomizeWithReplacements(
+            state = bottomInputState,
+            playerId = continuation.playerId,
+            cards = others,
+            context = EffectContext(
+                sourceId = continuation.sourceId,
+                controllerId = continuation.playerId,
+            ),
+            cardRegistry = services.cardRegistry,
+        )
+        if (bottomResult.isPaused) {
+            return ExecutionResult.paused(
+                bottomResult.state,
+                bottomResult.pendingDecision!!,
+                bottomResult.events,
+            )
+        }
+        if (!bottomResult.isSuccess) return bottomResult.toExecutionResult()
+        val afterBottom = if (hasCommanderRemainder) {
+            bottomResult.state.popContinuation().second
+        } else bottomResult.state
+        return continueCascadeAfterBottom(
             state = afterBottom,
+            continuation = afterBottomContinuation,
+            events = bottomResult.events,
+            checkForMore = checkForMore,
+        )
+    }
+
+    /** Continue the cascade YES branch once all non-hit cards have reached their bottom boundary. */
+    private fun continueCascadeAfterBottom(
+        state: GameState,
+        continuation: CascadeAfterBottomContinuation,
+        events: List<GameEvent>,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        val targetPrep = CastFromCollectionWithoutPayingCostExecutor.prepareTargetSelection(
+            state = state,
             cardId = continuation.cascadeCardId,
             casterId = continuation.playerId,
             cardRegistry = services.cardRegistry,
             targetFinder = targetFinder,
         )
         if (targetPrep is CastFromCollectionWithoutPayingCostExecutor.TargetPrep.NoLegalTargets) {
-            var finalState = afterBottom
-            val tailEvents = CascadeExecutor.bottomRandomize(
-                state = afterBottom,
+            val tail = CascadeExecutor.bottomRandomizeWithReplacements(
+                state = state,
                 playerId = continuation.playerId,
-                cards = listOf(continuation.cascadeCardId)
-            ) { finalState = it }
-            return checkForMore(finalState, bottomEvents + tailEvents)
+                cards = listOf(continuation.cascadeCardId),
+                context = EffectContext(
+                    sourceId = continuation.sourceId,
+                    controllerId = continuation.playerId,
+                ),
+                cardRegistry = services.cardRegistry,
+            )
+            if (tail.isPaused) {
+                return ExecutionResult.paused(tail.state, tail.pendingDecision!!, events + tail.events)
+            }
+            if (!tail.isSuccess) return tail.toExecutionResult()
+            return checkForMore(tail.state, events + tail.events)
         }
 
         // Grant free-cast permission so the synthesized cast pays nothing.
         val (permId, stateWithGrant) = CastFromCollectionWithoutPayingCostExecutor.grantFreeCast(
-            state = afterBottom,
+            state = state,
             cardId = continuation.cascadeCardId,
             controllerId = continuation.playerId,
             sourceId = continuation.sourceId,
@@ -879,30 +982,36 @@ class LibraryAndZoneContinuationResumer(
                 .pushContinuation(targetsContinuation)
                 .withPendingDecision(targetPrep.decision)
                 .withPriority(continuation.playerId)
-            return ExecutionResult.paused(pausedState, targetPrep.decision, bottomEvents + targetPrep.event)
+            return ExecutionResult.paused(pausedState, targetPrep.decision, events + targetPrep.event)
         }
 
         // Hand priority to the cascade controller for the synthesized cast. The cast
-        // happens *during* cascade resolution (CR 702.85a) rather than on a normal
-        // priority window, so we override the priorityPlayerId for this single call.
+        // happens during cascade resolution rather than on a normal priority window.
         val stateForCast = stateWithGrant.copy(priorityPlayerId = continuation.playerId)
-        val castAction = CastSpell(continuation.playerId, continuation.cascadeCardId)
-        val castResult = castSpellHandler.execute(stateForCast, castAction)
+        val castResult = castSpellHandler.execute(
+            stateForCast,
+            CastSpell(continuation.playerId, continuation.cascadeCardId),
+        )
 
         if (castResult.error != null) {
-            // Cast couldn't initiate (no legal targets, etc.) — revoke the unused free-cast
-            // grant; the cascade card wasn't cast, so it joins the leftovers on the bottom
-            // of the library.
             val revoked = CastFromCollectionWithoutPayingCostExecutor.revokeFreeCast(
                 stateWithGrant, continuation.cascadeCardId, permId
             )
-            var finalState = revoked
-            val tailEvents = CascadeExecutor.bottomRandomize(
+            val tail = CascadeExecutor.bottomRandomizeWithReplacements(
                 state = revoked,
                 playerId = continuation.playerId,
-                cards = listOf(continuation.cascadeCardId)
-            ) { finalState = it }
-            return checkForMore(finalState, bottomEvents + tailEvents)
+                cards = listOf(continuation.cascadeCardId),
+                context = EffectContext(
+                    sourceId = continuation.sourceId,
+                    controllerId = continuation.playerId,
+                ),
+                cardRegistry = services.cardRegistry,
+            )
+            if (tail.isPaused) {
+                return ExecutionResult.paused(tail.state, tail.pendingDecision!!, events + tail.events)
+            }
+            if (!tail.isSuccess) return tail.toExecutionResult()
+            return checkForMore(tail.state, events + tail.events)
         }
 
         // CastSpellHandler already detected + stacked this cast's triggers; propagate the flag
@@ -914,11 +1023,11 @@ class LibraryAndZoneContinuationResumer(
             return ExecutionResult.paused(
                 castResult.state,
                 castResult.pendingDecision,
-                bottomEvents + castResult.events
+                events + castResult.events
             ).copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         }
 
-        return checkForMore(castResult.state, bottomEvents + castResult.events)
+        return checkForMore(castResult.state, events + castResult.events)
             .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
     }
 
@@ -950,32 +1059,66 @@ class LibraryAndZoneContinuationResumer(
             return ExecutionResult.error(state, "Expected yes/no response for discover may-cast")
         }
 
-        val discovered = continuation.discoveredCardId
-        val others = continuation.exiledCards.filter { it != discovered }
-
-        // Bottom-randomize every other exiled card first (CR 701.57a).
-        var afterBottom = state
-        val bottomEvents = CascadeExecutor.bottomRandomize(
-            state = state,
+        val others = continuation.exiledCards.filter { it != continuation.discoveredCardId }
+        val afterBottomContinuation = DiscoverAfterBottomContinuation(
+            decisionId = "pending",
+            discover = continuation,
+            cast = response.choice,
+        )
+        val hasCommanderRemainder = state.format.usesCommanders && others.any { cardId ->
+            state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
+        }
+        val bottomInputState = if (hasCommanderRemainder) {
+            state.pushContinuation(afterBottomContinuation)
+        } else state
+        val bottomResult = CascadeExecutor.bottomRandomizeWithReplacements(
+            state = bottomInputState,
             playerId = continuation.playerId,
-            cards = others
-        ) { afterBottom = it }
+            cards = others,
+            context = EffectContext(
+                sourceId = continuation.sourceId,
+                controllerId = continuation.playerId,
+            ),
+            cardRegistry = services.cardRegistry,
+        )
+        if (bottomResult.isPaused) {
+            return ExecutionResult.paused(
+                bottomResult.state,
+                bottomResult.pendingDecision!!,
+                bottomResult.events,
+            )
+        }
+        if (!bottomResult.isSuccess) return bottomResult.toExecutionResult()
+        val afterBottom = if (hasCommanderRemainder) {
+            bottomResult.state.popContinuation().second
+        } else bottomResult.state
+        return continueDiscoverAfterBottom(
+            state = afterBottom,
+            continuation = afterBottomContinuation,
+            events = bottomResult.events,
+            checkForMore = checkForMore,
+        )
+    }
 
-        val discoveredCollections = continuation.storeDiscoveredAs
+    /** Continue discover once all non-discovered exiled cards have crossed their bottom boundary. */
+    private fun continueDiscoverAfterBottom(
+        state: GameState,
+        continuation: DiscoverAfterBottomContinuation,
+        events: List<GameEvent>,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        val discover = continuation.discover
+        val discovered = discover.discoveredCardId
+        val discoveredCollections = discover.storeDiscoveredAs
             ?.let { mapOf(it to listOf(discovered)) }
             ?: emptyMap()
 
-        if (!response.choice) {
-            // Put the discovered card into the controller's hand, then run the follow-up.
-            val moveResult = ZoneMovementUtils.moveCardToZone(afterBottom, discovered, Zone.HAND)
-            var afterHand = afterBottom
-            val leadingEvents = bottomEvents.toMutableList()
-            if (moveResult.isSuccess) {
-                afterHand = moveResult.state
-                leadingEvents.addAll(moveResult.events)
-            }
-            return runDiscoverThenEffect(
-                afterHand, continuation, discoveredCollections, leadingEvents, checkForMore
+        if (!continuation.cast) {
+            // Put the discovered card into the controller's hand, then run the follow-up. The
+            // follow-up is pushed below the pending zone change so a 903.9b answer resumes it
+            // through the ordinary continuation runner.
+            return moveDiscoverCardToHand(
+                state, discovered, discover, discoveredCollections, events, checkForMore
             )
         }
 
@@ -985,21 +1128,16 @@ class LibraryAndZoneContinuationResumer(
         // targets the cast can't initiate (CR 601.2c) and the card goes to hand instead. Checked
         // *before* granting so the card reaches hand without a lingering free-cast grant.
         val targetPrep = CastFromCollectionWithoutPayingCostExecutor.prepareTargetSelection(
-            state = afterBottom,
+            state = state,
             cardId = discovered,
-            casterId = continuation.playerId,
+            casterId = discover.playerId,
             cardRegistry = services.cardRegistry,
             targetFinder = targetFinder,
         )
         if (targetPrep is CastFromCollectionWithoutPayingCostExecutor.TargetPrep.NoLegalTargets) {
-            val moveResult = ZoneMovementUtils.moveCardToZone(afterBottom, discovered, Zone.HAND)
-            var afterHand = afterBottom
-            val handEvents = bottomEvents.toMutableList()
-            if (moveResult.isSuccess) {
-                afterHand = moveResult.state
-                handEvents.addAll(moveResult.events)
-            }
-            return runDiscoverThenEffect(afterHand, continuation, discoveredCollections, handEvents, checkForMore)
+            return moveDiscoverCardToHand(
+                state, discovered, discover, discoveredCollections, events, checkForMore
+            )
         }
 
         // Cast branch: grant a free cast and synthesize it through the normal cast machinery —
@@ -1007,25 +1145,25 @@ class LibraryAndZoneContinuationResumer(
         // cast's "whenever you cast a spell (from exile)" triggers are stacked exactly once
         // (Quintorius Kand).
         val (permId, granted) = CastFromCollectionWithoutPayingCostExecutor.grantFreeCast(
-            state = afterBottom,
+            state = state,
             cardId = discovered,
-            controllerId = continuation.playerId,
-            sourceId = continuation.sourceId,
+            controllerId = discover.playerId,
+            sourceId = discover.sourceId,
         )
 
         // The follow-up [thenEffect] is pre-pushed as an EffectContinuation so it resolves after
         // the cast even if the cast pauses for targets / X.
         var stateForCast = granted
-        if (continuation.thenEffect != null) {
+        if (discover.thenEffect != null) {
             val thenCtx = EffectContext(
-                sourceId = continuation.sourceId,
-                controllerId = continuation.playerId,
+                sourceId = discover.sourceId,
+                controllerId = discover.playerId,
                 pipeline = PipelineState.EMPTY.copy(storedCollections = discoveredCollections)
             )
             stateForCast = stateForCast.pushContinuation(
                 EffectContinuation(
                     decisionId = "pending",
-                    remainingEffects = listOf(continuation.thenEffect),
+                    remainingEffects = listOf(discover.thenEffect),
                     effectContext = thenCtx
                 )
             )
@@ -1039,12 +1177,12 @@ class LibraryAndZoneContinuationResumer(
             val pausedState = stateForCast
                 .pushContinuation(targetsContinuation)
                 .withPendingDecision(targetPrep.decision)
-                .withPriority(continuation.playerId)
-            return ExecutionResult.paused(pausedState, targetPrep.decision, bottomEvents + targetPrep.event)
+                .withPriority(discover.playerId)
+            return ExecutionResult.paused(pausedState, targetPrep.decision, events + targetPrep.event)
         }
 
-        val stateReady = stateForCast.copy(priorityPlayerId = continuation.playerId)
-        val castResult = castSpellHandler.execute(stateReady, CastSpell(continuation.playerId, discovered))
+        val stateReady = stateForCast.copy(priorityPlayerId = discover.playerId)
+        val castResult = castSpellHandler.execute(stateReady, CastSpell(discover.playerId, discovered))
 
         if (castResult.error != null) {
             // The cast couldn't initiate — pop the pre-pushed follow-up, revoke the unused
@@ -1052,23 +1190,18 @@ class LibraryAndZoneContinuationResumer(
             // that card into your hand"), then run the follow-up (Hit the Mother Lode still
             // makes its Treasures — a card was discovered).
             val withoutThen = CastFromCollectionWithoutPayingCostExecutor.revokeFreeCast(
-                if (continuation.thenEffect != null) stateForCast.popContinuation().second else stateForCast,
+                if (discover.thenEffect != null) stateForCast.popContinuation().second else stateForCast,
                 discovered,
                 permId,
             )
-            val moveResult = ZoneMovementUtils.moveCardToZone(withoutThen, discovered, Zone.HAND)
-            var afterHand = withoutThen
-            val handEvents = bottomEvents.toMutableList()
-            if (moveResult.isSuccess) {
-                afterHand = moveResult.state
-                handEvents.addAll(moveResult.events)
-            }
-            return runDiscoverThenEffect(afterHand, continuation, discoveredCollections, handEvents, checkForMore)
+            return moveDiscoverCardToHand(
+                withoutThen, discovered, discover, discoveredCollections, events, checkForMore
+            )
         }
 
         if (castResult.pendingDecision != null) {
             // The cast paused (targets / X); the pre-pushed follow-up runs when it resumes.
-            return ExecutionResult.paused(castResult.state, castResult.pendingDecision, bottomEvents + castResult.events)
+            return ExecutionResult.paused(castResult.state, castResult.pendingDecision, events + castResult.events)
                 .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         }
 
@@ -1080,9 +1213,50 @@ class LibraryAndZoneContinuationResumer(
         // emits (CR 701.57b) — a genuinely new event CastSpellHandler never saw — so scan its
         // "whenever you discover" triggers here.
         return scanDiscoveredEventTriggers(
-            checkForMore(castResult.state, bottomEvents + castResult.events)
+            checkForMore(castResult.state, events + castResult.events)
                 .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         )
+    }
+
+    /** Finish discover's library-exhausted branch after its bottom moves have resolved. */
+    private fun continueDiscoverNoHitBottom(
+        state: GameState,
+        continuation: DiscoverNoHitBottomContinuation,
+        events: List<GameEvent>,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        val finalCardId = continuation.exiledCards.lastOrNull()
+        val finalCardMv = finalCardId
+            ?.let { state.getEntity(it)?.get<CardComponent>()?.manaValue }
+        val runThen = continuation.effect.thenEffect?.takeIf {
+            finalCardMv != null && finalCardMv <= continuation.threshold
+        }
+        val discoveredCollections = continuation.effect.storeDiscoveredAs
+            ?.let { key -> finalCardId?.let { mapOf(key to listOf(it)) } }
+            ?: emptyMap()
+        val tail = com.wingedsheep.sdk.scripting.effects.CompositeEffect(
+            listOfNotNull(
+                runThen,
+                com.wingedsheep.sdk.scripting.effects.EmitDiscoveredEventEffect(continuation.threshold),
+            )
+        )
+        val result = services.effectExecutorRegistry.execute(
+            state,
+            tail,
+            EffectContext(
+                sourceId = continuation.context.sourceId,
+                controllerId = continuation.context.controllerId,
+                pipeline = PipelineState.EMPTY.copy(storedCollections = discoveredCollections),
+            )
+        )
+        if (result.isPaused) {
+            return ExecutionResult.paused(
+                result.state,
+                result.pendingDecision!!,
+                events + result.events,
+            )
+        }
+        return checkForMore(result.state, events + result.events)
     }
 
     /**
@@ -1109,6 +1283,59 @@ class LibraryAndZoneContinuationResumer(
             ExecutionResult.success(processed.newState, events)
                 .copy(triggersAlreadyProcessed = true)
         }
+    }
+
+    /**
+     * Move a discovered card into its controller's hand through the CR 903.9b boundary.
+     *
+     * Discover has already made its may-cast decision by the time this helper runs. The normal
+     * follow-up therefore sits below the pending zone-change frame, so both a synchronous move and
+     * a later Commander YES/NO answer resume through the same [CheckForMore] path.
+     */
+    private fun moveDiscoverCardToHand(
+        state: GameState,
+        cardId: EntityId,
+        continuation: DiscoverMayCastContinuation,
+        discoveredCollections: Map<String, List<EntityId>>,
+        leadingEvents: List<GameEvent>,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        val thenEffect = continuation.thenEffect
+        val stateWithFollowUp = if (thenEffect == null) {
+            state
+        } else {
+            state.pushContinuation(
+                EffectContinuation(
+                    decisionId = "pending",
+                    remainingEffects = listOf(thenEffect),
+                    effectContext = EffectContext(
+                        sourceId = continuation.sourceId,
+                        controllerId = continuation.playerId,
+                        pipeline = PipelineState.EMPTY.copy(storedCollections = discoveredCollections),
+                    ),
+                )
+            )
+        }
+
+        val moveResult = ZoneTransitionService.moveToZoneWithReplacements(
+            state = stateWithFollowUp,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            options = ZoneEntryOptions(controllerId = continuation.playerId),
+            context = EffectContext(
+                sourceId = continuation.sourceId,
+                controllerId = continuation.playerId,
+            ),
+            completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                .PlainZoneChangeCompletion,
+        )
+        if (moveResult.isPaused) {
+            return moveResult.toExecutionResult().copy(
+                events = leadingEvents + moveResult.events,
+            )
+        }
+        if (!moveResult.isSuccess) return moveResult.toExecutionResult()
+        return checkForMore(moveResult.state, leadingEvents + moveResult.events)
     }
 
     /** Run a discover [DiscoverMayCastContinuation.thenEffect] (if any) with the discovered card published. */
@@ -1179,20 +1406,49 @@ class LibraryAndZoneContinuationResumer(
             when (continuation.onCastFailure) {
                 FreeCastFallback.LEAVE -> {}
                 FreeCastFallback.HAND -> {
-                    val moveResult = ZoneMovementUtils.moveCardToZone(cleaned, continuation.cardId, Zone.HAND)
+                    val moveResult = ZoneTransitionService.moveToZoneWithReplacements(
+                        state = cleaned,
+                        entityId = continuation.cardId,
+                        destinationZone = Zone.HAND,
+                        options = ZoneEntryOptions(controllerId = continuation.casterId),
+                        context = EffectContext(
+                            sourceId = null,
+                            controllerId = continuation.casterId,
+                        ),
+                        completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                            .PlainZoneChangeCompletion,
+                    )
+                    if (moveResult.isPaused) {
+                        return moveResult.toExecutionResult().copy(
+                            events = fallbackEvents + moveResult.events,
+                        )
+                    }
                     if (moveResult.isSuccess) {
                         cleaned = moveResult.state
                         fallbackEvents.addAll(moveResult.events)
                     }
                 }
                 FreeCastFallback.BOTTOM_OF_LIBRARY -> {
-                    fallbackEvents.addAll(
-                        CascadeExecutor.bottomRandomize(
-                            state = cleaned,
-                            playerId = continuation.casterId,
-                            cards = listOf(continuation.cardId)
-                        ) { cleaned = it }
+                    val bottomResult = CascadeExecutor.bottomRandomizeWithReplacements(
+                        state = cleaned,
+                        playerId = continuation.casterId,
+                        cards = listOf(continuation.cardId),
+                        context = EffectContext(
+                            sourceId = null,
+                            controllerId = continuation.casterId,
+                        ),
+                        cardRegistry = services.cardRegistry,
                     )
+                    if (bottomResult.isPaused) {
+                        return ExecutionResult.paused(
+                            bottomResult.state,
+                            bottomResult.pendingDecision!!,
+                            fallbackEvents + bottomResult.events,
+                        )
+                    }
+                    if (!bottomResult.isSuccess) return bottomResult.toExecutionResult()
+                    cleaned = bottomResult.state
+                    fallbackEvents.addAll(bottomResult.events)
                 }
             }
             return checkForMore(cleaned, fallbackEvents)

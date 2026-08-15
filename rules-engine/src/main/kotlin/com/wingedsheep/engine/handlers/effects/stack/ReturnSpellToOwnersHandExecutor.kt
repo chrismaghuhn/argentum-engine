@@ -4,6 +4,8 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.replacement.PendingGameEvent
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -47,23 +49,16 @@ class ReturnSpellToOwnersHandExecutor : EffectExecutor<ReturnSpellToOwnersHandEf
             ?: spellComponent?.casterId
             ?: return EffectResult.error(state, "Cannot determine spell owner")
 
-        var newState = state.removeFromStack(spellId)
-        newState = newState.addToZone(ZoneKey(ownerId, Zone.HAND), spellId)
-        newState = newState.updateEntity(spellId) { c ->
-            c.without<SpellOnStackComponent>().without<TargetsComponent>()
-        }
-
-        return EffectResult.success(
-            newState,
-            listOf(
-                ZoneChangeEvent(
-                    spellId,
-                    cardComponent?.name ?: "Unknown",
-                    null,
-                    Zone.HAND,
-                    ownerId
-                )
-            )
+        // A spell on the stack is still a commander candidate under 903.9b:
+        // the rule applies from anywhere. Route the stack-to-hand move through
+        // the same pending event pipeline as permanent bounces.
+        return ZoneTransitionService.moveToZoneWithReplacements(
+            state = state,
+            entityId = spellId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+            context = context,
+            completion = PendingGameEvent.PlainZoneChangeCompletion,
         )
     }
 }

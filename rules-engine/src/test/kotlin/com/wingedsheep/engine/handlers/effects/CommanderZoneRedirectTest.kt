@@ -19,11 +19,11 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
 /**
- * `ZoneMovementUtils.checkZoneChangeRedirect` diverts commanders to the command zone when the
- * format is Commander *and* `alwaysDivertToCommand = true`. With the default
- * `alwaysDivertToCommand = false` the redirect is skipped — the commander reaches its original
- * destination and the CR 903.9a state-based action is responsible for prompting the owner (see
- * `CommanderZoneChoiceCheckTest`).
+ * `ZoneMovementUtils.checkZoneChangeRedirect` retains the legacy automatic diversion for the
+ * post-move graveyard/exile preference. Hand/library moves are deliberately excluded: even with
+ * `alwaysDivertToCommand = true`, CR 903.9b is answered inside the pending replacement pipeline.
+ * With the default preference off, graveyard/exile reach their destination and CR 903.9a prompts
+ * the owner (see `CommanderZoneChoiceCheckTest`).
  */
 class CommanderZoneRedirectTest : FunSpec({
 
@@ -83,12 +83,12 @@ class CommanderZoneRedirectTest : FunSpec({
         result.destinationZone shouldBe Zone.COMMAND
     }
 
-    test("bounced commander diverts to the command zone (battlefield → hand)") {
+    test("bounced commander is decided by the 903.9b replacement pipeline") {
         val state = stateWithCommander(alwaysDivertCommander, Zone.BATTLEFIELD)
         val result = ZoneMovementUtils.checkZoneChangeRedirect(
             state, cmdrId, Zone.BATTLEFIELD, Zone.HAND,
         )
-        result.destinationZone shouldBe Zone.COMMAND
+        result.destinationZone shouldBe Zone.HAND
     }
 
     test("commander leaving the command zone is not redirected back") {

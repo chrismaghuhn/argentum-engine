@@ -77,6 +77,7 @@ import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.engine.state.components.identity.CantBeCounteredComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.permissions.activeMayPlayFor
 import com.wingedsheep.engine.state.components.identity.PlayWithAdditionalCostComponent
@@ -2182,6 +2183,50 @@ class CastSpellHandler(
         val xValue = action.xValue ?: 0
         val cardDef = cardRegistry.getCard(cardComponent.cardDefinitionId)
 
+        // CR 903.9b is a replacement of the hand move that pays an additional casting cost
+        // (including Sneak and web-slinging). Those costs are otherwise paid in this handler's
+        // synchronous cast path, so surface the Commander choice before any cast-side mutation.
+        // The continuation re-enters this handler with the already-completed id removed from the
+        // payment choices; the cost is therefore paid exactly once.
+        val commanderBounceId = action.additionalCostPayment?.bouncedPermanents
+            ?.firstOrNull { id ->
+                id !in action.preResolvedZoneChangeIds &&
+                    state.format.usesCommanders &&
+                    state.getEntity(id)?.has<CommanderComponent>() == true
+            }
+        if (commanderBounceId != null) {
+            val bounceContainer = state.getEntity(commanderBounceId)
+            val preResolvedPayment = action.additionalCostPayment?.copy(
+                bouncedPermanents = action.additionalCostPayment.bouncedPermanents
+                    .filterNot { it == commanderBounceId }
+            )
+            val preResolvedAction = action.copy(
+                additionalCostPayment = preResolvedPayment,
+                preResolvedZoneChangeIds = action.preResolvedZoneChangeIds + commanderBounceId,
+                preResolvedSneakAttackDefenderId = action.preResolvedSneakAttackDefenderId
+                    ?: bounceContainer
+                        ?.get<com.wingedsheep.engine.state.components.combat.AttackingComponent>()
+                        ?.defenderId,
+                preResolvedWebSlingReturnedManaValue = action.preResolvedWebSlingReturnedManaValue
+                    ?: bounceContainer?.get<CardComponent>()?.manaValue,
+            )
+            val zoneResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                .moveToZoneWithReplacements(
+                    state = state,
+                    entityId = commanderBounceId,
+                    destinationZone = Zone.HAND,
+                    context = EffectContext(sourceId = action.cardId, controllerId = action.playerId),
+                    completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                        .CastSpellZoneChangeCompletion(preResolvedAction, commanderBounceId),
+                )
+            if (zoneResult.isPaused) return zoneResult.toExecutionResult()
+            if (!zoneResult.isSuccess) {
+                return zoneResult.toExecutionResult()
+            }
+            val resumed = execute(zoneResult.state, preResolvedAction)
+            return resumed.copy(events = zoneResult.events + resumed.events)
+        }
+
         // Modal DFC back face (CR 712.11b) — resolved pre-cast, while the card is still in hand.
         // Kept as its own local because the cost branch below charges *this* face's printed mana
         // cost, which the merged `transformedFace` alone can't distinguish from the other routes.
@@ -3250,7 +3295,7 @@ class CastSpellHandler(
             action.altAllows(AlternativeCostType.SNEAK) &&
             (cardDef.keywordAbilities.any { it.ninjutsuStyleCost != null } ||
                 SneakWindow.graveyardSneakGrantCost(currentState, action.playerId, cardRegistry) != null)
-        var sneakAttackDefenderId: EntityId? = null
+        var sneakAttackDefenderId: EntityId? = action.preResolvedSneakAttackDefenderId
         if (wasSneaked) {
             val bounceId = action.additionalCostPayment?.bouncedPermanents?.firstOrNull()
             if (bounceId != null) {
@@ -3271,7 +3316,7 @@ class CastSpellHandler(
         val wasWebSlung = action.useAlternativeCost && cardDef != null &&
             action.altAllows(AlternativeCostType.WEB_SLINGING) &&
             WebSlinging.effectiveWebSlinging(currentState, action.cardId, cardDef, action.playerId, cardRegistry, predicateEvaluator) != null
-        var webSlungReturnedManaValue = 0
+        var webSlungReturnedManaValue = action.preResolvedWebSlingReturnedManaValue ?: 0
         if (wasWebSlung) {
             val bounceId = action.additionalCostPayment?.bouncedPermanents?.firstOrNull()
             if (bounceId != null) {

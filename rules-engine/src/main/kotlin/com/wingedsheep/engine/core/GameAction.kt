@@ -185,7 +185,17 @@ data class CastSpell(
      * synthesized free casts) leave it null. Mirrors how [useWithoutPayingManaCost] was split
      * out as its own flag for the same reason (CR 118.9a — only one alternative cost per cast).
      */
-    val alternativeCostType: AlternativeCostType? = null
+    val alternativeCostType: AlternativeCostType? = null,
+    /**
+     * Internal continuation bookkeeping for Commander 903.9b pre-cost hand moves.
+     * These ids have already completed the zone-change replacement pipeline and must not be
+     * paid a second time when a cast resumes after the owner answers the replacement choice.
+     */
+    val preResolvedZoneChangeIds: List<EntityId> = emptyList(),
+    /** Last-known defender captured before a Sneak bounce pauses for Commander 903.9b. */
+    val preResolvedSneakAttackDefenderId: EntityId? = null,
+    /** Mana value captured before a web-slinging bounce pauses for Commander 903.9b. */
+    val preResolvedWebSlingReturnedManaValue: Int? = null
 ) : GameAction
 
 /**
@@ -387,7 +397,9 @@ data class ActivateAbility(
      * directly); ActivateAbilityHandler.validate() rejects any client-submitted action that carries
      * it, so it can't be used to skip the opponent-target pause.
      */
-    val opponentTargetsChosen: Boolean = false
+    val opponentTargetsChosen: Boolean = false,
+    /** Internal continuation bookkeeping for Commander 903.9b pre-cost hand moves. */
+    val preResolvedZoneChangeIds: List<EntityId> = emptyList()
 ) : GameAction
 
 // =============================================================================

@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DiscoveredEvent
 import com.wingedsheep.engine.core.DiscoverMayCastContinuation
+import com.wingedsheep.engine.core.DiscoverNoHitBottomContinuation
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.handlers.DecisionHandler
@@ -12,6 +13,7 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -49,7 +51,8 @@ import kotlin.reflect.KClass
 class DiscoverExecutor(
     /** Runs a [DiscoverEffect.thenEffect] through the registry (the late-bound recursion entry). */
     private val runEffect: (GameState, Effect, EffectContext) -> EffectResult,
-    private val decisionHandler: DecisionHandler = DecisionHandler()
+    private val decisionHandler: DecisionHandler = DecisionHandler(),
+    private val cardRegistry: CardRegistry = CardRegistry(),
 ) : EffectExecutor<DiscoverEffect> {
 
     override val effectType: KClass<DiscoverEffect> = DiscoverEffect::class
@@ -122,9 +125,38 @@ class DiscoverExecutor(
         if (discoveredCard == null) {
             // Library exhausted without exiling a nonland card with mana value ≤ N — no castable
             // stopping card, so no may-cast/hand decision; every exiled card is bottom-randomized.
-            val bottomEvents = CascadeExecutor.bottomRandomize(currentState, controllerId, exiledCards) { newState ->
-                currentState = newState
+            val hasCommanderRemainder = currentState.format.usesCommanders && exiledCards.any { cardId ->
+                currentState.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
             }
+            val bottomContinuation = DiscoverNoHitBottomContinuation(
+                decisionId = "pending",
+                effect = effect,
+                context = context,
+                threshold = threshold,
+                exiledCards = exiledCards.toList(),
+            )
+            val bottomInputState = if (hasCommanderRemainder) {
+                currentState.pushContinuation(bottomContinuation)
+            } else currentState
+            val bottomResult = CascadeExecutor.bottomRandomizeWithReplacements(
+                state = bottomInputState,
+                playerId = controllerId,
+                cards = exiledCards,
+                context = context,
+                cardRegistry = cardRegistry,
+            )
+            if (bottomResult.isPaused) {
+                return EffectResult.paused(
+                    bottomResult.state,
+                    bottomResult.pendingDecision!!,
+                    allEvents + bottomResult.events,
+                )
+            }
+            if (!bottomResult.isSuccess) return bottomResult
+            currentState = if (hasCommanderRemainder) {
+                bottomResult.state.popContinuation().second
+            } else bottomResult.state
+            val bottomEvents = bottomResult.events
             // CR 701.57c: the final card exiled is still the "discovered card" if its mana value is
             // ≤ N (a land at the bottom of the library has mana value 0). When so, a thenEffect keyed
             // on the discovered card still runs (Hit the Mother Lode decking itself out on lands still

@@ -1,6 +1,8 @@
 package com.wingedsheep.engine.core
 
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.effects.ExileFromTopRepeatingEffect
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import kotlinx.serialization.Serializable
 
@@ -305,6 +307,35 @@ data class CascadeMayCastContinuation(
 ) : ContinuationFrame
 
 /**
+ * Auto-resume frame for the cascade YES branch after the non-hit exiled cards have been
+ * bottom-randomized. It exists because a Commander in that remainder can pause the library move
+ * under CR 903.9b before the free-cast portion of cascade is allowed to continue.
+ */
+@Serializable
+data class CascadeAfterBottomContinuation(
+    override val decisionId: String,
+    val playerId: EntityId,
+    val sourceId: EntityId?,
+    val cascadeCardId: EntityId,
+) : ContinuationFrame
+
+/**
+ * Resume an ExileFromTopRepeating effect after its matching card's hand move has crossed the
+ * CR 903.9b boundary. The cards already exiled in the current iteration stay exiled; the resumed
+ * executor continues with the next iteration (or the final damage calculation) and preserves the
+ * number of cards that actually arrived in hand.
+ */
+@Serializable
+data class ExileFromTopRepeatingContinuation(
+    override val decisionId: String,
+    val effect: ExileFromTopRepeatingEffect,
+    val context: EffectContext,
+    val cardsToHand: Int,
+    val matchCardId: EntityId,
+    val repeatAfterMatch: Boolean,
+) : ContinuationFrame
+
+/**
  * Resume after the controller answers "cast the discovered card for free, or put it
  * into your hand?" during the resolution of a [com.wingedsheep.sdk.scripting.effects.DiscoverEffect]
  * (CR 701.57a).
@@ -339,6 +370,31 @@ data class DiscoverMayCastContinuation(
     val discoveredCardId: EntityId,
     val storeDiscoveredAs: String? = null,
     val thenEffect: com.wingedsheep.sdk.scripting.effects.Effect? = null,
+) : ContinuationFrame
+
+/**
+ * Auto-resume frame for discover after the non-discovered exiled cards have been
+ * bottom-randomized. A Commander in that remainder can pause the library move under
+ * CR 903.9b before discover continues with its hand/cast branch.
+ */
+@Serializable
+data class DiscoverAfterBottomContinuation(
+    override val decisionId: String,
+    val discover: DiscoverMayCastContinuation,
+    val cast: Boolean,
+) : ContinuationFrame
+
+/**
+ * Auto-resume frame for discover's library-exhausted branch. Every exiled card must cross the
+ * bottom-of-library boundary before the final-card rule and discover follow-up are evaluated.
+ */
+@Serializable
+data class DiscoverNoHitBottomContinuation(
+    override val decisionId: String,
+    val effect: com.wingedsheep.sdk.scripting.effects.DiscoverEffect,
+    val context: EffectContext,
+    val threshold: Int,
+    val exiledCards: List<EntityId>,
 ) : ContinuationFrame
 
 /**
