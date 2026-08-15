@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.core
 
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ExileFromTopRepeatingEffect
 import com.wingedsheep.sdk.scripting.effects.FaceDownMode
@@ -60,6 +61,13 @@ data class SelectFromCollectionContinuation(
  * @property destinationPlayerId The player whose zone the cards go to
  */
 @Serializable
+data class MoveCollectionOrderCompletion(
+    val playerId: EntityId,
+    val cardCount: Int,
+    val source: String?,
+)
+
+@Serializable
 data class MoveCollectionOrderContinuation(
     override val decisionId: String,
     val playerId: EntityId,
@@ -79,7 +87,12 @@ data class MoveCollectionOrderContinuation(
     val noRegenerate: Boolean = false,
     val storeMovedAs: String? = null,
     val underOwnersControl: Boolean = false,
-    val revealToSelf: Boolean = true
+    val revealToSelf: Boolean = true,
+    /** Post-move metadata retained across the ordering decision. */
+    val linkToSource: Boolean = false,
+    val unlinkFromSource: Boolean = false,
+    val addCounterType: CounterType? = null,
+    val markEnteredViaSourceAbility: Boolean = false,
 ) : ContinuationFrame
 
 /**

@@ -268,16 +268,58 @@ class ReplacementContinuationResumer(
                     storeMovedAs = completion.storeMovedAs,
                     underOwnersControl = completion.underOwnersControl,
                     revealToSelf = completion.revealToSelf,
+                    linkToSource = completion.linkToSource,
+                    unlinkFromSource = completion.unlinkFromSource,
+                    addCounterType = completion.addCounterType,
+                    markEnteredViaSourceAbility = completion.markEnteredViaSourceAbility,
                     startCardIndex = completion.nextCardIndex,
                     completedCardIds = completion.completedCardIds,
                     completedLibraryOwnerIds = completion.completedLibraryOwnerIds,
+                    clearMovedLibraryReveals = completion.clearMovedLibraryReveals,
+                    orderCompletion = completion.orderCompletion,
                 )
                 if (result.isPaused) {
                     return result.toExecutionResult().copy(
                         events = events + transition.events + result.events,
                     )
                 }
-                checkForMore(result.state, events + transition.events + result.events)
+                val completedPhysicalMove = if (completion.clearMovedLibraryReveals) {
+                    result.copy(
+                        state = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+                            .clearReveals(result.state, completion.cards),
+                    )
+                } else {
+                    result
+                }
+                val completed = moveCollectionExecutor.applyPostMoveMetadata(
+                    result = completedPhysicalMove,
+                    context = completion.context,
+                    cards = completion.cards,
+                    destination = completion.destination,
+                    linkToSource = completion.linkToSource,
+                    unlinkFromSource = completion.unlinkFromSource,
+                    addCounterType = completion.addCounterType,
+                    markEnteredViaSourceAbility = completion.markEnteredViaSourceAbility,
+                )
+                val withOrderEvent = completion.orderCompletion?.let { order ->
+                    completed.copy(
+                        events = completed.events + LibraryReorderedEvent(
+                            playerId = order.playerId,
+                            cardCount = order.cardCount,
+                            source = order.source,
+                        ),
+                    )
+                } ?: completed
+                val stateWithCollections = exposeCollectionsToNextFrame(
+                    withOrderEvent.state,
+                    withOrderEvent.updatedCollections,
+                    withOrderEvent.updatedStoredNumbers,
+                    withOrderEvent.updatedChosenValues,
+                )
+                checkForMore(
+                    stateWithCollections,
+                    events + transition.events + withOrderEvent.events,
+                )
             }
         }
     }

@@ -236,17 +236,68 @@ object ZoneTransitionService {
         state: GameState,
         pending: PendingGameEvent.ZoneChangePending
     ): ZoneTransitionResult {
+        // A replacement such as Progenitus's "shuffle into its owner's library" creates a
+        // library-shuffle obligation. If Commander 903.9b later changes the current destination
+        // to COMMAND, the card must not visit the library, but the obligation still resolves.
+        // When the final destination remains LIBRARY, carry the obligation into the physical atom
+        // as a shuffle placement so this path emits exactly the normal single shuffle event.
+        val pendingRedirect = pending.redirectResult
+        val resolvedRedirect = if (
+            pending.residualObligations.shuffleOwnerLibrary &&
+            pending.destinationZone == Zone.LIBRARY
+        ) {
+            (pendingRedirect ?: ZoneChangeRedirectResult(Zone.LIBRARY)).copy(
+                destinationZone = Zone.LIBRARY,
+                shuffleIntoLibrary = true,
+            )
+        } else {
+            pendingRedirect
+        }
         val resolvedOptions = pending.entryOptions.copy(
             skipZoneChangeReplacementEffects = true,
-            precomputedRedirect = pending.redirectResult,
+            precomputedRedirect = resolvedRedirect,
         )
-        return moveToZone(
+        val transition = moveToZone(
             state = state,
             entityId = pending.entityId,
             destinationZone = pending.destinationZone,
             options = resolvedOptions,
             fromZoneKey = pending.fromZoneKey,
         )
+
+        if (!pending.residualObligations.shuffleOwnerLibrary ||
+            transition.actualDestination == null ||
+            transition.actualDestination == Zone.LIBRARY
+        ) {
+            return transition
+        }
+
+        val (shuffledState, shuffleEvents) = shuffleLibrary(
+            transition.state,
+            pending.ownerId,
+        )
+        return transition.copy(
+            state = shuffledState,
+            events = transition.events + shuffleEvents,
+        )
+    }
+
+    /** Execute a residual library-shuffle obligation with the same deterministic RNG path used by
+     * ordinary shuffle effects. The card being moved is already in its final zone. */
+    private fun shuffleLibrary(
+        state: GameState,
+        ownerId: EntityId,
+    ): Pair<GameState, List<EngineGameEvent>> {
+        val libraryZone = ZoneKey(ownerId, Zone.LIBRARY)
+        val cleared = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
+            .clearLibraryReveals(state, ownerId)
+        val (shuffledLibrary, shuffledState) = cleared.nextRandom {
+            shuffle(cleared.getZone(libraryZone))
+        }
+        val newState = shuffledState.copy(
+            zones = shuffledState.zones + (libraryZone to shuffledLibrary)
+        )
+        return newState to listOf(com.wingedsheep.engine.core.LibraryShuffledEvent(ownerId))
     }
 
     /**

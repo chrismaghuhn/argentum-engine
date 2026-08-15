@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult
+import com.wingedsheep.engine.handlers.effects.ZoneChangeResidualObligations
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
@@ -263,6 +264,15 @@ sealed interface PendingGameEvent {
         val completedCardIds: List<EntityId> = emptyList(),
         /** Libraries that already received a card before this pending move. */
         val completedLibraryOwnerIds: List<EntityId> = emptyList(),
+        /** MoveCollection post-processing retained across the replacement pause. */
+        val linkToSource: Boolean = false,
+        val unlinkFromSource: Boolean = false,
+        val addCounterType: com.wingedsheep.sdk.core.CounterType? = null,
+        val markEnteredViaSourceAbility: Boolean = false,
+        /** CardOrder.Random hides the moved cards again after the physical sequence completes. */
+        val clearMovedLibraryReveals: Boolean = false,
+        /** Final event metadata for an ordered MoveCollection. */
+        val orderCompletion: MoveCollectionOrderCompletion? = null,
     ) : ZoneChangeCompletion
 
     /**
@@ -277,7 +287,8 @@ sealed interface PendingGameEvent {
         val destinationZone: Zone,
         val entryOptions: ZoneEntryOptions = ZoneEntryOptions(),
         val completion: ZoneChangeCompletion = PlainZoneChangeCompletion,
-        val redirectResult: com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult? = null
+        val redirectResult: com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult? = null,
+        val residualObligations: ZoneChangeResidualObligations = ZoneChangeResidualObligations(),
     ) : PendingGameEvent {
         override val affectedPlayerId: EntityId get() = ownerId
 
@@ -371,7 +382,10 @@ sealed interface PendingGameEvent {
                             // when no ordinary zone replacement had supplied a redirect result.
                             // Otherwise intrinsic leave-battlefield redirects would be re-read
                             // after the pending 903.9b choice and could turn YES into EXILE.
-                            redirectResult = ZoneChangeRedirectResult(Zone.COMMAND)
+                            // A prior redirect's side effects remain attached to the modified
+                            // event; Commander changes only its current destination.
+                            redirectResult = redirectResult?.copy(destinationZone = Zone.COMMAND)
+                                ?: ZoneChangeRedirectResult(Zone.COMMAND)
                         )
                     )
                 }
@@ -394,6 +408,13 @@ sealed interface PendingGameEvent {
                                 )
                             } else entryOptions,
                             redirectResult = redirect,
+                            residualObligations = if (
+                                effect.shuffleIntoLibrary && effect.newDestination == Zone.LIBRARY
+                            ) {
+                                residualObligations.copy(shuffleOwnerLibrary = true)
+                            } else {
+                                residualObligations
+                            },
                         )
                     )
                 }

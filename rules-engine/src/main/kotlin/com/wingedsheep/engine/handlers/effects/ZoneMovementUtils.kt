@@ -96,6 +96,18 @@ data class ZoneChangeRedirectResult(
 )
 
 /**
+ * Replacement side effects that remain owed after a later replacement changes the event's
+ * current destination. These are separate from [ZoneChangeRedirectResult]: the redirect result
+ * describes the current destination, while this value records an obligation created by an
+ * already-applied replacement.
+ */
+@Serializable
+data class ZoneChangeResidualObligations(
+    /** The owner's library must still be shuffled when the pending event completes. */
+    val shuffleOwnerLibrary: Boolean = false,
+)
+
+/**
  * Utility functions for zone transitions: moving permanents between zones,
  * destroying permanents, and cleaning up battlefield state.
  *

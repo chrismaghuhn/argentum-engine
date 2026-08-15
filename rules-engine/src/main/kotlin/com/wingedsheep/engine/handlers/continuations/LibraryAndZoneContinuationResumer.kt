@@ -199,17 +199,46 @@ class LibraryAndZoneContinuationResumer(
             storeMovedAs = continuation.storeMovedAs,
             underOwnersControl = continuation.underOwnersControl,
             revealToSelf = continuation.revealToSelf,
-        )
-        if (result.isPaused) return result.toExecutionResult()
-        if (!result.isSuccess) return result.toExecutionResult()
-
-        return checkForMore(
-            result.state,
-            result.events + LibraryReorderedEvent(
+            linkToSource = continuation.linkToSource,
+            unlinkFromSource = continuation.unlinkFromSource,
+            addCounterType = continuation.addCounterType,
+            markEnteredViaSourceAbility = continuation.markEnteredViaSourceAbility,
+            orderCompletion = MoveCollectionOrderCompletion(
                 playerId = continuation.playerId,
                 cardCount = orderedCards.size,
                 source = continuation.sourceName,
             ),
+        )
+        if (result.isPaused) return result.toExecutionResult()
+        if (!result.isSuccess) return result.toExecutionResult()
+
+        val completedMove = moveCollectionExecutor.applyPostMoveMetadata(
+            result = result,
+            context = context,
+            cards = orderedCards,
+            destination = destination,
+            linkToSource = continuation.linkToSource,
+            unlinkFromSource = continuation.unlinkFromSource,
+            addCounterType = continuation.addCounterType,
+            markEnteredViaSourceAbility = continuation.markEnteredViaSourceAbility,
+        )
+        val completed = completedMove.copy(
+            events = completedMove.events + LibraryReorderedEvent(
+                playerId = continuation.playerId,
+                cardCount = orderedCards.size,
+                source = continuation.sourceName,
+            ),
+        )
+
+        val stateWithCollections = exposeCollectionsToNextFrame(
+            completed.state,
+            completed.updatedCollections,
+            completed.updatedStoredNumbers,
+            completed.updatedChosenValues,
+        )
+        return checkForMore(
+            stateWithCollections,
+            completed.events,
         )
     }
 

@@ -26,13 +26,15 @@ because the canonical transition prepends top insertions. Bottom placement
 processes the plan from the first selected card toward the last. A Commander
 903.9b pause stores the plan, the next internal cursor, the already completed
 card identities, and the existing MoveCollection metadata in the continuation.
-Resume re-enters the same executor at that cursor. It does not expose cursor
-or completion state through `GameAction`.
+Resume re-enters the same executor at that cursor. Final `LibraryReorderedEvent`
+emission and pipeline outputs such as `storeMovedAs` are deferred until the
+physical plan is complete, so a pause cannot drop them. It does not expose
+cursor or completion state through `GameAction`.
 
 The existing collection bookkeeping remains the completion path: `updatedCollections`,
-`storeMovedAs`, reveal handling, link/unlink cleanup, placement semantics, and
-event ordering are preserved around the per-card transition. No second physical
-movement engine is introduced.
+`storeMovedAs`, reveal handling, link/unlink/counter/entered-via metadata,
+placement semantics, and event ordering are preserved around the per-card
+transition. No second physical movement engine is introduced.
 
 ## Replacement composition
 
@@ -54,7 +56,7 @@ Existing redirect metadata keeps its established semantics:
 | --- | --- |
 | destination | current event destination; later replacements may replace it |
 | shuffle obligation | residual; preserved until the owning library is shuffled |
-| reveal | preserved by the redirect result and applied by the normal completion path |
+| reveal | preserved by the redirect result; library reveal markers apply only to cards that finish in that library |
 | additionalEffect | preserved with its replacement controller |
 | effectControllerId | preserved as the replacement source controller |
 | linkSourceId | preserved for the existing exile-link path |
@@ -66,8 +68,9 @@ gets copied by an unconditional merge.
 ## Verification
 
 The RED phase adds four multi-card MoveCollection cases and four replacement
-composition cases, including the real Progenitus definition where module
-boundaries permit it. GREEN must retain the previous Commander, continuation
+composition cases, including a synthetic replacement with the exact Progenitus
+redirect shape. The actual Progenitus definition is unchanged; its module-level
+scenario surface has no existing suitable Commander setup seam. GREEN must retain the previous Commander, continuation
 security, stack, serialization, and non-Commander regressions. The final gate
 uses the repository's documented Gradle wrapper fallback because the Windows
 environment cannot execute `scripts/gradle-locked` directly.

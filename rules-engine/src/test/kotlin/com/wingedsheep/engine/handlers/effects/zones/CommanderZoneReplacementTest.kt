@@ -6,7 +6,9 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.EffectContinuation
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.LibraryReorderedEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.OptionalReplacementContinuation
@@ -304,6 +306,7 @@ class CommanderZoneReplacementTest : FunSpec({
         state: GameState,
         cards: List<EntityId>,
         placement: com.wingedsheep.sdk.scripting.effects.ZonePlacement,
+        storeMovedAs: String? = null,
     ): EffectResult {
         val effect = MoveCollectionEffect(
             from = "cards",
@@ -312,6 +315,7 @@ class CommanderZoneReplacementTest : FunSpec({
                 placement = placement,
             ),
             order = CardOrder.ControllerChooses,
+            storeMovedAs = storeMovedAs,
         )
         val context = EffectContext(
             sourceId = null,
@@ -426,6 +430,53 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.error shouldBe null
         resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
             listOf(normalAId, commanderId, normalBId, libraryCardId)
+        resumed.events.filterIsInstance<LibraryReorderedEvent>().size shouldBe 1
+        resumed.events.last().shouldBeInstanceOf<LibraryReorderedEvent>()
+    }
+
+    test("MoveCollection storeMovedAs survives a Commander pause into the next pipeline step") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal Card")
+        )
+        val context = EffectContext(
+            sourceId = null,
+            controllerId = playerId,
+            pipeline = PipelineState.EMPTY.copy(
+                storedCollections = mapOf("cards" to listOf(commanderId, normalAId)),
+            ),
+        )
+        val trailingMove = MoveCollectionEffect(
+            from = "moved",
+            destination = CardDestination.ToZone(Zone.GRAVEYARD),
+        )
+        val withTrailingEffect = state.pushContinuation(
+            EffectContinuation(
+                decisionId = "pending",
+                remainingEffects = listOf(trailingMove),
+                effectContext = context,
+            )
+        )
+        val orderPrompt = services.effectExecutorRegistry.execute(
+            withTrailingEffect,
+            MoveCollectionEffect(
+                from = "cards",
+                destination = CardDestination.ToZone(
+                    zone = Zone.LIBRARY,
+                    placement = com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+                ),
+                order = CardOrder.ControllerChooses,
+                storeMovedAs = "moved",
+            ),
+            context,
+        )
+
+        val commanderPrompt = resumeOrderedMove(services, orderPrompt, listOf(commanderId, normalAId))
+        val resumed = resumeExecutionYesNo(services, commanderPrompt, choice = false)
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.GRAVEYARD)).toSet() shouldBe
+            setOf(commanderId, normalAId)
     }
 
     test("commander from battlefield to hand pauses before moving") {
