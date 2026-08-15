@@ -1,7 +1,9 @@
 package com.wingedsheep.engine.handlers
 
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
@@ -12,6 +14,19 @@ import com.wingedsheep.sdk.scripting.ChoiceSlot
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.Serializable
+
+/**
+ * A zone change whose replacement chain has already been resolved. The move
+ * executor consumes this only while resuming a paused pending zone change;
+ * ordinary effect execution leaves it null.
+ */
+@Serializable
+data class ResolvedZoneChange(
+    val entityId: EntityId,
+    val fromZoneKey: ZoneKey,
+    val destinationZone: Zone,
+    val entryOptions: ZoneEntryOptions,
+)
 
 /**
  * Context for effect execution.
@@ -358,6 +373,8 @@ data class EffectContext(
     // --- Zone state ---
     /** Zone the spell was cast from (e.g., HAND, GRAVEYARD for flashback) */
     val castFromZone: Zone? = null,
+    /** Replacement-resolved zone change being completed after a decision. */
+    val resolvedZoneChange: ResolvedZoneChange? = null,
     // --- Projection state ---
     /** The entity being modified during continuous effect projection (for DynamicAmount evaluation) */
     val affectedEntityId: EntityId? = null,

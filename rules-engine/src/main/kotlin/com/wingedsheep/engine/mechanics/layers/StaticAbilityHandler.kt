@@ -1172,7 +1172,10 @@ class StaticAbilityHandler(
             is com.wingedsheep.sdk.scripting.EntersWithDevour,
             is com.wingedsheep.sdk.scripting.EntersWithRevealCounters,
             is com.wingedsheep.sdk.scripting.EntersWithExileCounters,
-            is com.wingedsheep.sdk.scripting.OnEnterRunEffect -> false
+            is com.wingedsheep.sdk.scripting.OnEnterRunEffect,
+            // CR 903.9b is a rule-owned synthetic candidate gathered by the
+            // pending zone-change adapter, never a printed/static ability.
+            is com.wingedsheep.sdk.scripting.CommanderZoneReplacement -> false
         }
 
     /**

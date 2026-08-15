@@ -16,6 +16,7 @@ import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.destroyPermanent
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionResult
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -97,9 +98,39 @@ class MoveToZoneEffectExecutor(
         // Build ZoneEntryOptions based on placement and effect properties
         val entryOptions = buildEntryOptions(effect, cardComponent, controllerId)
 
-        val transitionResult = ZoneTransitionService.moveToZone(
-            state, targetId, effect.destination, entryOptions, currentZone
-        )
+        val transitionResult = context.resolvedZoneChange
+            ?.takeIf { it.entityId == targetId }
+            ?.let { resolved ->
+                ZoneTransitionService.moveToZone(
+                    state = state,
+                    entityId = targetId,
+                    destinationZone = resolved.destinationZone,
+                    options = resolved.entryOptions,
+                    fromZoneKey = resolved.fromZoneKey,
+                )
+            }
+            ?: if (effect.destination == Zone.HAND || effect.destination == Zone.LIBRARY) {
+                val pendingResult = ZoneTransitionService.moveToZoneWithReplacements(
+                    state = state,
+                    entityId = targetId,
+                    destinationZone = effect.destination,
+                    options = entryOptions,
+                    fromZoneKey = currentZone,
+                    context = context,
+                    completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                        .MoveEffectZoneChangeCompletion(effect, context),
+                )
+                if (pendingResult.isPaused) return pendingResult
+                ZoneTransitionResult(
+                    state = pendingResult.state,
+                    events = pendingResult.events,
+                    actualDestination = findEntityZone(pendingResult.state, targetId)?.zoneType,
+                )
+            } else {
+                ZoneTransitionService.moveToZone(
+                    state, targetId, effect.destination, entryOptions, currentZone
+                )
+            }
 
         var resultState = transitionResult.state
         val extraEvents = mutableListOf<com.wingedsheep.engine.core.GameEvent>()
@@ -154,7 +185,7 @@ class MoveToZoneEffectExecutor(
         // override, so controllerId == ownerId there and behaviour is unchanged.
         val revealEvents = autoRevealForReturn(
             fromZone = currentZone.zoneType,
-            toZone = effect.destination,
+            toZone = actualDestZone ?: effect.destination,
             targetId = targetId,
             cardName = cardComponent.name,
             imageUri = cardComponent.imageUri,

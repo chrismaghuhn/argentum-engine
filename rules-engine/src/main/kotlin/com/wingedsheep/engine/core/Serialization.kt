@@ -350,6 +350,8 @@ val engineSerializersModule = SerializersModule {
         subclass(StaticDrawReplacementContinuation::class)
         subclass(TokenCreationReplacementContinuation::class)
         subclass(ReplacementChoiceContinuation::class)
+        subclass(OptionalReplacementContinuation::class)
+        subclass(ZoneChangeContinuation::class)
         subclass(ReplacementResolveContinuation::class)
         subclass(LeylineDecisionContinuation::class)
         subclass(LeylinePhaseContinuation::class)

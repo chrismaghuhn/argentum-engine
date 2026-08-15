@@ -67,6 +67,7 @@ import com.wingedsheep.sdk.scripting.events.CounterTypeFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.predicates.evaluateWith
+import kotlinx.serialization.Serializable
 
 /**
  * Result of a zone change redirect check.
@@ -85,6 +86,7 @@ import com.wingedsheep.sdk.scripting.predicates.evaluateWith
  * @param reveal When true, the card is revealed as it is redirected (informational — the shuffle
  *        destination is otherwise hidden). Darksteel Colossus / Progenitus.
  */
+@Serializable
 data class ZoneChangeRedirectResult(
     val destinationZone: Zone,
     val additionalEffect: com.wingedsheep.sdk.scripting.effects.Effect? = null,
@@ -110,6 +112,12 @@ object ZoneMovementUtils {
      * Battlefield, stack, and command itself are intentionally excluded — commanders enter
      * the battlefield like any other permanent, can sit on the stack while resolving, and
      * "moving to the command zone" while already there is a no-op.
+     */
+    /**
+     * Destinations covered by the legacy explicit auto-divert preference.
+     * Hand/library moves normally enter the serializable 903.9b pipeline;
+     * this set remains for direct physical transition callers and the
+     * post-move 903.9a compatibility path.
      */
     private val COMMANDER_DIVERT_DESTINATIONS = setOf(
         Zone.GRAVEYARD,
@@ -584,6 +592,9 @@ object ZoneMovementUtils {
         container.get<CardComponent>()
             ?: return EffectResult.error(state, "Not a card")
 
+        if (targetZone == Zone.HAND || targetZone == Zone.LIBRARY) {
+            return ZoneTransitionService.moveToZoneWithReplacements(state, entityId, targetZone)
+        }
         val result = ZoneTransitionService.moveToZone(state, entityId, targetZone)
         return EffectResult.success(result.state, result.events)
     }
@@ -656,7 +667,8 @@ object ZoneMovementUtils {
         state: GameState,
         entityId: EntityId,
         fromZone: Zone?,
-        toZone: Zone
+        toZone: Zone,
+        skipExternalReplacementEffects: Boolean = false
     ): ZoneChangeRedirectResult {
         val container = state.getEntity(entityId) ?: return ZoneChangeRedirectResult(toZone)
 
@@ -667,7 +679,7 @@ object ZoneMovementUtils {
         // the source is on the battlefield and has lost all abilities.
         val selfRedirect = container
             .get<com.wingedsheep.engine.state.components.identity.SelfZoneRedirectComponent>()
-        if (selfRedirect != null &&
+        if (!skipExternalReplacementEffects && selfRedirect != null &&
             !(fromZone == Zone.BATTLEFIELD && state.projectedState.hasLostAllAbilities(entityId))
         ) {
             for (effect in selfRedirect.redirects) {
@@ -700,18 +712,17 @@ object ZoneMovementUtils {
             return ZoneChangeRedirectResult(Zone.EXILE)
         }
 
-        // Commander zone-change shortcut (CR 903.9). When `alwaysDivertToCommand` is enabled
-        // on a Commander-enabled format, a card with CommanderComponent that would move to
-        // graveyard / exile / hand / library from any other zone is silently diverted to the
-        // command zone. Token copies of a commander aren't the commander itself (CR 903.10a)
-        // and never carry CommanderComponent, so the TokenComponent guard is implicit.
+        // Legacy explicit auto-YES compatibility path (CR 903.9). Player-facing hand/library
+        // moves use the serializable CommanderZoneReplacement candidate above the physical atom;
+        // direct internal callers still need the preference to mean the same choice. Token copies
+        // of a commander aren't the commander itself (CR 903.10a) and never carry
+        // CommanderComponent, so the TokenComponent guard is implicit.
         //
         // The default path leaves the destination unchanged — the commander reaches the
         // intended zone and the CR 903.9a state-based action (see CommanderZoneChoiceCheck)
         // prompts the owner before priority is granted.
-        if (container.has<CommanderComponent>() &&
-            toZone in COMMANDER_DIVERT_DESTINATIONS &&
-            fromZone != Zone.COMMAND
+        if (!skipExternalReplacementEffects && container.has<CommanderComponent>() &&
+            toZone in COMMANDER_DIVERT_DESTINATIONS
         ) {
             val format = state.format
             if (format.usesCommanders && format.alwaysDivertToCommand) {
@@ -726,6 +737,10 @@ object ZoneMovementUtils {
             if (counters != null && counters.getCount(CounterType.FINALITY) > 0) {
                 return ZoneChangeRedirectResult(Zone.EXILE)
             }
+        }
+
+        if (skipExternalReplacementEffects) {
+            return ZoneChangeRedirectResult(toZone)
         }
 
         for (permanentId in state.getBattlefield()) {
@@ -810,6 +825,31 @@ object ZoneMovementUtils {
         }
 
         return ZoneChangeRedirectResult(toZone)
+    }
+
+    /**
+     * Match a zone-change replacement pattern against a pending move. This is
+     * shared by the serializable replacement pipeline and the legacy physical
+     * transition helper so both paths use the same filter and cause semantics.
+     */
+    fun matchesZoneChangePattern(
+        state: GameState,
+        entityId: EntityId,
+        fromZone: Zone?,
+        toZone: Zone,
+        pattern: com.wingedsheep.sdk.scripting.EventPattern.ZoneChangeEvent,
+        sourceControllerId: EntityId,
+        requiredCause: ZoneChangeCause = ZoneChangeCause.Any
+    ): Boolean {
+        if (pattern.to != null && pattern.to != toZone) return false
+        if (pattern.from != null && pattern.from != fromZone) return false
+
+        val container = state.getEntity(entityId) ?: return false
+        if (!matchesZoneChangeFilter(state, entityId, container, pattern.filter, sourceControllerId)) {
+            return false
+        }
+
+        return causeSatisfied(state, entityId, container, requiredCause)
     }
 
     /**
@@ -1073,6 +1113,9 @@ object ZoneMovementUtils {
         container.get<CardComponent>()
             ?: return EffectResult.error(state, "Not a card")
 
+        if (targetZone == Zone.HAND || targetZone == Zone.LIBRARY) {
+            return ZoneTransitionService.moveToZoneWithReplacements(state, entityId, targetZone)
+        }
         val result = ZoneTransitionService.moveToZone(state, entityId, targetZone)
         return EffectResult.success(result.state, result.events)
     }

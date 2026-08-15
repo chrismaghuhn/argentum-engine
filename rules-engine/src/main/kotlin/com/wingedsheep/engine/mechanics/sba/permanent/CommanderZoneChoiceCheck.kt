@@ -14,10 +14,10 @@ import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Zone
 
 /**
- * CR 903.9a — if a commander is in a graveyard or in exile (and, by the modern Commander
- * rules committee extension, in its owner's hand or library) and that object was put into
- * that zone since the last time state-based actions were checked, its owner may put it
- * into the command zone.
+ * CR 903.9a — if a commander is in a graveyard or in exile and that object
+ * was put into that zone since the last time state-based actions were checked,
+ * its owner may put it into the command zone. Hand/library moves are handled
+ * before the physical transition by CR 903.9b.
  *
  * Implementation: when the format enables commanders *without* the
  * [Format.alwaysDivertToCommand] shortcut, pause the SBA loop with a yes/no
@@ -87,18 +87,11 @@ class CommanderZoneChoiceCheck(
     }
 
     companion object {
-        private val CHOICE_ZONES = setOf(
-            Zone.GRAVEYARD,
-            Zone.EXILE,
-            Zone.HAND,
-            Zone.LIBRARY,
-        )
+        private val CHOICE_ZONES = setOf(Zone.GRAVEYARD, Zone.EXILE)
 
         private fun zoneLabelFor(zone: Zone): String = when (zone) {
             Zone.GRAVEYARD -> "the graveyard"
             Zone.EXILE -> "exile"
-            Zone.HAND -> "your hand"
-            Zone.LIBRARY -> "your library"
             else -> zone.displayName
         }
     }

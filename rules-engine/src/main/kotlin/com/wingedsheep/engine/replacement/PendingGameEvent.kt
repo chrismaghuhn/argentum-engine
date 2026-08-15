@@ -2,9 +2,15 @@ package com.wingedsheep.engine.replacement
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.*
+import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import com.wingedsheep.sdk.scripting.references.Player
 import kotlinx.serialization.Serializable
 
@@ -55,6 +61,18 @@ sealed interface PendingGameEvent {
     ): Boolean
 
     /**
+     * Match a complete replacement candidate. Most events only need the
+     * pattern match above; zone-change replacements additionally carry a
+     * cause qualifier that belongs to the replacement itself.
+     */
+    fun matchesReplacement(
+        effect: ReplacementEffect,
+        sourceControllerId: EntityId,
+        state: GameState,
+        context: EffectContext?
+    ): Boolean = matches(effect.appliesTo, sourceControllerId, state, context)
+
+    /**
      * Apply a [ReplacementEffect] to this event and produce a [ReplacementOutcome].
      *
      * @param effect The replacement effect to apply
@@ -62,6 +80,31 @@ sealed interface PendingGameEvent {
      * @return The outcome (Modified, Replaced, or Consumed)
      */
     fun applyReplacement(effect: ReplacementEffect, state: GameState): ReplacementOutcome
+
+    /**
+     * Apply a gathered replacement while retaining its source identity. Most
+     * event domains only need the effect value; zone changes also use the
+     * source to preserve link/additional-effect metadata.
+     */
+    fun applyReplacement(gathered: GatheredReplacement, state: GameState): ReplacementOutcome =
+        applyReplacement(gathered.effect, state)
+
+    /**
+     * Whether an optional replacement should be presented as a decision for
+     * this event. Commander 903.9b is optional under normal play, but the
+     * headless `alwaysDivertToCommand` preference supplies an automatic YES
+     * while remaining inside CR 616 ordering.
+     */
+    fun isOptionalReplacement(gathered: GatheredReplacement, state: GameState): Boolean =
+        gathered.effect.optional
+
+    /**
+     * CR 903.9b is explicitly exempt from CR 614.5. The event may therefore
+     * gather that rule candidate again after another replacement changes the
+     * event. A plain unchanged event is still protected from an immediate
+     * re-prompt by the processor's temporary decline set.
+     */
+    fun canApplyReplacementMoreThanOnce(effect: ReplacementEffect): Boolean = false
 
     /**
      * Build a yes/no prompt and continuation for an optional replacement effect.
@@ -111,6 +154,211 @@ sealed interface PendingGameEvent {
      * post-replacement fields.
      */
     fun performContinuation(state: GameState): ContinuationFrame? = null
+
+    /** Work required after a replacement-resolved zone change reaches the physical atom. */
+    @Serializable
+    sealed interface ZoneChangeCompletion
+
+    /** A physical zone move can resume with no additional effect-level work. */
+    @Serializable
+    data object PlainZoneChangeCompletion : ZoneChangeCompletion
+
+    /**
+     * Completion mode used by MoveToZoneEffectExecutor. The original effect
+     * and context are retained so post-transition work is run after a paused
+     * Commander decision resolves.
+     */
+    @Serializable
+    data class MoveEffectZoneChangeCompletion(
+        val effect: MoveToZoneEffect,
+        val context: EffectContext
+    ) : ZoneChangeCompletion
+
+    /**
+     * A serializable zone-change event that is still hypothetical. Physical
+     * mutation is deferred until the replacement processor has finished.
+     */
+    @Serializable
+    data class ZoneChangePending(
+        val entityId: EntityId,
+        val ownerId: EntityId,
+        val fromZoneKey: ZoneKey,
+        val destinationZone: Zone,
+        val entryOptions: ZoneEntryOptions = ZoneEntryOptions(),
+        val completion: ZoneChangeCompletion = PlainZoneChangeCompletion,
+        val redirectResult: com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult? = null
+    ) : PendingGameEvent {
+        override val affectedPlayerId: EntityId get() = ownerId
+
+        private val fromZone: Zone get() = fromZoneKey.zoneType
+
+        /** CR 903.9b candidate gate: destination is hand/library, source is unrestricted. */
+        fun commanderRuleApplies(state: GameState): Boolean {
+            val container = state.getEntity(entityId) ?: return false
+            return state.format.usesCommanders &&
+                container.has<CommanderComponent>() &&
+                destinationZone in setOf(Zone.HAND, Zone.LIBRARY)
+        }
+
+        override fun matches(
+            pattern: EventPattern,
+            sourceControllerId: EntityId,
+            state: GameState,
+            context: EffectContext?
+        ): Boolean {
+            val zoneChange = pattern as? EventPattern.ZoneChangeEvent ?: return false
+            return ZoneMovementUtils.matchesZoneChangePattern(
+                state = state,
+                entityId = entityId,
+                fromZone = fromZone,
+                toZone = destinationZone,
+                pattern = zoneChange,
+                sourceControllerId = sourceControllerId,
+            )
+        }
+
+        override fun matchesReplacement(
+            effect: ReplacementEffect,
+            sourceControllerId: EntityId,
+            state: GameState,
+            context: EffectContext?
+        ): Boolean {
+            val zoneChange = effect.appliesTo as? EventPattern.ZoneChangeEvent ?: return false
+            val requiredCause = when (effect) {
+                is RedirectZoneChange -> effect.requiredCause
+                else -> ZoneChangeCause.Any
+            }
+            return ZoneMovementUtils.matchesZoneChangePattern(
+                state = state,
+                entityId = entityId,
+                fromZone = fromZone,
+                toZone = destinationZone,
+                pattern = zoneChange,
+                sourceControllerId = sourceControllerId,
+                requiredCause = requiredCause,
+            )
+        }
+
+        override fun applyReplacement(effect: ReplacementEffect, state: GameState): ReplacementOutcome =
+            applyReplacementInternal(effect, state, sourceEntityId = null)
+
+        override fun applyReplacement(
+            gathered: GatheredReplacement,
+            state: GameState
+        ): ReplacementOutcome = applyReplacementInternal(
+            gathered.effect,
+            state,
+            sourceEntityId = gathered.sourceEntityId(state)
+        )
+
+        private fun applyReplacementInternal(
+            effect: ReplacementEffect,
+            state: GameState,
+            sourceEntityId: EntityId?
+        ): ReplacementOutcome {
+            return when (effect) {
+                is CommanderZoneReplacement -> {
+                    if (!commanderRuleApplies(state)) {
+                        error("Commander 903.9b replacement no longer applies to $entityId")
+                    }
+                    ReplacementOutcome.Modified(
+                        copy(
+                            destinationZone = Zone.COMMAND,
+                            redirectResult = redirectResult?.copy(destinationZone = Zone.COMMAND)
+                        )
+                    )
+                }
+
+                is RedirectZoneChange -> {
+                    val redirect = com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult(
+                        destinationZone = effect.newDestination,
+                        linkSourceId = if (effect.linkToSource && effect.newDestination == Zone.EXILE) {
+                            sourceEntityId
+                        } else null,
+                        shuffleIntoLibrary = effect.shuffleIntoLibrary,
+                        reveal = effect.reveal,
+                    )
+                    ReplacementOutcome.Modified(
+                        copy(
+                            destinationZone = effect.newDestination,
+                            entryOptions = if (effect.shuffleIntoLibrary && effect.newDestination == Zone.LIBRARY) {
+                                entryOptions.copy(
+                                    libraryPlacement = com.wingedsheep.engine.handlers.effects.LibraryPlacement.Shuffled
+                                )
+                            } else entryOptions,
+                            redirectResult = redirect,
+                        )
+                    )
+                }
+
+                is RedirectZoneChangeWithEffect -> {
+                    val redirect = com.wingedsheep.engine.handlers.effects.ZoneChangeRedirectResult(
+                        destinationZone = effect.newDestination,
+                        additionalEffect = effect.additionalEffect,
+                        effectControllerId = sourceEntityId,
+                        linkSourceId = if (effect.linkToSource && effect.newDestination == Zone.EXILE) {
+                            sourceEntityId
+                        } else null,
+                    )
+                    ReplacementOutcome.Modified(
+                        copy(destinationZone = effect.newDestination, redirectResult = redirect)
+                    )
+                }
+
+                else -> error(
+                    "Unsupported replacement effect type '${effect::class.simpleName}' for ZoneChangePending"
+                )
+            }
+        }
+
+        override fun isOptionalReplacement(gathered: GatheredReplacement, state: GameState): Boolean =
+            gathered.effect.optional && !(
+                gathered.effect is CommanderZoneReplacement && state.format.alwaysDivertToCommand
+                )
+
+        override fun canApplyReplacementMoreThanOnce(effect: ReplacementEffect): Boolean =
+            effect is CommanderZoneReplacement
+
+        override fun createOptionalPrompt(
+            decisionId: String,
+            gathered: GatheredReplacement,
+            state: GameState,
+            context: EffectContext?
+        ): OptionalPromptResult? {
+            if (gathered.effect !is CommanderZoneReplacement) return null
+
+            val cardName = state.getEntity(entityId)
+                ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                ?.name
+                ?: "Commander"
+            val decision = YesNoDecision(
+                id = decisionId,
+                playerId = ownerId,
+                prompt = "Put $cardName into the command zone instead of putting it into your ${destinationZone.displayName}?",
+                context = DecisionContext(
+                    sourceId = entityId,
+                    sourceName = cardName,
+                    phase = DecisionPhase.RESOLUTION,
+                )
+            )
+            return OptionalPromptResult(
+                decision = decision,
+                continuation = OptionalReplacementContinuation(
+                    decisionId = decisionId,
+                    pendingEvent = this,
+                    gathered = gathered,
+                    alreadyApplied = emptySet(),
+                    context = context,
+                )
+            )
+        }
+
+        override fun performContinuation(state: GameState): ContinuationFrame =
+            ZoneChangeContinuation(
+                decisionId = "pending",
+                pendingEvent = this,
+            )
+    }
 
     /**
      * Draw event: a player is about to draw cards from their library.

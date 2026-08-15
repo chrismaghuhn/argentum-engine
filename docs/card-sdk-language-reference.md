@@ -9499,6 +9499,11 @@ The priority groups are (CR 616.1a–f):
   from = Zone.BATTLEFIELD, to = Zone.GRAVEYARD))` — the linked cards are then retrieved by a
   `Creature.exiledWithSource()` target (see §7 state predicates). Honored across the same graveyard
   paths as `RedirectZoneChange`.
+- `CommanderZoneReplacement` — the serializable, rule-owned CR 903.9b candidate used by the
+  pending zone-change adapter when a real commander would enter its owner's hand or library from
+  anywhere. It is optional under normal play, may be applied again after another replacement
+  changes the event, and is never a card-facing static ability; `alwaysDivertToCommand` supplies an
+  automatic YES inside the normal replacement pipeline.
 - `ReplacementEffect.IfYouDoBranchEffect(...)` — branch on "if you do" replacement.
 - `OnEnterRunEffect(effect)` — generic "as ~ enters the battlefield, run [effect]". The wrapped effect
   executes via the normal effect-executor pipeline at entry time (so `EffectTarget.Self` resolves to

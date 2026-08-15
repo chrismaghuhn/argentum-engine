@@ -31,6 +31,28 @@ data class ReplacementChoiceContinuation(
 ) : ContinuationFrame
 
 /**
+ * Generic yes/no continuation for an optional replacement that is not part
+ * of one of the older domain-specific draw continuations.
+ */
+@Serializable
+data class OptionalReplacementContinuation(
+    override val decisionId: String,
+    val pendingEvent: PendingGameEvent,
+    val gathered: GatheredReplacement,
+    val alreadyApplied: Set<ReplacementEffectIdentity>,
+    val context: EffectContext? = null
+) : ContinuationFrame
+
+/**
+ * Auto-resumed physical completion for a replacement-resolved zone change.
+ */
+@Serializable
+data class ZoneChangeContinuation(
+    override val decisionId: String,
+    val pendingEvent: PendingGameEvent.ZoneChangePending
+) : ContinuationFrame
+
+/**
  * Continuation frame for resuming the original execution context after a
  * replacement chain has fully resolved.
  *

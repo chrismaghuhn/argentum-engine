@@ -76,7 +76,8 @@ true:
 - the event's moving object has the real `CommanderComponent`;
 - the format uses commanders;
 - the requested destination is the owner's hand or library;
-- `alwaysDivertToCommand` has not already selected the deterministic shortcut.
+- `alwaysDivertToCommand` does not suppress the candidate; it is represented
+  as an automatic YES inside the normal replacement pipeline.
 
 There is deliberately no source-zone exclusion: CR 903.9b says “from
 anywhere”, including a command-zone-to-hand/library move.

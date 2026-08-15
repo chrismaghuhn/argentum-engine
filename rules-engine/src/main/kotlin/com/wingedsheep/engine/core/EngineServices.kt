@@ -111,5 +111,6 @@ class EngineServices(
         // the full cast pipeline (currently only
         // [com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithoutPayingCostExecutor]).
         effectExecutorRegistry.libraryExecutors.initialize(this)
+        ZoneTransitionService.replacementEffectProcessor = replacementEffectProcessor
     }
 }

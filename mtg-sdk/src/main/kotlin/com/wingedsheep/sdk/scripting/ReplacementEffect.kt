@@ -353,6 +353,28 @@ data class RedirectZoneChange(
 }
 
 /**
+ * CR 903.9b — a commander that would be put into its owner's hand or library
+ * may be put into the command zone instead.
+ *
+ * The engine gathers this rule-defined replacement only for the commander
+ * object involved in the pending zone-change event. It is optional by default
+ * so the affected owner is asked, while headless formats can supply an
+ * automatic YES without bypassing the replacement pipeline.
+ */
+@SerialName("CommanderZoneReplacement")
+@Serializable
+data object CommanderZoneReplacement : ReplacementEffect {
+    override val description: String =
+        "If a commander would be put into its owner's hand or library from anywhere, its owner may put it into the command zone instead"
+    override val appliesTo: EventPattern = EventPattern.ZoneChangeEvent(
+        filter = GameObjectFilter.Any
+    )
+    override val optional: Boolean = true
+
+    override fun applyTextReplacement(replacer: TextReplacer): ReplacementEffect = this
+}
+
+/**
  * Permanent enters the battlefield tapped.
  * Example: Glacial Fortress (conditional), tap lands, Thalia Heretic Cathar, Steam Vents (pay life)
  *

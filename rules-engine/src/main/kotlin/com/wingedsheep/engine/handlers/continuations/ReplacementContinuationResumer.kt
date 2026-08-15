@@ -20,14 +20,149 @@ class ReplacementContinuationResumer(
 ) : ContinuationResumerModule, AutoResumerModule {
 
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
-        resumer(ReplacementChoiceContinuation::class, ::resumeReplacementChoice)
+        resumer(ReplacementChoiceContinuation::class, ::resumeReplacementChoice),
+        resumer(OptionalReplacementContinuation::class, ::resumeOptionalReplacement)
     )
 
     override fun autoResumers(): List<AutoResumer<*>> = listOf(
         autoResumer(ReplacementResolveContinuation::class) { state, continuation, events, checkForMore ->
             resumeReplacementResolve(state, continuation, events, checkForMore)
+        },
+        autoResumer(ZoneChangeContinuation::class) { state, continuation, events, checkForMore ->
+            resumeZoneChange(state, continuation, events, checkForMore)
         }
     )
+
+    private fun resumeOptionalReplacement(
+        state: GameState,
+        continuation: OptionalReplacementContinuation,
+        response: DecisionResponse,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        if (response !is YesNoResponse) {
+            return ExecutionResult.error(state, "Expected yes/no response for optional replacement")
+        }
+
+        val stateWithRemainder = continuation.pendingEvent.remainderContinuation(state)
+            ?.let { state.pushContinuation(it) }
+            ?: state
+
+        val result = if (response.choice) {
+            processor.applySingle(
+                state = stateWithRemainder,
+                gathered = continuation.gathered,
+                event = continuation.pendingEvent,
+                alreadyApplied = continuation.alreadyApplied,
+            )
+        } else {
+            processor.processAfterOptionalDecline(
+                state = stateWithRemainder,
+                event = continuation.pendingEvent,
+                gathered = continuation.gathered,
+                context = continuation.context,
+                alreadyApplied = continuation.alreadyApplied,
+            )
+        }
+
+        return handleOptionalProcessorResult(
+            result = result,
+            event = continuation.pendingEvent,
+            state = stateWithRemainder,
+            context = continuation.context,
+            checkForMore = checkForMore,
+        )
+    }
+
+    /**
+     * The optional-decline path needs the unchanged state when the processor
+     * returns Pass. Keep this small state-aware wrapper separate from the
+     * outcome branch above so the normal replacement-choice code stays intact.
+     */
+    private fun handleOptionalProcessorResult(
+        result: ProcessorResult,
+        event: PendingGameEvent,
+        state: GameState,
+        context: EffectContext?,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        return when (result) {
+            is ProcessorResult.Paused -> ExecutionResult.paused(result.state, result.decision)
+            is ProcessorResult.Pass -> {
+                val performFrame = event.performContinuation(state)
+                val stateToResume = performFrame?.let { state.pushContinuation(it) } ?: state
+                checkForMore(stateToResume, emptyList())
+            }
+            is ProcessorResult.Resolved -> handleResolvedOptionalResult(result, context, checkForMore)
+        }
+    }
+
+    private fun handleResolvedOptionalResult(
+        result: ProcessorResult.Resolved,
+        context: EffectContext?,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        val stateAfterLifecycle = if (result.identity is ReplacementEffectIdentity.FloatingIdentity) {
+            processor.consumeFloatingEffect(result.state, result.identity.floatingId)
+        } else result.state
+
+        return when (val outcome = result.outcome) {
+            is ReplacementOutcome.Replaced -> {
+                val execCtx = result.executionContext ?: context
+                handleReplacedOutcome(stateAfterLifecycle, outcome, execCtx, checkForMore)
+            }
+            is ReplacementOutcome.Consumed -> checkForMore(stateAfterLifecycle, emptyList())
+            is ReplacementOutcome.Modified -> {
+                val performFrame = outcome.modifiedEvent.performContinuation(stateAfterLifecycle)
+                val cleared = stateAfterLifecycle.copy(activeReplacementChain = null)
+                val stateToResume = performFrame?.let { cleared.pushContinuation(it) } ?: cleared
+                checkForMore(stateToResume, emptyList())
+            }
+        }
+    }
+
+    private fun resumeZoneChange(
+        state: GameState,
+        continuation: ZoneChangeContinuation,
+        events: List<GameEvent>,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        val pending = continuation.pendingEvent
+        return when (val completion = pending.completion) {
+            PendingGameEvent.PlainZoneChangeCompletion -> {
+                val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                    .performPendingZoneChange(state, pending)
+                checkForMore(transition.state, events + transition.events)
+            }
+            is PendingGameEvent.MoveEffectZoneChangeCompletion -> {
+                val resolvedContext = completion.context.copy(
+                    resolvedZoneChange = com.wingedsheep.engine.handlers.ResolvedZoneChange(
+                        entityId = pending.entityId,
+                        fromZoneKey = pending.fromZoneKey,
+                        destinationZone = pending.destinationZone,
+                        entryOptions = pending.entryOptions.copy(
+                            skipZoneChangeReplacementEffects = true,
+                            precomputedRedirect = pending.redirectResult,
+                        ),
+                    )
+                )
+                val result = services.effectExecutorRegistry.execute(
+                    state,
+                    completion.effect,
+                    resolvedContext,
+                )
+                if (result.isPaused) {
+                    return ExecutionResult(
+                        result.state,
+                        events + result.events,
+                        result.error,
+                        result.pendingDecision,
+                        result.triggersAlreadyProcessed,
+                    )
+                }
+                checkForMore(result.state, events + result.events)
+            }
+        }
+    }
 
     /**
      * Resume after the player chose one of multiple competing replacement
