@@ -16,6 +16,12 @@ docs it points at; load those when the work needs them.
   the user confirms it's safe to continue. If the user confirms or explicitly asks for a PR despite the
   unrelated failure, opening the PR is allowed; disclose the failure and the verification that did pass
   in the PR body.
+- **Pull-request destination.** Every PR created by Codex, subagents, or repository automation for this
+  project MUST target `chrismaghuhn/argentum-engine` (`https://github.com/chrismaghuhn/argentum-engine`).
+  Before opening a PR, verify that `origin` is
+  `https://github.com/chrismaghuhn/argentum-engine.git`; when using GitHub tooling, pass the target
+  repository explicitly. Never target `wingedsheep/argentum-engine` or `Card-Forge/forge`, and never
+  create a PR unless the user explicitly asks.
 - **Route to the matching skill, don't freelance:**
   - Implementing a card — or a batch of them — from a backlog file or by name → **`add-card`** (Scryfall
     lookup, oracle errata, canonical-printing placement, scenario test).
