@@ -31,8 +31,10 @@ Evidence in the current baseline:
 
 ## Rules target
 
-The official Comprehensive Rules snapshot used for this design is the Wizards
-rules text effective August 7, 2026, downloaded August 15, 2026:
+The official Comprehensive Rules snapshot used for this design is the current
+Wizards TXT, `MagicCompRules 20260807.txt`, effective August 7, 2026:
+
+`https://media.wizards.com/2026/downloads/MagicCompRules%2020260807.txt`
 
 - CR 122.1 defines counters as markers on objects or players.
 - CR 122.2 says counters are not retained when an object moves from one zone to
