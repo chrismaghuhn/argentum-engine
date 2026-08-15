@@ -35,6 +35,58 @@ No cards, mechanics, rules-engine code, AI, gym, observation, or replay code wer
 
 The audit worktree was created from the fork after a normal merge of upstream. The active `agent/a2-1-commander-zone-conformance` worktree remained untouched. The audit is pinned to the merge source SHA above; later upstream changes require a fresh audit.
 
+## Audit snapshot vs post-audit status
+
+### AUDIT SNAPSHOT
+
+The coverage classifications, percentages, mechanic inventory, and persisted
+CSV artifacts in this document describe the state at the pinned ARG-DECK-01
+source SHA `31853cfe91b52718dc3fb67f159e6267d9c5fcc1`. They are reproducibility
+artifacts, not silently refreshed claims about current `main`.
+
+### POST-AUDIT STATUS
+
+ARG-DECK-02 / [PR #5](https://github.com/chrismaghuhn/argentum-engine/pull/5)
+was subsequently merged into the fork main at
+`5faeccb61da563fb9a9629c3cc360d171697b8f5`.
+
+- `CounterType.BOUNTY` and `Counters.BOUNTY` now exist on current fork main.
+- The generic named-counter LKI path was proven to already exist through the
+  existing snapshot, zone-change, trigger-matcher, and `withCounter` path.
+- `A8-FEATURE-002` is therefore **RESOLVED** on current fork main; no
+  Chevill-specific tracker was required.
+- Chevill's exact `CardDefinition` and card-specific scenario tests remain
+  outstanding. Chevill is not implemented or claimed executable by this PR.
+- The persisted 200-row coverage matrix, 400-row legality audit, mechanic
+  inventory, and all coverage percentages remain the original pinned audit
+  snapshot. No new coverage percentage is claimed without rerunning the full
+  audit.
+
+## Role annotations
+
+The `primary_role` and `secondary_roles` labels are project-specific, manually
+curated annotations for this curriculum. They are not imported from Argentum,
+EDHREC, or an ML model, and they are not presented as a canonical Magic
+taxonomy. EDHREC aggregates and public decklists informed archetype and role
+discovery only; they did not supply these labels or get copied as decklists.
+
+`primary_role` is exactly one deterministic bucket used for composition and
+statistical summaries. It is chosen from the card's structural/main intended
+purpose inside this specific deck. `secondary_roles` contains zero or more
+additional functional tags that preserve meaningful multifunctionality.
+
+For example, `Sakura-Tribe Elder` is annotated as:
+
+```text
+primary_role = CREATURE_THREAT
+secondary_roles = COMBAT|RAMP
+```
+
+That convention deliberately keeps the primary bucket deterministic while
+retaining the card's ramp function as a secondary tag. The taxonomy is not
+redesigned in this refresh; reconsidering whether labels such as
+`CREATURE_THREAT` are the best long-term names is a P3 follow-up.
+
 ## Current rules and policy verification
 
 - Official Commander construction is 99 cards plus one commander, singleton except basic lands, with color identity determined by mana symbols across the card. The official Commander page also describes commander-tax recasting and the command-zone replacement choice. See [Commander format rules](https://magic.wizards.com/en/formats/commander).
@@ -45,7 +97,14 @@ The audit worktree was created from the fork after a normal merge of upstream. T
 
 ### Legality checks
 
-All four list variants passed the current Scryfall card-legality check used for this audit: 100 cards including commander, no nonbasic duplicate, no illegal Commander card, and no `game_changer` flag. The complete 400-row result is persisted in [akiri-chevill-legality-audit.csv](akiri-chevill-legality-audit.csv); the official sources above are the policy authority and Scryfall is the current card-data cross-check.
+At the pinned audit snapshot, all four list variants passed the Scryfall
+card-legality check used for this audit: 100 cards including commander, no
+nonbasic duplicate, no illegal Commander card, and no `game_changer` flag. The
+complete 400-row result is persisted in
+[akiri-chevill-legality-audit.csv](akiri-chevill-legality-audit.csv); the
+official sources above were the policy authority and Scryfall was the
+card-data cross-check. This persisted result was not regenerated during the
+PR #5 integration refresh.
 
 ## Exact decks
 
@@ -273,7 +332,7 @@ The fingerprint is SHA-256 over UTF-8 card names in slot order, one name per lin
 
 ### Curriculum Ideal files
 
-- [Akiri Curriculum Ideal](akiri-ideal-v0.1.txt), fingerprint `efa7182a1be4afbd6bb600fc23f37718462de0d51e88a824d7556706908813eb4`.
+- [Akiri Curriculum Ideal](akiri-ideal-v0.1.txt), fingerprint `efa7182a1be4afbd6bb600fc23f37718462de0d51e88a824d7556706908813eb`.
 - [Chevill Curriculum Ideal](chevill-ideal-v0.1.txt), fingerprint `3757f79dbe1ece6afd24aa4a100b8310767ccfca8433747171d688789edf6f83`.
 
 The Ideal files are also exact 100-card lists. Their differences from the recommended pair are listed in the Ideal vs Argentum-Friendly section.
@@ -360,11 +419,15 @@ Final result: `INTENTIONAL_INFINITE_COMBOS = 0`; `ACCIDENTAL_DETERMINISTIC_COMBO
 - Current source was indexed at audit SHA using exact-name definition lookup, `CardDiscovery` semantics, `CardRegistry` semantics, generated-definition markers, and exact `*ScenarioTest.kt` filename discovery.
 - `HAND_AUTHORED`, `GENERATED`, and `UNKNOWN` are source-index classifications. A generated definition is not treated as conformance proof.
 - The source-level `CardDiscoveryTest` gate could not be run in this environment because the repository's `just` command was unavailable. Therefore the result is intentionally conservative and `ARGENTUM_COVERAGE` remains PARTIAL; no green build/test claim is made.
-- The strongest current evidence is an exact source definition plus relevant scenario/conformance evidence. A definition without such evidence is `SUPPORTED_DEFINITION_TEST_UNCLEAR`.
+- The strongest source evidence used in this snapshot is an exact source definition plus relevant scenario/conformance evidence. A definition without such evidence is `SUPPORTED_DEFINITION_TEST_UNCLEAR`.
 
-## Coverage summary
+## Coverage summary (AUDIT SNAPSHOT)
 
 The CSV is the recommended Friendly 200-slot matrix: [akiri-chevill-coverage.csv](akiri-chevill-coverage.csv). It contains exactly 100 Akiri rows and 100 Chevill rows, including commander and repeated basic-land slots.
+
+The percentages and counts below remain pinned to the original ARG-DECK-01
+audit source SHA. PR #5 changed current implementation status for
+`A8-FEATURE-002`, but this refresh does not claim new coverage percentages.
 
 ### Argentum-Friendly
 
@@ -434,7 +497,7 @@ Required columns are present: `deck`, `slot_number`, `card_name`, `oracle_id`, `
 
 The `replacement_candidate` field preserves the Ideal card at each Friendly substitution slot, so the burden reduction remains auditable rather than silently overwriting the curriculum choice.
 
-## Commander-specific findings
+## Commander-specific findings (AUDIT SNAPSHOT)
 
 ### Akiri, Fearless Voyager
 
@@ -450,11 +513,29 @@ The `replacement_candidate` field preserves the Ideal card at each Friendly subs
 - Missing reusable proof: “this opponent-controlled permanent has no bounty counter” at upkeep, place the named bounty counter, retain the mark through control/zone changes, and trigger only when the marked permanent dies. Current generic `TriggeringEntityHadCounters` is not sufficient because it does not prove the named bounty-counter condition.
 - Required edge-case scenarios: existing bounty; no legal target; target changes controller; simultaneous death; Chevill leaves; marked permanent LKI; draw/life gain; commander recast.
 
+### Chevill post-audit status
+
+The reusable named-counter/LKI blocker described above was resolved after this
+audit by ARG-DECK-02 / PR #5. The generic capability already existed, and PR #5
+added the missing `BOUNTY` vocabulary plus independent LKI characterization and
+serialization tests. No source-relative marked-permanent tracker was needed.
+Chevill's exact `CardDefinition`, upkeep targeting, bounty placement, draw/life
+effect, and card-specific scenario tests remain separate outstanding work.
+
 ## Mechanic inventory
 
-See [akiri-chevill-mechanics.md](akiri-chevill-mechanics.md). It contains the deduplicated normalized inventory, the cards using each family, source support assessment, exact scenario-test paths, and LOW/MEDIUM/HIGH/BLOCKER risk.
+See [akiri-chevill-mechanics.md](akiri-chevill-mechanics.md). It contains the
+deduplicated normalized inventory, the cards using each family, source support
+assessment, exact scenario-test paths, and LOW/MEDIUM/HIGH/BLOCKER risk. That
+inventory is also pinned to the historical audit snapshot; its post-audit
+status note records the PR #5 resolution.
 
-The highest-risk reusable surfaces are: commander zone movement; named bounty counter plus marked-permanent LKI; equipment attachment/unattach/duration; DFC/transform; and the Longbow/deathtouch structural package.
+The historical highest-risk reusable surfaces were: commander zone movement;
+named bounty counter plus marked-permanent LKI; equipment
+attachment/unattach/duration; DFC/transform; and the Longbow/deathtouch
+structural package. On current fork main, the named-counter/LKI item is
+resolved; commander-zone conformance and the remaining card-definition/test
+work are still open.
 
 ## Decision-family inventory
 
@@ -557,13 +638,13 @@ All findings in this section are `STRUCTURAL_INFERENCE_ONLY`; no win rate, simul
 See [akiri-chevill-closure-backlog.md](akiri-chevill-closure-backlog.md). Ordered items are:
 
 1. A8-FEATURE-001 commander zone movement conformance (shared blocker).
-2. A8-FEATURE-002 named bounty-counter plus marked-permanent LKI predicate (Chevill blocker and reusable future vocabulary).
-3. A8-CARD-001 Akiri exact definition and scenario.
-4. A8-CARD-002 Chevill exact definition and scenario.
-5. A8-CARD-003 Akiri equipment support batch.
-6. A8-CARD-004 Chevill bounty/deathtouch support batch.
-7. A8-CARD-005 remaining exact definitions/tests.
-8. A8-FEATURE-003 Longbow/deathtouch structural review after paired-seed smoke evidence.
+2. A8-CARD-001 Akiri exact definition and scenario.
+3. A8-CARD-002 Chevill exact definition and scenario; A8-FEATURE-002 is
+   resolved by PR #5.
+4. A8-CARD-003 Akiri equipment support batch.
+5. A8-CARD-004 Chevill bounty/deathtouch support batch.
+6. A8-CARD-005 remaining exact definitions/tests.
+7. A8-FEATURE-003 Longbow/deathtouch structural review after paired-seed smoke evidence.
 
 ## Artifacts
 
@@ -575,7 +656,7 @@ See [akiri-chevill-closure-backlog.md](akiri-chevill-closure-backlog.md). Ordere
 - [akiri-chevill-legality-audit.csv](akiri-chevill-legality-audit.csv) — persisted 400-row legality/Game Changer/color-identity audit for all four variants.
 - [akiri-chevill-legality-audit.md](akiri-chevill-legality-audit.md) — legality-audit method and source snapshot.
 - [akiri-chevill-mechanics.md](akiri-chevill-mechanics.md) — deduplicated mechanic inventory.
-- [akiri-chevill-closure-backlog.md](akiri-chevill-closure-backlog.md) — proposed A8 work, not implemented.
+- [akiri-chevill-closure-backlog.md](akiri-chevill-closure-backlog.md) — remaining A8 work; A8-FEATURE-002 is resolved, and card work remains unimplemented.
 
 ## Recommendation
 

@@ -1,6 +1,11 @@
 # ARG-DECK-01 — four-variant legality audit
 
-This persisted audit makes the current card-data checks reproducible for all four 100-slot variants, not only the recommended Friendly coverage matrix.
+This persisted audit makes the card-data checks performed for all four 100-slot variants reproducible, not only the recommended Friendly coverage matrix.
+
+This is the original **AUDIT SNAPSHOT** produced for ARG-DECK-01. Its 400 rows
+and policy/card-data observations remain pinned to the retrieval dates below;
+they were not regenerated during the post-audit PR #5 refresh. No new legality
+claim is made by the later documentation update.
 
 | field | value |
 |---|---|

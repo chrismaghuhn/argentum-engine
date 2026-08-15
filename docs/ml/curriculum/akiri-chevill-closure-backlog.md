@@ -23,7 +23,25 @@ Why first: both exact lists use Commander casting/recasting as a curriculum feat
 
 ## A8-FEATURE-002 — Named counter plus marked-permanent LKI predicate
 
-Severity: BLOCKER for Chevill. Shared future value: Chevill plus any card that places a named marker/counter and reacts after the marked permanent leaves.
+Status: **RESOLVED by ARG-DECK-02 / PR #5** on current fork main
+(`5faeccb61da563fb9a9629c3cc360d171697b8f5`).
+
+Historical audit status: BLOCKER for Chevill. Shared future value: Chevill plus
+any card that places a named marker/counter and reacts after the marked
+permanent leaves.
+
+Result:
+
+- The generic named-counter/LKI capability already existed in the engine.
+- `CounterType.BOUNTY` / `Counters.BOUNTY` was added by PR #5.
+- No Chevill-specific tracker or second marked-permanent state structure was
+  required.
+- Independent characterization and serialization tests cover the named-counter
+  LKI path, including counter removal before death, multiple counters,
+  simultaneous deaths, control changes, and source departure.
+
+Chevill's exact `CardDefinition` and scenario tests remain separate outstanding
+work; this item does not mark Chevill implemented.
 
 Required reusable shape:
 
@@ -54,7 +72,8 @@ The current SDK appears to contain relevant generic attack-batch, equipment, dra
 
 Severity: HIGH. Curriculum importance: commander.
 
-Depends on A8-FEATURE-002 and A8-FEATURE-001.
+Depends on A8-FEATURE-001. A8-FEATURE-002 is resolved by PR #5, but Chevill's
+card-specific definition and scenario coverage remain outstanding.
 
 Scenario matrix:
 
@@ -227,7 +246,8 @@ Do not label the package an infinite combo: the selected lists omit Thornbite St
 A8 closure is ready for paired-seed environment validation only after:
 
 1. A2 commander-zone evidence is green.
-2. Chevill’s named-counter/LKI condition has reusable tests.
+2. Chevill’s named-counter/LKI condition has reusable tests (satisfied by
+   ARG-DECK-02 / PR #5; Chevill's card-specific tests remain).
 3. Both commanders have card-specific scenario tests.
 4. Coverage counts have been regenerated from the then-current pinned SHA.
 5. Structural matchup risks have been checked with a deterministic, paired-seed harness.

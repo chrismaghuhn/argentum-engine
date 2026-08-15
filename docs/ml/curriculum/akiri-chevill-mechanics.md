@@ -1,8 +1,24 @@
 # ARG-DECK-01 — Akiri/Chevill mechanic inventory
 
-This inventory is pinned to audit source `31853cfe91b52718dc3fb67f159e6267d9c5fcc1` and upstream `d66a5d7f1b46b0ed8891c34ccfe163d491c4ff3d`.
+This inventory is an **AUDIT SNAPSHOT** pinned to source
+`31853cfe91b52718dc3fb67f159e6267d9c5fcc1` and upstream
+`d66a5d7f1b46b0ed8891c34ccfe163d491c4ff3d`. Its support classifications and
+risk labels are not silently regenerated after later engine changes.
 
 The primary matrix is the 200-slot Argentum-Friendly pair. The inventory also includes the Ideal pair so that an Ideal-only mechanic is not hidden by a convenience substitution. `tests_found` lists exact card-specific `*ScenarioTest.kt` paths found by source index; `NONE` does not mean no generic engine test exists.
+
+## Post-audit implementation status
+
+ARG-DECK-02 / [PR #5](https://github.com/chrismaghuhn/argentum-engine/pull/5)
+subsequently resolved `A8-FEATURE-002` on current fork main. The generic
+named-counter/LKI path already existed; PR #5 added the missing
+`CounterType.BOUNTY` / `Counters.BOUNTY` vocabulary and independent tests. No
+Chevill-specific tracker was required. The exact Chevill `CardDefinition` and
+card-specific scenario tests remain outstanding.
+
+The `bounty_counter`, `dies_trigger`, `last_known_information`, and
+`marked_permanent` rows below preserve the original pinned audit assessment;
+they are not current-main coverage claims.
 
 Deduplicated mechanic labels: **102** across the union of both variants.
 
@@ -114,7 +130,8 @@ Deduplicated mechanic labels: **102** across the union of both variants.
 ## High-level findings
 
 - The broad engine vocabulary is stronger than the exact card corpus: many keyword/effect families are present, while exact selected CardDefinitions and card-specific tests are sparse.
-- The two commander-specific risks are not interchangeable: Akiri is primarily an exact definition gap; Chevill needs a reusable named-counter/LKI predicate in addition to its missing exact definition.
+- The two commander-specific risks are not interchangeable in the pinned snapshot: Akiri is primarily an exact definition gap; Chevill was assessed as needing a reusable named-counter/LKI predicate in addition to its missing exact definition.
+- Current-main status: the reusable named-counter/LKI predicate is resolved by ARG-DECK-02 / PR #5; Chevill's exact definition and scenario coverage remain open.
 - `commander_zone` is listed once as a foundational blocker. It is not counted once per card and is not implemented by this milestone.
 - `Viridian Longbow` is executable and scenario-tested, but the deathtouch-plus-activated-damage package is a structural review item rather than an infinite-combo claim.
 
