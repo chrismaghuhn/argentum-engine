@@ -1,0 +1,401 @@
+deck_variant,deck,slot_number,card_name,oracle_id,mana_value,color_identity,commander_identity,card_type,layout,scryfall_commander_legality,scryfall_duel_legality,game_changer,official_banned_check,color_identity_match,nonbasic_singleton_check,notes
+Akiri Ideal,Akiri,1,"Akiri, Fearless Voyager",c03ae426-2536-4c20-a73a-a24e816f76b0,3,RW,RW,Legendary Creature — Kor Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,2,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,3,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,4,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,5,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,6,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,7,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,8,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,9,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,10,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,11,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,12,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,13,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,14,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,15,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,16,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,17,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,18,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,19,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,20,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,21,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,22,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,23,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Ideal,Akiri,24,Command Tower,0895c9b7-ae7d-4bb3-af17-3b75deb50a25,0,COLORLESS,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,25,Clifftop Retreat,d7faa3c8-46cf-46b2-bfa4-89000307cf18,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,26,Battlefield Forge,6b75b94e-83b7-457e-ac41-7ca90b5a59aa,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,27,Inspiring Vantage,3f17c60e-923a-4392-9da8-87d9ded009b7,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,28,Sacred Foundry,45181cb8-2090-4471-ba90-e5a8f04d525f,0,RW,RW,Land — Mountain Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,29,Spectator Seating,cf6d10ed-85c3-48f2-8ba0-2960e03b408b,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,30,Rugged Prairie,8e7641e1-e814-4d5a-9cb3-71ad2f4ceee8,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,31,Temple of Triumph,6f0d94d9-64bb-4175-83bc-301e8f79f54f,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,32,Boros Garrison,8fa3ac81-3dfe-4565-be99-5554f7597b4b,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,33,"Sunhome, Fortress of the Legion",a9f8344c-1705-4254-81d6-aa05e0c69c29,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,34,Slayers' Stronghold,2de7367b-a5a4-43f4-8f8f-b931ea28150d,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,35,Buried Ruin,3644f316-f9a3-46c9-9b1e-747f86cf4ead,0,COLORLESS,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,36,War Room,71c52bf5-2a5d-488e-8b15-7ef290e4b77d,0,COLORLESS,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,37,Bonders' Enclave,f33ce38a-34ec-4b65-a0fc-160484a02007,0,COLORLESS,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,38,"Sram, Senior Edificer",7e00b0cd-d212-4604-ba07-da21f4fe00b0,2,W,RW,Legendary Creature — Dwarf Advisor,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,39,Puresteel Paladin,74a62c7b-4753-4af2-b7a1-9a4ae8988801,2,W,RW,Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,40,Stoneforge Mystic,358789f9-7d87-411d-919e-d597da665cbd,2,W,RW,Creature — Kor Artificer,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,41,"Ardenn, Intrepid Archaeologist",7c521612-21c6-4c4b-b10e-66e70928609b,3,W,RW,Legendary Creature — Kor Scout,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,42,Bruenor Battlehammer,ea7de96f-db69-421d-a951-ffaeac140379,4,RW,RW,Legendary Creature — Dwarf Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,43,"Danitha Capashen, Paragon",4b6377da-83e7-4519-9582-16a9c16b8faa,3,W,RW,Legendary Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,44,Armored Skyhunter,b4dbbf56-d7df-4183-bb48-cfc6b4d0468f,4,W,RW,Creature — Cat Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,45,"Wyleth, Soul of Steel",35bef4d3-4473-4265-86b0-f1393c82fd1d,3,RW,RW,Legendary Creature — Human Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,46,"Reyav, Master Smith",d1fc2549-40d5-41c8-b3ab-07ea13e9381d,2,RW,RW,Legendary Creature — Dwarf Artificer,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,47,Fervent Champion,8de50bda-1ef6-4ccf-9efc-fab10b7eb2e5,1,R,RW,Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,48,Kor Blademaster,194260af-aba5-4d18-a69b-eedb97ed4a4b,2,W,RW,Creature — Kor Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,49,Leonin Shikari,857d94f7-113c-45a4-a88a-5d087347d57f,2,W,RW,Creature — Cat Soldier,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,50,Brass Squire,5a10c3a5-6724-4e5a-ae4f-b27dde12735a,3,COLORLESS,RW,Artifact Creature — Myr,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,51,Stone Haven Outfitter,8e646a6b-77ba-4f7d-8ee9-b0b084453f77,2,W,RW,Creature — Kor Artificer Ally,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,52,Auriok Steelshaper,e3ee8b0e-9bdc-4b9a-b4f9-59189dd6a80d,2,W,RW,Creature — Human Soldier,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,53,"Kemba, Kha Regent",499d5801-0c56-40f2-9a46-77025ed6cb87,3,W,RW,Legendary Creature — Cat Cleric,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,54,"Balan, Wandering Knight",d12cfd46-73c2-4206-9a10-0d2e7d6ac87e,4,W,RW,Legendary Creature — Cat Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,55,"Astor, Bearer of Blades",196962f0-6aff-4198-9e0c-eaf42aeaf147,4,RW,RW,Legendary Creature — Human Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,56,Mirran Crusader,fe69d9bd-2a60-4b33-a0d8-1ca18c2b6705,3,W,RW,Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,57,Selfless Spirit,71d785a9-ddc8-472e-a778-a551b444a4bd,2,W,RW,Creature — Spirit Cleric,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,58,Mother of Runes,60433b48-d27f-413c-905c-43839b1943f1,1,W,RW,Creature — Human Cleric,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,59,Skyclave Apparition,d90af00a-d322-4265-9954-7b1e80702e18,3,W,RW,Creature — Kor Spirit,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,60,Loran of the Third Path,b3d81980-76f2-44e2-b1c9-01e30c726312,3,W,RW,Legendary Creature — Human Artificer,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,61,Sun Titan,b2e950fb-cb7e-40a0-a311-5bbdd0477b29,6,W,RW,Creature — Giant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,62,Bonesplitter,452e3f5f-ce17-4682-966b-5cc100210aee,1,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,63,Swiftfoot Boots,c8b143ad-43ec-4e0d-a440-e348daa31391,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,64,Lightning Greaves,ca204b66-8d0c-431a-8d34-282f7c2d17da,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,65,Sword of the Animist,d79cbc61-6c15-48ea-bbba-3cffb819ccba,2,COLORLESS,RW,Legendary Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,66,Mask of Memory,d6b2c998-a226-426c-a40d-6e6007041bfe,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,67,Maul of the Skyclaves,088a1f56-198c-41a1-b244-ec1c7a771041,3,W,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,68,Basilisk Collar,f5f4dd28-f4ae-4d39-b9b8-6ebfd63c93fe,1,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,69,Fireshrieker,a02e1ca7-23c5-41e3-a744-72fc9e9dd8ba,3,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,70,Shadowspear,8b27326f-e7b8-4a4d-b589-df459246d19a,1,COLORLESS,RW,Legendary Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,71,Loxodon Warhammer,dba35ac5-7ad3-488a-a006-6b9a1d54eea5,3,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,72,O-Naginata,5641c831-5254-4ef2-ba48-328d86007479,1,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,73,Prowler's Helm,603ef53f-6191-4229-b85f-adad6f4503ce,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,74,Embercleave,4d6120d6-fcce-40bc-9fc6-e1f5beb6c728,6,R,RW,Legendary Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,75,Arcane Signet,0bc7f093-bef0-4f1a-852c-4b75ebf54838,2,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,76,Boros Signet,41c84665-1f99-40ab-aaca-1188649eb263,2,RW,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,77,Talisman of Conviction,6c326439-5620-4ec6-a56a-fe9c3d5d2a46,2,RW,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,78,Mind Stone,c97361b5-af16-4a7b-af85-a429dbaf4ad2,2,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,79,Commander's Sphere,0b67c4e2-f88b-4e01-85a1-9d5f5b8db13b,3,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,80,Wayfarer's Bauble,31f15274-301b-47c5-ba19-0ced04520878,1,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,81,Fire Diamond,97b477d8-2e05-475e-8ed6-7d680cb21cd9,2,R,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,82,Faithless Looting,3d6fa57a-aa53-4b5c-b8af-a7612c823117,1,R,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,83,Thrilling Discovery,c5f5a234-c751-4976-a3e1-fbd52b3255c9,2,RW,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,84,Reckless Impulse,584cf0fd-112a-4ca6-9c0e-1f3228a7d325,2,R,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,85,Mentor of the Meek,b9f4f96b-6e54-4fe6-8df7-623e0fc72409,3,W,RW,Creature — Human Soldier,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,86,Welcoming Vampire,605c1ee0-5e8a-4e0a-a99b-42a38873f822,3,W,RW,Creature — Vampire,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,87,Swords to Plowshares,b1544f21-7e98-461b-aed5-e748b0168c52,1,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,88,Path to Exile,d683d985-9888-4d21-8b5f-69e69ce4a03b,1,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,89,Generous Gift,fae37e28-e137-4177-b973-fa8b4dd8f409,3,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,90,Wear // Tear,9842734c-1eac-450a-731-4c22017ae586,3,RW,RW,Instant // Instant,split,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,91,Chaos Warp,07a0cba9-8768-4fd9-a3d5-b0f83b4bf8e8,3,R,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,92,Abrade,f9db72dc-9a5b-48a4-a86e-7464d9a2166a,2,R,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,93,Boros Charm,2679d0dd-ba30-4a1c-b6a0-b3ac6c790496,2,RW,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,94,Loran's Escape,1a9048d6-f3fa-4f3b-9baa-35318177bc6e,1,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,95,Wrath of God,34515b16-c9a4-4f98-8c77-416a7a523407,4,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,96,Blasphemous Act,7a2484a9-04fd-41a0-8224-610c1c07ed10,9,R,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,97,Sevinne's Reclamation,1b9f9f5b-8712-4f00-90cb-1b7b9970eccc,3,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,98,Open the Armory,2ecf7771-8061-4710-ad2e-80b092ae0b4b,2,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,99,Steelshaper's Gift,d9abda7e-6ca2-42ea-ab24-c542e57014f1,1,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Ideal,Akiri,100,Outpost Siege,ebb24fc7-dc71-4712-8c2a-b5920f78e55d,4,R,RW,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,1,"Chevill, Bane of Monsters",50863075-a30b-4238-8e31-5af32a39d886,2,BG,BG,Legendary Creature — Human Rogue,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,2,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,3,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,4,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,5,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,6,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,7,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,8,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,9,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,10,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,11,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,12,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,13,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,14,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,15,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,16,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,17,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,18,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,19,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,20,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,21,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,22,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,23,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,24,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,25,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Ideal,Chevill,26,Command Tower,0895c9b7-ae7d-4bb3-af17-3b75deb50a25,0,COLORLESS,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,27,Overgrown Tomb,975ec9a3-6f20-4177-8211-82526e092538,0,BG,BG,Land — Swamp Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,28,Woodland Cemetery,c9fe1383-1331-4a58-a45a-3320250221a9,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,29,Llanowar Wastes,32116127-cf96-4a1b-8896-a1ebc087b597,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,30,Temple of Malady,dc55421f-dee8-4263-9df0-2365df5f14bb,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,31,Tainted Wood,fa6d05a1-3df4-4751-b1a0-8d9693faec73,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,32,Golgari Rot Farm,1b301478-b14f-4ef8-94e6-9647d582eabe,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,33,Nurturing Peatland,8ed932ff-986c-4592-ad70-53b3fac80d69,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,34,Bojuka Bog,04b7362d-0490-4cb0-b5d7-2a7732f659ce,0,B,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,35,Barren Moor,326ba371-124c-4949-a048-3a0c8962e567,0,B,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,36,War Room,71c52bf5-2a5d-488e-8b15-7ef290e4b77d,0,COLORLESS,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,37,"Takenuma, Abandoned Mire",ac2dd694-d2f1-4025-8400-12332bdc882a,0,B,BG,Legendary Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,38,Bounty Hunter,2fd1cfc5-fbcd-4d31-ba8b-759d8c41b435,4,B,BG,Creature — Human Archer Minion,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,39,Termination Facilitator,56edd306-8676-49c4-b3c3-5ff840536c3a,2,B,BG,Creature — Human Assassin,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,40,Leyline Prowler,8ca3852a-fa37-46ef-a74d-3c7487ae50fc,3,BG,BG,Creature — Nightmare Beast,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,41,Royal Assassin,9ed6f28f-a3db-48c5-9ab0-b90a7fba5f57,3,B,BG,Creature — Human Assassin,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,42,Hooded Blightfang,342eb666-838c-43d0-bf52-2f704f2a80e3,3,B,BG,Creature — Snake,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,43,Morbid Opportunist,322f44f0-e6da-4ee0-b474-e7d5e9a461c5,3,B,BG,Creature — Human Rogue,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,44,Harvester of Souls,5987ce77-10ad-4871-900a-5a005fcf4955,6,B,BG,Creature — Demon,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,45,Viscera Seer,f82a4e85-526d-4456-b700-7760043a31be,1,B,BG,Creature — Vampire Wizard,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,46,Fleshbag Marauder,4b1bf05e-753e-4350-a913-894cf3cecc0c,3,B,BG,Creature — Zombie Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,47,Plaguecrafter,2e3ee458-fa3f-4452-ab95-5a7fb5a0483b,3,B,BG,Creature — Human Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,48,Ravenous Chupacabra,7b459306-149b-4f43-abc1-2dd70c748c0e,4,B,BG,Creature — Beast Horror,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,49,Reclamation Sage,032ec6e2-6cc3-4a97-9cc7-3233f5e11904,3,G,BG,Creature — Elf Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,50,Acidic Slime,21f45043-5419-4019-8b6c-e5294bd5f549,5,G,BG,Creature — Ooze,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,51,Eternal Witness,30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c,3,G,BG,Creature — Human Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,52,Sakura-Tribe Elder,e3afc704-220f-498f-9eaa-0821b17dc24c,2,G,BG,Creature — Snake Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,53,Llanowar Elves,68954295-54e3-4303-a6bc-fc4547a4e3a3,1,G,BG,Creature — Elf Druid,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,54,Elvish Mystic,3f3b2c10-21f8-4e13-be83-4ef3fa36e123,1,G,BG,Creature — Elf Druid,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,55,Wood Elves,8973bd99-20f8-4867-90ef-50392147ee1b,3,G,BG,Creature — Elf Scout,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,56,Scavenging Ooze,1ff25f67-36a7-4cfa-a2b1-2135b5b6fb67,2,G,BG,Creature — Ooze,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,57,Tireless Tracker,e6555cca-e608-4c87-b835-9cd47fd1f543,3,G,BG,Creature — Human Scout,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,58,"Toski, Bearer of Secrets",a8e707ec-ce77-4bc5-8c76-5ea3e81e8c7f,4,G,BG,Legendary Creature — Squirrel,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,59,Ohran Frostfang,b99ada26-9a61-4175-9fb8-15a106960220,5,G,BG,Snow Creature — Snake,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,60,"Glissa, the Traitor",cafacba9-195c-44ea-ba80-3e489274759c,3,BG,BG,Legendary Creature — Phyrexian Zombie Elf,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,61,Cankerbloom,d5b80895-621a-40df-bf48-6c7295658f21,2,G,BG,Creature — Phyrexian Fungus,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,62,Outland Liberator // Frenzied Trapbreaker,9545f126-062f-4410-a362-e16255a128d6,2,G,BG,Creature — Human Werewolf // Creature — Werewolf,transform,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,63,Beast Whisperer,5da7eea8-bb9e-47ce-a554-8a1ee058bd7a,4,G,BG,Creature — Elf Druid,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,64,Viridian Longbow,8b9119b0-9948-497f-aa92-2879d07bed1c,1,COLORLESS,BG,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,65,Arcane Signet,0bc7f093-bef0-4f1a-852c-4b75ebf54838,2,COLORLESS,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,66,Golgari Signet,1cf51f50-24e4-48d0-95b3-1dad3ffa4bf5,2,BG,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,67,Talisman of Resilience,42b8aa14-10bc-4bd6-88d9-4bb287eadd19,2,BG,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,68,Mind Stone,c97361b5-af16-4a7b-af85-a429dbaf4ad2,2,COLORLESS,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,69,Nature's Lore,78826359-fe63-44ad-adc4-a17ffcd710e4,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,70,Farseek,495e52e6-4c2b-4574-9474-eadbdcc8b4ac,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,71,Rampant Growth,8539f295-5d58-4436-a73a-b9277c4c7795,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,72,Sign in Blood,c6207f6a-a624-4754-88f5-dbe700c841ff,2,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,73,Night's Whisper,7ffae8f8-3006-4969-a339-6d30678f87ea,2,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,74,Read the Bones,5bf4d8d9-a2b2-4dba-ac05-9d4470a89db2,3,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,75,Phyrexian Arena,ee579a32-a048-4335-b966-231ba731cdea,3,B,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,76,Deathreap Ritual,b26e3596-5b28-4eb6-b3e2-03f63d8c6d49,4,BG,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,77,Moldervine Reclamation,68639a3d-2192-4921-8298-c76bb0cd6b02,5,BG,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,78,"Vraska, Golgari Queen",131096a3-2d53-4ec2-96d3-fcb58e698a13,4,BG,BG,Legendary Planeswalker — Vraska,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,79,Plumb the Forbidden,b099fc54-cdbc-46cb-b4e4-7c2ca77b115b,2,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,80,Guardian Project,4f9e07ae-6341-4b46-9f77-f17ab659d266,4,G,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,81,Garruk's Uprising,3127ae9b-a7a7-43ec-89d7-688f8445b33d,3,G,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,82,Assassin's Trophy,ac10d218-f9a6-4058-9cda-a15ca1b0b7b5,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,83,Putrefy,9b271430-f53d-42d6-a547-2f286dd9bcb6,3,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,84,Beast Within,7735eeba-693b-47e2-bd51-414379cf1016,3,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,85,Abrupt Decay,1c747fe2-289e-492a-a846-aa77707e2dc3,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,86,Go for the Throat,2f092562-9e17-43cd-aeb8-d0567f99363e,2,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,87,Bite Down,623903de-3c04-4745-9af3-d7ec9fb2574d,2,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,88,Tear Asunder,610af0f7-b5e3-43fb-9d02-7c59bd99034c,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,89,Maelstrom Pulse,95ce305f-34bc-4d6d-b7ba-ffd4b2a25336,3,BG,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,90,Sheoldred's Edict,217062f5-96f1-454c-9507-17f34ef37070,2,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,91,Nature's Claim,6d4e558e-9109-4918-a082-fdcbaffd516b,1,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,92,Damnation,d57a8f0b-7989-4db5-8756-6f2690097252,4,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,93,Languish,ef1a83f2-6707-41a2-b5ed-861c8e45ae07,4,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,94,Tamiyo's Safekeeping,bb2b324c-970a-4920-884e-c92ba49669f0,1,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,95,Snakeskin Veil,1e6a24be-8281-41c1-a5ba-b68f0ef1d7b8,1,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,96,Golgari Charm,f0ab7166-9fcf-46e5-af2c-b7f628db4789,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,97,Malakir Rebirth // Malakir Mire,a731e87b-8d99-4b64-8ee3-8e540d652366,1,B,BG,Instant // Land,modal_dfc,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,98,Diabolic Intent,038519b9-bca8-4b27-b5ac-2409595469d0,2,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,99,Regrowth,e6e4a8bd-5c40-4654-8de1-0da9afed90fd,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Ideal,Chevill,100,Victimize,240e85d3-e495-4877-8609-4b4056c402f7,3,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,1,"Akiri, Fearless Voyager",c03ae426-2536-4c20-a73a-a24e816f76b0,3,RW,RW,Legendary Creature — Kor Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,2,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,3,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,4,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,5,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,6,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,7,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,8,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,9,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,10,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,11,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,12,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,13,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,14,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,15,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,16,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,17,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,18,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,19,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,20,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,21,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,22,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,23,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Akiri Friendly,Akiri,24,Command Tower,0895c9b7-ae7d-4bb3-af17-3b75deb50a25,0,COLORLESS,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,25,Clifftop Retreat,d7faa3c8-46cf-46b2-bfa4-89000307cf18,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,26,Battlefield Forge,6b75b94e-83b7-457e-ac41-7ca90b5a59aa,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,27,Inspiring Vantage,3f17c60e-923a-4392-9da8-87d9ded009b7,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,28,Sacred Foundry,45181cb8-2090-4471-ba90-e5a8f04d525f,0,RW,RW,Land — Mountain Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,29,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Spectator Seating
+Akiri Friendly,Akiri,30,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Rugged Prairie
+Akiri Friendly,Akiri,31,Temple of Triumph,6f0d94d9-64bb-4175-83bc-301e8f79f54f,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,32,Boros Garrison,8fa3ac81-3dfe-4565-be99-5554f7597b4b,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,33,"Sunhome, Fortress of the Legion",a9f8344c-1705-4254-81d6-aa05e0c69c29,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,34,Slayers' Stronghold,2de7367b-a5a4-43f4-8f8f-b931ea28150d,0,RW,RW,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,35,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Buried Ruin
+Akiri Friendly,Akiri,36,Mountain,a3fb7228-e76b-4e96-a40e-20b5fed75685,0,R,RW,Basic Land — Mountain,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: War Room
+Akiri Friendly,Akiri,37,Plains,bc71ebf6-2056-41f7-be35-b2e5c34afa99,0,W,RW,Basic Land — Plains,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Bonders' Enclave
+Akiri Friendly,Akiri,38,"Sram, Senior Edificer",7e00b0cd-d212-4604-ba07-da21f4fe00b0,2,W,RW,Legendary Creature — Dwarf Advisor,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,39,Puresteel Paladin,74a62c7b-4753-4af2-b7a1-9a4ae8988801,2,W,RW,Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,40,Stoneforge Mystic,358789f9-7d87-411d-919e-d597da665cbd,2,W,RW,Creature — Kor Artificer,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,41,"Ardenn, Intrepid Archaeologist",7c521612-21c6-4c4b-b10e-66e70928609b,3,W,RW,Legendary Creature — Kor Scout,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,42,Bruenor Battlehammer,ea7de96f-db69-421d-a951-ffaeac140379,4,RW,RW,Legendary Creature — Dwarf Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,43,"Danitha Capashen, Paragon",4b6377da-83e7-4519-9582-16a9c16b8faa,3,W,RW,Legendary Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,44,Armored Skyhunter,b4dbbf56-d7df-4183-bb48-cfc6b4d0468f,4,W,RW,Creature — Cat Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,45,"Wyleth, Soul of Steel",35bef4d3-4473-4265-86b0-f1393c82fd1d,3,RW,RW,Legendary Creature — Human Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,46,"Reyav, Master Smith",d1fc2549-40d5-41c8-b3ab-07ea13e9381d,2,RW,RW,Legendary Creature — Dwarf Artificer,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,47,Fervent Champion,8de50bda-1ef6-4ccf-9efc-fab10b7eb2e5,1,R,RW,Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,48,Kor Blademaster,194260af-aba5-4d18-a69b-eedb97ed4a4b,2,W,RW,Creature — Kor Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,49,Leonin Shikari,857d94f7-113c-45a4-a88a-5d087347d57f,2,W,RW,Creature — Cat Soldier,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,50,Brass Squire,5a10c3a5-6724-4e5a-ae4f-b27dde12735a,3,COLORLESS,RW,Artifact Creature — Myr,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,51,Stone Haven Outfitter,8e646a6b-77ba-4f7d-8ee9-b0b084453f77,2,W,RW,Creature — Kor Artificer Ally,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,52,Auriok Steelshaper,e3ee8b0e-9bdc-4b9a-b4f9-59189dd6a80d,2,W,RW,Creature — Human Soldier,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,53,"Kemba, Kha Regent",499d5801-0c56-40f2-9a46-77025ed6cb87,3,W,RW,Legendary Creature — Cat Cleric,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,54,"Balan, Wandering Knight",d12cfd46-73c2-4206-9a10-0d2e7d6ac87e,4,W,RW,Legendary Creature — Cat Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,55,"Astor, Bearer of Blades",196962f0-6aff-4198-9e0c-eaf42aeaf147,4,RW,RW,Legendary Creature — Human Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,56,Mirran Crusader,fe69d9bd-2a60-4b33-a0d8-1ca18c2b6705,3,W,RW,Creature — Human Knight,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,57,Selfless Spirit,71d785a9-ddc8-472e-a778-a551b444a4bd,2,W,RW,Creature — Spirit Cleric,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,58,Mother of Runes,60433b48-d27f-413c-905c-43839b1943f1,1,W,RW,Creature — Human Cleric,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,59,Skyclave Apparition,d90af00a-d322-4265-9954-7b1e80702e18,3,W,RW,Creature — Kor Spirit,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,60,Loran of the Third Path,b3d81980-76f2-44e2-b1c9-01e30c726312,3,W,RW,Legendary Creature — Human Artificer,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,61,Sun Titan,b2e950fb-cb7e-40a0-a311-5bbdd0477b29,6,W,RW,Creature — Giant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,62,Bonesplitter,452e3f5f-ce17-4682-966b-5cc100210aee,1,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,63,Swiftfoot Boots,c8b143ad-43ec-4e0d-a440-e348daa31391,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,64,Lightning Greaves,ca204b66-8d0c-431a-8d34-282f7c2d17da,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,65,Sword of the Animist,d79cbc61-6c15-48ea-bbba-3cffb819ccba,2,COLORLESS,RW,Legendary Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,66,Mask of Memory,d6b2c998-a226-426c-a40d-6e6007041bfe,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,67,Vulshok Morningstar,12a8adc4-927f-4314-b2ef-9c647ace68d5,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Maul of the Skyclaves
+Akiri Friendly,Akiri,68,Basilisk Collar,f5f4dd28-f4ae-4d39-b9b8-6ebfd63c93fe,1,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,69,Fireshrieker,a02e1ca7-23c5-41e3-a744-72fc9e9dd8ba,3,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,70,Shadowspear,8b27326f-e7b8-4a4d-b589-df459246d19a,1,COLORLESS,RW,Legendary Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,71,Loxodon Warhammer,dba35ac5-7ad3-488a-a006-6b9a1d54eea5,3,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,72,Vulshok Battlegear,708df587-3b13-42cb-8341-f476ab4cbe45,3,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: O-Naginata
+Akiri Friendly,Akiri,73,Prowler's Helm,603ef53f-6191-4229-b85f-adad6f4503ce,2,COLORLESS,RW,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,74,Embercleave,4d6120d6-fcce-40bc-9fc6-e1f5beb6c728,6,R,RW,Legendary Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,75,Arcane Signet,0bc7f093-bef0-4f1a-852c-4b75ebf54838,2,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,76,Boros Signet,41c84665-1f99-40ab-aaca-1188649eb263,2,RW,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,77,Talisman of Conviction,6c326439-5620-4ec6-a56a-fe9c3d5d2a46,2,RW,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,78,Mind Stone,c97361b5-af16-4a7b-af85-a429dbaf4ad2,2,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,79,Commander's Sphere,0b67c4e2-f88b-4e01-85a1-9d5f5b8db13b,3,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,80,Wayfarer's Bauble,31f15274-301b-47c5-ba19-0ced04520878,1,COLORLESS,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,81,Fire Diamond,97b477d8-2e05-475e-8ed6-7d680cb21cd9,2,R,RW,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,82,Faithless Looting,3d6fa57a-aa53-4b5c-b8af-a7612c823117,1,R,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,83,Thrilling Discovery,c5f5a234-c751-4976-a3e1-fbd52b3255c9,2,RW,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,84,Reckless Impulse,584cf0fd-112a-4ca6-9c0e-1f3228a7d325,2,R,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,85,Mentor of the Meek,b9f4f96b-6e54-4fe6-8df7-623e0fc72409,3,W,RW,Creature — Human Soldier,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,86,Welcoming Vampire,605c1ee0-5e8a-4e0a-a99b-42a38873f822,3,W,RW,Creature — Vampire,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,87,Swords to Plowshares,b1544f21-7e98-461b-aed5-e748b0168c52,1,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,88,Path to Exile,d683d985-9888-4d21-8b5f-69e69ce4a03b,1,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,89,Generous Gift,fae37e28-e137-4177-b973-fa8b4dd8f409,3,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,90,Disenchant,a7e97fa9-4b72-4548-b854-5be5f18a6f1a,2,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Wear // Tear
+Akiri Friendly,Akiri,91,Chaos Warp,07a0cba9-8768-4fd9-a3d5-b0f83b4bf8e8,3,R,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,92,Abrade,f9db72dc-9a5b-48a4-a86e-7464d9a2166a,2,R,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,93,Boros Charm,2679d0dd-ba30-4a1c-b6a0-b3ac6c790496,2,RW,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,94,Loran's Escape,1a9048d6-f3fa-4f3b-9baa-35318177bc6e,1,W,RW,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,95,Wrath of God,34515b16-c9a4-4f98-8c77-416a7a523407,4,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,96,Blasphemous Act,7a2484a9-04fd-41a0-8224-610c1c07ed10,9,R,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,97,Sevinne's Reclamation,1b9f9f5b-8712-4f00-90cb-1b7b9970eccc,3,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,98,Open the Armory,2ecf7771-8061-4710-ad2e-80b092ae0b4b,2,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,99,Steelshaper's Gift,d9abda7e-6ca2-42ea-ab24-c542e57014f1,1,W,RW,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Akiri Friendly,Akiri,100,Outpost Siege,ebb24fc7-dc71-4712-8c2a-b5920f78e55d,4,R,RW,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,1,"Chevill, Bane of Monsters",50863075-a30b-4238-8e31-5af32a39d886,2,BG,BG,Legendary Creature — Human Rogue,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,2,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,3,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,4,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,5,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,6,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,7,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,8,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,9,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,10,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,11,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,12,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,13,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,14,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,15,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,16,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,17,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,18,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,19,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,20,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,21,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,22,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,23,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,24,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,25,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed
+Chevill Friendly,Chevill,26,Command Tower,0895c9b7-ae7d-4bb3-af17-3b75deb50a25,0,COLORLESS,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,27,Overgrown Tomb,975ec9a3-6f20-4177-8211-82526e092538,0,BG,BG,Land — Swamp Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,28,Woodland Cemetery,c9fe1383-1331-4a58-a45a-3320250221a9,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,29,Llanowar Wastes,32116127-cf96-4a1b-8896-a1ebc087b597,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,30,Temple of Malady,dc55421f-dee8-4263-9df0-2365df5f14bb,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,31,Forest,b34bb2dc-c1af-4d77-b0b3-a0fb342a5fc6,0,G,BG,Basic Land — Forest,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Tainted Wood
+Chevill Friendly,Chevill,32,Golgari Rot Farm,1b301478-b14f-4ef8-94e6-9647d582eabe,0,BG,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,33,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Nurturing Peatland
+Chevill Friendly,Chevill,34,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,basic-land repeat allowed; Friendly replacement slot: Bojuka Bog
+Chevill Friendly,Chevill,35,Barren Moor,326ba371-124c-4949-a048-3a0c8962e567,0,B,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,36,War Room,71c52bf5-2a5d-488e-8b15-7ef290e4b77d,0,COLORLESS,BG,Land,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,37,Swamp,56719f6a-1a6c-4c0a-8d21-18f7d7350b68,0,B,BG,Basic Land — Swamp,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,"basic-land repeat allowed; Friendly replacement slot: Takenuma, Abandoned Mire"
+Chevill Friendly,Chevill,38,Bounty Hunter,2fd1cfc5-fbcd-4d31-ba8b-759d8c41b435,4,B,BG,Creature — Human Archer Minion,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,39,Termination Facilitator,56edd306-8676-49c4-b3c3-5ff840536c3a,2,B,BG,Creature — Human Assassin,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,40,Leyline Prowler,8ca3852a-fa37-46ef-a74d-3c7487ae50fc,3,BG,BG,Creature — Nightmare Beast,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,41,Royal Assassin,9ed6f28f-a3db-48c5-9ab0-b90a7fba5f57,3,B,BG,Creature — Human Assassin,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,42,Hooded Blightfang,342eb666-838c-43d0-bf52-2f704f2a80e3,3,B,BG,Creature — Snake,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,43,Morbid Opportunist,322f44f0-e6da-4ee0-b474-e7d5e9a461c5,3,B,BG,Creature — Human Rogue,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,44,Harvester of Souls,5987ce77-10ad-4871-900a-5a005fcf4955,6,B,BG,Creature — Demon,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,45,Viscera Seer,f82a4e85-526d-4456-b700-7760043a31be,1,B,BG,Creature — Vampire Wizard,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,46,Fleshbag Marauder,4b1bf05e-753e-4350-a913-894cf3cecc0c,3,B,BG,Creature — Zombie Warrior,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,47,Plaguecrafter,2e3ee458-fa3f-4452-ab95-5a7fb5a0483b,3,B,BG,Creature — Human Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,48,Ravenous Chupacabra,7b459306-149b-4f43-abc1-2dd70c748c0e,4,B,BG,Creature — Beast Horror,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,49,Reclamation Sage,032ec6e2-6cc3-4a97-9cc7-3233f5e11904,3,G,BG,Creature — Elf Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,50,Acidic Slime,21f45043-5419-4019-8b6c-e5294bd5f549,5,G,BG,Creature — Ooze,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,51,Eternal Witness,30b24e8e-3b0e-4d8e-90f3-f66eb7c1858c,3,G,BG,Creature — Human Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,52,Sakura-Tribe Elder,e3afc704-220f-498f-9eaa-0821b17dc24c,2,G,BG,Creature — Snake Shaman,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,53,Llanowar Elves,68954295-54e3-4303-a6bc-fc4547a4e3a3,1,G,BG,Creature — Elf Druid,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,54,Elvish Mystic,3f3b2c10-21f8-4e13-be83-4ef3fa36e123,1,G,BG,Creature — Elf Druid,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,55,Wood Elves,8973bd99-20f8-4867-90ef-50392147ee1b,3,G,BG,Creature — Elf Scout,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,56,Scavenging Ooze,1ff25f67-36a7-4cfa-a2b1-2135b5b6fb67,2,G,BG,Creature — Ooze,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,57,Tireless Tracker,e6555cca-e608-4c87-b835-9cd47fd1f543,3,G,BG,Creature — Human Scout,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,58,"Toski, Bearer of Secrets",a8e707ec-ce77-4bc5-8c76-5ea3e81e8c7f,4,G,BG,Legendary Creature — Squirrel,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,59,Ohran Frostfang,b99ada26-9a61-4175-9fb8-15a106960220,5,G,BG,Snow Creature — Snake,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,60,"Glissa, the Traitor",cafacba9-195c-44ea-ba80-3e489274759c,3,BG,BG,Legendary Creature — Phyrexian Zombie Elf,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,61,Naturalize,bdb3ca68-ec1f-4e16-81cc-d23f8f52c728,2,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Cankerbloom
+Chevill Friendly,Chevill,62,Outland Liberator // Frenzied Trapbreaker,9545f126-062f-4410-a362-e16255a128d6,2,G,BG,Creature — Human Werewolf // Creature — Werewolf,transform,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,63,Garruk's Packleader,13279222-422d-4447-9451-2463b0c714c6,5,G,BG,Creature — Beast,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Beast Whisperer
+Chevill Friendly,Chevill,64,Viridian Longbow,8b9119b0-9948-497f-aa92-2879d07bed1c,1,COLORLESS,BG,Artifact — Equipment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,65,Arcane Signet,0bc7f093-bef0-4f1a-852c-4b75ebf54838,2,COLORLESS,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,66,Golgari Signet,1cf51f50-24e4-48d0-95b3-1dad3ffa4bf5,2,BG,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,67,Talisman of Resilience,42b8aa14-10bc-4bd6-88d9-4bb287eadd19,2,BG,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,68,Mind Stone,c97361b5-af16-4a7b-af85-a429dbaf4ad2,2,COLORLESS,BG,Artifact,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,69,Nature's Lore,78826359-fe63-44ad-adc4-a17ffcd710e4,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,70,Farseek,495e52e6-4c2b-4574-9474-eadbdcc8b4ac,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,71,Rampant Growth,8539f295-5d58-4436-a73a-b9277c4c7795,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,72,Sign in Blood,c6207f6a-a624-4754-88f5-dbe700c841ff,2,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,73,Night's Whisper,7ffae8f8-3006-4969-a339-6d30678f87ea,2,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,74,Read the Bones,5bf4d8d9-a2b2-4dba-ac05-9d4470a89db2,3,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,75,Phyrexian Arena,ee579a32-a048-4335-b966-231ba731cdea,3,B,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,76,Deathreap Ritual,b26e3596-5b28-4eb6-b3e2-03f63d8c6d49,4,BG,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,77,Moldervine Reclamation,68639a3d-2192-4921-8298-c76bb0cd6b02,5,BG,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,78,"Garruk Relentless // Garruk, the Veil-Cursed",7cec9021-6f25-4fd8-b40e-adf4ffd3a7b8,4,BG,BG,Legendary Planeswalker — Garruk // Legendary Planeswalker — Garruk,transform,legal,legal,FALSE,FALSE,TRUE,TRUE,"Friendly replacement slot: Vraska, Golgari Queen"
+Chevill Friendly,Chevill,79,Plumb the Forbidden,b099fc54-cdbc-46cb-b4e4-7c2ca77b115b,2,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,80,Guardian Project,4f9e07ae-6341-4b46-9f77-f17ab659d266,4,G,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,81,Garruk's Uprising,3127ae9b-a7a7-43ec-89d7-688f8445b33d,3,G,BG,Enchantment,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,82,Assassin's Trophy,ac10d218-f9a6-4058-9cda-a15ca1b0b7b5,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,83,Putrefy,9b271430-f53d-42d6-a547-2f286dd9bcb6,3,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,84,Beast Within,7735eeba-693b-47e2-bd51-414379cf1016,3,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,85,Abrupt Decay,1c747fe2-289e-492a-a846-aa77707e2dc3,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,86,Go for the Throat,2f092562-9e17-43cd-aeb8-d0567f99363e,2,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,87,Bite Down,623903de-3c04-4745-9af3-d7ec9fb2574d,2,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,88,Tear Asunder,610af0f7-b5e3-43fb-9d02-7c59bd99034c,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,89,Maelstrom Pulse,95ce305f-34bc-4d6d-b7ba-ffd4b2a25336,3,BG,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,90,Diabolic Edict,058917c1-21ab-488a-9f9c-591c55f3c596,2,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Sheoldred's Edict
+Chevill Friendly,Chevill,91,Nature's Claim,6d4e558e-9109-4918-a082-fdcbaffd516b,1,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,92,Damnation,d57a8f0b-7989-4db5-8756-6f2690097252,4,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,93,Infest,d6850616-7db5-4141-9ab0-ae8d1f08114f,3,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Languish
+Chevill Friendly,Chevill,94,Tamiyo's Safekeeping,bb2b324c-970a-4920-884e-c92ba49669f0,1,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,95,Snakeskin Veil,1e6a24be-8281-41c1-a5ba-b68f0ef1d7b8,1,G,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,96,Golgari Charm,f0ab7166-9fcf-46e5-af2c-b7f628db4789,2,BG,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,97,Undying Malice,8b061702-1bc3-45aa-a758-446b25034801,1,B,BG,Instant,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Malakir Rebirth // Malakir Mire
+Chevill Friendly,Chevill,98,Diabolic Intent,038519b9-bca8-4b27-b5ac-2409595469d0,2,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,99,Regrowth,e6e4a8bd-5c40-4654-8de1-0da9afed90fd,2,G,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,
+Chevill Friendly,Chevill,100,Unearth,4e0b647a-6e1a-421b-bca9-8d5e346bda80,1,B,BG,Sorcery,normal,legal,legal,FALSE,FALSE,TRUE,TRUE,Friendly replacement slot: Victimize
