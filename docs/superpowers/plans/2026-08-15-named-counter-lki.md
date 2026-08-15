@@ -49,9 +49,9 @@
 
 ## Task 6: Final upstream check, review, and handoff
 
-- [ ] Fetch upstream again immediately before handoff and compare BOUNTY/LKI-related paths for overlap.
-- [ ] Verify `origin` is the fork and the branch is `agent/a8-feature-named-counter-lki`.
-- [ ] Commit the tests/docs and vocabulary/client changes with focused commit messages and the repository Co-Authored-By convention.
-- [ ] Push only to `chrismaghuhn/argentum-engine`.
-- [ ] Open a draft PR against the fork's `main`, referencing issues #1, #2, and #4; do not merge and do not target upstream.
-- [ ] If all acceptance and regression gates are green, report `ARG_DECK_02_PASS` and `PROCEED_TO_CHEVILL_CARD_DEFINITION`; otherwise keep the draft open with `ARG_DECK_02_PARTIAL` or `ARG_DECK_02_FAIL`.
+- [x] Fetch upstream again immediately before handoff and compare BOUNTY/LKI-related paths for overlap.
+- [x] Verify `origin` is the fork and the branch is `agent/a8-feature-named-counter-lki`.
+- [x] Commit the tests/docs and vocabulary/client changes with focused commit messages and the repository Co-Authored-By convention.
+- [x] Push only to `chrismaghuhn/argentum-engine`.
+- [x] Open a draft PR against the fork's `main`, referencing issues #1, #2, and #4; do not merge and do not target upstream.
+- [x] If all acceptance and regression gates are green, report `ARG_DECK_02_PASS` and `PROCEED_TO_CHEVILL_CARD_DEFINITION`; otherwise keep the draft open with `ARG_DECK_02_PARTIAL` or `ARG_DECK_02_FAIL`.
