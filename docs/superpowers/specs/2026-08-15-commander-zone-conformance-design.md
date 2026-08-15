@@ -22,10 +22,9 @@ deterministic `alwaysDivertToCommand` preference. The existing serializable
 right reusable seam, but it currently has no zone-change pending-event adapter.
 This is classified as `REUSABLE_REPLACEMENT_DECISION_GAP`.
 
-The official rules snapshot used for this design is the current TXT linked from
-the Wizards rules page. The live page currently links the `20260808` filename;
-the document itself says it is effective August 7, 2026:
-<https://media.wizards.com/2026/downloads/MagicCompRules%2020260808.txt>.
+The official rules snapshot used for this design is `MagicCompRules 20260807.txt`,
+effective August 7, 2026:
+<https://media.wizards.com/2026/downloads/MagicCompRules%2020260807.txt>.
 
 ## Goals
 
