@@ -276,6 +276,7 @@ class CommanderZoneReplacementTest : FunSpec({
 
         finalPending.destinationZone shouldBe Zone.COMMAND
         finalPending.redirectResult?.shuffleIntoLibrary shouldBe true
+        finalPending.residualObligations.shuffleOwnerLibrary shouldBe true
 
         val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
             .performPendingZoneChange(state, finalPending)
@@ -477,6 +478,39 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.error shouldBe null
         resumed.state.getZone(ZoneKey(playerId, Zone.GRAVEYARD)).toSet() shouldBe
             setOf(commanderId, normalAId)
+    }
+
+    test("ordered MoveCollection Commander pause is serializable and fork-safe") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal Card")
+        )
+        val orderPrompt = orderedMovePrompt(
+            services,
+            state,
+            listOf(commanderId, normalAId),
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+        )
+        val commanderPrompt = resumeOrderedMove(services, orderPrompt, listOf(commanderId, normalAId))
+        val frame = commanderPrompt.state.continuationStack.last()
+        val json = Json { serializersModule = engineSerializersModule }
+
+        val encoded = json.encodeToString(ContinuationFrame.serializer(), frame)
+        val decoded = json.decodeFromString<ContinuationFrame>(encoded)
+        decoded shouldBe frame
+
+        val forkedState = commanderPrompt.state.copy(
+            continuationStack = commanderPrompt.state.continuationStack.dropLast(1) + decoded,
+        )
+        val resumed = resumeExecutionYesNo(
+            services,
+            commanderPrompt.copy(state = forkedState),
+            choice = false,
+        )
+
+        resumed.error shouldBe null
+        resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
+            listOf(commanderId, normalAId, libraryCardId)
     }
 
     test("commander from battlefield to hand pauses before moving") {
