@@ -2644,11 +2644,11 @@ class StackResolver(
         // resolution context before checking their current legality so CR 608.2a can run before
         // CR 608.2b. Having a stored target in this context does not make it legal; target
         // validation below still decides which resolution path applies.
-        val resolvedTargets2 = targetsComponent?.targets ?: emptyList()
+        val chosenTargets = targetsComponent?.targets ?: emptyList()
         val targetReqs = targetsComponent?.targetRequirements ?: emptyList()
         val context = EffectContext.forTriggeredAbility(
             abilityComponent,
-            targets = resolvedTargets2,
+            targets = chosenTargets,
             targetRequirements = targetReqs
         )
 

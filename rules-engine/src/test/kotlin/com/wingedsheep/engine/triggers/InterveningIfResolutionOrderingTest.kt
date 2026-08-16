@@ -194,7 +194,7 @@ class InterveningIfResolutionOrderingTest : FunSpec({
         driver.events.filterIsInstance<AbilityFizzledEvent>() shouldBe emptyList()
     }
 
-    test("ORDER-06: one illegal target preserves partial-target resolution") {
+    test("ORDER-06: one illegal target does not cause an all-target fizzle") {
         val driver = buildDriver()
         installTargetedEndStepAbility(
             driver,
