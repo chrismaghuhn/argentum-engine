@@ -69,6 +69,14 @@ review, it is a change to decline.
   facades are the curated surface, and this is the half that would otherwise drift from how cards are
   actually written. `match` necessarily destructures concrete classes; that asymmetry is inherent to
   a bidirectional rule, which is exactly why the `build` half must not compound it.
+- **Where a keyword is *lowered* rather than stored, call the lowering — don't restate it.** Equip is
+  the worked example: a card writes `equipAbility("{1}")` and the DSL produces `equipCost` plus a
+  whole activated ability. `Grammar.equipLine` calls `ActivatedAbility.equip`, the factory that body
+  moved into, so both sides of the differential are one definition. Restating a lowering here would
+  agree with the cards exactly until someone edited one of them, and the gate would then report every
+  card with the mechanic over a change nobody made to a card. Note what this is *not* a licence for:
+  extracting an existing lowering into a factory is fine, and it is the one thing this module may
+  push into `mtg-sdk` on its own; **adding a type or a capability there is still `add-feature` work.**
 - **An SDK gap is reported, never routed around.** If the SDK cannot express a card, the rule
   declines and the report ranks it. Do not model it in Assay, do not approximate it with the nearest
   effect, and do not add a type to `mtg-sdk` from inside this module — that goes through
@@ -180,8 +188,10 @@ instantiation — not another `oneOf` branch, which would be ambiguity by constr
 
 ## Printed-shape information belongs to normalization
 
-Line grouping, the `;` separator, reminder text, and which noun a card uses for itself are properties
-of the *printed line*. The model has nowhere to put them and must not grow somewhere.
+Line grouping, the `;` separator, reminder text, which noun a card uses for itself, and which
+adjective it uses for the permanent it is attached to ("equipped creature" vs "enchanted creature",
+one model and two words chosen by the type line) are properties of the *printed line*. The model has
+nowhere to put them and must not grow somewhere.
 `normalize/Normalizer.kt` owns them, every pass is invertible by construction (it records what it
 removed and `restore` replays the inverses), and `NormalizedFace.restore(lines) == raw` is itself
 gated — a normalization that cannot round-trip its own output would let any grammar look correct.
@@ -314,6 +324,24 @@ symbols to a skeleton and counting those gives the shape ranking, and it disagre
 ranking in ways that change the work. The step triggers are the worked example: 410 cards decline on
 "At the beginning of…", and adding every step-trigger prefix moved whole-card coverage by 23, because
 the other 387 were blocked on their effect clause all along.
+
+**The ranking that has actually held up is over the parse's *tail*, and it is two measurements.**
+The spell-cast band is the worked example and the method is reusable verbatim:
+
+1. `just assay-report --declines` (add `--implemented` for the grammar backlog), re-parse every
+   declined line, take the decline's `position`, and key the families on **the text from that offset
+   on**. That is neither the token ranking (which over-weights a missing prefix) nor the shape
+   ranking (which counts cards a family *mentions*): it names the piece of grammar that would have
+   to exist for the line to get further. Then count, per family, the cards **all** of whose declined
+   lines fall in it — the honest "sole-blocked" number.
+2. Before writing anything, **substitute a known-good prefix for the family** into those cards'
+   declined lines and re-parse. That says how many payoffs the rest of the grammar can already read,
+   which is the number the band will actually deliver. The spell-cast family predicted 234 whole
+   cards and delivered 183; modal spells, which both other rankings put first, measured 126.
+
+Every ranking that skipped step 2 has overstated its band, three times in the same direction. Step 2
+costs one throwaway probe over `Grammar.abilityLine.parseLine`, and it is what turns "which cards
+does this family reach" into "which lines does it finish".
 
 The split re-weights the list rather than reordering it wholesale, which is itself the finding: the
 top families are the same in both populations, so the grammar backlog and the SDK backlog are being
