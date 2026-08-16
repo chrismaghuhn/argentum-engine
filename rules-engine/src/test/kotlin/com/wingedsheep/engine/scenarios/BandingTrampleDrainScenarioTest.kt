@@ -31,7 +31,7 @@ import io.kotest.matchers.types.shouldBeInstanceOf
  * Question: may the attacker assign Noble Elephant's full 2 trample damage to the
  * defending player? Spined Wurm has no trample, so all 5 of its power must go to the
  * blocker (its only legal target) — covering the 3 lethal. That satisfies the CR 702.19b
- * trample lethal-first gate (counting cross-band damage), so the trampler may drain its 2.
+ * trample-specific lethal requirement (counting cross-band damage), so the trampler may drain its 2.
  */
 class BandingTrampleDrainScenarioTest : FunSpec({
 
@@ -126,7 +126,7 @@ class BandingTrampleDrainScenarioTest : FunSpec({
                     neToPanther.id -> neToBlk
                     wurmToPanther.id -> wurmToBlk
                     neDrain.id -> drain
-                    else -> 0
+                    else -> edge.amount
                 }
                 DamageEdgeAmount(edge.id, amount)
             }

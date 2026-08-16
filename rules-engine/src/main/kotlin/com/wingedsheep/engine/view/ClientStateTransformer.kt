@@ -3219,7 +3219,6 @@ class ClientStateTransformer(
                     defendingPlayerId = attackingComponent.defenderId
                 }
 
-                val damageOrderComponent = container.get<DamageAssignmentOrderComponent>()
                 val damageAssignmentComponent = container.get<DamageAssignmentComponent>()
 
                 attackers.add(
@@ -3234,7 +3233,9 @@ class ClientStateTransformer(
                         blockedBy = blockedComponent?.blockerIds ?: emptyList(),
                         mustBeBlockedByAll = entityId in mustBeBlockedCreatures,
                         bandId = attackingComponent.bandId,
-                        damageAssignmentOrder = damageOrderComponent?.orderedBlockers,
+                        // The nullable field remains for old payload decoding;
+                        // current gameplay never exposes a live damage order.
+                        damageAssignmentOrder = null,
                         damageAssignments = damageAssignmentComponent?.assignments
                     )
                 )

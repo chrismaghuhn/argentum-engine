@@ -904,7 +904,8 @@ data class BlockersDeclaredEvent(
 @SerialName("BlockerOrderDeclaredEvent")
 data class BlockerOrderDeclaredEvent(
     val attackerId: EntityId,
-    val orderedBlockers: List<EntityId>  // First in list receives damage first
+    /** Decode-only legacy payload; modern combat does not emit this event. */
+    val orderedBlockers: List<EntityId>
 ) : GameEvent
 
 /**
@@ -914,7 +915,8 @@ data class BlockerOrderDeclaredEvent(
 @SerialName("AttackerOrderDeclaredEvent")
 data class AttackerOrderDeclaredEvent(
     val blockerId: EntityId,
-    val orderedAttackers: List<EntityId>  // First in list receives damage first
+    /** Decode-only legacy payload; modern combat does not emit this event. */
+    val orderedAttackers: List<EntityId>
 ) : GameEvent
 
 /**

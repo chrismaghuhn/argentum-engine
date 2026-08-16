@@ -62,14 +62,7 @@ object CombatRemovalHelper {
                         }
                     } else {
                         newState.updateEntity(entityId) { container ->
-                            var updated = container.with(BlockingComponent(updatedIds))
-                            val attackerOrder = updated.get<AttackerOrderComponent>()
-                            if (attackerOrder != null) {
-                                updated = updated.with(AttackerOrderComponent(
-                                    attackerOrder.orderedAttackers.filter { it != targetId }
-                                ))
-                            }
-                            updated
+                            container.with(BlockingComponent(updatedIds))
                         }
                     }
                 }

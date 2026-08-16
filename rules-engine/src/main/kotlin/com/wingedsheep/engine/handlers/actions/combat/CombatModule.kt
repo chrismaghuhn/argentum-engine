@@ -10,7 +10,7 @@ import com.wingedsheep.engine.handlers.actions.ActionHandlerModule
  * Combat actions include:
  * - DeclareAttackers: Declare which creatures are attacking
  * - DeclareBlockers: Declare which creatures are blocking
- * - OrderBlockers: Order blockers for damage assignment
+ * - OrderBlockers: decode-compatible rejection for the obsolete damage-order action
  */
 class CombatModule(private val services: EngineServices) : ActionHandlerModule {
     override fun handlers(): List<ActionHandler<*>> = listOf(

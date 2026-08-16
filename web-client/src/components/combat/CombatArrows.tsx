@@ -21,8 +21,6 @@ interface ArrowData {
   start: Point
   end: Point
   blockerId: EntityId
-  /** 1-based damage order position (1 = first to receive damage). Undefined if not yet ordered. */
-  damageOrder?: number
   /** Damage assigned to this blocker. Undefined if not yet assigned. */
   damageAmount?: number
 }
@@ -278,10 +276,6 @@ export function CombatArrows() {
   // Check if we're still in combat phase
   const isInCombatPhase = currentStep && COMBAT_STEPS.has(currentStep as Step)
 
-  // Check if we're selecting damage order (hide blocker arrows during this UI)
-  const isSelectingDamageOrder = pendingDecision?.type === 'OrderObjectsDecision' &&
-    pendingDecision?.context?.phase === 'COMBAT'
-
   // Hide all arrows during full-screen overlay decisions (e.g., ChooseColorDecision)
   // But keep arrows visible for combat trigger YesNo decisions (e.g., Gustcloak Savior)
   const hasOverlayDecision = pendingDecision != null &&
@@ -348,11 +342,7 @@ export function CombatArrows() {
         return getPlayerLifeCenter(controller) ?? p
       }
 
-      // Skip blocker arrows during damage order selection (that UI shows blockers separately)
-      if (isSelectingDamageOrder) {
-        setArrows([])
-        // Still compute attacker arrows below
-      } else if (isDeclaringBlockers && combatState) {
+      if (isDeclaringBlockers && combatState) {
         // Use local blocker assignments (real-time feedback during declaration)
         for (const [blockerIdStr, attackerIds] of Object.entries(combatState.blockerAssignments)) {
           const blockerId = blockerIdStr as EntityId
@@ -398,15 +388,10 @@ export function CombatArrows() {
           }
         }
       } else if (gameStateCombat && gameStateCombat.blockers.length > 0 && isInCombatPhase) {
-        // Build lookup maps for damage order and assignments from attacker data
-        const blockerDamageOrder = new Map<EntityId, number>()
+        // Build a lookup map for current damage amounts. Legacy damage-assignment order is not
+        // part of modern combat rendering and is intentionally not read here.
         const blockerDamageAmount = new Map<EntityId, number>()
         for (const attacker of gameStateCombat.attackers) {
-          if (attacker.damageAssignmentOrder) {
-            attacker.damageAssignmentOrder.forEach((blockerId, index) => {
-              blockerDamageOrder.set(blockerId, index + 1)
-            })
-          }
           if (attacker.damageAssignments) {
             for (const [targetId, amount] of Object.entries(attacker.damageAssignments)) {
               blockerDamageAmount.set(targetId as EntityId, amount)
@@ -436,8 +421,6 @@ export function CombatArrows() {
               end: attackerPos,
               blockerId: blocker.creatureId,
             }
-            const order = blockerDamageOrder.get(blocker.creatureId)
-            if (order != null) arrow.damageOrder = order
             const amount = blockerDamageAmount.get(blocker.creatureId)
             if (amount != null) arrow.damageAmount = amount
             newArrows.push(arrow)
@@ -611,7 +594,7 @@ export function CombatArrows() {
     updateArrows()
     const interval = setInterval(updateArrows, 100)
     return () => clearInterval(interval)
-  }, [combatState, gameStateCombat, opponentAttackerTargets, opponentBlockerAssignments, isDeclaringBlockers, isInCombatPhase, cards, isSpectating, isSelectingDamageOrder, players, isMulti, viewedOpponentId, viewingPlayerId])
+  }, [combatState, gameStateCombat, opponentAttackerTargets, opponentBlockerAssignments, isDeclaringBlockers, isInCombatPhase, cards, isSpectating, players, isMulti, viewedOpponentId, viewingPlayerId])
 
   // Don't render during full-screen overlay decisions
   if (hasOverlayDecision) {
@@ -709,15 +692,15 @@ export function CombatArrows() {
       })}
 
       {/* Blocker assignments */}
-      {arrows.map(({ start, end, blockerId, damageOrder, damageAmount }) => (
+      {arrows.map(({ start, end, blockerId, damageAmount }) => (
         <g key={`blocker-${blockerId}`}>
           <Arrow
             start={start}
             end={end}
             color="#4488ff"
           />
-          {/* Damage order and assignment badges near the blocker (creature receiving damage) */}
-          {(damageOrder != null || damageAmount != null) && (() => {
+          {/* Modern damage-assignment amount badge near the blocker. */}
+          {damageAmount != null && (() => {
             const midX = (start.x + end.x) / 2
             const midY = (start.y + end.y) / 2
             const dx = end.x - start.x
@@ -732,66 +715,35 @@ export function CombatArrows() {
             const badgeX = mt * mt * start.x + 2 * mt * t * controlX + t * t * end.x
             const badgeY = mt * mt * start.y + 2 * mt * t * controlY + t * t * end.y
 
-            if (damageAmount != null) {
-              // Show damage assignment: "order: amount" or just "amount"
-              const label = damageOrder != null ? `#${damageOrder}: ${damageAmount} dmg` : `${damageAmount} dmg`
-              const textWidth = label.length * 7 + 12
-              return (
-                <g>
-                  <rect
-                    x={badgeX - textWidth / 2}
-                    y={badgeY - 11}
-                    width={textWidth}
-                    height={22}
-                    rx={11}
-                    fill="#000000"
-                    fillOpacity={0.85}
-                    stroke="#dc2626"
-                    strokeWidth={1.5}
-                  />
-                  <text
-                    x={badgeX}
-                    y={badgeY + 4}
-                    textAnchor="middle"
-                    fill="#f87171"
-                    fontSize={12}
-                    fontWeight={700}
-                    fontFamily="system-ui, sans-serif"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {label}
-                  </text>
-                </g>
-              )
-            } else if (damageOrder != null) {
-              // Show just the damage order number
-              return (
-                <g>
-                  <circle
-                    cx={badgeX}
-                    cy={badgeY}
-                    r={13}
-                    fill="#000000"
-                    fillOpacity={0.85}
-                    stroke="#f59e0b"
-                    strokeWidth={1.5}
-                  />
-                  <text
-                    x={badgeX}
-                    y={badgeY + 5}
-                    textAnchor="middle"
-                    fill="#fbbf24"
-                    fontSize={14}
-                    fontWeight={700}
-                    fontFamily="system-ui, sans-serif"
-                    style={{ pointerEvents: 'none' }}
-                  >
-                    {damageOrder}
-                  </text>
-                </g>
-              )
-            }
-            return null
+            const label = `${damageAmount} dmg`
+            const textWidth = label.length * 7 + 12
+            return (
+              <g>
+                <rect
+                  x={badgeX - textWidth / 2}
+                  y={badgeY - 11}
+                  width={textWidth}
+                  height={22}
+                  rx={11}
+                  fill="#000000"
+                  fillOpacity={0.85}
+                  stroke="#dc2626"
+                  strokeWidth={1.5}
+                />
+                <text
+                  x={badgeX}
+                  y={badgeY + 4}
+                  textAnchor="middle"
+                  fill="#f87171"
+                  fontSize={12}
+                  fontWeight={700}
+                  fontFamily="system-ui, sans-serif"
+                  style={{ pointerEvents: 'none' }}
+                >
+                  {label}
+                </text>
+              </g>
+            )
           })()}
         </g>
       ))}

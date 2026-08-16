@@ -16,8 +16,8 @@ import io.kotest.matchers.types.shouldBeInstanceOf
  * Combat damage assignment flow, driven through the combat resolution board
  * ([CombatResolutionDecision]). When an attacker has trample or multiple blockers with excess
  * power, the chooser gets a board of [com.wingedsheep.engine.core.DamageEdge]s pre-filled with
- * the lethal-first default; they confirm or re-divide. Damage-assignment order is part of the
- * board (declaration order is the default), not a separate pre-step.
+ * a complete deterministic split; they confirm or re-divide. Damage assignment is part of the
+ * board, not a separate order pre-step.
  */
 class CombatDamageAssignmentTest : FunSpec({
 
@@ -58,7 +58,8 @@ class CombatDamageAssignmentTest : FunSpec({
         blockerEdge.maximum shouldBe 5
         blockerEdge.lethal shouldBe 2
         drainEdge.targetId shouldBe opponent
-        // Default: 2 to blocker (lethal), 3 to player.
+        // The deterministic default satisfies the trample-specific lethal
+        // requirement, then assigns the excess to the defending player.
         blockerEdge.amount shouldBe 2
         drainEdge.amount shouldBe 3
 
@@ -100,7 +101,7 @@ class CombatDamageAssignmentTest : FunSpec({
         driver.assertLifeTotal(opponent, 19)
     }
 
-    test("multiple blockers: board defaults to lethal-first order then drains") {
+    test("multiple blockers: board defaults to a complete legal trample split") {
         val driver = createDriver()
         driver.initMirrorMatch(deck = Deck.of("Forest" to 20, "Mountain" to 20), startingLife = 20)
 
@@ -119,7 +120,7 @@ class CombatDamageAssignmentTest : FunSpec({
         driver.declareAttackers(activePlayer, listOf(trampler), opponent).isSuccess shouldBe true
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        // Damage-assignment order is folded into the board (declaration order is the default).
+        // The complete assignment board has no separate blocker-order step.
         driver.declareBlockers(opponent, mapOf(
             blocker1 to listOf(trampler),
             blocker2 to listOf(trampler)
@@ -132,7 +133,8 @@ class CombatDamageAssignmentTest : FunSpec({
         val toB1 = decision.edges.single { it.sourceId == trampler && it.targetId == blocker1 }
         val toB2 = decision.edges.single { it.sourceId == trampler && it.targetId == blocker2 }
         val drain = decision.edges.single { it.sourceId == trampler && it.isTrampleDrain }
-        // Default: 2 to bears (lethal), 1 to goblin (lethal), 2 to player.
+        // The default assigns trample-specific lethal to each blocker (2 to the
+        // 2/2 and 1 to the 2/1), then sends the excess to the defending player.
         toB1.amount shouldBe 2
         toB2.amount shouldBe 1
         drain.amount shouldBe 2
@@ -171,7 +173,7 @@ class CombatDamageAssignmentTest : FunSpec({
         decision.shouldBeInstanceOf<CombatResolutionDecision>()
         val blockerEdge = decision.edges.single { it.sourceId == trampler && it.targetId == blocker }
         val drainEdge = decision.edges.single { it.sourceId == trampler && it.isTrampleDrain }
-        // With deathtouch, 1 damage is lethal. Default: 1 to blocker, 2 to player.
+        // With deathtouch, 1 damage is lethal; the remaining two trample over.
         blockerEdge.lethal shouldBe 1
         blockerEdge.amount shouldBe 1
         drainEdge.amount shouldBe 2
@@ -179,7 +181,6 @@ class CombatDamageAssignmentTest : FunSpec({
         driver.confirmCombatDamage()
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
-        // 2 trample damage to player (3 power - 1 to blocker = 2)
         driver.assertLifeTotal(opponent, 18)
         // 704.5h: blocker received 1 deathtouch damage, so it dies
         driver.findPermanent(opponent, "Grizzly Bears").shouldBeNull()
@@ -261,15 +262,16 @@ class CombatDamageAssignmentTest : FunSpec({
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         driver.declareBlockers(opponent, mapOf(blocker to listOf(trampler))).isSuccess shouldBe true
 
-        // passPriorityUntil(POSTCOMBAT_MAIN) auto-resolves the board with its defaults.
+        // passPriorityUntil(POSTCOMBAT_MAIN) auto-resolves the board with its
+        // complete deterministic trample plan.
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
-        // Default assignment: 2 to blocker (lethal), 3 to player.
+        // Default assignment: lethal to the blocker, with the excess trampling over.
         driver.findPermanent(opponent, "Grizzly Bears").shouldBeNull()
         driver.assertLifeTotal(opponent, 17)
     }
 
-    test("Daunting Defender - default assignment accounts for prevention and kills Cleric") {
+    test("Daunting Defender - neutral default remains a complete legal assignment") {
         val driver = createDriver()
         driver.initMirrorMatch(deck = Deck.of("Forest" to 20, "Plains" to 20), startingLife = 20)
 
@@ -296,19 +298,19 @@ class CombatDamageAssignmentTest : FunSpec({
         decision.shouldBeInstanceOf<CombatResolutionDecision>()
         val blockerEdge = decision.edges.single { it.sourceId == trampler && it.targetId == clericBlocker }
         val drainEdge = decision.edges.single { it.sourceId == trampler && it.isTrampleDrain }
-        // The CR 510.1c order threshold is toughness only (2); prevention doesn't change it.
+        // Lethal is metadata for the trample-specific rule, not a generic
+        // assignment-order gate.
         blockerEdge.lethal shouldBe 2
-        // But the default accounts for Daunting Defender's prevention so it actually kills: 2 + 1.
-        blockerEdge.amount shouldBe 3
-        drainEdge.amount shouldBe 2
+        blockerEdge.amount shouldBe 2
+        drainEdge.amount shouldBe 3
 
         driver.confirmCombatDamage()
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
-        // 3 assigned - 1 prevented = 2 = lethal to the 2/2 Cleric.
-        driver.findPermanent(opponent, "Test Cleric").shouldBeNull()
-        driver.getGraveyardCardNames(opponent) shouldContain "Test Cleric"
-        driver.assertLifeTotal(opponent, 18)
+        // Two assigned - one prevented leaves one damage on the 2/2 Cleric;
+        // the three excess damage still reaches the defending player.
+        driver.findPermanent(opponent, "Test Cleric").shouldNotBeNull()
+        driver.assertLifeTotal(opponent, 17)
         driver.findPermanent(opponent, "Daunting Defender").shouldNotBeNull()
         driver.findPermanent(activePlayer, "Trample Beast").shouldNotBeNull()
     }

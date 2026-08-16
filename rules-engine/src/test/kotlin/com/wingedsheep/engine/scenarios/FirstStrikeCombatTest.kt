@@ -24,7 +24,7 @@ class FirstStrikeCombatTest : FunSpec({
         return driver
     }
 
-    test("first strike attacker kills blocker before it can deal damage") {
+    test("COMBAT-16 first strike attacker kills blocker before it can deal damage") {
         // 3/1 first strike attacks, 3/3 blocks
         // First strike step: 3/1 deals 3 to 3/3 (lethal), 3/3 dies
         // Regular step: 3/3 is dead, can't deal damage back
@@ -63,7 +63,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.getGraveyardCardNames(opponent) shouldContain "Centaur Courser"
     }
 
-    test("first strike blocker kills attacker before regular damage") {
+    test("COMBAT-16 first strike blocker kills attacker before regular damage") {
         // 3/3 attacks, 3/1 first strike blocks
         // First strike step: 3/1 deals 3 to 3/3 (lethal), 3/3 dies
         // Regular step: 3/3 is dead, can't deal damage back
@@ -99,7 +99,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.getGraveyardCardNames(activePlayer) shouldContain "Centaur Courser"
     }
 
-    test("first strike too weak — both deal damage in their respective steps") {
+    test("COMBAT-16 first strike too weak — both deal damage in their respective steps") {
         // 2/1 first strike attacks, 3/3 blocks
         // First strike step: 2/1 deals 2 to 3/3 (not lethal)
         // Regular step: 3/3 deals 3 to 2/1 (lethal)
@@ -135,7 +135,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.findPermanent(opponent, "Centaur Courser") shouldNotBe null
     }
 
-    test("both have first strike — simultaneous first strike damage") {
+    test("COMBAT-16 both have first strike — simultaneous first strike damage") {
         // 2/1 FS attacks, 2/1 FS blocks
         // First strike step: both deal 2 damage to each other (both lethal)
         // Result: both die
@@ -169,7 +169,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.getGraveyardCardNames(opponent) shouldContain "Blade of the Ninth Watch"
     }
 
-    test("unblocked first strike deals damage in first strike step") {
+    test("COMBAT-16 unblocked first strike deals damage in first strike step") {
         // 2/1 first strike attacks unblocked
         // Player takes 2 damage in first strike step
         val driver = createDriver()
@@ -201,7 +201,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.assertLifeTotal(opponent, 18)
     }
 
-    test("attacker killed by first strike blocker does not deal damage in normal step") {
+    test("COMBAT-18 attacker killed by first strike blocker does not deal damage in normal step") {
         // 2/2 attacks, blocked by 3/1 first strike AND 1/1
         // First strike step: 3/1 deals 3 to 2/2 (lethal), 2/2 dies
         // Regular step: 2/2 is dead, can't deal damage; 1/1 can't deal damage to dead attacker
@@ -245,7 +245,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.findPermanent(opponent, "Savannah Lions") shouldNotBe null
     }
 
-    test("blocked first strike does not trample to player") {
+    test("COMBAT-16 blocked first strike does not trample to player") {
         // 3/1 first strike attacks, 1/1 blocks
         // First strike step: 3/1 deals 3 to 1/1 (lethal, excess 2)
         // No trample, so excess damage does NOT go to player

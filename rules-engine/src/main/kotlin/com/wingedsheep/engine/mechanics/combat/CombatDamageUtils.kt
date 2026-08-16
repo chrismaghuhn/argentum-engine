@@ -33,29 +33,43 @@ internal object CombatDamageUtils {
     enum class CombatSide { ATTACKER, BLOCKER }
 
     /**
-     * Who divides a source's combat damage, and whether CR 510.1c assignment order applies.
-     *
-     * @property playerId The player who chooses this source's damage division.
-     * @property orderConstrained False only when banding (CR 702.22j/k) lets the chooser ignore
-     *   the damage-assignment order. Note this is the *only* thing banding relaxes about order:
-     *   a banded attacker's own [ATTACKER][CombatSide.ATTACKER]-side edges stay order-constrained
-     *   unless one of its blockers has banding — band cooperation falls out of CR 510.1c's
-     *   cross-source lethal counting in the validator, not from lifting the attacker's order.
+     * Order distinct assignment choosers in active-player/nonactive-player order (CR 101.4).
+     * The source graph decides who is relevant; this helper only sequences those authorities.
      */
-    data class DamageChooser(val playerId: EntityId, val orderConstrained: Boolean)
+    fun apnapChooserOrder(
+        state: GameState,
+        activePlayerId: EntityId,
+        chooserIds: Collection<EntityId>,
+    ): List<EntityId> {
+        val relevant = chooserIds.distinct()
+        val apnapOrder = if (state.activePlayerId == activePlayerId) {
+            state.apnapOrder
+        } else {
+            // Keep the helper deterministic for synthetic/offline callers that pass an
+            // explicit active player without stamping it onto GameState.
+            val activeIndex = state.turnOrder.indexOf(activePlayerId)
+            if (activeIndex >= 0) {
+                state.turnOrder.drop(activeIndex) + state.turnOrder.take(activeIndex)
+            } else {
+                state.turnOrder
+            }
+        }
+        return (apnapOrder.filter { it in relevant } + relevant.filter { it !in apnapOrder }).distinct()
+    }
+
+    /** Who divides a source's combat damage. Banding changes this authority, not legality. */
+    data class DamageChooser(val playerId: EntityId)
 
     /**
-     * Resolve who assigns [sourceId]'s combat damage and whether its assignment order is
-     * constrained, applying the banding inversions (CR 702.22j/k) on top of the normal
-     * CR 510.1c defaults. This single entry point replaces the older split of
+     * Resolve who assigns [sourceId]'s combat damage, applying the banding inversions
+     * (CR 702.22j/k) on top of the normal chooser defaults. This single entry point replaces the older split of
      * `damageAssignmentChooser` / `blockerDamageAssignmentChooser` / `attackerBandHasBanding`.
      *
      * - [ATTACKER][CombatSide.ATTACKER]: default is the attacking player. If any creature
-     *   blocking [sourceId] has banding, CR 702.22j hands the division to the defending player
-     *   and lifts the order constraint.
+     *   blocking [sourceId] has banding, CR 702.22j hands the division to the defending player.
      * - [BLOCKER][CombatSide.BLOCKER]: default is the blocker's controller ([defaultChooser]).
      *   If any attacker [sourceId] is blocking has banding, CR 702.22k hands the division to the
-     *   active player and lifts the order constraint.
+     *   active player.
      */
     fun combatDamageChooser(
         state: GameState,
@@ -75,10 +89,10 @@ internal object CombatDamageUtils {
         attackerId: EntityId,
         defaultChooser: EntityId,
     ): DamageChooser {
-        val container = state.getEntity(attackerId) ?: return DamageChooser(defaultChooser, orderConstrained = true)
+        val container = state.getEntity(attackerId) ?: return DamageChooser(defaultChooser)
         val blockedBy = container.get<BlockedComponent>()
         val blockerHasBanding = blockedBy?.blockerIds?.any { projected.hasKeyword(it, Keyword.BANDING) } == true
-        if (!blockerHasBanding) return DamageChooser(defaultChooser, orderConstrained = true)
+        if (!blockerHasBanding) return DamageChooser(defaultChooser)
 
         // CR 702.22j: the defending player divides this attacker's damage "as they choose".
         val defenderId = container.get<AttackingComponent>()?.defenderId
@@ -87,7 +101,7 @@ internal object CombatDamageUtils {
             state.turnOrder.contains(defenderId) -> defenderId
             else -> projected.getController(defenderId) ?: defaultChooser
         }
-        return DamageChooser(chooser, orderConstrained = false)
+        return DamageChooser(chooser)
     }
 
     private fun blockerDamageChooser(
@@ -98,14 +112,14 @@ internal object CombatDamageUtils {
         activePlayerId: EntityId,
     ): DamageChooser {
         val blocking = state.getEntity(blockerId)?.get<BlockingComponent>()
-            ?: return DamageChooser(defaultChooser, orderConstrained = true)
+            ?: return DamageChooser(defaultChooser)
         // CR 702.22k: if any blocked attacker has banding, the active player divides this
         // blocker's damage "as they choose".
         val attackerHasBanding = blocking.blockedAttackerIds.any { projected.hasKeyword(it, Keyword.BANDING) }
         return if (attackerHasBanding) {
-            DamageChooser(activePlayerId, orderConstrained = false)
+            DamageChooser(activePlayerId)
         } else {
-            DamageChooser(defaultChooser, orderConstrained = true)
+            DamageChooser(defaultChooser)
         }
     }
 

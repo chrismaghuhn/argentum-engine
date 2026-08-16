@@ -11,22 +11,20 @@ import kotlinx.serialization.Serializable
  * drain nodes, and each [DamageEdge] carries an engine-computed default amount the player can
  * adjust before confirming.
  *
- * There is no separate damage-assignment *order* step: the chooser assigns damage to each edge
- * directly, and the validator accepts any split that is legal under *some* order the attacker
- * could pick (CR 510.1c) — i.e. for an [DamageEdge.orderConstrained] source, at most one blocker
- * it damages may be left below [DamageEdge.lethal] (counting cross-source damage this step).
- * Banding (CR 702.22j/k) lifts even that, letting the chooser divide freely, and flips
- * [DamageEdge.editableBy]; it does NOT lift the separate CR 702.19b trample lethal-first gate,
- * which keys off [DamageEdge.lethal] directly regardless of [DamageEdge.orderConstrained].
+ * There is no separate damage-assignment-order step: the chooser assigns a
+ * complete amount to each edge directly. Ordinary combat edges are freely
+ * splittable; banding changes [DamageEdge.editableBy]. Trample's separate
+ * lethal requirement is evaluated from the complete graph and same-step
+ * aggregate damage, never from an order field.
  */
 
 /** Which way a [DamageEdge] points, and therefore how it is gated. */
 @Serializable
 enum class DamageEdgeDirection {
-    /** Attacker assigns to one of its blockers (CR 510.1c order applies). */
+    /** Attacker assigns to one of its blockers. */
     ATTACKER_TO_BLOCKER,
 
-    /** Blocker assigns to one of the attackers it blocks (CR 510.1c order applies). */
+    /** Blocker assigns to one of the attackers it blocks. */
     BLOCKER_TO_ATTACKER,
 
     /** Trample / free-assignment overflow to the defending player (CR 702.19b drain). */
@@ -52,14 +50,13 @@ enum class ResolutionTargetKind { PLAYER, PLANESWALKER, BATTLE }
  * @property amount Engine-computed default; the editor may change it within `[0, maximum]`.
  * @property maximum Cap for this edge — the source's available combat damage (its power, or
  *   toughness for Doran-style sources).
- * @property lethal The true lethal need for [targetId] from this source: 1 for a deathtouch
- *   source, otherwise `toughness − damage already marked` (at least 1). Always the real value
- *   so the CR 702.19b trample gate stays correct even when [orderConstrained] is false.
- * @property orderConstrained Whether this edge participates in CR 510.1c damage-assignment order
- *   gating. False for banding (CR 702.22j/k) and free-assignment edges, which may be divided
- *   ignoring order.
+ * @property lethal A display/replay hint retained for wire compatibility. It
+ *   is not an ordinary legality gate; trample computes lethal from the full
+ *   assignment plan.
+ * @property orderConstrained A decode-only compatibility field retained for old payloads.
+ *   It is omitted from modern wire output and current gameplay does not evaluate it.
  * @property isTrampleDrain True for a trample overflow edge to a player/planeswalker/battle;
- *   gated by CR 702.19b (every blocker at lethal first), independent of [orderConstrained].
+ *   gated by CR 702.19b from the complete assignment plan.
  * @property editableBy The player allowed to modify this edge. Banding flips this to the
  *   opposing player for the affected edges (CR 702.22j/k).
  */
@@ -72,7 +69,8 @@ data class DamageEdge(
     val amount: Int,
     val maximum: Int,
     val lethal: Int,
-    val orderConstrained: Boolean,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val orderConstrained: Boolean = false,
     val isTrampleDrain: Boolean,
     val editableBy: EntityId,
 )
@@ -110,8 +108,9 @@ data class ResolutionBlocker(
     val hasDoubleStrike: Boolean,
     val dealsDamageThisStep: Boolean,
     val blockedAttackerIds: List<EntityId>,
-    /** Damage-assignment order for the attackers this blocker blocks (CR 510.1c). */
-    val orderedAttackers: List<EntityId>,
+    /** Decode-only compatibility field retained for old payloads; current gameplay omits it. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val orderedAttackers: List<EntityId> = emptyList(),
     val markedDamage: Int,
 )
 
@@ -156,14 +155,18 @@ data class DamageEdgeAmount(val edgeId: String, val amount: Int)
  *
  * @property edges The chosen amounts. A chooser submits only the edges they own ([DamageEdge.editableBy]);
  *   the resumer filters out any others.
- * @property orderedBlockers Optional row-order overrides: attacker -> its blockers in assignment order.
- * @property orderedAttackers Optional row-order overrides: blocker -> the attackers it blocks, in order.
+ * @property orderedBlockers Decode-only row-order payload retained for old replays. Modern
+ *   responses omit it and current gameplay ignores it.
+ * @property orderedAttackers Decode-only row-order payload retained for old replays. Modern
+ *   responses omit it and current gameplay ignores it.
  */
 @Serializable
 @SerialName("CombatResolutionResponse")
 data class CombatResolutionResponse(
     override val decisionId: String,
     val edges: List<DamageEdgeAmount>,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val orderedBlockers: Map<EntityId, List<EntityId>> = emptyMap(),
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val orderedAttackers: Map<EntityId, List<EntityId>> = emptyMap(),
 ) : DecisionResponse

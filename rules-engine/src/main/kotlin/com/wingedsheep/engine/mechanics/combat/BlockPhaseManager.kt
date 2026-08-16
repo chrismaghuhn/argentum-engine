@@ -50,7 +50,7 @@ import java.util.UUID
  * - Provoke requirements
  * - Projected must-block requirements (Grand Melee)
  * - Block taxes (Whipgrass Entangler)
- * - Blocker order decisions for multiple blockers
+ * - Persisting unordered block relations for the combat-damage assignment board
  * - Mandatory blocker assignment queries
  */
 internal class BlockPhaseManager(
@@ -145,7 +145,8 @@ internal class BlockPhaseManager(
     /**
      * Apply the post-tax commitment for a declared block: stamp [BlockingComponent] /
      * [BlockedComponent], mark the blockers-declared tracking component, emit the
-     * [BlockersDeclaredEvent], and queue any blocker-order / attacker-order decisions.
+     * [BlockersDeclaredEvent]. Modern combat damage does not queue a blocker-order or
+     * attacker-order decision here.
      *
      * Callable from the synchronous (no-tax) path in [declareBlockers] and from
      * [com.wingedsheep.engine.handlers.continuations.CombatTaxContinuationResumer] after
@@ -159,7 +160,7 @@ internal class BlockPhaseManager(
     ): ExecutionResult {
         // CR 702.22h: blocking any member of an attacking band blocks the whole band — a blocker
         // assigned to one band member is treated as blocking every member. Expand the declared
-        // assignments before stamping so the rest of combat (ordering, the damage board) sees the
+        // assignments before stamping so the rest of combat (the damage board) sees the
         // full bipartite picture.
         val bandMembers = collectBands(state)
         val expandedBlockers: Map<EntityId, List<EntityId>> = blockers.mapValues { (_, attackerIds) ->
@@ -220,9 +221,9 @@ internal class BlockPhaseManager(
         val blockTaxEvents = taxEvents
 
         // Damage-assignment order (CR 510.1c/d) is no longer collected in a standalone
-        // OrderObjectsDecision pre-step. The combat resolution board owns ordering: it reads the
-        // declaration order (BlockedComponent.blockerIds / BlockingComponent.blockedAttackerIds)
-        // as the default and lets the chooser reorder via the response. No pause here.
+        // OrderObjectsDecision pre-step. The combat resolution board consumes the unordered
+        // BlockedComponent/BlockingComponent relations and collects the complete split directly.
+        // No pause occurs here.
         return ExecutionResult.success(
             newState,
             blockTaxEvents + blockersEvent

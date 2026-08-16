@@ -378,10 +378,10 @@ data class DistributeDecision(
 ) : PendingDecision
 
 /**
- * Player must order objects (e.g., damage assignment order, scry).
+ * Player must order objects for legacy or non-combat effects (e.g., scry).
  *
  * @property objects The entity IDs that need to be ordered
- * @property cardInfo Optional card info for UI display (used for blocker ordering in combat)
+ * @property cardInfo Optional card info for UI display in legacy callers
  */
 @Serializable
 @SerialName("OrderObjectsDecision")
@@ -488,18 +488,17 @@ data class ChooseReplacementDecision(
 ) : PendingDecision
 
 /**
- * Player must assign combat damage from an attacker to blockers.
+ * Legacy decode shape for an obsolete per-attacker damage-assignment decision.
  *
- * Per CR 510.1c: Damage must be assigned in order. A creature cannot be
- * assigned damage until all creatures before it in the order have been
- * assigned lethal damage.
+ * Modern gameplay uses [CombatResolutionDecision] instead. The fields below remain only so
+ * old saved decisions can be decoded; current gameplay never emits or evaluates this shape.
  *
  * @property attackerId The attacking creature assigning damage
  * @property availablePower Total damage available to assign
- * @property orderedTargets Blockers in damage assignment order (first = first to receive damage)
+ * @property orderedTargets Legacy target-order field retained for replay decoding
  * @property defenderId The defending player (only receives damage if attacker has trample)
- * @property minimumAssignments Minimum damage each blocker must receive (lethal damage)
- * @property defaultAssignments Pre-computed optimal damage distribution (lethal to each blocker in order, remainder to last/player)
+ * @property minimumAssignments Legacy minimum hints; current combat validation does not use them
+ * @property defaultAssignments Legacy defaults; current combat uses CombatResolutionDecision
  * @property hasTrample Whether excess damage can go to defending player
  * @property hasDeathtouch If true, 1 damage is lethal to any creature
  */

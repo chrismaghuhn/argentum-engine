@@ -19,12 +19,10 @@ import com.wingedsheep.engine.state.components.battlefield.WasDealtDamageThisTur
 import com.wingedsheep.engine.state.components.player.WasDealtCombatDamageByLegendaryCreatureThisTurnComponent
 import com.wingedsheep.engine.state.components.player.CombatDamageReceivedThisTurnComponent
 import com.wingedsheep.engine.state.components.player.WasDealtCombatDamageThisTurnComponent
-import com.wingedsheep.engine.state.components.combat.AttackerOrderComponent
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.combat.BlockedComponent
 import com.wingedsheep.engine.state.components.combat.BlockingComponent
 import com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent
-import com.wingedsheep.engine.state.components.combat.DamageAssignmentOrderComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
@@ -298,16 +296,15 @@ internal class CombatDamageManager(
     // attacker/blocker/defender damage graph — covering every attacker that needs a
     // manual damage-assignment choice this step, plus the blocker→attacker edges for
     // any blocker that blocks two or more attackers. Banding flips edge ownership and
-    // lifts ordering via [CombatDamageUtils.combatDamageChooser] (CR 702.22j/k).
+    // changes chooser authority via [CombatDamageUtils.combatDamageChooser] (CR 702.22j/k).
     // =========================================================================
 
-    /** One attacker's contribution to the board: its blockers, defaults, chooser, and ordering. */
+    /** One attacker's contribution to the board: its blockers, defaults, and chooser authority. */
     private data class PlanCandidate(
         val attackerId: EntityId,
         val attackerName: String,
         val attackingComponent: AttackingComponent,
         val chooser: EntityId,
-        val orderConstrained: Boolean,
         val availablePower: Int,
         val liveBlockers: List<EntityId>,
         val hasTrample: Boolean,
@@ -384,9 +381,7 @@ internal class CombatDamageManager(
             val attackerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, attackerId, cardRegistry)
             if (attackerPower <= 0) continue
 
-            val orderedBlockers = attackerContainer.get<DamageAssignmentOrderComponent>()?.orderedBlockers
-                ?: blockedBy.blockerIds
-            val liveBlockers = orderedBlockers.filter { it in battlefield }
+            val liveBlockers = blockedBy.blockerIds.filter { it in battlefield }
             if (liveBlockers.isEmpty()) continue
 
             val attackingPlayer = projected.getController(attackerId) ?: continue
@@ -401,7 +396,6 @@ internal class CombatDamageManager(
                     attackerName = attackerCard.name,
                     attackingComponent = attackingComponent,
                     chooser = chooser.playerId,
-                    orderConstrained = chooser.orderConstrained,
                     availablePower = attackerPower,
                     liveBlockers = liveBlockers,
                     hasTrample = projected.hasKeyword(attackerId, Keyword.TRAMPLE),
@@ -457,8 +451,6 @@ internal class CombatDamageManager(
                 hasDoubleStrike = projected.hasKeyword(blockerId, Keyword.DOUBLE_STRIKE),
                 dealsDamageThisStep = dealsDamageThisStep(projected, blockerId, firstStrike),
                 blockedAttackerIds = blocking?.blockedAttackerIds.orEmpty(),
-                orderedAttackers = container.get<AttackerOrderComponent>()?.orderedAttackers
-                    ?: blocking?.blockedAttackerIds.orEmpty(),
                 markedDamage = container.get<DamageComponent>()?.amount ?: 0,
             )
         }
@@ -482,10 +474,13 @@ internal class CombatDamageManager(
 
         val edges = mutableListOf<DamageEdge>()
 
-        // Attacker -> blocker edges, plus a trample drain to the defender. Defaults come from the
-        // lethal-first auto distribution (CR 510.1c order); the player may re-divide within budget.
+        // Attacker -> blocker edges, plus a trample drain to the defender. The
+        // ordinary default is arbitrary; trample defaults come from the explicit
+        // trample-lethal helper and are not a generic assignment-order rule.
         for (c in candidates) {
-            val auto = damageCalculator.calculateAutoDamageDistribution(state, c.attackerId).assignments
+            val defaultAssignments = damageCalculator
+                .calculateAutoDamageDistribution(state, c.attackerId)
+                .assignments
             for (blockerId in c.liveBlockers) {
                 edges.add(
                     DamageEdge(
@@ -493,11 +488,10 @@ internal class CombatDamageManager(
                         sourceId = c.attackerId,
                         targetId = blockerId,
                         direction = DamageEdgeDirection.ATTACKER_TO_BLOCKER,
-                        amount = auto[blockerId] ?: 0,
+                        amount = defaultAssignments[blockerId] ?: 0,
                         maximum = c.availablePower,
                         lethal = damageCalculator.calculateLethalDamage(state, blockerId, c.attackerId)
                             .lethalAmount.coerceAtLeast(1),
-                        orderConstrained = c.orderConstrained,
                         isTrampleDrain = false,
                         editableBy = c.chooser,
                     )
@@ -518,10 +512,9 @@ internal class CombatDamageManager(
                         sourceId = c.attackerId,
                         targetId = defenderId,
                         direction = direction,
-                        amount = auto[defenderId] ?: 0,
+                        amount = defaultAssignments[defenderId] ?: 0,
                         maximum = c.availablePower,
                         lethal = 0,
-                        orderConstrained = false,
                         isTrampleDrain = true,
                         editableBy = c.chooser,
                     )
@@ -529,29 +522,23 @@ internal class CombatDamageManager(
             }
         }
 
-        // Blocker -> attacker edges for any blocker that blocks 2+ attackers (CR 510.1c). Seed the
-        // running pending-damage map with the attacker-side amounts so successive blockers see what
-        // each attacker is already taking (Ironfist crossover).
-        val pendingDamage = mutableMapOf<EntityId, Int>()
-        for (edge in edges) {
-            if (edge.direction == DamageEdgeDirection.ATTACKER_TO_BLOCKER) {
-                pendingDamage.merge(edge.targetId, edge.amount, Int::plus)
-            }
-        }
+        // Blocker -> attacker edges for any blocker that blocks 2+ attackers.
+        // Their defaults are also arbitrary complete splits; same-step damage
+        // is evaluated from the submitted plan, not from a precomputed order.
         for (blocker in blockerNodes) {
             if (blocker.blockedAttackerIds.size < 2) continue
+            if (!blocker.dealsDamageThisStep) continue
             val defaultChooser = projected.getController(blocker.id) ?: continue
             val chooser = CombatDamageUtils.combatDamageChooser(
                 state, projected, blocker.id, CombatDamageUtils.CombatSide.BLOCKER,
                 defaultChooser = defaultChooser, activePlayerId = activePlayerId,
             )
-            val orderedTargets = blocker.orderedAttackers.filter { it in battlefield }
-            if (orderedTargets.isEmpty()) continue
+            val attackerTargets = blocker.blockedAttackerIds.filter { it in battlefield }
+            if (attackerTargets.isEmpty()) continue
             val blockerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, blocker.id, cardRegistry)
             if (blockerPower <= 0) continue
-            val defaults = damageCalculator.calculateBlockerDamageDistribution(state, blocker.id, pendingDamage).assignments
-            for (attackerId in orderedTargets) {
-                val default = defaults[attackerId] ?: 0
+            for (attackerId in attackerTargets) {
+                val default = if (attackerId == attackerTargets.first()) blockerPower else 0
                 edges.add(
                     DamageEdge(
                         id = edgeId(blocker.id, attackerId),
@@ -562,24 +549,27 @@ internal class CombatDamageManager(
                         maximum = blockerPower,
                         lethal = damageCalculator.calculateLethalDamage(state, attackerId, blocker.id)
                             .lethalAmount.coerceAtLeast(1),
-                        orderConstrained = chooser.orderConstrained,
+                        // Retained in the wire model for old payloads. Current gameplay has no
+                        // generic assignment-order constraint.
                         isTrampleDrain = false,
                         editableBy = chooser.playerId,
                     )
                 )
-                pendingDamage.merge(attackerId, default, Int::plus)
             }
         }
 
-        // CR 510.1c sequences assignment: attacker-side choosers act first, then any blocker-side
-        // editor that isn't already queued. The resumer hands off to each chooser in turn.
-        val attackerChoosers = candidates.map { it.chooser }.distinct()
-        val blockerChoosers = edges
+        // Assignment choices are collected in active-player/nonactive-player
+        // order. This keeps the chooser authority from banding while applying
+        // APNAP to multi-player combat instead of assuming a two-player order.
+        val candidateChoosers = candidates.map { it.chooser }
+        val edgeChoosers = edges
             .filter { it.direction == DamageEdgeDirection.BLOCKER_TO_ATTACKER }
             .map { it.editableBy }
-            .distinct()
-            .filterNot { it in attackerChoosers }
-        val choosers = attackerChoosers + blockerChoosers
+        val choosers = CombatDamageUtils.apnapChooserOrder(
+            state,
+            activePlayerId,
+            candidateChoosers + edgeChoosers,
+        )
 
         val decisionId = UUID.randomUUID().toString()
         // Names here are the real card names; per-viewer face-down masking is applied downstream at
@@ -671,9 +661,7 @@ internal class CombatDamageManager(
             attackerContainer.get<CardComponent>() ?: continue
 
             val blockedBy = attackerContainer.get<BlockedComponent>()
-            val orderedBlockers = attackerContainer.get<DamageAssignmentOrderComponent>()?.orderedBlockers
-                ?: blockedBy?.blockerIds
-                ?: emptyList()
+            val blockers = blockedBy?.blockerIds ?: emptyList()
 
             // Attacker damage
             if (dealsDamageThisStep(projected, attackerId, firstStrike)) {
@@ -728,20 +716,16 @@ internal class CombatDamageManager(
             }
         }
 
-        // Blocker counterattack damage — each blocker divides its damage among attackers it blocks.
-        // Per CR 510.1c, lethal damage checks must account for damage being assigned by other
-        // creatures in the same combat damage step, so we track pending damage across all blockers.
+        // Blocker damage — each blocker divides its damage among attackers it blocks.
         val pendingDamage = mutableMapOf<EntityId, Int>()
         val processedBlockers = mutableSetOf<EntityId>()
         for ((attackerId, _) in attackers) {
             if (attackerId !in state.getBattlefield()) continue
             val attackerContainer = state.getEntity(attackerId) ?: continue
             val blockedBy = attackerContainer.get<BlockedComponent>()
-            val orderedBlockers = attackerContainer.get<DamageAssignmentOrderComponent>()?.orderedBlockers
-                ?: blockedBy?.blockerIds
-                ?: emptyList()
+            val blockersForAttacker = blockedBy?.blockerIds ?: emptyList()
 
-            for (blockerId in orderedBlockers) {
+            for (blockerId in blockersForAttacker) {
                 if (blockerId in processedBlockers) continue
                 if (blockerId !in state.getBattlefield()) continue
                 val blockerContainer = state.getEntity(blockerId) ?: continue
@@ -778,7 +762,7 @@ internal class CombatDamageManager(
                         pendingDamage[targetId] = (pendingDamage[targetId] ?: 0) + blockerPower
                     }
                 } else {
-                    // Blocking multiple attackers — divide damage among them in order
+                    // Blocking multiple attackers — use the neutral complete-plan seed.
                     val autoDist = damageCalculator.calculateBlockerDamageDistribution(
                         state, blockerId, pendingDamage
                     )

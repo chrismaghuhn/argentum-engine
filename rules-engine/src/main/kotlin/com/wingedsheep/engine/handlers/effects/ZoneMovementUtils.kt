@@ -235,11 +235,8 @@ object ZoneMovementUtils {
     }
 
     /**
-     * Clean up combat references to a leaving entity on other creatures.
-     * When a blocker leaves the battlefield, remove it from each attacker's
-     * BlockedComponent.blockerIds and DamageAssignmentOrderComponent.orderedBlockers.
-     * When an attacker leaves the battlefield, remove it from each blocker's
-     * BlockingComponent.blockedAttackerIds and AttackerOrderComponent.orderedAttackers.
+     * Clean up modern combat references to a leaving entity on other creatures.
+     * Compatibility-only damage-order payloads are not queried or maintained.
      */
     fun cleanupCombatReferences(state: GameState, leavingEntityId: EntityId): GameState {
         val container = state.getEntity(leavingEntityId) ?: return state
@@ -254,10 +251,6 @@ object ZoneMovementUtils {
                     val blocked = updated.get<BlockedComponent>()
                     if (blocked != null) {
                         updated = updated.with(BlockedComponent(blocked.blockerIds.filter { it != leavingEntityId }))
-                    }
-                    val order = updated.get<DamageAssignmentOrderComponent>()
-                    if (order != null) {
-                        updated = updated.with(DamageAssignmentOrderComponent(order.orderedBlockers.filter { it != leavingEntityId }))
                     }
                     updated
                 }
@@ -280,10 +273,6 @@ object ZoneMovementUtils {
                             } else {
                                 updated.with(BlockingComponent(updatedIds))
                             }
-                        }
-                        val attackerOrder = updated.get<AttackerOrderComponent>()
-                        if (attackerOrder != null) {
-                            updated = updated.with(AttackerOrderComponent(attackerOrder.orderedAttackers.filter { it != leavingEntityId }))
                         }
                         updated
                     }
