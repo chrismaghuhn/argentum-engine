@@ -2843,7 +2843,8 @@ class StackResolver(
         // The ability's chosen targets are already stored on the stack. Build the same canonical
         // resolution context before checking their current legality so CR 608.2a can run before
         // CR 608.2b. Having a stored target in this context does not make it legal; target
-        // validation below still decides which resolution path applies.
+        // validation below still decides which resolution path applies. The context is shared by
+        // the intervening-if check and the effect itself; target legality remains CR 608.2b's job.
         val chosenTargets = targetsComponent?.targets ?: emptyList()
         val targetReqs = targetsComponent?.targetRequirements ?: emptyList()
         val context = EffectContext.forTriggeredAbility(
@@ -2854,7 +2855,8 @@ class StackResolver(
 
         // CR 603.4 / 608.2a: an intervening-if condition is checked before the target legality
         // check in 608.2b. If it is false, the ability leaves the stack without validating targets
-        // or executing any part of its effect.
+        // or executing any part of its effect. A triggerRestriction is a trigger-time CR 603.2
+        // restriction and is intentionally not rechecked during resolution.
         abilityComponent.interveningIf?.let { condition ->
             if (!conditionEvaluator.evaluate(state, condition, context)) {
                 return ExecutionResult.success(
@@ -2870,7 +2872,7 @@ class StackResolver(
             }
         }
 
-        // Validate targets (including protection check - Rule 702.16)
+        // CR 608.2b — validate targets (including protection check, CR 702.16)
         val sourceCard = state.getEntity(abilityComponent.sourceId)?.get<CardComponent>()
         val sourceColors = sourceCard?.colors ?: emptySet()
         val sourceSubtypes = sourceCard?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet()
