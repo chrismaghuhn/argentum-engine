@@ -368,6 +368,18 @@ object Triggers {
     )
 
     /**
+     * When you attack a player with one or more creatures matching [filter].
+     *
+     * This is explicitly per defending player: several qualifying attackers against the same
+     * player produce one trigger, while qualifying attackers against two different players
+     * produce two triggers. A planeswalker or battle target does not count as its controller.
+     */
+    fun YouAttackPlayerWithFilter(filter: GameObjectFilter): TriggerSpec = TriggerSpec(
+        event = YouAttackPlayerEvent(minAttackers = 1, attackerFilter = filter),
+        binding = TriggerBinding.ANY
+    )
+
+    /**
      * When you play a land (CR 305.1). Pass [fromZoneOtherThan] to restrict to lands played from a
      * zone other than that one — Shadow of the Goblin: "whenever you play a land … from anywhere
      * other than your hand" is `youPlayLand(fromZoneOtherThan = Zone.HAND)`. Fires only for the

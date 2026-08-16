@@ -53,8 +53,7 @@ curl -s -X POST localhost:8081/envs -H 'Content-Type: application/json' -d '{
     } } }
   ],
   "skipMulligans": true,
-  "startingPlayerIndex": 0,
-  "revealAll": true
+  "startingPlayerIndex": 0
 }'
 ```
 
@@ -63,9 +62,10 @@ Key config fields:
 - **`deck`** — `{"type":"Explicit","cards":{"Name":count}}` (recommended for testing), or
   `{"type":"RandomSealed","setCode":"BLB","boosterCount":8}` (needs the set's basic-land variants
   registered).
-- **`revealAll: true`** — set this for self-play. Normally observations hide the opponent's hand and
-  libraries; since one agent is playing *both* seats, you want to see everything. (Never use it for
-  real RL self-play — it leaks information.)
+- **Privacy boundary** — observations always hide unauthorized hand/library identities, while
+  individually revealed or Visibility-authorized top-library cards may be shown; there is no reveal-all
+  bypass. `legalActions` and the action registry are exposed only when the configured perspective is
+  `agentToAct`; use separate perspective-configured environments when driving both seats.
 - **`skipMulligans: true`** — skip the mulligan back-and-forth.
 - `startingPlayerIndex` — pin it for reproducibility (null = random).
 
@@ -99,9 +99,15 @@ curl -s -X POST localhost:8081/envs/$ENV/step \
 
 The fields that matter most for spotting bugs:
 
-- `agentToAct` — whose decision this is. (With `revealAll` you make moves for both.)
+- `agentToAct` — whose decision this is. A perspective that is not the actor receives an empty
+  `legalActions` list and no usable action registry.
 - `legalActions[]` — each has `actionId`, `kind` (`PLAY_CARD`, `ACTIVATE_ABILITY`, `PASS`,
-  `DECISION`, …), `description`, `affordable`, `manaCost`, target counts.
+  `DECISION`, …), `description`, `affordable`, `manaCost`, target counts, and an
+  `actionSemantics` object containing the structured action identity used by the digest. The
+  `description` is presentation-only and is never used for semantic identity; generated
+  activated-ability handles are normalized through their printed, granted, static, emblem,
+  class-level, or intrinsic provenance into stable ordinals and structural payloads. Donor
+  EntityIds embedded in runtime handles are never semantic identity.
 - `zones[]` → `cards[]` → `EntityFeatures` — the projected (post-layers) truth about each object:
   `oracleText`, `power`/`toughness`, `types`/`subtypes`/`keywords`/`colors`, `tapped`, `counters`,
   `attachedTo`. **`oracleText` is your oracle**: read what the card *says*, then watch whether the

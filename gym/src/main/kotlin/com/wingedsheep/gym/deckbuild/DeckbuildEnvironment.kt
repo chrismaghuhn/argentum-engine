@@ -65,7 +65,7 @@ class DeckbuildEnvironment(
 
     // --- GymEnv --------------------------------------------------------------
 
-    override fun observe(revealAll: Boolean?): ObservationResult {
+    override fun observe(): ObservationResult {
         val acts = buildActions()
         actions = acts
         val obs = DeckbuildObservation(

@@ -4204,6 +4204,17 @@ sealed set for attack-time facts beyond the basics.
 
 - `YouAttack` — when you declare attackers (player-level, ANY binding).
 - `YouAttackWithFilter(filter)` — when you attack with ≥1 matching attacker.
+- `YouAttackPlayerWithFilter(filter)` — per-defending-player attack trigger. The filter is
+  evaluated first, then qualifying attackers are grouped by their direct declared player target:
+  two qualifying attackers against the same player produce one trigger, while qualifying
+  attackers against two different players produce one trigger for each player. The new
+  `EventPattern.YouAttackPlayerEvent(minAttackers, attackerFilter)` applies `minAttackers`
+  independently to each player group; `minAttackers` must be at least 1 and invalid SDK data is
+  rejected at construction/deserialization. A planeswalker or battle is not converted through its
+  controller, so attacking one does not count as attacking that player. Each emitted trigger binds
+  that player as `TriggerContext.triggeringPlayerId` for `Player.TriggeringPlayer` effects. The
+  per-player expansion is preserved for battlefield, non-battlefield, globally granted, and
+  event-based delayed trigger detection paths.
 - `CreaturesAttackYou` — defender side; fires once per `AttackersDeclaredEvent`,
   not per attacker. Excludes creatures attacking a planeswalker you control
   (CR 509.1b). Pair with `DynamicAmounts.creaturesAttackingYou()` for
@@ -5147,7 +5158,8 @@ Dominant back faces that "stay" instead self-exile on their final chapter, dodgi
   delayed ability fires whenever a matching *event* occurs, staying resident until `expiry`
   (`DelayedTriggerExpiry.EndOfTurn`) removes it. Supported events include `DealsDamageEvent`,
   `ZoneChangeEvent`, the internal `DamagePreventedEvent`, and the attack-declaration events
-  `YouAttackEvent` / `AttackEvent`. There are two ways to scope which events match:
+  `YouAttackEvent` / `YouAttackPlayerEvent` / `AttackEvent`. There are two ways to scope which
+  events match:
   - **Entity-scoped** — set `watchedTarget` to bind the trigger to one concrete entity (resolved at
     creation time): "when **that** creature deals combat damage / dies this turn" (Long River Lurker,
     Deflecting Palm). Only `DealsDamageEvent` (scoped on the damage source) and `ZoneChangeEvent`
@@ -5165,14 +5177,22 @@ Dominant back faces that "stay" instead self-exile on their final chapter, dodgi
     "whenever a creature you control enters this turn, …" (Thunder of Unity chapters II/III):
     `trigger = Triggers.entersBattlefield(GameObjectFilter.Creature.youControl(), binding = ANY)`.
     Matching delegates to the same `TriggerMatcher` the battlefield triggers use, so the filter's
-    type **and** controller predicates are honored — it fires only for *your* creatures, not every
-    permanent that enters. (`YouAttackEvent` / `AttackEvent` are always filter-scoped this way.)
+     type **and** controller predicates are honored — it fires only for *your* creatures, not every
+     permanent that enters. (`YouAttackEvent` / `AttackEvent` are always filter-scoped this way.)
+     `YouAttackPlayerEvent` is also filter-scoped and emits one instance per distinct directly
+     attacked player whose group reaches `minAttackers`; it does not accept `watchedTarget` or
+     `watchedRecipient` scope.
   - `fireOnce = true` makes it a **one-shot**: it's consumed the first time it fires, then gone —
     "when you **next** [event] this turn". Combine with `trigger = Triggers.YouAttack` for the
     common "when you next attack this turn, …" template (All-Out Assault: untap each creature you
     control on your next attack). With `fireOnce = false` (default) it fires on every matching event
     until expiry (double-strike combat damage). One-shot consumption happens when the trigger goes
     on the stack (`TriggerProcessor`), so a second matching event the same turn won't re-fire it.
+    For `YouAttackPlayerEvent`, a single declaration can contain multiple simultaneous matching
+    player occurrences. That bounded case currently fails closed when `fireOnce = true`: the engine
+    emits no trigger rather than choosing a player by turn order or collection order. Exact CR 603.7b
+    controller choice for those simultaneous occurrences is a separate generic decision follow-up;
+    do not treat this combination as fully rules-complete yet.
   - `expiry` — when the resident delayed trigger is removed. `DelayedTriggerExpiry.EndOfTurn`
     (default) drops it in the end-of-turn cleanup ("this turn" riders).
     `DelayedTriggerExpiry.UntilControllersNextTurn` is the delayed-trigger analogue of

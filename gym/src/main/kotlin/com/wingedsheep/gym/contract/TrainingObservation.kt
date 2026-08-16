@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The payload an agent receives from any gym environment after `observe` / `step`.
@@ -20,7 +21,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 sealed interface Observation {
-    /** Sha256 of the canonical schema — clients compare to abort on drift. */
+    /** Contract identifier — clients compare it to abort on privacy/schema drift. */
     val schemaHash: String
 
     /** The player/agent who must act next, or null when [terminated]. */
@@ -53,7 +54,7 @@ sealed interface Observation {
 @Serializable
 @SerialName("Game")
 data class TrainingObservation(
-    /** Sha256 of the canonical schema. Python clients compare this to abort on drift. */
+    /** Contract identifier. Python clients compare this to abort on privacy/schema drift. */
     override val schemaHash: String,
 
     /** The player whose information-set this observation represents. */
@@ -72,8 +73,9 @@ data class TrainingObservation(
 
     /**
      * Per-zone entity views. A `(ownerId, zoneType)` pair appears at most once.
-     * Hidden zones (opponent hand, libraries) expose [ZoneView.hidden] = true
-     * and [ZoneView.cards] is empty (only [ZoneView.size] is populated).
+     * Hidden members are omitted from [ZoneView.cards], while [ZoneView.size]
+     * always reports the total number of entities in the zone. A zone may be
+     * mixed-visibility (for example, face-down exile).
      */
     val zones: List<ZoneView>,
 
@@ -131,8 +133,9 @@ data class ManaPoolView(
 /**
  * A zone's contents from [TrainingObservation.perspectivePlayerId]'s point of view.
  *
- * When [hidden] is true (opponent's hand, any library), [cards] is empty and
- * only [size] is meaningful. This mirrors real-MTG information hiding.
+ * [size] is the total zone size. [cards] contains only cards whose identity or
+ * public projection is visible to the perspective; fully hidden cards do not
+ * contribute entity IDs to the observation.
  */
 @Serializable
 data class ZoneView(
@@ -209,6 +212,8 @@ data class EntityFeatures(
 data class StackItemView(
     val entityId: EntityId,
     val controllerId: EntityId?,
+    /** Public source object for an ability, or the spell object itself for a spell. */
+    val sourceEntityId: EntityId? = null,
     val name: String,
     val kind: StackItemKind,
     /** Printed oracle text of the card backing this stack item — empty for stackless triggers. */
@@ -244,6 +249,14 @@ data class LegalActionView(
     val maxTargets: Int = 0,
     val requiresDamageDistribution: Boolean = false,
     val isManaAbility: Boolean = false,
+    /**
+     * Structured, presentation-free action identity used by semantic equality and StateDigest.
+     * This includes the engine action/decision payload but excludes the transport handle and
+     * human-readable description. Generated activated-ability handles are replaced by
+     * provenance-specific stable ordinals plus structural ability payloads; no runtime handle or
+     * donor EntityId is used as a semantic key. It is not a second rules or visibility model.
+     */
+    val actionSemantics: JsonObject? = null,
     /** True when this entry was generated from [PendingDecisionView], not a GameAction. */
     val isDecisionOption: Boolean = false
 )
@@ -260,7 +273,7 @@ data class LegalActionView(
  */
 @Serializable
 data class PendingDecisionView(
-    val decisionId: String,
+    val decisionId: String?,
     val kind: PendingDecisionKind,
     val playerId: EntityId,
     val prompt: String,
@@ -276,6 +289,7 @@ data class PendingDecisionView(
 
 @Serializable
 enum class PendingDecisionKind {
+    GENERIC,
     CHOOSE_TARGETS,
     SELECT_CARDS,
     YES_NO,

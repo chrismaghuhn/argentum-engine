@@ -1,12 +1,14 @@
 package com.wingedsheep.gym.contract
 
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AssignDamageDecision
 import com.wingedsheep.engine.core.BatchYesNoDecision
 import com.wingedsheep.engine.core.BatchYesNoResponse
-import com.wingedsheep.engine.core.CombatResolutionDecision
+import com.wingedsheep.engine.core.BottomCards
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseColorDecision
 import com.wingedsheep.engine.core.ChooseModeDecision
 import com.wingedsheep.engine.core.ChooseNumberDecision
@@ -14,49 +16,88 @@ import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.ChooseReplacementDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ColorChosenResponse
+import com.wingedsheep.engine.core.CombatResolutionDecision
+import com.wingedsheep.engine.core.CrewVehicle
+import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DistributeDecision
+import com.wingedsheep.engine.core.ForetellCard
+import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PendingDecision
+import com.wingedsheep.engine.core.PlayLand
+import com.wingedsheep.engine.core.PlotCard
 import com.wingedsheep.engine.core.ReorderLibraryDecision
+import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.SearchLibraryDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
+import com.wingedsheep.engine.core.SuspendCardFromHand
+import com.wingedsheep.engine.core.TurnFaceUp
+import com.wingedsheep.engine.core.TypecycleCard
+import com.wingedsheep.engine.core.UnlockRoomDoor
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
+import com.wingedsheep.engine.handlers.ConditionEvaluator
+import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
+import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
+import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.EmblemActivatedAbilityComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
+import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
+import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.effects.LevelUpClassEffect
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Converts `(GameState, perspectivePlayerId)` into a [TrainingObservation].
  *
  * ## Information hiding
  *
- * By default, opponent hand and everyone's library are hidden
- * ([ZoneView.hidden] = true, [ZoneView.cards] empty). Set [revealAll] to
- * `true` to disable masking — only appropriate for debug scripts; never
- * for real self-play training.
+ * Opponent hand and library identities are perspective-masked. Individually
+ * revealed cards and Visibility-authorized top-of-library cards may appear in
+ * [ZoneView.cards], while fully hidden members never do. There is no production
+ * bypass for this boundary.
  *
  * ## Projected vs. base state
  *
@@ -67,24 +108,39 @@ import com.wingedsheep.sdk.model.EntityId
  * zones — see `GameState.getBattlefield`).
  */
 class ObservationBuilder(
-    private val schemaHash: String = SchemaHash.CURRENT
+    private val schemaHash: String = SchemaHash.CURRENT,
+    private val cardRegistry: CardRegistry
 ) {
+    private val visibility = Visibility(cardRegistry)
+    private val predicateEvaluator = PredicateEvaluator()
+    private val conditionEvaluator = ConditionEvaluator()
+    private val castPermissionUtils by lazy {
+        CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
+    }
+    private val actionSerialization = Json {
+        encodeDefaults = true
+        explicitNulls = false
+        classDiscriminator = "type"
+    }
+
     fun build(
         state: GameState,
         perspectivePlayerId: EntityId,
-        legalActions: List<LegalAction>,
-        revealAll: Boolean = false
+        legalActions: List<LegalAction>
     ): ObservationResult {
-        val projected = state.projectedState
-
         val players = state.turnOrder.map { buildPlayerView(state, it, perspectivePlayerId) }
 
-        val zones = buildZones(state, perspectivePlayerId, revealAll)
+        val zones = buildZones(state, perspectivePlayerId)
 
-        val stack = state.stack.map { entityId -> buildStackItem(state, entityId) }
+        val agentToAct = state.pendingDecision?.playerId ?: state.priorityPlayerId
+        val mayReceiveActions = !state.gameOver && perspectivePlayerId == agentToAct
+
+        val stack = state.stack.map { entityId ->
+            buildStackItem(state, entityId, perspectivePlayerId)
+        }
 
         val pendingDecisionAndRegistry = state.pendingDecision
-            ?.let { buildPendingDecision(it) }
+            ?.let { buildPendingDecision(it, mayReceiveActions) }
         val pendingDecisionView = pendingDecisionAndRegistry?.first
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
 
@@ -92,19 +148,22 @@ class ObservationBuilder(
         // engine's `legalActions` is empty — we use the decision options instead.
         val legalActionViews: List<LegalActionView>
         val actionRegistry: ActionRegistry
-        if (state.pendingDecision != null) {
+        if (!mayReceiveActions) {
+            legalActionViews = emptyList()
+            actionRegistry = ActionRegistry.EMPTY
+        } else if (state.pendingDecision != null) {
             val responses = decisionRegistry.decisionResponses.map { it.second }
             legalActionViews = buildDecisionOptionViews(state.pendingDecision!!, responses)
             actionRegistry = decisionRegistry
         } else {
-            legalActionViews = legalActions.mapIndexed { idx, la -> legalActionToView(idx, la) }
+            legalActionViews = legalActions.mapIndexed { idx, la -> legalActionToView(state, idx, la) }
             actionRegistry = ActionRegistry.ofLegalActions(legalActions)
         }
 
         val obs = TrainingObservation(
             schemaHash = schemaHash,
             perspectivePlayerId = perspectivePlayerId,
-            agentToAct = state.pendingDecision?.playerId ?: state.priorityPlayerId,
+            agentToAct = agentToAct,
             turnNumber = state.turnNumber,
             phase = state.phase,
             step = state.step,
@@ -169,25 +228,35 @@ class ObservationBuilder(
 
     private fun buildZones(
         state: GameState,
-        perspectivePlayerId: EntityId,
-        revealAll: Boolean
+        perspectivePlayerId: EntityId
     ): List<ZoneView> {
         // Emit a view for every (player, zone) in turn order so trainers see a
         // consistent shape regardless of whether a zone happens to be empty.
         val perPlayerZones = listOf(
-            Zone.HAND, Zone.LIBRARY, Zone.GRAVEYARD, Zone.EXILE, Zone.BATTLEFIELD
+            Zone.HAND,
+            Zone.LIBRARY,
+            Zone.GRAVEYARD,
+            Zone.EXILE,
+            Zone.BATTLEFIELD,
+            Zone.COMMAND
         )
         val views = mutableListOf<ZoneView>()
         for (playerId in state.turnOrder) {
             for (zone in perPlayerZones) {
                 val key = ZoneKey(playerId, zone)
                 val ids = state.getZone(key)
-                val hidden = !revealAll && isHiddenFrom(zone, playerId, perspectivePlayerId)
-                val cards = if (hidden) emptyList() else ids.map { buildEntityFeatures(state, it, zone) }
+                val cards = ids.mapNotNull { entityId ->
+                    when (cardVisibility(state, key, entityId, perspectivePlayerId, zone)) {
+                        CardVisibility.HIDDEN -> null
+                        CardVisibility.VISIBLE_IDENTITY -> buildEntityFeatures(state, entityId, zone)
+                        CardVisibility.PUBLIC_FACE_DOWN_ONLY ->
+                            buildEntityFeatures(state, entityId, zone, maskFaceDownIdentity = true)
+                    }
+                }
                 views += ZoneView(
                     ownerId = playerId,
                     zoneType = zone,
-                    hidden = hidden,
+                    hidden = cards.size != ids.size,
                     size = ids.size,
                     cards = cards
                 )
@@ -196,10 +265,56 @@ class ObservationBuilder(
         return views
     }
 
-    private fun isHiddenFrom(zone: Zone, owner: EntityId, perspective: EntityId): Boolean = when (zone) {
-        Zone.LIBRARY -> true
-        Zone.HAND -> owner != perspective
-        else -> false
+    private enum class CardVisibility {
+        HIDDEN,
+        VISIBLE_IDENTITY,
+        PUBLIC_FACE_DOWN_ONLY
+    }
+
+    private fun cardVisibility(
+        state: GameState,
+        key: ZoneKey,
+        entityId: EntityId,
+        perspective: EntityId,
+        zone: Zone
+    ): CardVisibility {
+        if (zone == Zone.LIBRARY) {
+            if (!isLibraryCardVisibleTo(state, key, entityId, perspective)) {
+                return CardVisibility.HIDDEN
+            }
+        } else if (!visibility.isZoneVisibleTo(state, key, perspective)) {
+            return CardVisibility.HIDDEN
+        }
+
+        val container = state.getEntity(entityId) ?: return CardVisibility.HIDDEN
+        if (!container.has<FaceDownComponent>()) return CardVisibility.VISIBLE_IDENTITY
+        if (visibility.isCardRevealedTo(state, entityId, perspective)) {
+            return CardVisibility.VISIBLE_IDENTITY
+        }
+
+        val controller = state.projectedState.getController(entityId)
+            ?: container.get<ControllerComponent>()?.playerId
+        if (zone == Zone.BATTLEFIELD &&
+            (controller == perspective || visibility.hasLookAtFaceDownCreatures(state, perspective))
+        ) {
+            return CardVisibility.VISIBLE_IDENTITY
+        }
+
+        if (zone == Zone.EXILE) return CardVisibility.HIDDEN
+        return CardVisibility.PUBLIC_FACE_DOWN_ONLY
+    }
+
+    private fun isLibraryCardVisibleTo(
+        state: GameState,
+        key: ZoneKey,
+        entityId: EntityId,
+        perspective: EntityId
+    ): Boolean {
+        if (visibility.isCardRevealedTo(state, entityId, perspective)) return true
+        val isTopCard = state.getLibrary(key.ownerId).firstOrNull() == entityId
+        if (!isTopCard) return false
+        return visibility.revealsTopOfLibraryPublicly(state, key.ownerId) ||
+            (key.ownerId == perspective && visibility.hasLookAtTopOfLibrary(state, perspective))
     }
 
     // =========================================================================
@@ -209,7 +324,8 @@ class ObservationBuilder(
     private fun buildEntityFeatures(
         state: GameState,
         entityId: EntityId,
-        zone: Zone
+        zone: Zone,
+        maskFaceDownIdentity: Boolean = false
     ): EntityFeatures {
         val container = state.getEntity(entityId) ?: ComponentContainer.EMPTY
         val card = container.get<CardComponent>()
@@ -217,44 +333,64 @@ class ObservationBuilder(
         val pv = projected.getProjectedValues(entityId)
 
         val onBattlefield = zone == Zone.BATTLEFIELD
+        val publicFaceDown = maskFaceDownIdentity && container.has<FaceDownComponent>()
 
         val types: Set<String> = when {
+            publicFaceDown && onBattlefield -> pv?.types?.toSet() ?: setOf("CREATURE")
+            publicFaceDown -> emptySet()
             pv != null -> pv.types.toSet()
             card != null -> card.typeLine.cardTypes.mapTo(mutableSetOf()) { it.name }
             else -> emptySet()
         }
         val subtypes: Set<String> = when {
+            publicFaceDown -> if (onBattlefield) pv?.subtypes?.toSet() ?: emptySet() else emptySet()
             pv != null -> pv.subtypes.toSet()
             card != null -> card.typeLine.subtypes.mapTo(mutableSetOf()) { it.value }
             else -> emptySet()
         }
         val colors: Set<String> = when {
+            publicFaceDown -> if (onBattlefield) pv?.colors?.toSet() ?: emptySet() else emptySet()
             pv != null -> pv.colors.toSet()
             card != null -> card.colors.mapTo(mutableSetOf()) { it.name }
             else -> emptySet()
         }
         val keywords: Set<String> = when {
+            publicFaceDown -> if (onBattlefield) pv?.keywords?.toSet() ?: emptySet() else emptySet()
             pv != null -> pv.keywords.toSet()
             card != null -> card.baseKeywords.mapTo(mutableSetOf()) { it.name }
             else -> emptySet()
         }
 
+        val sortedTypes = types.sorted().toCollection(LinkedHashSet())
+        val sortedSubtypes = subtypes.sorted().toCollection(LinkedHashSet())
+        val sortedColors = colors.sorted().toCollection(LinkedHashSet())
+        val sortedKeywords = keywords.sorted().toCollection(LinkedHashSet())
+        val ownerId = container.get<OwnerComponent>()?.playerId ?: card?.ownerId
+
         return EntityFeatures(
             entityId = entityId,
-            cardDefinitionId = card?.cardDefinitionId,
-            name = card?.name ?: "",
+            cardDefinitionId = if (publicFaceDown) null else card?.cardDefinitionId,
+            name = if (publicFaceDown) {
+                if (onBattlefield) "Face-down permanent" else "Face-down card"
+            } else {
+                card?.name ?: ""
+            },
             zone = zone,
-            ownerId = container.get<OwnerComponent>()?.playerId ?: card?.ownerId,
+            ownerId = ownerId,
             controllerId = if (onBattlefield) projected.getController(entityId) else null,
-            types = types,
-            subtypes = subtypes,
-            colors = colors,
-            keywords = keywords,
-            manaCost = card?.manaCost?.toString() ?: "",
-            manaValue = card?.manaValue ?: 0,
-            oracleText = card?.oracleText ?: "",
-            power = if (onBattlefield) projected.getPower(entityId) else null,
-            toughness = if (onBattlefield) projected.getToughness(entityId) else null,
+            types = sortedTypes,
+            subtypes = sortedSubtypes,
+            colors = sortedColors,
+            keywords = sortedKeywords,
+            manaCost = if (publicFaceDown) "" else card?.manaCost?.toString() ?: "",
+            manaValue = if (publicFaceDown) 0 else card?.manaValue ?: 0,
+            oracleText = if (publicFaceDown) "" else card?.oracleText ?: "",
+            power = if (onBattlefield) {
+                if (publicFaceDown) pv?.power ?: 2 else projected.getPower(entityId)
+            } else null,
+            toughness = if (onBattlefield) {
+                if (publicFaceDown) pv?.toughness ?: 2 else projected.getToughness(entityId)
+            } else null,
             tapped = onBattlefield && container.get<TappedComponent>() != null,
             // Only creatures meaningfully suffer summoning sickness — the engine attaches the
             // marker to every entering permanent so Vehicles / animated lands inherit the
@@ -267,9 +403,12 @@ class ObservationBuilder(
             faceDown = container.get<FaceDownComponent>() != null,
             damageMarked = container.get<DamageComponent>()?.amount ?: 0,
             counters = container.get<CountersComponent>()?.counters
-                ?.mapKeys { it.key.name } ?: emptyMap(),
+                ?.mapKeys { it.key.name }
+                ?.toSortedMap() ?: emptyMap(),
             attachedTo = container.get<AttachedToComponent>()?.targetId,
-            attachments = container.get<AttachmentsComponent>()?.attachedIds ?: emptyList()
+            attachments = container.get<AttachmentsComponent>()?.attachedIds
+                ?.sortedBy { it.value }
+                ?: emptyList()
         )
     }
 
@@ -277,23 +416,60 @@ class ObservationBuilder(
     // Stack
     // =========================================================================
 
-    private fun buildStackItem(state: GameState, entityId: EntityId): StackItemView {
+    private fun buildStackItem(
+        state: GameState,
+        entityId: EntityId,
+        perspectivePlayerId: EntityId
+    ): StackItemView {
         val container = state.getEntity(entityId)
         val card = container?.get<CardComponent>()
-        // Stack kind inference — fall back to OTHER. A more precise classification
-        // can be added once the stack carries explicit metadata.
+        val spell = container?.get<SpellOnStackComponent>()
+        val triggered = container?.get<TriggeredAbilityOnStackComponent>()
+        val activated = container?.get<ActivatedAbilityOnStackComponent>()
+        val legacyAbility = container?.get<AbilityOnStackComponent>()
+
         val kind = when {
-            card?.spellEffect != null -> StackItemKind.SPELL
-            card != null -> StackItemKind.SPELL
+            spell != null || card?.spellEffect != null -> StackItemKind.SPELL
+            triggered != null -> StackItemKind.TRIGGERED_ABILITY
+            activated != null || legacyAbility != null -> StackItemKind.ACTIVATED_ABILITY
             else -> StackItemKind.OTHER
         }
+
+        val controllerId = spell?.casterId
+            ?: triggered?.controllerId
+            ?: activated?.controllerId
+            ?: legacyAbility?.controllerId
+            ?: state.projectedState.getController(entityId)
+            ?: container?.get<ControllerComponent>()?.playerId
+        val sourceEntityId = when {
+            spell != null -> entityId
+            triggered != null -> triggered.sourceId
+            activated != null -> activated.sourceId
+            legacyAbility != null -> legacyAbility.sourceId
+            else -> null
+        }
+        val faceDown = container?.has<FaceDownComponent>() == true || spell?.castFaceDown == true
+        val identityVisible = !faceDown ||
+            visibility.isCardRevealedTo(state, entityId, perspectivePlayerId) ||
+            controllerId == perspectivePlayerId
+        val targets = container?.get<TargetsComponent>()?.targets
+            ?.map { target ->
+                when (target) {
+                    is ChosenTarget.Player -> target.playerId
+                    is ChosenTarget.Permanent -> target.entityId
+                    is ChosenTarget.Card -> target.cardId
+                    is ChosenTarget.Spell -> target.spellEntityId
+                }
+            } ?: emptyList()
+
         return StackItemView(
             entityId = entityId,
-            controllerId = state.projectedState.getController(entityId),
-            name = card?.name ?: "",
+            controllerId = controllerId,
+            sourceEntityId = sourceEntityId,
+            name = if (identityVisible) card?.name ?: "" else "Face-down spell",
             kind = kind,
-            oracleText = card?.oracleText ?: "",
-            targets = emptyList()
+            oracleText = if (identityVisible) card?.oracleText ?: "" else "",
+            targets = targets
         )
     }
 
@@ -301,14 +477,14 @@ class ObservationBuilder(
     // Legal actions
     // =========================================================================
 
-    private fun legalActionToView(actionId: Int, la: LegalAction): LegalActionView {
+    private fun legalActionToView(state: GameState, actionId: Int, la: LegalAction): LegalActionView {
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
             description = la.description,
             affordable = la.affordable,
-            sourceEntityId = null,
-            targetEntityIds = la.validTargets ?: emptyList(),
+            sourceEntityId = actionSourceEntityId(la),
+            targetEntityIds = (la.validTargets ?: emptyList()).sortedBy { it.value },
             manaCost = la.manaCostString,
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
@@ -316,8 +492,208 @@ class ObservationBuilder(
             maxTargets = la.targetCount,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
+            actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )
+    }
+
+    private fun actionSemantic(state: GameState, action: GameAction): JsonObject {
+        val encoded = actionSerialization
+            .encodeToJsonElement(GameAction.serializer(), action)
+            .jsonObject
+        if (action !is ActivateAbility) return encoded
+
+        return buildJsonObject {
+            encoded.forEach { (key, value) ->
+                if (key != "abilityId") put(key, value)
+            }
+            put("abilityKey", stableAbilityKey(state, action))
+        }
+    }
+
+    /**
+     * AbilityId is an engine handle and the default generated value contains a JVM-global counter.
+     * Resolve the action against the same authoritative provenance sources used by legal-action
+     * enumeration before it enters the semantic observation. The structural payload protects
+     * against two abilities with the same ordinal accidentally being treated as equivalent; the
+     * canonical ordinal protects against genuinely separate but structurally identical grants.
+     */
+    private fun stableAbilityKey(state: GameState, action: ActivateAbility): JsonObject {
+        val source = state.getEntity(action.sourceId)
+        val card = source?.get<CardComponent>()
+        val cardDefinition = card?.cardDefinitionId?.let(cardRegistry::getCard)
+        val classLevel = source?.get<ClassLevelComponent>()?.currentLevel
+        val printedAbilities = cardDefinition?.script
+            ?.effectiveActivatedAbilities(classLevel)
+            .orEmpty()
+        val printedOrdinal = printedAbilities.indexOfFirst { it.id == action.abilityId }
+        if (printedOrdinal >= 0) {
+            return abilityKey(
+                origin = "printed",
+                ordinal = printedOrdinal,
+                ability = printedAbilities[printedOrdinal],
+                cardDefinitionId = card?.cardDefinitionId
+            )
+        }
+
+        val classLevelUp = classLevelUpAbility(cardDefinition, source, action.abilityId)
+        if (classLevelUp != null) {
+            return abilityKey(
+                origin = "classLevelUp",
+                ordinal = classLevelUpOrdinal(source),
+                ability = classLevelUp,
+                cardDefinitionId = card?.cardDefinitionId
+            )
+        }
+
+        val grantedAbilities = state.grantedActivatedAbilities
+            .asSequence()
+            .filter { it.entityId == action.sourceId }
+            .map { it.ability }
+            .toList()
+        val grantedOrdinal = grantedAbilities.indexOfFirst { it.id == action.abilityId }
+        if (grantedOrdinal >= 0) {
+            return abilityKey(
+                origin = "granted",
+                ordinal = stableAbilityOrdinal(grantedAbilities, grantedOrdinal),
+                ability = grantedAbilities[grantedOrdinal],
+                cardDefinitionId = card?.cardDefinitionId
+            )
+        }
+
+        val staticGrants = castPermissionUtils.getStaticGrantedAbilitiesWithGranter(action.sourceId, state)
+        val staticOrdinal = staticGrants.indexOfFirst { it.ability.id == action.abilityId }
+        if (staticOrdinal >= 0) {
+            val grant = staticGrants[staticOrdinal]
+            val granterCardDefinitionId = state.getEntity(grant.granterId)
+                ?.get<CardComponent>()
+                ?.cardDefinitionId
+            return abilityKey(
+                origin = "static",
+                ordinal = stableAbilityOrdinal(staticGrants.map { it.ability }, staticOrdinal),
+                ability = grant.ability,
+                cardDefinitionId = granterCardDefinitionId
+            )
+        }
+
+        val emblemAbilities = activeEmblemAbilities(state, action.sourceId)
+        val emblemOrdinal = emblemAbilities.indexOfFirst { it.id == action.abilityId }
+        if (emblemOrdinal >= 0) {
+            return abilityKey(
+                origin = "emblem",
+                ordinal = stableAbilityOrdinal(emblemAbilities, emblemOrdinal),
+                ability = emblemAbilities[emblemOrdinal],
+                cardDefinitionId = null
+            )
+        }
+
+        val intrinsicAbilities = IntrinsicManaAbilities.forEntity(state, state.projectedState, action.sourceId)
+        val intrinsicOrdinal = intrinsicAbilities.indexOfFirst { it.id == action.abilityId }
+        if (intrinsicOrdinal >= 0) {
+            return abilityKey(
+                origin = "intrinsic",
+                ordinal = stableAbilityOrdinal(intrinsicAbilities, intrinsicOrdinal),
+                ability = intrinsicAbilities[intrinsicOrdinal],
+                cardDefinitionId = null
+            )
+        }
+
+        // A legal ActivateAbility must come from one of the authoritative sources above. Keep
+        // synthetic/manual caller input fail-closed rather than reintroducing the runtime handle
+        // (including donor_<entity>_<printedId>) into semantic equality or StateDigest.
+        return buildJsonObject { put("unresolved", true) }
+    }
+
+    private fun classLevelUpAbility(
+        cardDefinition: com.wingedsheep.sdk.model.CardDefinition?,
+        source: ComponentContainer?,
+        abilityId: AbilityId,
+    ): ActivatedAbility? {
+        val currentLevel = source?.get<ClassLevelComponent>()?.currentLevel ?: return null
+        val targetLevel = currentLevel + 1
+        if (abilityId != AbilityId.classLevelUp(targetLevel)) return null
+        val level = cardDefinition?.classLevels?.find { it.level == targetLevel } ?: return null
+        return ActivatedAbility(
+            id = abilityId,
+            cost = AbilityCost.Atom(CostAtom.Mana(level.cost)),
+            effect = LevelUpClassEffect(targetLevel),
+            timing = TimingRule.SorcerySpeed,
+            descriptionOverride = "Level up to level $targetLevel"
+        )
+    }
+
+    private fun classLevelUpOrdinal(source: ComponentContainer?): Int =
+        source?.get<ClassLevelComponent>()?.currentLevel?.plus(1) ?: 0
+
+    private fun activeEmblemAbilities(state: GameState, sourceId: EntityId): List<ActivatedAbility> =
+        state.entities.flatMap { (emblemId, emblemContainer) ->
+            val grant = emblemContainer.get<EmblemActivatedAbilityComponent>() ?: return@flatMap emptyList()
+            val controllerId = emblemContainer.get<ControllerComponent>()?.playerId ?: return@flatMap emptyList()
+            val matches = predicateEvaluator.matches(
+                state,
+                state.projectedState,
+                sourceId,
+                grant.filter.baseFilter,
+                PredicateContext(controllerId = controllerId, sourceId = emblemId),
+            ) && (!grant.filter.excludeSelf || sourceId != emblemId)
+            if (matches) grant.abilities else emptyList()
+        }
+
+    private fun stableAbilityOrdinal(abilities: List<ActivatedAbility>, targetIndex: Int): Int {
+        val targetSignature = structuralAbilitySignature(abilities[targetIndex])
+        val structurallyBefore = abilities
+            .take(targetIndex)
+            .count { structuralAbilitySignature(it) == targetSignature }
+        return abilities.count { structuralAbilitySignature(it) < targetSignature } + structurallyBefore
+    }
+
+    private fun structuralAbilitySignature(ability: ActivatedAbility): String =
+        structuralAbilityJson(ability).toString()
+
+    private fun structuralAbilityJson(ability: ActivatedAbility): JsonObject {
+        val encoded = actionSerialization
+            .encodeToJsonElement(ActivatedAbility.serializer(), ability)
+            .jsonObject
+        return JsonObject(encoded.filterKeys { it != "id" && it != "descriptionOverride" })
+    }
+
+    private fun abilityKey(
+        origin: String,
+        ordinal: Int,
+        ability: ActivatedAbility,
+        cardDefinitionId: String?
+    ): JsonObject = buildJsonObject {
+        put("origin", origin)
+        put("ordinal", ordinal)
+        cardDefinitionId?.let { put("cardDefinitionId", it) }
+        put(
+            "ability",
+            structuralAbilityJson(ability)
+        )
+    }
+
+    private fun decisionSemantic(response: DecisionResponse): JsonObject {
+        val encoded = actionSerialization
+            .encodeToJsonElement(DecisionResponse.serializer(), response)
+            .jsonObject
+        return JsonObject(encoded.filterKeys { it != "decisionId" })
+    }
+
+    private fun actionSourceEntityId(legalAction: LegalAction): EntityId? = when (val action = legalAction.action) {
+        is CastSpell -> action.cardId
+        is ActivateAbility -> action.sourceId
+        is CycleCard -> action.cardId
+        is PlotCard -> action.cardId
+        is ForetellCard -> action.cardId
+        is SuspendCardFromHand -> action.cardId
+        is TypecycleCard -> action.cardId
+        is PlayLand -> action.cardId
+        is CrewVehicle -> action.vehicleId
+        is SaddleMount -> action.mountId
+        is TurnFaceUp -> action.sourceId
+        is UnlockRoomDoor -> action.roomId
+        is BottomCards -> action.cardIds.firstOrNull()
+        else -> null
     }
 
     // =========================================================================
@@ -333,8 +709,24 @@ class ObservationBuilder(
      * submits a `DecisionResponse` via a dedicated endpoint (Phase 3).
      */
     private fun buildPendingDecision(
-        decision: PendingDecision
+        decision: PendingDecision,
+        exposeToPerspective: Boolean
     ): Pair<PendingDecisionView, ActionRegistry> {
+        if (!exposeToPerspective) {
+            return PendingDecisionView(
+                decisionId = null,
+                kind = PendingDecisionKind.GENERIC,
+                playerId = decision.playerId,
+                prompt = "",
+                sourceEntityId = null,
+                sourceName = null,
+                triggeringEntityId = null,
+                effectHint = null,
+                requiresStructuredResponse = true,
+                shape = DecisionShape()
+            ) to ActionRegistry.EMPTY
+        }
+
         val ctx = decision.context
         val baseShape = DecisionShape()
 
@@ -502,6 +894,7 @@ class ObservationBuilder(
                 kind = "DECISION",
                 description = describeResponse(decision, response),
                 affordable = true,
+                actionSemantics = decisionSemantic(response),
                 isDecisionOption = true
             )
         }
