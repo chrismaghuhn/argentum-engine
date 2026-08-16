@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.LibraryReorderedEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OptionalReplacementContinuation
 import com.wingedsheep.engine.core.ReorderLibraryDecision
 import com.wingedsheep.engine.core.ZoneChangeEvent
@@ -903,6 +904,68 @@ class CommanderZoneReplacementTest : FunSpec({
 
         val decision = initial.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
         decision.playerId shouldBe opponentId
+    }
+
+    test("CR 616 ordering does not let the controller answer the owner's 903.9b choice") {
+        val replacementSourceId = EntityId.generate()
+        val replacementSource = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = "Controlled Exile",
+                name = "Controlled Exile",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+                ownerId = opponentId,
+            ),
+            OwnerComponent(opponentId),
+            ControllerComponent(opponentId),
+            ReplacementEffectSourceComponent(
+                listOf(
+                    RedirectZoneChange(
+                        newDestination = Zone.EXILE,
+                        appliesTo = EventPattern.ZoneChangeEvent(
+                            filter = GameObjectFilter.Any,
+                            from = Zone.BATTLEFIELD,
+                            to = Zone.HAND,
+                        ),
+                    )
+                )
+            ),
+        )
+        val state = stateWithCommanderOnControllerBattlefield()
+            .withEntity(replacementSourceId, replacementSource)
+            .addToZone(ZoneKey(opponentId, Zone.BATTLEFIELD), replacementSourceId)
+        val services = EngineServices(CardRegistry())
+
+        val initial = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+            .moveToZoneWithReplacements(
+                state = state,
+                entityId = commanderId,
+                destinationZone = Zone.HAND,
+                fromZoneKey = ZoneKey(opponentId, Zone.BATTLEFIELD),
+                context = EffectContext(sourceId = null, controllerId = opponentId),
+            )
+        val ordering = initial.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+        ordering.playerId shouldBe opponentId
+        val commanderOption = ordering.options.indexOfFirst { it.startsWith("Test Commander -") }
+        commanderOption shouldNotBe -1
+
+        val ownerPrompt = services.continuationHandler.resume(
+            initial.state.clearPendingDecision(),
+            OptionChosenResponse(ordering.id, commanderOption),
+        )
+
+        ownerPrompt.isPaused shouldBe true
+        ownerPrompt.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe playerId
+        ownerPrompt.state.getZone(ZoneKey(opponentId, Zone.BATTLEFIELD)) shouldBe
+            listOf(commanderId, replacementSourceId)
+        ownerPrompt.state.getZone(ZoneKey(playerId, Zone.HAND)) shouldBe emptyList()
+
+        val declined = services.continuationHandler.resume(
+            ownerPrompt.state.clearPendingDecision(),
+            YesNoResponse(ownerPrompt.pendingDecision.id, choice = false),
+        )
+        declined.error shouldBe null
+        declined.state.getZone(ZoneKey(playerId, Zone.EXILE)) shouldBe listOf(commanderId)
     }
 
     test("optional Commander YES preserves ordinary replacement identities already applied") {

@@ -3185,16 +3185,33 @@ class ActivateAbilityHandler(
     private fun commanderHandMoveTargets(
         cost: AbilityCost,
         action: ActivateAbility,
-    ): List<EntityId> = when (cost) {
-        AbilityCost.ReturnSelfToHand -> listOf(action.sourceId)
-        is AbilityCost.Atom -> {
-            val atom = cost.atom
-            if (atom is CostAtom.ReturnToHand) {
-                action.costPayment?.bouncedPermanents?.take(atom.count) ?: emptyList()
-            } else emptyList()
+    ): List<EntityId> {
+        val bounceChoices = action.costPayment?.bouncedPermanents.orEmpty()
+
+        fun collect(current: AbilityCost, offset: Int): Pair<List<EntityId>, Int> = when (current) {
+            AbilityCost.ReturnSelfToHand -> listOf(action.sourceId) to offset
+            is AbilityCost.Atom -> {
+                val atom = current.atom
+                if (atom is CostAtom.ReturnToHand) {
+                    bounceChoices.drop(offset).take(atom.count) to (offset + atom.count)
+                } else {
+                    emptyList<EntityId>() to offset
+                }
+            }
+            is AbilityCost.Composite -> {
+                val targets = mutableListOf<EntityId>()
+                var nextOffset = offset
+                for (child in current.costs) {
+                    val (childTargets, childOffset) = collect(child, nextOffset)
+                    targets += childTargets
+                    nextOffset = childOffset
+                }
+                targets to nextOffset
+            }
+            else -> emptyList<EntityId>() to offset
         }
-        is AbilityCost.Composite -> cost.costs.flatMap { commanderHandMoveTargets(it, action) }
-        else -> emptyList()
+
+        return collect(cost, 0).first
     }
 
     /**
@@ -3206,23 +3223,38 @@ class ActivateAbilityHandler(
         sourceId: EntityId,
         resolvedIds: Set<EntityId>,
         bounceChoices: List<EntityId>,
-    ): AbilityCost = when (cost) {
-        AbilityCost.ReturnSelfToHand ->
-            if (sourceId in resolvedIds) AbilityCost.Free else cost
-        is AbilityCost.Atom -> when (val atom = cost.atom) {
-            is CostAtom.ReturnToHand -> {
-                val resolvedBounceCount = bounceChoices.count { it in resolvedIds }
-                val remaining = (atom.count - resolvedBounceCount).coerceAtLeast(0)
-                if (remaining == 0) AbilityCost.Free else AbilityCost.Atom(atom.copy(count = remaining))
+    ): AbilityCost {
+        fun remove(current: AbilityCost, offset: Int): Pair<AbilityCost, Int> = when (current) {
+            AbilityCost.ReturnSelfToHand ->
+                (if (sourceId in resolvedIds) AbilityCost.Free else current) to offset
+            is AbilityCost.Atom -> when (val atom = current.atom) {
+                is CostAtom.ReturnToHand -> {
+                    val assignedChoices = bounceChoices.drop(offset).take(atom.count)
+                    val resolvedBounceCount = assignedChoices.count { it in resolvedIds }
+                    val remaining = (atom.count - resolvedBounceCount).coerceAtLeast(0)
+                    val remainingCost = if (remaining == 0) {
+                        AbilityCost.Free
+                    } else {
+                        AbilityCost.Atom(atom.copy(count = remaining))
+                    }
+                    remainingCost to (offset + atom.count)
+                }
+                else -> current to offset
             }
-            else -> cost
+            is AbilityCost.Composite -> {
+                val children = mutableListOf<AbilityCost>()
+                var nextOffset = offset
+                for (child in current.costs) {
+                    val (updatedChild, childOffset) = remove(child, nextOffset)
+                    children += updatedChild
+                    nextOffset = childOffset
+                }
+                AbilityCost.Composite(children) to nextOffset
+            }
+            else -> current to offset
         }
-        is AbilityCost.Composite -> AbilityCost.Composite(
-            cost.costs.map {
-                removePreResolvedHandMoves(it, sourceId, resolvedIds, bounceChoices)
-            }
-        )
-        else -> cost
+
+        return remove(cost, 0).first
     }
 
     /**

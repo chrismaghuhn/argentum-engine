@@ -380,6 +380,27 @@ class ReplacementContinuationResumer(
         // Pass continuation.context for condition evaluation during recursive processing.
         val context = continuation.context
 
+        // CR 616 chooses which replacement is applied next; it does not answer a separate
+        // optional replacement choice. In particular, a stolen Commander can be selected by
+        // its controller as the next replacement, but CR 903.9b still asks the Commander owner.
+        // Keep the event unchanged and hand the chosen optional candidate to its own prompt
+        // before applySingle() is allowed to modify the event.
+        if (continuation.pendingEvent.isOptionalReplacement(chosen, state)) {
+            val promptResult = continuation.pendingEvent.createOptionalPrompt(
+                decisionId = java.util.UUID.randomUUID().toString(),
+                gathered = chosen,
+                state = state,
+                context = context,
+                alreadyApplied = continuation.alreadyApplied,
+            )
+            if (promptResult != null) {
+                val stateWithDecision = state
+                    .withPendingDecision(promptResult.decision)
+                    .pushContinuation(promptResult.continuation)
+                return ExecutionResult.paused(stateWithDecision, promptResult.decision)
+            }
+        }
+
         // Push domain-specific remainder continuation (e.g. remaining draws
         // in the draw loop) before the replacement resolves, so it sits below
         // any ReplacementResolveContinuation in the stack and can resume after

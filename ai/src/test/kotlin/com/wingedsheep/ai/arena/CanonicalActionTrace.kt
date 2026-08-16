@@ -2,6 +2,7 @@ package com.wingedsheep.ai.arena
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 
@@ -31,11 +32,11 @@ internal fun canonicalActionTrace(action: GameAction): String = when (action) {
         "wasWaterbendPaid=${action.wasWaterbendPaid}",
         "giftRecipient=${action.giftRecipient}",
         "splicedCardIds=${action.splicedCardIds}",
-        "damageDistribution=${action.damageDistribution}",
+        "damageDistribution=${canonicalEntityIntMap(action.damageDistribution)}",
         "useAlternativeCost=${action.useAlternativeCost}",
         "chosenModes=${action.chosenModes}",
         "modeTargetsOrdered=${action.modeTargetsOrdered.map(::canonicalTargets)}",
-        "modeDamageDistribution=${action.modeDamageDistribution}",
+        "modeDamageDistribution=${canonicalModeDamageDistribution(action.modeDamageDistribution)}",
         "graveyardLifeCost=${action.graveyardLifeCost}",
         "graveyardCastRider=${canonicalGraveyardCastRider(action.graveyardCastRider)}",
         "conspiredCreatures=${action.conspiredCreatures}",
@@ -56,8 +57,7 @@ internal fun canonicalActionTrace(action: GameAction): String = when (action) {
         "repeatCount=${action.repeatCount}",
         "paymentStrategy=${canonicalPaymentStrategy(action.paymentStrategy)}",
         "alternativePayment=${canonicalAlternativePayment(action.alternativePayment)}",
-        "damageDistribution=${action.damageDistribution}",
-        "opponentTargetsChosen=${action.opponentTargetsChosen}",
+        "damageDistribution=${canonicalEntityIntMap(action.damageDistribution)}",
     )
     is CycleCard -> fields(
         "CycleCard",
@@ -163,6 +163,19 @@ internal fun canonicalActionTrace(action: GameAction): String = when (action) {
 private fun fields(type: String, vararg fields: String): String =
     "$type(${fields.joinToString(", ")})"
 
+private fun canonicalEntityIntMap(map: Map<EntityId, Int>?): String =
+    map?.entries
+        ?.sortedBy { it.key.value }
+        ?.joinToString(prefix = "{", postfix = "}") { "${it.key.value}=${it.value}" }
+        ?: "null"
+
+private fun canonicalModeDamageDistribution(map: Map<Int, Map<EntityId, Int>>): String =
+    map.entries
+        .sortedBy { it.key }
+        .joinToString(prefix = "{", postfix = "}") {
+            "${it.key}=${canonicalEntityIntMap(it.value)}"
+        }
+
 private fun canonicalTargets(targets: List<ChosenTarget>): String =
     targets.joinToString(prefix = "[", postfix = "]") { target ->
         when (target) {
@@ -243,7 +256,10 @@ internal fun canonicalDecisionResponse(response: DecisionResponse): String = whe
     is ModesChosenResponse -> fields("ModesChosenResponse", "selectedModes=${response.selectedModes}")
     is ColorChosenResponse -> fields("ColorChosenResponse", "color=${response.color}")
     is NumberChosenResponse -> fields("NumberChosenResponse", "number=${response.number}")
-    is DistributionResponse -> fields("DistributionResponse", "distribution=${response.distribution}")
+    is DistributionResponse -> fields(
+        "DistributionResponse",
+        "distribution=${canonicalEntityIntMap(response.distribution)}",
+    )
     is OrderedResponse -> fields("OrderedResponse", "orderedObjects=${response.orderedObjects}")
     is PilesSplitResponse -> fields("PilesSplitResponse", "piles=${response.piles}")
     is OptionChosenResponse -> fields("OptionChosenResponse", "optionIndex=${response.optionIndex}")
@@ -256,7 +272,10 @@ internal fun canonicalDecisionResponse(response: DecisionResponse): String = whe
         "BudgetModalResponse",
         "selectedModeIndices=${response.selectedModeIndices}",
     )
-    is DamageAssignmentResponse -> fields("DamageAssignmentResponse", "assignments=${response.assignments}")
+    is DamageAssignmentResponse -> fields(
+        "DamageAssignmentResponse",
+        "assignments=${canonicalEntityIntMap(response.assignments)}",
+    )
     is ManaSourcesSelectedResponse -> fields(
         "ManaSourcesSelectedResponse",
         "selectedSources=${response.selectedSources}",
