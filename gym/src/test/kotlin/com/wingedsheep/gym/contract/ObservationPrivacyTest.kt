@@ -3,11 +3,13 @@ package com.wingedsheep.gym.contract
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.CardEntityFactory
+import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Zone
@@ -42,15 +44,16 @@ class ObservationPrivacyTest : FunSpec({
         return env
     }
 
-    fun replaceOpponentHiddenCards(
+    fun replaceCardsInZones(
         state: GameState,
         opponent: EntityId,
-        replacementName: String
+        replacementName: String,
+        zones: Set<Zone>
     ): GameState {
         val replacement = CardEntityFactory
             .create(registry().requireCard(replacementName), opponent)
             .get<CardComponent>()
-        val hiddenIds = state.getHand(opponent) + state.getLibrary(opponent)
+        val hiddenIds = zones.flatMap { state.getZone(ZoneKey(opponent, it)) }
         val entities = state.entities.toMutableMap()
         hiddenIds.forEach { id ->
             entities[id] = checkNotNull(entities[id]).with(checkNotNull(replacement))
@@ -58,8 +61,38 @@ class ObservationPrivacyTest : FunSpec({
         return state.copy(entities = entities)
     }
 
+    fun replaceOpponentHiddenCards(
+        state: GameState,
+        opponent: EntityId,
+        replacementName: String
+    ): GameState = replaceCardsInZones(
+        state,
+        opponent,
+        replacementName,
+        setOf(Zone.HAND, Zone.LIBRARY)
+    )
+
+    fun replaceCard(
+        state: GameState,
+        owner: EntityId,
+        entityId: EntityId,
+        replacementName: String
+    ): GameState {
+        val replacement = CardEntityFactory
+            .create(registry().requireCard(replacementName), owner)
+            .get<CardComponent>()
+        return state.copy(
+            entities = state.entities + (
+                entityId to checkNotNull(state.entities[entityId]).with(checkNotNull(replacement))
+                )
+        )
+    }
+
     fun observation(state: GameState, perspective: EntityId): TrainingObservation =
         ObservationBuilder().build(state, perspective, emptyList()).observation as TrainingObservation
+
+    fun result(state: GameState, perspective: EntityId): ObservationResult =
+        ObservationBuilder().build(state, perspective, emptyList())
 
     fun moveFirstOpponentHandCardFaceDownToBattlefield(
         state: GameState,
@@ -137,5 +170,170 @@ class ObservationPrivacyTest : FunSpec({
         mountainCard.power shouldBe goblinCard.power
         mountainCard.toughness shouldBe goblinCard.toughness
         mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
+    }
+
+    test("own hand identity remains visible when paired hidden worlds differ") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val goblinState = replaceCardsInZones(
+            base.state,
+            owner,
+            "Raging Goblin",
+            setOf(Zone.HAND)
+        )
+
+        val mountainObservation = observation(base.state, owner)
+        val goblinObservation = observation(goblinState, owner)
+        val mountainHand = mountainObservation.zones.single {
+            it.ownerId == owner && it.zoneType == Zone.HAND
+        }
+        val goblinHand = goblinObservation.zones.single {
+            it.ownerId == owner && it.zoneType == Zone.HAND
+        }
+
+        mountainHand.cards.size shouldBe mountainHand.size
+        goblinHand.cards.size shouldBe goblinHand.size
+        mountainHand.cards.map { it.cardDefinitionId }.toSet() shouldNotBe
+            goblinHand.cards.map { it.cardDefinitionId }.toSet()
+        mountainObservation.stateDigest shouldNotBe goblinObservation.stateDigest
+    }
+
+    test("library identity and order stay hidden for owner and opponent") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val pairedState = replaceCardsInZones(
+            base.state,
+            owner,
+            "Raging Goblin",
+            setOf(Zone.LIBRARY)
+        )
+
+        listOf(base.playerIds[0], owner).forEach { perspective ->
+            val mountainObservation = observation(base.state, perspective)
+            val goblinObservation = observation(pairedState, perspective)
+            val mountainLibrary = mountainObservation.zones.single {
+                it.ownerId == owner && it.zoneType == Zone.LIBRARY
+            }
+            val goblinLibrary = goblinObservation.zones.single {
+                it.ownerId == owner && it.zoneType == Zone.LIBRARY
+            }
+
+            mountainLibrary.hidden.shouldBe(true)
+            goblinLibrary.hidden.shouldBe(true)
+            mountainLibrary.cards.shouldBeEmpty()
+            goblinLibrary.cards.shouldBeEmpty()
+            mountainLibrary.size shouldBe goblinLibrary.size
+            mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
+        }
+    }
+
+    test("non-acting perspective receives no legal actions or action registry") {
+        val env = environment()
+        val actingPlayer = env.playerIds[0]
+        val nonActingPerspective = env.playerIds[1]
+        val result = ObservationBuilder().build(
+            env.state,
+            nonActingPerspective,
+            env.legalActions()
+        )
+
+        result.observation.agentToAct shouldBe actingPlayer
+        result.observation.legalActions.shouldBeEmpty()
+        result.registry shouldBe ActionRegistry.EMPTY
+    }
+
+    test("pending decision is generic and action-free for non-owner perspective") {
+        val env = environment()
+        val owner = env.playerIds[1]
+        val sourceId = env.state.getHand(owner).first()
+        val state = env.state.copy(
+            pendingDecision = YesNoDecision(
+                id = "private-decision-1",
+                playerId = owner,
+                prompt = "Choose Raging Goblin",
+                context = DecisionContext(
+                    sourceId = sourceId,
+                    sourceName = "Raging Goblin",
+                    triggeringEntityId = sourceId,
+                    effectHint = "Reveal Raging Goblin"
+                )
+            )
+        )
+
+        val ownerResult = result(state, owner)
+        val otherResult = result(state, env.playerIds[0])
+        ownerResult.observation.pendingDecision!!.prompt shouldBe "Choose Raging Goblin"
+        otherResult.observation.pendingDecision!!.prompt shouldBe ""
+        otherResult.observation.legalActions.shouldBeEmpty()
+        otherResult.registry shouldBe ActionRegistry.EMPTY
+    }
+
+    test("face-down exile omits unauthorized card objects but keeps total size") {
+        val base = environment()
+        val opponent = base.playerIds[1]
+        val hiddenId = base.state.getHand(opponent)[0]
+        val visibleId = base.state.getHand(opponent)[1]
+        val goblinState = replaceCard(base.state, opponent, hiddenId, "Raging Goblin")
+
+        fun moveToExile(state: GameState): GameState {
+            val handKey = ZoneKey(opponent, Zone.HAND)
+            val exileKey = ZoneKey(opponent, Zone.EXILE)
+            val zones = state.zones.toMutableMap()
+            zones[handKey] = state.getHand(opponent).drop(2)
+            zones[exileKey] = state.getExile(opponent) + listOf(hiddenId, visibleId)
+            return state.copy(
+                entities = state.entities + (
+                    hiddenId to checkNotNull(state.getEntity(hiddenId)).with(FaceDownComponent)
+                    ),
+                zones = zones
+            )
+        }
+
+        val mountainObservation = observation(moveToExile(base.state), base.playerIds[0])
+        val goblinObservation = observation(moveToExile(goblinState), base.playerIds[0])
+        val mountainExile = mountainObservation.zones.single {
+            it.ownerId == opponent && it.zoneType == Zone.EXILE
+        }
+        val goblinExile = goblinObservation.zones.single {
+            it.ownerId == opponent && it.zoneType == Zone.EXILE
+        }
+
+        mountainExile.size shouldBe 2
+        goblinExile.size shouldBe 2
+        mountainExile.cards.size shouldBe 1
+        goblinExile.cards.size shouldBe 1
+        mountainExile.cards.single().entityId shouldBe visibleId
+        goblinExile.cards.single().entityId shouldBe visibleId
+        mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
+    }
+
+    test("face-down stack spell hides underlying identity") {
+        val base = environment()
+        val opponent = base.playerIds[1]
+        val hiddenId = base.state.getHand(opponent).first()
+        val goblinState = replaceCard(base.state, opponent, hiddenId, "Raging Goblin")
+
+        fun moveToStack(state: GameState): GameState {
+            val handKey = ZoneKey(opponent, Zone.HAND)
+            val zones = state.zones.toMutableMap()
+            zones[handKey] = state.getHand(opponent).drop(1)
+            return state.copy(
+                entities = state.entities + (
+                    hiddenId to checkNotNull(state.getEntity(hiddenId)).with(FaceDownComponent)
+                    ),
+                zones = zones,
+                stack = state.stack + hiddenId
+            )
+        }
+
+        val mountainStack = observation(moveToStack(base.state), base.playerIds[0]).stack.single()
+        val goblinStack = observation(moveToStack(goblinState), base.playerIds[0]).stack.single()
+
+        mountainStack.entityId shouldBe hiddenId
+        goblinStack.entityId shouldBe hiddenId
+        mountainStack.name shouldBe goblinStack.name
+        mountainStack.name shouldNotBe "Mountain"
+        goblinStack.name shouldNotBe "Raging Goblin"
+        mountainStack.oracleText shouldBe goblinStack.oracleText
     }
 })
