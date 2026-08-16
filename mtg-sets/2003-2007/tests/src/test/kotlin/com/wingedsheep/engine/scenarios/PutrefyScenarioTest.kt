@@ -1,8 +1,14 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.mechanics.layers.ActiveFloatingEffect
+import com.wingedsheep.engine.mechanics.layers.FloatingEffectData
+import com.wingedsheep.engine.mechanics.layers.Layer
+import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.Duration
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -65,6 +71,38 @@ class PutrefyScenarioTest : ScenarioTestBase() {
                 }
                 game.findPermanent("Test Enchantment") shouldNotBe null
             }
+
+            test("destroys a creature despite a regeneration shield") {
+                val game = game("Grizzly Bears")
+                val target = game.findPermanent("Grizzly Bears")!!
+                game.state = game.state.copy(
+                    floatingEffects = game.state.floatingEffects + regenerationShield(target, game.player2Id)
+                )
+
+                val result = game.castSpell(1, "Putrefy", targetId = target)
+                withClue("Putrefy should cast against a shielded creature: ${result.error}") {
+                    result.error shouldBe null
+                }
+                game.resolveStack()
+
+                withClue("Putrefy's \"can't be regenerated\" clause ignores the shield") {
+                    game.findPermanent("Grizzly Bears") shouldBe null
+                    game.isInGraveyard(2, "Grizzly Bears") shouldBe true
+                }
+            }
         }
     }
 }
+
+private fun regenerationShield(entityId: EntityId, controllerId: EntityId) = ActiveFloatingEffect(
+    id = EntityId.generate(),
+    effect = FloatingEffectData(
+        layer = Layer.ABILITY,
+        modification = SerializableModification.RegenerationShield,
+        affectedEntities = setOf(entityId)
+    ),
+    duration = Duration.EndOfTurn,
+    sourceId = null,
+    controllerId = controllerId,
+    timestamp = 1L
+)
