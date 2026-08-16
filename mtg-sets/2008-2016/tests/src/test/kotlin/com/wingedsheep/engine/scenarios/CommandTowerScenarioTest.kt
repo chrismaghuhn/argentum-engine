@@ -47,6 +47,7 @@ class CommandTowerScenarioTest : FunSpec({
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<ChooseColorDecision>()
         decision.playerId shouldBe player
+        decision.availableColors shouldBe setOf(Color.BLACK, Color.GREEN)
         driver.submitDecision(player, ColorChosenResponse(decision.id, Color.GREEN)).isSuccess shouldBe true
 
         driver.isTapped(tower) shouldBe true
