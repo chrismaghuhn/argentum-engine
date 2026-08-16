@@ -164,7 +164,7 @@ class ReplayDecisionContinuationTest : ScenarioTestBase() {
                 ?: error("expected the replay test card to pause for ChooseNumberDecision")
             val pendingActionCount = session.getRecordedActions().size
 
-            val observationBuilder = ObservationBuilder()
+            val observationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
             val legalActionEnumerator = LegalActionEnumerator.create(cardRegistry)
             val livePendingBoundary = observationBoundary(
                 livePending,

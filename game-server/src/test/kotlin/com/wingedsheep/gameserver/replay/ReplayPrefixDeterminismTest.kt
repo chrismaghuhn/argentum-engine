@@ -136,7 +136,7 @@ class ReplayPrefixDeterminismTest : ScenarioTestBase() {
             val replay = recording.replay
             val reconstructor = ReplayReconstructor(cardRegistry, null)
             val prefixes = listOf(0, 1, replay.actions.size / 2, replay.actions.size).distinct()
-            val observationBuilder = ObservationBuilder()
+            val observationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
             val legalActionEnumerator = LegalActionEnumerator.create(cardRegistry)
             val perspective = EntityId(replay.setup.players.first().playerId)
 

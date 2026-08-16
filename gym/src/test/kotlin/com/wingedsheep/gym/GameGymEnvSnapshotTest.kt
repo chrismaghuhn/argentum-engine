@@ -1,7 +1,10 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.PlayLand
+import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
@@ -25,26 +28,35 @@ class GameGymEnvSnapshotTest : FunSpec({
         startingPlayerIndex = 0,
     )
 
-    fun passOrFirstAction(env: GameGymEnv): Int {
-        val observation = env.observe().observation
-        return observation.legalActions
-            .firstOrNull { it.kind.contains("pass", ignoreCase = true) }
-            ?.actionId
-            ?: observation.legalActions.first().actionId
+    fun advanceWithPassOrFirstAction(env: GameGymEnv) {
+        val legalActions = env.environment.legalActions()
+        val action = legalActions
+            .firstOrNull { it.action is PlayLand }
+            ?.action
+            ?: legalActions.firstOrNull { it.action is PassPriority }
+            ?.action
+            ?: legalActions.first().action
+        env.environment.step(action)
+        env.observe()
     }
 
     test("snapshot restore preserves step count and observation at the captured point") {
-        val environment = GameEnvironment.create(registry())
-        val gym = GameGymEnv(environment, perspectivePlayerIndex = 0, defaultRevealAll = false)
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
         gym.reset(config())
-        repeat(11) { gym.step(passOrFirstAction(gym)) }
+        repeat(11) { advanceWithPassOrFirstAction(gym) }
 
         val capturedStep = environment.stepCount
         val capturedDigest = gym.observe().observation.stateDigest
         val codec = SnapshotCodec()
         val handle = gym.snapshot(codec)
 
-        repeat(4) { gym.step(passOrFirstAction(gym)) }
+        repeat(4) { advanceWithPassOrFirstAction(gym) }
         gym.restore(codec, handle)
 
         environment.stepCount shouldBe capturedStep
@@ -52,19 +64,24 @@ class GameGymEnvSnapshotTest : FunSpec({
     }
 
     test("snapshot at step 73 leaves only 27 steps in a 100-step episode budget") {
-        val environment = GameEnvironment.create(registry())
-        val gym = GameGymEnv(environment, perspectivePlayerIndex = 0, defaultRevealAll = false)
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
         gym.reset(config())
-        repeat(73) { gym.step(passOrFirstAction(gym)) }
+        repeat(73) { advanceWithPassOrFirstAction(gym) }
 
         val codec = SnapshotCodec()
         val handle = gym.snapshot(codec)
-        repeat(3) { gym.step(passOrFirstAction(gym)) }
+        repeat(3) { advanceWithPassOrFirstAction(gym) }
         gym.restore(codec, handle)
 
         var restoredSteps = 0
         while (!gym.isTerminal && environment.stepCount < 100) {
-            gym.step(passOrFirstAction(gym))
+            advanceWithPassOrFirstAction(gym)
             restoredSteps++
         }
 
