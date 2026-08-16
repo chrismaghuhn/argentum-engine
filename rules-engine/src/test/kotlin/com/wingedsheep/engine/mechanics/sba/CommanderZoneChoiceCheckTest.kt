@@ -84,12 +84,20 @@ class CommanderZoneChoiceCheckTest : FunSpec({
         frame.currentZone shouldBe Zone.GRAVEYARD
     }
 
-    test("pauses for a commander in exile, hand, or library too") {
-        for (zone in listOf(Zone.EXILE, Zone.HAND, Zone.LIBRARY)) {
+    test("pauses for a commander in exile too") {
+        for (zone in listOf(Zone.EXILE)) {
             val result = check.check(stateWithCommanderIn(zone))
             result.isPaused shouldBe true
             (result.state.continuationStack.last() as CommanderZoneChoiceContinuation)
                 .currentZone shouldBe zone
+        }
+    }
+
+    test("does not run the 903.9a SBA for a commander already in hand or library") {
+        for (zone in listOf(Zone.HAND, Zone.LIBRARY)) {
+            val result = check.check(stateWithCommanderIn(zone))
+            result.isPaused shouldBe false
+            result.state.continuationStack shouldBe emptyList()
         }
     }
 
@@ -110,15 +118,17 @@ class CommanderZoneChoiceCheckTest : FunSpec({
         result.isPaused shouldBe false
     }
 
-    test("does not pause when alwaysDivertToCommand is enabled") {
-        // The synchronous replacement-time redirect handles diversion; the SBA must stay out
-        // of the way so it doesn't double-prompt for shortcut tooling / AI.
+    test("alwaysDivertToCommand answers the post-move graveyard choice automatically") {
         val state = stateWithCommanderIn(
             Zone.GRAVEYARD,
             format = Format.Commander(alwaysDivertToCommand = true),
         )
         val result = check.check(state)
         result.isPaused shouldBe false
+        result.state.getZone(ZoneKey(ownerId, Zone.GRAVEYARD)) shouldBe emptyList()
+        result.state.getZone(ZoneKey(ownerId, Zone.COMMAND)) shouldBe listOf(cmdrId)
+        result.events.filterIsInstance<com.wingedsheep.engine.core.ZoneChangeEvent>()
+            .map { it.toZone } shouldBe listOf(Zone.COMMAND)
     }
 
     test("does not pause when the format is not Commander") {

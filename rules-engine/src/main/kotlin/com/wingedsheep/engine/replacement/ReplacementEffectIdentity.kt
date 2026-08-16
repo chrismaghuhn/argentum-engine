@@ -71,4 +71,17 @@ sealed interface ReplacementEffectIdentity {
         val sourceEntityId: EntityId,
         val effectIndex: Int = 0
     ) : ReplacementEffectIdentity
+
+    /**
+     * The rule-defined CR 903.9b replacement for one commander object.
+     *
+     * This is deliberately an event-local identity rather than a permanent
+     * identity: the replacement is synthesized by the rules engine when the
+     * commander is about to enter its owner's hand or library.
+     */
+    @SerialName("CommanderRuleIdentity")
+    @Serializable
+    data class CommanderRuleIdentity(
+        val commanderId: EntityId
+    ) : ReplacementEffectIdentity
 }

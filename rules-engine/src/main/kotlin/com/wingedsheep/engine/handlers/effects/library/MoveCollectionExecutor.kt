@@ -18,6 +18,7 @@ import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.player.SacrificedFoodThisTurnComponent
 import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CardDestination
@@ -90,30 +91,76 @@ class MoveCollectionExecutor(
 
         return when (destination) {
             is CardDestination.ToZone -> {
-                var result = moveToZone(state, context, cards, destination, effect.order, effect.revealed, effect.moveType, effect.faceDown, effect.noRegenerate, effect.storeMovedAs, effect.underOwnersControl, effect.revealToSelf)
-                if (effect.linkToSource && result.isSuccess) {
-                    result = linkCardsToSource(result, context, cards)
+                val result = moveToZone(
+                    state = state,
+                    context = context,
+                    cards = cards,
+                    destination = destination,
+                    order = effect.order,
+                    revealed = effect.revealed,
+                    moveType = effect.moveType,
+                    faceDown = effect.faceDown,
+                    noRegenerate = effect.noRegenerate,
+                    storeMovedAs = effect.storeMovedAs,
+                    underOwnersControl = effect.underOwnersControl,
+                    revealToSelf = effect.revealToSelf,
+                    linkToSource = effect.linkToSource,
+                    unlinkFromSource = effect.unlinkFromSource,
+                    addCounterType = effect.addCounterType,
+                    markEnteredViaSourceAbility = effect.markEnteredViaSourceAbility,
+                )
+                if (result.isSuccess) {
+                    applyPostMoveMetadata(
+                        result = result,
+                        context = context,
+                        cards = cards,
+                        destination = destination,
+                        linkToSource = effect.linkToSource,
+                        unlinkFromSource = effect.unlinkFromSource,
+                        addCounterType = effect.addCounterType,
+                        markEnteredViaSourceAbility = effect.markEnteredViaSourceAbility,
+                    )
+                } else {
+                    result
                 }
-                if (effect.unlinkFromSource && result.isSuccess) {
-                    result = unlinkCardsFromSource(result, context, cards)
-                }
-                val counterType = effect.addCounterType
-                if (counterType != null && result.isSuccess) {
-                    var newState = result.state
-                    for (cardId in cards) {
-                        newState = newState.updateEntity(cardId) { c ->
-                            val existing = c.get<CountersComponent>() ?: CountersComponent()
-                            c.with(existing.withAdded(counterType, 1))
-                        }
-                    }
-                    result = EffectResult.success(newState, result.events).copy(updatedCollections = result.updatedCollections)
-                }
-                if (effect.markEnteredViaSourceAbility && destination.zone == Zone.BATTLEFIELD && result.isSuccess) {
-                    result = markEnteredViaSourceAbility(result, context, cards)
-                }
-                result
             }
         }
+    }
+
+    /** Apply MoveCollection metadata after all physical cards have completed. */
+    internal fun applyPostMoveMetadata(
+        result: EffectResult,
+        context: EffectContext,
+        cards: List<EntityId>,
+        destination: CardDestination.ToZone,
+        linkToSource: Boolean,
+        unlinkFromSource: Boolean,
+        addCounterType: CounterType?,
+        markEnteredViaSourceAbility: Boolean,
+    ): EffectResult {
+        if (!result.isSuccess) return result
+
+        var completed = result
+        if (linkToSource) {
+            completed = linkCardsToSource(completed, context, cards)
+        }
+        if (unlinkFromSource) {
+            completed = unlinkCardsFromSource(completed, context, cards)
+        }
+        if (addCounterType != null) {
+            var newState = completed.state
+            for (cardId in cards) {
+                newState = newState.updateEntity(cardId) { c ->
+                    val existing = c.get<CountersComponent>() ?: CountersComponent()
+                    c.with(existing.withAdded(addCounterType, 1))
+                }
+            }
+            completed = completed.copy(state = newState)
+        }
+        if (markEnteredViaSourceAbility && destination.zone == Zone.BATTLEFIELD) {
+            completed = markEnteredViaSourceAbility(completed, context, cards)
+        }
+        return completed
     }
 
     /**
@@ -132,13 +179,13 @@ class MoveCollectionExecutor(
         val sourceId = context.sourceId ?: return result
         var newState = result.state
         for (cardId in cards) {
-            val zone = findCurrentZone(newState, cardId, newState.getEntity(cardId)?.get<CardComponent>()?.ownerId ?: continue)
-            if (zone != Zone.BATTLEFIELD) continue
+            val zoneKey = findCurrentZone(newState, cardId, newState.getEntity(cardId)?.get<CardComponent>()?.ownerId ?: continue)
+            if (zoneKey?.zoneType != Zone.BATTLEFIELD) continue
             newState = newState.updateEntity(cardId) { c ->
                 c.with(com.wingedsheep.engine.state.components.battlefield.EnteredViaAbilityComponent(sourceId))
             }
         }
-        return EffectResult.success(newState, result.events).copy(updatedCollections = result.updatedCollections)
+        return result.copy(state = newState)
     }
 
     /**
@@ -158,7 +205,7 @@ class MoveCollectionExecutor(
         newState = newState.updateEntity(sourceId) { c ->
             c.with(com.wingedsheep.engine.state.components.battlefield.LinkedExileComponent(allExiled))
         }
-        return EffectResult.success(newState, result.events)
+        return result.copy(state = newState)
     }
 
     /**
@@ -194,7 +241,11 @@ class MoveCollectionExecutor(
         noRegenerate: Boolean = false,
         storeMovedAs: String? = null,
         underOwnersControl: Boolean = false,
-        revealToSelf: Boolean = true
+        revealToSelf: Boolean = true,
+        linkToSource: Boolean = false,
+        unlinkFromSource: Boolean = false,
+        addCounterType: CounterType? = null,
+        markEnteredViaSourceAbility: Boolean = false,
     ): EffectResult {
         val destPlayerId = resolvePlayer(destination.player, context, state)
             ?: return EffectResult.error(state, "Could not resolve destination player for MoveCollection")
@@ -207,7 +258,26 @@ class MoveCollectionExecutor(
             // For top placement: always pause (even for 1 card, so player can see it)
             // For bottom placement: only pause when there are multiple cards to order
             if (!isBottom || cards.size > 1) {
-                return pauseForOrderDecision(state, context, cards, destZone, destPlayerId, destination.placement)
+                return pauseForOrderDecision(
+                    state = state,
+                    context = context,
+                    cards = cards,
+                    destZone = destZone,
+                    destPlayerId = destPlayerId,
+                    placement = destination.placement,
+                    destinationPlayer = destination.player,
+                    revealed = revealed,
+                    moveType = moveType,
+                    faceDown = faceDown,
+                    noRegenerate = noRegenerate,
+                    storeMovedAs = storeMovedAs,
+                    underOwnersControl = underOwnersControl,
+                    revealToSelf = revealToSelf,
+                    linkToSource = linkToSource,
+                    unlinkFromSource = unlinkFromSource,
+                    addCounterType = addCounterType,
+                    markEnteredViaSourceAbility = markEnteredViaSourceAbility,
+                )
             }
         }
 
@@ -218,7 +288,25 @@ class MoveCollectionExecutor(
             cards to state
         }
 
-        val result = moveCardsToZone(stateForMove, context, orderedCards, destination, destPlayerId, revealed, moveType, faceDown, noRegenerate, storeMovedAs, underOwnersControl, revealToSelf)
+        val result = moveCardsToZone(
+            state = stateForMove,
+            context = context,
+            cards = orderedCards,
+            destination = destination,
+            destPlayerId = destPlayerId,
+            revealed = revealed,
+            moveType = moveType,
+            faceDown = faceDown,
+            noRegenerate = noRegenerate,
+            storeMovedAs = storeMovedAs,
+            underOwnersControl = underOwnersControl,
+            revealToSelf = revealToSelf,
+            linkToSource = linkToSource,
+            unlinkFromSource = unlinkFromSource,
+            addCounterType = addCounterType,
+            markEnteredViaSourceAbility = markEnteredViaSourceAbility,
+            clearMovedLibraryReveals = order == CardOrder.Random,
+        )
 
         // Random library placement: the mover doesn't know where the cards landed, so strip
         // their reveal markers. moveCardsToZone marks moved cards as revealed to the controller
@@ -245,7 +333,19 @@ class MoveCollectionExecutor(
         cards: List<EntityId>,
         destZone: Zone,
         destPlayerId: EntityId,
-        placement: ZonePlacement = ZonePlacement.Top
+        placement: ZonePlacement = ZonePlacement.Top,
+        destinationPlayer: com.wingedsheep.sdk.scripting.references.Player,
+        revealed: Boolean,
+        moveType: MoveType,
+        faceDown: FaceDownMode?,
+        noRegenerate: Boolean,
+        storeMovedAs: String?,
+        underOwnersControl: Boolean,
+        revealToSelf: Boolean,
+        linkToSource: Boolean,
+        unlinkFromSource: Boolean,
+        addCounterType: CounterType?,
+        markEnteredViaSourceAbility: Boolean,
     ): EffectResult {
         val playerId = context.controllerId
 
@@ -295,7 +395,20 @@ class MoveCollectionExecutor(
             cards = cards,
             destinationZone = destZone,
             destinationPlayerId = destPlayerId,
-            placement = placement
+            placement = placement,
+            context = context,
+            destinationPlayer = destinationPlayer,
+            revealed = revealed,
+            moveType = moveType,
+            faceDown = faceDown,
+            noRegenerate = noRegenerate,
+            storeMovedAs = storeMovedAs,
+            underOwnersControl = underOwnersControl,
+            revealToSelf = revealToSelf,
+            linkToSource = linkToSource,
+            unlinkFromSource = unlinkFromSource,
+            addCounterType = addCounterType,
+            markEnteredViaSourceAbility = markEnteredViaSourceAbility,
         )
 
         val stateWithDecision = state.withPendingDecision(decision)
@@ -331,7 +444,16 @@ class MoveCollectionExecutor(
         noRegenerate: Boolean = false,
         storeMovedAs: String? = null,
         underOwnersControl: Boolean = false,
-        revealToSelf: Boolean = true
+        revealToSelf: Boolean = true,
+        linkToSource: Boolean = false,
+        unlinkFromSource: Boolean = false,
+        addCounterType: CounterType? = null,
+        markEnteredViaSourceAbility: Boolean = false,
+        clearMovedLibraryReveals: Boolean = false,
+        startCardIndex: Int = 0,
+        completedCardIds: List<EntityId> = emptyList(),
+        completedLibraryOwnerIds: List<EntityId> = emptyList(),
+        orderCompletion: MoveCollectionOrderCompletion? = null,
     ): EffectResult {
         val destZone = destination.zone
 
@@ -385,7 +507,29 @@ class MoveCollectionExecutor(
             }
         }
 
-        return moveCardsToZoneInternal(state, context, cards, destination, destPlayerId, revealed, moveType, faceDown, noRegenerate, storeMovedAs, underOwnersControl, revealToSelf)
+        return moveCardsToZoneInternal(
+            state = state,
+            context = context,
+            cards = cards,
+            destination = destination,
+            destPlayerId = destPlayerId,
+            revealed = revealed,
+            moveType = moveType,
+            faceDown = faceDown,
+            noRegenerate = noRegenerate,
+            storeMovedAs = storeMovedAs,
+            underOwnersControl = underOwnersControl,
+            revealToSelf = revealToSelf,
+            linkToSource = linkToSource,
+            unlinkFromSource = unlinkFromSource,
+            addCounterType = addCounterType,
+            markEnteredViaSourceAbility = markEnteredViaSourceAbility,
+            clearMovedLibraryReveals = clearMovedLibraryReveals,
+            startCardIndex = startCardIndex,
+            completedCardIds = completedCardIds,
+            completedLibraryOwnerIds = completedLibraryOwnerIds,
+            orderCompletion = orderCompletion,
+        )
     }
 
     /**
@@ -525,9 +669,9 @@ class MoveCollectionExecutor(
         val cardName = newState.getEntity(auraId)?.get<CardComponent>()?.name ?: "Unknown"
 
         // Find and remove from current zone
-        val fromZone = findCurrentZone(newState, auraId, ownerId)
-        if (fromZone != null) {
-            newState = newState.removeFromZone(ZoneKey(ownerId, fromZone), auraId)
+        val fromZoneKey = findCurrentZone(newState, auraId, ownerId)
+        if (fromZoneKey != null) {
+            newState = newState.removeFromZone(fromZoneKey, auraId)
         }
 
         // Add to battlefield
@@ -558,12 +702,12 @@ class MoveCollectionExecutor(
             targetContainer.with(AttachmentsComponent(updatedIds))
         }
 
-        if (fromZone != null) {
+        if (fromZoneKey != null) {
             events.add(
                 ZoneChangeEvent(
                     entityId = auraId,
                     entityName = cardName,
-                    fromZone = fromZone,
+                    fromZone = fromZoneKey.zoneType,
                     toZone = Zone.BATTLEFIELD,
                     ownerId = ownerId
                 )
@@ -596,7 +740,16 @@ class MoveCollectionExecutor(
         noRegenerate: Boolean = false,
         storeMovedAs: String? = null,
         underOwnersControl: Boolean = false,
-        revealToSelf: Boolean = true
+        revealToSelf: Boolean = true,
+        linkToSource: Boolean = false,
+        unlinkFromSource: Boolean = false,
+        addCounterType: CounterType? = null,
+        markEnteredViaSourceAbility: Boolean = false,
+        clearMovedLibraryReveals: Boolean = false,
+        startCardIndex: Int = 0,
+        completedCardIds: List<EntityId> = emptyList(),
+        completedLibraryOwnerIds: List<EntityId> = emptyList(),
+        orderCompletion: MoveCollectionOrderCompletion? = null,
     ): EffectResult {
         val destZone = destination.zone
         val events = mutableListOf<GameEvent>()
@@ -611,11 +764,22 @@ class MoveCollectionExecutor(
             state
         }
 
-        val movedIds = mutableListOf<EntityId>()
+        val movedIds = completedCardIds.toMutableList()
         // Track every library that received at least one card so per-card owner routing
         // (e.g., a permanent owned by another player going to its owner's library) shuffles
         // and reveal-marks every affected library, not just the destination's nominal owner.
-        val librariesReceivingCards = linkedSetOf<EntityId>()
+        val librariesReceivingCards = linkedSetOf<EntityId>().apply {
+            addAll(completedLibraryOwnerIds)
+            completedCardIds.forEach { completedCardId ->
+                val completedOwnerId = newState.getEntity(completedCardId)
+                    ?.get<OwnerComponent>()
+                    ?.playerId
+                    ?: return@forEach
+                if (findCurrentZone(newState, completedCardId, completedOwnerId)?.zoneType == Zone.LIBRARY) {
+                    add(completedOwnerId)
+                }
+            }
+        }
 
         // Determine library placement for ZoneTransitionService
         val libraryPlacement = when (destination.placement) {
@@ -625,8 +789,94 @@ class MoveCollectionExecutor(
             else -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
         }
 
-        for (cardId in cards) {
+        for ((cardIndex, cardId) in cards.withIndex()) {
+            if (cardIndex < startCardIndex) continue
+
             val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId ?: destPlayerId
+
+            // Commander 903.9b is part of this card's physical move, not a collection-wide
+            // preflight. The ordered list is already the physical insertion plan (top moves
+            // back-to-front, bottom moves front-to-back), so stopping here preserves every card
+            // before and after a paused Commander exactly where the player selected it.
+            if (destZone == Zone.HAND || destZone == Zone.LIBRARY) {
+                val isCommander = state.format.usesCommanders &&
+                    newState.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.CommanderComponent>() == true
+                val fromZoneKey = findCurrentZone(newState, cardId, ownerId)
+                val fromZone = fromZoneKey?.zoneType
+                if (isCommander && fromZoneKey != null) {
+                    val actualDestPlayerId = if (fromZone == Zone.BATTLEFIELD) ownerId else destPlayerId
+                    val libraryPlacement = when (destination.placement) {
+                        ZonePlacement.Bottom -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
+                        // The collection shuffles once after all cards are placed; a per-card
+                        // replacement transition therefore uses bottom insertion here.
+                        ZonePlacement.Shuffled -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Bottom
+                        else -> com.wingedsheep.engine.handlers.effects.LibraryPlacement.Top
+                    }
+                    val pendingResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+                        .moveToZoneWithReplacements(
+                            state = newState,
+                            entityId = cardId,
+                            destinationZone = destZone,
+                            options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
+                                controllerId = actualDestPlayerId,
+                                libraryPlacement = libraryPlacement,
+                            ),
+                            fromZoneKey = fromZoneKey,
+                            context = context,
+                            completion = com.wingedsheep.engine.replacement.PendingGameEvent
+                                .MoveCollectionZoneChangeCompletion(
+                                    context = context,
+                                    cards = cards,
+                                    destination = destination,
+                                    destPlayerId = destPlayerId,
+                                    revealed = revealed,
+                                    moveType = moveType,
+                                    faceDown = faceDown,
+                                    noRegenerate = noRegenerate,
+                                    storeMovedAs = storeMovedAs,
+                                    underOwnersControl = underOwnersControl,
+                                    revealToSelf = revealToSelf,
+                                    nextCardIndex = cardIndex + 1,
+                                    completedCardIds = (movedIds + cardId).distinct(),
+                                    completedLibraryOwnerIds = librariesReceivingCards.toList(),
+                                    linkToSource = linkToSource,
+                                    unlinkFromSource = unlinkFromSource,
+                                    addCounterType = addCounterType,
+                                    markEnteredViaSourceAbility = markEnteredViaSourceAbility,
+                                    clearMovedLibraryReveals = clearMovedLibraryReveals,
+                                    orderCompletion = orderCompletion,
+                                ),
+                        )
+                    if (pendingResult.isPaused) {
+                        return pendingResult.copy(events = events + pendingResult.events)
+                    }
+                    if (!pendingResult.isSuccess) {
+                        return pendingResult.copy(events = events + pendingResult.events)
+                    }
+                    newState = pendingResult.state
+                    events.addAll(pendingResult.events)
+                    movedIds.add(cardId)
+                    if (destZone == Zone.LIBRARY &&
+                        findCurrentZone(newState, cardId, ownerId)?.zoneType == Zone.LIBRARY
+                    ) {
+                        librariesReceivingCards.add(ownerId)
+                    }
+                    continue
+                }
+            }
+
+            // A Commander hand/library move may already have completed through
+            // the pending replacement adapter. Keep it in the collection-level
+            // bookkeeping, but never issue a second physical move after resume.
+            if (cardId in context.preResolvedZoneChangeIds) {
+                movedIds.add(cardId)
+                if (destZone == Zone.LIBRARY &&
+                    findCurrentZone(newState, cardId, ownerId)?.zoneType == Zone.LIBRARY
+                ) {
+                    librariesReceivingCards.add(ownerId)
+                }
+                continue
+            }
 
             // For MoveType.Destroy, check indestructible and regeneration before moving
             if (moveType == MoveType.Destroy) {
@@ -653,7 +903,8 @@ class MoveCollectionExecutor(
             }
 
             // Find current zone for controller override logic
-            val fromZone = findCurrentZone(newState, cardId, ownerId)
+            val fromZoneKey = findCurrentZone(newState, cardId, ownerId)
+            val fromZone = fromZoneKey?.zoneType
 
             // Determine actual destination player based on moveType and zones.
             // A permanent leaving the battlefield always goes to its owner's hand/library/exile/
@@ -694,7 +945,6 @@ class MoveCollectionExecutor(
             )
 
             // Delegate to ZoneTransitionService for full cleanup + entry
-            val fromZoneKey = if (fromZone != null) ZoneKey(ownerId, fromZone) else null
             val transitionResult = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
                 newState, cardId, destZone, entryOptions, fromZoneKey
             )
@@ -737,13 +987,23 @@ class MoveCollectionExecutor(
         // Persist reveals when cards are moved into a library at a known position.
         // The mover knows where each card landed; if revealed=true, everyone knows.
         // (Shuffled placement is handled above and intentionally does NOT mark.)
-        if (destZone == Zone.LIBRARY && destination.placement != ZonePlacement.Shuffled && movedIds.isNotEmpty()) {
+        val libraryMovedIds = movedIds.filter { movedId ->
+            val movedOwnerId = newState.getEntity(movedId)
+                ?.get<OwnerComponent>()
+                ?.playerId
+                ?: return@filter false
+            findCurrentZone(newState, movedId, movedOwnerId)?.zoneType == Zone.LIBRARY
+        }
+        if (destZone == Zone.LIBRARY &&
+            destination.placement != ZonePlacement.Shuffled &&
+            libraryMovedIds.isNotEmpty()
+        ) {
             val audience: Set<EntityId> = if (revealed) {
                 newState.turnOrder.toSet()
             } else {
                 setOf(context.controllerId)
             }
-            newState = LibraryRevealUtils.markRevealed(newState, movedIds, audience)
+            newState = LibraryRevealUtils.markRevealed(newState, libraryMovedIds, audience)
         }
 
         // Emit discard event if configured
@@ -794,7 +1054,7 @@ class MoveCollectionExecutor(
             // pulse on whatever permanent the card became — wrong for tutor-and-play effects.
             val sourceZones = cards.mapNotNull { cardId ->
                 val ownerId = state.getEntity(cardId)?.get<OwnerComponent>()?.playerId
-                if (ownerId != null) findCurrentZone(state, cardId, ownerId) else null
+                if (ownerId != null) findCurrentZone(state, cardId, ownerId)?.zoneType else null
             }
             val sharedFromZone = sourceZones.distinct().singleOrNull()
             events.add(
@@ -835,15 +1095,17 @@ class MoveCollectionExecutor(
     }
 
     /**
-     * Find which zone a card currently lives in.
+     * Find the actual keyed zone containing a card. Battlefield permanents are keyed by their
+     * controller, while other zones are keyed by their owner; reconstructing a key from the
+     * owner's identity therefore loses valid control-changing battlefield states.
      */
-    private fun findCurrentZone(state: GameState, cardId: EntityId, ownerId: EntityId): Zone? {
-        for (zone in Zone.entries) {
-            val zoneKey = ZoneKey(ownerId, zone)
-            if (cardId in state.getZone(zoneKey)) {
-                return zone
+    private fun findCurrentZone(state: GameState, cardId: EntityId, ownerId: EntityId): ZoneKey? {
+        for ((zoneKey, entities) in state.zones) {
+            if (cardId in entities) {
+                return zoneKey
             }
         }
+        if (cardId in state.stack) return ZoneKey(ownerId, Zone.STACK)
         return null
     }
 

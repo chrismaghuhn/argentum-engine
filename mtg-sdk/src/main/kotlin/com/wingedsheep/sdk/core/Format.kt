@@ -71,12 +71,11 @@ sealed interface Format {
      * @property deckSize Total deck size including the commander; the validator enforces this.
      * @property startingLife Each player's starting life total.
      * @property startingHandSize Cards drawn for the opening hand.
-     * @property alwaysDivertToCommand Bypass the CR 903.9a player choice and unconditionally
-     *   divert a commander leaving for graveyard / exile / hand / library to the command zone.
-     *   Off by default — the SBA pauses with a yes/no decision so the owner can choose to leave
-     *   the commander in the destination zone (e.g. to keep recursion targets in graveyard or
-     *   keep linked-exile abilities tracking it). AI/headless tooling can flip this on to skip
-     *   the prompt.
+     * @property alwaysDivertToCommand Pre-answer the applicable Commander-zone choice with YES
+     *   in deterministic/headless mode. For graveyard/exile this is the CR 903.9a post-move choice;
+     *   for hand/library it is the CR 903.9b pre-move replacement choice. The normal player-facing
+     *   hand/library path still enters the replacement pipeline, and the preference is off by
+     *   default so the owner can control the choice externally.
      */
     @Serializable
     data class Commander(

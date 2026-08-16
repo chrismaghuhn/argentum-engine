@@ -45,7 +45,6 @@ import com.wingedsheep.engine.state.components.combat.DamageAssignmentOrderCompo
 import com.wingedsheep.engine.state.components.combat.DealtFirstStrikeDamageComponent
 import com.wingedsheep.engine.state.components.combat.RequiresManualDamageAssignmentComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.MorphDataComponent
@@ -67,6 +66,7 @@ import com.wingedsheep.sdk.scripting.events.CounterTypeFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.predicates.evaluateWith
+import kotlinx.serialization.Serializable
 
 /**
  * Result of a zone change redirect check.
@@ -85,6 +85,7 @@ import com.wingedsheep.sdk.scripting.predicates.evaluateWith
  * @param reveal When true, the card is revealed as it is redirected (informational — the shuffle
  *        destination is otherwise hidden). Darksteel Colossus / Progenitus.
  */
+@Serializable
 data class ZoneChangeRedirectResult(
     val destinationZone: Zone,
     val additionalEffect: com.wingedsheep.sdk.scripting.effects.Effect? = null,
@@ -92,6 +93,18 @@ data class ZoneChangeRedirectResult(
     val linkSourceId: EntityId? = null,
     val shuffleIntoLibrary: Boolean = false,
     val reveal: Boolean = false
+)
+
+/**
+ * Replacement side effects that remain owed after a later replacement changes the event's
+ * current destination. These are separate from [ZoneChangeRedirectResult]: the redirect result
+ * describes the current destination, while this value records an obligation created by an
+ * already-applied replacement.
+ */
+@Serializable
+data class ZoneChangeResidualObligations(
+    /** The owner's library must still be shuffled when the pending event completes. */
+    val shuffleOwnerLibrary: Boolean = false,
 )
 
 /**
@@ -104,19 +117,6 @@ data class ZoneChangeRedirectResult(
 object ZoneMovementUtils {
 
     private val predicateEvaluator = PredicateEvaluator()
-
-    /**
-     * Destinations that the commander zone-change replacement can intercept (CR 903.9).
-     * Battlefield, stack, and command itself are intentionally excluded — commanders enter
-     * the battlefield like any other permanent, can sit on the stack while resolving, and
-     * "moving to the command zone" while already there is a no-op.
-     */
-    private val COMMANDER_DIVERT_DESTINATIONS = setOf(
-        Zone.GRAVEYARD,
-        Zone.EXILE,
-        Zone.HAND,
-        Zone.LIBRARY,
-    )
 
     /**
      * Apply Saga entry setup to an entity entering the battlefield (Rule 714.3a).
@@ -584,6 +584,9 @@ object ZoneMovementUtils {
         container.get<CardComponent>()
             ?: return EffectResult.error(state, "Not a card")
 
+        if (targetZone == Zone.HAND || targetZone == Zone.LIBRARY) {
+            return ZoneTransitionService.moveToZoneWithReplacements(state, entityId, targetZone)
+        }
         val result = ZoneTransitionService.moveToZone(state, entityId, targetZone)
         return EffectResult.success(result.state, result.events)
     }
@@ -656,7 +659,8 @@ object ZoneMovementUtils {
         state: GameState,
         entityId: EntityId,
         fromZone: Zone?,
-        toZone: Zone
+        toZone: Zone,
+        skipExternalReplacementEffects: Boolean = false
     ): ZoneChangeRedirectResult {
         val container = state.getEntity(entityId) ?: return ZoneChangeRedirectResult(toZone)
 
@@ -667,7 +671,7 @@ object ZoneMovementUtils {
         // the source is on the battlefield and has lost all abilities.
         val selfRedirect = container
             .get<com.wingedsheep.engine.state.components.identity.SelfZoneRedirectComponent>()
-        if (selfRedirect != null &&
+        if (!skipExternalReplacementEffects && selfRedirect != null &&
             !(fromZone == Zone.BATTLEFIELD && state.projectedState.hasLostAllAbilities(entityId))
         ) {
             for (effect in selfRedirect.redirects) {
@@ -700,25 +704,6 @@ object ZoneMovementUtils {
             return ZoneChangeRedirectResult(Zone.EXILE)
         }
 
-        // Commander zone-change shortcut (CR 903.9). When `alwaysDivertToCommand` is enabled
-        // on a Commander-enabled format, a card with CommanderComponent that would move to
-        // graveyard / exile / hand / library from any other zone is silently diverted to the
-        // command zone. Token copies of a commander aren't the commander itself (CR 903.10a)
-        // and never carry CommanderComponent, so the TokenComponent guard is implicit.
-        //
-        // The default path leaves the destination unchanged — the commander reaches the
-        // intended zone and the CR 903.9a state-based action (see CommanderZoneChoiceCheck)
-        // prompts the owner before priority is granted.
-        if (container.has<CommanderComponent>() &&
-            toZone in COMMANDER_DIVERT_DESTINATIONS &&
-            fromZone != Zone.COMMAND
-        ) {
-            val format = state.format
-            if (format.usesCommanders && format.alwaysDivertToCommand) {
-                return ZoneChangeRedirectResult(Zone.COMMAND)
-            }
-        }
-
         // Check for finality counter — if a permanent with a finality counter
         // would die (go from battlefield to graveyard), exile it instead.
         if (fromZone == Zone.BATTLEFIELD && toZone == Zone.GRAVEYARD) {
@@ -726,6 +711,10 @@ object ZoneMovementUtils {
             if (counters != null && counters.getCount(CounterType.FINALITY) > 0) {
                 return ZoneChangeRedirectResult(Zone.EXILE)
             }
+        }
+
+        if (skipExternalReplacementEffects) {
+            return ZoneChangeRedirectResult(toZone)
         }
 
         for (permanentId in state.getBattlefield()) {
@@ -810,6 +799,31 @@ object ZoneMovementUtils {
         }
 
         return ZoneChangeRedirectResult(toZone)
+    }
+
+    /**
+     * Match a zone-change replacement pattern against a pending move. This is
+     * shared by the serializable replacement pipeline and the legacy physical
+     * transition helper so both paths use the same filter and cause semantics.
+     */
+    fun matchesZoneChangePattern(
+        state: GameState,
+        entityId: EntityId,
+        fromZone: Zone?,
+        toZone: Zone,
+        pattern: com.wingedsheep.sdk.scripting.EventPattern.ZoneChangeEvent,
+        sourceControllerId: EntityId,
+        requiredCause: ZoneChangeCause = ZoneChangeCause.Any
+    ): Boolean {
+        if (pattern.to != null && pattern.to != toZone) return false
+        if (pattern.from != null && pattern.from != fromZone) return false
+
+        val container = state.getEntity(entityId) ?: return false
+        if (!matchesZoneChangeFilter(state, entityId, container, pattern.filter, sourceControllerId)) {
+            return false
+        }
+
+        return causeSatisfied(state, entityId, container, requiredCause)
     }
 
     /**
@@ -1073,6 +1087,9 @@ object ZoneMovementUtils {
         container.get<CardComponent>()
             ?: return EffectResult.error(state, "Not a card")
 
+        if (targetZone == Zone.HAND || targetZone == Zone.LIBRARY) {
+            return ZoneTransitionService.moveToZoneWithReplacements(state, entityId, targetZone)
+        }
         val result = ZoneTransitionService.moveToZone(state, entityId, targetZone)
         return EffectResult.success(result.state, result.events)
     }

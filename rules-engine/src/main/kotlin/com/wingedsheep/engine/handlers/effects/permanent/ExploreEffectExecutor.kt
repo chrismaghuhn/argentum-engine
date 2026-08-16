@@ -6,7 +6,6 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ReplacementEffectUtils
-import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -118,12 +117,24 @@ class ExploreEffectExecutor(
         )
 
         return if (topCardComponent.typeLine.isLand) {
-            // Land: move directly to hand
-            val transition = ZoneTransitionService.moveToZone(state, topCardId, Zone.HAND)
-            EffectResult.success(
-                transition.state,
-                listOf(revealEvent) + transition.events + exploredEvent(true)
+            // Land: the move is still a player-visible hand move, so compose it
+            // through MoveToZoneEffect. That keeps the 903.9b pending replacement
+            // and its continuation below the explore-specific reveal event.
+            val result = recurse(
+                state,
+                CompositeEffect(listOf(
+                    MoveToZoneEffect(
+                        target = EffectTarget.SpecificEntity(topCardId),
+                        destination = Zone.HAND
+                    ),
+                    EmitExploredEventEffect(
+                        target = EffectTarget.SpecificEntity(exploringCreatureId),
+                        revealedCardWasLand = true
+                    )
+                )),
+                context
             )
+            result.copy(events = listOf(revealEvent) + result.events)
         } else {
             // Non-land: mark card revealed to all players, add +1/+1 counter, then ask:
             // back to top of library (stays visible) or graveyard?

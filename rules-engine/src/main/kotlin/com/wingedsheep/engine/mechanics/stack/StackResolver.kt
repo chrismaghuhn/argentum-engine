@@ -64,6 +64,9 @@ import com.wingedsheep.sdk.scripting.effects.MoveTrackedBattlefieldObjectEffect
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EntersAsCopy
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
+import com.wingedsheep.engine.handlers.effects.LibraryPlacement
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.permanent.types.buildCardComponentForDfcFace
 import com.wingedsheep.engine.handlers.effects.permanent.types.dfcBackFaceManaValue
 import com.wingedsheep.engine.handlers.effects.permanent.types.returnDfcFace
@@ -81,6 +84,7 @@ import com.wingedsheep.engine.mechanics.targeting.PlayerTargetRestriction
 import com.wingedsheep.engine.handlers.SourceTypeTargeting
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
+import com.wingedsheep.engine.replacement.PendingGameEvent
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.*
 
@@ -875,8 +879,10 @@ class StackResolver(
         // Pop from stack
         val (_, poppedState) = state.popFromStack()
 
-        // Determine what type of item this is
-        return when {
+        // Determine what type of item this is. A resolving spell stays a coherent stack object
+        // while a resolution-time choice is pending; the zone-transition atom removes it from
+        // the stack only when the physical move actually completes.
+        val result = when {
             container.has<SpellOnStackComponent>() ->
                 resolveSpell(poppedState, topId, container)
 
@@ -889,6 +895,21 @@ class StackResolver(
             else ->
                 ExecutionResult.error(state, "Unknown stack item type")
         }
+
+        // Ordinary resolution choices (for example an as-enters number/type choice) resume
+        // through their own spell continuation and must keep the historical popped-stack shape.
+        // Only replacement ordering/optional-replacement prompts need the spell to remain a
+        // coherent stack object: their continuation will perform the final zone transition.
+        val pendingContinuation = result.state.peekContinuation()
+        val replacementDecisionPending = pendingContinuation is OptionalReplacementContinuation ||
+            pendingContinuation is ReplacementChoiceContinuation
+        if (result.isPaused && replacementDecisionPending && container.has<SpellOnStackComponent>() &&
+            result.state.getEntity(topId)?.has<SpellOnStackComponent>() == true &&
+            topId !in result.state.stack
+        ) {
+            return result.copy(state = result.state.copy(stack = result.state.stack + topId))
+        }
+        return result
     }
 
     /**
@@ -2184,12 +2205,81 @@ class StackResolver(
                     else -> Zone.GRAVEYARD
                 }
 
+                // Omen resolves into the library, which is a 903.9b hand/library boundary even
+                // when the spell's effect paused earlier in resolution. Keep the original effect
+                // decision below the replacement frames; after the commander answer resolves,
+                // the completion restores that same decision instead of silently auto-completing
+                // the spell's paused effect.
+                if (pausedOmenFaceShuffle) {
+                    val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                        state = effectResult.state,
+                        entityId = spellId,
+                        destinationZone = Zone.LIBRARY,
+                        options = ZoneEntryOptions(libraryPlacement = LibraryPlacement.Shuffled),
+                        fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                        context = EffectContext(
+                            sourceId = spellId,
+                            controllerId = spellComponent.casterId,
+                        ),
+                        completion = PendingGameEvent.ResumePendingDecisionZoneChangeCompletion(
+                            pendingDecision = effectResult.pendingDecision!!,
+                        ),
+                    )
+                    if (pendingMove.isPaused) {
+                        return ExecutionResult.paused(
+                            pendingMove.state,
+                            pendingMove.pendingDecision!!,
+                            events + effectResult.events + pendingMove.events,
+                        )
+                    }
+                    if (pendingMove.error != null) return pendingMove.toExecutionResult()
+                    return ExecutionResult.paused(
+                        pendingMove.state,
+                        effectResult.pendingDecision,
+                        events + effectResult.events + pendingMove.events,
+                    )
+                }
+
                 // Apply RedirectZoneChange replacement effects (e.g., Festival of Embers).
                 val pausedRedirect = com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.checkZoneChangeRedirect(
                     effectResult.state, spellId, Zone.STACK, pausedIntended
                 )
                 val pausedDestZone = pausedRedirect.destinationZone
                 val pausedDestZoneKey = ZoneKey(ownerId, pausedDestZone)
+
+                // A resolving spell can still be redirected into hand/library while an earlier
+                // resolution decision is pending. Keep the stack object coherent until the
+                // canonical transition completes: CR 903.9b may pause again before the physical
+                // move, and ResumePendingDecisionZoneChangeCompletion restores the original
+                // resolution decision only after that move is finished.
+                if (pausedDestZone == Zone.HAND || pausedDestZone == Zone.LIBRARY) {
+                    val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                        state = effectResult.state,
+                        entityId = spellId,
+                        destinationZone = pausedIntended,
+                        fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                        context = EffectContext(
+                            sourceId = spellId,
+                            controllerId = spellComponent.casterId,
+                        ),
+                        completion = PendingGameEvent.ResumePendingDecisionZoneChangeCompletion(
+                            pendingDecision = effectResult.pendingDecision!!,
+                        ),
+                    )
+                    if (pendingMove.isPaused) {
+                        return ExecutionResult.paused(
+                            pendingMove.state,
+                            pendingMove.pendingDecision!!,
+                            events + effectResult.events + pendingMove.events,
+                        )
+                    }
+                    if (pendingMove.error != null) return pendingMove.toExecutionResult()
+                    return ExecutionResult.paused(
+                        pendingMove.state,
+                        effectResult.pendingDecision,
+                        events + effectResult.events + pendingMove.events,
+                    )
+                }
 
                 // Move spell to graveyard/exile even though effect is paused
                 var pausedState = effectResult.state.updateEntity(spellId) { c ->
@@ -2334,11 +2424,66 @@ class StackResolver(
             else -> Zone.GRAVEYARD
         }
 
+        // Omen's library destination must enter the shared pending-event pipeline. This keeps the
+        // 903.9b choice available for a commander cast from any zone and lets the canonical zone
+        // transition atom perform the library shuffle only after replacement processing finishes.
+        if (omenFaceShuffle) {
+            val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                state = newState,
+                entityId = spellId,
+                destinationZone = Zone.LIBRARY,
+                options = ZoneEntryOptions(libraryPlacement = LibraryPlacement.Shuffled),
+                fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                context = EffectContext(
+                    sourceId = spellId,
+                    controllerId = spellComponent.casterId,
+                ),
+                completion = PendingGameEvent.PlainZoneChangeCompletion,
+            )
+            if (pendingMove.isPaused) {
+                return ExecutionResult.paused(
+                    pendingMove.state,
+                    pendingMove.pendingDecision!!,
+                    events + pendingMove.events,
+                )
+            }
+            if (pendingMove.error != null) return pendingMove.toExecutionResult()
+            return ExecutionResult.success(pendingMove.state, events + pendingMove.events)
+        }
+
         // Apply RedirectZoneChange replacement effects (e.g., Festival of Embers
         // exiles cards that would go to your graveyard from anywhere).
         val redirect = com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.checkZoneChangeRedirect(
             newState, spellId, Zone.STACK, intendedDestination
         )
+
+        // A normal resolving spell can still be redirected into hand/library by an active
+        // replacement effect. The legacy redirect probe is used only as a cheap gate; the actual
+        // event is re-evaluated by the serializable pipeline so Commander 903.9b participates in
+        // CR 616 ordering instead of being hidden behind the old direct mutation path.
+        if (redirect.destinationZone == Zone.HAND || redirect.destinationZone == Zone.LIBRARY) {
+            val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                state = newState,
+                entityId = spellId,
+                destinationZone = intendedDestination,
+                fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                context = EffectContext(
+                    sourceId = spellId,
+                    controllerId = spellComponent.casterId,
+                ),
+                completion = PendingGameEvent.PlainZoneChangeCompletion,
+            )
+            if (pendingMove.isPaused) {
+                return ExecutionResult.paused(
+                    pendingMove.state,
+                    pendingMove.pendingDecision!!,
+                    events + pendingMove.events,
+                )
+            }
+            if (pendingMove.error != null) return pendingMove.toExecutionResult()
+            return ExecutionResult.success(pendingMove.state, events + pendingMove.events)
+        }
+
         val destinationZone = redirect.destinationZone
         val destZoneKey = ZoneKey(ownerId, destinationZone)
 
@@ -2598,6 +2743,42 @@ class StackResolver(
             com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
                 .checkZoneChangeRedirect(state, spellId, Zone.STACK, Zone.GRAVEYARD)
         }
+
+        // If an ordinary replacement redirects the fizzle into hand/library, let the pending
+        // event pipeline ask the commander owner about 903.9b before the card leaves the stack.
+        // Keep the legacy path for graveyard/exile so the post-move 903.9a compatibility behavior
+        // remains unchanged.
+        if (fizzleRedirect.destinationZone == Zone.HAND || fizzleRedirect.destinationZone == Zone.LIBRARY) {
+            val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                state = state,
+                entityId = spellId,
+                destinationZone = if (flashbackExile || exileAfterResolve) Zone.EXILE else Zone.GRAVEYARD,
+                fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                context = EffectContext(
+                    sourceId = spellId,
+                    controllerId = spellComponent.casterId,
+                ),
+                completion = PendingGameEvent.StackSpellDispositionZoneChangeCompletion(
+                    fizzled = true,
+                    cardName = cardComponent?.name ?: "Unknown",
+                    reason = "All targets are invalid",
+                ),
+            )
+            if (pendingMove.isPaused) {
+                return ExecutionResult.paused(
+                    pendingMove.state,
+                    pendingMove.pendingDecision!!,
+                    pendingMove.events,
+                )
+            }
+            if (pendingMove.error != null) return pendingMove.toExecutionResult()
+            return ExecutionResult.success(
+                pendingMove.state,
+                listOf(SpellFizzledEvent(spellId, cardComponent?.name ?: "Unknown", "All targets are invalid")) +
+                    pendingMove.events,
+            )
+        }
+
         val destZone = fizzleRedirect.destinationZone
         val destZoneKey = ZoneKey(ownerId, destZone)
 
@@ -2944,6 +3125,40 @@ class StackResolver(
             com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
                 .checkZoneChangeRedirect(state, spellId, Zone.STACK, Zone.GRAVEYARD)
         }
+
+        // A replacement that redirects a countered spell into hand/library crosses the 903.9b
+        // boundary. Re-enter the normal pending-event pipeline so a Commander answer can pause
+        // and serialize instead of mutating the stack directly.
+        if (counterRedirect.destinationZone == Zone.HAND || counterRedirect.destinationZone == Zone.LIBRARY) {
+            val pendingMove = ZoneTransitionService.moveToZoneWithReplacements(
+                state = state,
+                entityId = spellId,
+                destinationZone = if (exileAfterResolve) Zone.EXILE else Zone.GRAVEYARD,
+                fromZoneKey = ZoneKey(ownerId, Zone.STACK),
+                context = EffectContext(
+                    sourceId = spellId,
+                    controllerId = spellComponent?.casterId ?: ownerId,
+                ),
+                completion = PendingGameEvent.StackSpellDispositionZoneChangeCompletion(
+                    fizzled = false,
+                    cardName = cardComponent?.name ?: "Unknown",
+                ),
+            )
+            if (pendingMove.isPaused) {
+                return ExecutionResult.paused(
+                    pendingMove.state,
+                    pendingMove.pendingDecision!!,
+                    pendingMove.events,
+                )
+            }
+            if (pendingMove.error != null) return pendingMove.toExecutionResult()
+            return ExecutionResult.success(
+                pendingMove.state,
+                listOf(SpellCounteredEvent(spellId, cardComponent?.name ?: "Unknown")) +
+                    pendingMove.events,
+            )
+        }
+
         val destZone = counterRedirect.destinationZone
         val destZoneKey = ZoneKey(ownerId, destZone)
         newState = newState.addToZone(destZoneKey, spellId)

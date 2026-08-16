@@ -11,6 +11,7 @@ import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.identity.SelfZoneRedirectComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.CommanderZoneReplacement
 import com.wingedsheep.sdk.scripting.ReplacementEffect
 import com.wingedsheep.sdk.scripting.ReplacementPriorityGroup
 import java.util.*
@@ -102,6 +103,29 @@ class ReplacementEffectProcessor {
     }
 
     /**
+     * Continue after an optional replacement was declined. The identity is
+     * suppressed only for this unchanged event shape; if a later replacement
+     * modifies the event, [processInternal] starts the next gather with an
+     * empty temporary suppression set.
+     */
+    fun processAfterOptionalDecline(
+        state: GameState,
+        event: PendingGameEvent,
+        gathered: GatheredReplacement,
+        context: EffectContext? = null,
+        alreadyApplied: Set<ReplacementEffectIdentity> = emptySet()
+    ): ProcessorResult {
+        val fullAlreadyApplied = alreadyApplied + (state.activeReplacementChain ?: emptySet())
+        return processInternal(
+            state = state,
+            event = event,
+            context = context,
+            alreadyApplied = fullAlreadyApplied,
+            temporarilySuppressed = setOf(gathered.identity),
+        )
+    }
+
+    /**
      * Internal recursive loop. Applies one replacement at a time and re-checks
      * for additional matches until none remain, or we need player input.
      *
@@ -113,63 +137,73 @@ class ReplacementEffectProcessor {
         state: GameState,
         event: PendingGameEvent,
         context: EffectContext?,
-        alreadyApplied: Set<ReplacementEffectIdentity>
+        alreadyApplied: Set<ReplacementEffectIdentity>,
+        temporarilySuppressed: Set<ReplacementEffectIdentity> = emptySet()
     ): ProcessorResult {
         // 1. Gather all active replacement effects from the battlefield
         val gathered = gatherReplacements(state, event, context)
 
         // 2. Filter out already-applied effects (CR 614.5)
-        val fresh = gathered.filter { it.identity !in alreadyApplied }
+        val fresh = gathered.filter {
+            it.identity !in alreadyApplied && it.identity !in temporarilySuppressed
+        }
 
         if (fresh.isEmpty()) {
             return ProcessorResult.Pass
         }
 
-        // 3. Separate optional replacements — they need a yes/no prompt before
-        //    entering the standard CR 616.1 pipeline.
-        val (optional, mandatory) = fresh.partition {
-            it.effect.optional
-        }
-        if (optional.isNotEmpty()) {
-            // Present the optional prompt via the event's domain-specific handler.
-            // If the event doesn't support optional prompts, treat as mandatory.
-            //
-            // Known simplification: CR 616.1 puts optional and mandatory effects in one pool and
-            // orders the whole pool by priority group, so a mandatory 616.1a self-replacement
-            // should be applied before an optional 616.1e one. Prompting optionals first is only
-            // observable when both are applicable to the same event, which needs a card that
-            // classifies above ANY — nothing does yet.
-            return presentOptionalReplacement(state, event, optional.first(), alreadyApplied, context)
-        }
-
-        // 4. If only one mandatory match, apply it directly
-        if (mandatory.size == 1) {
-            return applySingle(state, mandatory[0], event, alreadyApplied)
-        }
-
-        // 5. Multiple mandatory matches — group by priority order (CR 616.1a-e)
-        val byGroup = mandatory.groupBy { it.effect.priorityGroup }
+        // 3. CR 616.1 orders the complete applicable pool before asking an optional
+        // replacement question. Do not prompt a 903.9b candidate in group ANY while a
+        // higher-priority mandatory replacement is still applicable.
+        val byGroup = fresh.groupBy { it.effect.priorityGroup }
 
         for (group in enumEntries<ReplacementPriorityGroup>()) {
             val groupEffects = byGroup[group] ?: continue
             if (groupEffects.isEmpty()) continue
 
-            if (groupEffects.size > 1) {
+            val (optional, mandatory) = groupEffects.partition {
+                event.isOptionalReplacement(it, state)
+            }
+
+            // A lone optional candidate is a yes/no question. If an optional effect has no
+            // domain-specific prompt, it is treated as mandatory by the helper below.
+            if (mandatory.isEmpty() && optional.isNotEmpty()) {
+                return presentOptionalReplacement(state, event, optional.first(), alreadyApplied, context)
+            }
+
+            // An optional and a mandatory effect in the same priority group are both part of the
+            // CR 616 choice set. The ordering player chooses the next effect, but does not get a
+            // second player's optional-effect decision. Selecting an optional candidate below
+            // routes through its own domain prompt; if that prompt is declined, the processor
+            // suppresses only that candidate for the unchanged event and re-runs CR 616.
+            if (mandatory.isNotEmpty() && optional.isNotEmpty()) {
+                return presentChoice(
+                    state = state,
+                    event = event,
+                    options = groupEffects,
+                    alreadyApplied = alreadyApplied,
+                    context = context,
+                )
+            }
+
+            // If only one mandatory match remains, apply it directly.
+            if (mandatory.size == 1) {
+                return applySingle(state, mandatory[0], event, alreadyApplied)
+            }
+
+            if (mandatory.size > 1) {
                 // CR 616.1a–e: when multiple effects share the same priority group, the affected
                 // player chooses which to apply. Skip the prompt when the choice is unobservable.
-                val first = groupEffects.first()
-                if (isChoiceUnobservable(groupEffects, first, event, state)) {
+                val first = mandatory.first()
+                if (isChoiceUnobservable(mandatory, first, event, state)) {
                     return applySingle(state, first, event, alreadyApplied)
                 }
                 // The order is observable — the player must choose (CR 616.1).
-                return presentChoice(state, event, groupEffects, alreadyApplied, context)
+                return presentChoice(state, event, mandatory, alreadyApplied, context)
             }
-
-            // Single effect — auto-apply
-            return applySingle(state, groupEffects.first(), event, alreadyApplied)
         }
 
-        // Unreachable: mandatory was non-empty, so at least one group matched.
+        // Unreachable: fresh was non-empty, so at least one priority group matched.
         error("unreachable: mandatory effects exist but no priority group matched")
     }
 
@@ -204,9 +238,9 @@ class ReplacementEffectProcessor {
             }
         if (sameSourceSameEffect) return true
 
-        val firstOutcome = event.applyReplacement(first.effect, state)
+        val firstOutcome = event.applyReplacement(first, state)
         if (firstOutcome !is ReplacementOutcome.Modified) return false
-        return groupEffects.all { event.applyReplacement(it.effect, state) == firstOutcome }
+        return groupEffects.all { event.applyReplacement(it, state) == firstOutcome }
     }
 
     /**
@@ -223,7 +257,7 @@ class ReplacementEffectProcessor {
         event: PendingGameEvent,
         alreadyApplied: Set<ReplacementEffectIdentity>
     ): ProcessorResult {
-        val outcome = createOutcome(gathered.effect, event, state)
+        val outcome = createOutcome(gathered, event, state)
 
         // Build execution context — prefer floating-shield context (Words cycle),
         // otherwise use the affected player as the controller so the replacement
@@ -243,7 +277,11 @@ class ReplacementEffectProcessor {
         // responsibility — the processor only computes the outcome and passes the
         // identity through so callers can act on it.
 
-        val updatedAlreadyApplied = alreadyApplied + gathered.identity
+        val updatedAlreadyApplied = if (event.canApplyReplacementMoreThanOnce(gathered.effect)) {
+            alreadyApplied
+        } else {
+            alreadyApplied + gathered.identity
+        }
 
         return when (outcome) {
             is ReplacementOutcome.Modified -> {
@@ -251,7 +289,12 @@ class ReplacementEffectProcessor {
                 // per-card draw loop don't re-apply the same ModifyDrawAmount (CR 614.5).
                 val stateWithChain = state.copy(activeReplacementChain = updatedAlreadyApplied)
                 val recurseResult = processInternal(
-                    stateWithChain, outcome.modifiedEvent, execContext, updatedAlreadyApplied
+                    stateWithChain,
+                    outcome.modifiedEvent,
+                    execContext,
+                    updatedAlreadyApplied,
+                    // A changed event gets a fresh applicability opportunity.
+                    temporarilySuppressed = emptySet()
                 )
                 when (recurseResult) {
                     is ProcessorResult.Pass -> {
@@ -310,9 +353,9 @@ class ReplacementEffectProcessor {
         event: PendingGameEvent,
         options: List<GatheredReplacement>,
         alreadyApplied: Set<ReplacementEffectIdentity>,
-        context: EffectContext?
+        context: EffectContext?,
     ): ProcessorResult.Paused {
-        val playerId = event.affectedPlayerId
+        val playerId = event.replacementOrderingPlayerId(state)
         val decisionId = UUID.randomUUID().toString()
 
         val decision = ChooseOptionDecision(
@@ -324,7 +367,9 @@ class ReplacementEffectProcessor {
                 sourceName = "Replacement effect choice",
                 phase = DecisionPhase.RESOLUTION
             ),
-            options = disambiguate(options.map { it.description }),
+            options = disambiguate(
+                options.map { it.description }
+            ),
             canCancel = false
         )
 
@@ -359,7 +404,13 @@ class ReplacementEffectProcessor {
         context: EffectContext?
     ): ProcessorResult {
         val decisionId = UUID.randomUUID().toString()
-        val promptResult = event.createOptionalPrompt(decisionId, gathered, state, context)
+        val promptResult = event.createOptionalPrompt(
+            decisionId = decisionId,
+            gathered = gathered,
+            state = state,
+            context = context,
+            alreadyApplied = alreadyApplied,
+        )
             ?: // Event doesn't support optional prompts — treat as mandatory
             return applySingle(state, gathered, event, alreadyApplied)
 
@@ -377,11 +428,11 @@ class ReplacementEffectProcessor {
      * outcome production — the processor remains domain-agnostic.
      */
     private fun createOutcome(
-        effect: ReplacementEffect,
+        gathered: GatheredReplacement,
         event: PendingGameEvent,
         state: GameState
     ): ReplacementOutcome {
-        return event.applyReplacement(effect, state)
+        return event.applyReplacement(gathered, state)
     }
 
     /**
@@ -403,6 +454,23 @@ class ReplacementEffectProcessor {
     ): List<GatheredReplacement> {
         val results = mutableListOf<GatheredReplacement>()
         val battlefieldSet = state.getBattlefield().toSet()
+
+        // CR 903.9b is a rule-defined replacement, not a card ability. Gather
+        // it through the same identity/ordering pipeline as every other
+        // replacement candidate so `alwaysDivertToCommand` can auto-answer YES
+        // without skipping CR 616.
+        if (event is PendingGameEvent.ZoneChangePending && event.commanderRuleApplies(state)) {
+            val commanderName = state.getEntity(event.entityId)
+                ?.get<CardComponent>()
+                ?.name
+                ?: "Commander"
+            results += GatheredReplacement(
+                identity = ReplacementEffectIdentity.CommanderRuleIdentity(event.entityId),
+                effect = CommanderZoneReplacement,
+                sourceControllerId = event.ownerId,
+                description = "$commanderName - ${CommanderZoneReplacement.description}",
+            )
+        }
 
         // 1. Battlefield permanents with ReplacementEffectSourceComponent
         for (entityId in battlefieldSet) {
@@ -553,7 +621,7 @@ class ReplacementEffectProcessor {
         context: EffectContext? = null
     ): Boolean {
         // Delegate to the polymorphic event match
-        if (!event.matches(effect.appliesTo, sourceControllerId, state, context)) {
+        if (!event.matchesReplacement(effect, sourceControllerId, state, context)) {
             return false
         }
 

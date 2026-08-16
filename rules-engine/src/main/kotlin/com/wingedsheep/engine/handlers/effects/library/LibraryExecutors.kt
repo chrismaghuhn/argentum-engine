@@ -70,8 +70,8 @@ class LibraryExecutors(
         RevealCollectionExecutor(),
         ExileFromTopRepeatingExecutor(),
         ExileLibraryUntilManaValueExecutor(),
-        CascadeExecutor(),
-        DiscoverExecutor(recursion),
+        CascadeExecutor(cardRegistry = cardRegistry),
+        DiscoverExecutor(recursion, cardRegistry = cardRegistry),
         CastFromCollectionWithoutPayingCostExecutor(
             castSpellHandlerProvider = {
                 castSpellHandlerRef.get()

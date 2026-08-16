@@ -4,10 +4,14 @@ import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
@@ -18,6 +22,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 
 /**
  * Tests for the Omen mechanic (Tarkir: Dragonstorm).
@@ -133,5 +138,51 @@ class OmenMechanicTest : FunSpec({
         // The Dragon resolved onto the battlefield — not shuffled away.
         driver.getPermanents(player) shouldContain dragon
         driver.state.getZone(ZoneKey(player, Zone.LIBRARY)) shouldNotContain dragon
+    }
+
+    test("Omen keeps a coherent stack object while Commander 903.9b is pending") {
+        val driver = createDriver()
+        driver.initMirrorMatch(
+            deck = Deck.of("Island" to 40, "Forest" to 20),
+            startingLife = 20
+        )
+        driver.replaceState(driver.state.copy(format = Format.Commander()))
+
+        val player = driver.activePlayer!!
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val omen = driver.putCardInHand(player, "Island Dragon")
+        driver.replaceState(
+            driver.state.updateEntity(omen) { c -> c.with(CommanderComponent(ownerId = player)) }
+        )
+        driver.giveMana(player, Color.BLUE, 2)
+
+        val cast = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = omen,
+                faceIndex = 0,
+                paymentStrategy = PaymentStrategy.FromPool
+            )
+        )
+        cast.isSuccess shouldBe true
+
+        // Resolution reaches the pre-move library boundary. The 903.9b prompt must leave the
+        // spell physically and semantically on the stack until the owner answers it.
+        val resolution = driver.bothPass()
+        resolution.isPaused shouldBe true
+        driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>().playerId shouldBe player
+        driver.state.stack shouldContain omen
+        driver.state.getEntity(omen)!!.has<SpellOnStackComponent>() shouldBe true
+        driver.state.getZone(ZoneKey(player, Zone.LIBRARY)) shouldNotContain omen
+
+        // Decline the replacement so this Omen follows its intended library destination; the
+        // assertion above is the important part of this regression, before the answer.
+        driver.submitYesNo(player, false)
+        driver.isPaused shouldBe false
+        driver.state.stack shouldNotContain omen
+        driver.state.getEntity(omen)!!.has<SpellOnStackComponent>() shouldBe false
+        val finalZones = driver.state.zones.filterValues { omen in it }.keys
+        finalZones shouldContain ZoneKey(player, Zone.LIBRARY)
     }
 })

@@ -25,8 +25,8 @@ import io.kotest.matchers.types.shouldBeInstanceOf
  * linked-exile card to the battlefield as normal.
  *
  * The sibling tests cover the other arms of the interaction:
- *  - `CommanderZoneRedirectTest` — `alwaysDivertToCommand = true` rewrites the destination
- *    synchronously, so Liminal Hold never even gets a linked-exile reference.
+ *  - `CommanderZoneRedirectTest` — the redirect probe leaves graveyard/exile timing to the
+ *    903.9a SBA; `alwaysDivertToCommand` answers that post-move choice automatically.
  *  - `CommanderZoneChoiceCheckTest` — the SBA pause / marker semantics in isolation.
  *  - `CommanderZoneMarkerStripTest` — the marker is cleared on every commander zone change.
  */

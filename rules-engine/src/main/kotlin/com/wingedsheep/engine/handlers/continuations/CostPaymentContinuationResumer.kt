@@ -16,10 +16,16 @@ import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.mechanics.cost.CostPaymentContext
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
 import com.wingedsheep.engine.mechanics.cost.PaymentResult
+import com.wingedsheep.engine.replacement.PendingGameEvent
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
+import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.effects.Effect
@@ -212,9 +218,137 @@ class CostPaymentContinuationResumer(
         ) {
             return declined(state, continuation, checkForMore)
         }
+
+        if (cost is PayCost.Atom && cost.atom is CostAtom.ReturnToHand) {
+            return preflightCommanderReturnToHand(
+                state = state,
+                continuation = continuation,
+                selectedCards = response.selectedCards,
+                checkForMore = checkForMore,
+            )
+        }
+
         val execution = paymentService.performPayment(state, continuation.payerId, cost, continuation.sourceId, selected)
         return if (execution.success) paid(execution.state, execution.events, continuation, checkForMore)
         else declined(state, continuation, checkForMore)
+    }
+
+    /**
+     * CostPaymentService's terminal mutation is synchronous. Before it runs a ReturnToHand atom,
+     * lift selected Commanders through the serializable zone-change adapter so 903.9b can pause
+     * and resume without allowing the terminal payment to move the same object twice. Non-Commander
+     * selections remain in the ordinary cost payer.
+     */
+    private fun preflightCommanderReturnToHand(
+        state: GameState,
+        continuation: CostPaymentContinuation,
+        selectedCards: List<com.wingedsheep.sdk.model.EntityId>,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        val commanderIds = selectedCards.filter { id ->
+            state.format.usesCommanders &&
+                id in state.getBattlefield() &&
+                state.getEntity(id)?.has<CommanderComponent>() == true
+        }
+        if (commanderIds.isEmpty()) {
+            val selected = selectedCards.groupingBy { it }.eachCount()
+            val execution = paymentService.performPayment(
+                state,
+                continuation.payerId,
+                continuation.cost,
+                continuation.sourceId,
+                selected,
+            )
+            return if (execution.success) paid(execution.state, execution.events, continuation, checkForMore)
+            else declined(state, continuation, checkForMore)
+        }
+
+        val completion = PendingGameEvent.CostPaymentZoneChangeCompletion(
+            continuation = continuation,
+            nonCommanderSelectedCards = selectedCards.filterNot { it in commanderIds },
+            remainingCommanderIds = commanderIds.drop(1),
+        )
+        val firstCommander = commanderIds.first()
+        val ownerId = state.getEntity(firstCommander)?.get<OwnerComponent>()?.playerId
+            ?: continuation.payerId
+        val result = ZoneTransitionService.moveToZoneWithReplacements(
+            state = state,
+            entityId = firstCommander,
+            destinationZone = Zone.HAND,
+            options = ZoneEntryOptions(controllerId = ownerId),
+            context = EffectContext(
+                sourceId = continuation.sourceId,
+                controllerId = continuation.payerId,
+            ),
+            completion = completion,
+        )
+        if (result.isPaused) return result.toExecutionResult()
+        if (!result.isSuccess) return result.toExecutionResult()
+
+        return resumeAfterCommanderZoneChange(
+            state = result.state,
+            completion = completion,
+            priorEvents = result.events,
+            checkForMore = checkForMore,
+        )
+    }
+
+    /** Called by the replacement resumer after the current Commander move is physically complete. */
+    fun resumeAfterCommanderZoneChange(
+        state: GameState,
+        completion: PendingGameEvent.CostPaymentZoneChangeCompletion,
+        priorEvents: List<GameEvent>,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        val nextCommander = completion.remainingCommanderIds.firstOrNull()
+        if (nextCommander != null) {
+            val remaining = completion.copy(
+                remainingCommanderIds = completion.remainingCommanderIds.drop(1),
+            )
+            val ownerId = state.getEntity(nextCommander)?.get<OwnerComponent>()?.playerId
+                ?: completion.continuation.payerId
+            val result = ZoneTransitionService.moveToZoneWithReplacements(
+                state = state,
+                entityId = nextCommander,
+                destinationZone = Zone.HAND,
+                options = ZoneEntryOptions(controllerId = ownerId),
+                context = EffectContext(
+                    sourceId = completion.continuation.sourceId,
+                    controllerId = completion.continuation.payerId,
+                ),
+                completion = remaining,
+            )
+            if (result.isPaused) {
+                return result.toExecutionResult().copy(events = priorEvents + result.events)
+            }
+            if (!result.isSuccess) return result.toExecutionResult()
+            return resumeAfterCommanderZoneChange(
+                state = result.state,
+                completion = remaining,
+                priorEvents = priorEvents + result.events,
+                checkForMore = checkForMore,
+            )
+        }
+
+        val paymentContinuation = completion.continuation
+        val selected = completion.nonCommanderSelectedCards.groupingBy { it }.eachCount()
+        val execution = paymentService.performPayment(
+            state,
+            paymentContinuation.payerId,
+            paymentContinuation.cost,
+            paymentContinuation.sourceId,
+            selected,
+        )
+        return if (execution.success) {
+            paid(
+                state = execution.state,
+                priorEvents = priorEvents + execution.events,
+                continuation = paymentContinuation,
+                checkForMore = checkForMore,
+            )
+        } else {
+            declined(state, paymentContinuation, checkForMore)
+        }
     }
 
     private fun resumeChoice(

@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.handlers.effects.library
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.ExileFromTopRepeatingContinuation
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.handlers.EffectContext
@@ -10,6 +11,9 @@ import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.replacement.PendingGameEvent
 import com.wingedsheep.engine.handlers.effects.ReplacementEffectUtils
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.state.GameState
@@ -44,6 +48,32 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
         state: GameState,
         effect: ExileFromTopRepeatingEffect,
         context: EffectContext
+    ): EffectResult = executeFrom(state, effect, context, initialCardsToHand = 0, shouldContinue = true)
+
+    /** Continue the loop after a pending hand-boundary move has physically completed. */
+    fun resumeAfterMatch(
+        state: GameState,
+        continuation: ExileFromTopRepeatingContinuation,
+    ): EffectResult {
+        val ownerId = state.getEntity(continuation.matchCardId)
+            ?.get<com.wingedsheep.engine.state.components.identity.OwnerComponent>()?.playerId
+            ?: continuation.context.controllerId
+        val arrivedInHand = state.getZone(ZoneKey(ownerId, Zone.HAND)).contains(continuation.matchCardId)
+        return executeFrom(
+            state = state,
+            effect = continuation.effect,
+            context = continuation.context,
+            initialCardsToHand = continuation.cardsToHand + if (arrivedInHand) 1 else 0,
+            shouldContinue = continuation.repeatAfterMatch,
+        )
+    }
+
+    private fun executeFrom(
+        state: GameState,
+        effect: ExileFromTopRepeatingEffect,
+        context: EffectContext,
+        initialCardsToHand: Int,
+        shouldContinue: Boolean,
     ): EffectResult {
         val controllerId = context.controllerId
         val sourceId = context.sourceId
@@ -51,10 +81,10 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
         val predicateContext = PredicateContext.fromEffectContext(context)
         var currentState = state
         val allEvents = mutableListOf<EngineGameEvent>()
-        var cardsToHand = 0
+        var cardsToHand = initialCardsToHand
 
         // Repeat loop: exile until match, put in hand, repeat if MV >= threshold
-        var continueProcess = true
+        var continueProcess = shouldContinue
         while (continueProcess) {
             val libraryZone = ZoneKey(controllerId, Zone.LIBRARY)
             val library = currentState.getZone(libraryZone)
@@ -112,18 +142,49 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
 
             // Put match card in hand
             if (matchCard != null) {
-                val handResult = ZoneMovementUtils.moveCardToZone(currentState, matchCard, Zone.HAND)
-                if (handResult.isSuccess) {
-                    currentState = handResult.state
-                    allEvents.addAll(handResult.events)
-                    cardsToHand++
-                }
-
-                // Check if we should repeat: match card's MV >= threshold
+                // Check if we should repeat before the move creates a new object/zone identity.
                 val matchManaValue = currentState.getEntity(matchCard)
                     ?.get<CardComponent>()?.manaValue ?: 0
+                val repeatAfterMatch = matchManaValue >= effect.repeatIfManaValueAtLeast
+                val outerContinuation = ExileFromTopRepeatingContinuation(
+                    decisionId = "pending",
+                    effect = effect,
+                    context = context,
+                    cardsToHand = cardsToHand,
+                    matchCardId = matchCard,
+                    repeatAfterMatch = repeatAfterMatch,
+                )
+                val handResult = ZoneTransitionService.moveToZoneWithReplacements(
+                    state = currentState.pushContinuation(outerContinuation),
+                    entityId = matchCard,
+                    destinationZone = Zone.HAND,
+                    options = ZoneEntryOptions(controllerId = controllerId),
+                    context = context,
+                    completion = PendingGameEvent.PlainZoneChangeCompletion,
+                )
+                if (handResult.isPaused) {
+                    return EffectResult.paused(
+                        handResult.state,
+                        handResult.pendingDecision!!,
+                        allEvents + handResult.events,
+                    )
+                }
+                if (!handResult.isSuccess) {
+                    return EffectResult.error(
+                        handResult.state,
+                        handResult.error ?: "Matching card could not be moved to hand",
+                    )
+                }
 
-                continueProcess = matchManaValue >= effect.repeatIfManaValueAtLeast
+                // The continuation is only needed when the pending move paused. Remove the
+                // sentinel we pushed for the synchronous path before continuing this loop.
+                val (_, stateWithoutOuterContinuation) = handResult.state.popContinuation()
+                currentState = stateWithoutOuterContinuation
+                if (currentState.getZone(ZoneKey(ownerIdOf(currentState, matchCard), Zone.HAND)).contains(matchCard)) {
+                    cardsToHand++
+                }
+                allEvents.addAll(handResult.events)
+                continueProcess = repeatAfterMatch
             } else {
                 // No match found (library exhausted without finding a matching card)
                 continueProcess = false
@@ -142,4 +203,10 @@ class ExileFromTopRepeatingExecutor : EffectExecutor<ExileFromTopRepeatingEffect
 
         return EffectResult.success(currentState, allEvents)
     }
+
+    private fun ownerIdOf(state: GameState, entityId: EntityId): EntityId =
+        state.getEntity(entityId)
+            ?.get<com.wingedsheep.engine.state.components.identity.OwnerComponent>()?.playerId
+            ?: state.turnOrder.firstOrNull()
+            ?: error("No player available to resolve owner for $entityId")
 }

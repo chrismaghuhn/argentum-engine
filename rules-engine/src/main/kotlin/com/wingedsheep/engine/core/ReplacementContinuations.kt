@@ -26,8 +26,36 @@ data class ReplacementChoiceContinuation(
     override val decisionId: String,
     val pendingEvent: PendingGameEvent,
     val options: List<GatheredReplacement>,
+    /**
+     * Legacy optional-decline entries retained for decoding older internal frames.
+     * Newly created CR 616 frames route optional candidates through their own prompt
+     * and leave this list empty.
+     */
+    val declineOptional: List<GatheredReplacement> = emptyList(),
     val alreadyApplied: Set<ReplacementEffectIdentity>,
     val context: EffectContext? = null
+) : ContinuationFrame
+
+/**
+ * Generic yes/no continuation for an optional replacement that is not part
+ * of one of the older domain-specific draw continuations.
+ */
+@Serializable
+data class OptionalReplacementContinuation(
+    override val decisionId: String,
+    val pendingEvent: PendingGameEvent,
+    val gathered: GatheredReplacement,
+    val alreadyApplied: Set<ReplacementEffectIdentity>,
+    val context: EffectContext? = null
+) : ContinuationFrame
+
+/**
+ * Auto-resumed physical completion for a replacement-resolved zone change.
+ */
+@Serializable
+data class ZoneChangeContinuation(
+    override val decisionId: String,
+    val pendingEvent: PendingGameEvent.ZoneChangePending
 ) : ContinuationFrame
 
 /**
