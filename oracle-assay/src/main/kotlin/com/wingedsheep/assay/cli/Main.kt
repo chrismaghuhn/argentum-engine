@@ -1,11 +1,13 @@
 package com.wingedsheep.assay.cli
 
+import com.wingedsheep.assay.bake.VerdictLedger
 import com.wingedsheep.assay.compile.CardCompiler
 import com.wingedsheep.assay.compile.CompileResult
 import com.wingedsheep.assay.corpus.ImplementedCorpus
 import com.wingedsheep.assay.corpus.OracleCard
 import com.wingedsheep.assay.corpus.OracleCorpus
 import com.wingedsheep.assay.corpus.SetMembership
+import com.wingedsheep.assay.gate.DeclineKey
 import com.wingedsheep.assay.gate.Differential
 import com.wingedsheep.assay.gate.FinenessReport
 import com.wingedsheep.assay.gate.LineVerdict
@@ -47,6 +49,7 @@ fun main(args: Array<String>) {
         "report" -> exitProcess(gate(flags, gating = false))
         "differential" -> exitProcess(differential(flags))
         "explore" -> exitProcess(explore(flags))
+        "bake" -> exitProcess(bake(flags))
         "corpus" -> exitProcess(corpus(flags))
         "-h", "--help", "help" -> {
             usage()
@@ -73,11 +76,15 @@ private fun usage() = System.err.println(
       assay report [options]         the same report, always exits 0
       assay differential [options]   diff Assay's readings against the hand-written cards
       assay explore [--port N]       browse all of the above against the live grammar
+      assay bake [--out PATH]        re-bless the whole-card verdict ledger: one sorted line per
+                                     card, read-whole or the decline that stopped it
       assay corpus [--refresh]       show or refresh the cached Scryfall Oracle bulk
 
     Options:
       --file PATH      compile: read the Scryfall(-style) card object from a file instead of
                        looking a name up in the corpus — the path a custom card takes
+      --out PATH       bake: where to write the ledger (default the game-server resource the Set
+                       Completion view reads)
       --limit N        assay only the first N cards (a fast smoke run)
       --set CODE       restrict to one set — every card *printed* in it for gate/report (a small
                        per-set list is fetched from Scryfall and cached), the golden's file name
@@ -87,6 +94,12 @@ private fun usage() = System.err.println(
       --implemented    restrict to cards that already have a hand-written golden, so the decline
                        table becomes the *grammar* backlog: gaps whose answer is already written
                        and which the differential confirms the moment they parse
+      --rank KEY       how the decline table is keyed: token (default — the token each line died
+                       on), shape (the whole line, skeletonized), or tail (the text from the decline
+                       onward — the ranking that names a piece of work, and the only one that also
+                       reports how many cards a family is the *sole* blocker of)
+      --tail-words N   how many words of the tail make a family (default 3). A design parameter that
+                       was measured rather than chosen; this is how to re-measure it
       --top N          how many decline families (or divergences) to list
       --refresh        re-download the bulk file before running
       --declines       after the report, list every declined line (long)
@@ -123,6 +136,31 @@ private class Flags(args: List<String>) {
     fun has(name: String) = name in named
     fun int(name: String): Int? = named[name]?.toIntOrNull()
     fun str(name: String): String? = named[name]
+}
+
+/**
+ * `assay bake` — re-bless the whole-card verdict ledger.
+ *
+ * Deliberately a human action rather than a build step. The ledger is two things at once (see
+ * [VerdictLedger]): the Set Completion view's data source, which wants it current, and this module's
+ * regression ledger, which wants it re-blessed on purpose so a PR's diff is the list of cards whose
+ * reading changed. Wiring it into the build would satisfy the first and destroy the second.
+ */
+private fun bake(flags: Flags): Int {
+    val target = java.io.File(flags.str("out") ?: VerdictLedger.DEFAULT_OUTPUT)
+    val limit = flags.int("limit")
+    if (limit != null) {
+        System.err.println("assay: --limit is a smoke run; do not commit the result")
+    }
+    val ledger = VerdictLedger.build(refresh = flags.has("refresh"), limit = limit) { done ->
+        System.err.print("\rassay: baked $done cards…")
+    }
+    System.err.println()
+    VerdictLedger.write(ledger, target)
+    val permil = if (ledger.corpus == 0) 0 else ledger.whole * 1000 / ledger.corpus
+    println("baked ${ledger.corpus} cards — ${ledger.whole} read whole (${permil}‰) -> $target")
+    println("review the diff: a card that moved out of `whole` is a regression, not noise")
+    return 0
 }
 
 private fun corpus(flags: Flags): Int {
@@ -311,7 +349,21 @@ private const val DEFAULT_EXPLORE_PORT = 7345
 
 private fun gate(flags: Flags, gating: Boolean): Int {
     val touchstone = Touchstone()
-    val builder = FinenessReport.builder()
+    // The tail ranking is the one that decides work, and the reason it is reachable from here at all
+    // is that the band it named had to be measured with a throwaway probe because `assay report`
+    // could not print it. The default stays TOKEN: this command is also the gate's own diagnostic.
+    val ranking = DeclineKey.byName(flags.str("rank")) ?: run {
+        val given = flags.str("rank")
+        if (given != null) {
+            System.err.println(
+                "assay: unknown --rank \"$given\" — one of ${DeclineKey.entries.joinToString(", ") { it.name.lowercase() }}"
+            )
+            return 2
+        }
+        DeclineKey.TOKEN
+    }
+    val tailWords = flags.int("tail-words") ?: DeclineKey.TAIL_WORDS
+    val builder = FinenessReport.builder(tailWords = tailWords)
     val setFilter = flags.str("set")?.uppercase()
     val limit = flags.int("limit")
 
@@ -367,7 +419,7 @@ private fun gate(flags: Flags, gating: Boolean): Int {
         "vanilla + keyword-only (Phase 1 scope)".takeIf { scopeOnly },
         setCards?.let { "set ${it.code.uppercase()} — ${it.size} cards printed in it" },
     ).joinToString(" · ").ifEmpty { null }
-    println(report.render(topDeclines = flags.int("top") ?: 20, population = population))
+    println(report.render(topDeclines = flags.int("top") ?: 20, population = population, ranking = ranking))
 
     if (declineLines.isNotEmpty()) {
         println()
