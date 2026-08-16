@@ -763,6 +763,39 @@ sealed interface EventPattern : TextReplaceable<EventPattern> {
     }
 
     /**
+     * When you attack one or more players with at least [minAttackers] qualifying creatures.
+     *
+     * Unlike [YouAttackEvent], this is a per-defending-player trigger: the attacker filter is
+     * evaluated first, then the qualifying attackers are grouped by their direct declared player
+     * target, and one trigger instance is produced for each group that reaches [minAttackers].
+     * Attacking a planeswalker or battle never counts as attacking that object's controller.
+     * Historical [com.wingedsheep.engine.core.AttackersDeclaredEvent] payloads without target
+     * snapshots fail closed for this pattern.
+     */
+    @SerialName("YouAttackPlayerEvent")
+    @Serializable
+    data class YouAttackPlayerEvent(
+        val minAttackers: Int = 1,
+        val attackerFilter: GameObjectFilter? = null
+    ) : EventPattern {
+        override val description: String = buildString {
+            append("you attack ")
+            if (minAttackers <= 1) {
+                append("a player with one or more ")
+            } else {
+                append("a player with $minAttackers or more ")
+            }
+            append(attackerFilter?.description ?: "creatures")
+        }
+
+        override fun applyTextReplacement(replacer: TextReplacer): EventPattern {
+            val filter = attackerFilter ?: return this
+            val newFilter = filter.applyTextReplacement(replacer)
+            return if (newFilter !== filter) copy(attackerFilter = newFilter) else this
+        }
+    }
+
+    /**
      * When one or more creatures attack the trigger's controller (the player).
      * Defender side of [YouAttackEvent]: fires once per [com.wingedsheep.engine.core.AttackersDeclaredEvent]
      * when at least [minAttackers] declared attackers have the trigger's controller as their defender.

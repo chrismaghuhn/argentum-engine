@@ -4204,6 +4204,14 @@ sealed set for attack-time facts beyond the basics.
 
 - `YouAttack` — when you declare attackers (player-level, ANY binding).
 - `YouAttackWithFilter(filter)` — when you attack with ≥1 matching attacker.
+- `YouAttackPlayerWithFilter(filter)` — per-defending-player attack trigger. The filter is
+  evaluated first, then qualifying attackers are grouped by their direct declared player target:
+  two qualifying attackers against the same player produce one trigger, while qualifying
+  attackers against two different players produce one trigger for each player. The new
+  `EventPattern.YouAttackPlayerEvent(minAttackers, attackerFilter)` applies `minAttackers`
+  independently to each player group. A planeswalker or battle is not converted through its
+  controller, so attacking one does not count as attacking that player. Each emitted trigger binds
+  that player as `TriggerContext.triggeringPlayerId` for `Player.TriggeringPlayer` effects.
 - `CreaturesAttackYou` — defender side; fires once per `AttackersDeclaredEvent`,
   not per attacker. Excludes creatures attacking a planeswalker you control
   (CR 509.1b). Pair with `DynamicAmounts.creaturesAttackingYou()` for
@@ -5147,7 +5155,8 @@ Dominant back faces that "stay" instead self-exile on their final chapter, dodgi
   delayed ability fires whenever a matching *event* occurs, staying resident until `expiry`
   (`DelayedTriggerExpiry.EndOfTurn`) removes it. Supported events include `DealsDamageEvent`,
   `ZoneChangeEvent`, the internal `DamagePreventedEvent`, and the attack-declaration events
-  `YouAttackEvent` / `AttackEvent`. There are two ways to scope which events match:
+  `YouAttackEvent` / `YouAttackPlayerEvent` / `AttackEvent`. There are two ways to scope which
+  events match:
   - **Entity-scoped** — set `watchedTarget` to bind the trigger to one concrete entity (resolved at
     creation time): "when **that** creature deals combat damage / dies this turn" (Long River Lurker,
     Deflecting Palm). Only `DealsDamageEvent` (scoped on the damage source) and `ZoneChangeEvent`

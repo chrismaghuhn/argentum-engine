@@ -220,8 +220,9 @@ internal class AttackPhaseManager(
 
         // Attackers whose declared defender is a *player* (CR 508.1), not a planeswalker or
         // battle. Backs AttackPredicate.DefenderIsPlayer ("attacks an opponent"); the defender
-        // kind is fixed at declaration and the event carries no per-attacker defender identity,
-        // so the fact is stamped here. `defenderId in turnOrder` is the player-identity idiom.
+        // kind is fixed at declaration and this aggregate fact is stamped here. The complete
+        // attacker-to-target snapshot is emitted below for per-player trigger grouping.
+        // `defenderId in turnOrder` is the player-identity idiom.
         val attackersAgainstPlayer = attackers.filterValues { it in state.turnOrder }.keys
 
         newState = newState.updateEntity(attackingPlayer) { container ->
@@ -244,16 +245,33 @@ internal class AttackPhaseManager(
             updated
         }
 
-        val attackerNames = attackers.keys.map { state.getEntity(it)?.get<CardComponent>()?.name ?: "Creature" }
+        // Event collection order is part of replay/trigger determinism. Do not leak the
+        // iteration order of the caller's declaration map into any serialized attack-event field.
+        val canonicalAttackerIds = attackers.keys.sortedBy { it.value }
+        val canonicalFirstTimeAttackers = linkedSetOf<EntityId>().apply {
+            canonicalAttackerIds.filterTo(this) { it in firstTimeAttackers }
+        }
+        val canonicalAttackersAgainstPlayer = linkedSetOf<EntityId>().apply {
+            canonicalAttackerIds.filterTo(this) { it in attackersAgainstPlayer }
+        }
+        val attackerNames = canonicalAttackerIds.map {
+            state.getEntity(it)?.get<CardComponent>()?.name ?: "Creature"
+        }
+        val declaredAttacks = attackers.entries
+            .sortedWith(compareBy({ it.key.value }, { it.value.value }))
+            .map { (attackerId, defenderId) ->
+                com.wingedsheep.engine.core.DeclaredAttack(attackerId, defenderId)
+            }
         return ExecutionResult.success(
             newState,
             taxEvents + tapEvents + listOf(
                 AttackersDeclaredEvent(
-                    attackers.keys.toList(),
-                    attackerNames,
-                    attackingPlayer,
-                    firstTimeAttackers = firstTimeAttackers,
-                    attackersAgainstPlayer = attackersAgainstPlayer
+                    attackerNames = attackerNames,
+                    attackingPlayerId = attackingPlayer,
+                    attackers = canonicalAttackerIds,
+                    firstTimeAttackers = canonicalFirstTimeAttackers,
+                    attackersAgainstPlayer = canonicalAttackersAgainstPlayer,
+                    declaredAttacks = declaredAttacks,
                 )
             )
         )

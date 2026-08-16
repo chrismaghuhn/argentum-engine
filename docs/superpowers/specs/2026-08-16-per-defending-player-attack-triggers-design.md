@@ -58,9 +58,11 @@ val declaredAttacks: List<DeclaredAttack> = emptyList()
 
 The existing `attackers`, `attackerNames`, `attackingPlayerId`,
 `firstTimeAttackers`, and `attackersAgainstPlayer` fields retain their current
-meaning and ordering. The new list is created from the declaration map in
-canonical `(attackerId, defenderId)` order. No map or set iteration order is
-used for serialized event data or trigger-group order.
+meaning. All map-derived event collections are emitted in canonical attacker
+order, so their serialized order is independent of the declaration map's
+iteration order. The new list is created from the declaration map in canonical
+`(attackerId, defenderId)` order. No map or set iteration order is used for
+serialized event data or trigger-group order.
 
 An absent field in a historical serialized event decodes to an empty list.
 The new matcher treats an empty `declaredAttacks` list as “no per-player target
@@ -181,4 +183,3 @@ event pattern/facade, trigger indexing/matching/detection, serialization tests,
 and the SDK language reference. Combat legality, damage, Commander rules,
 Chevill, Gym, replay policy, card corpus, and Akiri implementation are out of
 scope.
-

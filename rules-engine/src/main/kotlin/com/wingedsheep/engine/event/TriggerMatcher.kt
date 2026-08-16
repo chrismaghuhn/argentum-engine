@@ -130,6 +130,8 @@ class TriggerMatcher(
                     event.attackers.size >= trigger.minAttackers
                 }
             }
+            is EventPattern.YouAttackPlayerEvent ->
+                matchingAttackedPlayers(trigger, event, sourceId, controllerId, state).isNotEmpty()
             is EventPattern.LandPlayedEvent -> {
                 // "Whenever you play a land …" (Shadow of the Goblin). ANY-binding player trigger:
                 // the playing player must be the trigger's controller. `fromZoneOtherThan` excludes
@@ -785,6 +787,57 @@ class TriggerMatcher(
                 if (trigger.finalChapterOnly && !event.isFinalChapter) return false
                 true
             }
+        }
+    }
+
+    /**
+     * Return the distinct players directly attacked by qualifying attackers for the explicit
+     * per-defending-player attack pattern.
+     *
+     * The event snapshot is deliberately the only source of attacker-to-target information here.
+     * In particular, do not use [com.wingedsheep.engine.mechanics.combat.CombatDefenders] because
+     * that helper intentionally resolves a planeswalker's/battle's controller for other combat
+     * semantics. This trigger asks whether the declared target itself was a player.
+     *
+     * [GameState.turnOrder] supplies a canonical player order, so the result does not depend on
+     * map/set iteration order and can enter the existing APNAP sorter without a second ordering
+     * policy.
+     */
+    fun matchingAttackedPlayers(
+        trigger: EventPattern.YouAttackPlayerEvent,
+        event: EngineGameEvent,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        state: GameState,
+    ): List<EntityId> {
+        if (event !is AttackersDeclaredEvent) return emptyList()
+        if (state.activePlayerId != controllerId) return emptyList()
+        // An empty list means this event was produced by an old serializer or that no attackers
+        // were declared. Never reconstruct the missing target mapping from aggregate fields/live
+        // AttackingComponent state.
+        if (event.declaredAttacks.isEmpty()) return emptyList()
+
+        val filter = trigger.attackerFilter
+        val predicateContext = com.wingedsheep.engine.handlers.PredicateContext(
+            controllerId = controllerId,
+            sourceId = sourceId,
+        )
+        val projected = state.projectedState
+        val qualifyingAttacks = event.declaredAttacks.filter { declaration ->
+            declaration.defenderId in state.turnOrder &&
+                (filter == null || predicateEvaluator.matches(
+                    state,
+                    projected,
+                    declaration.attackerId,
+                    filter,
+                    predicateContext,
+                ))
+        }
+        if (qualifyingAttacks.isEmpty()) return emptyList()
+
+        val required = trigger.minAttackers.coerceAtLeast(1)
+        return state.turnOrder.filter { playerId ->
+            qualifyingAttacks.count { it.defenderId == playerId } >= required
         }
     }
 

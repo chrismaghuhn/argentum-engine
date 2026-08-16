@@ -873,9 +873,22 @@ data class TargetsChosenEvent(
  * [attackersAgainstPlayer] is the subset of [attackers] declared as attacking a **player**
  * (CR 508.1), as opposed to a planeswalker or battle. It backs
  * `AttackPredicate.DefenderIsPlayer` ("attacks an opponent"): the defender kind is fixed at
- * declaration and the event doesn't otherwise carry per-attacker defender identity, so the
- * player-vs-permanent fact is stamped here rather than re-derived downstream.
+ * declaration and this aggregate field is stamped here rather than re-derived downstream.
+ * [declaredAttacks] carries the complete attacker-to-target snapshot for consumers that need
+ * the identity of each direct declared target.
+ *
+ * [declaredAttacks] is the replay-safe snapshot for trigger patterns whose
+ * semantics group qualifying attackers by their actual declared player target.
+ * It is intentionally empty for historical payloads that predate this field;
+ * consumers must fail closed rather than infer targets from the aggregate
+ * fields or current combat state.
  */
+@Serializable
+data class DeclaredAttack(
+    val attackerId: EntityId,
+    val defenderId: EntityId,
+)
+
 @Serializable
 @SerialName("AttackersDeclaredEvent")
 data class AttackersDeclaredEvent(
@@ -883,7 +896,8 @@ data class AttackersDeclaredEvent(
     val attackerNames: List<String> = emptyList(),
     val attackingPlayerId: EntityId? = null,
     val firstTimeAttackers: Set<EntityId> = emptySet(),
-    val attackersAgainstPlayer: Set<EntityId> = emptySet()
+    val attackersAgainstPlayer: Set<EntityId> = emptySet(),
+    val declaredAttacks: List<DeclaredAttack> = emptyList(),
 ) : GameEvent
 
 /**
