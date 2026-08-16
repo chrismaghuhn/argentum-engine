@@ -112,6 +112,13 @@ ability, so every step rule enriches every trigger rule for free. Any new senten
 activated abilities, modal spells, "you may", delayed triggers — must slot the existing effect
 grammar rather than restating the verbs. The win is multiplicative; restating is additive and rots.
 
+`Modal` is the rule read in both directions at once, and the cheapest band so far because of it. A
+mode slots the cascade's whole `sentence`, so every effect the grammar can read is a mode; and the
+family is offered *at* `Steps.step` rather than as a line rule, so every context that already slots a
+step — spells, triggers, activated abilities — got modal abilities without being told. Ask of a new
+construct which of the two directions it wants before writing it: a line rule reaches one position, a
+clause reaches all of them.
+
 The **cost band** is the same rule applied to a *vocabulary* rather than to a clause, and it is the
 one to copy when the SDK has already done the factoring. `CostAtom`'s KDoc calls itself "the one cost
 language" — one payable thing, carried into each context by that context's own `Atom` wrapper — and
@@ -199,6 +206,31 @@ consequence, and the rule made sentence-terminal — plus a named position, `run
 for the twelve lines that *end* in such a clause ("Counter target spell. If you control a blue
 creature, draw a card, then discard a card."). Widening the full-stop join instead was tried and was
 wrong, and the ambiguity gate said so in one run: the scope simply leaked one join further along.
+
+The **counting band** is the second worked example of that same lesson, and it adds two of its own.
+`DynamicAmount` is the SDK's one language for "a number the game works out", and `Amounts` was
+holding a three-row `count` plus seventeen bespoke clauses each restating one verb over one count —
+so the fix was the cost band's fix: a layered vocabulary, and every sentence a lift of it. Its first
+new lesson is about **where a line's meaning is allowed to land**. A characteristic-defining ability
+(CR 604.3) is not an ability the engine executes; it is the value behind the printed `*`, and the SDK
+puts it in `CardDefinition.creatureStats`. So `CardFragment` grew a slot outside the script, one
+field per characteristic — two fields rather than one `CreatureStats` because Yavimaya Kavu prints
+the halves on separate lines — and `CardCompiler` is where the header's star and the text's
+definition meet, fail-closed in both directions and with the star's *offset* compared as a number
+rather than as a string (`1+*` in Oracle is `*+1` in the model). If a line's meaning has nowhere to
+go in `CardScript`, the answer is a fragment slot and a note here, never an approximation into the
+nearest ability list.
+
+Its second lesson is about **printing conventions the model does decide**. A damage sentence puts its
+"equal to …" clause before or after the recipient, 152 printed lines to 195, and neither is a
+minority to decline — but two rules that can each print one model is printing left to alternation
+order. The corpus draws the split on the *shape of the amount* (a property read off an object leads,
+a tally trails), which is a fact about the model, so the two orders take disjoint halves of
+`DynamicAmount` and the minority order for each half is an `alternate`. The mirror case is why life
+gain is **not** in the band: "for each" already spells that model 131 times to 23, so adding the
+clause there would have been the second printer, and an `alternate` would have left graveyard counts
+parseable and unprintable. When two spellings collide, check which rule can print the *whole* domain
+before deciding which is canonical.
 
 ## Fail-closed matching — the rule that catches the dangerous bug class
 
@@ -388,21 +420,31 @@ That band is the worked example and the method is reusable verbatim:
 2. Before writing anything, **substitute a known-good prefix for the family** into those cards'
    declined lines and re-parse. That says how many payoffs the rest of the grammar can already read,
    which is the number the band will actually deliver. The spell-cast family predicted 234 whole
-   cards and delivered 183; modal spells, which both other rankings put first, measured 126.
-   Landfall is the standing example on the live grammar: 189 cards blocked, 104 sole-blocked, and the
-   probe says **48** whole cards would be finished.
+   cards and delivered 183; modal spells, which both other rankings put first, measured 126 and
+   delivered **137**. Landfall is the standing example on the live grammar: 189 cards blocked, 104
+   sole-blocked, and the probe says **48** whole cards would be finished.
 
 Every ranking that skipped step 2 has overstated its band, four times in the same direction. Step 2
 is family-specific, so it cannot be precomputed and does not belong in a report — but it is one
 `PrefixProbe.run` over the live grammar, and it is what turns "which cards does this family reach"
 into "which lines does it finish".
 
+The modal band is the one case where the probe **under**-stated, and the reason is worth knowing
+before trusting a number: it substitutes a prefix into the lines that *declined*, and the modal
+family's payoff was partly in lines that had never declined as a family at all — the 204 cards whose
+header sits inside a trigger, which the probe measured as trigger declines. A family that is a
+*clause position* rather than a line shape will do this again. Read the probe as a floor there.
+
 **Three keyings, three biases, and knowing which to read.** `DeclineKey` holds all of them and the
 gate computes all three in the one sweep, so the CLI and the explorer cannot disagree about a family.
 Read the tail by default. Read `SHAPE` when the family's sentence *is* the whole line. Read `TOKEN`
 when the parse dies at offset 0 — a line that read nothing has no tail short of itself, so `TAIL`
-degenerates to `SHAPE` there and only the dead token holds the family together. The modal bullets are
-the case: 2,015 declined `•` lines are one token family and hundreds of tail rows.
+degenerates to `SHAPE` there and only the dead token holds the family together. The modal bullets
+*were* the case — 2,015 declined `•` lines were one token family and hundreds of tail rows — and how
+that resolved is the more useful half: a bullet is not a line, normalization now keeps a modal card's
+rows together, and the family stopped being a ranking problem by stopping being 2,015 lines. A
+keying that scatters one construct across hundreds of rows is worth reading as a question about where
+the line boundaries are, not only as a question about which key to use.
 
 The split re-weights the list rather than reordering it wholesale, which is itself the finding: the
 top families are the same in both populations, so the grammar backlog and the SDK backlog are being

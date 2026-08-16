@@ -20,13 +20,36 @@ and those are the two sentences on it. The **aura band** followed: `Enchant <fil
 attached-permanent statics, which opened `staticAbilities` — the largest `CardScript` slot the
 differential could not see into, and the one every later static family lands in.
 
-The most recent work is the **spell-cost band** — what a spell costs, and what changes it. It is
+The most recent work is the **counting band** — *how many*, as one vocabulary and the three places a
+card puts it (**+109 whole cards**). It is the cost band's lesson applied to a second SDK type:
+`DynamicAmount` is the one language for a number the game works out, and the grammar was holding a
+three-row count plus seventeen bespoke clauses restating one verb each. It is also the first band
+whose reading lands **outside `CardScript`** — a characteristic-defining ability is the value behind
+the printed `*`, so the fragment grew a stat slot and the compiler is where the header's star and the
+text's definition finally meet. See [the counting band](#the-counting-band); it found six card bugs,
+one of them a Revenant counting the battlefield where its text says graveyard.
+
+Before it came the **modal band** — "Choose one —" and the rows under it (**+137 whole
+cards**). It is the first band whose main change is *outside* `grammar/`: a bullet is a continuation
+of the line above it, so a modal card's rows are one ability rather than four, and that is
+normalization's job — the one join whose inverse is free, because the joined line carries its own
+newlines. The grammar half is small and multiplicative: a modal block is a **clause position** rather
+than a line, so the 204 cards that print the header inside a trigger or after an activation cost cost
+nothing beyond the 446 that print it alone, and a *mode* is one whole sentence from the enclosing
+cascade. See [the modal band](#the-modal-band) below; it found eight card bugs — two faking "one or
+both" as a third mode, one board wipe destroying one permanent at a time — and all eight are fixed in
+the same change.
+
+Beside it came the **spell-cost band** — what a spell costs, and what changes it. It is
 the first band picked by the probe *against* both other rankings agreeing, and it delivered
-**+126 whole cards** (7,451 → 7,577) from one sentence read as three vocabularies: whose spells,
+**+126 whole cards** from one sentence read as three vocabularies: whose spells,
 by how much, and under what clause. See [the spell-cost band](#the-spell-cost-band); it also closed
 a reversible-but-wrong reading of every intervening-if whose consequence is more than one clause,
 and it leaves the largest single SDK finding this module has produced — `CostReductionSource`'s five
 `FixedIf…` cases restate `CostGating.OnlyIf`, and the corpus is split down the middle between them.
+
+The two were written in parallel off the same 7,451 and compose without overlapping: **7,714 cards**
+read whole between them.
 
 Before it came the **cost band** — what you pay, everywhere you pay it. It is the largest
 single delivery a family has made here (**+274 whole cards**, 7,177 → 7,451) and the first one that
@@ -36,7 +59,7 @@ vocabulary lifted into an activated ability's cost and into a spell's additional
 two vocabularies over the same English. See [the cost band](#the-cost-band) below; it also found
 three hand-written cards whose noun phrases were wrong inside a cost, where nothing had ever looked.
 
-Before it came the **spell-cast band** — "Whenever you cast a noncreature spell, …" — which
+Before that came the **spell-cast band** — "Whenever you cast a noncreature spell, …" — which
 gives the grammar its first noun phrase for a *spell* rather than a permanent, and was the largest
 single family left in the corpus by the honest ranking: 504 cards declined on nothing but a
 spell-cast trigger, against 263 for the next one. See [the spell-cast band](#the-spell-cast-band)
@@ -162,29 +185,34 @@ non-zero on. Declines are not failures.
 
 ```
 Cards assayed                    34882
-Ability lines                    66793  (38843 unique)
+Ability lines                    64753  (37998 unique)
 
-Round-trips byte-exact           25551   382.5‰ (38.3%)
+Round-trips byte-exact           25869   399.5‰ (40.0%)
 Alternate spelling normalized    1326
-Declined                         39916
+Declined                         37520
 Ambiguous — distinct readings    0
 Print mismatch                   0
 Normalization not invertible     0
 Full inverse not reproduced      0
 Redundant readings (same model)  0
 
-Cards fully covered              7577 / 34882   217.2‰ (21.7%)
+Cards fully covered              7823 / 34882   224.3‰ (22.4%)
 Vanilla + keyword-only cards     1444 / 1712   843.5‰ (84.3%)   <- Phase 1 target
 Portal (set POR)                 200 / 200     1000.0‰ (100%)   <- the Portal band's target
 Legions (set LGN)                145 / 145     1000.0‰ (100%)   <- the Legions band's target
-Bloomburrow (set BLB)            58 / 280      207.1‰ (20.7%)   <- the Bloomburrow band, in progress
+Bloomburrow (set BLB)            60 / 280      214.3‰ (21.4%)   <- the Bloomburrow band, in progress
 Reminder-text glosses            2870 matched · 114 differed · 965 unglossed
 ```
 
 Fineness is **parts per thousand**, per the assay the module is named for — 841.1‰ is 84.1%.
 
+The **line count fell** with the modal band and that is not a regression: a card printing
+"Choose one —" and three bullets used to be four lines, and it is one ability. Normalization now
+keeps the rows together, so 2,040 rows stopped being counted as abilities of their own. Percentages
+against that denominator are therefore not comparable across the change; the whole-card number is.
+
 The machinery holds: **zero** ambiguities, print mismatches, or non-invertible normalizations
-across 66,793 ability lines. The 84.1% on Phase 1's own target class is not the round trip
+across 64,753 ability lines. The 84.1% on Phase 1's own target class is not the round trip
 faltering — every remaining line in that class declines because the SDK has no vocabulary for the
 keyword, which `just assay-report --scope` lists in rank order.
 
@@ -622,9 +650,11 @@ they are three different bands rather than more rows:
 
 ## The spell-cost band
 
-What a spell costs, and what changes it. Whole-corpus coverage went 7,451 → **7,577 cards**,
-byte-exact lines 25,377 → **25,551**, the differential's compared population 2,747 → **2,795** — and
-like the cost band before it, no new SDK type: `ModifySpellCost` already had every field.
+What a spell costs, and what changes it. Measured on its own against the 7,451 this band and the
+modal band branched from, whole-corpus coverage went to **7,577 cards**, byte-exact lines 25,377 →
+**25,551**, and the differential's compared population 2,747 → **2,795**; merged with the modal band
+the two compose to 7,714 and 2,832. Like the cost band before it, no new SDK type:
+`ModifySpellCost` already had every field.
 
 **The probe picked it, and it picked it against both other rankings.** On the tail ranking the
 family reads 265 cards blocked and 112 sole-blocked, which is fourth. What moves it to first is step
@@ -756,6 +786,231 @@ snapshot:
   every cast restriction and every conditional static — which is why it is the highest-leverage
   place left in this family and not a member of it.
 
+## The modal band
+
+"Choose one —" and the rows under it. Measured on its own against the 7,451 both this band and the
+spell-cost band branched from, whole-corpus coverage went to **7,588 cards** and the differential's
+compared population 2,747 → **2,784**; merged with the spell-cost band the two compose to 7,714 and
+2,832, because they share no lines. It is also the first band that made the *line count go down*:
+2,040 bullet rows stopped being counted as abilities of their own, because they never were any.
+
+**The band is three changes, and only one of them is in `grammar/`.**
+
+**A bullet is a continuation, so the split belongs to normalization.** Oracle lays one modal ability
+out over several printed rows, and the ability split pass was reading each row as an ability — which
+is how "• Destroy target artifact." came to be 2,015 declines under one dead token and hundreds of
+tail rows, the case the ranking section names as the reason `TOKEN` exists at all. A lone bullet
+denotes nothing; the thing it is a mode *of* is on the row above. So [`Normalizer`](src/main/kotlin/com/wingedsheep/assay/normalize/Normalizer.kt)
+joins a bullet onto the line above it, and this is the one join whose inverse is **free**: the joined
+line carries its own newlines and `restore` already joins lines with `\n`, so nothing is recorded and
+nothing is replayed. Every other spelling — a spacer, a sentinel — would have needed an inverse to
+get wrong.
+
+**A bullet is also a sentence start, which is the third one.** `SentenceCase` already knew about the
+line start, the ability cost's colon and the full stop; it now knows about `\n• `. That is what lets
+the modal rules slot the existing effect vocabulary mid-sentence instead of needing a capitalized
+copy of every verb — the same argument the full stop carried, and the file's own KDoc predicted this
+shape ("if you find yourself wanting a capital inside a template, the answer is almost certainly
+another sentence start"). The corpus states the rule too: of 2,121 bullet rows, every one opens on an
+uppercase letter or a symbol and none on a lowercase letter.
+
+**And a modal block is a *clause position*, not a line.** That is where the leverage is.
+[`Modal`](src/main/kotlin/com/wingedsheep/assay/grammar/Modal.kt) is offered at `Steps.step`, beside
+the sentence and the self-terminating clauses, so every context that already slots a step got modal
+abilities without being told: **446** cards print one of the four headers as a whole line and
+**204** print it after a trigger's comma ("When this creature enters, choose one —") or an activated
+ability's colon ("Sacrifice this artifact: Choose one —"), and the second group cost nothing. A *mode* is one whole sentence from the
+enclosing cascade, so every verb the grammar can read is a mode and a mode's targets come with it —
+which is the shape `Mode` exists for, per-mode requirements being the SDK's own worked example
+(Cryptic Command).
+
+Because the family is a function of the cascade's sentence rule, it is instantiated once per anaphor
+position, exactly as `SelfSteps.retargetable` is. And the bullets slot `sentence` rather than `step`,
+so a mode is never itself modal — not a safety rail but the thing that makes the rule constructible,
+since a family reaching the rule it belongs to is left recursion.
+
+**Four headers, and two of them are disjoint by mode count.** `ModalEffect` says "how many" with two
+numbers and English says it with four phrases: "Choose one" `(1, 1)`, "Choose two" `(2, 2)`, "Choose
+one or both" `(2, 1)`, "Choose one or more" `(n, 1)`. The last two collide at two modes, so rather
+than ordering an alternation they are made disjoint by what they can spell — "both" is a word about
+exactly two things, and the corpus agrees without exception: all 56 cards printing "one or both" have
+two modes and all 21 printing "one or more" have three or more. A three-mode `(2, 1)` is a model no
+header can print and it declines.
+
+**A mode's description is a fold, and it is a fold by construction rather than by accident.**
+`Mode.description` is "Human-readable description of the mode", defaulting to `effect.description` —
+presentation, never executed. Hand-written cards spell the printed row out with the card's own name
+in it ("Boros Charm deals 4 damage to target player or planeswalker"), and the text reaching the
+grammar has had that name abstracted to `~` before any rule sees it, so reproducing the row is
+unavailable *by construction* and would put a tilde in a string shown to a player. The rule therefore
+leaves the field at its default and never invents prose, and `Folds.dropModeDescriptions` drops it
+from both sides — scoped to a `ModalEffect`'s modes rather than added to the presentation *key* list,
+because `description` is not a rare name and `AlternativeCostEffect` carries one that is part of what
+it does. Everything that decides what a mode *does* is still compared, and so are the count fields
+above it, which is where two of the findings below came from.
+
+**What it found: eight divergences, every one a card bug, and all eight are fixed here.** The band
+brought thirty-seven more cards into the compared population and eight of them were wrong the first
+time the grammar looked. Each fix is a card change, with a scenario test where the behaviour moved:
+
+- **Winterflame** and **Scour for Scrap** fake "one or both" as *three* modes with `chooseCount = 1`
+  — tap, damage, and a third mode that does both. `ModalEffect` has `minChooseCount` for exactly this
+  (CR 700.2), and the hand-written spelling is a different card: it offers a mode the card does not
+  print, and it reports one chosen mode where `SpellCastEvent.chosenModesCount` should say two. Both
+  are now `chooseCount = 2, minChooseCount = 1` over the two printed modes, with
+  `WinterflameScenarioTest` and `ScourForScrapScenarioTest` covering one mode, both modes, and the
+  mode count itself.
+- **Split Up** destroyed each half of the board with a `ForEach` over the group where every other
+  sweep in the corpus gathers first and destroys the collection. That is not a spelling: gathering is
+  what makes the creatures leave together, and one at a time changes what a dies-trigger sees. It is
+  `Effects.DestroyAll` now, with `SplitUpScenarioTest` asserting both halves and a two-trigger sweep.
+- **Bejeweled Warg** carried `countsAsModalSpell = false` on a printed "Choose one —" trigger. The
+  field's own KDoc says `true` is for exactly that wording and `false` is for the non-modal mechanics
+  that reuse the type (Gift); CR 700.2 makes a *spell or ability* modal on that wording, so the flag
+  was saying something untrue about text that plainly is modal. It was also inert, since the only
+  reader is the spell-cast path a triggered ability never reaches — which is why it survived review.
+  Removed; the card's existing scenario test still passes unchanged.
+- **Four cards are the bare-tribal-noun family again** — Bejeweled Warg's "target Wolf you control",
+  Black Panther's "another nontoken Hero you control", Misery Charm's "target Cleric" and Vitality
+  Charm's "target Beast", all `IsCreature` where the printed noun names only a subtype. The same
+  class the 103-card migration fixed everywhere the grammar could already see; these four sat inside
+  a modal block, which nothing read until now. All four now name `Permanent`, which is a filter edit
+  and a re-bless — the treatment that migration established.
+- **Misery Charm and Decoy Ploy** put no `IsPermanent` on "target Cleric card from your graveyard"
+  where `TargetFilter.PermanentInYourGraveyard` — a facade that migration created, and whose KDoc
+  says a bare tribal noun in front of "card" names any permanent card — says they should. Two cards
+  on one side of a decided question and two (Angel of Flight Alabaster, Lord of the Undead) on the
+  other. **The grammar was flipped to match the minority and the flip was reverted**: the SDK facade
+  documents the reading and the migration created it, so reversing a decided question inside a
+  band's PR would be the gate lying about which side is wrong. Both cards now go through the facade.
+  Decoy Ploy's was the wider miss — `GameObjectFilter.Any` would let a Villain *instant* be chosen.
+
+**One print mismatch, and it was not in this family.** A two-colour token line became reachable for
+the first time and `Tokens` printed "white and green" where Exhibition Magician prints "green and
+white". WUBRG is a *cycle*, and a printed pair starts at whichever colour leaves the other within two
+steps forward — the adjacency Magic names its allied and enemy pairs by. A plain ordinal sort spells
+five of the ten pairs backwards; the corpus writes all ten, 369 times between them, and agrees
+without exception. Its one counterexample is prose rather than a token — Frenemy of the Guildpact's
+reminder text naming "blue and green" as an example of an enemy pair — and reminder text is
+stripped before any rule sees it.
+Three or more colours is deliberately left alone, because eleven phrases is not enough to settle it
+and two of them name the same three colours in different orders.
+
+**Where the ranking points next, in this family.** The header is no longer what blocks a modal card —
+the top rows keyed on a modal tail are now the modes' own *effect* vocabulary ("• Create a token
+that's a copy of…", 103 cards; the damage-prevention modes, 57). What is left of the header itself is
+the variants that reach a *different* `ModalEffect` field rather than a different count: "choose up to
+one —" (27 cards), "Choose one. If [condition], choose both instead." (30), "choose one that hasn't
+been chosen" and its this-turn sibling (20), and "choose one at random" (5), which has no SDK field at
+all and is a finding rather than a gap in a rule.
+
+## The counting band
+
+*How many* — one vocabulary, and the three places a card puts it. Whole-corpus coverage
+7,714 → **7,823 cards** (+109); the baked verdict ledger 7,513 → **7,618 whole**, with 105 cards
+gained and **none lost**. No new SDK type, and the largest thing it changed is not a rule at all but
+where a value is allowed to land.
+
+**The band is the SDK's own factoring, read back.** `DynamicAmount` is the one language for "a
+number the game works out", exactly as `CostAtom` is the one language for "a thing you pay" — and
+the grammar had it the way the cost band found `Costs`: [`Amounts`](src/main/kotlin/com/wingedsheep/assay/grammar/Amounts.kt)
+held a three-row `count` and **seventeen bespoke clauses**, each restating one verb over one
+count. That is the mtgish curve in miniature. The fix is the cost band's: make the count a real
+layered vocabulary and make each sentence a *lift* of it.
+
+The vocabulary now layers the way [`Filters`](src/main/kotlin/com/wingedsheep/assay/grammar/Filters.kt)
+does — one layer owning one field, never a combinator that can also print the others:
+
+| Layer | Reads | Model |
+|---|---|---|
+| battlefield tally | "the number of Swamps you control" | `AggregateBattlefield(player, filter)` |
+| zone tally | "the number of creature cards in your graveyard" | `Count(player, zone, filter)` |
+| unfiltered zone tally | "the number of cards in your hand" | `Count(player, zone)` |
+| aggregation | "the greatest mana value among artifacts you control" | the same aggregate, `aggregation` + `property` |
+| counters on the source | "the number of +1/+1 counters on ~" | `EntityProperty(Source, CounterCount)` |
+| player value | "your life total" | `YourLifeTotal` |
+| multiplier | "twice …" | `Multiply(inner, 2)` |
+
+### A `*` is half in the box and half in the text
+
+The band's centre of gravity is the **characteristic-defining ability** (CR 604.3), and it is the
+first line whose meaning does not land in `CardScript` at all. `Nightmare's power and toughness are
+each equal to the number of Swamps you control.` is not an ability the engine executes — the SDK
+puts it in `CardDefinition.creatureStats`, as `CharacteristicValue.Dynamic(…)`, which is what the
+printed `*` means. So [`CardFragment`](src/main/kotlin/com/wingedsheep/assay/grammar/CardFragment.kt)
+grew a fifth slot, one field per characteristic, and the compiler is where the two halves of a `*`
+finally meet — the header knows there is a star and only the line knows what defines it.
+
+Two fields rather than one `CreatureStats` because Yavimaya Kavu prints the halves on **separate
+lines**, defining its power from red creatures and its toughness from green ones. A `CreatureStats`
+needs both at once and neither line has both, so the fold is per characteristic.
+
+The pairing in [`CardCompiler`](src/main/kotlin/com/wingedsheep/assay/compile/CardCompiler.kt) is
+fail-closed in both directions, which is what makes it safe to have opened at all: a star with no
+defining line still declines (as it always did), a defining line over a printed *number* declines
+too, and the star's arithmetic is **checked rather than trusted** — Oracle prints Lhurgoyf's
+toughness as `1+*` where the model spells it `*+1`, so the offset is compared as a number and
+"…toughness is equal to that number plus 1" cannot compile onto a creature whose box says plain `*`.
+
+The differential now compares the stat box as well, and that is where the band paid.
+
+### Where the clause goes is decided by the model, not by rule order
+
+A damage sentence puts its "equal to …" clause in two places and **both are real Oracle**: 195
+printed lines trail it ("deals damage to target creature equal to the number of Mountains you
+control") and 152 lead with it ("deals damage equal to its power to target creature"). Neither is a
+minority spelling to decline — but two rules that can each print one model is printing decided by
+alternation order, which this module treats as a latent bug rather than a preference.
+
+The split the corpus actually draws is on the **shape of the amount**: a property read off an object
+is a light noun phrase and leads; a tally is a heavy one and trails. That is a fact about the model,
+so the two orders take disjoint halves of `DynamicAmount` and each refuses the other's — and the
+*minority* order for each half is registered as an `alternate`, parsed and never printed, so a card
+printing it comes back as a variant instead of declining. English is following the heavy-NP rule
+here; `EntityProperty` is where the light ones live.
+
+**Life is deliberately not in the band, and the reason is the same rule pointing the other way.**
+"You gain 1 life for each creature you control" and "You gain life equal to the number of creatures
+you control" are one model, and Oracle prints the first 131 times against the second's 23 — so the
+"for each" family is already canonical there and adding the clause would be a second rule that can
+print the same value. Making it an `alternate` does not work either: the "for each" rules only spell
+*battlefield* aggregates, so a life gain counting a graveyard would parse with nothing able to print
+it. The next step is to give "for each" the same vocabulary treatment this band gave "equal to", and
+that is a band of its own rather than a row.
+
+### Six card bugs, one of them a card doing something else entirely
+
+The differential reported six divergences the day the grammar could read these lines, all six fixed
+in the same change:
+
+- **Revenant** counted creatures on the *battlefield* where its text says creature cards in your
+  *graveyard* — a generated draft that nobody had reviewed, and a different card. It gets the
+  band's one new scenario test, pinning the zone, the filter and whose graveyard is counted.
+- **Heedless One, Nameless One, Reckless One** read "the number of Elves on the battlefield" as
+  creatures. A bare tribal noun names every *permanent* with the subtype — the reading
+  `TargetFilter.PermanentInYourGraveyard`'s KDoc settled and the 103-card migration established, and
+  Zombie Master is the card that proves it deliberate. Filter edits plus a re-bless, no new tests.
+- **Regal Bunnicorn** spelled its battlefield tally `Count(You, BATTLEFIELD, …)` where 603 goldens
+  write `AggregateBattlefield` and 49 write the other. Same value, same evaluation, one printed form
+  per model — so the grammar emits the majority spelling and this card moved to it.
+- **Torrent of Fire** left the noun out of its aggregate, passing the default `Any` filter where the
+  line prints "permanents". A no-op on the battlefield and still not what the card says.
+
+The last two are the shape this module keeps producing: **two SDK spellings of one value**, recorded
+as findings in `Amounts`' own KDoc rather than papered over. `Count(player, BATTLEFIELD, filter)`
+restates `AggregateBattlefield`; `AggregateZone` with its default aggregation restates `Count`
+(17 goldens against 236). The grammar emits one of each pair and says which.
+
+### What is left in the family
+
+The counts themselves. The top remaining tail row is `damage equal to …` at 116 cards, and its
+examples are now all **entity properties** — "equal to its power", "equal to that creature's
+toughness", "equal to the sacrificed creature's power" — which is 72% of every "deals damage equal
+to" line in the corpus and 41% of the life ones. That is not another vocabulary row: "its" means the
+source in one clause and the target in another, so it is a fourth **anaphor position**, and the
+module's rule is to instantiate the vocabulary per position rather than to add an `oneOf` branch.
+Sized by the probe at **47 whole cards**, and it is the natural next band.
+
 ## What Phase 1 already found
 
 The report is two documents at once, and the second one is about `mtg-sdk`:
@@ -801,19 +1056,29 @@ named population bucket instead and the denominator stays visible.
 
 ```
   Hand-written cards                 9131
-    compared                         2698
-    not yet covered by the grammar   5793
-    script slot not modelled yet      88
-    lines do not fold into one card   54
+    compared                         2832
+    not yet covered by the grammar   5650
+    script slot not modelled yet      96
+    lines do not fold into one card   55
     multi-face (out of scope)        301
     Oracle text differs from golden  197
     golden would not decode            0
 
-  Confirmed — models agree           2698   1000.0‰ (100.0%)
-  DIVERGENT — read every one            0
+  Confirmed — models agree           2819   995.4‰ (99.5%)
+  DIVERGENT — read every one           13
 ```
 
-**The count is back at zero, and the card that took it off zero was a card bug.** The Bloomburrow
+**The thirteen are one finding, on purpose.** They are the spell-cost band's `FixedIf…`-against-
+`OnlyIf` split — seven goldens plus their relatives, diverging because the grammar emits the gate
+where the corpus writes both spellings; see [that band](#the-spell-cost-band) for why the gate is the
+reading with reach. Nothing else is open: the modal band took the count off zero with eight of its
+own and every one turned out to be a **card** bug, all eight fixed in the same change.
+
+Zero was never the property. The count goes up every time the grammar reaches a slot nobody had
+compared before, and that rise is the gate earning its keep rather than a regression — what matters
+is that every divergence is read and classified as parser bug, card bug or fold.
+
+**The last time the count was at zero, the card that had taken it off zero was a card bug.** The Bloomburrow
 band's one standing divergence was the already-open `ManaColorSet.Specific` finding, recurring on
 Spider Manifestation exactly as the note below predicted it would: "{T}: Add {R} or {G}." written as
 one `AddManaOfChoiceEffect` where 165 cards write two abilities. What the finding's own note says

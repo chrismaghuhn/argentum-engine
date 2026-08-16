@@ -10,6 +10,7 @@ import com.wingedsheep.assay.grammar.CardFragment
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardScript
+import com.wingedsheep.sdk.model.CharacteristicValue
 import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.serialization.CardSerialization
 import kotlinx.serialization.json.JsonArray
@@ -162,6 +163,13 @@ class Differential(private val touchstone: Touchstone = Touchstone()) {
             // confirm an Equipment that can never be equipped: `CardValidator` and `CardLinter` both
             // read this field, and a card carrying the ability without the cost is a different card.
             equipCost = definition.equipCost,
+            // The second compared field outside the script, and the first that is not behaviour: a
+            // `*` in the stat box is a characteristic-defining ability (CR 604.3), and the SDK puts
+            // it here rather than in an ability list. Only the *dynamic* halves are compared — a
+            // fixed 2/2 is the printed header, which no line says and Assay never reads — so the
+            // pair is null on both sides for every card without a CDA.
+            dynamicPower = definition.creatureStats?.power?.takeIf { it !is CharacteristicValue.Fixed },
+            dynamicToughness = definition.creatureStats?.toughness?.takeIf { it !is CharacteristicValue.Fixed },
         )
 
         // The other half of the modelled-slot guard, now that whole *ability lists* are slots the
@@ -183,8 +191,10 @@ class Differential(private val touchstone: Touchstone = Touchstone()) {
         val cardKeywords = Folds.apply(fromCard.keywordAbilities.toSet())
         val scriptsAgree = normalizeSlotNames(fromText.script) == normalizeSlotNames(fromCard.script)
         val equipCostsAgree = fromText.equipCost == fromCard.equipCost
+        val statsAgree = fromText.dynamicPower == fromCard.dynamicPower &&
+            fromText.dynamicToughness == fromCard.dynamicToughness
 
-        return if (textKeywords == cardKeywords && scriptsAgree && equipCostsAgree) {
+        return if (textKeywords == cardKeywords && scriptsAgree && equipCostsAgree && statsAgree) {
             CardComparison(implemented, card, Population.COMPARED, Verdict.CONFIRMED)
         } else {
             CardComparison(
@@ -199,9 +209,20 @@ class Differential(private val touchstone: Touchstone = Touchstone()) {
                 textEquipCost = fromText.equipCost.takeUnless { equipCostsAgree },
                 cardEquipCost = fromCard.equipCost.takeUnless { equipCostsAgree },
                 equipCostsAgree = equipCostsAgree,
+                textStats = statLine(fromText).takeUnless { statsAgree },
+                cardStats = statLine(fromCard).takeUnless { statsAgree },
+                statsAgree = statsAgree,
             )
         }
     }
+
+    /**
+     * A card's two characteristic-defining halves as one printable line, `power/toughness`, with a
+     * dash where the half is not defined by an ability. Structural for [structural]'s reason: two
+     * `DynamicAmount`s that describe themselves identically are exactly the pair worth reading.
+     */
+    private fun statLine(fragment: CardFragment): String =
+        "${fragment.dynamicPower ?: "—"} / ${fragment.dynamicToughness ?: "—"}"
 
     /**
      * Do the Scryfall face and the golden say the same thing, once reminder text is out of the way?
@@ -290,9 +311,11 @@ class Differential(private val touchstone: Touchstone = Touchstone()) {
         return CardSerialization.json.encodeToString(
             JsonElement.serializer(),
             sortKeys(
-                Folds.dropPresentation(
-                    Folds.flattenComposites(
-                        canonicalizeGrantedAbilities(canonicalizeAbilities(normalizeSlots(tree))),
+                Folds.dropModeDescriptions(
+                    Folds.dropPresentation(
+                        Folds.flattenComposites(
+                            canonicalizeGrantedAbilities(canonicalizeAbilities(normalizeSlots(tree))),
+                        ),
                     ),
                 ),
             ),
@@ -542,6 +565,47 @@ internal object Folds {
 
     private val PRESENTATION_KEYS = setOf("imageUri", "message", "prompt", "descriptionOverride")
 
+    /**
+     * **A mode's `description` is the same class of field, and it is scoped rather than named.**
+     *
+     * `Mode.description` is documented as "Human-readable description of the mode" and defaults to
+     * `effect.description` — presentation, never executed, derived by the SDK from the effect beside
+     * it. That is exactly what [dropPresentation] drops, and the only reason it is not a fifth entry
+     * in [PRESENTATION_KEYS] is that `description` is not a rare name: `ReplacementEffect`'s
+     * `AlternativeCostEffect` carries a serialized one that *is* part of what the effect does, and a
+     * key-wide drop would stop the gate seeing it. So this walks to the modes of a `ModalEffect` and
+     * drops the field only there.
+     *
+     * The two sides disagree by construction rather than by accident, which is what makes this a
+     * fold rather than a bug to fix. Hand-written cards spell the printed row out with the card's
+     * own name in it — Boros Charm's first mode reads "Boros Charm deals 4 damage to target player
+     * or planeswalker" — and the text Assay parses has had that name abstracted to `~` before any
+     * rule sees it. The grammar therefore leaves the field at its default and never invents prose;
+     * see `Modal.modeFor`. Everything that decides what a mode *does* — its effect, its targets, its
+     * per-mode costs — is still compared, and the count fields on the modal above it are compared
+     * too, which is where Winterflame's disagreement surfaced.
+     */
+    fun dropModeDescriptions(element: JsonElement): JsonElement = when (element) {
+        is JsonObject -> {
+            val walked = JsonObject(element.mapValues { dropModeDescriptions(it.value) })
+            val modes = walked["modes"] as? JsonArray
+            if (modes != null && (walked["type"] as? JsonPrimitive)?.content == MODAL_TYPE) {
+                JsonObject(walked + ("modes" to JsonArray(modes.map(::dropModeDescription))))
+            } else {
+                walked
+            }
+        }
+
+        is JsonArray -> JsonArray(element.map(::dropModeDescriptions))
+        else -> element
+    }
+
+    private fun dropModeDescription(mode: JsonElement): JsonElement =
+        (mode as? JsonObject)?.let { JsonObject(it - "description") } ?: mode
+
+    /** `ModalEffect`'s `@SerialName`. The discriminator is what keeps the fold above scoped. */
+    private const val MODAL_TYPE = "Modal"
+
     // `liftTriggerConsent` used to live here, bridging `TriggeredAbility.optional = true` (106 cards)
     // and a `MayEffect` around the effect (214 cards) — two SDK spellings of "you may" that the
     // engine already lowered one into the other on every game. It is gone because the *SDK* is: the
@@ -682,6 +746,14 @@ data class CardComparison(
     val textEquipCost: ManaCost? = null,
     val cardEquipCost: ManaCost? = null,
     val equipCostsAgree: Boolean = true,
+    /**
+     * The characteristic-defining halves of the stat box, when they disagree — same three-field
+     * shape as the equip cost above, and for the same reason: "the card defines a `*` the text does
+     * not" is the interesting case and a pair of nulls cannot tell it from agreement.
+     */
+    val textStats: String? = null,
+    val cardStats: String? = null,
+    val statsAgree: Boolean = true,
 )
 
 /**
@@ -711,7 +783,10 @@ class DifferentialReport private constructor(
     val clean: Boolean get() = undecodable.isEmpty()
 
     fun render(topDivergences: Int = 40): String = buildString {
-        appendLine("Argentum Assay — differential (${CardFragment.MODELLED_SLOTS_NOTE}, keywords, equipCost)")
+        appendLine(
+            "Argentum Assay — differential " +
+                "(${CardFragment.MODELLED_SLOTS_NOTE}, keywords, equipCost, defined P/T)"
+        )
         appendLine("=".repeat(78))
         appendLine()
         appendLine(row("Hand-written cards", cards.toString()))
@@ -755,6 +830,10 @@ class DifferentialReport private constructor(
                 if (!d.equipCostsAgree) {
                     appendLine("    equip cost from text:  ${d.textEquipCost ?: "(none)"}")
                     appendLine("    equip cost on card:    ${d.cardEquipCost ?: "(none)"}")
+                }
+                if (!d.statsAgree) {
+                    appendLine("    defined P/T from text: ${d.textStats ?: "(none)"}")
+                    appendLine("    defined P/T on card:   ${d.cardStats ?: "(none)"}")
                 }
             }
             if (divergent > divergences.size) {

@@ -89,9 +89,9 @@ class MoveCollectionExecutor(
             return EffectResult.success(state)
         }
 
-        return when (destination) {
+        var result = when (destination) {
             is CardDestination.ToZone -> {
-                val result = moveToZone(
+                moveToZone(
                     state = state,
                     context = context,
                     cards = cards,
@@ -109,8 +109,14 @@ class MoveCollectionExecutor(
                     addCounterType = effect.addCounterType,
                     markEnteredViaSourceAbility = effect.markEnteredViaSourceAbility,
                 )
-                if (result.isSuccess) {
-                    applyPostMoveMetadata(
+            }
+            is CardDestination.ToZoneExiledFrom ->
+                moveToZonesExiledFrom(state, context, cards, destination, effect)
+        }
+        if (result.isSuccess) {
+            when (destination) {
+                is CardDestination.ToZone -> {
+                    result = applyPostMoveMetadata(
                         result = result,
                         context = context,
                         cards = cards,
@@ -120,11 +126,153 @@ class MoveCollectionExecutor(
                         addCounterType = effect.addCounterType,
                         markEnteredViaSourceAbility = effect.markEnteredViaSourceAbility,
                     )
-                } else {
-                    result
+                }
+                is CardDestination.ToZoneExiledFrom -> {
+                    // The per-card destination has no single fixed zone to pass to the fork's
+                    // metadata helper. The upstream return recipe does not currently combine this
+                    // destination with post-move metadata, but keep the link/counter/entry-marker
+                    // semantics coherent if a future card composes those fields with it.
+                    if (effect.linkToSource) {
+                        result = linkCardsToSource(result, context, cards)
+                    }
+                    if (effect.unlinkFromSource) {
+                        result = unlinkCardsFromSource(result, context, cards)
+                    }
+                    effect.addCounterType?.let { counterType ->
+                        var newState = result.state
+                        for (cardId in cards) {
+                            newState = newState.updateEntity(cardId) { c ->
+                                val existing = c.get<CountersComponent>() ?: CountersComponent()
+                                c.with(existing.withAdded(counterType, 1))
+                            }
+                        }
+                        result = result.copy(state = newState)
+                    }
+                    if (effect.markEnteredViaSourceAbility) {
+                        result = markEnteredViaSourceAbility(result, context, cards)
+                    }
                 }
             }
         }
+        return result
+    }
+
+    /**
+     * Send each card back to the zone recorded on its
+     * [com.wingedsheep.engine.state.components.identity.ExiledFromZoneComponent] — CR 610.3's
+     * "return the object to its previous zone" for an exile-until whose exile half spanned several
+     * zones.
+     *
+     * Cards are grouped by destination zone and each group is handed to the ordinary
+     * [moveToZone] path, so aura-target selection, owner routing, library placement, reveals and
+     * events all behave exactly as they do for a fixed [CardDestination.ToZone].
+     *
+     * The per-group [CardDestination.ToZone] is rebuilt with **only** the zone: no `player`, no
+     * `placement`. That is load-bearing rather than an oversight — owner routing for a
+     * non-battlefield zone comes from the zone transition itself (it routes to the card's owner),
+     * and the battlefield case comes from `underOwnersControl` (CR 610.3c). One consequence worth
+     * knowing: a card that was exiled from the *middle* of a library comes back at
+     * `ZonePlacement.Default`, not at the index it left from. CR 610.3 names only "its previous
+     * zone" and fixes no position, so that is legal, but it is not a round trip.
+     *
+     * **Group order matters.** `moveToZone` can pause for player input, and a pause abandons the
+     * groups that haven't run yet. Only two destinations can pause: a library group under
+     * [CardOrder.ControllerChooses] (the reorder decision) and a battlefield group containing an
+     * Aura (its enchant target, CR 303.4f). Those two are therefore ordered last — every zone that
+     * cannot pause runs first. With the shipped `Effects.ReturnLinkedExileToZoneExiledFrom` facade
+     * (which uses [CardOrder.Preserve]) only the battlefield group can pause, so nothing is ever
+     * stranded; a caller that opts into `ControllerChooses` *and* returns cards to both a library
+     * and the battlefield could strand the battlefield group behind the library prompt.
+     * TODO: resume the remaining groups from the continuation instead of abandoning them, so that
+     *  combination stops being a hazard a caller has to know about.
+     *
+     * A card whose origin zone wasn't recorded, or was a zone an object can't be returned to
+     * (the stack), falls back to [CardDestination.ToZoneExiledFrom.fallback]. A card recorded as
+     * exiled *from exile* (CR 406.7) is left exactly where it is — see [originZoneOf].
+     */
+    private fun moveToZonesExiledFrom(
+        state: GameState,
+        context: EffectContext,
+        cards: List<EntityId>,
+        destination: CardDestination.ToZoneExiledFrom,
+        effect: MoveCollectionEffect
+    ): EffectResult {
+        val byZone = cards.groupBy { cardId -> originZoneOf(state, cardId, destination.fallback) }
+            // An object exiled from exile (CR 406.7) never changed zones, so "return it to its
+            // previous zone" leaves it in exile. Skip the group outright rather than running an
+            // exile → exile transition, which would emit a spurious ZoneChangeEvent and strip the
+            // face-down / suspend / madness / paradigm markers off a card that went nowhere.
+            .filterKeys { it != Zone.EXILE }
+        // Zones that cannot pause first; library then battlefield last (see the doc comment).
+        val orderedZones = byZone.keys.sortedBy { zone ->
+            when (zone) {
+                Zone.LIBRARY -> 1
+                Zone.BATTLEFIELD -> 2
+                else -> 0
+            }
+        }
+
+        var runningState = state
+        val events = mutableListOf<GameEvent>()
+        val collections = mutableMapOf<String, List<EntityId>>()
+
+        for (zone in orderedZones) {
+            val group = byZone.getValue(zone)
+            val groupResult = moveToZone(
+                state = runningState,
+                context = context,
+                cards = group,
+                destination = CardDestination.ToZone(zone),
+                order = effect.order,
+                revealed = effect.revealed,
+                moveType = effect.moveType,
+                faceDown = effect.faceDown,
+                noRegenerate = effect.noRegenerate,
+                storeMovedAs = effect.storeMovedAs,
+                underOwnersControl = effect.underOwnersControl,
+                revealToSelf = effect.revealToSelf,
+                linkToSource = effect.linkToSource,
+                unlinkFromSource = effect.unlinkFromSource,
+                addCounterType = effect.addCounterType,
+                markEnteredViaSourceAbility = effect.markEnteredViaSourceAbility,
+            )
+            runningState = groupResult.state
+            events.addAll(groupResult.events)
+            groupResult.updatedCollections.forEach { (key, ids) ->
+                collections[key] = (collections[key] ?: emptyList()) + ids
+            }
+            if (!groupResult.isSuccess || groupResult.pendingDecision != null) {
+                return groupResult.copy(
+                    state = runningState,
+                    events = events,
+                    updatedCollections = collections
+                )
+            }
+        }
+
+        return EffectResult.success(runningState, events).copy(updatedCollections = collections)
+    }
+
+    /**
+     * The zone [cardId] was exiled from, or [fallback] when nothing usable was recorded.
+     *
+     * Two recorded values are not returned as-is:
+     *  - **`STACK`** takes [fallback]. A spell lifted off the stack and exiled has no stack object
+     *    to go back to (CR 400.7 — it would be a new object, and the stack only holds spells and
+     *    abilities that were *put* there).
+     *  - **`EXILE`** is returned unchanged, and the caller ([moveToZonesExiledFrom]) drops that
+     *    group: an object exiled from exile (CR 406.7) "doesn't change zones", so its previous
+     *    zone *is* exile and the CR 610.3 return is a no-op.
+     *
+     * Every other `Zone` member — battlefield, hand, graveyard, library, command, sideboard — is
+     * passed straight through, so this is a two-value exclusion list, not an allowlist.
+     */
+    private fun originZoneOf(state: GameState, cardId: EntityId, fallback: Zone): Zone {
+        val recorded = state.getEntity(cardId)
+            ?.get<com.wingedsheep.engine.state.components.identity.ExiledFromZoneComponent>()
+            ?.zone
+            ?: return fallback
+        return if (recorded == Zone.STACK) fallback else recorded
     }
 
     /** Apply MoveCollection metadata after all physical cards have completed. */
