@@ -150,7 +150,7 @@ serialized(a) shouldNotContain pair.hiddenCardNameA
 serialized(b) shouldNotContain pair.hiddenCardNameB
 ~~~
 
-Repeat from the hidden-hand owner’s perspective and assert that the own-hand card identity is present and the semantic observations and digests differ. Add a library pair with different identities and order and assert that both player perspectives expose only size and produce equal semantic observations and digests.
+Repeat from the hidden-hand owner’s perspective and assert that the own-hand card identity is present and the semantic observations and digests differ. Add a library pair with different identities and order and assert that unauthorized members remain omitted while individually revealed or Visibility-authorized top cards are exposed and affect the semantic observation and digest.
 
 - [ ] **Step 4: Write the face-down, mixed-exile, and entity-ID RED tests.**
 
@@ -402,7 +402,9 @@ Keep LegalActionView.description available only in the actor’s observation. Do
 If a required structured action-identity field is not generically available from
 the engine, classify it as an A5 contract dependency. Do not broaden
 rules-engine scope and do not substitute description text for the missing
-structured field.
+structured field. The observation contract carries a deterministic structured
+engine-action/decision payload for fields such as ability identity and cast
+choices; transport IDs and presentation text remain outside the digest.
 
 - [ ] **Step 4: Populate public stack source and target metadata.**
 
@@ -465,7 +467,7 @@ counters = counters.toSortedMap()
 availableColors = availableColors.sorted().toCollection(LinkedHashSet())
 ~~~
 
-Do not sort players, stack, targets, distributions, or attachments until the specific engine semantics prove that a collection is unordered. The wire form includes actionId and decisionId when present.
+Do not sort players, stack, chosen targets, distributions, or other rules-significant lists. Attachments and legal-action candidate target sets are proven unordered and are canonicalized deterministically. The wire form includes actionId and decisionId when present.
 
 - [ ] **Step 3: Implement the semantic form.**
 
@@ -501,7 +503,7 @@ buildJsonObject {
 }
 ~~~
 
-Add any additional structured field introduced by the contract before relying on it for semantic identity. Never add description as a fallback. If two actions remain distinguishable only by prose, fail the focused test and record that as an explicit structured contract gap.
+Add the deterministic structured engine-action/decision payload to the fingerprint so fields such as `abilityId`, `castFaceDown`, `faceIndex`, modes, payments, and repeat counts remain distinguishable. Never add description as a fallback. If two actions remain distinguishable only by prose, fail the focused test and record that as an explicit structured contract gap.
 
 - [ ] **Step 5: Test transport-ID and ordering semantics.**
 

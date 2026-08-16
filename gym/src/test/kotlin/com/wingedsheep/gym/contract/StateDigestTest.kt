@@ -35,7 +35,7 @@ class StateDigestTest : FunSpec({
     }
 
     fun observation(env: GameEnvironment, perspectiveIndex: Int = 0): TrainingObservation =
-        ObservationBuilder().build(
+        ObservationBuilder(cardRegistry = registry()).build(
             env.state,
             env.playerIds[perspectiveIndex],
             env.legalActions()
@@ -74,7 +74,7 @@ class StateDigestTest : FunSpec({
                 )
             )
         )
-        val pending = ObservationBuilder().build(pendingState, owner, emptyList())
+        val pending = ObservationBuilder(cardRegistry = registry()).build(pendingState, owner, emptyList())
             .observation as TrainingObservation
         val pendingVariant = pending.copy(
             pendingDecision = pending.pendingDecision!!.copy(decisionId = "decision-next")

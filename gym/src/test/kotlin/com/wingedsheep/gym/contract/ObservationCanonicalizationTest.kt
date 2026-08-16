@@ -36,7 +36,7 @@ class ObservationCanonicalizationTest : FunSpec({
     }
 
     fun observation(env: GameEnvironment): TrainingObservation =
-        ObservationBuilder().build(env.state, env.playerIds.first(), env.legalActions())
+        ObservationBuilder(cardRegistry = registry()).build(env.state, env.playerIds.first(), env.legalActions())
             .observation as TrainingObservation
 
     test("wire JSON retains transport IDs while semantic JSON excludes them") {
@@ -107,6 +107,45 @@ class ObservationCanonicalizationTest : FunSpec({
             ObservationCanonicalizer.wireJson(withCard(sameSetDifferentInsertionOrder))
     }
 
+    test("unordered attachments and legal target candidates are canonicalized as sets") {
+        val base = observation(environment())
+        val cardZoneIndex = base.zones.indexOfFirst { it.cards.isNotEmpty() }
+        val cardIndex = base.zones[cardZoneIndex].cards.indexOfFirst { true }
+        val card = base.zones[cardZoneIndex].cards[cardIndex]
+        val attachmentA = EntityId("attachment-a")
+        val attachmentB = EntityId("attachment-b")
+
+        fun withAttachments(attachments: List<EntityId>): TrainingObservation = base.copy(
+            zones = base.zones.mapIndexed { index, zone ->
+                if (index != cardZoneIndex) zone else zone.copy(
+                    cards = zone.cards.mapIndexed { nestedIndex, nested ->
+                        if (nestedIndex == cardIndex) nested.copy(attachments = attachments) else nested
+                    }
+                )
+            }
+        )
+
+        ObservationCanonicalizer.wireJson(withAttachments(listOf(attachmentA, attachmentB))) shouldBe
+            ObservationCanonicalizer.wireJson(withAttachments(listOf(attachmentB, attachmentA)))
+
+        val firstTarget = EntityId("candidate-a")
+        val secondTarget = EntityId("candidate-b")
+        val withTargetsA = base.copy(
+            legalActions = listOf(
+                base.legalActions.first().copy(targetEntityIds = listOf(firstTarget, secondTarget))
+            )
+        )
+        val withTargetsB = withTargetsA.copy(
+            legalActions = listOf(
+                withTargetsA.legalActions.first().copy(targetEntityIds = listOf(secondTarget, firstTarget))
+            )
+        )
+
+        ObservationCanonicalizer.semanticJson(withTargetsA) shouldBe
+            ObservationCanonicalizer.semanticJson(withTargetsB)
+        StateDigest.compute(withTargetsA) shouldBe StateDigest.compute(withTargetsB)
+    }
+
     test("rules-significant stack order remains observable") {
         val base = observation(environment())
         val lower = StackItemView(
@@ -140,9 +179,9 @@ class ObservationCanonicalizationTest : FunSpec({
                 hiddenId to checkNotNull(env.state.entities[hiddenId]).with(checkNotNull(replacement))
                 )
         )
-        val maskedA = ObservationBuilder().build(env.state, env.playerIds[0], emptyList())
+        val maskedA = ObservationBuilder(cardRegistry = registry()).build(env.state, env.playerIds[0], emptyList())
             .observation as TrainingObservation
-        val maskedB = ObservationBuilder().build(pairedState, env.playerIds[0], emptyList())
+        val maskedB = ObservationBuilder(cardRegistry = registry()).build(pairedState, env.playerIds[0], emptyList())
             .observation as TrainingObservation
 
         val wireA = ObservationCanonicalizer.wireJson(maskedA)

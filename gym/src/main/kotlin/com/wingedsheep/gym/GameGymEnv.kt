@@ -21,7 +21,7 @@ import com.wingedsheep.gym.service.SnapshotHandle
 class GameGymEnv(
     val environment: GameEnvironment,
     private val perspectivePlayerIndex: Int,
-    private val observationBuilder: ObservationBuilder = ObservationBuilder()
+    private val observationBuilder: ObservationBuilder
 ) : GymEnv {
 
     @Volatile

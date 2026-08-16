@@ -76,10 +76,19 @@ internal object ObservationCanonicalizer {
         put("maxTargets", action.maxTargets)
         put("requiresDamageDistribution", action.requiresDamageDistribution)
         put("isManaAbility", action.isManaAbility)
+        action.actionSemantics?.let { put("actionSemantics", it) }
         put("isDecisionOption", action.isDecisionOption)
     }
 
-    private val unorderedArrayKeys = setOf("types", "subtypes", "colors", "keywords", "availableColors")
+    private val unorderedArrayKeys = setOf(
+        "types",
+        "subtypes",
+        "colors",
+        "keywords",
+        "availableColors",
+        "attachments",
+        "targetEntityIds"
+    )
 
     private fun canonicalize(element: JsonElement, propertyName: String? = null): JsonElement = when (element) {
         is JsonObject -> JsonObject(

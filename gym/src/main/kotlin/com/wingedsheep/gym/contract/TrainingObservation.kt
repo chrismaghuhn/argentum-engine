@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * The payload an agent receives from any gym environment after `observe` / `step`.
@@ -248,6 +249,12 @@ data class LegalActionView(
     val maxTargets: Int = 0,
     val requiresDamageDistribution: Boolean = false,
     val isManaAbility: Boolean = false,
+    /**
+     * Structured, presentation-free action identity used by semantic equality and StateDigest.
+     * This includes the engine action/decision payload but excludes the transport handle and
+     * human-readable description. It is not a second rules or visibility model.
+     */
+    val actionSemantics: JsonObject? = null,
     /** True when this entry was generated from [PendingDecisionView], not a GameAction. */
     val isDecisionOption: Boolean = false
 )

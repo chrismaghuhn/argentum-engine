@@ -1,12 +1,14 @@
 package com.wingedsheep.gym.contract
 
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AssignDamageDecision
 import com.wingedsheep.engine.core.BatchYesNoDecision
 import com.wingedsheep.engine.core.BatchYesNoResponse
-import com.wingedsheep.engine.core.CombatResolutionDecision
+import com.wingedsheep.engine.core.BottomCards
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseColorDecision
 import com.wingedsheep.engine.core.ChooseModeDecision
 import com.wingedsheep.engine.core.ChooseNumberDecision
@@ -14,34 +16,33 @@ import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.ChooseReplacementDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ColorChosenResponse
+import com.wingedsheep.engine.core.CombatResolutionDecision
+import com.wingedsheep.engine.core.CrewVehicle
+import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DistributeDecision
+import com.wingedsheep.engine.core.ForetellCard
+import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PendingDecision
+import com.wingedsheep.engine.core.PlayLand
+import com.wingedsheep.engine.core.PlotCard
 import com.wingedsheep.engine.core.ReorderLibraryDecision
+import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.SearchLibraryDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
-import com.wingedsheep.engine.core.YesNoDecision
-import com.wingedsheep.engine.core.YesNoResponse
-import com.wingedsheep.engine.legalactions.LegalAction
-import com.wingedsheep.engine.core.ActivateAbility
-import com.wingedsheep.engine.core.BottomCards
-import com.wingedsheep.engine.core.CastSpell
-import com.wingedsheep.engine.core.CrewVehicle
-import com.wingedsheep.engine.core.CycleCard
-import com.wingedsheep.engine.core.ForetellCard
-import com.wingedsheep.engine.core.PlotCard
-import com.wingedsheep.engine.core.PlayLand
-import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.SuspendCardFromHand
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.TypecycleCard
 import com.wingedsheep.engine.core.UnlockRoomDoor
+import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.core.YesNoResponse
+import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -69,15 +70,19 @@ import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComp
 import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Converts `(GameState, perspectivePlayerId)` into a [TrainingObservation].
  *
  * ## Information hiding
  *
- * Opponent hand and everyone's library are always perspective-masked
- * ([ZoneView.hidden] = true, [ZoneView.cards] empty when no individual card is
- * visible). There is no production bypass for this boundary.
+ * Opponent hand and library identities are perspective-masked. Individually
+ * revealed cards and Visibility-authorized top-of-library cards may appear in
+ * [ZoneView.cards], while fully hidden members never do. There is no production
+ * bypass for this boundary.
  *
  * ## Projected vs. base state
  *
@@ -89,9 +94,14 @@ import com.wingedsheep.sdk.model.EntityId
  */
 class ObservationBuilder(
     private val schemaHash: String = SchemaHash.CURRENT,
-    cardRegistry: CardRegistry = CardRegistry()
+    cardRegistry: CardRegistry
 ) {
     private val visibility = Visibility(cardRegistry)
+    private val actionSerialization = Json {
+        encodeDefaults = true
+        explicitNulls = false
+        classDiscriminator = "type"
+    }
 
     fun build(
         state: GameState,
@@ -248,8 +258,13 @@ class ObservationBuilder(
         perspective: EntityId,
         zone: Zone
     ): CardVisibility {
-        if (zone == Zone.LIBRARY) return CardVisibility.HIDDEN
-        if (!visibility.isZoneVisibleTo(state, key, perspective)) return CardVisibility.HIDDEN
+        if (zone == Zone.LIBRARY) {
+            if (!isLibraryCardVisibleTo(state, key, entityId, perspective)) {
+                return CardVisibility.HIDDEN
+            }
+        } else if (!visibility.isZoneVisibleTo(state, key, perspective)) {
+            return CardVisibility.HIDDEN
+        }
 
         val container = state.getEntity(entityId) ?: return CardVisibility.HIDDEN
         if (!container.has<FaceDownComponent>()) return CardVisibility.VISIBLE_IDENTITY
@@ -260,14 +275,26 @@ class ObservationBuilder(
         val controller = state.projectedState.getController(entityId)
             ?: container.get<ControllerComponent>()?.playerId
         if (zone == Zone.BATTLEFIELD &&
-            controller == perspective &&
-            visibility.hasLookAtFaceDownCreatures(state, perspective)
+            (controller == perspective || visibility.hasLookAtFaceDownCreatures(state, perspective))
         ) {
             return CardVisibility.VISIBLE_IDENTITY
         }
 
         if (zone == Zone.EXILE) return CardVisibility.HIDDEN
         return CardVisibility.PUBLIC_FACE_DOWN_ONLY
+    }
+
+    private fun isLibraryCardVisibleTo(
+        state: GameState,
+        key: ZoneKey,
+        entityId: EntityId,
+        perspective: EntityId
+    ): Boolean {
+        if (visibility.isCardRevealedTo(state, entityId, perspective)) return true
+        val isTopCard = state.getLibrary(key.ownerId).firstOrNull() == entityId
+        if (!isTopCard) return false
+        return visibility.revealsTopOfLibraryPublicly(state, key.ownerId) ||
+            (key.ownerId == perspective && visibility.hasLookAtTopOfLibrary(state, perspective))
     }
 
     // =========================================================================
@@ -359,7 +386,9 @@ class ObservationBuilder(
                 ?.mapKeys { it.key.name }
                 ?.toSortedMap() ?: emptyMap(),
             attachedTo = container.get<AttachedToComponent>()?.targetId,
-            attachments = container.get<AttachmentsComponent>()?.attachedIds ?: emptyList()
+            attachments = container.get<AttachmentsComponent>()?.attachedIds
+                ?.sortedBy { it.value }
+                ?: emptyList()
         )
     }
 
@@ -399,7 +428,7 @@ class ObservationBuilder(
             legacyAbility != null -> legacyAbility.sourceId
             else -> null
         }
-        val faceDown = container?.has<FaceDownComponent>() == true
+        val faceDown = container?.has<FaceDownComponent>() == true || spell?.castFaceDown == true
         val identityVisible = !faceDown ||
             visibility.isCardRevealedTo(state, entityId, perspectivePlayerId) ||
             controllerId == perspectivePlayerId
@@ -435,7 +464,7 @@ class ObservationBuilder(
             description = la.description,
             affordable = la.affordable,
             sourceEntityId = actionSourceEntityId(la),
-            targetEntityIds = la.validTargets ?: emptyList(),
+            targetEntityIds = (la.validTargets ?: emptyList()).sortedBy { it.value },
             manaCost = la.manaCostString,
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
@@ -443,8 +472,19 @@ class ObservationBuilder(
             maxTargets = la.targetCount,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
+            actionSemantics = actionSemantic(la.action),
             isDecisionOption = false
         )
+    }
+
+    private fun actionSemantic(action: GameAction): JsonObject =
+        actionSerialization.encodeToJsonElement(GameAction.serializer(), action).jsonObject
+
+    private fun decisionSemantic(response: DecisionResponse): JsonObject {
+        val encoded = actionSerialization
+            .encodeToJsonElement(DecisionResponse.serializer(), response)
+            .jsonObject
+        return JsonObject(encoded.filterKeys { it != "decisionId" })
     }
 
     private fun actionSourceEntityId(legalAction: LegalAction): EntityId? = when (val action = legalAction.action) {
@@ -662,6 +702,7 @@ class ObservationBuilder(
                 kind = "DECISION",
                 description = describeResponse(decision, response),
                 affordable = true,
+                actionSemantics = decisionSemantic(response),
                 isDecisionOption = true
             )
         }

@@ -3,26 +3,36 @@ package com.wingedsheep.gym.contract
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.CardEntityFactory
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.event.GrantedStaticAbility
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.gym.GameEnvironment
+import com.wingedsheep.mtg.sets.definitions.ktk.KhansOfTarkirSet
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.LookAtTopOfLibrary
+import com.wingedsheep.sdk.scripting.RevealTopOfLibrary
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 
@@ -33,6 +43,10 @@ class ObservationPrivacyTest : FunSpec({
             it.register(PortalSet.cards)
             it.register(PortalSet.basicLands)
         }
+
+    fun registryWithLens(): CardRegistry = registry().also {
+        it.register(KhansOfTarkirSet.cards)
+    }
 
     fun environment(): GameEnvironment {
         val env = GameEnvironment.create(registry())
@@ -93,11 +107,20 @@ class ObservationPrivacyTest : FunSpec({
         )
     }
 
-    fun observation(state: GameState, perspective: EntityId): TrainingObservation =
-        ObservationBuilder().build(state, perspective, emptyList()).observation as TrainingObservation
+    fun observation(
+        state: GameState,
+        perspective: EntityId,
+        cardRegistry: CardRegistry = registry()
+    ): TrainingObservation =
+        ObservationBuilder(cardRegistry = cardRegistry)
+            .build(state, perspective, emptyList()).observation as TrainingObservation
 
-    fun result(state: GameState, perspective: EntityId): ObservationResult =
-        ObservationBuilder().build(state, perspective, emptyList())
+    fun result(
+        state: GameState,
+        perspective: EntityId,
+        cardRegistry: CardRegistry = registry()
+    ): ObservationResult =
+        ObservationBuilder(cardRegistry = cardRegistry).build(state, perspective, emptyList())
 
     fun moveFirstOpponentHandCardFaceDownToBattlefield(
         state: GameState,
@@ -114,6 +137,27 @@ class ObservationPrivacyTest : FunSpec({
             entities = state.entities + (cardId to entity),
             zones = zones
         ) to cardId
+    }
+
+    fun grantStaticAbilityToBattlefieldCard(
+        state: GameState,
+        playerId: EntityId,
+        ability: com.wingedsheep.sdk.scripting.StaticAbility
+    ): GameState {
+        val anchorId = state.getHand(playerId).last()
+        val handKey = ZoneKey(playerId, Zone.HAND)
+        val battlefieldKey = ZoneKey(playerId, Zone.BATTLEFIELD)
+        val zones = state.zones.toMutableMap()
+        zones[handKey] = state.getHand(playerId).dropLast(1)
+        zones[battlefieldKey] = state.getBattlefield(playerId) + anchorId
+        return state.copy(
+            zones = zones,
+            grantedStaticAbilities = state.grantedStaticAbilities + GrantedStaticAbility(
+                entityId = anchorId,
+                ability = ability,
+                duration = Duration.Permanent
+            )
+        )
     }
 
     test("opponent hand identity is absent from the complete masked observation") {
@@ -177,6 +221,49 @@ class ObservationPrivacyTest : FunSpec({
         mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
     }
 
+    test("own controlled face-down battlefield identity remains visible") {
+        val base = environment()
+        val owner = base.playerIds[0]
+        val (state, cardId) = moveFirstOpponentHandCardFaceDownToBattlefield(base.state, owner)
+
+        val card = observation(state, owner).zones.single {
+            it.ownerId == owner && it.zoneType == Zone.BATTLEFIELD
+        }.cards.single { it.entityId == cardId }
+
+        card.cardDefinitionId.shouldNotBeNull()
+        card.name shouldBe "Mountain"
+        card.faceDown shouldBe true
+    }
+
+    test("battlefield look-at permission reveals an opponent face-down permanent") {
+        val base = environment()
+        val viewer = base.playerIds[0]
+        val opponent = base.playerIds[1]
+        val (faceDownState, faceDownId) =
+            moveFirstOpponentHandCardFaceDownToBattlefield(base.state, opponent)
+        val lensId = base.state.getHand(viewer).last()
+        val lensCard = checkNotNull(CardEntityFactory
+            .create(registryWithLens().requireCard("Lens of Clarity"), viewer)
+            .get<CardComponent>())
+        val handKey = ZoneKey(viewer, Zone.HAND)
+        val battlefieldKey = ZoneKey(viewer, Zone.BATTLEFIELD)
+        val zones = faceDownState.zones.toMutableMap()
+        zones[handKey] = faceDownState.getHand(viewer).filterNot { it == lensId }
+        zones[battlefieldKey] = faceDownState.getBattlefield(viewer) + lensId
+        val state = faceDownState.copy(
+            entities = faceDownState.entities +
+                (lensId to checkNotNull(faceDownState.entities[lensId]).with(lensCard)),
+            zones = zones
+        )
+
+        val card = observation(state, viewer, registryWithLens()).zones.single {
+            it.ownerId == opponent && it.zoneType == Zone.BATTLEFIELD
+        }.cards.single { it.entityId == faceDownId }
+
+        card.cardDefinitionId.shouldNotBeNull()
+        card.name shouldBe "Mountain"
+    }
+
     test("own hand identity remains visible when paired hidden worlds differ") {
         val base = environment()
         val owner = base.playerIds[1]
@@ -232,6 +319,56 @@ class ObservationPrivacyTest : FunSpec({
         }
     }
 
+    test("individually revealed library cards are visible without exposing other cards") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val perspective = base.playerIds[0]
+        val topId = base.state.getLibrary(owner).first()
+        val hiddenId = base.state.getLibrary(owner)[1]
+        val revealedState = base.state.updateEntity(topId) {
+            it.with(RevealedToComponent.to(perspective))
+        }
+
+        val library = observation(revealedState, perspective).zones.single {
+            it.ownerId == owner && it.zoneType == Zone.LIBRARY
+        }
+
+        library.size shouldBe base.state.getLibrary(owner).size
+        library.cards.map { it.entityId } shouldBe listOf(topId)
+        library.cards.single().name shouldBe "Mountain"
+        library.cards.none { it.entityId == hiddenId } shouldBe true
+    }
+
+    test("public and private top-library visibility uses the shared Visibility rules") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val opponent = base.playerIds[0]
+        val ownerTopId = base.state.getLibrary(owner).first()
+        val publicState = grantStaticAbilityToBattlefieldCard(
+            base.state,
+            owner,
+            RevealTopOfLibrary
+        )
+        val publicLibrary = observation(publicState, opponent).zones.single {
+            it.ownerId == owner && it.zoneType == Zone.LIBRARY
+        }
+        publicLibrary.cards.map { it.entityId } shouldBe listOf(ownerTopId)
+
+        val privateState = grantStaticAbilityToBattlefieldCard(
+            base.state,
+            owner,
+            LookAtTopOfLibrary
+        )
+        val ownerLibrary = observation(privateState, owner).zones.single {
+            it.ownerId == owner && it.zoneType == Zone.LIBRARY
+        }
+        val opponentLibrary = observation(privateState, opponent).zones.single {
+            it.ownerId == owner && it.zoneType == Zone.LIBRARY
+        }
+        ownerLibrary.cards.map { it.entityId } shouldBe listOf(ownerTopId)
+        opponentLibrary.cards.shouldBeEmpty()
+    }
+
     test("command zone is public with a stable entity identity") {
         val base = environment()
         val owner = base.playerIds[1]
@@ -258,7 +395,7 @@ class ObservationPrivacyTest : FunSpec({
         val env = environment()
         val actingPlayer = env.playerIds[0]
         val nonActingPerspective = env.playerIds[1]
-        val result = ObservationBuilder().build(
+        val result = ObservationBuilder(cardRegistry = registry()).build(
             env.state,
             nonActingPerspective,
             env.legalActions()
@@ -283,11 +420,55 @@ class ObservationPrivacyTest : FunSpec({
             manaCostString = "{1}"
         )
 
-        val view = ObservationBuilder().build(env.state, actor, listOf(action))
+        val view = ObservationBuilder(cardRegistry = registry()).build(env.state, actor, listOf(action))
             .observation.legalActions.single()
         view.sourceEntityId shouldBe sourceId
         view.targetEntityIds shouldBe listOf(env.playerIds[1])
         view.manaCost shouldBe "{1}"
+    }
+
+    test("different structured abilities on one source change the semantic digest") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val sourceId = env.state.getHand(actor).first()
+
+        fun observationFor(abilityId: String): TrainingObservation {
+            val action = LegalAction(
+                action = ActivateAbility(actor, sourceId, AbilityId(abilityId)),
+                actionType = "ACTIVATE_ABILITY",
+                description = "Activate ability"
+            )
+            return ObservationBuilder(cardRegistry = registry())
+                .build(env.state, actor, listOf(action)).observation as TrainingObservation
+        }
+
+        val first = observationFor("ability-a")
+        val second = observationFor("ability-b")
+
+        first.legalActions.single().description shouldBe second.legalActions.single().description
+        first.stateDigest shouldNotBe second.stateDigest
+    }
+
+    test("different structured cast choices change the semantic digest") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val sourceId = env.state.getHand(actor).first()
+
+        fun observationFor(castFaceDown: Boolean): TrainingObservation {
+            val action = LegalAction(
+                action = CastSpell(
+                    playerId = actor,
+                    cardId = sourceId,
+                    castFaceDown = castFaceDown
+                ),
+                actionType = "CAST_SPELL",
+                description = "Cast card"
+            )
+            return ObservationBuilder(cardRegistry = registry())
+                .build(env.state, actor, listOf(action)).observation as TrainingObservation
+        }
+
+        observationFor(false).stateDigest shouldNotBe observationFor(true).stateDigest
     }
 
     test("pending decision is generic and action-free for non-owner perspective") {
@@ -375,7 +556,9 @@ class ObservationPrivacyTest : FunSpec({
             zones[handKey] = state.getHand(opponent).drop(1)
             return state.copy(
                 entities = state.entities + (
-                    hiddenId to checkNotNull(state.getEntity(hiddenId)).with(FaceDownComponent)
+                    hiddenId to checkNotNull(state.getEntity(hiddenId)).with(
+                        SpellOnStackComponent(casterId = opponent, castFaceDown = true)
+                    )
                     ),
                 zones = zones,
                 stack = state.stack + hiddenId

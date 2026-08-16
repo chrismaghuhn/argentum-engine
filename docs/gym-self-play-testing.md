@@ -62,9 +62,10 @@ Key config fields:
 - **`deck`** — `{"type":"Explicit","cards":{"Name":count}}` (recommended for testing), or
   `{"type":"RandomSealed","setCode":"BLB","boosterCount":8}` (needs the set's basic-land variants
   registered).
-- **Privacy boundary** — observations always hide unauthorized hand/library identities, and there
-  is no reveal-all bypass. `legalActions` and the action registry are exposed only when the configured
-  perspective is `agentToAct`; use separate perspective-configured environments when driving both seats.
+- **Privacy boundary** — observations always hide unauthorized hand/library identities, while
+  individually revealed or Visibility-authorized top-library cards may be shown; there is no reveal-all
+  bypass. `legalActions` and the action registry are exposed only when the configured perspective is
+  `agentToAct`; use separate perspective-configured environments when driving both seats.
 - **`skipMulligans: true`** — skip the mulligan back-and-forth.
 - `startingPlayerIndex` — pin it for reproducibility (null = random).
 
@@ -101,7 +102,9 @@ The fields that matter most for spotting bugs:
 - `agentToAct` — whose decision this is. A perspective that is not the actor receives an empty
   `legalActions` list and no usable action registry.
 - `legalActions[]` — each has `actionId`, `kind` (`PLAY_CARD`, `ACTIVATE_ABILITY`, `PASS`,
-  `DECISION`, …), `description`, `affordable`, `manaCost`, target counts.
+  `DECISION`, …), `description`, `affordable`, `manaCost`, target counts, and an
+  `actionSemantics` object containing the structured action identity used by the digest. The
+  `description` is presentation-only and is never used for semantic identity.
 - `zones[]` → `cards[]` → `EntityFeatures` — the projected (post-layers) truth about each object:
   `oracleText`, `power`/`toughness`, `types`/`subtypes`/`keywords`/`colors`, `tapped`, `counters`,
   `attachedTo`. **`oracleText` is your oracle**: read what the card *says*, then watch whether the
