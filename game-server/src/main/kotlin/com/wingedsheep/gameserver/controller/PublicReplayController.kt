@@ -4,6 +4,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.gameserver.handler.MessageSender
 import com.wingedsheep.gameserver.persistence.persistenceJson
 import com.wingedsheep.gameserver.replay.ReplayFidelity
+import com.wingedsheep.gameserver.replay.ReplayRead
 import com.wingedsheep.gameserver.replay.ReplayService
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -33,15 +34,32 @@ class PublicReplayController(
             ?: return ResponseEntity.notFound().build()
         val payload = replayService.viewerPayload(stored)
             ?: return ResponseEntity.notFound().build()
-        val replay = stored.replay
+        val metadata = when (stored) {
+            is ReplayRead.Decoded -> stored.stored.replay.let { replay ->
+                ReplayMetadata(
+                    gameId = replay.gameId,
+                    playerNames = replay.players.map { it.name },
+                    winnerName = replay.winnerName,
+                    startedAt = replay.startedAt,
+                    endedAt = replay.endedAt,
+                )
+            }
+            is ReplayRead.UnsupportedVersion -> ReplayMetadata(
+                gameId = stored.gameId,
+                playerNames = stored.playerNames,
+                winnerName = stored.winnerName,
+                startedAt = stored.startedAt,
+                endedAt = stored.endedAt,
+            )
+        }
 
         val response = PublicReplayResponse(
-            gameId = replay.gameId,
-            player1Name = replay.players.getOrNull(0)?.name ?: "",
-            player2Name = replay.players.getOrNull(1)?.name ?: "",
-            winnerName = replay.winnerName,
-            startedAt = replay.startedAt,
-            endedAt = replay.endedAt,
+            gameId = metadata.gameId,
+            player1Name = metadata.playerNames.getOrNull(0) ?: "",
+            player2Name = metadata.playerNames.getOrNull(1) ?: "",
+            winnerName = metadata.winnerName,
+            startedAt = metadata.startedAt,
+            endedAt = metadata.endedAt,
             snapshotCount = payload.frameCount,
             fidelity = payload.fidelity.name,
             degradedReason = payload.degradedReason,
@@ -78,6 +96,14 @@ class PublicReplayController(
         return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(json)
     }
 }
+
+private data class ReplayMetadata(
+    val gameId: String,
+    val playerNames: List<String>,
+    val winnerName: String?,
+    val startedAt: String,
+    val endedAt: String,
+)
 
 @Serializable
 data class PublicReplayResponse(

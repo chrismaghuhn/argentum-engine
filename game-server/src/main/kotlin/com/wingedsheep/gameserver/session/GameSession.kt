@@ -257,6 +257,14 @@ class GameSession(
     // stream is re-derived on demand by ReplayReconstructor.
     @Volatile
     private var replaySetup: com.wingedsheep.gameserver.replay.ReplaySetup? = null
+    /** Fingerprint/checkpoint semantics for the active recording; legacy resumes retain their version. */
+    private var replayVersion = com.wingedsheep.gameserver.replay.CompactReplay.CURRENT_VERSION
+    /**
+     * Monotone identity of the recorded input history. It changes on every replay-log mutation,
+     * including an undo that truncates the log, so a replacement action cannot alias an old prefix
+     * merely because action/yield counts happen to return to the same values.
+     */
+    private var recordingRevision = 0L
     private val recordedActions = CopyOnWriteArrayList<GameAction>()
     // Persistent-yield mutations applied out-of-band of [recordedActions]. Captured in turn order so
     // the reconstructor can re-apply each at the action position it was set (see [CompactReplay.yields]).
@@ -1159,6 +1167,7 @@ class GameSession(
             while (recordedActions.size > target) recordedActions.removeAt(recordedActions.size - 1)
             recordedYields.removeIf { it.afterActionCount > target }
             recordedCheckpoints.removeIf { it.afterActionCount > target }
+            if (replaySetup != null) recordingRevision++
         }
         clearCheckpoint()
         logger.info("Player $playerId undid their last action")
@@ -1345,6 +1354,7 @@ class GameSession(
     /** Append an applied, state-advancing action to the compact replay log. */
     private fun recordAction(action: GameAction) {
         recordedActions.add(action)
+        recordingRevision++
         stampCheckpointIfDue()
     }
 
@@ -1364,7 +1374,9 @@ class GameSession(
         recordedCheckpoints.add(
             com.wingedsheep.gameserver.replay.ReplayCheckpoint(
                 afterActionCount = count,
-                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(state),
+                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(
+                    state, replayVersion,
+                ),
             )
         )
     }
@@ -1389,6 +1401,28 @@ class GameSession(
                 identity = identity,
                 kind = kind,
             )
+        )
+        recordingRevision++
+        refreshCadenceCheckpointIfDue()
+    }
+
+    /**
+     * A yield changes the transition-semantic state without advancing the action stream. If it is
+     * applied exactly at a cadence boundary, replace that boundary's live checkpoint so replay
+     * verification sees the post-yield state. This updates an existing cadence stamp only; the
+     * persistence-only tail remains the flusher's responsibility.
+     */
+    private fun refreshCadenceCheckpointIfDue() {
+        val count = recordedActions.size
+        if (count == 0 || count % com.wingedsheep.gameserver.replay.ReplayRecordingPolicy.CHECKPOINT_EVERY_ACTIONS != 0) {
+            return
+        }
+        val state = gameState ?: return
+        val checkpointIndex = recordedCheckpoints.indexOfFirst { it.afterActionCount == count }
+        if (checkpointIndex < 0) return
+        recordedCheckpoints[checkpointIndex] = com.wingedsheep.gameserver.replay.ReplayCheckpoint(
+            afterActionCount = count,
+            fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(state, replayVersion),
         )
     }
 
@@ -1440,11 +1474,15 @@ class GameSession(
             val setup = replaySetup ?: return null
             val state = gameState ?: return null
             com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot(
+                version = replayVersion,
                 setup = setup,
                 actions = recordedActions.toList(),
                 yields = recordedYields.toList(),
+                recordingRevision = recordingRevision,
                 checkpoints = recordedCheckpoints.toList(),
-                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(state),
+                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(
+                    state, replayVersion,
+                ),
                 startedAt = replayStartedAt,
                 gameOver = state.gameOver,
             )
@@ -1662,7 +1700,9 @@ class GameSession(
         expectedFingerprint: String?,
     ): Boolean = synchronized(stateLock) {
         val live = gameState
-        val actual = live?.let { com.wingedsheep.gameserver.replay.ReplayFingerprint.of(it) }
+        val actual = live?.let {
+            com.wingedsheep.gameserver.replay.ReplayFingerprint.of(it, record.version)
+        }
         if (expectedFingerprint == null) {
             logger.warn(
                 "Replay recording for $sessionId has no stored fingerprint " +
@@ -1681,13 +1721,28 @@ class GameSession(
         }
 
         replaySetup = record.setup
+        replayVersion = record.version
         recordedActions.clear()
         recordedActions.addAll(record.actions)
         recordedYields.clear()
         recordedYields.addAll(record.yields)
         recordedCheckpoints.clear()
-        recordedCheckpoints.addAll(record.checkpoints)
+        recordedCheckpoints.addAll(
+            if (com.wingedsheep.gameserver.replay.ReplayCheckpointPolicy.requiresTailCheckpoint(record.version)) {
+                // The persisted tail proves the flushed prefix but is a derived persistence view,
+                // not a live cadence checkpoint. Keep only cadence stamps in the resumed session;
+                // the next flush will derive one fresh tail for its own coherent snapshot.
+                record.checkpoints.filter {
+                    it.afterActionCount % com.wingedsheep.gameserver.replay.ReplayRecordingPolicy.CHECKPOINT_EVERY_ACTIONS == 0
+                }
+            } else {
+                record.checkpoints
+            }
+        )
         replayStartedAt = runCatching { Instant.parse(record.startedAt) }.getOrNull()
+        // The durable replay does not carry this in-memory cursor. Mark the restore as a fresh
+        // mutation; the flusher's restart adoption still forces one write before it can skip.
+        recordingRevision++
         return true
     }
 

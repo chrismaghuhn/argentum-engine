@@ -64,18 +64,26 @@ class ReplayDurabilityTest : ScenarioTestBase() {
             state.priorityPlayerId?.let { session.executeAutoPass(it) }
         }
 
+        val snapshot = session.replayRecordingSnapshot().shouldNotBeNull()
         return CompactReplay(
+            version = snapshot.version,
             gameId = session.sessionId,
             players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
-            startedAt = Instant.now().toString(),
+            startedAt = (snapshot.startedAt ?: Instant.now()).toString(),
             endedAt = Instant.now().toString(),
             winnerName = null,
-            setup = session.getReplaySetup().shouldNotBeNull(),
-            actions = session.getRecordedActions(),
-            yields = session.getReplayYields(),
+            setup = snapshot.setup,
+            actions = snapshot.actions,
+            yields = snapshot.yields,
             engineVersion = "test-build",
             pinnedCards = session.getPinnedCards(),
-            checkpoints = session.getReplayCheckpoints(),
+            checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(snapshot.version)) {
+                ReplayCheckpointPolicy.withV3Tail(
+                    checkpoints = snapshot.checkpoints,
+                    actionCount = snapshot.actions.size,
+                    fingerprint = snapshot.fingerprint,
+                )
+            } else snapshot.checkpoints,
         )
     }
 
@@ -126,7 +134,12 @@ class ReplayDurabilityTest : ScenarioTestBase() {
 
             // Without the pin, reconstruction produces a game that was never played...
             val unpinned = ReplayReconstructor(changed, null)
-                .reconstructStateAt(replay.copy(pinnedCards = emptyList()), replay.actions.size)
+                // Suppress checkpoints only for this structural comparison. The v3 full-state
+                // checkpoint intentionally rejects the changed card before a state can be served.
+                .reconstructStateAt(
+                    replay.copy(pinnedCards = emptyList(), checkpoints = emptyList()),
+                    replay.actions.size,
+                )
                 .shouldNotBeNull()
             unpinned.entities shouldNotBe liveTruth.entities
 

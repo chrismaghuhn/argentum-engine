@@ -8,6 +8,7 @@ import com.wingedsheep.gameserver.protocol.ErrorCode
 import com.wingedsheep.gameserver.protocol.GameOverReason
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.gameserver.replay.CompactReplay
+import com.wingedsheep.gameserver.replay.ReplayCheckpointPolicy
 import com.wingedsheep.gameserver.replay.ReplayPlayerInfo
 import com.wingedsheep.gameserver.replay.ReplayService
 import com.wingedsheep.gameserver.repository.GameRepository
@@ -686,9 +687,10 @@ class GamePlayHandler(
         // Save the compact replay if the game had meaningful activity (>= 5 frames) and was started
         // through the normal path (so its inputs were recorded and it can be re-simulated). Dev
         // scenario / hotseat games inject state directly and have no setup, so they aren't saved.
-        val replaySetup = gameSession.getReplaySetup()
-        val frameCount = gameSession.getReplayFrameCount()
-        if (replaySetup != null && frameCount >= 5) {
+        val replaySnapshot = gameSession.replayRecordingSnapshot()
+        val replaySetup = replaySnapshot?.setup
+        val frameCount = replaySnapshot?.let { 1 + it.actions.size } ?: 0
+        if (replaySnapshot != null && replaySetup != null && frameCount >= 5) {
             val winnerName = winnerId?.let { wId ->
                 gameSession.getPlayers().find { it.playerId == wId }?.playerName
             }
@@ -704,21 +706,30 @@ class GamePlayHandler(
             val tournamentRound = replayTournament?.getRoundForMatch(gameSessionId)?.roundNumber
 
             val replay = CompactReplay(
+                version = replaySnapshot.version,
                 gameId = gameSessionId,
                 players = gameSession.getPlayers().map {
                     ReplayPlayerInfo(it.playerId.value, it.playerName)
                 },
-                startedAt = (gameSession.replayStartedAt ?: Instant.now()).toString(),
+                startedAt = (replaySnapshot.startedAt ?: Instant.now()).toString(),
                 endedAt = Instant.now().toString(),
                 winnerName = winnerName,
                 tournamentName = tournamentName,
                 tournamentRound = tournamentRound,
-                setup = replaySetup,
-                actions = gameSession.getRecordedActions(),
-                yields = gameSession.getReplayYields(),
+                setup = replaySnapshot.setup,
+                actions = replaySnapshot.actions,
+                yields = replaySnapshot.yields,
                 engineVersion = engineVersion.value,
                 pinnedCards = gameSession.getPinnedCards(),
-                checkpoints = gameSession.getReplayCheckpoints(),
+                checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replaySnapshot.version)) {
+                    ReplayCheckpointPolicy.withV3Tail(
+                        checkpoints = replaySnapshot.checkpoints,
+                        actionCount = replaySnapshot.actions.size,
+                        fingerprint = replaySnapshot.fingerprint,
+                    )
+                } else {
+                    replaySnapshot.checkpoints
+                },
             )
             // AI-only games (e.g. the LLM tournament) are stored — that page links straight at their
             // replays — but skip the archived frame stream, which is orders of magnitude larger than

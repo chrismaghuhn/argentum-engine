@@ -76,15 +76,14 @@ data class CompactReplay(
 
     companion object {
         /**
-         * Bump when a setup/action shape change would break reconstruction of older records.
-         *
-         * v1 → v2 added [engineVersion], [pinnedCards] and [checkpoints]. All three default to
-         * empty, so v1 records decode and reconstruct unchanged — the version is a diagnostic
-         * marker, not a decode gate. Decoding stays deliberately tolerant (`ignoreUnknownKeys`,
-         * defaults for every added field) so a record written by a newer build never becomes
-         * unreadable by an older one mid-deploy.
+         * Bump when replay reconstruction semantics change, not merely when an additive field is
+         * introduced. v1 is the original compact input stream; v2 added [engineVersion],
+         * [pinnedCards] and legacy [checkpoints]; v3 defines the complete transition-semantic
+         * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint. The
+         * codec still tolerates unknown fields on supported versions, but rejects versions newer
+         * than this constant before deserialization.
          */
-        const val CURRENT_VERSION = 2
+        const val CURRENT_VERSION = 3
 
         const val UNKNOWN_VERSION = "unknown"
     }
@@ -110,9 +109,13 @@ data class ReplayCheckpoint(
  * makes that a live race, since the game thread advances between calls.
  */
 data class ReplayRecordingSnapshot(
+    /** Replay semantics carried by the recording being flushed; new sessions use v3. */
+    val version: Int = CompactReplay.CURRENT_VERSION,
     val setup: ReplaySetup,
     val actions: List<com.wingedsheep.engine.core.GameAction>,
     val yields: List<ReplayYieldEntry>,
+    /** Monotone identity of the current input history, including truncations that restore a count. */
+    val recordingRevision: Long,
     val checkpoints: List<ReplayCheckpoint>,
     /** [ReplayFingerprint] of the position [actions] produces — the resume gate's expected value. */
     val fingerprint: String,

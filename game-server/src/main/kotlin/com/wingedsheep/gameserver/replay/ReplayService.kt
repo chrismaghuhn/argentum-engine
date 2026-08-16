@@ -48,7 +48,7 @@ data class ReplayViewerPayload(
  * The single entry point for reading and writing replays.
  *
  * Writing goes to exactly one place ([ReplayStore]). Reading resolves a game id to its
- * [StoredReplay] and then decides *how* to answer, which is the whole point of the two-payload
+ * [ReplayRead] and then decides *how* to answer, which is the whole point of the two-payload
  * format:
  *
  * - Re-simulate the input log. If it comes back faithful, serve that — it renders through today's
@@ -129,7 +129,11 @@ class ReplayService(
      * session is being flushed for). Refusing the downgrade here makes the ordering irrelevant.
      */
     fun saveInProgress(replay: CompactReplay, resumeFingerprint: String?) {
-        if (store.find(replay.gameId)?.status == ReplayStatus.FINISHED) return
+        when (val existing = store.find(replay.gameId)) {
+            is ReplayRead.Decoded -> if (existing.stored.status == ReplayStatus.FINISHED) return
+            is ReplayRead.UnsupportedVersion -> return
+            null -> Unit
+        }
         store.save(
             StoredReplay(
                 replay = replay,
@@ -148,7 +152,7 @@ class ReplayService(
      * are not necessarily on the build that recorded it any more.
      */
     fun finalizePartial(gameId: String) {
-        val stored = store.find(gameId) ?: return
+        val stored = (store.find(gameId) as? ReplayRead.Decoded)?.stored ?: return
         if (stored.status != ReplayStatus.IN_PROGRESS) return
         store.save(
             stored.copy(
@@ -163,10 +167,11 @@ class ReplayService(
     }
 
     /** The stored record for [gameId], or null if unknown. */
-    fun find(gameId: String): CompactReplay? = store.find(gameId)?.replay
+    fun find(gameId: String): CompactReplay? =
+        (store.find(gameId) as? ReplayRead.Decoded)?.stored?.replay
 
     /** The stored record with its archive and bookkeeping, for the recording/resume paths. */
-    fun findStored(gameId: String): StoredReplay? = store.find(gameId)
+    fun findStored(gameId: String): ReplayRead? = store.find(gameId)
 
     /** Every in-flight recording, for resuming after a restart. */
     fun inProgress(): List<StoredReplay> = store.findInProgress()
@@ -179,6 +184,25 @@ class ReplayService(
     fun viewerPayload(gameId: String): ReplayViewerPayload? =
         store.find(gameId)?.let { viewerPayload(it) }
 
+    /**
+     * Future compact versions never enter the reconstructor. If the durable viewer archive is
+     * present, it is safe to show that recorded presentation as an explicitly degraded replay; if
+     * not, the ordinary API gets a controlled unavailable result instead of an exception or a
+     * fabricated current-version reconstruction.
+     */
+    fun viewerPayload(read: ReplayRead): ReplayViewerPayload? = when (read) {
+        is ReplayRead.Decoded -> viewerPayload(read.stored)
+        is ReplayRead.UnsupportedVersion -> read.presentation?.let { archived ->
+            ReplayViewerPayload(
+                body = archived,
+                frameCount = read.frameCount,
+                fidelity = ReplayFidelity.DIVERGED,
+                degradedReason = "Unsupported CompactReplay version; showing the archived presentation.",
+                stateReproducible = false,
+            )
+        }
+    }
+
     fun viewerPayload(stored: StoredReplay): ReplayViewerPayload? {
         val reconstructed = runCatching { reconstructor.reconstruct(stored.replay) }
             .onFailure { logger.error("Replay {} failed to reconstruct: {}", stored.replay.gameId, it.message) }
@@ -189,8 +213,10 @@ class ReplayService(
                 body = presentation.compose(reconstructed),
                 frameCount = reconstructed.frameCount,
                 fidelity = reconstructed.fidelity,
-                degradedReason = null,
-                stateReproducible = true,
+                degradedReason = reconstructed.divergenceReason,
+                // v1/v2 retain their historical unverified-but-reconstructable behavior. A v3
+                // record is DATA_TRUSTED only after its mandatory tail proof matches.
+                stateReproducible = stored.replay.version < 3 || reconstructed.fidelity == ReplayFidelity.EXACT,
             )
         }
 
@@ -224,23 +250,42 @@ class ReplayService(
 
     /** The full unmasked [GameState] at [frame] for [gameId] (0 = initial), or null. */
     fun reconstructStateAt(gameId: String, frame: Int): GameState? =
-        find(gameId)?.let { reconstructor.reconstructStateAt(it, frame) }
+        find(gameId)?.let { replay ->
+            if (replay.version >= 3) {
+                val fidelity = runCatching { reconstructor.reconstruct(replay).fidelity }.getOrNull()
+                if (fidelity != ReplayFidelity.EXACT) return@let null
+            }
+            reconstructor.reconstructStateAt(replay, frame)
+        }
 
     /** Finished games this player took part in, newest first. */
     fun recentForPlayer(playerId: String, limit: Int = 50): List<ReplaySummary> =
         store.findRecentForPlayer(playerId, limit)
 
     /** Summary for a single game id (tournament game lists resolve ids one at a time). */
-    fun summary(gameId: String): ReplaySummary? = store.find(gameId)?.replay?.let {
-        ReplaySummary(
-            gameId = it.gameId,
-            playerNames = it.players.map { player -> player.name },
-            startedAt = it.startedAt,
-            endedAt = it.endedAt,
-            winnerName = it.winnerName,
-            frameCount = it.frameCount,
-            tournamentName = it.tournamentName,
-            tournamentRound = it.tournamentRound,
+    fun summary(gameId: String): ReplaySummary? = when (val read = store.find(gameId)) {
+        is ReplayRead.Decoded -> read.stored.replay.toSummary()
+        is ReplayRead.UnsupportedVersion -> ReplaySummary(
+            gameId = read.gameId,
+            playerNames = read.playerNames,
+            startedAt = read.startedAt,
+            endedAt = read.endedAt,
+            winnerName = read.winnerName,
+            frameCount = read.frameCount,
+            tournamentName = read.tournamentName,
+            tournamentRound = read.tournamentRound,
         )
+        null -> null
     }
 }
+
+private fun CompactReplay.toSummary() = ReplaySummary(
+    gameId = gameId,
+    playerNames = players.map { it.name },
+    startedAt = startedAt,
+    endedAt = endedAt,
+    winnerName = winnerName,
+    frameCount = frameCount,
+    tournamentName = tournamentName,
+    tournamentRound = tournamentRound,
+)

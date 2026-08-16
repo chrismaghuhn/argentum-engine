@@ -6,6 +6,7 @@ import com.wingedsheep.gameserver.persistence.dto.PersistentGameSession
 import com.wingedsheep.gameserver.persistence.persistenceJson
 import com.wingedsheep.gameserver.persistence.restoreGameSession
 import com.wingedsheep.gameserver.persistence.toPersistent
+import com.wingedsheep.gameserver.replay.ReplayRead
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerIdentity
 import com.wingedsheep.gameserver.session.SessionRegistry
@@ -167,7 +168,7 @@ class RedisGameRepository(
      * disagree — a short honest replay beats a long fictional one.
      */
     private fun resumeReplayRecording(session: GameSession) {
-        val stored = replayService.findStored(session.sessionId) ?: return
+        val stored = (replayService.findStored(session.sessionId) as? ReplayRead.Decoded)?.stored ?: return
         if (stored.status != com.wingedsheep.gameserver.replay.ReplayStatus.IN_PROGRESS) return
         val resumed = session.restoreReplayRecording(stored.replay, stored.resumeFingerprint)
         logger.info(
