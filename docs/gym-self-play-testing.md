@@ -53,8 +53,7 @@ curl -s -X POST localhost:8081/envs -H 'Content-Type: application/json' -d '{
     } } }
   ],
   "skipMulligans": true,
-  "startingPlayerIndex": 0,
-  "revealAll": true
+  "startingPlayerIndex": 0
 }'
 ```
 
@@ -63,9 +62,9 @@ Key config fields:
 - **`deck`** — `{"type":"Explicit","cards":{"Name":count}}` (recommended for testing), or
   `{"type":"RandomSealed","setCode":"BLB","boosterCount":8}` (needs the set's basic-land variants
   registered).
-- **`revealAll: true`** — set this for self-play. Normally observations hide the opponent's hand and
-  libraries; since one agent is playing *both* seats, you want to see everything. (Never use it for
-  real RL self-play — it leaks information.)
+- **Privacy boundary** — observations always hide unauthorized hand/library identities, and there
+  is no reveal-all bypass. `legalActions` and the action registry are exposed only when the configured
+  perspective is `agentToAct`; use separate perspective-configured environments when driving both seats.
 - **`skipMulligans: true`** — skip the mulligan back-and-forth.
 - `startingPlayerIndex` — pin it for reproducibility (null = random).
 
@@ -99,7 +98,8 @@ curl -s -X POST localhost:8081/envs/$ENV/step \
 
 The fields that matter most for spotting bugs:
 
-- `agentToAct` — whose decision this is. (With `revealAll` you make moves for both.)
+- `agentToAct` — whose decision this is. A perspective that is not the actor receives an empty
+  `legalActions` list and no usable action registry.
 - `legalActions[]` — each has `actionId`, `kind` (`PLAY_CARD`, `ACTIVATE_ABILITY`, `PASS`,
   `DECISION`, …), `description`, `affordable`, `manaCost`, target counts.
 - `zones[]` → `cards[]` → `EntityFeatures` — the projected (post-layers) truth about each object:

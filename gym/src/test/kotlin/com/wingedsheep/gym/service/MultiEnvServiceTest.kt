@@ -236,11 +236,10 @@ class MultiEnvServiceTest : FunSpec({
         val handle = svc.snapshot(envId)
         val openingDigest = opening.observation.stateDigest
 
-        // Advance a few steps so the restore has something to undo.
-        repeat(3) {
-            val actionId = svc.observe(envId).observation.legalActions.first().actionId
-            svc.step(StepRequest(envId, actionId))
-        }
+        // Advance one actor-owned step. A fixed perspective receives no
+        // actions after priority moves to the other player.
+        val actionId = svc.observe(envId).observation.legalActions.first().actionId
+        svc.step(StepRequest(envId, actionId))
         svc.observe(envId).observation.stateDigest shouldNotBe openingDigest
 
         val restored = svc.restore(envId, handle)

@@ -1,10 +1,12 @@
 package com.wingedsheep.gym.server.controller
 
+import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
 import com.wingedsheep.gym.service.EnvId
 import com.wingedsheep.gym.service.PlayerSpec
+import com.wingedsheep.gym.service.MultiEnvService
 import com.wingedsheep.gym.server.dto.CreateEnvResponse
 import com.wingedsheep.gym.server.dto.DisposeBody
 import com.wingedsheep.gym.server.dto.SchemaHashResponse
@@ -12,7 +14,9 @@ import com.wingedsheep.gym.server.dto.StepBody
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.extensions.spring.SpringExtension
 import io.kotest.matchers.booleans.shouldBeFalse
+import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.collections.shouldNotBeEmpty
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
@@ -20,6 +24,7 @@ import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
+import org.springframework.beans.factory.annotation.Autowired
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -40,6 +45,9 @@ class EnvControllerTest : FunSpec() {
 
     @LocalServerPort
     private var port: Int = 0
+
+    @Autowired
+    private lateinit var multiEnvService: MultiEnvService
 
     private val json = Json {
         ignoreUnknownKeys = true
@@ -224,6 +232,59 @@ class EnvControllerTest : FunSpec() {
             )
             (finalObs.turnNumber >= initialTurn) shouldBe true
 
+            deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
+        }
+
+        test("obsolete revealAll inputs are rejected or ignored without unmasking") {
+            val payload = json.encodeToString(twoPlayerConfig())
+            val obsoletePayload = payload.substringBeforeLast("}") + ",\"revealAll\":true}"
+            val createResponse = postJson("/envs", obsoletePayload)
+
+            if (createResponse.statusCode() in 200..299) {
+                val created = json.decodeFromString<CreateEnvResponse>(createResponse.body())
+                val createdObservation = created.observation as TrainingObservation
+                val opponentId = createdObservation.players.first { !it.isPerspective }.id
+                val opponentHand = createdObservation.zones.first {
+                    it.ownerId == opponentId && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND
+                }
+                opponentHand.hidden.shouldBeTrue()
+                opponentHand.cards.shouldBeEmpty()
+
+                val queryObservation = json.decodeFromString<TrainingObservation>(
+                    get("/envs/${created.envId.value}?revealAll=true").body()
+                )
+                queryObservation.stateDigest shouldBe createdObservation.stateDigest
+                queryObservation.zones.first {
+                    it.ownerId == opponentId && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND
+                }.cards.shouldBeEmpty()
+                deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
+            } else {
+                (createResponse.statusCode() in 400..499) shouldBe true
+            }
+        }
+
+        test("direct and HTTP observations have equal masked semantics and stable wire bytes") {
+            val created = json.decodeFromString<CreateEnvResponse>(
+                postJson("/envs", json.encodeToString(twoPlayerConfig())).body()
+            )
+            val firstResponse = get("/envs/${created.envId.value}")
+            val secondResponse = get("/envs/${created.envId.value}")
+            firstResponse.statusCode() shouldBe 200
+            secondResponse.statusCode() shouldBe 200
+            firstResponse.body() shouldBe secondResponse.body()
+
+            val httpObservation = json.decodeFromString<TrainingObservation>(firstResponse.body())
+            val directObservation = multiEnvService.observe(created.envId).observation as TrainingObservation
+            httpObservation shouldBe directObservation
+            httpObservation.schemaHash shouldBe SchemaHash.CURRENT
+            httpObservation.stateDigest shouldBe directObservation.stateDigest
+
+            val opponentId = httpObservation.players.first { !it.isPerspective }.id
+            val opponentHand = httpObservation.zones.first {
+                it.ownerId == opponentId && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND
+            }
+            opponentHand.hidden.shouldBeTrue()
+            opponentHand.cards.shouldBeEmpty()
             deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
         }
     }

@@ -20,7 +20,7 @@ import kotlinx.serialization.Serializable
  */
 @Serializable
 sealed interface Observation {
-    /** Sha256 of the canonical schema — clients compare to abort on drift. */
+    /** Contract identifier — clients compare it to abort on privacy/schema drift. */
     val schemaHash: String
 
     /** The player/agent who must act next, or null when [terminated]. */
@@ -53,7 +53,7 @@ sealed interface Observation {
 @Serializable
 @SerialName("Game")
 data class TrainingObservation(
-    /** Sha256 of the canonical schema. Python clients compare this to abort on drift. */
+    /** Contract identifier. Python clients compare this to abort on privacy/schema drift. */
     override val schemaHash: String,
 
     /** The player whose information-set this observation represents. */

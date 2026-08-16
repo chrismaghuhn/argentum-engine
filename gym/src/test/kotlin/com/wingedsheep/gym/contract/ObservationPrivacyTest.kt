@@ -3,12 +3,16 @@ package com.wingedsheep.gym.contract
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.CardEntityFactory
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
@@ -265,6 +269,27 @@ class ObservationPrivacyTest : FunSpec({
         result.registry shouldBe ActionRegistry.EMPTY
     }
 
+    test("actor action view retains structured source identity") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val sourceId = env.state.getHand(actor).first()
+        val action = LegalAction(
+            action = CastSpell(actor, sourceId),
+            actionType = "CAST_SPELL",
+            description = "Cast Mountain",
+            validTargets = listOf(env.playerIds[1]),
+            targetCount = 1,
+            minTargets = 0,
+            manaCostString = "{1}"
+        )
+
+        val view = ObservationBuilder().build(env.state, actor, listOf(action))
+            .observation.legalActions.single()
+        view.sourceEntityId shouldBe sourceId
+        view.targetEntityIds shouldBe listOf(env.playerIds[1])
+        view.manaCost shouldBe "{1}"
+    }
+
     test("pending decision is generic and action-free for non-owner perspective") {
         val env = environment()
         val owner = env.playerIds[1]
@@ -286,7 +311,15 @@ class ObservationPrivacyTest : FunSpec({
         val ownerResult = result(state, owner)
         val otherResult = result(state, env.playerIds[0])
         ownerResult.observation.pendingDecision!!.prompt shouldBe "Choose Raging Goblin"
-        otherResult.observation.pendingDecision!!.prompt shouldBe ""
+        val generic = otherResult.observation.pendingDecision!!
+        generic.kind shouldBe PendingDecisionKind.GENERIC
+        generic.decisionId.shouldBeNull()
+        generic.prompt shouldBe ""
+        generic.sourceEntityId.shouldBeNull()
+        generic.sourceName.shouldBeNull()
+        generic.triggeringEntityId.shouldBeNull()
+        generic.effectHint.shouldBeNull()
+        generic.requiresStructuredResponse shouldBe true
         otherResult.observation.legalActions.shouldBeEmpty()
         otherResult.registry shouldBe ActionRegistry.EMPTY
     }
@@ -358,5 +391,32 @@ class ObservationPrivacyTest : FunSpec({
         mountainStack.name shouldNotBe "Mountain"
         goblinStack.name shouldNotBe "Raging Goblin"
         mountainStack.oracleText shouldBe goblinStack.oracleText
+    }
+
+    test("public stack target metadata changes observation and digest") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val stackId = base.state.getHand(owner).first()
+
+        fun withTarget(target: EntityId): GameState {
+            val handKey = ZoneKey(owner, Zone.HAND)
+            val zones = base.state.zones.toMutableMap()
+            zones[handKey] = base.state.getHand(owner).drop(1)
+            val stackEntity = checkNotNull(base.state.getEntity(stackId)).with(
+                TargetsComponent(listOf(ChosenTarget.Player(target)))
+            )
+            return base.state.copy(
+                entities = base.state.entities + (stackId to stackEntity),
+                zones = zones,
+                stack = listOf(stackId)
+            )
+        }
+
+        val first = observation(withTarget(base.playerIds[0]), base.playerIds[0])
+        val second = observation(withTarget(base.playerIds[1]), base.playerIds[0])
+
+        first.stack.single().targets shouldBe listOf(base.playerIds[0])
+        second.stack.single().targets shouldBe listOf(base.playerIds[1])
+        first.stateDigest shouldNotBe second.stateDigest
     }
 })
