@@ -28,6 +28,9 @@ Create or modify only these task-owned files:
   `mtg-sets/2017-2022/src/main/kotlin/com/wingedsheep/mtg/sets/definitions/znr/cards/AkiriFearlessVoyager.kt`.
 - Create
   `mtg-sets/2017-2022/tests/src/test/kotlin/com/wingedsheep/engine/scenarios/AkiriFearlessVoyagerScenarioTest.kt`.
+- Modify only the test-scoped serialization dependency in
+  `mtg-sets/2017-2022/tests/build.gradle.kts`, required by AKIRI-24's
+  paused-GameState round-trip.
 - Modify only the generated Akiri object in
   `mtg-sets/src/test/resources/snapshots/cards/ZNR.json`, using the approved
   snapshot recipe after the card is green.
