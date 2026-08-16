@@ -256,12 +256,12 @@ Akiri section of `docs/ml/curriculum/akiri-chevill-closure-backlog.md`.
   and Plan documentation may be committed separately before implementation.
 - [x] Verify the branch is `agent/a8-card-001r2-akiri` and `origin` is exactly
   `https://github.com/chrismaghuhn/argentum-engine.git`.
-- [ ] Push the branch without force-push or rebase.
-- [ ] Open exactly one Draft PR targeting `chrismaghuhn/argentum-engine:main`.
+- [x] Push the branch without force-push or rebase.
+- [x] Open exactly one Draft PR targeting `chrismaghuhn/argentum-engine:main`.
   The PR body must report the host-first semantics, the opponent-controlled
   Equipment test, all local gates, the Windows wrapper limitation if it
   remains, and any unverified hosted checks.
-- [ ] Do not merge, mark Ready, enable auto-merge, touch unrelated PRs, or
+- [x] Do not merge, mark Ready, enable auto-merge, touch unrelated PRs, or
   claim completion before the final verification output is captured.
 
 ## Final self-review checklist
