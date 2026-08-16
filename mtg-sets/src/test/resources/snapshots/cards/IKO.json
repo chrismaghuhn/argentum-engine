@@ -18,6 +18,134 @@
     ]
 }
 
+// Chevill, Bane of Monsters
+{
+    "name": "Chevill, Bane of Monsters",
+    "manaCost": "{B}{G}",
+    "typeLine": "Legendary Creature — Human Rogue",
+    "oracleText": "Deathtouch\nAt the beginning of your upkeep, if your opponents control no permanents with bounty counters on them, put a bounty counter on target creature or planeswalker an opponent controls.\nWhenever a permanent an opponent controls with a bounty counter on it dies, you gain 3 life and draw a card.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 3
+    },
+    "keywords": [
+        "DEATHTOUCH"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "StepEvent",
+                    "step": "UPKEEP"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "AddCounters",
+                    "counterType": "bounty",
+                    "count": 1,
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target creature or planeswalker an opponent controls"
+                    }
+                },
+                "targetRequirement": {
+                    "type": "TargetObject",
+                    "filter": {
+                        "baseFilter": "creature|planeswalker ctrl:opponent"
+                    },
+                    "id": "target creature or planeswalker an opponent controls"
+                },
+                "interveningIf": {
+                    "type": "Exists",
+                    "player": "EachOpponent",
+                    "zone": "Battlefield",
+                    "filter": {
+                        "cardPredicates": [
+                            "IsPermanent"
+                        ],
+                        "statePredicates": [
+                            {
+                                "type": "HasCounter",
+                                "counterType": "bounty"
+                            }
+                        ]
+                    },
+                    "negate": true
+                }
+            },
+            {
+                "id": "ability_2",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "filter": {
+                        "cardPredicates": [
+                            "IsPermanent"
+                        ],
+                        "statePredicates": [
+                            {
+                                "type": "HasCounter",
+                                "counterType": "bounty"
+                            }
+                        ],
+                        "controllerPredicate": "ControlledByOpponent"
+                    },
+                    "from": "Battlefield",
+                    "to": "Graveyard"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Composite",
+                    "effects": [
+                        {
+                            "type": "GainLife",
+                            "amount": {
+                                "type": "Fixed",
+                                "amount": 3
+                            }
+                        },
+                        {
+                            "type": "DrawCards",
+                            "count": {
+                                "type": "Fixed",
+                                "amount": 1
+                            }
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "181",
+        "rarity": "MYTHIC",
+        "artist": "Yongjae Choi",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/e/fecbf0a3-ebe1-43b6-a720-462ba19002eb.jpg?1783931028",
+        "rulings": [
+            {
+                "date": "2020-04-17",
+                "text": "Chevill’s middle ability and last ability look for any bounty counter on your opponents’ permanents, not just one from that Chevill. For example, if players A and B each control a Chevill and player A has put a bounty counter on player C’s creature, player B’s Chevill won’t put a counter on anything and both players will gain 3 life and draw a card when that creature dies."
+            },
+            {
+                "date": "2020-04-17",
+                "text": "If the creature or planeswalker with a bounty counter on it ceases to be a creature or planeswalker, Chevill’s last ability will still trigger if that permanent is put into a graveyard from the battlefield."
+            },
+            {
+                "date": "2020-04-17",
+                "text": "If Chevill leaves the battlefield at the same time that an opponent’s permanent with a bounty counter on it dies, you gain 3 life and draw a card. If Chevill leaves the battlefield before that permanent dies, Chevill’s last ability won’t be around to trigger."
+            },
+            {
+                "date": "2020-04-17",
+                "text": "If your life total is brought to 0 or less at the same time that a creature with a bounty counter on it is dealt lethal damage, you lose the game before the last ability goes on the stack."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "BLACK",
+        "GREEN"
+    ]
+}
+
 // Gloom Pangolin
 {
     "name": "Gloom Pangolin",
