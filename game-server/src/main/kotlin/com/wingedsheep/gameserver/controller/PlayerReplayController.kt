@@ -1,6 +1,7 @@
 package com.wingedsheep.gameserver.controller
 
 import com.wingedsheep.gameserver.replay.ReplayService
+import com.wingedsheep.gameserver.replay.ReplayRead
 import com.wingedsheep.gameserver.replay.ReplaySummary
 import com.wingedsheep.gameserver.repository.LobbyRepository
 import com.wingedsheep.gameserver.session.SessionRegistry
@@ -73,7 +74,10 @@ class PlayerReplayController(
 
         // Verify the player was a participant OR is in the same tournament
         val playerId = identity.playerId.value
-        val isParticipant = stored.replay.players.any { it.playerId == playerId }
+        val isParticipant = when (stored) {
+            is ReplayRead.Decoded -> stored.stored.replay.players.any { it.playerId == playerId }
+            is ReplayRead.UnsupportedVersion -> playerId in stored.playerIds
+        }
         val isTournamentMember = lobbyId?.let { lid ->
             val tournament = lobbyRepository.findTournamentById(lid)
             tournament != null &&

@@ -33,6 +33,62 @@ data class StoredReplay(
     val resumeFingerprint: String? = null,
 )
 
+/**
+ * Result of reading one persisted replay row.
+ *
+ * A future compact format is intentionally not represented as [StoredReplay]: that type promises
+ * that its input stream is safe for the current reconstructor. The marker keeps enough durable
+ * metadata to authorize/view an archived presentation without fabricating a reconstruction.
+ */
+sealed interface ReplayRead {
+    data class Decoded(val stored: StoredReplay) : ReplayRead
+
+    data class UnsupportedVersion(
+        val gameId: String,
+        val version: Int,
+        val status: ReplayStatus,
+        val playerIds: List<String>,
+        val playerNames: List<String>,
+        val startedAt: String,
+        val endedAt: String,
+        val winnerName: String?,
+        val frameCount: Int,
+        val tournamentName: String?,
+        val tournamentRound: Int?,
+        val engineVersion: String?,
+        /** Decoded `{initialSnapshot,deltas}` JSON; never the encoded database column. */
+        val presentation: String?,
+    ) : ReplayRead {
+        companion object {
+            fun from(stored: StoredReplay): UnsupportedVersion {
+                val replay = stored.replay
+                return UnsupportedVersion(
+                    gameId = replay.gameId,
+                    version = replay.version,
+                    status = stored.status,
+                    playerIds = replay.players.map { it.playerId },
+                    playerNames = replay.players.map { it.name },
+                    startedAt = replay.startedAt,
+                    endedAt = replay.endedAt,
+                    winnerName = replay.winnerName,
+                    frameCount = replay.frameCount,
+                    tournamentName = replay.tournamentName,
+                    tournamentRound = replay.tournamentRound,
+                    engineVersion = replay.engineVersion,
+                    presentation = stored.presentation,
+                )
+            }
+        }
+    }
+}
+
+private fun StoredReplay.toReplayRead(): ReplayRead =
+    if (replay.version > CompactReplay.CURRENT_VERSION) {
+        ReplayRead.UnsupportedVersion.from(this)
+    } else {
+        ReplayRead.Decoded(this)
+    }
+
 /** Listing projection, read from the metadata columns without decoding the payload. */
 data class ReplaySummary(
     val gameId: String,
@@ -60,7 +116,7 @@ data class ReplaySummary(
  */
 interface ReplayStore {
     fun save(record: StoredReplay)
-    fun find(gameId: String): StoredReplay?
+    fun find(gameId: String): ReplayRead?
     fun findRecentForPlayer(playerId: String, limit: Int): List<ReplaySummary>
 
     /** In-progress records, for resuming recordings after a restart. */
@@ -87,7 +143,7 @@ class InMemoryReplayStore : ReplayStore {
         records[record.replay.gameId] = record
     }
 
-    override fun find(gameId: String): StoredReplay? = records[gameId]
+    override fun find(gameId: String): ReplayRead? = records[gameId]?.toReplayRead()
 
     override fun findRecentForPlayer(playerId: String, limit: Int): List<ReplaySummary> =
         synchronized(records) {
@@ -100,7 +156,11 @@ class InMemoryReplayStore : ReplayStore {
         }
 
     override fun findInProgress(): List<StoredReplay> =
-        synchronized(records) { records.values.filter { it.status == ReplayStatus.IN_PROGRESS } }
+        synchronized(records) {
+            records.values
+                .filter { it.status == ReplayStatus.IN_PROGRESS }
+                .mapNotNull { (it.toReplayRead() as? ReplayRead.Decoded)?.stored }
+        }
 
     private companion object {
         const val MAX_RECORDS = 200
@@ -177,7 +237,7 @@ class JdbcReplayStore(private val replays: GameReplayRepository) : ReplayStore {
         )
     }
 
-    override fun find(gameId: String): StoredReplay? = replays.findByGameId(gameId)?.toStored()
+    override fun find(gameId: String): ReplayRead? = replays.findByGameId(gameId)?.toReplayRead()
 
     override fun findRecentForPlayer(playerId: String, limit: Int): List<ReplaySummary> =
         replays.findRecentForPlayer(playerId, limit).map { row ->
@@ -194,24 +254,68 @@ class JdbcReplayStore(private val replays: GameReplayRepository) : ReplayStore {
         }
 
     override fun findInProgress(): List<StoredReplay> =
-        replays.findByStatus(ReplayStatus.IN_PROGRESS.name).mapNotNull { it.toStored() }
+        replays.findByStatus(ReplayStatus.IN_PROGRESS.name).mapNotNull {
+            (it.toReplayRead() as? ReplayRead.Decoded)?.stored
+        }
 
-    private fun GameReplayRow.toStored(): StoredReplay? {
-        val decoded = runCatching { ReplayCodec.decode(data) }
-            .onFailure { logger.error("Replay {} failed to decode: {}", gameId, it.message) }
-            .getOrNull() ?: return null
+    private fun GameReplayRow.toReplayRead(): ReplayRead? {
+        val decoded = try {
+            ReplayCodec.decode(data)
+        } catch (unsupported: UnsupportedReplayVersionException) {
+            logger.warn(
+                "Replay {} uses unsupported CompactReplay version {}; serving archive if available",
+                gameId, unsupported.encounteredVersion,
+            )
+            return ReplayRead.UnsupportedVersion(
+                gameId = gameId,
+                version = unsupported.encounteredVersion,
+                status = replayStatus(),
+                playerIds = players.sortedBy { it.seat }.map { it.playerId },
+                playerNames = playerRosterNames(),
+                startedAt = startedAt?.toString() ?: "",
+                endedAt = endedAt.toString(),
+                winnerName = winnerName,
+                frameCount = frameCount,
+                tournamentName = tournamentName,
+                tournamentRound = tournamentRound,
+                engineVersion = engineVersion,
+                presentation = decodedPresentation(),
+            )
+        } catch (failure: Exception) {
+            logger.error("Replay {} failed to decode: {}", gameId, failure.message)
+            return null
+        }
         // Pins come from their own column post-V11. A pre-V11 row has none there and still carries
         // them inside the blob, so only overwrite when the column actually holds something.
         val pins = runCatching { ReplayCodec.decodePins(pinnedCards) }
             .onFailure { logger.error("Replay {} has unreadable pins: {}", gameId, it.message) }
             .getOrDefault(emptyList())
-        return StoredReplay(
+        return ReplayRead.Decoded(StoredReplay(
             replay = if (pins.isEmpty()) decoded else decoded.copy(pinnedCards = pins),
-            status = runCatching { ReplayStatus.valueOf(status) }.getOrDefault(ReplayStatus.FINISHED),
-            presentation = presentation?.let { runCatching { ReplayCodec.decodeText(it) }.getOrNull() },
+            status = replayStatus(),
+            presentation = decodedPresentation(),
             resumeFingerprint = resumeFingerprint,
-        )
+        ))
     }
+
+    private fun GameReplayRow.replayStatus(): ReplayStatus =
+        runCatching { ReplayStatus.valueOf(status) }.getOrDefault(ReplayStatus.FINISHED)
+
+    private fun GameReplayRow.playerRosterNames(): List<String> =
+        if (players.isNotEmpty()) {
+            players.sortedBy { it.seat }.map { it.playerName }
+        } else {
+            playerNames.split(", ").filter { it.isNotBlank() }
+        }
+
+    private fun GameReplayRow.decodedPresentation(): String? =
+        presentation?.let {
+            runCatching { ReplayCodec.decodeText(it) }
+                .onFailure { failure ->
+                    logger.warn("Replay {} has an unreadable archived presentation: {}", gameId, failure.message)
+                }
+                .getOrNull()
+        }
 
     private fun parseInstant(value: String?): Instant? =
         value?.takeIf { it.isNotBlank() }?.let { runCatching { Instant.parse(it) }.getOrNull() }

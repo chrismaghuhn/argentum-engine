@@ -8,6 +8,7 @@ import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
+import io.mockk.mockk
 import java.time.Instant
 
 class ReplayTailCheckpointTest : ScenarioTestBase() {
@@ -73,6 +74,22 @@ class ReplayTailCheckpointTest : ScenarioTestBase() {
             val mismatch = base.copy(checkpoints = listOf(ReplayCheckpoint(0, "0".repeat(64))))
 
             reconstructor.reconstruct(mismatch).fidelity shouldBe ReplayFidelity.DIVERGED
+        }
+
+        test("a fully applied v3 replay without a tail stays unverified and cannot be shared as state") {
+            val base = replay()
+            val store = InMemoryReplayStore()
+            store.save(StoredReplay(base, ReplayStatus.FINISHED))
+            val service = ReplayService(
+                store = store,
+                reconstructor = ReplayReconstructor(cardRegistry, null),
+                presentation = mockk(relaxed = true),
+            )
+
+            val payload = service.viewerPayload(base.gameId).shouldNotBeNull()
+            payload.fidelity shouldBe ReplayFidelity.UNVERIFIED
+            payload.stateReproducible shouldBe false
+            service.reconstructStateAt(base.gameId, 0) shouldBe null
         }
     }
 }

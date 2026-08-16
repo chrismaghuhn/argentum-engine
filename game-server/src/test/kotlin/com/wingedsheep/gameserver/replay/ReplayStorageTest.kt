@@ -95,7 +95,7 @@ class ReplayStorageTest : ScenarioTestBase() {
             store.save(StoredReplay(replay("g3", listOf("bob" to "Bob", "carol" to "Carol"), "2026-01-02T00:00:00Z"), ReplayStatus.FINISHED))
 
             store.findRecentForPlayer("alice", 10).map { it.gameId } shouldContainExactly listOf("g2", "g1")
-            store.find("g3").shouldNotBeNull().replay.gameId shouldBe "g3"
+            (store.find("g3").shouldNotBeNull() as ReplayRead.Decoded).stored.replay.gameId shouldBe "g3"
             store.find("nope") shouldBe null
         }
 
@@ -127,11 +127,11 @@ class ReplayStorageTest : ScenarioTestBase() {
 
             service.finalizePartial("g-abandoned")
 
-            store.find("g-abandoned").shouldNotBeNull().status shouldBe ReplayStatus.FINISHED
+            (store.find("g-abandoned").shouldNotBeNull() as ReplayRead.Decoded).stored.status shouldBe ReplayStatus.FINISHED
             store.findRecentForPlayer("alice", 10).map { it.gameId } shouldContainExactly listOf("g-abandoned")
             // Finalizing twice is harmless — a finished record is left alone.
             service.finalizePartial("g-abandoned")
-            store.find("g-abandoned").shouldNotBeNull().status shouldBe ReplayStatus.FINISHED
+            (store.find("g-abandoned").shouldNotBeNull() as ReplayRead.Decoded).stored.status shouldBe ReplayStatus.FINISHED
         }
 
         test("a flush that lands after game over cannot downgrade the finished record") {
@@ -144,7 +144,7 @@ class ReplayStorageTest : ScenarioTestBase() {
             // The sweep read this session as live before the game-over path stored the final record.
             service.saveInProgress(finished.copy(winnerName = null, endedAt = ""), resumeFingerprint = "abc")
 
-            val stored = store.find("g-done").shouldNotBeNull()
+            val stored = (store.find("g-done").shouldNotBeNull() as ReplayRead.Decoded).stored
             stored.status shouldBe ReplayStatus.FINISHED
             stored.presentation shouldBe "FRAMES"
             stored.replay.winnerName shouldBe "Alice"
@@ -167,7 +167,7 @@ class ReplayStorageTest : ScenarioTestBase() {
 
             ReplayCheckpointFlusher(games, service, EngineVersion("test")).flush()
 
-            store.find("g-stranded").shouldNotBeNull().status shouldBe ReplayStatus.FINISHED
+            (store.find("g-stranded").shouldNotBeNull() as ReplayRead.Decoded).stored.status shouldBe ReplayStatus.FINISHED
             store.findRecentForPlayer("alice", 10).map { it.gameId } shouldContainExactly listOf("g-stranded")
             store.findInProgress() shouldBe emptyList()
         }
