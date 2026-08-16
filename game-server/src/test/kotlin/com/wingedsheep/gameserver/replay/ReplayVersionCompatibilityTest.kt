@@ -59,4 +59,10 @@ class ReplayVersionCompatibilityTest : FunSpec({
         reencoded["version"]?.jsonPrimitive?.int shouldBe 1
         ReplayFingerprint.of(GameState(), decoded.version).length shouldBe 16
     }
+
+    test("v3 checkpoint policy is explicit rather than tied to the current version") {
+        ReplayCheckpointPolicy.requiresTailCheckpoint(3) shouldBe true
+        ReplayCheckpointPolicy.requiresTailCheckpoint(2) shouldBe false
+        ReplayCheckpointPolicy.requiresTailCheckpoint(4) shouldBe false
+    }
 })

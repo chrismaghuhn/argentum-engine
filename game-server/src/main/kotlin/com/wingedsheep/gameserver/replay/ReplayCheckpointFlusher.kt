@@ -19,8 +19,8 @@ import java.util.concurrent.atomic.AtomicBoolean
  * re-encoded blob, so per-action writes are quadratic in the length of the game for a property
  * (surviving a crash) that a few seconds of granularity satisfies just as well.
  *
- * So we sweep instead: every few seconds, flush the sessions whose action count moved. The cost of
- * coarse flushing is that a crash loses the last few actions, which
+ * So we sweep instead: every few seconds, flush the sessions whose recording cursor moved. The cost
+ * of coarse flushing is that a crash loses the last few inputs, which
  * [GameSession.restoreReplayRecording] detects on the way back up (via the fingerprint written with
  * each flush) and handles by keeping the honest shorter replay rather than splicing the rest of the
  * game onto a stale prefix.
@@ -33,8 +33,11 @@ class ReplayCheckpointFlusher(
 ) {
     private val logger = LoggerFactory.getLogger(ReplayCheckpointFlusher::class.java)
 
-    /** sessionId -> action count at last flush, so an idle game isn't rewritten every sweep. */
-    private val flushed = ConcurrentHashMap<String, Int>()
+    /**
+     * sessionId -> recording cursor at last flush, so an idle game isn't rewritten every sweep.
+     * Yields are replay inputs too, even though they are intentionally kept outside the action log.
+     */
+    private val flushed = ConcurrentHashMap<String, FlushCursor>()
 
     /** Guards the one-time startup reconciliation in [adoptRecordsLeftByAPreviousRun]. */
     private val reconciled = AtomicBoolean(false)
@@ -81,7 +84,10 @@ class ReplayCheckpointFlusher(
         for (record in stranded) {
             val gameId = record.replay.gameId
             if (gameId in liveIds) {
-                flushed[gameId] = record.replay.actions.size
+                flushed[gameId] = FlushCursor(
+                    actionCount = record.replay.actions.size,
+                    yieldCount = record.replay.yields.size,
+                )
             } else {
                 runCatching { replayService.finalizePartial(gameId) }
                     .onFailure { logger.warn("Failed to finalize stranded replay $gameId: ${it.message}") }
@@ -109,7 +115,7 @@ class ReplayCheckpointFlusher(
         // live and still recorded; there is nothing left to checkpoint, and [ReplayService] would
         // refuse the write anyway. Skip before paying for the encode.
         if (snapshot.gameOver) return
-        if (flushed[session.sessionId] == snapshot.actions.size) return
+        if (flushed[session.sessionId] == snapshot.flushCursor()) return
 
         replayService.saveInProgress(
             replay = CompactReplay(
@@ -127,7 +133,7 @@ class ReplayCheckpointFlusher(
                 pinnedCards = session.getPinnedCards(),
                 // The tail is a persistence-only view of this coherent snapshot. Do not append it
                 // to GameSession.recordedCheckpoints, or every sweep would accumulate duplicates.
-                checkpoints = if (snapshot.version == CompactReplay.CURRENT_VERSION) {
+                checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(snapshot.version)) {
                     ReplayCheckpointPolicy.withV3Tail(
                         checkpoints = snapshot.checkpoints,
                         actionCount = snapshot.actions.size,
@@ -139,8 +145,18 @@ class ReplayCheckpointFlusher(
             ),
             resumeFingerprint = snapshot.fingerprint,
         )
-        flushed[session.sessionId] = snapshot.actions.size
+        flushed[session.sessionId] = snapshot.flushCursor()
     }
+
+    private fun ReplayRecordingSnapshot.flushCursor(): FlushCursor = FlushCursor(
+        actionCount = actions.size,
+        yieldCount = yields.size,
+    )
+
+    private data class FlushCursor(
+        val actionCount: Int,
+        val yieldCount: Int,
+    )
 
     private companion object {
         const val FLUSH_INTERVAL_MS = 5_000L

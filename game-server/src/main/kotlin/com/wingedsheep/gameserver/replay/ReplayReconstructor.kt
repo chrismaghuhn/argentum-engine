@@ -99,7 +99,7 @@ class ReplayReconstructor(
 
         // v3 includes the zero-action state in the same tail-checkpoint contract. Legacy records
         // deliberately retain their previous behavior and did not verify an initial checkpoint.
-        if (replay.version == 3) {
+        if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version)) {
             when (val initialCheck = engine.verifyCheckpoint(replay, state, afterActionCount = 0)) {
                 is CheckpointCheck.Mismatch -> divergence = initialCheck.failure
                 CheckpointCheck.Match -> if (replay.actions.isEmpty()) tailVerified = true
@@ -128,7 +128,7 @@ class ReplayReconstructor(
             previous = snapshot
         }
 
-        val unverifiedReason = if (replay.version == 3 && divergence == null) {
+        val unverifiedReason = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version) && divergence == null) {
             val tailCount = replay.checkpoints.count { it.afterActionCount == replay.actions.size }
             when {
                 tailCount == 0 ->

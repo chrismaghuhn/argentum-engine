@@ -1394,6 +1394,27 @@ class GameSession(
                 kind = kind,
             )
         )
+        refreshCadenceCheckpointIfDue()
+    }
+
+    /**
+     * A yield changes the transition-semantic state without advancing the action stream. If it is
+     * applied exactly at a cadence boundary, replace that boundary's live checkpoint so replay
+     * verification sees the post-yield state. This updates an existing cadence stamp only; the
+     * persistence-only tail remains the flusher's responsibility.
+     */
+    private fun refreshCadenceCheckpointIfDue() {
+        val count = recordedActions.size
+        if (count == 0 || count % com.wingedsheep.gameserver.replay.ReplayRecordingPolicy.CHECKPOINT_EVERY_ACTIONS != 0) {
+            return
+        }
+        val state = gameState ?: return
+        val checkpointIndex = recordedCheckpoints.indexOfFirst { it.afterActionCount == count }
+        if (checkpointIndex < 0) return
+        recordedCheckpoints[checkpointIndex] = com.wingedsheep.gameserver.replay.ReplayCheckpoint(
+            afterActionCount = count,
+            fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(state, replayVersion),
+        )
     }
 
     /**
@@ -1697,7 +1718,7 @@ class GameSession(
         recordedYields.addAll(record.yields)
         recordedCheckpoints.clear()
         recordedCheckpoints.addAll(
-            if (record.version == com.wingedsheep.gameserver.replay.CompactReplay.CURRENT_VERSION) {
+            if (com.wingedsheep.gameserver.replay.ReplayCheckpointPolicy.requiresTailCheckpoint(record.version)) {
                 // The persisted tail proves the flushed prefix but is a derived persistence view,
                 // not a live cadence checkpoint. Keep only cadence stamps in the resumed session;
                 // the next flush will derive one fresh tail for its own coherent snapshot.

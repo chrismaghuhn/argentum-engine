@@ -1,7 +1,10 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.BatchYesNoDecision
+import com.wingedsheep.engine.core.ChooseModeDecision
 import com.wingedsheep.engine.core.LegendRuleContinuation
+import com.wingedsheep.engine.core.ModeOption
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.PlayerYields
@@ -133,6 +136,66 @@ class ReplayFingerprintV3Test : FunSpec({
         ) shouldBe ReplayFingerprint.of(
             GameState(pendingDecision = decision("xyz", prompt = "Prompt B", effectHint = "Hint B"))
         )
+    }
+
+    test("v3 excludes audited presentation-only decision labels") {
+        val yesNoA = GameState(
+            pendingDecision = YesNoDecision(
+                id = "yes-a",
+                playerId = EntityId("p1"),
+                prompt = "same semantic question",
+                context = DecisionContext(),
+                yesText = "Accept the offer",
+                noText = "Decline the offer",
+                hint = "A very specific UI hint",
+            ),
+        )
+        val yesNoB = yesNoA.copy(
+            pendingDecision = (yesNoA.pendingDecision as YesNoDecision).copy(
+                id = "yes-b",
+                yesText = "Do it",
+                noText = "Do not do it",
+                hint = "A different UI hint",
+            ),
+        )
+        ReplayFingerprint.of(yesNoA, 3) shouldBe ReplayFingerprint.of(yesNoB, 3)
+
+        val batchA = GameState(
+            pendingDecision = BatchYesNoDecision(
+                id = "batch-a",
+                playerId = EntityId("p1"),
+                prompt = "same batch question",
+                context = DecisionContext(),
+                count = 2,
+                yesText = "Accept all",
+                noText = "Decline all",
+            ),
+        )
+        val batchB = batchA.copy(
+            pendingDecision = (batchA.pendingDecision as BatchYesNoDecision).copy(
+                id = "batch-b",
+                yesText = "All yes",
+                noText = "All no",
+            ),
+        )
+        ReplayFingerprint.of(batchA, 3) shouldBe ReplayFingerprint.of(batchB, 3)
+
+        val modesA = GameState(
+            pendingDecision = ChooseModeDecision(
+                id = "modes-a",
+                playerId = EntityId("p1"),
+                prompt = "same mode question",
+                context = DecisionContext(),
+                modes = listOf(ModeOption(index = 0, text = "Draw two cards", available = true)),
+            ),
+        )
+        val modesB = modesA.copy(
+            pendingDecision = (modesA.pendingDecision as ChooseModeDecision).copy(
+                id = "modes-b",
+                modes = listOf(ModeOption(index = 0, text = "A completely different label", available = true)),
+            ),
+        )
+        ReplayFingerprint.of(modesA, 3) shouldBe ReplayFingerprint.of(modesB, 3)
     }
 
     test("decision routing fields remain present through shared canonical aliases") {

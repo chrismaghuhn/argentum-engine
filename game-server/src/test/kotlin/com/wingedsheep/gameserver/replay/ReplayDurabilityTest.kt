@@ -77,7 +77,7 @@ class ReplayDurabilityTest : ScenarioTestBase() {
             yields = snapshot.yields,
             engineVersion = "test-build",
             pinnedCards = session.getPinnedCards(),
-            checkpoints = if (snapshot.version == CompactReplay.CURRENT_VERSION) {
+            checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(snapshot.version)) {
                 ReplayCheckpointPolicy.withV3Tail(
                     checkpoints = snapshot.checkpoints,
                     actionCount = snapshot.actions.size,

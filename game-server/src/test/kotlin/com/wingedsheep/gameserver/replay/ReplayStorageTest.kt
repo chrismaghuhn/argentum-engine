@@ -4,13 +4,17 @@ import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.repository.GameRepository
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
+import com.wingedsheep.engine.state.YieldKind
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AbilityIdentity
 import io.kotest.matchers.collections.shouldContainExactly
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.mockk.every
 import io.mockk.mockk
 import org.springframework.web.socket.WebSocketSession
@@ -67,6 +71,26 @@ class ReplayStorageTest : ScenarioTestBase() {
         return session
     }
 
+    private fun playToActionCount(target: Int): GameSession {
+        val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+        val p1 = EntityId.of("cadence-p1")
+        val p2 = EntityId.of("cadence-p2")
+        session.addPlayer(PlayerSession(mockWs("cadence-ws1"), p1, "Alice"), mapOf("Forest" to 40))
+        session.addPlayer(PlayerSession(mockWs("cadence-ws2"), p2, "Bob"), mapOf("Forest" to 40))
+        session.startGame()
+        session.keepHand(p1)
+        session.keepHand(p2)
+
+        var attempts = 0
+        while (session.getRecordedActions().size < target && attempts++ < 200) {
+            val state = session.getStateForTesting() ?: break
+            if (state.gameOver) break
+            state.priorityPlayerId?.let { session.executeAutoPass(it) }
+        }
+        session.getRecordedActions().size shouldBe target
+        return session
+    }
+
     /** Exactly what the flusher stores: one atomic snapshot turned into a record + its gate value. */
     private fun GameSession.flushRecord(): Pair<CompactReplay, String> {
         val snapshot = replayRecordingSnapshot().shouldNotBeNull()
@@ -80,7 +104,7 @@ class ReplayStorageTest : ScenarioTestBase() {
             setup = snapshot.setup,
             actions = snapshot.actions,
             yields = snapshot.yields,
-            checkpoints = if (snapshot.version == CompactReplay.CURRENT_VERSION) {
+            checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(snapshot.version)) {
                 ReplayCheckpointPolicy.withV3Tail(
                     checkpoints = snapshot.checkpoints,
                     actionCount = snapshot.actions.size,
@@ -187,6 +211,52 @@ class ReplayStorageTest : ScenarioTestBase() {
             val replayed = ReplayReconstructor(cardRegistry, null)
                 .reconstructStateAt(record, record.actions.size).shouldNotBeNull()
             ReplayFingerprint.of(replayed) shouldBe fingerprint
+        }
+
+        test("a yield-only mutation marks an in-progress replay flush dirty") {
+            val session = playPartialGame()
+            val store = InMemoryReplayStore()
+            val service = ReplayService(store, mockk(relaxed = true), mockk(relaxed = true))
+            val games = mockk<GameRepository>(relaxed = true) {
+                every { findAll() } returns listOf(session)
+            }
+            val flusher = ReplayCheckpointFlusher(games, service, EngineVersion("test"))
+
+            flusher.flush()
+            val before = (store.find(session.sessionId) as ReplayRead.Decoded).stored.replay
+
+            session.setAbilityYield(
+                EntityId.of("resume-p1"),
+                AbilityIdentity("Yield Test#TST-1", AbilityId("yield-test")),
+                YieldKind.ALWAYS_ANSWER_YES,
+            )
+            flusher.flush()
+
+            val after = (store.find(session.sessionId) as ReplayRead.Decoded).stored.replay
+            after.yields.size shouldBe before.yields.size + 1
+            after.checkpoints.count { it.afterActionCount == after.actions.size } shouldBe 1
+        }
+
+        test("a yield at a cadence checkpoint refreshes the checkpoint before replay persistence") {
+            val session = playToActionCount(20)
+            val before = session.getReplayCheckpoints().single { it.afterActionCount == 20 }.fingerprint
+
+            session.setAbilityYield(
+                EntityId.of("cadence-p1"),
+                AbilityIdentity("Cadence Yield#TST-1", AbilityId("cadence-yield")),
+                YieldKind.ALWAYS_ANSWER_YES,
+            )
+            val refreshed = session.getReplayCheckpoints().single { it.afterActionCount == 20 }.fingerprint
+            refreshed shouldNotBe before
+
+            var attempts = 0
+            while (session.getRecordedActions().size < 21 && attempts++ < 20) {
+                val state = session.getStateForTesting().shouldNotBeNull()
+                state.priorityPlayerId?.let { session.executeAutoPass(it) }
+            }
+            val (record, _) = session.flushRecord()
+
+            ReplayReconstructor(cardRegistry, null).reconstruct(record).fidelity shouldBe ReplayFidelity.EXACT
         }
 
         test("per-flush v3 tails do not accumulate in the live cadence checkpoint list") {

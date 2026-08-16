@@ -31,7 +31,10 @@ import kotlin.reflect.KClass
 @OptIn(ExperimentalSerializationApi::class)
 internal object TransitionSemanticGameStateCanonicalizer {
 
-    private val presentationOnlyKeys = setOf("prompt", "effectHint")
+    // Audited against decision validation and resume paths: these values are labels/hints consumed
+    // by observation/log presentation only. Their descriptor fields remain in the wire inventory,
+    // but their UI text must not make an otherwise identical transition state diverge.
+    private val presentationOnlyKeys = setOf("prompt", "effectHint", "yesText", "noText", "hint")
 
     /** Polymorphic state values need their concrete descriptor to discover nested Set fields. */
     private val polymorphicDescriptors: Map<String, SerialDescriptor> by lazy {
@@ -86,7 +89,7 @@ internal object TransitionSemanticGameStateCanonicalizer {
             val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
             val sorted = element.entries
                 .asSequence()
-                .filterNot { (key, _) -> decisionTree && key in presentationOnlyKeys }
+                .filterNot { (key, _) -> decisionTree && isPresentationOnlyField(key, concreteDescriptor) }
                 .map { (key, value) ->
                     key to canonicalize(
                         element = value,
@@ -172,6 +175,10 @@ internal object TransitionSemanticGameStateCanonicalizer {
         val typeName = element["type"]?.jsonPrimitive?.contentOrNull ?: return descriptor
         return polymorphicDescriptors[typeName] ?: descriptor
     }
+
+    private fun isPresentationOnlyField(key: String, descriptor: SerialDescriptor?): Boolean =
+        key in presentationOnlyKeys ||
+            (key == "text" && descriptor?.serialName?.endsWith(".ModeOption") == true)
 
     private fun SerialDescriptor.fieldDescriptor(key: String): SerialDescriptor? {
         if (kind == StructureKind.MAP) return getElementDescriptor(1)

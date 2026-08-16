@@ -721,7 +721,7 @@ class GamePlayHandler(
                 yields = replaySnapshot.yields,
                 engineVersion = engineVersion.value,
                 pinnedCards = gameSession.getPinnedCards(),
-                checkpoints = if (replaySnapshot.version == CompactReplay.CURRENT_VERSION) {
+                checkpoints = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replaySnapshot.version)) {
                     ReplayCheckpointPolicy.withV3Tail(
                         checkpoints = replaySnapshot.checkpoints,
                         actionCount = replaySnapshot.actions.size,
