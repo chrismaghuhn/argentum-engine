@@ -8,6 +8,7 @@ import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.GymEnv
 import com.wingedsheep.gym.contract.ObservationResult
+import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.deckbuild.DeckbuildEnvironment
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.sdk.model.EntityId
@@ -57,7 +58,11 @@ class MultiEnvService(
         val gameConfig = config.toGameConfig()
         val env = GameEnvironment.create(cardRegistry)
         env.reset(gameConfig)
-        val gymEnv = GameGymEnv(env, config.perspectivePlayerIndex, config.revealAll)
+        val gymEnv = GameGymEnv(
+            environment = env,
+            perspectivePlayerIndex = config.perspectivePlayerIndex,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
+        )
         val envId = EnvId.generate()
         envs[envId] = gymEnv
         return CreatedEnv(envId, gymEnv.observe())
@@ -95,8 +100,8 @@ class MultiEnvService(
     // =========================================================================
 
     /** Get the current observation without advancing state. */
-    fun observe(envId: EnvId, revealAll: Boolean? = null): ObservationResult =
-        requireEnv(envId).observe(revealAll)
+    fun observe(envId: EnvId): ObservationResult =
+        requireEnv(envId).observe()
 
     /**
      * Advance a single env by the given [StepRequest.actionId]. The ID must
