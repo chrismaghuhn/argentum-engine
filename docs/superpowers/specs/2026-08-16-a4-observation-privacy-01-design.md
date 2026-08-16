@@ -142,7 +142,17 @@ perspectivePlayerId == agentToAct
 
 This is not equivalent to “active player.” Priority or a pending decision may
 belong to a non-active player. For a non-actor perspective, `legalActions` is
-empty and no action registry is exposed for that perspective.
+empty and no action registry is exposed for that perspective:
+
+```text
+perspectivePlayerId != agentToAct
+
+legalActions = emptyList()
+ActionRegistry = EMPTY
+```
+
+The empty registry invariant is internal to the Gym environment and must be
+covered by a focused test; it is not a second wire-level action model.
 
 Action descriptions must not leak private card names, search results, source
 names, or private options. The action view remains a projection of the engine’s
@@ -206,6 +216,10 @@ It includes `schemaHash`/schema ID, perspective and turn context, visible
 players and zones, visible structured card characteristics, public stack
 metadata and targets, masked pending-decision structure, and the structured
 legal-action fingerprint.
+
+The semantic representation is an internal deterministic projection used for
+digest and equality purposes. It is not a second public observation DTO or a
+second visibility implementation.
 
 Visible card identity is represented through structured identity and
 characteristic fields. If two semantically different actions or decisions can
@@ -376,7 +390,27 @@ The change must not modify:
 
 ## 11. Verification and hard stops
 
-All heavy builds run through `just` on JDK 21. The required final gates are:
+Use JDK 21.
+
+Prefer the repository’s documented `just` gates when they are executable in the
+current environment. If `just` cannot execute on Windows because its POSIX
+launcher/scripts fail before Gradle starts (for example, `WinError 193`), use
+the repository’s documented direct Gradle/Git-Bash fallback with equivalent
+tasks.
+
+Record in the verification report:
+
+```text
+JUST_AVAILABLE
+FALLBACK_USED
+FALLBACK_REASON
+exact commands executed
+```
+
+An environment-specific launcher failure is not itself a product regression.
+The equivalent required test gates must still execute successfully.
+
+The required final gates are:
 
 ```text
 :gym:test
