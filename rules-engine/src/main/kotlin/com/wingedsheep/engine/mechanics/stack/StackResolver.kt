@@ -2640,6 +2640,36 @@ class StackResolver(
         val abilityComponent = container.get<TriggeredAbilityOnStackComponent>()!!
         val targetsComponent = container.get<TargetsComponent>()
 
+        // The ability's chosen targets are already stored on the stack. Build the same canonical
+        // resolution context before checking their current legality so CR 608.2a can run before
+        // CR 608.2b. Having a stored target in this context does not make it legal; target
+        // validation below still decides which resolution path applies.
+        val resolvedTargets2 = targetsComponent?.targets ?: emptyList()
+        val targetReqs = targetsComponent?.targetRequirements ?: emptyList()
+        val context = EffectContext.forTriggeredAbility(
+            abilityComponent,
+            targets = resolvedTargets2,
+            targetRequirements = targetReqs
+        )
+
+        // CR 603.4 / 608.2a: an intervening-if condition is checked before the target legality
+        // check in 608.2b. If it is false, the ability leaves the stack without validating targets
+        // or executing any part of its effect.
+        abilityComponent.interveningIf?.let { condition ->
+            if (!conditionEvaluator.evaluate(state, condition, context)) {
+                return ExecutionResult.success(
+                    state.removeEntity(abilityId),
+                    listOf(
+                        AbilityFizzledEvent(
+                            abilityComponent.sourceId,
+                            abilityComponent.description,
+                            "Intervening-if condition is no longer true"
+                        )
+                    )
+                )
+            }
+        }
+
         // Validate targets (including protection check - Rule 702.16)
         val sourceCard = state.getEntity(abilityComponent.sourceId)?.get<CardComponent>()
         val sourceColors = sourceCard?.colors ?: emptySet()
@@ -2672,41 +2702,7 @@ class StackResolver(
             }
         }
 
-        // Execute the effect
-        val resolvedTargets2 = targetsComponent?.targets ?: emptyList()
-        val targetReqs = targetsComponent?.targetRequirements ?: emptyList()
-        val context = EffectContext.forTriggeredAbility(
-            abilityComponent,
-            targets = resolvedTargets2,
-            targetRequirements = targetReqs
-        )
-
-        // CR 603.4's second check. "If the ability triggers, it checks the stated condition again
-        // as it resolves. If the condition isn't true at that time, the ability is removed from the
-        // stack and does nothing. Note that this mirrors the check for legal targets." So it sits
-        // right after the target check above, reads the same resolution-time context the effect is
-        // about to run in — trigger payload, last-known info, captured batch and all — and fizzles
-        // through the same event rather than silently doing nothing.
-        //
-        // Only [TriggeredAbilityOnStackComponent.interveningIf] reaches here. A
-        // `triggerRestriction` ("...attacks *while* you control a Dinosaur") is a CR 603.2
-        // restriction on the trigger event and was already spent when the ability triggered;
-        // re-checking it would fizzle abilities that must resolve.
-        abilityComponent.interveningIf?.let { condition ->
-            if (!conditionEvaluator.evaluate(state, condition, context)) {
-                return ExecutionResult.success(
-                    state.removeEntity(abilityId),
-                    listOf(
-                        AbilityFizzledEvent(
-                            abilityComponent.sourceId,
-                            abilityComponent.description,
-                            "Intervening-if condition is no longer true"
-                        )
-                    )
-                )
-            }
-        }
-
+        // Execute the effect after CR 608.2a and CR 608.2b have both passed.
         val effectResult = effectHandler.execute(state, abilityComponent.effect, context)
 
         // If effect is paused awaiting a decision, return paused state
