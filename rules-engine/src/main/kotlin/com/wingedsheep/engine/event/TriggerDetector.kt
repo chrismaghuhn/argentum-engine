@@ -919,6 +919,16 @@ class TriggerDetector(
                         targetRequirement = delayed.targetRequirement,
                         additionalTargetRequirements = delayed.additionalTargetRequirements,
                     )
+                    if (delayed.fireOnce && matchingAttackedPlayers!!.size > 1) {
+                        // CR 603.7b requires the delayed-trigger controller to choose which
+                        // simultaneous occurrence causes a one-shot delayed ability to trigger.
+                        // This detector has no choice continuation at the occurrence boundary yet;
+                        // do not substitute turn-order for that player decision. Leaving the
+                        // delayed ability resident is safer than emitting a trigger for an
+                        // engine-chosen player and keeps the case available to a future choice
+                        // primitive.
+                        continue
+                    }
                     val playersToTrigger = if (delayed.fireOnce) {
                         matchingAttackedPlayers!!.take(1)
                     } else {

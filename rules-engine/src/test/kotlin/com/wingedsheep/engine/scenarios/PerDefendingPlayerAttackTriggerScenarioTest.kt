@@ -704,6 +704,39 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             setOf(pod.playerB, pod.playerC)
     }
 
+    test("ATTACK-GROUP-DELAYED-01: ambiguous fire-once player matches fail closed") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val sourceId = pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, delayedWatcher.name)
+        val delayedId = "per-player-delayed-fire-once"
+        val delayed = DelayedTriggeredAbility(
+            id = delayedId,
+            effect = Effects.DrawCards(1),
+            sourceId = sourceId,
+            sourceName = delayedWatcher.name,
+            controllerId = pod.attackingPlayer,
+            trigger = TriggerSpec(
+                event = EventPattern.YouAttackPlayerEvent(
+                    attackerFilter = qualifyingFilter,
+                ),
+                binding = TriggerBinding.ANY,
+            ),
+            fireOnce = true,
+        )
+
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(
+                pod.driver.state.copy(delayedTriggers = listOf(delayed)),
+                listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
+            )
+            .filter { it.sourceName == delayedWatcher.name }
+
+        // There is no existing generic decision continuation at this boundary. Until one exists,
+        // the engine must not choose a player by canonical ordering (CR 603.7b).
+        pending.shouldBeEmpty()
+    }
+
     test("watched-target scope fails closed for per-player delayed attack triggers") {
         val pod = pod()
         val attacker = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
