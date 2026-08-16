@@ -842,7 +842,29 @@ class TriggerDetector(
             for (delayed in eventBased) {
                 if (delayed.fireOnce && delayed.id in firedOnceIds) continue
                 val spec = delayed.trigger ?: continue
-                if (!matchesEventForWatchedEntity(spec, event, delayed.watchedEntityId, delayed.watchedRecipientId, delayed.id, delayed.sourceId, delayed.controllerId, state)) continue
+                val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
+                    trigger = spec.event,
+                    binding = spec.binding,
+                    event = event,
+                    sourceId = delayed.sourceId,
+                    controllerId = delayed.controllerId,
+                    state = state,
+                    watchedEntityId = delayed.watchedEntityId,
+                    watchedRecipientId = delayed.watchedRecipientId,
+                )
+                if (matchingAttackedPlayers != null) {
+                    if (matchingAttackedPlayers.isEmpty()) continue
+                } else if (!matchesEventForWatchedEntity(
+                        spec,
+                        event,
+                        delayed.watchedEntityId,
+                        delayed.watchedRecipientId,
+                        delayed.id,
+                        delayed.sourceId,
+                        delayed.controllerId,
+                        state,
+                    )
+                ) continue
 
                 // A filter-scoped attack delayed trigger ("this turn, whenever a creature you control
                 // attacks alone, do X to it" — The Last Ronin III) must fan out one trigger per
@@ -882,6 +904,49 @@ class TriggerDetector(
                     continue
                 }
 
+                // A per-defending-player delayed attack trigger keeps the same multiplicity and
+                // explicit player binding as a battlefield-resident trigger. A fire-once delayed
+                // ability is consumed by the first resulting instance, while a reusable delayed
+                // ability emits one instance per matching player.
+                if (specEvent is com.wingedsheep.sdk.scripting.EventPattern.YouAttackPlayerEvent &&
+                    event is AttackersDeclaredEvent &&
+                    delayed.watchedEntityId == null && delayed.watchedRecipientId == null
+                ) {
+                    val delayedAbility = TriggeredAbility.create(
+                        trigger = spec.event,
+                        binding = spec.binding,
+                        effect = delayed.effect,
+                        targetRequirement = delayed.targetRequirement,
+                        additionalTargetRequirements = delayed.additionalTargetRequirements,
+                    )
+                    if (delayed.fireOnce && matchingAttackedPlayers!!.size > 1) {
+                        // CR 603.7b requires the delayed-trigger controller to choose which
+                        // simultaneous occurrence causes a one-shot delayed ability to trigger.
+                        // This detector has no choice continuation at the occurrence boundary yet;
+                        // do not substitute turn-order for that player decision. Leaving the
+                        // delayed ability resident is safer than emitting a trigger for an
+                        // engine-chosen player and keeps the case available to a future choice
+                        // primitive.
+                        continue
+                    }
+                    val playersToTrigger = if (delayed.fireOnce) {
+                        matchingAttackedPlayers!!.take(1)
+                    } else {
+                        matchingAttackedPlayers!!
+                    }
+                    addPerPlayerAttackTriggers(
+                        ability = delayedAbility,
+                        sourceId = delayed.sourceId,
+                        sourceName = delayed.sourceName,
+                        controllerId = delayed.controllerId,
+                        attackedPlayers = playersToTrigger,
+                        triggers = triggers,
+                        consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null,
+                    )
+                    if (delayed.fireOnce && playersToTrigger.isNotEmpty()) firedOnceIds.add(delayed.id)
+                    continue
+                }
+
                 if (delayed.fireOnce) firedOnceIds.add(delayed.id)
                 triggers.add(
                     PendingTrigger(
@@ -903,6 +968,60 @@ class TriggerDetector(
                     )
                 )
             }
+        }
+    }
+
+    /**
+     * Return the per-player expansion for [EventPattern.YouAttackPlayerEvent], or null when the
+     * trigger is not this explicit attack shape (so callers can use the ordinary Boolean matcher).
+     * An empty result is meaningful: this trigger shape was applicable but had no matching player.
+     * That distinction lets every detector path consume the same cardinality-preserving result
+     * without first collapsing it through [TriggerMatcher.matchesTrigger].
+     */
+    private fun matchingAttackedPlayersForTrigger(
+        trigger: EventPattern,
+        binding: TriggerBinding,
+        event: EngineGameEvent,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        state: GameState,
+        watchedEntityId: EntityId? = null,
+        watchedRecipientId: EntityId? = null,
+    ): List<EntityId>? {
+        val perPlayerTrigger = trigger as? EventPattern.YouAttackPlayerEvent ?: return null
+        if (event !is AttackersDeclaredEvent) return null
+        if (binding == TriggerBinding.ATTACHED || watchedEntityId != null || watchedRecipientId != null) {
+            return emptyList()
+        }
+        return matcher.matchingAttackedPlayers(
+            perPlayerTrigger,
+            event,
+            sourceId,
+            controllerId,
+            state,
+        )
+    }
+
+    private fun addPerPlayerAttackTriggers(
+        ability: TriggeredAbility,
+        sourceId: EntityId,
+        sourceName: String,
+        controllerId: EntityId,
+        attackedPlayers: List<EntityId>,
+        triggers: MutableList<PendingTrigger>,
+        consumesDelayedTriggerId: String? = null,
+    ) {
+        for (attackedPlayer in attackedPlayers) {
+            triggers.add(
+                PendingTrigger(
+                    ability = ability,
+                    sourceId = sourceId,
+                    sourceName = sourceName,
+                    controllerId = controllerId,
+                    triggerContext = TriggerContext(triggeringPlayerId = attackedPlayer),
+                    consumesDelayedTriggerId = consumesDelayedTriggerId,
+                )
+            )
         }
     }
 
@@ -933,11 +1052,17 @@ class TriggerDetector(
         return when (specEvent) {
             // Attack-declaration triggers are player-/filter-scoped, not entity-scoped, so they
             // reuse the canonical matcher rather than the watched-entity narrowing above.
-            // Powers "when you next attack this turn, …" (YouAttackEvent) and the general
-            // "when a [filtered] creature next attacks" (AttackEvent).
+            // Powers "when you next attack this turn, …" (YouAttackEvent), the per-player
+            // attack pattern, and the general "when a [filtered] creature next attacks"
+            // (AttackEvent).
             is com.wingedsheep.sdk.scripting.EventPattern.YouAttackEvent,
             is com.wingedsheep.sdk.scripting.EventPattern.AttackEvent ->
                 matcher.matchesTrigger(specEvent, spec.binding, event, sourceId, controllerId, state)
+            // A per-defending-player attack trigger has no entity/recipient scope. Reject a
+            // delayed spec carrying one rather than falling through to a single unbound trigger.
+            is com.wingedsheep.sdk.scripting.EventPattern.YouAttackPlayerEvent ->
+                watchedEntityId == null && watchedRecipientId == null &&
+                    matcher.matchesTrigger(specEvent, spec.binding, event, sourceId, controllerId, state)
             // Spell-cast delayed triggers ("whenever you cast a [filtered] spell this turn, …",
             // Rediscover the Way chapter III) are filter-scoped: delegate to the canonical
             // spell-cast matcher so the spell filter and casting-player predicate are honored.
@@ -1026,6 +1151,25 @@ class TriggerDetector(
 
             for (ability in entry.abilities) {
                 if (Zone.BATTLEFIELD !in ability.activeZones) continue
+                val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
+                    trigger = ability.trigger,
+                    binding = ability.binding,
+                    event = event,
+                    sourceId = entityId,
+                    controllerId = controllerId,
+                    state = state,
+                )
+                if (matchingAttackedPlayers != null) {
+                    addPerPlayerAttackTriggers(
+                        ability = ability,
+                        sourceId = entityId,
+                        sourceName = cardComponent.name,
+                        controllerId = controllerId,
+                        attackedPlayers = matchingAttackedPlayers,
+                        triggers = triggers,
+                    )
+                    continue
+                }
                 if (matcher.matchesTrigger(ability.trigger, ability.binding, event, entityId, controllerId, state)) {
                     // For "whenever a creature attacks" (AttackEvent with ANY binding),
                     // create one trigger per attacking creature (Rule 603.2c)
@@ -1395,6 +1539,25 @@ class TriggerDetector(
                         val ownerId = cardComponent.ownerId
                             ?: container.get<OwnerComponent>()?.playerId
                             ?: continue
+                        val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
+                            trigger = ability.trigger,
+                            binding = ability.binding,
+                            event = event,
+                            sourceId = entityId,
+                            controllerId = ownerId,
+                            state = state,
+                        )
+                        if (matchingAttackedPlayers != null) {
+                            addPerPlayerAttackTriggers(
+                                ability = ability,
+                                sourceId = entityId,
+                                sourceName = cardComponent.name,
+                                controllerId = ownerId,
+                                attackedPlayers = matchingAttackedPlayers,
+                                triggers = triggers,
+                            )
+                            continue
+                        }
                         if (matcher.matchesTrigger(ability.trigger, ability.binding, event, entityId, ownerId, state)) {
                             triggers.add(
                                 PendingTrigger(
@@ -1689,6 +1852,25 @@ class TriggerDetector(
 
         for (global in state.globalGrantedTriggeredAbilities) {
             val ability = global.ability
+            val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
+                trigger = ability.trigger,
+                binding = ability.binding,
+                event = event,
+                sourceId = global.sourceId,
+                controllerId = global.controllerId,
+                state = state,
+            )
+            if (matchingAttackedPlayers != null) {
+                addPerPlayerAttackTriggers(
+                    ability = ability,
+                    sourceId = global.sourceId,
+                    sourceName = global.sourceName,
+                    controllerId = global.controllerId,
+                    attackedPlayers = matchingAttackedPlayers,
+                    triggers = triggers,
+                )
+                continue
+            }
             // Use a dummy sourceId for matchesTrigger (global abilities aren't attached to entities)
             if (matcher.matchesTrigger(ability.trigger, ability.binding, event, global.sourceId, global.controllerId, state)) {
                 triggers.add(
@@ -3415,6 +3597,8 @@ class TriggerDetector(
      * count as the cause; if the trigger names a specific attacker (per-attacker AttackEvent), that
      * attacker must match.
      *
+     * A per-defending-player attack trigger is caused only for the player whose bound group
+     * contains a matching doubler attacker; its other player-bound instances are independent.
      * Multiple copies are additive: N copies add N extra firings of each affected trigger.
      */
     private fun duplicateAttackTriggers(
@@ -3484,7 +3668,8 @@ class TriggerDetector(
                     // Only attack-caused triggers: "whenever a creature attacks" / "whenever you attack".
                     val triggerEvent = trigger.ability.trigger
                     val isAttackTrigger = triggerEvent is EventPattern.AttackEvent ||
-                        triggerEvent is EventPattern.YouAttackEvent
+                        triggerEvent is EventPattern.YouAttackEvent ||
+                        triggerEvent is EventPattern.YouAttackPlayerEvent
                     if (!isAttackTrigger) continue
 
                     // If the trigger names a specific attacker (per-attacker AttackEvent), that
@@ -3492,6 +3677,19 @@ class TriggerDetector(
                     // attacker (e.g. "whenever you attack") are caused by the attack as a whole.
                     val triggeringAttacker = trigger.triggerContext.triggeringEntityId
                     if (triggeringAttacker != null && triggeringAttacker !in matchingAttackers) continue
+
+                    // Per-defending-player instances are independent trigger occurrences. The
+                    // doubler only duplicates the occurrence for the directly attacked player
+                    // whose group contains a matching cause attacker; do not duplicate another
+                    // player's instance from the same declaration event.
+                    if (triggerEvent is EventPattern.YouAttackPlayerEvent) {
+                        val attackedPlayer = trigger.triggerContext.triggeringPlayerId
+                        if (attackedPlayer == null || attackedPlayer !in state.turnOrder) continue
+                        if (attackEvent.declaredAttacks.none { declaration ->
+                                declaration.attackerId in matchingAttackers &&
+                                    declaration.defenderId == attackedPlayer
+                            }) continue
+                    }
 
                     duplicates.add(trigger)
                 }

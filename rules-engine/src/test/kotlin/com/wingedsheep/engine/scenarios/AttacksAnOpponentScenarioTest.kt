@@ -21,10 +21,11 @@ import io.kotest.matchers.shouldBe
  * to the *player* case only. Kaalia's 2024 ruling makes this concrete: her ability "doesn't
  * trigger if it attacks a planeswalker or battle."
  *
- * The defender kind is fixed at declaration and the `AttackersDeclaredEvent` carries no
- * per-attacker defender identity, so the player-vs-permanent fact is stamped on the event at
- * declaration (`attackersAgainstPlayer`) rather than re-derived downstream — mirroring the
- * `firstTimeAttackers` treatment for `AttackPredicate.FirstTimeEachTurn`.
+ * The defender kind is fixed at declaration and the player-vs-permanent aggregate fact is
+ * stamped on the event at declaration (`attackersAgainstPlayer`) rather than re-derived
+ * downstream — mirroring the `firstTimeAttackers` treatment for
+ * `AttackPredicate.FirstTimeEachTurn`. The event also carries a complete target snapshot for
+ * trigger patterns that need per-attacked-player grouping.
  *
  * Battles: the engine does not yet model battles (no `CardType.BATTLE`) and attack validation only
  * accepts an opponent player or an opponent's planeswalker as a defender
