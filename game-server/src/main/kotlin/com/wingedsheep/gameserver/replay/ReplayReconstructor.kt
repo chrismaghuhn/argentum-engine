@@ -219,7 +219,7 @@ private class ReplayEngine(
 
         val checkpoint = replay.checkpoints.firstOrNull { it.afterActionCount == afterActionCount }
         if (checkpoint != null) {
-            val actual = ReplayFingerprint.of(next)
+            val actual = ReplayFingerprint.of(next, replay.version)
             if (actual != checkpoint.fingerprint) {
                 return StepResult(
                     null,

@@ -1662,7 +1662,9 @@ class GameSession(
         expectedFingerprint: String?,
     ): Boolean = synchronized(stateLock) {
         val live = gameState
-        val actual = live?.let { com.wingedsheep.gameserver.replay.ReplayFingerprint.of(it) }
+        val actual = live?.let {
+            com.wingedsheep.gameserver.replay.ReplayFingerprint.of(it, record.version)
+        }
         if (expectedFingerprint == null) {
             logger.warn(
                 "Replay recording for $sessionId has no stored fingerprint " +

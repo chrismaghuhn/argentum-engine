@@ -1,5 +1,6 @@
 package com.wingedsheep.gameserver.replay
 
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.gameserver.persistence.persistenceJson
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
@@ -56,5 +57,6 @@ class ReplayVersionCompatibilityTest : FunSpec({
             .parseToJsonElement(ReplayCodec.decodeText(ReplayCodec.encode(decoded)).trim())
             .jsonObject
         reencoded["version"]?.jsonPrimitive?.int shouldBe 1
+        ReplayFingerprint.of(GameState(), decoded.version).length shouldBe 16
     }
 })

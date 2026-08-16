@@ -126,7 +126,12 @@ class ReplayDurabilityTest : ScenarioTestBase() {
 
             // Without the pin, reconstruction produces a game that was never played...
             val unpinned = ReplayReconstructor(changed, null)
-                .reconstructStateAt(replay.copy(pinnedCards = emptyList()), replay.actions.size)
+                // Suppress checkpoints only for this structural comparison. The v3 full-state
+                // checkpoint intentionally rejects the changed card before a state can be served.
+                .reconstructStateAt(
+                    replay.copy(pinnedCards = emptyList(), checkpoints = emptyList()),
+                    replay.actions.size,
+                )
                 .shouldNotBeNull()
             unpinned.entities shouldNotBe liveTruth.entities
 
