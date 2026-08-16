@@ -23,4 +23,6 @@ dependencies {
 
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)
+    // AKIRI-24 round-trips a paused GameState continuation in the card scenario.
+    testImplementation(libs.kotlinxSerialization)
 }
