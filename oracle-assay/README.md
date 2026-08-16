@@ -20,12 +20,29 @@ and those are the two sentences on it. The **aura band** followed: `Enchant <fil
 attached-permanent statics, which opened `staticAbilities` — the largest `CardScript` slot the
 differential could not see into, and the one every later static family lands in.
 
-The most recent work is the **spell-cast band** — "Whenever you cast a noncreature spell, …" — which
-gives the grammar its first noun phrase for a *spell* rather than a permanent, and is the largest
-single family left in the corpus by the honest ranking: 504 cards decline on nothing but a
+The most recent work is the **spell-cost band** — what a spell costs, and what changes it. It is
+the first band picked by the probe *against* both other rankings agreeing, and it delivered
+**+126 whole cards** (7,451 → 7,577) from one sentence read as three vocabularies: whose spells,
+by how much, and under what clause. See [the spell-cost band](#the-spell-cost-band); it also closed
+a reversible-but-wrong reading of every intervening-if whose consequence is more than one clause,
+and it leaves the largest single SDK finding this module has produced — `CostReductionSource`'s five
+`FixedIf…` cases restate `CostGating.OnlyIf`, and the corpus is split down the middle between them.
+
+Before it came the **cost band** — what you pay, everywhere you pay it. It is the largest
+single delivery a family has made here (**+274 whole cards**, 7,177 → 7,451) and the first one that
+needed no new grammar *machinery* at all, only a refactoring: `CostAtom`'s own KDoc calls itself
+"the one cost language", and the grammar now reads it that way round — one `Phrase<CostAtom>`
+vocabulary lifted into an activated ability's cost and into a spell's additional cost, instead of
+two vocabularies over the same English. See [the cost band](#the-cost-band) below; it also found
+three hand-written cards whose noun phrases were wrong inside a cost, where nothing had ever looked.
+
+Before it came the **spell-cast band** — "Whenever you cast a noncreature spell, …" — which
+gives the grammar its first noun phrase for a *spell* rather than a permanent, and was the largest
+single family left in the corpus by the honest ranking: 504 cards declined on nothing but a
 spell-cast trigger, against 263 for the next one. See [the spell-cast band](#the-spell-cast-band)
 below; it is also where the ranking method itself changed, from the token a line died on to the
-**tail** the parse could not read.
+**tail** the parse could not read. Then the **Bloomburrow band** — the first set picked *because*
+its cards are already implemented, so every decline was a grammar gap with a written answer.
 
 Before it came the **counters band**, the first one picked by *ranking the backlog* rather than by
 picking a set: `just assay-report --implemented` said 656 cards with a hand-written golden decline
@@ -66,8 +83,10 @@ just assay-report --top 40          # the same numbers, always exit 0
 just assay-report --scope           # restricted to Phase 1's own target class
 just assay-report --implemented     # restricted to cards that already have a golden — the *grammar* backlog
 just assay-report --set POR         # restricted to one set — every card *printed* in it
+just assay-report --rank tail       # declines keyed on the parse's tail, with the sole-blocked count
 just assay-differential             # Assay's readings vs. the hand-written cards
 just assay-explore                  # all of the above in a browser, on the live grammar
+just assay-bake                     # re-bless the whole-card verdict ledger (see below)
 just assay corpus --refresh         # re-download the Scryfall Oracle bulk (~24 MB, cached 7 days)
 ```
 
@@ -143,21 +162,22 @@ non-zero on. Declines are not failures.
 
 ```
 Cards assayed                    34882
-Ability lines                    66793  (38865 unique)
+Ability lines                    66793  (38843 unique)
 
-Round-trips byte-exact           24139   361.4‰ (36.1%)
-Alternate spelling normalized    1120
-Declined                         41534
+Round-trips byte-exact           25551   382.5‰ (38.3%)
+Alternate spelling normalized    1326
+Declined                         39916
 Ambiguous — distinct readings    0
 Print mismatch                   0
 Normalization not invertible     0
 Full inverse not reproduced      0
 Redundant readings (same model)  0
 
-Cards fully covered              6583 / 34882   188.7‰ (18.9%)
+Cards fully covered              7577 / 34882   217.2‰ (21.7%)
 Vanilla + keyword-only cards     1444 / 1712   843.5‰ (84.3%)   <- Phase 1 target
 Portal (set POR)                 200 / 200     1000.0‰ (100%)   <- the Portal band's target
 Legions (set LGN)                145 / 145     1000.0‰ (100%)   <- the Legions band's target
+Bloomburrow (set BLB)            58 / 280      207.1‰ (20.7%)   <- the Bloomburrow band, in progress
 Reminder-text glosses            2870 matched · 114 differed · 965 unglossed
 ```
 
@@ -452,7 +472,10 @@ produced one of each kind.
 - **The standing `ManaColorSet.Specific` finding, recurring — Spider Manifestation.** "{T}: Add {R}
   or {G}." as one `AddManaOfChoiceEffect` where 165 cards write two abilities. The README's own note
   said none of the thirteen was compared "because each one's rider declines anyway"; this band read
-  the rider. Still not folded, for the reason recorded below.
+  the rider. Read afterwards and classified a **card bug**: the note says `Specific` earns its place
+  on the riders the two-ability form cannot express, and this line has no rider — the card was in the
+  wrong group. Fixed to two abilities, with a scenario test. The finding below is unchanged and still
+  not folded.
 
 **Where the ranking points next.** On the same tail ranking, the row under `you cast` at 504 was
 `When ~` at 263 and then a flat run — `enchanted creature` 183, `for each` 175, `Until end of` 170,
@@ -460,6 +483,278 @@ produced one of each kind.
 the pre-band measurement and can only have risen, since a card blocked by two families was
 sole-blocked by neither.) A flat tail is the shape the equipment band's residue had, and it is the
 signal that the next target is a *set* rather than a family.
+
+## The Bloomburrow band
+
+Bloomburrow is 280 cards, every one of them implemented by hand here, which makes it the first set
+picked *because* the goldens exist: every line it declines is a grammar gap whose known-good answer
+is already written, and the differential confirms each one the moment it parses. The band took the
+set 42 → **58 cards** and the whole corpus 6,583 → **7,177**, and it is four pieces of machinery plus
+rows — the ratio the module's "cards covered per rule" curve is watching for.
+
+**A granted keyword is a run, not a keyword.** `Keywords.keywordRun` spells "trample",
+"lifelink and indestructible" and "trample, hexproof, and indestructible" as the list the model
+actually holds, and every grant position slots it: to a target, to a group, to the source, to the
+enchanted permanent. It *replaced* rules rather than adding them — `SelfSteps` carried a
+two-keyword rule with no singular sibling, which is what a family looks like before it is one, and
+`Statics.conditionalSelfStatic` collapsed a `pairForm` boolean into a three-member enum that also
+gained the keyword-only sentence ("As long as you've lost life this turn, ~ has flying and
+vigilance") for free. One grant is the bare effect and several are a composite, because that is what
+`CompositeEffect` means and what every hand-written card holds; a rule that printed the singular as
+a one-element composite would have disagreed with all of them.
+
+**A token's count, colours and keywords are slots.** Six rows out of two axes — the count ("a",
+a number word, "X") and the keyword rider — plus a colour *run* with `keywordRun`'s shape over
+`Set<Color>`. The sets have no order and the printed sentence needs one, so colours print WUBRG and
+keywords print in `Keyword`'s declaration order: both are `Color`/`Keyword`'s own, and a card that
+built its set the other way round still prints the sentence Oracle prints. The predefined nouns
+(Food, Treasure, Clue, Blood, Map, Lander, Shard) are a second family, each row calling the facade
+the SDK publishes for it — with "investigate" deliberately left out, because CR 701.36a makes it the
+same model as "create a Clue token" and two canonical spellings would leave printing undecided.
+
+**An ability word is printed shape, and belongs to normalization.** CR 207.2c: *"they have no
+special rules meaning and no individual entries in the Comprehensive Rules."* So `Landfall — `,
+`Threshold — ` and `Valiant — ` come off the line, are recorded per line index, and go back on in
+`restore` — the alternative being a grammar rule per ability word wrapping every sentence the grammar
+already reads, which is the multiplicative cost "lift, don't re-spell" exists to refuse. The list is
+**CR 207.2c's, verbatim, rather than a pattern**: CR 207.2d's *flavor* words have the identical
+printed shape and are unbounded, and so is a Saga's `I —` and a Class's `Level 2 —`. Worth 106 cards
+corpus-wide on its own, and it is what let the differential see the landfall bug below.
+
+Then three rows: Valiant's trigger (one `TriggerSpec` the SDK already publishes), "deals N damage to
+target opponent", and Threshold's graveyard count — which turned the hand-size comparison into a
+two-member shape over (player, zone, direction).
+
+**What it found.** Fifteen bugs in hand-written cards and one in `mtg-sdk`, every one surfaced by the
+differential on the day a line stopped declining:
+
+- **`Triggers.LandYouControlEnters` was `TriggerBinding.OTHER`** — one facade, 29 cards. No landfall
+  ability prints "another"; the distinction is invisible on a creature and load-bearing on a *land*
+  with a landfall trigger, which under `OTHER` would silently not see itself enter.
+- **Five more bare-noun-is-permanents cards** — Kargan Dragonrider, Corsair Captain, Lathliss,
+  Inside Source, Voice of the Woods, all `IsCreature` where the printed noun names only a subtype.
+  The same class the bare-tribal-noun migration fixed; these were never comparable before.
+- **Sunstar Expansionist read its intervening "if" as a resolution-time gate** — "When this creature
+  enters, **if** an opponent controls more lands than you, …" is CR 603.4, checked when the trigger
+  would go on the stack *and* again on resolution, not a `Gate.WhenCondition` that always triggers.
+- **Seven BLB cards printed text the card does not have** — five keyword runs in the wrong order
+  (Scryfall prints "Reach, vigilance"), Hunter's Talent on the pre-Bloomburrow "enters the
+  battlefield" wording, and Quaketusk Boar with no `oracleText` at all.
+- **Shocking Sharpshooter restated a documented default** — `damageSource = Self` is what `null`
+  already means for a permanent's own triggered ability. 72 other cards carry the same redundancy
+  and will surface as the grammar widens; it is *not* folded, because the field means something
+  when it is set to anything else.
+
+**Where the ranking points next, inside this set.** Gift is the largest family left by a wide margin
+— **17 BLB cards are sole-blocked by it** — and it is two halves rather than one: the `Gift a card`
+keyword line and the `If the gift was promised, …` rider, the second of which needs its base clause
+to read first. After it: the Class levels (`{3}{U}: Level 2`, 10 cards), modal spells (8), and
+"Spend this mana only to cast …" (6).
+
+## The cost band
+
+What you pay, everywhere you pay it. Whole-corpus coverage went 7,177 → **7,451 cards**, byte-exact
+lines 24,993 → **25,377**, the differential's compared population 2,698 → **2,747** — and, being an
+`mtg-sdk`-shaped band, it needed no new SDK type at all: every atom it reads was already in
+`CostAtom`, waiting for a sentence.
+
+**It is the largest band the tail ranking has produced, and the probe agreed with it before a line
+was written.** Ranked by the parse's tail, the top rows are the modal bullets and a scatter of
+trigger prefixes; the cost family does not appear as a row at all, because a cost is *the text before
+a colon* and the tail keys on what came after. Ranking the colon lines directly — substituting `{T}: `
+for every cost the grammar could not read and re-parsing — says **465 whole cards are blocked on
+nothing but the cost clause**, against 104 for the modal band and 111 for cost reduction. A second
+probe, greedy over the individual atoms, ranked the rows: "Discard a card" alone finishes 86 cards,
+counter removal 49, the singular tap 35, "Sacrifice another" 35. The band delivered **274**, which is
+the sum of exactly the rows that were written; the residue is named below and each piece of it is a
+different band.
+
+**One vocabulary, two contexts, because the SDK says so.** `CostAtom`'s own KDoc calls itself "the
+one cost language": a payable thing is declared once and each *context* carries it through its own
+`Atom` wrapper. Assay had it the other way round — `Costs` read a list of cost sentences for an
+activated ability, and `Restrictions.additionalCostLine` was a separate rule that read
+"sacrifice {filter}" and nothing else. Two vocabularies over one English. So `Costs.atoms` is now a
+`Phrase<CostAtom>`, and the two contexts are two *lifts* of it. Adding "discard a card" to the
+activation side gave "As an additional cost to cast this spell, discard a card." for free, and the
+test for that property is one assertion in each of the two files.
+
+**What is deliberately *not* an atom is the other half of the argument.** "Sacrifice ~", "Exile ~",
+`{T}`, `{Q}`, "Exert ~" stay `AbilityCost` cases and are unreachable from the spell side — for the
+reason `CostAtom` gives for keeping `excludeSelf` off it: *a spell being cast has no source
+permanent*. That is a rule rather than a gap, and `RestrictionsTest` asserts the decline.
+
+**Capitalization stopped being an `alternate` and became a parameter.** A cost atom is the one clause
+Oracle capitalizes that is not a sentence start, so while costs lived in one position the lowercase
+spelling could be an `alternate` — parseable, never printed. It no longer holds: in
+"As an additional cost to cast this spell, **sacrifice** a creature." the lowercase form is
+*canonical*. The vocabulary is therefore a function of its leading word's spelling, instantiated
+twice, which is also what stops a row existing in one capitalization only.
+
+**Three card bugs, all of the same kind, all invisible in play.** The differential went 0 → 3 the
+first time the gate could read a cost's noun phrase, and every one of them was a hand-written card:
+
+- **Wirewood Symbiote** and **Fungal Plots** spell "an Elf you control" and "two Saprolings" as
+  `GameObjectFilter.Creature.withSubtype(…)`. A bare tribal noun means any *permanent* of that
+  tribe — the same correction the 103-card migration made everywhere the grammar could already see,
+  and these two survived it because their nouns were inside a **cost**, which nothing read until now.
+  Unobservable today, since every printed Elf and Saproling is a creature.
+- **Gene Pollinator** writes `Costs.TapAnotherPermanent()` for "Tap an untapped permanent you
+  control" — a text with no "another" in it, and a filter left at the facade's unqualified default
+  where the noun is "permanent". The `excludeSelf` restated what the co-paid `{T}` already
+  guarantees.
+
+**Where the ranking points next, in this family.** The same greedy probe names the rows left, and
+they are three different bands rather than more rows:
+
+- **The self costs that are activated from another zone** — "Discard ~" (25 cards) and
+  "Exile ~ from your graveyard" (22). Both need `ActivatedAbility.activateFromZone`, which the cost
+  clause *determines* — you cannot discard a permanent, and "from your graveyard" says where the card
+  is. That makes the cost rule's result a pair of (cost, zone) rather than a cost, which is a change
+  to `Costs.cost`'s type and to `Activated`'s four call sites: a band of its own, not a row.
+- **The keyword-labelled costs** — "Exhaust — {5}{U}{U}" (6), "Power-up — {5}{G}{G}" (8),
+  "Boast — {4}{R}" (7), "Max speed — {3}" (10), "Renew —", "Forecast —", "Waterbend". Each is a flag
+  on `ActivatedAbility` plus a printed prefix; one shape, seven rows.
+- **Filter gaps, not cost gaps** — "Sacrifice a Food" (14) and "Sacrifice another creature or
+  artifact" decline in [`Filters`](src/main/kotlin/com/wingedsheep/assay/grammar/Filters.kt), not
+  here: the artifact subtypes the SDK publishes no list for, and the type disjunction.
+- **`{S}`** (20 cards) is an **SDK gap** — `ManaCost` cannot express snow mana, so `Primitives.manaCost`
+  declines rather than inventing a symbol. That one is `add-feature` work.
+
+## The spell-cost band
+
+What a spell costs, and what changes it. Whole-corpus coverage went 7,451 → **7,577 cards**,
+byte-exact lines 25,377 → **25,551**, the differential's compared population 2,747 → **2,795** — and
+like the cost band before it, no new SDK type: `ModifySpellCost` already had every field.
+
+**The probe picked it, and it picked it against both other rankings.** On the tail ranking the
+family reads 265 cards blocked and 112 sole-blocked, which is fourth. What moves it to first is step
+two — substituting a known-good line for the family's own span and re-parsing — because this family's
+span is the *whole line*, so the substitution is exact rather than a prediction:
+
+| family | tail rank `sole` | probe: whole cards finished |
+|---|---|---|
+| **`This spell costs …`** | 112 | **112** |
+| modal (`Choose one —` + bullets) | 0 (363 reached) | 75 |
+| `~'s power and toughness are each equal to …` | 67 | 68 |
+| library look-at-top-N | 119 | 64 |
+| `Whenever one or more …` | 130 | 32 |
+| fronted `Until end of turn, …` | 186 | **0** |
+
+That last row is the whole argument for step two in one line: the largest sole-blocked count in the
+table finishes *nothing*, because every one of its payloads is a construct the grammar also lacks.
+
+### The shape: one sentence, three vocabularies
+
+`ModifySpellCost(target, modification, gating)` has three fields, and the printed sentence has
+exactly three variable parts, so [`SpellCosts`](src/main/kotlin/com/wingedsheep/assay/grammar/SpellCosts.kt)
+is their product rather than one rule per sentence:
+
+```
+  <subject> cost(s) <amount> less|more to cast <clause>.
+     │                 │            │             └── nothing · if <condition> · for each <count>
+     │                 │            │                 · if it targets <filter> · , where X is <var>
+     │                 │            └── the direction: two SDK families, not a sign
+     │                 └── generic or coloured: also two SDK families, split on the printed cost
+     └── this spell · spells you cast · <quality> spells you cast · <quality> spells
+```
+
+The subject is a slot shared by every sentence, which is why "Creature spells you cast cost {1} less
+to cast." cost one row rather than a parallel set — 148 cards arrived with the same five clauses the
+`This spell` subject uses.
+
+### Filters, instantiated a third time: spell position
+
+A spell on the stack **is not a permanent**, and two rules follow from that fact rather than from a
+spelling:
+
+- A bare subtype in spell position means `Any.withSubtype`, not the battlefield noun phrase's
+  `Permanent.withSubtype` — the reading the differential took 103 cards to settle for the
+  battlefield. So `Filters.spellQuality` is the cascade instantiated for the position, exactly as
+  `SelfSteps.retargetable` is instantiated per anaphor, and the bare-subtype row there is
+  **canonical** where the battlefield one is an `alternate`.
+- A `StatePredicate` — tapped, attacking, face-down — is a fact about a permanent, so a spell filter
+  may not carry one. That guard is why Dream Chisel *declines*: its
+  "Face-down creature spells you cast cost {1} less to cast." has a dedicated
+  `SpellCostTarget.FaceDownYouCast`, and reading it as a creature filter with `IsFaceDown` on it is
+  a different value that prints back byte-identically. The differential caught it; the guard closes
+  it rather than folding it.
+
+### The finding: `FixedIf…` restates `OnlyIf`, and the corpus is split
+
+`CostReductionSource` carries `Fixed`, `FixedIfControlFilter`, `FixedIfCreatureAttackingYou`,
+`FixedIfCreatureDiedThisTurn` and `FixedIfVoid`. Every one says "reduce by *n* when *P* holds",
+which is what `ReduceGeneric(n)` under `CostGating.OnlyIf(P)` says — and the hand-written corpus
+writes the same sentence both ways, 21 cards each.
+
+The grammar emits **the gate**, and the reason is reach rather than counting: its condition slot is
+the whole of `Conditions`, so one rule reads every "… if <condition>" sentence the grammar will ever
+know, while the `FixedIf…` cases are five sentences that cannot become six without an SDK change.
+The one exception is `FixedIfAnyTargetMatches`, which stays canonical for "if it targets …" because
+what it tests — the spell's own target list — is not a `Condition` and has no gate spelling.
+
+So seven goldens diverge on purpose, and that divergence *is* the finding: **the `FixedIf…` family
+should fold into `OnlyIf`**, and until it does, two cards printing one sentence carry two models.
+`Ghalta, Primal Hunger` is the same finding one level down — `TotalPowerYouControl` against
+`TotalPropertyAmongPermanentsYouControl(Power, Creature)`, which the SDK's own KDoc already calls
+the generalization of it.
+
+### Leonin Vanguard: an intervening-if that lost its scope
+
+Widening `Conditions` made this line readable, and the differential immediately reported it:
+
+> At the beginning of combat on your turn, **if you control three or more creatures**, this creature
+> gets +1/+1 until end of turn **and** you gain 1 life.
+
+`Steps.conditionalClause` slotted a single atom and sat inside the clause run, so the condition
+scoped the *first* clause and the second was joined after it. That round-trips byte-exactly and means
+something else — and inside a trigger it means something else in the rules, because `Triggers` lifts
+a **top-level** gate into `interveningIf` (CR 603.4, re-checked on resolution) and a gate buried
+under a `Composite` is not top-level. The ability silently lost its intervening-if.
+
+The fix is the one the pay-gates already carry, applied to the same shape: the rule's consequence is
+a clause *run*, and the rule is sentence-terminal — out of `simpleClause`/`laterClause`, into
+`clause`, with `gatedConsequence` as its slot so no second gate can open inside it. This is
+Kalastria Highborn's lesson a second time: **a gate's scope runs to the end of the sentence.**
+
+Making it terminal cost twelve cards of the shape "Counter target spell. **If you control a blue
+creature, draw a card, then discard a card.**", which the ledger's diff reported the moment it was
+re-baked — the artifact doing exactly the job it was committed for. The answer is not to relax the
+rule but to name the position: `runEndingInScopedClause` is a run of ordinary clauses that *ends* in
+a scoped one, with the scoped clause as the phrase's last slot so nothing can follow it. The
+intermediate fix that only widened the full-stop join was wrong and the gate said so within one run
+— "…draw a card, then discard a card." had two readings, the condition over both clauses or over the
+draw with the discard joined after, which is the same scope leak one join further along.
+
+### Card bugs it found, all of one known class
+
+Five hand-written cards spell a **bare tribal noun** as `Creature.withSubtype` where the settled
+reading is `Permanent.withSubtype` — the 103-card migration's rule, in positions that migration did
+not reach (a cost gate's condition, a target filter, a lord's group). They are reported rather than
+fixed here, because each lives in a different era module and the fix re-blesses the corpus-wide card
+snapshot:
+
+| card | where |
+|---|---|
+| Goblin Warchief [SCG] | "Goblins you control have haste" |
+| Krosan Warchief [SCG] | the regenerate target |
+| Grow Extra Arms [SPM] | the target filter |
+| Tombstone, Career Criminal [SPM] | "target Villain card from your graveyard" |
+| Dragon's Prey [TDM] | "if it targets a Dragon" |
+
+### What is left in the family, with counts
+
+- **The subject vocabulary** — "Instant and sorcery spells you cast" (20 lines) needs the type
+  disjunction in its adjectival form; the bare colours ("Red spells", 25) and the remaining subtypes
+  are rows in `Filters.spellQuality`, not new sentences.
+- **`CostGating.NthOfTypePerTurn`** — "The first spell you cast each turn costs {1} less to cast."
+  (6 goldens): a subject shape rather than a clause, and the `gating` field's third case.
+- **The leading condition** — "If you weren't the starting player, this spell costs {1} less to
+  cast." (3). Both orders exist for one model, so it is an `alternate` of the trailing form, exactly
+  as the conditional statics do it.
+- **`Conditions` itself** is the ceiling on the "if …" clause and always will be: 74 lines print a
+  condition, and the grammar names eleven. Every row added there also enriches every intervening-if,
+  every cast restriction and every conditional static — which is why it is the highest-leverage
+  place left in this family and not a member of it.
 
 ## What Phase 1 already found
 
@@ -505,25 +800,34 @@ partially-read card would count a keyword Assay never saw as agreement, so every
 named population bucket instead and the denominator stays visible.
 
 ```
-  Hand-written cards                 9127
-    compared                         2495
-    not yet covered by the grammar   5995
-    script slot not modelled yet      83
-    lines do not fold into one card   50
+  Hand-written cards                 9131
+    compared                         2698
+    not yet covered by the grammar   5793
+    script slot not modelled yet      88
+    lines do not fold into one card   54
     multi-face (out of scope)        301
-    Oracle text differs from golden  203
+    Oracle text differs from golden  197
     golden would not decode            0
 
-  Confirmed — models agree           2494    999.6‰ (100.0%)
-  DIVERGENT — read every one            1
+  Confirmed — models agree           2698   1000.0‰ (100.0%)
+  DIVERGENT — read every one            0
 ```
 
-**The one standing divergence is the already-open `ManaColorSet.Specific` finding**, recurring on
-Spider Manifestation exactly as the note below predicted it would. The count was at zero after the
-sweep and the two findings after it; the spell-cast band took it to four and three of those are
-fixed here, which is the gate behaving the way it is supposed to — zero is a checkpoint, not a
-property, and it has risen on the day the grammar reached every new card class but one. The sweep
-itself took the count from 122 to 1: every divergence the gate had
+**The count is back at zero, and the card that took it off zero was a card bug.** The Bloomburrow
+band's one standing divergence was the already-open `ManaColorSet.Specific` finding, recurring on
+Spider Manifestation exactly as the note below predicted it would: "{T}: Add {R} or {G}." written as
+one `AddManaOfChoiceEffect` where 165 cards write two abilities. What the finding's own note says
+justifies `Specific` is a *rider* the two-ability form cannot express correctly — and Spider
+Manifestation's mana line has no rider at all. It was the first of the thirteen to become comparable
+and the one that did not belong in the group; it is now two abilities, with the scenario test that
+asserts the observable half (activating adds the colour straight into the pool, with no colour
+decision to make). The finding itself stands, unchanged and still not folded: the other twelve keep
+their riders, and the grammar still never emits `Specific`.
+
+The count was at zero after the sweep and the two findings after it; the spell-cast band took it to
+four and three of those were fixed in that band, which is the gate behaving the way it is supposed to
+— zero is a checkpoint, not a property. The sweep itself took the count from 122 to 1: every
+divergence the gate had
 accumulated was read, classified as parser bug / card bug / fold, and acted on. The one it left
 standing was Lavaborn Muse, closed by the CR 603.4 split below. What the sweep found, by kind:
 
@@ -653,8 +957,10 @@ and never `triggerRestriction`, so a "while" card declines rather than printing 
 means something else.
 
 **The differential was at zero here, and the spell-cast band moved it off — exactly as this
-paragraph predicted.** Four divergences over 46 newly-compared cards, three of them fixed (one
-parser bug, two card bugs) and the fourth the standing `ManaColorSet.Specific` finding. Zero is a
+paragraph predicted.** Four divergences over 46 newly-compared cards, three of them fixed on the spot
+(one parser bug, two card bugs) and the fourth — Spider Manifestation, under the standing
+`ManaColorSet.Specific` finding — read afterwards and fixed as a third card bug, since that card's
+mana line carries none of the riders the finding says the type earns its place on. Zero is a
 checkpoint, not a destination: it means every card the grammar reads whole agrees with its golden on
 the day it is measured, and the next band of rules is expected to move it off again.
 
@@ -917,12 +1223,21 @@ Found the way all five were, by running it on a card class it had never reached.
   "Target creature gets +3/+3 until end of turn." Different polymorphic hierarchies, so nothing
   clashes, but one card's JSON can show both under one type name.
 - **Open: `ManaColorSet.Specific` is a second spelling of a dual land's line.** 165 cards write
-  "{T}: Add {B} or {G}." as two `AddManaEffect` abilities sharing a cost, and 13 write it as one
+  "{T}: Add {B} or {G}." as two `AddManaEffect` abilities sharing a cost, and a much smaller group —
+  13 when this was written, 16 goldens today — write it as one
   `AddManaOfChoiceEffect(ManaColorSet.Specific(...))`. Unlike the other entries in this list the
   split has a *reason*: every card in the smaller group carries a rider the two-ability form cannot
   express correctly — "Activate only once each turn" on two abilities permits two activations — so
   the type earns its place. The grammar emits the majority and never emits `Specific`, and none of
-  the 13 is compared today because each one's rider declines anyway.
+  the smaller group is compared today because each one's rider declines anyway.
+
+  **The divergence it threw off is also its membership test.** Spider Manifestation was in the
+  smaller group with a bare "{T}: Add {R} or {G}." and no rider on it at all — so its line parsed, so
+  the card was compared, so it diverged, and the finding's own reason for the type is what says it
+  belonged in the majority. It is now two abilities. Generalized: **a card in the smaller group whose
+  mana line *reads* is a card in the wrong group**, because a rider is exactly what makes the line
+  decline. That test costs nothing to run — it is the differential, unchanged — and it is why the
+  finding is worth leaving open rather than folding.
 
 And the gate paid for itself before its first report: writing it surfaced that "Plains"
 de-pluralized to `Subtype("Plain")` — the "Elves" → `Elve` failure, live on the basic land types,
@@ -988,17 +1303,24 @@ just edited is one restart away from being re-measured, and a custom card runs t
 stripping and the invertibility check included — instead of an approximation of it.
 `com.sun.net.httpserver` is in the JDK, so the SDK-only dependency rule is untouched.
 
-Two things it shows that no CLI report does:
+Three things it shows that no CLI report does:
 
 - **Which cards are behind a decline family**, and how many of those already have a hand-written
   golden. `assay report` ranks the families; clicking one is the backlog it names, split into the
   grammar gaps (answer already written, differential confirms it the moment it parses) and the
   possible SDK gaps.
-- **Both rankings side by side.** Keying declines by the token a line *died on* answers "what is the
-  grammar missing"; keying them by the **sentence shape** — the line with numbers and mana symbols
-  collapsed — answers "what should I write next", and they disagree sharply. The token ranking's top
-  row is `Whenever` at 5,070 cards, which names no piece of work; the shape ranking's is
-  `Enchant creature` at 921 cards, which is one rule.
+- **All three rankings side by side.** Keying declines by the token a line *died on* answers "what is
+  the grammar missing"; by the **sentence shape** — the line with numbers and mana symbols collapsed
+  — answers "which whole sentence needs a rule"; and by the **parse's tail** — the text from the
+  decline's own offset on, cut to three words — answers "what construct would let these lines get
+  further", which is the one that decides work. They disagree sharply, and the page says why.
+  `assay report --rank <token|shape|tail>` prints the same three tables.
+- **Whether writing a family would actually finish its cards.** The sole-blocked count says which
+  cards a band *reaches*; the probe on a family's page substitutes a known-good prefix for the
+  family's own span, re-parses every declined line of every card behind it on the live grammar, and
+  says how many whole cards come into coverage. Landfall reads 189 cards blocked and 104
+  sole-blocked, and the probe says **48**. That gap is why every band picked without this step has
+  been overstated.
 
 The corpus sweep (~5s) runs in the background at startup, so the live parser and the rule tree are
 usable before the numbers land; the differential runs on first request and is then cached, because
@@ -1009,6 +1331,59 @@ reading is a value, and the rule that produced it is gone by the time the gate s
 *print* side is deterministic: `oneOf` prints through the first canonical alternative that can
 express the value, so "which rule printed this" has one answer, and it is the same walk the round
 trip depends on. A rule showing no usage printed nothing in 34,882 cards.
+
+### The explorer inside the app
+
+`game-server` mounts the same page and the same handlers under `/api/assay/explorer`, so the web
+client's **Set Completion** view offers it as a tab beside the coverage grid. That is one `<iframe>`
+and no second implementation: `explore/ExploreApi.kt` holds every route's behaviour and both servers
+— `assay explore`'s loopback [`ExploreServer`] and the Spring controller — are reduced to moving
+bytes. A React port of these views would have been free to drift from the gates it displays, which is
+the thing "a view, never a second source of truth" exists to prevent.
+
+Unlike the custom-card sandbox next door, the tab is **not** gated. It is a read over public card
+text — no state a request can mutate, no game, no account, no corpus write — so the thing to weigh is
+resources, not exposure, and the sweep is already lazy: `ExploreApi` is built and its sweep started
+on the *first request*, so a server nobody opens it on fetches nothing. Where `~/.cache/scryfall`
+does not exist, that first sweep downloads the bulk; where it cannot, the page stays up with its
+live parser and rule tree and reports the failure. The differential needs `mtg-sets` test resources
+and so answers "no goldens found" off a bootJar — one page degraded, the rest intact.
+
+## The verdict ledger
+
+`just assay-bake` writes `game-server/src/main/resources/coverage/assay-verdicts.json`: one sorted
+line per card, saying whether [`CardCompiler`] reads it **whole** and, if not, the decline that
+stopped it and the printed line that decline points at. 6,979 of 34,882 cards, at the time of
+writing.
+
+It has two readers, and the second one is why the format is what it is.
+
+**The Set Completion view** joins it per card, which turns the *missing* half of that page into a
+ranked backlog: a card nobody has authored that Assay already reads end to end needs no new grammar
+and no new SDK vocabulary, so it is the cheapest work on the board. The page badges those cards,
+filters to them, counts them per set, and can sort every set by how many it has. Baked rather than
+computed because the production server has no Scryfall cache — the same reason, and the same answer,
+as the coverage denominator in `scripts/gen-set-totals`.
+
+**`git diff`** reads it as the regression check this module has been missing. At corpus size a change
+can move thousands of verdicts and "round-trips went up" hides the twelve cards that went *down*.
+One card per line, sorted by name, means a re-bake's diff *is* the list of cards whose reading
+changed — so re-bless it deliberately, in its own commit, the way the card goldens are. It is
+therefore not wired into the build: a stale ledger degrades into an out-of-date badge, while an
+auto-regenerated one would erase the only signal that made it worth committing.
+
+It answers with [`CardCompiler`] rather than with line verdicts because "could be implemented using
+Assay" is that object's exact question. A card whose every line round-trips can still fail on a `*`
+power, a second face, or `CardValidator`, and a badge reading "ready" for a card that cannot be
+produced would be worse than no badge.
+
+> Baking it for the first time found a bug the gates could not see: `CardCompiler` **threw** on a
+> card with a negative printed power (`CreatureStats` requires a non-negative base and enforces it
+> with `require`), so Spinal Parasite and the Un-set creatures crashed the compiler instead of
+> declining. Nothing had previously handed it all 34,882 cards; the Scenario Builder's paste box
+> would have answered a 500. Negative P/T is now a `HEADER` decline naming the value — an SDK finding
+> reported the way every other one is — and constructing the definition is guarded, so any *other*
+> model invariant becomes an `INVALID_CARD` decline rather than an exception out of a bulk run.
 
 ## Adding a rule
 

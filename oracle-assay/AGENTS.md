@@ -84,9 +84,11 @@ review, it is a change to decline.
 - **Two SDK spellings of one thing get one rule, and a finding.** Registering both is genuine
   ambiguity. `Primitives.protectionScope` deliberately never emits
   `Simple(PROTECTION_FROM_EACH_OPPONENT)`; `ProtectionScope.Colors` is a scope the grammar never
-  produces; `Mana` never emits `ManaColorSet.Specific`, which 13 cards use for a dual land's line
-  where 165 use two abilities. Each such omission carries a KDoc paragraph naming it as an SDK
-  finding.
+  produces; `Mana` never emits `ManaColorSet.Specific`, which a handful of cards use for a dual
+  land's line where 165 use two abilities. Each such omission carries a KDoc paragraph naming it as
+  an SDK finding. Declining the minority spelling also polices the minority's membership: what earns
+  `Specific` is a rider, a rider is what makes the line decline, so a card in that group whose mana
+  line *reads* is in the wrong group. That is how Spider Manifestation's card bug surfaced.
 - **A value the SDK carries twice is derived, not spelled.** `ActivatedAbility` says a mana ability
   is one in `isManaAbility` *and* in `timing`; no printed word says either, and CR 605.1a defines it
   as a property of the effect and the target list. `Activated.abilityFor` therefore computes both,
@@ -109,6 +111,22 @@ write it inline the first time, and factor when the *second* member of the shape
 ability, so every step rule enriches every trigger rule for free. Any new sentence context —
 activated abilities, modal spells, "you may", delayed triggers — must slot the existing effect
 grammar rather than restating the verbs. The win is multiplicative; restating is additive and rots.
+
+The **cost band** is the same rule applied to a *vocabulary* rather than to a clause, and it is the
+one to copy when the SDK has already done the factoring. `CostAtom`'s KDoc calls itself "the one cost
+language" — one payable thing, carried into each context by that context's own `Atom` wrapper — and
+the grammar had it the other way round: `Costs` read a list of cost sentences and
+`Restrictions.additionalCostLine` read one of them again, separately. The fix was to make the
+vocabulary a `Phrase<CostAtom>` and the two contexts two lifts of it. Read the SDK's own type before
+writing a second vocabulary; if it already unifies the thing, the grammar's factoring should be the
+same shape, and what stays outside the shared part (the self-costs, which a spell cannot pay) is then
+a stated rule rather than a gap.
+
+The band's other transferable finding is about **case**. A construct that lives in one sentence
+position can spell its second capitalization as an `alternate` — parseable, never printed. The moment
+it reaches a second position that spelling may become *canonical* there, and an `alternate` would
+print the wrong one. Make the capitalization a parameter of the family and instantiate it per
+position, exactly as `SelfSteps.retargetable` is instantiated per anaphor position.
 
 **Layer over a predicate bag; never compose.** A `GameObjectFilter` is a bag with no canonical
 spelling, so two rules that can each print *part* of one value leave printing underdetermined. The
@@ -150,6 +168,37 @@ both are worth knowing before touching a leaf: a subtype is a *proper noun* stan
 `SentenceCase` has already lowercased it, and the fix belongs to the leaf and is gated on the SDK's
 own type list — an ungated one reads "**Other** creatures you control get +0/+1." as a tribe called
 *Other*, byte-perfect and wrong, which the differential caught and the README records.
+
+The **Bloomburrow band** is the third, and it is the shape of a set picked *because it is already
+implemented*: every card in it has a golden, so every declined line is a grammar gap whose answer is
+written and whose fix the differential confirms on the same run. That is where it paid — four pieces
+of machinery moved 594 cards corpus-wide and surfaced sixteen bugs in the *corpus*, one of them in an
+`mtg-sdk` trigger facade that 29 cards share. Two of the four went outside `grammar/` again, and the
+reason is the one this file keeps stating: an ability word has no rules meaning (CR 207.2c), so it is
+printed shape and belongs to `normalize/`, exactly where the attachment noun went. The other lesson
+is subtractive — the keyword *run* deleted two rules while covering more, because the count belonged
+in the slot and not in the rule, and a family with a `pairForm` boolean in it is a family with an
+axis it has not named yet.
+
+The **spell-cost band** is the one to read for a family whose axes are the SDK type's own fields.
+`ModifySpellCost(target, modification, gating)` has three, the printed sentence has three variable
+parts, and the grammar is their product — one subject slot shared by every clause, so the second
+subject ("Creature spells you cast cost {1} less to cast.", 148 cards) was one row rather than a
+parallel set. Three of its lessons generalize. **Read the SDK's duplicates before choosing a
+canonical, and choose by reach**: `CostReductionSource`'s five `FixedIf…` cases restate
+`CostGating.OnlyIf`, the corpus writes both 21 times each, and the gate wins because its slot is the
+whole of `Conditions` while the `FixedIf…` cases can never become six. **A position can need its own
+instantiation of `Filters`**: a spell is not a permanent, so a bare subtype in spell position is
+`Any.withSubtype` and a `StatePredicate` is refused outright — the guard that made Dream Chisel
+decline instead of round-tripping a different value. And **widening a condition vocabulary exposes
+the sentences above it**: the new `Conditions` rows made Leonin Vanguard readable, and the
+differential immediately showed `conditionalClause` scoping its condition over only the first clause
+of a run — which inside a trigger silently dropped the CR 603.4 intervening-if, because `Triggers`
+lifts only a *top-level* gate. The fix was the pay-gates' own shape: a clause run for the
+consequence, and the rule made sentence-terminal — plus a named position, `runEndingInScopedClause`,
+for the twelve lines that *end* in such a clause ("Counter target spell. If you control a blue
+creature, draw a card, then discard a card."). Widening the full-stop join instead was tried and was
+wrong, and the ambiguity gate said so in one run: the scope simply leaked one join further along.
 
 ## Fail-closed matching — the rule that catches the dangerous bug class
 
@@ -326,22 +375,34 @@ ranking in ways that change the work. The step triggers are the worked example: 
 the other 387 were blocked on their effect clause all along.
 
 **The ranking that has actually held up is over the parse's *tail*, and it is two measurements.**
-The spell-cast band is the worked example and the method is reusable verbatim:
+Both are now in the tool — `just assay-report --rank tail`, and the probe box on the explorer's
+decline-family page — because the spell-cast band had to be picked with a throwaway probe outside it.
+That band is the worked example and the method is reusable verbatim:
 
-1. `just assay-report --declines` (add `--implemented` for the grammar backlog), re-parse every
-   declined line, take the decline's `position`, and key the families on **the text from that offset
-   on**. That is neither the token ranking (which over-weights a missing prefix) nor the shape
-   ranking (which counts cards a family *mentions*): it names the piece of grammar that would have
-   to exist for the line to get further. Then count, per family, the cards **all** of whose declined
-   lines fall in it — the honest "sole-blocked" number.
+1. Key each declined line on **the text from the decline's `position` on**, skeletonized and cut to
+   its first three words (`DeclineKey.TAIL`). That is neither the token ranking (which over-weights a
+   missing prefix) nor the shape ranking (which counts cards a family *mentions*): it names the piece
+   of grammar that would have to exist for the line to get further. Then count, per family, the cards
+   **all** of whose declined lines fall in it — the honest "sole-blocked" number, which the report
+   prints as `sole` and the explorer as a column beside `Blocks`.
 2. Before writing anything, **substitute a known-good prefix for the family** into those cards'
    declined lines and re-parse. That says how many payoffs the rest of the grammar can already read,
    which is the number the band will actually deliver. The spell-cast family predicted 234 whole
    cards and delivered 183; modal spells, which both other rankings put first, measured 126.
+   Landfall is the standing example on the live grammar: 189 cards blocked, 104 sole-blocked, and the
+   probe says **48** whole cards would be finished.
 
-Every ranking that skipped step 2 has overstated its band, three times in the same direction. Step 2
-costs one throwaway probe over `Grammar.abilityLine.parseLine`, and it is what turns "which cards
-does this family reach" into "which lines does it finish".
+Every ranking that skipped step 2 has overstated its band, four times in the same direction. Step 2
+is family-specific, so it cannot be precomputed and does not belong in a report — but it is one
+`PrefixProbe.run` over the live grammar, and it is what turns "which cards does this family reach"
+into "which lines does it finish".
+
+**Three keyings, three biases, and knowing which to read.** `DeclineKey` holds all of them and the
+gate computes all three in the one sweep, so the CLI and the explorer cannot disagree about a family.
+Read the tail by default. Read `SHAPE` when the family's sentence *is* the whole line. Read `TOKEN`
+when the parse dies at offset 0 — a line that read nothing has no tail short of itself, so `TAIL`
+degenerates to `SHAPE` there and only the dead token holds the family together. The modal bullets are
+the case: 2,015 declined `•` lines are one token family and hundreds of tail rows.
 
 The split re-weights the list rather than reordering it wholesale, which is itself the finding: the
 top families are the same in both populations, so the grammar backlog and the SDK backlog are being
@@ -432,7 +493,12 @@ implementation of the thing it displays.
 `FinenessReport`, `Touchstone` or `Differential` — the same objects the CLI renders as text. If the
 explorer needs a number the gates do not produce, the number goes in the *gate* and both read it.
 An explorer that computed its own fineness would make two reports that can disagree, and the one
-people look at would be the one nobody gates on.
+people look at would be the one nobody gates on. The decline rankings are the worked example of the
+rule being applied rather than argued about: the keying (`gate/DeclineKey.kt`), the family counts and
+the sole-blocked number all live in `FinenessReport`, so `assay report --rank tail` and the page are
+one ranking. What stays in `AssayIndex` is the *link table* — which card names, a dozen example
+lines, the hand-written split — which is not a number and would make a corpus run's memory grow with
+the corpus for a question no gate asks.
 
 **It calls the live grammar; it never precomputes a payload.** The mtgish model explorer this is
 modelled on had to embed its data and ship the parser as WebAssembly, because the parser lived in
@@ -441,7 +507,24 @@ resource — the whole value is that a rule you just edited is one restart away 
 
 **No new production dependency, and no path back to being a loader.** `com.sun.net.httpserver` is in
 the JDK; that is why the SDK-only rule still holds, and it is the constraint to check before reaching
-for a framework. The server binds loopback only and holds no state a request can mutate.
+for a framework. `ExploreServer` binds loopback only and holds no state a request can mutate.
+
+**Two transports, one explorer — and the split is by transport, not by feature.** `game-server`
+mounts the same page and the same routes under `/api/assay/explorer` so the web client's Set
+Completion view can frame the live tool as a tab. That is only safe while neither server *decides*
+anything: `explore/ExploreApi.kt` owns the sweep, the caches and every route's behaviour, and both
+`ExploreServer` and the Spring controller are reduced to moving bytes. If you find yourself writing a
+`when` on a route name in a transport, it belongs in `ExploreApi`. The page's request prefix is a
+serve-time substitution (`ExploreApi.page(apiBase)` replaces `%%ASSAY_API_BASE%%`) for the same
+reason — a hard-coded `/api/` would have forced the second server to proxy or the page to fork.
+
+The embedded tab is **not** gated, and the reason is worth stating so nobody "fixes" it: the explorer
+is a read over public card text with no state a request can mutate, so the cost of mounting it is
+resources rather than exposure. Those are handled where they arise — the sweep is lazy, so a server
+nobody opens the tool on pays nothing; a sweep that cannot run leaves the page usable and says so;
+the differential degrades to its "no goldens" message off a bootJar. What this does *not* license is
+treating the explorer as production infrastructure: it still wants a 24 MB corpus and a warm index,
+which is why the coverage badges read the baked ledger below instead of asking it.
 
 Two supporting pieces have their own reasons:
 
@@ -455,6 +538,40 @@ Two supporting pieces have their own reasons:
   `oneOf` prints through the first canonical alternative that can express a value, so "which rule
   printed this" is exact. Do not replace it with a re-match to attribute a number: that would be a
   second, unverified implementation of the half the round trip depends on.
+
+## The verdict ledger (`bake/`)
+
+`just assay-bake` writes one sorted line per card — read-whole, or the decline that stopped it — to
+`game-server/src/main/resources/coverage/assay-verdicts.json`. It is the one place this module
+*does* bake a snapshot, and the exception is principled rather than convenient: it answers a
+question for a machine that cannot run the grammar. The production `game-server` is a bare JRE with
+no `~/.cache/scryfall`, so the Set Completion view's "Assay already reads this card" badge has no
+live path to an answer, exactly as the coverage denominator has none and is baked by
+`scripts/gen-set-totals`. **This does not weaken the explorer's rule.** The explorer must stay live
+because its value is re-measuring an edited rule; the ledger is read by a server that has no grammar
+on hand at all.
+
+Three things to preserve when touching it:
+
+- **It is also the regression ledger this file has been asking for.** "Regressions need a diff, not a
+  total" describes exactly this artifact — one sorted line per card, re-blessed deliberately like the
+  card goldens — so a re-bake's `git diff` *is* the list of cards whose reading changed. That is why
+  `write` frames the JSON by hand instead of using `prettyPrint` (which would spread each card over
+  five lines and destroy the property), and why the bake is **not** wired into the build: an
+  auto-regenerated ledger erases the only signal that made it worth committing. A stale one degrades
+  into an out-of-date badge, which is the cheaper failure.
+- **It answers with `CardCompiler`, not with line verdicts.** "Could this be implemented using Assay"
+  is that object's exact question, and it is stricter than the line verdicts: a card whose every line
+  round-trips can still fail on a `*` power, a second face, or `CardValidator`. The explorer's
+  "cards fully covered" is therefore legitimately a little higher than the ledger's `whole`, and the
+  two are not meant to match.
+- **A bulk run is the first thing that hands the compiler every card, so it finds what nothing else
+  does.** The first bake crashed on a negative printed power — `CreatureStats` enforces a
+  non-negative base with `require`, and `CardCompiler` handed it `-1`. Both halves of the fix are the
+  module's own rules applied: negative P/T is now a `HEADER` decline naming the value (an SDK finding
+  reported like every other one), and constructing the definition is guarded so any *other* model
+  invariant becomes an `INVALID_CARD` decline. A compiler that throws breaks "declining is success"
+  for every caller — including the Scenario Builder's paste box, which would have answered a 500.
 
 ## Style
 
@@ -477,8 +594,11 @@ just assay explain "Wall of Omens"  # the same, with a caret on the token a decl
 just assay-gate                     # touchstone over the corpus; exit 1 on a bug
 just assay-gate --limit 2000        # fast smoke run while iterating
 just assay-report --top 40          # the same numbers, always exit 0 — the SDK gap report
+just assay-report --rank tail       # …keyed on the parse's tail, with the sole-blocked count
+just assay-report --rank tail --tail-words 4   # re-measure the tail's one design parameter
 just assay-differential             # Assay's readings vs. the hand-written cards
 just assay-explore                  # all of the above in a browser, on the live grammar
+just assay-bake                     # re-bless the whole-card verdict ledger (own commit; read the diff)
 ```
 
 Unit tests are Kotest string-spec under `src/test/kotlin/com/wingedsheep/assay/`, named for the
