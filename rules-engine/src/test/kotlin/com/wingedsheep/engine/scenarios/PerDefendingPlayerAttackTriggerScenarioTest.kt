@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.DeclaredAttack
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.engineSerializersModule
+import com.wingedsheep.engine.event.DelayedTriggeredAbility
 import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.support.GameTestDriver
@@ -20,6 +21,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalAttackTriggers
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
@@ -59,6 +61,15 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         subtypes = setOf(Subtype("Bear")),
         power = 2,
         toughness = 2,
+    )
+
+    val otherQualifyingCreature = CardDefinition.creature(
+        name = "Attack Group Menace Bear",
+        manaCost = ManaCost.parse("{1}{G}"),
+        subtypes = setOf(Subtype("Bear")),
+        power = 2,
+        toughness = 2,
+        keywords = setOf(Keyword.MENACE),
     )
 
     val testWalker = card("Attack Group Walker") {
@@ -124,6 +135,21 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         }
     }
 
+    val delayedWatcher = card("Per Player Delayed Attack Watcher") {
+        manaCost = "{2}"
+        typeLine = "Enchantment"
+    }
+
+    val attackDoubler = card("Attack Group Doubler") {
+        manaCost = "{2}"
+        typeLine = "Enchantment"
+        staticAbility {
+            ability = AdditionalAttackTriggers(
+                attackerFilter = GameObjectFilter.Creature.withSubtype(Subtype("Warrior")),
+            )
+        }
+    }
+
     data class Pod(
         val driver: GameTestDriver,
         val attackingPlayer: EntityId,
@@ -137,12 +163,15 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             TestCards.all + listOf(
                 qualifyingCreature,
                 nonQualifyingCreature,
+                otherQualifyingCreature,
                 testWalker,
                 perPlayerWatcher,
                 perPlayerMinTwoWatcher,
                 declarationWatcher,
                 existingFilteredDeclarationWatcher,
                 perAttackerWatcher,
+                delayedWatcher,
+                attackDoubler,
             )
         )
         val players = driver.initMultiplayer(
@@ -528,5 +557,94 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             perAttackerWatcher.name,
             attackEvent(pod, first to pod.playerB, second to pod.playerC),
         ) shouldHaveSize 2
+    }
+
+    test("additional attack trigger doubling remains scoped to the bound attacked player") {
+        val pod = pod()
+        val warrior = pod.driver.putCreatureOnBattlefield(
+            pod.attackingPlayer,
+            qualifyingCreature.name,
+        )
+        val bear = pod.driver.putCreatureOnBattlefield(
+            pod.attackingPlayer,
+            otherQualifyingCreature.name,
+        )
+        pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
+        pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, attackDoubler.name)
+
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(
+                pod.driver.state,
+                listOf(attackEvent(pod, warrior to pod.playerB, bear to pod.playerC)),
+            )
+            .filter { it.sourceName == perPlayerWatcher.name }
+
+        pending shouldHaveSize 3
+        pending.count { it.triggerContext.triggeringPlayerId == pod.playerB } shouldBe 2
+        pending.count { it.triggerContext.triggeringPlayerId == pod.playerC } shouldBe 1
+    }
+
+    test("event-based per-player delayed attack trigger fans out with player bindings") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val sourceId = pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, delayedWatcher.name)
+        val delayedId = "per-player-delayed"
+        val delayed = DelayedTriggeredAbility(
+            id = delayedId,
+            effect = Effects.DrawCards(1),
+            sourceId = sourceId,
+            sourceName = delayedWatcher.name,
+            controllerId = pod.attackingPlayer,
+            trigger = TriggerSpec(
+                event = EventPattern.YouAttackPlayerEvent(
+                    attackerFilter = qualifyingFilter,
+                ),
+                binding = TriggerBinding.ANY,
+            ),
+        )
+
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(
+                pod.driver.state.copy(delayedTriggers = listOf(delayed)),
+                listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
+            )
+            .filter { it.sourceName == delayedWatcher.name }
+
+        pending shouldHaveSize 2
+        pending.map { it.triggerContext.triggeringPlayerId }.toSet() shouldBe
+            setOf(pod.playerB, pod.playerC)
+    }
+
+    test("watched-target scope fails closed for per-player delayed attack triggers") {
+        val pod = pod()
+        val attacker = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val watchedEntity = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, otherQualifyingCreature.name)
+        val sourceId = pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, delayedWatcher.name)
+        val delayedId = "per-player-delayed-watched"
+        val delayed = DelayedTriggeredAbility(
+            id = delayedId,
+            effect = Effects.DrawCards(1),
+            sourceId = sourceId,
+            sourceName = delayedWatcher.name,
+            controllerId = pod.attackingPlayer,
+            trigger = TriggerSpec(
+                event = EventPattern.YouAttackPlayerEvent(
+                    attackerFilter = qualifyingFilter,
+                ),
+                binding = TriggerBinding.ANY,
+            ),
+            watchedEntityId = watchedEntity,
+            fireOnce = true,
+        )
+
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(
+                pod.driver.state.copy(delayedTriggers = listOf(delayed)),
+                listOf(attackEvent(pod, attacker to pod.playerB)),
+            )
+            .filter { it.consumesDelayedTriggerId == delayedId }
+
+        pending.shouldBeEmpty()
     }
 })
