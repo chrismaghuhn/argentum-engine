@@ -32,4 +32,3 @@ class AttackTriggerPatternSerializationTest : FunSpec({
         )
     }
 })
-
