@@ -114,6 +114,8 @@ data class ReplayRecordingSnapshot(
     val setup: ReplaySetup,
     val actions: List<com.wingedsheep.engine.core.GameAction>,
     val yields: List<ReplayYieldEntry>,
+    /** Monotone identity of the current input history, including truncations that restore a count. */
+    val recordingRevision: Long,
     val checkpoints: List<ReplayCheckpoint>,
     /** [ReplayFingerprint] of the position [actions] produces — the resume gate's expected value. */
     val fingerprint: String,

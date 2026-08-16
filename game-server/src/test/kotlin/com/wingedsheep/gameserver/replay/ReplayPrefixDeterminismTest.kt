@@ -1,6 +1,12 @@
 package com.wingedsheep.gameserver.replay
 
+import com.wingedsheep.engine.legalactions.EnumerationMode
+import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.LegalActionEnumerator
 import com.wingedsheep.engine.view.ClientStateTransformer
+import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.StateDigest
+import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
@@ -30,6 +36,53 @@ class ReplayPrefixDeterminismTest : ScenarioTestBase() {
         val replay: CompactReplay,
         val liveStates: Map<Int, GameState>,
     )
+
+    /**
+     * The A4 boundary that A6 must preserve. The raw decision nonce is normalized only in the
+     * typed decision-id slot; the rest of the perspective-safe observation remains exact.
+     */
+    private data class ObservationBoundary(
+        val structural: TrainingObservation,
+        val stateDigest: String,
+        val semanticEngineActions: List<LegalAction>,
+        val semanticObservationActions: List<com.wingedsheep.gym.contract.LegalActionView>,
+    )
+
+    private fun observationBoundary(
+        state: GameState,
+        perspectivePlayerId: EntityId,
+        observationBuilder: ObservationBuilder,
+        legalActionEnumerator: LegalActionEnumerator,
+    ): ObservationBoundary {
+        val actor = state.pendingDecision?.playerId ?: state.priorityPlayerId
+        val legalActions = if (state.pendingDecision == null && actor != null) {
+            legalActionEnumerator.enumerate(state, actor, EnumerationMode.ACTIONS_ONLY)
+        } else {
+            emptyList()
+        }
+        val observation = observationBuilder.build(
+            state = state,
+            perspectivePlayerId = perspectivePlayerId,
+            legalActions = legalActions,
+        ).observation as TrainingObservation
+        val normalizedWithoutDigest = observation.copy(
+            pendingDecision = observation.pendingDecision?.copy(decisionId = "D0"),
+            stateDigest = "",
+        )
+        val normalized = normalizedWithoutDigest.copy(
+            stateDigest = StateDigest.compute(normalizedWithoutDigest),
+        )
+        return ObservationBoundary(
+            structural = normalized.copy(legalActions = emptyList(), stateDigest = ""),
+            stateDigest = normalized.stateDigest,
+            semanticEngineActions = legalActions
+                .map { it.copy(description = "") }
+                .sortedBy { it.toString() },
+            semanticObservationActions = observation.legalActions
+                .map { it.copy(actionId = 0, description = "") }
+                .sortedBy { it.toString() },
+        )
+    }
 
     private fun recording(): Recording {
         val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
@@ -83,6 +136,9 @@ class ReplayPrefixDeterminismTest : ScenarioTestBase() {
             val replay = recording.replay
             val reconstructor = ReplayReconstructor(cardRegistry, null)
             val prefixes = listOf(0, 1, replay.actions.size / 2, replay.actions.size).distinct()
+            val observationBuilder = ObservationBuilder()
+            val legalActionEnumerator = LegalActionEnumerator.create(cardRegistry)
+            val perspective = EntityId(replay.setup.players.first().playerId)
 
             prefixes.forEach { prefix ->
                 val live = recording.liveStates[prefix].shouldNotBeNull()
@@ -100,6 +156,25 @@ class ReplayPrefixDeterminismTest : ScenarioTestBase() {
                 val builder = SpectatorStateBuilder(cardRegistry, ClientStateTransformer(cardRegistry))
                 builder.buildState(reconstructed, seats, setup.seatRoster, replay.gameId) shouldBe
                     builder.buildState(live, seats, setup.seatRoster, replay.gameId)
+
+                val liveObservation = observationBoundary(
+                    state = live,
+                    perspectivePlayerId = perspective,
+                    observationBuilder = observationBuilder,
+                    legalActionEnumerator = legalActionEnumerator,
+                )
+                val reconstructedObservation = observationBoundary(
+                    state = reconstructed,
+                    perspectivePlayerId = perspective,
+                    observationBuilder = observationBuilder,
+                    legalActionEnumerator = legalActionEnumerator,
+                )
+
+                liveObservation.structural shouldBe reconstructedObservation.structural
+                liveObservation.stateDigest shouldBe reconstructedObservation.stateDigest
+                liveObservation.semanticEngineActions shouldBe reconstructedObservation.semanticEngineActions
+                liveObservation.semanticObservationActions shouldBe
+                    reconstructedObservation.semanticObservationActions
             }
 
             reconstructor.reconstruct(replay).fidelity shouldBe ReplayFidelity.EXACT

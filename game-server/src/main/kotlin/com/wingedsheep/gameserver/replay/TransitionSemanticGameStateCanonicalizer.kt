@@ -36,6 +36,33 @@ internal object TransitionSemanticGameStateCanonicalizer {
     // but their UI text must not make an otherwise identical transition state diverge.
     private val presentationOnlyKeys = setOf("prompt", "effectHint", "yesText", "noText", "hint")
 
+    /**
+     * Descriptor-scoped presentation fields from the PendingDecision audit. Keep this map narrow:
+     * the surrounding decision objects still contribute their option IDs, ordering, constraints,
+     * payment shape, and continuation relationships to the transition fingerprint.
+     */
+    private val presentationOnlyFieldsByType = mapOf(
+        "DecisionContext" to setOf("sourceName", "inlineOnTrigger"),
+        "TargetRequirementInfo" to setOf("description"),
+        "ConditionalSelectionMinimum" to setOf("description"),
+            "SelectCardsDecision" to setOf(
+                "cardInfo",
+                "useTargetingUI",
+                "selectedLabel",
+                "remainderLabel",
+                "nonSelectableOptions",
+            ),
+        "OrderObjectsDecision" to setOf("cardInfo"),
+        "SplitPilesDecision" to setOf("pileLabels", "cardInfo"),
+        "OptionMetadata" to setOf("description", "iconKey"),
+        "ChooseOptionDecision" to setOf("defaultSearch", "optionCardIds"),
+        "SearchLibraryDecision" to setOf("cards", "filterDescription"),
+        "ReorderLibraryDecision" to setOf("cardInfo"),
+        "ManaSourceOption" to setOf("name"),
+        "WaterbendPermanentChoice" to setOf("name", "isCreature"),
+        "BudgetModeOption" to setOf("description"),
+    )
+
     /** Polymorphic state values need their concrete descriptor to discover nested Set fields. */
     private val polymorphicDescriptors: Map<String, SerialDescriptor> by lazy {
         val descriptors = linkedMapOf<String, SerialDescriptor>()
@@ -176,9 +203,12 @@ internal object TransitionSemanticGameStateCanonicalizer {
         return polymorphicDescriptors[typeName] ?: descriptor
     }
 
-    private fun isPresentationOnlyField(key: String, descriptor: SerialDescriptor?): Boolean =
-        key in presentationOnlyKeys ||
-            (key == "text" && descriptor?.serialName?.endsWith(".ModeOption") == true)
+    private fun isPresentationOnlyField(key: String, descriptor: SerialDescriptor?): Boolean {
+        if (key in presentationOnlyKeys) return true
+        val typeName = descriptor?.serialName?.substringAfterLast('.') ?: return false
+        return key in presentationOnlyFieldsByType[typeName].orEmpty() ||
+            (key == "text" && typeName == "ModeOption")
+    }
 
     private fun SerialDescriptor.fieldDescriptor(key: String): SerialDescriptor? {
         if (kind == StructureKind.MAP) return getElementDescriptor(1)

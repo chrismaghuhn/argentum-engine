@@ -87,6 +87,9 @@ class ReplayCheckpointFlusher(
                 flushed[gameId] = FlushCursor(
                     actionCount = record.replay.actions.size,
                     yieldCount = record.replay.yields.size,
+                    // A persisted replay predates this in-memory identity. Force the recovered
+                    // session through one coherent write before count-based skipping is possible.
+                    recordingRevision = null,
                 )
             } else {
                 runCatching { replayService.finalizePartial(gameId) }
@@ -151,11 +154,13 @@ class ReplayCheckpointFlusher(
     private fun ReplayRecordingSnapshot.flushCursor(): FlushCursor = FlushCursor(
         actionCount = actions.size,
         yieldCount = yields.size,
+        recordingRevision = recordingRevision,
     )
 
     private data class FlushCursor(
         val actionCount: Int,
         val yieldCount: Int,
+        val recordingRevision: Long?,
     )
 
     private companion object {

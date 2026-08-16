@@ -2,10 +2,27 @@ package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.BatchYesNoDecision
+import com.wingedsheep.engine.core.BudgetModalDecision
+import com.wingedsheep.engine.core.BudgetModeOption
+import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.ChooseModeDecision
+import com.wingedsheep.engine.core.ChooseReplacementDecision
+import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.ConditionalSelectionMinimum
 import com.wingedsheep.engine.core.LegendRuleContinuation
+import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ModeOption
+import com.wingedsheep.engine.core.OptionMetadata
+import com.wingedsheep.engine.core.OrderObjectsDecision
+import com.wingedsheep.engine.core.ReorderLibraryDecision
+import com.wingedsheep.engine.core.SearchCardInfo
+import com.wingedsheep.engine.core.SearchLibraryDecision
+import com.wingedsheep.engine.core.SelectCardsDecision
+import com.wingedsheep.engine.core.SelectManaSourcesDecision
+import com.wingedsheep.engine.core.SplitPilesDecision
+import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.PlayerYields
 import com.wingedsheep.engine.state.ZoneKey
@@ -196,6 +213,361 @@ class ReplayFingerprintV3Test : FunSpec({
             ),
         )
         ReplayFingerprint.of(modesA, 3) shouldBe ReplayFingerprint.of(modesB, 3)
+    }
+
+    test("v3 excludes audited decision display metadata but retains transition constraints") {
+        val player = EntityId("p1")
+        val first = EntityId("e1")
+        val second = EntityId("e2")
+        val contextA = DecisionContext(
+            sourceId = EntityId("source"),
+            sourceName = "Source A",
+            triggeringEntityId = EntityId("trigger"),
+            inlineOnTrigger = false,
+            effectHint = "Effect A",
+        )
+        val contextB = contextA.copy(
+            sourceName = "Source B",
+            inlineOnTrigger = true,
+            effectHint = "Effect B",
+        )
+        val cardInfoA = SearchCardInfo(
+            name = "Card A",
+            manaCost = "{1}",
+            typeLine = "Creature",
+            imageUri = "a.png",
+            colors = listOf("G"),
+            power = 1,
+        )
+        val cardInfoB = cardInfoA.copy(
+            name = "Card B",
+            manaCost = "{2}",
+            typeLine = "Artifact",
+            imageUri = "b.png",
+            colors = listOf("R"),
+            power = 2,
+        )
+
+        val states = listOf(
+            GameState(
+                pendingDecision = ChooseTargetsDecision(
+                    id = "targets",
+                    playerId = player,
+                    prompt = "same prompt",
+                    context = contextA,
+                    targetRequirements = listOf(
+                        TargetRequirementInfo(
+                            index = 0,
+                            description = "Target A",
+                            minTargets = 1,
+                            maxTargets = 1,
+                            sameOwner = true,
+                            totalManaValueAtMost = 3,
+                            differentNames = true,
+                        ),
+                    ),
+                    legalTargets = mapOf(0 to listOf(first)),
+                    canCancel = true,
+                ),
+            ) to GameState(
+                pendingDecision = ChooseTargetsDecision(
+                    id = "targets",
+                    playerId = player,
+                    prompt = "different prompt",
+                    context = contextB,
+                    targetRequirements = listOf(
+                        TargetRequirementInfo(
+                            index = 0,
+                            description = "Target B",
+                            minTargets = 1,
+                            maxTargets = 1,
+                            sameOwner = true,
+                            totalManaValueAtMost = 3,
+                            differentNames = true,
+                        ),
+                    ),
+                    legalTargets = mapOf(0 to listOf(first)),
+                    canCancel = true,
+                ),
+            ),
+            GameState(
+                pendingDecision = SelectCardsDecision(
+                    id = "cards",
+                    playerId = player,
+                    prompt = "same prompt",
+                    context = contextA,
+                    options = listOf(first, second),
+                    minSelections = 1,
+                    maxSelections = 2,
+                    ordered = true,
+                    cardInfo = mapOf(first to cardInfoA),
+                    useTargetingUI = false,
+                    selectedLabel = "Selected A",
+                    remainderLabel = "Remainder A",
+                    nonSelectableOptions = listOf(second),
+                    onePerCardType = true,
+                    onePerColor = true,
+                    availableColors = listOf("G"),
+                    onePerCardName = true,
+                    onePerBasicLandType = true,
+                    onePerPower = true,
+                    maxTotalManaValue = 4,
+                    minTotalManaValue = 1,
+                    maxTotalPower = 3,
+                    conditionalMinimums = listOf(
+                        ConditionalSelectionMinimum(
+                            requiredSelections = 2,
+                            minimumSelections = 1,
+                            matchingOptions = listOf(first),
+                            requiredMatches = 1,
+                            description = "Condition A",
+                        ),
+                    ),
+                ),
+            ) to GameState(
+                pendingDecision = SelectCardsDecision(
+                    id = "cards",
+                    playerId = player,
+                    prompt = "different prompt",
+                    context = contextB,
+                    options = listOf(first, second),
+                    minSelections = 1,
+                    maxSelections = 2,
+                    ordered = true,
+                    cardInfo = mapOf(first to cardInfoB),
+                    useTargetingUI = true,
+                    selectedLabel = "Selected B",
+                    remainderLabel = "Remainder B",
+                    nonSelectableOptions = emptyList(),
+                    onePerCardType = true,
+                    onePerColor = true,
+                    availableColors = listOf("G"),
+                    onePerCardName = true,
+                    onePerBasicLandType = true,
+                    onePerPower = true,
+                    maxTotalManaValue = 4,
+                    minTotalManaValue = 1,
+                    maxTotalPower = 3,
+                    conditionalMinimums = listOf(
+                        ConditionalSelectionMinimum(
+                            requiredSelections = 2,
+                            minimumSelections = 1,
+                            matchingOptions = listOf(first),
+                            requiredMatches = 1,
+                            description = "Condition B",
+                        ),
+                    ),
+                ),
+            ),
+            GameState(
+                pendingDecision = SearchLibraryDecision(
+                    id = "search",
+                    playerId = player,
+                    prompt = "Search A",
+                    context = contextA,
+                    options = listOf(first),
+                    minSelections = 0,
+                    maxSelections = 1,
+                    cards = mapOf(first to cardInfoA),
+                    filterDescription = "A filter",
+                ),
+            ) to GameState(
+                pendingDecision = SearchLibraryDecision(
+                    id = "search",
+                    playerId = player,
+                    prompt = "Search B",
+                    context = contextB,
+                    options = listOf(first),
+                    minSelections = 0,
+                    maxSelections = 1,
+                    cards = mapOf(first to cardInfoB),
+                    filterDescription = "A different filter",
+                ),
+            ),
+            GameState(
+                pendingDecision = ReorderLibraryDecision(
+                    id = "reorder",
+                    playerId = player,
+                    prompt = "Reorder A",
+                    context = contextA,
+                    cards = listOf(first, second),
+                    cardInfo = mapOf(first to cardInfoA),
+                ),
+            ) to GameState(
+                pendingDecision = ReorderLibraryDecision(
+                    id = "reorder",
+                    playerId = player,
+                    prompt = "Reorder B",
+                    context = contextB,
+                    cards = listOf(first, second),
+                    cardInfo = mapOf(first to cardInfoB),
+                ),
+            ),
+            GameState(
+                pendingDecision = ChooseOptionDecision(
+                    id = "option",
+                    playerId = player,
+                    prompt = "Option A",
+                    context = contextA,
+                    options = listOf("one", "two"),
+                    defaultSearch = "Search A",
+                    optionCardIds = mapOf(0 to listOf(first)),
+                    optionMetadata = listOf(OptionMetadata(id = "one", description = "A", iconKey = "a")),
+                    canCancel = true,
+                ),
+            ) to GameState(
+                pendingDecision = ChooseOptionDecision(
+                    id = "option",
+                    playerId = player,
+                    prompt = "Option B",
+                    context = contextB,
+                    options = listOf("one", "two"),
+                    defaultSearch = "Search B",
+                    optionCardIds = mapOf(0 to listOf(second)),
+                    optionMetadata = listOf(OptionMetadata(id = "one", description = "B", iconKey = "b")),
+                    canCancel = true,
+                ),
+            ),
+            GameState(
+                pendingDecision = ChooseReplacementDecision(
+                    id = "replacement",
+                    playerId = player,
+                    prompt = "Replacement A",
+                    context = contextA,
+                    fromOptions = listOf("Forest"),
+                    toOptions = listOf("Island"),
+                    fromMetadata = listOf(OptionMetadata(id = "forest", description = "A", iconKey = "a")),
+                    toMetadata = listOf(OptionMetadata(id = "island", description = "A", iconKey = "a")),
+                    allowedToByFrom = listOf(listOf(0)),
+                    defaultFromIndex = 0,
+                ),
+            ) to GameState(
+                pendingDecision = ChooseReplacementDecision(
+                    id = "replacement",
+                    playerId = player,
+                    prompt = "Replacement B",
+                    context = contextB,
+                    fromOptions = listOf("Forest"),
+                    toOptions = listOf("Island"),
+                    fromMetadata = listOf(OptionMetadata(id = "forest", description = "B", iconKey = "b")),
+                    toMetadata = listOf(OptionMetadata(id = "island", description = "B", iconKey = "b")),
+                    allowedToByFrom = listOf(listOf(0)),
+                    defaultFromIndex = 0,
+                ),
+            ),
+            GameState(
+                pendingDecision = OrderObjectsDecision(
+                    id = "order",
+                    playerId = player,
+                    prompt = "Order A",
+                    context = contextA,
+                    objects = listOf(first, second),
+                    cardInfo = mapOf(first to cardInfoA),
+                ),
+            ) to GameState(
+                pendingDecision = OrderObjectsDecision(
+                    id = "order",
+                    playerId = player,
+                    prompt = "Order B",
+                    context = contextB,
+                    objects = listOf(first, second),
+                    cardInfo = mapOf(first to cardInfoB),
+                ),
+            ),
+            GameState(
+                pendingDecision = SplitPilesDecision(
+                    id = "split",
+                    playerId = player,
+                    prompt = "Split A",
+                    context = contextA,
+                    cards = listOf(first, second),
+                    numberOfPiles = 2,
+                    pileLabels = listOf("Keep A", "Discard A"),
+                    cardInfo = mapOf(first to cardInfoA),
+                ),
+            ) to GameState(
+                pendingDecision = SplitPilesDecision(
+                    id = "split",
+                    playerId = player,
+                    prompt = "Split B",
+                    context = contextB,
+                    cards = listOf(first, second),
+                    numberOfPiles = 2,
+                    pileLabels = listOf("Keep B", "Discard B"),
+                    cardInfo = mapOf(first to cardInfoB),
+                ),
+            ),
+            GameState(
+                pendingDecision = SelectManaSourcesDecision(
+                    id = "mana",
+                    playerId = player,
+                    prompt = "Mana A",
+                    context = contextA,
+                    availableSources = listOf(
+                        ManaSourceOption(
+                            entityId = first,
+                            name = "Forest A",
+                            producesColors = emptySet(),
+                            producesColorless = true,
+                        ),
+                    ),
+                    requiredCost = "{1}",
+                    autoPaySuggestion = listOf(first),
+                    waterbendPermanents = listOf(WaterbendPermanentChoice(first, "Permanent A", false)),
+                ),
+            ) to GameState(
+                pendingDecision = SelectManaSourcesDecision(
+                    id = "mana",
+                    playerId = player,
+                    prompt = "Mana B",
+                    context = contextB,
+                    availableSources = listOf(
+                        ManaSourceOption(
+                            entityId = first,
+                            name = "Forest B",
+                            producesColors = emptySet(),
+                            producesColorless = true,
+                        ),
+                    ),
+                    requiredCost = "{1}",
+                    autoPaySuggestion = listOf(first),
+                    waterbendPermanents = listOf(WaterbendPermanentChoice(first, "Permanent B", true)),
+                ),
+            ),
+            GameState(
+                pendingDecision = BudgetModalDecision(
+                    id = "budget",
+                    playerId = player,
+                    prompt = "Budget A",
+                    context = contextA,
+                    budget = 2,
+                    modes = listOf(BudgetModeOption(cost = 1, description = "Mode A")),
+                ),
+            ) to GameState(
+                pendingDecision = BudgetModalDecision(
+                    id = "budget",
+                    playerId = player,
+                    prompt = "Budget B",
+                    context = contextB,
+                    budget = 2,
+                    modes = listOf(BudgetModeOption(cost = 1, description = "Mode B")),
+                ),
+            ),
+        )
+
+        states.forEach { (a, b) ->
+            ReplayFingerprint.of(a, 3) shouldBe ReplayFingerprint.of(b, 3)
+        }
+
+        val semanticChange = (states[1].first.pendingDecision as SelectCardsDecision)
+            .copy(minSelections = 2)
+        ReplayFingerprint.of(states[1].first.copy(pendingDecision = semanticChange), 3) shouldNotBe
+            ReplayFingerprint.of(states[1].first, 3)
+
+        val semanticColorChange = (states[1].first.pendingDecision as SelectCardsDecision)
+            .copy(availableColors = listOf("R"))
+        ReplayFingerprint.of(states[1].first.copy(pendingDecision = semanticColorChange), 3) shouldNotBe
+            ReplayFingerprint.of(states[1].first, 3)
     }
 
     test("decision routing fields remain present through shared canonical aliases") {

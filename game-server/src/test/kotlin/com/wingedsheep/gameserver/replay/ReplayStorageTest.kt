@@ -1,5 +1,8 @@
 package com.wingedsheep.gameserver.replay
 
+import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PlayLand
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.repository.GameRepository
 import com.wingedsheep.gameserver.session.GameSession
@@ -7,6 +10,8 @@ import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.engine.state.YieldKind
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.Phase
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
@@ -235,6 +240,74 @@ class ReplayStorageTest : ScenarioTestBase() {
             val after = (store.find(session.sessionId) as ReplayRead.Decoded).stored.replay
             after.yields.size shouldBe before.yields.size + 1
             after.checkpoints.count { it.afterActionCount == after.actions.size } shouldBe 1
+        }
+
+        test("an undo followed by a replacement action at the same count rewrites the flushed prefix") {
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val p1 = EntityId.of("undo-revision-p1")
+            val p2 = EntityId.of("undo-revision-p2")
+            session.addPlayer(PlayerSession(mockWs("undo-revision-ws1"), p1, "Alice"), mapOf("Forest" to 40))
+            session.addPlayer(PlayerSession(mockWs("undo-revision-ws2"), p2, "Bob"), mapOf("Forest" to 40))
+            session.startGame()
+            session.keepHand(p1)
+            session.keepHand(p2)
+
+            var atPrecombatMain = false
+            repeat(200) {
+                if (atPrecombatMain) return@repeat
+                val state = session.getStateForTesting().shouldNotBeNull()
+                if (state.phase == Phase.PRECOMBAT_MAIN &&
+                    state.step == Step.PRECOMBAT_MAIN &&
+                    state.activePlayerId == p1 &&
+                    state.priorityPlayerId == p1
+                ) {
+                    atPrecombatMain = true
+                } else {
+                    session.executeAutoPass(state.priorityPlayerId!!)
+                }
+            }
+            atPrecombatMain shouldBe true
+
+            val landId = session.getHand(p1).first { id ->
+                session.getStateForTesting()!!.getEntity(id)?.get<CardComponent>()?.name == "Forest"
+            }
+            val pass = session.executeAction(p1, PassPriority(p1))
+            check(pass is GameSession.ActionResult.Success) { "PassPriority should succeed: $pass" }
+            session.isUndoAvailable(p1) shouldBe true
+
+            val store = InMemoryReplayStore()
+            val service = ReplayService(store, mockk(relaxed = true), mockk(relaxed = true))
+            val games = mockk<GameRepository>(relaxed = true) {
+                every { findAll() } returns listOf(session)
+            }
+            val flusher = ReplayCheckpointFlusher(games, service, EngineVersion("test"))
+
+            flusher.flush()
+            val flushedPass = (store.find(session.sessionId) as ReplayRead.Decoded).stored.replay
+            flushedPass.actions.last() shouldBe PassPriority(p1)
+            val flushedCount = flushedPass.actions.size
+
+            val undo = session.executeUndo(p1)
+            check(undo is GameSession.ActionResult.Success) { "Undo should succeed: $undo" }
+            session.getRecordedActions().size shouldBe flushedCount - 1
+
+            val replacement = session.executeAction(p1, PlayLand(p1, landId))
+            check(replacement is GameSession.ActionResult.Success) {
+                "Replacement PlayLand should succeed: $replacement"
+            }
+            session.getRecordedActions().size shouldBe flushedCount
+
+            // Counts deliberately return to the old cursor. The revision must still force a write.
+            flusher.flush()
+            val rewritten = (store.find(session.sessionId) as ReplayRead.Decoded).stored.replay
+            rewritten.actions.size shouldBe flushedCount
+            rewritten.actions.last() shouldBe PlayLand(p1, landId)
+
+            val live = session.getStateForTesting().shouldNotBeNull()
+            val reconstructed = ReplayReconstructor(cardRegistry, null)
+                .reconstructStateAt(rewritten, rewritten.actions.size)
+                .shouldNotBeNull()
+            ReplayFingerprint.of(reconstructed, 3) shouldBe ReplayFingerprint.of(live, 3)
         }
 
         test("a yield at a cadence checkpoint refreshes the checkpoint before replay persistence") {

@@ -259,6 +259,12 @@ class GameSession(
     private var replaySetup: com.wingedsheep.gameserver.replay.ReplaySetup? = null
     /** Fingerprint/checkpoint semantics for the active recording; legacy resumes retain their version. */
     private var replayVersion = com.wingedsheep.gameserver.replay.CompactReplay.CURRENT_VERSION
+    /**
+     * Monotone identity of the recorded input history. It changes on every replay-log mutation,
+     * including an undo that truncates the log, so a replacement action cannot alias an old prefix
+     * merely because action/yield counts happen to return to the same values.
+     */
+    private var recordingRevision = 0L
     private val recordedActions = CopyOnWriteArrayList<GameAction>()
     // Persistent-yield mutations applied out-of-band of [recordedActions]. Captured in turn order so
     // the reconstructor can re-apply each at the action position it was set (see [CompactReplay.yields]).
@@ -1161,6 +1167,7 @@ class GameSession(
             while (recordedActions.size > target) recordedActions.removeAt(recordedActions.size - 1)
             recordedYields.removeIf { it.afterActionCount > target }
             recordedCheckpoints.removeIf { it.afterActionCount > target }
+            if (replaySetup != null) recordingRevision++
         }
         clearCheckpoint()
         logger.info("Player $playerId undid their last action")
@@ -1347,6 +1354,7 @@ class GameSession(
     /** Append an applied, state-advancing action to the compact replay log. */
     private fun recordAction(action: GameAction) {
         recordedActions.add(action)
+        recordingRevision++
         stampCheckpointIfDue()
     }
 
@@ -1394,6 +1402,7 @@ class GameSession(
                 kind = kind,
             )
         )
+        recordingRevision++
         refreshCadenceCheckpointIfDue()
     }
 
@@ -1469,6 +1478,7 @@ class GameSession(
                 setup = setup,
                 actions = recordedActions.toList(),
                 yields = recordedYields.toList(),
+                recordingRevision = recordingRevision,
                 checkpoints = recordedCheckpoints.toList(),
                 fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(
                     state, replayVersion,
@@ -1730,6 +1740,9 @@ class GameSession(
             }
         )
         replayStartedAt = runCatching { Instant.parse(record.startedAt) }.getOrNull()
+        // The durable replay does not carry this in-memory cursor. Mark the restore as a fresh
+        // mutation; the flusher's restart adoption still forces one write before it can skip.
+        recordingRevision++
         return true
     }
 
