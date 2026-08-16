@@ -489,42 +489,25 @@ internal object TransitionSemanticGameStateCanonicalizer {
                 val keyDescriptor = descriptor.getElementDescriptor(0)
                 val valueDescriptor = descriptor.getElementDescriptor(1)
                 // allowStructuredMapKeys encodes a map with structured keys as interleaved
-                // key/value entries. Keep that wire shape, but sort the key/value pairs.
+                // key/value entries. Keep that wire shape, but sort fully canonicalized pairs.
                 if (keyDescriptor.kind is StructureKind || keyDescriptor.kind is PolymorphicKind) {
-                    val pairIndexes = (0 until element.size / 2).sortedBy { index ->
-                        val localDecisionAliases = DecisionNonceAliasTable()
-                        val localAbilityAliases = AbilityIdAliasTable()
-                        val key = canonicalize(
-                            element = element[index * 2],
-                            path = path + "key",
-                            decisionAliases = localDecisionAliases,
-                            abilityAliases = localAbilityAliases,
-                            descriptor = keyDescriptor,
-                        )
-                        val value = canonicalize(
-                            element = element[index * 2 + 1],
-                            path = path + "value",
-                            decisionAliases = localDecisionAliases,
-                            abilityAliases = localAbilityAliases,
-                            descriptor = valueDescriptor,
-                        )
-                        render(JsonArray(listOf(key, value)))
-                    }
-                    val pairs = pairIndexes.map { index ->
-                        canonicalize(
-                            element = element[index * 2],
-                            path = path + "key",
-                            decisionAliases = decisionAliases,
-                            abilityAliases = abilityAliases,
-                            descriptor = keyDescriptor,
-                        ) to canonicalize(
-                            element = element[index * 2 + 1],
-                            path = path + "value",
-                            decisionAliases = decisionAliases,
-                            abilityAliases = abilityAliases,
-                            descriptor = valueDescriptor,
-                        )
-                    }
+                    val pairs = (0 until element.size / 2)
+                        .map { index ->
+                            canonicalize(
+                                element = element[index * 2],
+                                path = path + "key",
+                                decisionAliases = decisionAliases,
+                                abilityAliases = abilityAliases,
+                                descriptor = keyDescriptor,
+                            ) to canonicalize(
+                                element = element[index * 2 + 1],
+                                path = path + "value",
+                                decisionAliases = decisionAliases,
+                                abilityAliases = abilityAliases,
+                                descriptor = valueDescriptor,
+                            )
+                        }
+                        .sortedWith(compareBy({ render(it.first) }, { render(it.second) }))
                     return JsonArray(pairs.flatMap { (key, value) -> listOf(key, value) })
                 }
 

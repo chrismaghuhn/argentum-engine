@@ -338,6 +338,59 @@ class ReplayFingerprintV3Test : FunSpec({
             ReplayFingerprint.of(state("ability_901", "ability_902", reverseTrackingOrder = true), 3)
     }
 
+    test("v3 sorts structured auto-answer map pairs after global ability aliasing") {
+        fun state(
+            firstId: String,
+            secondId: String,
+            reverseAutoAnswerOrder: Boolean = false,
+            reverseEffects: Boolean = false,
+        ) = GameState(
+            grantedActivatedAbilities = listOf(
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(firstId),
+                        cost = Costs.Free,
+                        effect = if (reverseEffects) Effects.GainLife(3) else Effects.DrawCards(1),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(secondId),
+                        cost = Costs.Free,
+                        effect = if (reverseEffects) Effects.DrawCards(1) else Effects.GainLife(3),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+            ),
+            yieldsByPlayer = mapOf(
+                EntityId("p1") to PlayerYields(
+                    autoAnswer = if (reverseAutoAnswerOrder) {
+                        linkedMapOf(
+                            AbilityIdentity("Card#1", AbilityId(secondId)) to true,
+                            AbilityIdentity("Card#1", AbilityId(firstId)) to true,
+                        )
+                    } else {
+                        linkedMapOf(
+                            AbilityIdentity("Card#1", AbilityId(firstId)) to true,
+                            AbilityIdentity("Card#1", AbilityId(secondId)) to true,
+                        )
+                    },
+                ),
+            ),
+        )
+
+        ReplayFingerprint.of(state("ability_501", "ability_502"), 3) shouldBe
+            ReplayFingerprint.of(
+                state("ability_901", "ability_902", reverseAutoAnswerOrder = true),
+                3,
+            )
+        ReplayFingerprint.of(state("ability_501", "ability_502"), 3) shouldNotBe
+            ReplayFingerprint.of(state("ability_501", "ability_502", reverseEffects = true), 3)
+    }
+
     test("v3 aliases nested triggered, stack, and effect ability references") {
         fun stateWithHandle(handle: String) = GameState(
             entities = mapOf(
