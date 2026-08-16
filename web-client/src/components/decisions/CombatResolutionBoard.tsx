@@ -16,9 +16,9 @@ import { ResponsiveContext } from '@/components/game/board'
  * assign — the sources whose edges they own ({@link DamageEdge.editableBy}). Per CR 510.1c the
  * attacker assigns its creatures' damage and the defender assigns its blockers' damage as separate
  * steps, so the opponent's half isn't rendered (it's chosen on their own board). Each owned edge is
- * pre-filled with the engine's lethal-first default and adjusted with +/- steppers. The server is
+ * pre-filled with a deterministic complete split and adjusted with +/- steppers. The server is
  * authoritative — the board only clamps to `[0, maximum]` and the per-source power budget;
- * CR 510.1c / 702.19b legality is enforced on submit by the engine.
+ * trample legality is enforced on submit by the engine.
  */
 export function CombatResolutionBoard({ decision }: { decision: CombatResolutionDecision }) {
   const submit = useGameStore((s) => s.submitCombatResolutionDecision)
@@ -58,38 +58,14 @@ export function CombatResolutionBoard({ decision }: { decision: CombatResolution
   // nor blocker payloads carry it, so read it off the masked client state.
   const hasBanding = (id: EntityId): boolean =>
     gameState?.cards[id]?.keywords?.includes(Keyword.BANDING) ?? false
-  // A source's edges are "banding-inverted" for this player when banding handed them the division:
-  // the order constraint is lifted (CR 702.22j/k) and they're a real combat edge, not a trample
-  // drain. On defense this is how the defender ends up assigning an attacker's damage.
-  const sourceBandingInverted = (sourceId: EntityId): boolean =>
-    myEdges.some((e) => e.sourceId === sourceId && !e.orderConstrained && !e.isTrampleDrain)
   const bandingActive =
     decision.attackers.some((a) => a.bandId != null) ||
     [...decision.attackers, ...decision.blockers].some((c) => hasBanding(c.id))
 
-  // Initial / reset assignment. Starts from the engine's lethal-first defaults, but for any source
-  // whose division banding handed to this player (order lifted) we instead dump the source's whole
-  // power onto its FIRST target and zero the rest — the canonical banding line: sponge everything
-  // onto one creature. This covers both directions symmetrically:
-  //   - Defense (CR 702.22j): you block with a banding creature, so you assign the attacker's
-  //     damage → all onto your first blocker (and, as a bonus, nothing tramples through).
-  //   - Offense (CR 702.22k): you attack with a band, so you assign each blocker's damage → all
-  //     onto the first band member (the sponge); every blocker funnels onto it since blocking one
-  //     band member blocks the whole band (CR 702.22h).
-  // The player can still redistribute with the steppers.
+  // The engine supplies a complete deterministic split for every source. Keep it intact on reset;
+  // banding changes editableBy, not the legality or default arithmetic.
   const defaultAmounts = (): Record<string, number> => {
-    const result: Record<string, number> = Object.fromEntries(decision.edges.map((e) => [e.id, e.amount]))
-    for (const sourceId of sourceIds) {
-      if (!sourceBandingInverted(sourceId)) continue
-      const sourceEdges = myEdges.filter((e) => e.sourceId === sourceId)
-      const firstCombatEdge = sourceEdges.find((e) => !e.isTrampleDrain)
-      if (!firstCombatEdge) continue
-      const power = sourcePower(sourceId)
-      for (const e of sourceEdges) {
-        result[e.id] = e.id === firstCombatEdge.id ? Math.min(power, e.maximum) : 0
-      }
-    }
-    return result
+    return Object.fromEntries(decision.edges.map((e) => [e.id, e.amount]))
   }
 
   const [amounts, setAmounts] = useState<Record<string, number>>(defaultAmounts)
@@ -218,13 +194,11 @@ export function CombatResolutionBoard({ decision }: { decision: CombatResolution
   const edgeRow = (edge: DamageEdge) => {
     const amount = amounts[edge.id] ?? 0
     const isDrain = edge.isTrampleDrain
-    const atLethal = !isDrain && edge.lethal > 0 && amount >= edge.lethal
     const arrow = isDrain ? 'trample →' : '→'
     // Combined-damage hint: only meaningful when this creature is targeted by more than one of
     // the player's edges (otherwise the per-edge amount already is the total).
     const sharedTarget = !isDrain && targetEdgeCount(edge.targetId) > 1
     const combined = sharedTarget ? combinedOnTarget(edge.targetId) : 0
-    const combinedAtLethal = sharedTarget && edge.lethal > 0 && combined >= edge.lethal
     return (
       <div key={edge.id} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
         <span style={{ color: '#888', fontSize: responsive.fontSize.small, minWidth: 56, textAlign: 'right' }}>
@@ -239,13 +213,13 @@ export function CombatResolutionBoard({ decision }: { decision: CombatResolution
             {hasBanding(edge.targetId) && bandingPill()}
           </div>
           {!isDrain && (
-            <span style={{ color: atLethal ? '#4ade80' : '#f59e0b', fontSize: responsive.fontSize.small }}>
-              lethal: {edge.lethal}{atLethal ? ' ✓' : ''}{edge.orderConstrained ? '' : ' (any order)'}
+            <span style={{ color: '#f59e0b', fontSize: responsive.fontSize.small }}>
+              lethal reference: {edge.lethal}
             </span>
           )}
           {sharedTarget && (
-            <span style={{ color: combinedAtLethal ? '#4ade80' : '#f59e0b', fontSize: responsive.fontSize.small, fontWeight: 600 }}>
-              combined: {combined}{edge.lethal > 0 ? ` / ${edge.lethal}` : ''}{combinedAtLethal ? ' ✓' : ''}
+            <span style={{ color: '#f59e0b', fontSize: responsive.fontSize.small, fontWeight: 600 }}>
+              combined reference: {combined}{edge.lethal > 0 ? ` / ${edge.lethal}` : ''}
             </span>
           )}
           {isDrain && (
@@ -304,11 +278,6 @@ export function CombatResolutionBoard({ decision }: { decision: CombatResolution
                 {sourceLabel(sourceId)}
               </span>
               {hasBanding(sourceId) && bandingPill()}
-              {sourceBandingInverted(sourceId) && !hasBanding(sourceId) && (
-                <span style={{ color: '#c084fc', fontSize: responsive.fontSize.small, maxWidth: cardW + 30, textAlign: 'center', lineHeight: 1.2 }}>
-                  Banding: you assign this creature's damage
-                </span>
-              )}
             </div>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10, flex: 1 }}>
               {edgesBySource(sourceId).map(edgeRow)}

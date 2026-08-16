@@ -17,6 +17,7 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionDecision
 import com.wingedsheep.engine.core.CombatResolutionResponse
+import com.wingedsheep.engine.core.CombatResolutionContinuation
 import com.wingedsheep.engine.core.DamageEdge
 import com.wingedsheep.engine.core.DamageEdgeDirection
 import com.wingedsheep.engine.core.DamageAssignmentResponse
@@ -42,6 +43,7 @@ import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.mechanics.combat.CombatDamageAssignmentPlanValidator
 import com.wingedsheep.sdk.model.EntityId
 
 /**
@@ -74,7 +76,7 @@ object DecisionValidators {
             is ChooseReplacementDecision -> validateReplacement(decision, response)
             is BudgetModalDecision -> validateBudgetModal(decision, response)
             is AssignDamageDecision -> validateDamageAssignment(decision, response)
-            is CombatResolutionDecision -> validateCombatResolution(decision, response)
+            is CombatResolutionDecision -> validateCombatResolution(decision, response, state)
             is SearchLibraryDecision -> validateLibrarySearch(decision, response)
             is ReorderLibraryDecision -> validateLibraryReorder(decision, response)
             is SelectManaSourcesDecision -> validateManaSourcesSelection(response)
@@ -85,21 +87,14 @@ object DecisionValidators {
     /**
      * Validate a [CombatResolutionResponse] against its [CombatResolutionDecision].
      *
-     * Geometric checks only (the resumer enforces per-edge ownership by filtering to the current
-     * chooser's [DamageEdge.editableBy], so this stays submitter-agnostic):
-     * - Each submitted amount lies in `[0, maximum]` for its edge.
-     * - Per source, the total assigned across its edges doesn't exceed its power.
-     * - CR 510.1c damage-assignment order: the attacking player picks the order, so an assignment is
-     *   legal iff it's legal under *some* order — i.e. for an [DamageEdge.orderConstrained] source,
-     *   at most one blocker it damages may be left below lethal (counting cross-source damage this
-     *   step, which is what lets a band cooperate). Banding edges (orderConstrained = false) don't gate.
-     * - CR 702.19b trample lethal-first: a trample drain may carry damage only once every blocker
-     *   the trampling attacker assigns to is at lethal (aggregated across the step). Independent of
-     *   CR 510.1c order, so banding never relaxes it.
+     * Edge shape is checked here. The complete semantic plan is then handed to
+     * [CombatDamageAssignmentPlanValidator], which permits arbitrary ordinary
+     * splits and independently enforces trample's aggregate lethal requirement.
      */
     private fun validateCombatResolution(
         decision: CombatResolutionDecision,
         response: DecisionResponse,
+        state: GameState? = null,
     ): String? {
         if (response !is CombatResolutionResponse) {
             return "Expected combat resolution response"
@@ -107,6 +102,9 @@ object DecisionValidators {
 
         val edgesById = decision.edges.associateBy { it.id }
         val submitted = response.edges.associateBy { it.edgeId }
+        if (submitted.size != response.edges.size) {
+            return "Duplicate combat assignment edge id"
+        }
 
         for ((edgeId, entry) in submitted) {
             val edge = edgesById[edgeId] ?: return "Unknown edge id: $edgeId"
@@ -114,59 +112,22 @@ object DecisionValidators {
             if (entry.amount > edge.maximum) return "Edge $edgeId: amount ${entry.amount} exceeds maximum ${edge.maximum}"
         }
 
-        fun amountOf(edge: DamageEdge): Int = submitted[edge.id]?.amount ?: edge.amount
-
-        // Per-source budget — every edge from a source caps at that source's power (its `maximum`).
-        val edgesBySource = decision.edges.groupBy { it.sourceId }
-        for ((sourceId, sourceEdges) in edgesBySource) {
-            val total = sourceEdges.sumOf { amountOf(it) }
-            val power = sourceEdges.maxOf { it.maximum }
-            if (total > power) return "Source $sourceId: damage total $total exceeds available power $power"
+        val amounts = decision.edges.associate { edge ->
+            // The response may echo the complete board, but only the current
+            // chooser's edges are authoritative. Other-owner entries must not
+            // turn a valid later chooser plan into an incomplete interim plan.
+            val submittedAmount = submitted[edge.id]
+                ?.takeIf { edge.editableBy == decision.playerId }
+                ?.amount
+            edge.id to (submittedAmount ?: edge.amount)
         }
-
-        // Aggregate damage reaching each target this step (CR 510.1c cross-source lethal counting).
-        val aggregate = mutableMapOf<EntityId, Int>()
-        for (edge in decision.edges) {
-            if (edge.isTrampleDrain) continue
-            aggregate.merge(edge.targetId, amountOf(edge), Int::plus)
-        }
-
-        // CR 510.1c: the attacking player chooses the damage-assignment order, so there is no fixed
-        // order to gate against — an assignment is legal iff it's legal under *some* order. Walking
-        // the chosen order, every blocker a source damages except the last (where it runs out) must
-        // be at lethal; blockers it skips are unconstrained. Equivalently: at most one blocker a
-        // source assigns damage to may be left below its lethal need (counting cross-source damage
-        // this step). Banding (orderConstrained = false) lifts even this — the chooser divides freely.
-        for ((sourceId, sourceEdges) in edgesBySource) {
-            val belowLethal = sourceEdges.count { edge ->
-                edge.orderConstrained && !edge.isTrampleDrain &&
-                    amountOf(edge) > 0 && (aggregate[edge.targetId] ?: 0) < edge.lethal
-            }
-            if (belowLethal > 1) {
-                return "Source $sourceId: must assign lethal damage to all but one blocker before " +
-                    "spreading damage further"
-            }
-        }
-
-        // CR 702.19b trample lethal-first.
-        val damageToBlocker = mutableMapOf<EntityId, Int>()
-        for (edge in decision.edges) {
-            if (edge.direction != DamageEdgeDirection.ATTACKER_TO_BLOCKER) continue
-            damageToBlocker.merge(edge.targetId, amountOf(edge), Int::plus)
-        }
-        for (drain in decision.edges) {
-            if (!drain.isTrampleDrain) continue
-            if (amountOf(drain) <= 0) continue
-            for (blockerEdge in decision.edges) {
-                if (blockerEdge.sourceId != drain.sourceId) continue
-                if (blockerEdge.direction != DamageEdgeDirection.ATTACKER_TO_BLOCKER) continue
-                if ((damageToBlocker[blockerEdge.targetId] ?: 0) < blockerEdge.lethal) {
-                    return "Trample drain ${drain.id}: preceding blocker not at lethal"
-                }
-            }
-        }
-
-        return null
+        // Cross-source trample legality is a property of the final same-step graph. During a
+        // multi-chooser handoff, a later owner may still change a supporting attacker edge, so
+        // only the final resumer validates that aggregate. Shape/range/source-total checks still
+        // run for every response.
+        val continuation = state?.peekContinuation() as? CombatResolutionContinuation
+        val finalPlan = continuation == null || continuation.pendingChoosers.size <= 1
+        return CombatDamageAssignmentPlanValidator.validate(decision, amounts, enforceTrample = finalPlan)
     }
 
     private fun validateTargets(
@@ -468,38 +429,12 @@ object DecisionValidators {
             }
         }
 
-        // Validate damage assignment order
-        var allPreviousHaveLethal = true
-        for (blockerId in decision.orderedTargets) {
-            val assignedDamage = response.assignments[blockerId] ?: 0
-            val lethalRequired = decision.minimumAssignments[blockerId] ?: 0
-            val hasLethal = assignedDamage >= lethalRequired
-
-            if (!hasLethal && !allPreviousHaveLethal) {
-                // Fine - can assign 0 to later blockers
-            } else if (!hasLethal) {
-                allPreviousHaveLethal = false
-            }
-
-            // Check no subsequent blocker has damage if this one doesn't have lethal
-            if (!hasLethal) {
-                val laterBlockers = decision.orderedTargets.dropWhile { it != blockerId }.drop(1)
-                for (laterBlocker in laterBlockers) {
-                    if ((response.assignments[laterBlocker] ?: 0) > 0) {
-                        return "Cannot assign damage to later blocker until earlier blockers have lethal damage"
-                    }
-                }
-            }
-        }
-
-        // Validate trample damage
+        // This legacy decision shape is retained for replay decoding only.
+        // Its old order constraint is not part of current combat gameplay.
         val damageToDefender = response.assignments[decision.defenderId] ?: 0
         if (damageToDefender > 0) {
             if (!decision.hasTrample) {
                 return "Cannot assign damage to defending player without trample"
-            }
-            if (!allPreviousHaveLethal) {
-                return "Cannot assign trample damage until all blockers have lethal damage"
             }
         }
         return null

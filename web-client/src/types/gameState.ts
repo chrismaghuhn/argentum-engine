@@ -798,7 +798,7 @@ export interface ClientAttacker {
   readonly mustBeBlockedByAll?: boolean
   /** Banding band id (CR 702.22) shared by every attacker in the same band; null/absent if not banded. */
   readonly bandId?: string | null
-  /** Ordered list of blockers for damage assignment (first receives damage first). Null if not yet ordered. */
+  /** Compatibility-only legacy order payload; modern combat does not populate or read it. */
   readonly damageAssignmentOrder?: readonly EntityId[]
   /** Damage assigned to each target (blocker ID or player ID -> damage amount). Null if not yet assigned. */
   readonly damageAssignments?: Readonly<Record<EntityId, number>>

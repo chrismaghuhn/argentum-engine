@@ -95,8 +95,8 @@ class CombatManager(
      * would spill onto the defending player through trample, while the blockers still blocking
      * were never assigned the lethal damage CR 702.19b requires first.
      *
-     * Only the assignment is cleared. Damage assignment *order* ([DamageAssignmentOrderComponent],
-     * [AttackerOrderComponent]) is chosen once per combat and stays put.
+     * Only the per-step assignment is cleared. Legacy order components, when
+     * present in a decoded old state, are not consulted by the next step.
      */
     fun clearDamageAssignmentsForNewDamageStep(state: GameState): GameState {
         var newState = state
@@ -136,6 +136,7 @@ class CombatManager(
                     .without<BlockingComponent>()
                     .without<BlockedComponent>()
                     .without<DamageAssignmentComponent>()
+                    .without<FirstCombatDamageStepEligibilityComponent>()
                     .without<DamageAssignmentOrderComponent>()
                     .without<AttackerOrderComponent>()
                     .without<DealtFirstStrikeDamageComponent>()

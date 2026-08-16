@@ -471,10 +471,9 @@ export interface ReorderLibraryDecision extends PendingDecisionBase {
 }
 
 /**
- * Player must order objects (e.g., damage assignment order for blockers).
- *
- * Used when an attacker is blocked by multiple creatures and the attacking
- * player must declare the order in which blockers receive damage.
+ * Player must order objects for effects that still use generic object ordering
+ * (for example, library manipulation). Modern combat damage does not generate
+ * this decision type.
  */
 export interface OrderObjectsDecision extends PendingDecisionBase {
   readonly type: 'OrderObjectsDecision'
@@ -643,9 +642,9 @@ export interface DamageEdge {
   readonly maximum: number
   /** True lethal need for the target from this source (deathtouch -> 1, else toughness - marked). */
   readonly lethal: number
-  /** Whether this edge participates in CR 510.1c assignment-order gating (banding lifts it). */
+  /** Compatibility field retained for old payloads; current legality ignores it. */
   readonly orderConstrained: boolean
-  /** Trample overflow edge to a player / planeswalker / battle (CR 702.19b lethal-first). */
+  /** Trample overflow edge to a player / planeswalker / battle (CR 702.19b). */
   readonly isTrampleDrain: boolean
   /** Which player may modify this edge (banding flips it to the opponent). */
   readonly editableBy: EntityId

@@ -282,7 +282,8 @@ class DecisionHandler {
     }
 
     /**
-     * Creates an ordering decision (for scry, damage assignment, etc.).
+     * Creates a generic ordering decision (for example, scry). Combat damage
+     * uses CombatResolutionDecision instead; this helper is not a combat path.
      */
     fun createOrderDecision(
         state: GameState,

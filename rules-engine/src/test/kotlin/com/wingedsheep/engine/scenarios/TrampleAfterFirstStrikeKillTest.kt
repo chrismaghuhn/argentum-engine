@@ -71,7 +71,7 @@ class TrampleAfterFirstStrikeKillTest : FunSpec({
         toughness = 1
     )
 
-    test("trample damage carries through after first strike kills the blocker") {
+    test("COMBAT-17 double-strike trample deals in two real combat steps") {
         // 2/2 double strike + trample attacks; 3/2 blocks.
         // First strike step: attacker assigns 2 to blocker → blocker dies.
         // Regular damage step: blocker is gone, trample carries 2 to player.
@@ -110,7 +110,7 @@ class TrampleAfterFirstStrikeKillTest : FunSpec({
         driver.assertLifeTotal(opponent, 18)
     }
 
-    test("surviving blockers still soak the regular damage of a double-strike trampler") {
+    test("COMBAT-18 state changes between double-strike combat steps preserve surviving blockers") {
         // 3/3 double strike + trample attacks; blocked by a 4/2 and four 1/1 goblins.
         // First strike step: 2 to the 4/2 (lethal) and 1 to one goblin — both die.
         // Regular damage step: three 1/1 goblins are still blocking, so CR 702.19b forces
@@ -173,12 +173,13 @@ class TrampleAfterFirstStrikeKillTest : FunSpec({
         driver.confirmCombatDamage()
         driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
 
-        // Every blocker died; none of the damage reached the defending player.
+        // The modern default is a complete trample plan: one point is assigned to each
+        // surviving blocker, so all three die and no damage reaches the defending player.
         driver.getCreatures(opponent).size shouldBe 0
         driver.assertLifeTotal(opponent, 20)
     }
 
-    test("without trample, double-strike damage to dead blocker is lost (no spillover)") {
+    test("COMBAT-17 without trample, double-strike damage to dead blocker is lost") {
         // 2/2 double strike (no trample) attacks; 3/2 blocks.
         // First strike step: 2 to blocker → blocker dies.
         // Regular damage step: blocker is gone; no trample, so no damage to player.

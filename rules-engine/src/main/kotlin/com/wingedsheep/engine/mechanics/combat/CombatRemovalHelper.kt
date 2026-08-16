@@ -7,6 +7,7 @@ import com.wingedsheep.engine.state.components.combat.BlockedComponent
 import com.wingedsheep.engine.state.components.combat.BlockingComponent
 import com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent
 import com.wingedsheep.engine.state.components.combat.DamageAssignmentOrderComponent
+import com.wingedsheep.engine.state.components.combat.FirstCombatDamageStepEligibilityComponent
 import com.wingedsheep.engine.state.components.combat.RequiresManualDamageAssignmentComponent
 import com.wingedsheep.sdk.model.EntityId
 
@@ -46,6 +47,7 @@ object CombatRemovalHelper {
                 .without<BlockingComponent>()
                 .without<BlockedComponent>()
                 .without<DamageAssignmentComponent>()
+                .without<FirstCombatDamageStepEligibilityComponent>()
                 .without<DamageAssignmentOrderComponent>()
                 .without<AttackerOrderComponent>()
                 .without<RequiresManualDamageAssignmentComponent>()
@@ -62,14 +64,7 @@ object CombatRemovalHelper {
                         }
                     } else {
                         newState.updateEntity(entityId) { container ->
-                            var updated = container.with(BlockingComponent(updatedIds))
-                            val attackerOrder = updated.get<AttackerOrderComponent>()
-                            if (attackerOrder != null) {
-                                updated = updated.with(AttackerOrderComponent(
-                                    attackerOrder.orderedAttackers.filter { it != targetId }
-                                ))
-                            }
-                            updated
+                            container.with(BlockingComponent(updatedIds))
                         }
                     }
                 }
@@ -91,6 +86,7 @@ object CombatRemovalHelper {
                         container
                             .without<BlockedComponent>()
                             .without<DamageAssignmentComponent>()
+                            .without<FirstCombatDamageStepEligibilityComponent>()
                             .without<DamageAssignmentOrderComponent>()
                             .without<RequiresManualDamageAssignmentComponent>()
                     }

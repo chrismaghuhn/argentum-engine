@@ -4,9 +4,11 @@ import com.wingedsheep.engine.core.CombatResolutionDecision
 import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DamageEdgeDirection
+import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
@@ -62,10 +64,10 @@ class CombatResolutionBoardTest : FunSpec({
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
         // declareBlockers takes a Map<blocker, List<attackers>>. With multiple blockers on
         // the same attacker, the engine immediately pauses on an OrderObjectsDecision so
-        // the chooser can pick damage-assignment order; result.isPaused == true.
+        // the chooser can provide the complete combat assignment; result.isPaused == true.
         driver.declareBlockers(defender, mapOf(lions to listOf(tusker), centaur to listOf(tusker)))
 
-        // The engine emits an OrderObjectsDecision for the blocker-order in declare-blockers.
+        // The modern board is emitted after blockers are declared; no blocker-order decision is inserted.
         // Submit the natural order (lions, centaur) and continue.
         var decision: com.wingedsheep.engine.core.PendingDecision? = driver.state.pendingDecision
         if (decision is com.wingedsheep.engine.core.OrderObjectsDecision) {
@@ -95,6 +97,44 @@ class CombatResolutionBoardTest : FunSpec({
             edges = decision.edges.map { DamageEdgeAmount(it.id, it.amount) },
         )
         driver.submitDecision(decision.playerId, response).isSuccess shouldBe true
+    }
+
+    test("COMBAT-19 a banding blocker assigns the attacker's damage") {
+        val driver = createDriver()
+        val bandingBlocker = CardDefinition.creature(
+            name = "Test Banding Blocker",
+            manaCost = ManaCost.parse("{1}{W}"),
+            subtypes = setOf(Subtype("Soldier")),
+            power = 2,
+            toughness = 2,
+            keywords = setOf(com.wingedsheep.sdk.core.Keyword.BANDING),
+        )
+        driver.registerCard(bandingBlocker)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
+        val attacker = driver.activePlayer!!
+        val defender = driver.getOpponent(attacker)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val trampler = driver.putCreatureOnBattlefield(attacker, "Trample Beast")
+        val banding = driver.putCreatureOnBattlefield(defender, "Test Banding Blocker")
+        val secondBlocker = driver.putCreatureOnBattlefield(defender, "Grizzly Bears")
+        driver.removeSummoningSickness(trampler)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attacker, listOf(trampler), defender).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(
+            defender,
+            mapOf(banding to listOf(trampler), secondBlocker to listOf(trampler)),
+        ).error shouldBe null
+
+        driver.passPriorityUntil(Step.COMBAT_DAMAGE)
+        val decision = driver.pendingDecision.shouldBeInstanceOf<CombatResolutionDecision>()
+        decision.playerId shouldBe defender
+        decision.coChooserId shouldBe null
+        decision.edges
+            .filter { it.sourceId == trampler && it.direction == DamageEdgeDirection.ATTACKER_TO_BLOCKER }
+            .forEach { it.editableBy shouldBe defender }
     }
 
     /**
@@ -194,8 +234,8 @@ class CombatResolutionBoardTest : FunSpec({
         neToGiant.targetId shouldBe giantId
         partnerToGiant.targetId shouldBe giantId
         drain.targetId shouldBe defender
-        // Trample drain stays gated even though banding relaxes lethal-first
-        // ordering on the ATK→BLK edges (CR 702.19b is independent of 702.22).
+        // Banding changes chooser authority, but never removes the separate
+        // CR 702.19b trample requirement.
         drain.isTrampleDrain shouldBe true
 
         fun planEdges(
@@ -207,21 +247,15 @@ class CombatResolutionBoardTest : FunSpec({
                 neToGiant.id -> neToGiantDmg
                 partnerToGiant.id -> partnerToGiantDmg
                 drain.id -> drainDmg
-                else -> 0
+                else -> edge.amount
             }
             DamageEdgeAmount(edge.id, amount)
         }
 
-        // Attempt 1: skip the blocker entirely, dump NE's 2 damage on the player.
-        // Band has assigned 0 damage to the giant → trample drain must be rejected.
-        val skipBlocker = CombatResolutionResponse(decision.id, planEdges(0, 0, 2))
-        val skipBlockerResult = driver.submitDecision(decision.playerId, skipBlocker)
-        skipBlockerResult.isSuccess shouldBe false
-        skipBlockerResult.error shouldBe "Trample drain ${drain.id}: preceding blocker not at lethal"
-
-        // Attempt 2: band cooperates partway — partner puts 2 on giant, NE drains
+        // A complete plan that assigns only the partner's 2 damage to the
+        // giant leaves it below lethal while NE drains 2.
         // its full 2 to the player. Giant has only 2 damage (lethal = 3) → still
-        // rejected. This is the case banding alone cannot rescue.
+        // rejected. Banding alone cannot rescue this plan.
         val belowLethal = CombatResolutionResponse(decision.id, planEdges(0, 2, 2))
         val belowLethalResult = driver.submitDecision(decision.playerId, belowLethal)
         belowLethalResult.isSuccess shouldBe false
@@ -400,17 +434,69 @@ class CombatResolutionBoardTest : FunSpec({
         fromCrusher.forEach { it.editableBy shouldBe defender }
     }
 
+    test("COMBAT-18R1 first-strike blocker gets a live assignment decision when attackers do not deal yet") {
+        val driver = createDriver()
+        val firstStrikeCrusher = CardDefinition.creature(
+            name = "Test First Strike Crusher",
+            manaCost = ManaCost.parse("{4}{W}"),
+            subtypes = setOf(Subtype("Soldier")),
+            power = 3,
+            toughness = 3,
+            keywords = setOf(com.wingedsheep.sdk.core.Keyword.FIRST_STRIKE),
+            script = CardScript.creature(staticAbilities = listOf(CanBlockAnyNumber())),
+        )
+        driver.registerCard(firstStrikeCrusher)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
+        val attacker = driver.activePlayer!!
+        val defender = driver.getOpponent(attacker)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val firstAttacker = driver.putCreatureOnBattlefield(attacker, "Centaur Courser")
+        val secondAttacker = driver.putCreatureOnBattlefield(attacker, "Centaur Courser")
+        val blocker = driver.putCreatureOnBattlefield(defender, "Test First Strike Crusher")
+        driver.removeSummoningSickness(firstAttacker)
+        driver.removeSummoningSickness(secondAttacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attacker, listOf(firstAttacker, secondAttacker), defender).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(defender, mapOf(blocker to listOf(firstAttacker, secondAttacker))).error shouldBe null
+
+        driver.passPriorityUntil(Step.FIRST_STRIKE_COMBAT_DAMAGE)
+        val decision = driver.pendingDecision.shouldBeInstanceOf<CombatResolutionDecision>()
+        decision.firstStrike shouldBe true
+        decision.attackers.map { it.id }.toSet() shouldBe setOf(firstAttacker, secondAttacker)
+        decision.attackers.forEach { it.dealsDamageThisStep shouldBe false }
+        decision.blockers.map { it.id } shouldBe listOf(blocker)
+
+        val blockerEdges = decision.edges.filter {
+            it.sourceId == blocker && it.direction == DamageEdgeDirection.BLOCKER_TO_ATTACKER
+        }
+        blockerEdges.map { it.targetId }.toSet() shouldBe setOf(firstAttacker, secondAttacker)
+        blockerEdges.forEach { it.editableBy shouldBe defender }
+        blockerEdges.sumOf { it.amount } shouldBe 3
+
+        driver.submitCombatDamage(
+            mapOf(
+                (blocker to firstAttacker) to 1,
+                (blocker to secondAttacker) to 2,
+            )
+        ).isSuccess shouldBe true
+        driver.state.getEntity(blocker)
+            ?.get<com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent>()
+            ?.assignments shouldBe mapOf(firstAttacker to 1, secondAttacker to 2)
+    }
+
     /**
      * CR 702.22k: when an attacking creature has banding, the active player
-     * chooses the damage division for the blockers blocking it AND can ignore
-     * the damage-assignment order. So the BLOCKER_TO_ATTACKER edges should
-     * have `minimum = 0` (not the lethal threshold) so the active player can
+     * chooses the damage division for the blockers blocking it. The
+     * BLOCKER_TO_ATTACKER edges remain freely splittable, so the active player can
      * dump all of a blocker's damage on a single band member.
      *
      * Before the fix the validator rejected such submissions with
      * "amount X below minimum Y".
      */
-    test("banding attacker: BLOCKER_TO_ATTACKER edges have minimum=0 (lethal-first bypassed)") {
+    test("banding attacker: blocker assignments remain freely splittable") {
         val driver = createDriver()
         val bandingKnight = CardDefinition.creature(
             name = "Test Banding Knight",
@@ -463,11 +549,11 @@ class CombatResolutionBoardTest : FunSpec({
         val blockerEdges = decision.edges.filter {
             it.direction == DamageEdgeDirection.BLOCKER_TO_ATTACKER
         }
-        // With banding active on at least one blocked attacker, every blocker edge is
-        // order-unconstrained — the active player can ignore the damage-assignment order
-        // (CR 702.22k).
+        // With banding active on at least one blocked attacker, the active player owns
+        // the blocker-to-attacker assignment (CR 702.22k).
         blockerEdges.forEach { edge ->
             edge.orderConstrained shouldBe false
+            edge.editableBy shouldBe attacker
         }
     }
 
@@ -486,7 +572,7 @@ class CombatResolutionBoardTest : FunSpec({
      * shape: decision.coChooserId is the defender on the attacker's prompt,
      * and the second prompt re-emits with playerId=defender.
      */
-    test("two 8/4 tramplers double-blocked: emits two-step CR 510.1c flow with defender second") {
+    test("COMBAT-22 two 8/4 tramplers collect assignments before any damage") {
         val driver = createDriver()
         val testSilvos = CardDefinition.creature(
             name = "Test Silvos",
@@ -530,7 +616,7 @@ class CombatResolutionBoardTest : FunSpec({
             ),
         )
 
-        // Drain order-of-blockers / order-of-attackers pre-steps.
+        // There is no separate blocker-order or attacker-order pre-step.
         advanceUntilDecision(driver)
         var decision: com.wingedsheep.engine.core.PendingDecision? = driver.state.pendingDecision
         while (decision is com.wingedsheep.engine.core.OrderObjectsDecision) {
@@ -587,10 +673,13 @@ class CombatResolutionBoardTest : FunSpec({
         val afterAttacker = driver.submitDecision(decision.playerId, attackerResponse)
         afterAttacker.error shouldBe null
         afterAttacker.isPaused shouldBe true
+        afterAttacker.events.none { it is DamageDealtEvent } shouldBe true
+        afterAttacker.state.getEntity(silvos1)?.get<DamageComponent>() shouldBe null
+        afterAttacker.state.getEntity(crusher1)?.get<DamageComponent>() shouldBe null
 
-        // Step 2 (CR 510.1c second half): defender now sees the same shape
-        // with playerId = defender, coChooserId = null. Submit the engine
-        // defaults (lethal-first concentrates damage on silvos1, killing it).
+        // Step 2: defender now sees the same shape with playerId = defender,
+        // coChooserId = null. Each Crusher's damage remains a freely chosen
+        // blocker-to-attacker split and the default concentrates it on silvos1.
         val defenderDecision = driver.state.pendingDecision
         defenderDecision.shouldBeInstanceOf<CombatResolutionDecision>()
         defenderDecision.playerId shouldBe defender
@@ -605,10 +694,9 @@ class CombatResolutionBoardTest : FunSpec({
         val battlefield = driver.state.getBattlefield()
         battlefield.contains(crusher1) shouldBe false
         battlefield.contains(crusher2) shouldBe false
-        // Default lethal-first plan: Crusher1→silvos1=2, Crusher2→silvos1=2.
-        // silvos1 takes 4 damage = lethal. silvos2 untouched. (CR 510.1d
-        // forbids the blocker from putting <lethal on silvos1 then spilling
-        // to silvos2.)
+        // Each trampler's default satisfies the trample-specific lethal
+        // requirement for both blockers, so both blockers die. No generic
+        // lethal-first rule is involved.
         battlefield.contains(silvos1) shouldBe false
         battlefield.contains(silvos2) shouldBe true
         // No trample through.
@@ -687,13 +775,16 @@ class CombatResolutionBoardTest : FunSpec({
         }
 
         decision.shouldBeInstanceOf<CombatResolutionDecision>()
-        // First prompt: attacker submits 4+4 lethal to each crusher. We use
-        // the engine defaults here — the attacker has no interesting choice
-        // with two 8-power tramplers facing 4-toughness blockers.
+        // First prompt: explicitly submit a complete legal plan that assigns
+        // 4 damage from each Silvos to each Crusher. This keeps the test about
+        // the defender's later choice rather than about a UI default.
         decision.playerId shouldBe attacker
         val attackerResponse = CombatResolutionResponse(
             decisionId = decision.id,
-            edges = decision.edges.map { DamageEdgeAmount(it.id, it.amount) },
+            edges = decision.edges.map { edge ->
+                val amount = if (edge.direction == DamageEdgeDirection.ATTACKER_TO_BLOCKER) 4 else 0
+                DamageEdgeAmount(edge.id, amount)
+            },
         )
         driver.submitDecision(decision.playerId, attackerResponse).error shouldBe null
 
@@ -822,14 +913,14 @@ class CombatResolutionBoardTest : FunSpec({
 
         decision.shouldBeInstanceOf<CombatResolutionDecision>()
 
-        // The small attacker's blocker edges: order-constrained (no banding), maximum=3
-        // (its power), lethal=4 (Crusher's toughness). The constraint is satisfiable.
+        // The small attacker's blocker edges remain freely splittable, maximum=3 (its power),
+        // and carry a lethal display hint of 4 (Crusher's toughness).
         val smallEdges = decision.edges.filter {
             it.sourceId == smallId && it.direction == DamageEdgeDirection.ATTACKER_TO_BLOCKER
         }
         smallEdges.size shouldBe 2
         smallEdges.forEach { edge ->
-            edge.orderConstrained shouldBe true
+            edge.orderConstrained shouldBe false
             edge.maximum shouldBe 3
             edge.lethal shouldBe 4
         }
@@ -859,10 +950,10 @@ class CombatResolutionBoardTest : FunSpec({
      * Banding cross-band damage cooperation (CR 702.22j/k).
      *
      * The active player divides each banded attacker's outgoing damage
-     * among the band's blockers ignoring damage-assignment order
-     * (CR 702.22j, attacker-side bypass — symmetric to the long-standing
-     * CR 702.22k bypass on blocker-to-attacker damage). The chooser stays
-     * the active player; only the order constraint is lifted. The
+      * among the band's blockers without a generic lethal-first constraint
+      * (CR 702.22j, attacker-side authority — symmetric to the
+      * CR 702.22k authority on blocker-to-attacker damage). The chooser stays
+      * the active player; ordinary assignments remain freely splittable. The
      * non-banding member of the band (CR 702.22c) inherits the bypass
      * because the band as a whole contains a banding creature.
      *

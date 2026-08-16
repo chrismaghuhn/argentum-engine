@@ -73,14 +73,24 @@ data class DamageAssignmentComponent(
 ) : Component
 
 /**
- * Stores the order in which blockers receive damage from an attacker.
- * Set during the Declare Blockers step when an attacker is blocked by multiple creatures.
+ * Records the First Strike and Double Strike keywords a combat creature had when the first
+ * combat-damage step began. The regular combat-damage step uses this historical snapshot rather
+ * than treating a keyword gained or lost after the first step as if it had been present at the
+ * beginning of combat damage (CR 510.4, 702.4c, 702.7c).
+ */
+@Serializable
+data class FirstCombatDamageStepEligibilityComponent(
+    val hadFirstStrike: Boolean,
+    val hadDoubleStrike: Boolean,
+) : Component
+
+/**
+ * Historical order in which blockers received damage from an attacker.
  *
- * Per Rule 510.1c: an attacker blocked by 2+ creatures has its damage divided
- * among them as its controller chooses; the engine surfaces this as an explicit
- * ordering of blockers.
+ * Decode-only compatibility component for old combat replays. Modern combat damage is
+ * represented by a complete assignment graph and does not create or read this component.
  *
- * @property orderedBlockers Index 0 is the first creature to receive damage
+ * @property orderedBlockers The historical blocker-order payload
  */
 @Serializable
 data class DamageAssignmentOrderComponent(
@@ -135,14 +145,12 @@ data object AttackersDeclaredThisCombatComponent : Component
 data object BlockersDeclaredThisCombatComponent : Component
 
 /**
- * Stores the order in which attackers receive damage from a blocker that blocks multiple attackers.
- * Set during the Declare Blockers step when a blocker blocks multiple attacking creatures.
+ * Historical order in which attackers received damage from a blocker that blocked multiple attackers.
  *
- * Per Rule 510.1d: a blocker blocking 2+ attackers has its damage divided
- * among them as its controller chooses; the engine surfaces this as an explicit
- * ordering of attackers.
+ * Decode-only compatibility component for old combat replays. Modern combat damage is
+ * represented by a complete assignment graph and does not create or read this component.
  *
- * @property orderedAttackers Index 0 is the first creature to receive damage
+ * @property orderedAttackers The historical attacker-order payload
  */
 @Serializable
 data class AttackerOrderComponent(

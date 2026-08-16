@@ -953,7 +953,7 @@ data class ClientAttacker(
      * declared (during the defender's blocks and combat), not just during declare-attackers.
      */
     val bandId: String? = null,
-    /** Ordered list of blockers for damage assignment (first receives damage first). Null if not yet ordered. */
+    /** Decode-only legacy damage-assignment order field; modern gameplay leaves it null. */
     val damageAssignmentOrder: List<EntityId>? = null,
     /** Damage assigned to each target (blocker ID or player ID -> damage amount). Null if not yet assigned. */
     val damageAssignments: Map<EntityId, Int>? = null

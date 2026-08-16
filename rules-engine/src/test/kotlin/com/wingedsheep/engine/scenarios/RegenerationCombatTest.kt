@@ -272,7 +272,7 @@ class RegenerationCombatTest : FunSpec({
         driver.findPermanent(opponent, "Centaur Courser") shouldNotBe null
     }
 
-    test("blocked trample attacker whose blocker regenerated deals full damage to player") {
+    test("COMBAT-12 blocked trample attacker whose blocker regenerated deals full damage to player") {
         // 5/5 trample attacks, 3/3 blocks. 3/3 has regen shield.
         // Active player bolts the 3/3 blocker during combat → regeneration triggers
         // 3/3 removed from combat. 5/5 is still "blocked" but has trample.

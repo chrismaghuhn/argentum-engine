@@ -2,8 +2,11 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
@@ -24,7 +27,16 @@ class FirstStrikeCombatTest : FunSpec({
         return driver
     }
 
-    test("first strike attacker kills blocker before it can deal damage") {
+    fun setBaseKeywords(driver: GameTestDriver, creatureId: EntityId, keywords: Set<Keyword>) {
+        driver.replaceState(
+            driver.state.updateEntity(creatureId) { container ->
+                val card = container.get<CardComponent>() ?: error("Missing card component for $creatureId")
+                container.with(card.copy(baseKeywords = keywords))
+            }
+        )
+    }
+
+    test("COMBAT-16 first strike attacker kills blocker before it can deal damage") {
         // 3/1 first strike attacks, 3/3 blocks
         // First strike step: 3/1 deals 3 to 3/3 (lethal), 3/3 dies
         // Regular step: 3/3 is dead, can't deal damage back
@@ -63,7 +75,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.getGraveyardCardNames(opponent) shouldContain "Centaur Courser"
     }
 
-    test("first strike blocker kills attacker before regular damage") {
+    test("COMBAT-16 first strike blocker kills attacker before regular damage") {
         // 3/3 attacks, 3/1 first strike blocks
         // First strike step: 3/1 deals 3 to 3/3 (lethal), 3/3 dies
         // Regular step: 3/3 is dead, can't deal damage back
@@ -99,7 +111,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.getGraveyardCardNames(activePlayer) shouldContain "Centaur Courser"
     }
 
-    test("first strike too weak — both deal damage in their respective steps") {
+    test("COMBAT-16 first strike too weak — both deal damage in their respective steps") {
         // 2/1 first strike attacks, 3/3 blocks
         // First strike step: 2/1 deals 2 to 3/3 (not lethal)
         // Regular step: 3/3 deals 3 to 2/1 (lethal)
@@ -135,7 +147,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.findPermanent(opponent, "Centaur Courser") shouldNotBe null
     }
 
-    test("both have first strike — simultaneous first strike damage") {
+    test("COMBAT-16 both have first strike — simultaneous first strike damage") {
         // 2/1 FS attacks, 2/1 FS blocks
         // First strike step: both deal 2 damage to each other (both lethal)
         // Result: both die
@@ -169,7 +181,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.getGraveyardCardNames(opponent) shouldContain "Blade of the Ninth Watch"
     }
 
-    test("unblocked first strike deals damage in first strike step") {
+    test("COMBAT-16 unblocked first strike deals damage in first strike step") {
         // 2/1 first strike attacks unblocked
         // Player takes 2 damage in first strike step
         val driver = createDriver()
@@ -201,7 +213,7 @@ class FirstStrikeCombatTest : FunSpec({
         driver.assertLifeTotal(opponent, 18)
     }
 
-    test("attacker killed by first strike blocker does not deal damage in normal step") {
+    test("COMBAT-18 attacker killed by first strike blocker does not deal damage in normal step") {
         // 2/2 attacks, blocked by 3/1 first strike AND 1/1
         // First strike step: 3/1 deals 3 to 2/2 (lethal), 2/2 dies
         // Regular step: 2/2 is dead, can't deal damage; 1/1 can't deal damage to dead attacker
@@ -245,7 +257,92 @@ class FirstStrikeCombatTest : FunSpec({
         driver.findPermanent(opponent, "Savannah Lions") shouldNotBe null
     }
 
-    test("blocked first strike does not trample to player") {
+    test("COMBAT-18R1 first strike loss after the first damage step does not grant a second hit") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "First Strike Knight")
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer)
+
+        driver.bothPass()
+        driver.currentStep shouldBe Step.FIRST_STRIKE_COMBAT_DAMAGE
+        driver.assertLifeTotal(defenderPlayer, 17)
+
+        val currentKeywords = driver.state.getEntity(attacker)!!.get<CardComponent>()!!.baseKeywords
+        setBaseKeywords(driver, attacker, currentKeywords - Keyword.FIRST_STRIKE)
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 17)
+    }
+
+    test("COMBAT-18R1 first strike gained after the first damage step does not suppress the regular hit") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val firstStrikeAttacker = driver.putCreatureOnBattlefield(attackerPlayer, "First Strike Knight")
+        val ordinaryAttacker = driver.putCreatureOnBattlefield(attackerPlayer, "Grizzly Bears")
+        driver.removeSummoningSickness(firstStrikeAttacker)
+        driver.removeSummoningSickness(ordinaryAttacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(
+            attackerPlayer,
+            listOf(firstStrikeAttacker, ordinaryAttacker),
+            defenderPlayer,
+        ).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer)
+
+        driver.bothPass()
+        driver.currentStep shouldBe Step.FIRST_STRIKE_COMBAT_DAMAGE
+        driver.assertLifeTotal(defenderPlayer, 17)
+
+        val currentKeywords = driver.state.getEntity(ordinaryAttacker)!!.get<CardComponent>()!!.baseKeywords
+        setBaseKeywords(driver, ordinaryAttacker, currentKeywords + Keyword.FIRST_STRIKE)
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 15)
+    }
+
+    test("COMBAT-18R1 double strike loss after the first damage step does not grant a second hit") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Grizzly Bears")
+        val currentKeywords = driver.state.getEntity(attacker)!!.get<CardComponent>()!!.baseKeywords
+        setBaseKeywords(driver, attacker, currentKeywords + Keyword.DOUBLE_STRIKE)
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer)
+
+        driver.bothPass()
+        driver.currentStep shouldBe Step.FIRST_STRIKE_COMBAT_DAMAGE
+        driver.assertLifeTotal(defenderPlayer, 18)
+
+        setBaseKeywords(driver, attacker, currentKeywords)
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 18)
+    }
+
+    test("COMBAT-16 blocked first strike does not trample to player") {
         // 3/1 first strike attacks, 1/1 blocks
         // First strike step: 3/1 deals 3 to 1/1 (lethal, excess 2)
         // No trample, so excess damage does NOT go to player

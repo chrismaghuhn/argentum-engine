@@ -80,9 +80,9 @@ export function DecisionUI() {
     return <ReorderCardsUI key={pendingDecision.id} decision={pendingDecision} responsive={responsive} />
   }
 
-  // Handle OrderObjectsDecision (e.g., damage assignment order for blockers)
+  // Handle generic object-ordering decisions (modern combat uses CombatResolutionDecision).
   if (pendingDecision.type === 'OrderObjectsDecision') {
-    // Combat phase ordering uses dedicated blocker ordering UI
+    // Legacy combat-order payloads use the compatibility UI; modern combat uses the board above.
     if (pendingDecision.context.phase === 'COMBAT') {
       return <OrderBlockersUI key={pendingDecision.id} decision={pendingDecision} responsive={responsive} />
     }
