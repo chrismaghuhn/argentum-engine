@@ -136,6 +136,7 @@ class CombatManager(
                     .without<BlockingComponent>()
                     .without<BlockedComponent>()
                     .without<DamageAssignmentComponent>()
+                    .without<FirstCombatDamageStepEligibilityComponent>()
                     .without<DamageAssignmentOrderComponent>()
                     .without<AttackerOrderComponent>()
                     .without<DealtFirstStrikeDamageComponent>()

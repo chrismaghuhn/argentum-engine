@@ -2,8 +2,11 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
@@ -22,6 +25,15 @@ class FirstStrikeCombatTest : FunSpec({
         val driver = GameTestDriver()
         driver.registerCards(TestCards.all)
         return driver
+    }
+
+    fun setBaseKeywords(driver: GameTestDriver, creatureId: EntityId, keywords: Set<Keyword>) {
+        driver.replaceState(
+            driver.state.updateEntity(creatureId) { container ->
+                val card = container.get<CardComponent>() ?: error("Missing card component for $creatureId")
+                container.with(card.copy(baseKeywords = keywords))
+            }
+        )
     }
 
     test("COMBAT-16 first strike attacker kills blocker before it can deal damage") {
@@ -243,6 +255,91 @@ class FirstStrikeCombatTest : FunSpec({
         // Both blockers should survive - attacker died before normal damage step
         driver.findPermanent(opponent, "First Strike Knight") shouldNotBe null
         driver.findPermanent(opponent, "Savannah Lions") shouldNotBe null
+    }
+
+    test("COMBAT-18R1 first strike loss after the first damage step does not grant a second hit") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "First Strike Knight")
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer)
+
+        driver.bothPass()
+        driver.currentStep shouldBe Step.FIRST_STRIKE_COMBAT_DAMAGE
+        driver.assertLifeTotal(defenderPlayer, 17)
+
+        val currentKeywords = driver.state.getEntity(attacker)!!.get<CardComponent>()!!.baseKeywords
+        setBaseKeywords(driver, attacker, currentKeywords - Keyword.FIRST_STRIKE)
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 17)
+    }
+
+    test("COMBAT-18R1 first strike gained after the first damage step does not suppress the regular hit") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val firstStrikeAttacker = driver.putCreatureOnBattlefield(attackerPlayer, "First Strike Knight")
+        val ordinaryAttacker = driver.putCreatureOnBattlefield(attackerPlayer, "Grizzly Bears")
+        driver.removeSummoningSickness(firstStrikeAttacker)
+        driver.removeSummoningSickness(ordinaryAttacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(
+            attackerPlayer,
+            listOf(firstStrikeAttacker, ordinaryAttacker),
+            defenderPlayer,
+        ).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer)
+
+        driver.bothPass()
+        driver.currentStep shouldBe Step.FIRST_STRIKE_COMBAT_DAMAGE
+        driver.assertLifeTotal(defenderPlayer, 17)
+
+        val currentKeywords = driver.state.getEntity(ordinaryAttacker)!!.get<CardComponent>()!!.baseKeywords
+        setBaseKeywords(driver, ordinaryAttacker, currentKeywords + Keyword.FIRST_STRIKE)
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 15)
+    }
+
+    test("COMBAT-18R1 double strike loss after the first damage step does not grant a second hit") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Grizzly Bears")
+        val currentKeywords = driver.state.getEntity(attacker)!!.get<CardComponent>()!!.baseKeywords
+        setBaseKeywords(driver, attacker, currentKeywords + Keyword.DOUBLE_STRIKE)
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defenderPlayer).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer)
+
+        driver.bothPass()
+        driver.currentStep shouldBe Step.FIRST_STRIKE_COMBAT_DAMAGE
+        driver.assertLifeTotal(defenderPlayer, 18)
+
+        setBaseKeywords(driver, attacker, currentKeywords)
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 18)
     }
 
     test("COMBAT-16 blocked first strike does not trample to player") {

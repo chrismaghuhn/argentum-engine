@@ -73,6 +73,18 @@ data class DamageAssignmentComponent(
 ) : Component
 
 /**
+ * Records the First Strike and Double Strike keywords a combat creature had when the first
+ * combat-damage step began. The regular combat-damage step uses this historical snapshot rather
+ * than treating a keyword gained or lost after the first step as if it had been present at the
+ * beginning of combat damage (CR 510.4, 702.4c, 702.7c).
+ */
+@Serializable
+data class FirstCombatDamageStepEligibilityComponent(
+    val hadFirstStrike: Boolean,
+    val hadDoubleStrike: Boolean,
+) : Component
+
+/**
  * Historical order in which blockers received damage from an attacker.
  *
  * Decode-only compatibility component for old combat replays. Modern combat damage is

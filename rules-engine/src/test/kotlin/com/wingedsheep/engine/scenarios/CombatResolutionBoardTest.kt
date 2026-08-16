@@ -434,6 +434,59 @@ class CombatResolutionBoardTest : FunSpec({
         fromCrusher.forEach { it.editableBy shouldBe defender }
     }
 
+    test("COMBAT-18R1 first-strike blocker gets a live assignment decision when attackers do not deal yet") {
+        val driver = createDriver()
+        val firstStrikeCrusher = CardDefinition.creature(
+            name = "Test First Strike Crusher",
+            manaCost = ManaCost.parse("{4}{W}"),
+            subtypes = setOf(Subtype("Soldier")),
+            power = 3,
+            toughness = 3,
+            keywords = setOf(com.wingedsheep.sdk.core.Keyword.FIRST_STRIKE),
+            script = CardScript.creature(staticAbilities = listOf(CanBlockAnyNumber())),
+        )
+        driver.registerCard(firstStrikeCrusher)
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
+        val attacker = driver.activePlayer!!
+        val defender = driver.getOpponent(attacker)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val firstAttacker = driver.putCreatureOnBattlefield(attacker, "Centaur Courser")
+        val secondAttacker = driver.putCreatureOnBattlefield(attacker, "Centaur Courser")
+        val blocker = driver.putCreatureOnBattlefield(defender, "Test First Strike Crusher")
+        driver.removeSummoningSickness(firstAttacker)
+        driver.removeSummoningSickness(secondAttacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attacker, listOf(firstAttacker, secondAttacker), defender).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(defender, mapOf(blocker to listOf(firstAttacker, secondAttacker))).error shouldBe null
+
+        driver.passPriorityUntil(Step.FIRST_STRIKE_COMBAT_DAMAGE)
+        val decision = driver.pendingDecision.shouldBeInstanceOf<CombatResolutionDecision>()
+        decision.firstStrike shouldBe true
+        decision.attackers.map { it.id }.toSet() shouldBe setOf(firstAttacker, secondAttacker)
+        decision.attackers.forEach { it.dealsDamageThisStep shouldBe false }
+        decision.blockers.map { it.id } shouldBe listOf(blocker)
+
+        val blockerEdges = decision.edges.filter {
+            it.sourceId == blocker && it.direction == DamageEdgeDirection.BLOCKER_TO_ATTACKER
+        }
+        blockerEdges.map { it.targetId }.toSet() shouldBe setOf(firstAttacker, secondAttacker)
+        blockerEdges.forEach { it.editableBy shouldBe defender }
+        blockerEdges.sumOf { it.amount } shouldBe 3
+
+        driver.submitCombatDamage(
+            mapOf(
+                (blocker to firstAttacker) to 1,
+                (blocker to secondAttacker) to 2,
+            )
+        ).isSuccess shouldBe true
+        driver.state.getEntity(blocker)
+            ?.get<com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent>()
+            ?.assignments shouldBe mapOf(firstAttacker to 1, secondAttacker to 2)
+    }
+
     /**
      * CR 702.22k: when an attacking creature has banding, the active player
      * chooses the damage division for the blockers blocking it. The

@@ -23,6 +23,7 @@ import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.combat.BlockedComponent
 import com.wingedsheep.engine.state.components.combat.BlockingComponent
 import com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent
+import com.wingedsheep.engine.state.components.combat.FirstCombatDamageStepEligibilityComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
@@ -70,7 +71,15 @@ internal class CombatDamageManager(
      *
      * @param firstStrike If true, only creatures with first strike/double strike deal damage
      */
-    fun applyCombatDamage(state: GameState, firstStrike: Boolean = false): ExecutionResult {
+    fun applyCombatDamage(inputState: GameState, firstStrike: Boolean = false): ExecutionResult {
+        // The first invocation of the first-strike step is the historical boundary needed by
+        // CR 510.4. Capture it before any prevention or assignment decision can pause the step;
+        // continuation re-entry sees the already stamped components and leaves them unchanged.
+        val state = if (firstStrike) {
+            captureFirstCombatDamageStepEligibility(inputState)
+        } else {
+            inputState
+        }
         if (isAllCombatDamagePrevented(state)) {
             return ExecutionResult.success(state)
         }
@@ -103,7 +112,7 @@ internal class CombatDamageManager(
             val hasAssignAsUnblocked = cardDef.staticAbilities.any { it is AssignCombatDamageAsUnblocked }
             if (!hasAssignAsUnblocked) continue
 
-            if (!dealsDamageThisStep(projected, attackerId, firstStrike)) continue
+            if (!dealsDamageThisStep(state, projected, attackerId, firstStrike)) continue
 
             val attackerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, attackerId, cardRegistry)
             if (attackerPower <= 0) continue
@@ -149,14 +158,7 @@ internal class CombatDamageManager(
             val hasDivideDamageFreely = cardDef.staticAbilities.any { it is DivideCombatDamageFreely }
             if (!hasDivideDamageFreely) continue
 
-            val hasFirstStrike = projected.hasKeyword(attackerId, Keyword.FIRST_STRIKE)
-            val hasDoubleStrike = projected.hasKeyword(attackerId, Keyword.DOUBLE_STRIKE)
-            val attackerDealsDamageThisStep = if (firstStrike) {
-                hasFirstStrike || hasDoubleStrike
-            } else {
-                !hasFirstStrike || hasDoubleStrike
-            }
-            if (!attackerDealsDamageThisStep) continue
+            if (!dealsDamageThisStep(state, projected, attackerId, firstStrike)) continue
 
             val allDamagePrevented = DamageUtils.isAllDamageFromSourcePrevented(state, attackerId)
             val groupPrevented = isCombatDamagePreventedByGroupFilter(state, attackerId, projected)
@@ -289,6 +291,37 @@ internal class CombatDamageManager(
         return ExecutionResult.success(newState, events)
     }
 
+    /**
+     * Stamp the combat creatures' First/Double Strike state at the beginning of first-strike
+     * combat damage. This is deliberately per object and immutable, so a keyword-changing effect
+     * between the two damage steps cannot rewrite the eligibility decision for the regular step.
+     */
+    private fun captureFirstCombatDamageStepEligibility(state: GameState): GameState {
+        val combatantIds = state.getBattlefield().filter { entityId ->
+            val container = state.getEntity(entityId) ?: return@filter false
+            container.has<AttackingComponent>() || container.has<BlockingComponent>()
+        }
+        if (combatantIds.isEmpty() || combatantIds.all { entityId ->
+                state.getEntity(entityId)?.has<FirstCombatDamageStepEligibilityComponent>() == true
+            }) {
+            return state
+        }
+
+        val projected = state.projectedState
+        var captured = state
+        for (entityId in combatantIds) {
+            captured = captured.updateEntity(entityId) { container ->
+                container.with(
+                    FirstCombatDamageStepEligibilityComponent(
+                        hadFirstStrike = projected.hasKeyword(entityId, Keyword.FIRST_STRIKE),
+                        hadDoubleStrike = projected.hasKeyword(entityId, Keyword.DOUBLE_STRIKE),
+                    )
+                )
+            }
+        }
+        return captured
+    }
+
     // =========================================================================
     // Combat resolution board (CR 510 / 702.22)
     //
@@ -308,6 +341,15 @@ internal class CombatDamageManager(
         val availablePower: Int,
         val liveBlockers: List<EntityId>,
         val hasTrample: Boolean,
+    )
+
+    /** A blocker-side source that needs to divide damage among multiple attackers. */
+    private data class BlockerPlanCandidate(
+        val blockerId: EntityId,
+        val blockerName: String,
+        val chooser: EntityId,
+        val availablePower: Int,
+        val liveAttackers: List<EntityId>,
     )
 
     /** Stable wire id for a damage edge. The resumer reads source/target off the edge, never parses this. */
@@ -363,7 +405,7 @@ internal class CombatDamageManager(
                 cardDef?.staticAbilities?.any { it is DivideCombatDamageFreely } == true) continue
             // AssignAsUnblocked, once answered, has written a DamageAssignmentComponent → skip.
             if (attackerContainer.get<DamageAssignmentComponent>() != null) continue
-            if (!dealsDamageThisStep(projected, attackerId, firstStrike)) continue
+            if (!dealsDamageThisStep(state, projected, attackerId, firstStrike)) continue
 
             val blockedBy = attackerContainer.get<BlockedComponent>()
             if (blockedBy == null || blockedBy.blockerIds.isEmpty()) continue
@@ -403,37 +445,87 @@ internal class CombatDamageManager(
             )
         }
 
-        if (candidates.isEmpty()) return null
-        return emitCombatResolutionDecision(state, projected, candidates, firstStrike)
+        // A blocker that deals damage in this step can require its own player choice even when
+        // every attacker it blocks is waiting for the regular step (for example, a first-strike
+        // blocker shared by two ordinary attackers). Keep this source independent of the
+        // attacker-side candidate filter so the choice cannot fall through to the neutral seed.
+        val blockerCandidates = mutableListOf<BlockerPlanCandidate>()
+        for ((blockerId, blockingComponent) in state.findEntitiesWith<BlockingComponent>()) {
+            if (blockerId !in battlefield) continue
+            val blockerContainer = state.getEntity(blockerId) ?: continue
+            val blockerCard = blockerContainer.get<CardComponent>() ?: continue
+            if (blockerContainer.get<DamageAssignmentComponent>() != null) continue
+            if (!dealsDamageThisStep(state, projected, blockerId, firstStrike)) continue
+
+            val liveAttackers = blockingComponent.blockedAttackerIds.filter { attackerId ->
+                attackerId in battlefield && state.getEntity(attackerId)?.has<AttackingComponent>() == true
+            }
+            if (liveAttackers.size < 2) continue
+
+            val blockerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, blockerId, cardRegistry)
+            if (blockerPower <= 0) continue
+
+            val defaultChooser = projected.getController(blockerId) ?: continue
+            val chooser = CombatDamageUtils.combatDamageChooser(
+                state, projected, blockerId, CombatDamageUtils.CombatSide.BLOCKER,
+                defaultChooser = defaultChooser,
+                activePlayerId = state.activePlayerId ?: defaultChooser,
+            )
+            blockerCandidates.add(
+                BlockerPlanCandidate(
+                    blockerId = blockerId,
+                    blockerName = blockerCard.name,
+                    chooser = chooser.playerId,
+                    availablePower = blockerPower,
+                    liveAttackers = liveAttackers,
+                )
+            )
+        }
+
+        if (candidates.isEmpty() && blockerCandidates.isEmpty()) return null
+        return emitCombatResolutionDecision(state, projected, candidates, blockerCandidates, firstStrike)
     }
 
     private fun emitCombatResolutionDecision(
         state: GameState,
         projected: ProjectedState,
         candidates: List<PlanCandidate>,
+        blockerCandidates: List<BlockerPlanCandidate>,
         firstStrike: Boolean,
     ): ExecutionResult {
         val battlefield = state.getBattlefield()
-        val activePlayerId = state.activePlayerId ?: candidates.first().chooser
-        val blockerIds = candidates.flatMap { it.liveBlockers }.toSet()
+        val activePlayerId = state.activePlayerId
+            ?: candidates.firstOrNull()?.chooser
+            ?: blockerCandidates.first().chooser
+        val blockerIds = (candidates.flatMap { it.liveBlockers } + blockerCandidates.map { it.blockerId }).toSet()
         val defenderIds = candidates.map { it.attackingComponent.defenderId }.toSet()
 
-        val attackerNodes = candidates.map { c ->
-            val container = state.getEntity(c.attackerId)
+        val candidateByAttacker = candidates.associateBy { it.attackerId }
+        val attackerIds = linkedSetOf<EntityId>().apply {
+            candidates.forEach { add(it.attackerId) }
+            blockerCandidates.forEach { addAll(it.liveAttackers) }
+        }
+        val attackerNodes = attackerIds.mapNotNull { attackerId ->
+            val attackingComponent = state.getEntity(attackerId)?.get<AttackingComponent>()
+                ?: return@mapNotNull null
+            val candidate = candidateByAttacker[attackerId]
+            val container = state.getEntity(attackerId)
+            val card = container?.get<CardComponent>() ?: return@mapNotNull null
+            val blockedBy = container.get<BlockedComponent>()
             ResolutionAttacker(
-                id = c.attackerId,
-                name = c.attackerName,
-                power = projected.getPower(c.attackerId) ?: c.availablePower,
-                toughness = projected.getToughness(c.attackerId) ?: 0,
-                hasTrample = c.hasTrample,
-                hasDeathtouch = projected.hasKeyword(c.attackerId, Keyword.DEATHTOUCH),
-                hasFirstStrike = projected.hasKeyword(c.attackerId, Keyword.FIRST_STRIKE),
-                hasDoubleStrike = projected.hasKeyword(c.attackerId, Keyword.DOUBLE_STRIKE),
-                dealsDamageThisStep = true,
-                bandId = c.attackingComponent.bandId,
-                attackedDefenderId = c.attackingComponent.defenderId,
-                blockedByIds = c.liveBlockers,
-                markedDamage = container?.get<DamageComponent>()?.amount ?: 0,
+                id = attackerId,
+                name = candidate?.attackerName ?: card.name,
+                power = projected.getPower(attackerId) ?: candidate?.availablePower ?: 0,
+                toughness = projected.getToughness(attackerId) ?: 0,
+                hasTrample = projected.hasKeyword(attackerId, Keyword.TRAMPLE),
+                hasDeathtouch = projected.hasKeyword(attackerId, Keyword.DEATHTOUCH),
+                hasFirstStrike = projected.hasKeyword(attackerId, Keyword.FIRST_STRIKE),
+                hasDoubleStrike = projected.hasKeyword(attackerId, Keyword.DOUBLE_STRIKE),
+                dealsDamageThisStep = dealsDamageThisStep(state, projected, attackerId, firstStrike),
+                bandId = attackingComponent.bandId,
+                attackedDefenderId = attackingComponent.defenderId,
+                blockedByIds = blockedBy?.blockerIds.orEmpty().filter { it in battlefield },
+                markedDamage = container.get<DamageComponent>()?.amount ?: 0,
             )
         }
 
@@ -441,6 +533,9 @@ internal class CombatDamageManager(
             val container = state.getEntity(blockerId) ?: return@mapNotNull null
             val card = container.get<CardComponent>() ?: return@mapNotNull null
             val blocking = container.get<BlockingComponent>()
+            val liveAttackers = blocking?.blockedAttackerIds.orEmpty().filter { attackerId ->
+                attackerId in battlefield && state.getEntity(attackerId)?.has<AttackingComponent>() == true
+            }
             ResolutionBlocker(
                 id = blockerId,
                 name = card.name,
@@ -449,8 +544,8 @@ internal class CombatDamageManager(
                 hasDeathtouch = projected.hasKeyword(blockerId, Keyword.DEATHTOUCH),
                 hasFirstStrike = projected.hasKeyword(blockerId, Keyword.FIRST_STRIKE),
                 hasDoubleStrike = projected.hasKeyword(blockerId, Keyword.DOUBLE_STRIKE),
-                dealsDamageThisStep = dealsDamageThisStep(projected, blockerId, firstStrike),
-                blockedAttackerIds = blocking?.blockedAttackerIds.orEmpty(),
+                dealsDamageThisStep = dealsDamageThisStep(state, projected, blockerId, firstStrike),
+                blockedAttackerIds = liveAttackers,
                 markedDamage = container.get<DamageComponent>()?.amount ?: 0,
             )
         }
@@ -561,7 +656,7 @@ internal class CombatDamageManager(
         // Assignment choices are collected in active-player/nonactive-player
         // order. This keeps the chooser authority from banding while applying
         // APNAP to multi-player combat instead of assuming a two-player order.
-        val candidateChoosers = candidates.map { it.chooser }
+        val candidateChoosers = candidates.map { it.chooser } + blockerCandidates.map { it.chooser }
         val edgeChoosers = edges
             .filter { it.direction == DamageEdgeDirection.BLOCKER_TO_ATTACKER }
             .map { it.editableBy }
@@ -574,18 +669,28 @@ internal class CombatDamageManager(
         val decisionId = UUID.randomUUID().toString()
         // Names here are the real card names; per-viewer face-down masking is applied downstream at
         // delivery time (DecisionEnricher), since this one decision graph is shown to both choosers.
-        val prompt = if (candidates.size == 1) {
-            "Assign ${candidates[0].attackerName}'s ${candidates[0].availablePower} combat damage"
-        } else {
-            "Assign combat damage for ${candidates.size} attackers"
+        val prompt = when {
+            candidates.size == 1 ->
+                "Assign ${candidates[0].attackerName}'s ${candidates[0].availablePower} combat damage"
+            candidates.isNotEmpty() -> "Assign combat damage for ${candidates.size} attackers"
+            blockerCandidates.size == 1 ->
+                "Assign ${blockerCandidates[0].blockerName}'s ${blockerCandidates[0].availablePower} combat damage"
+            else -> "Assign combat damage for ${blockerCandidates.size} blockers"
+        }
+        val sourceId = candidates.firstOrNull()?.attackerId ?: blockerCandidates.firstOrNull()?.blockerId
+        val sourceName = when {
+            candidates.size == 1 -> candidates[0].attackerName
+            candidates.isNotEmpty() -> "Combat damage"
+            blockerCandidates.size == 1 -> blockerCandidates[0].blockerName
+            else -> "Combat damage"
         }
         val decision = CombatResolutionDecision(
             id = decisionId,
             playerId = choosers.first(),
             prompt = prompt,
             context = DecisionContext(
-                sourceId = candidates.firstOrNull()?.attackerId,
-                sourceName = if (candidates.size == 1) candidates[0].attackerName else "Combat damage",
+                sourceId = sourceId,
+                sourceName = sourceName,
                 phase = DecisionPhase.COMBAT,
             ),
             firstStrike = firstStrike,
@@ -664,7 +769,7 @@ internal class CombatDamageManager(
             val blockers = blockedBy?.blockerIds ?: emptyList()
 
             // Attacker damage
-            if (dealsDamageThisStep(projected, attackerId, firstStrike)) {
+            if (dealsDamageThisStep(state, projected, attackerId, firstStrike)) {
                 val power = CombatDamageUtils.getAssignedCombatDamage(state, projected, attackerId, cardRegistry)
                 if (power > 0) {
                     val manualAssignment = attackerContainer.get<DamageAssignmentComponent>()
@@ -730,7 +835,7 @@ internal class CombatDamageManager(
                 if (blockerId !in state.getBattlefield()) continue
                 val blockerContainer = state.getEntity(blockerId) ?: continue
                 blockerContainer.get<CardComponent>() ?: continue
-                if (!dealsDamageThisStep(projected, blockerId, firstStrike)) continue
+                if (!dealsDamageThisStep(state, projected, blockerId, firstStrike)) continue
                 val blockerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, blockerId, cardRegistry)
                 if (blockerPower <= 0) continue
 
@@ -779,12 +884,23 @@ internal class CombatDamageManager(
         return assignments
     }
 
-    private fun dealsDamageThisStep(projected: ProjectedState, creatureId: EntityId, firstStrike: Boolean): Boolean {
+    private fun dealsDamageThisStep(
+        state: GameState,
+        projected: ProjectedState,
+        creatureId: EntityId,
+        firstStrike: Boolean,
+    ): Boolean {
         val hasFirstStrike = projected.hasKeyword(creatureId, Keyword.FIRST_STRIKE)
         val hasDoubleStrike = projected.hasKeyword(creatureId, Keyword.DOUBLE_STRIKE)
-        return if (firstStrike) {
-            hasFirstStrike || hasDoubleStrike
+        if (firstStrike) return hasFirstStrike || hasDoubleStrike
+
+        val firstStepEligibility = state.getEntity(creatureId)
+            ?.get<FirstCombatDamageStepEligibilityComponent>()
+        return if (firstStepEligibility != null) {
+            (!firstStepEligibility.hadFirstStrike && !firstStepEligibility.hadDoubleStrike) || hasDoubleStrike
         } else {
+            // If no first-strike step occurred, the current characteristics define the ordinary
+            // combat-damage step. This fallback also keeps direct engine callers compatible.
             !hasFirstStrike || hasDoubleStrike
         }
     }
@@ -1425,14 +1541,7 @@ internal class CombatDamageManager(
             val attackerContainer = state.getEntity(attackerId) ?: continue
             attackerContainer.get<CardComponent>() ?: continue
 
-            val hasFirstStrike = projected.hasKeyword(attackerId, Keyword.FIRST_STRIKE)
-            val hasDoubleStrike = projected.hasKeyword(attackerId, Keyword.DOUBLE_STRIKE)
-            val dealsDamageThisStep = if (firstStrike) {
-                hasFirstStrike || hasDoubleStrike
-            } else {
-                !hasFirstStrike || hasDoubleStrike
-            }
-            if (!dealsDamageThisStep) continue
+            if (!dealsDamageThisStep(state, projected, attackerId, firstStrike)) continue
 
             val attackerPower = CombatDamageUtils.getAssignedCombatDamage(state, projected, attackerId, cardRegistry)
             if (attackerPower <= 0) continue

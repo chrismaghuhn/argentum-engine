@@ -43,6 +43,7 @@ import com.wingedsheep.engine.state.components.combat.BlockingComponent
 import com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent
 import com.wingedsheep.engine.state.components.combat.DamageAssignmentOrderComponent
 import com.wingedsheep.engine.state.components.combat.DealtFirstStrikeDamageComponent
+import com.wingedsheep.engine.state.components.combat.FirstCombatDamageStepEligibilityComponent
 import com.wingedsheep.engine.state.components.combat.RequiresManualDamageAssignmentComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
@@ -495,6 +496,7 @@ object ZoneMovementUtils {
             .without<BlockingComponent>()
             .without<BlockedComponent>()
             .without<DamageAssignmentComponent>()
+            .without<FirstCombatDamageStepEligibilityComponent>()
             .without<DamageAssignmentOrderComponent>()
             .without<AttackerOrderComponent>()
             .without<DealtFirstStrikeDamageComponent>()
@@ -990,6 +992,7 @@ object ZoneMovementUtils {
                 .without<BlockingComponent>()
                 .without<BlockedComponent>()
                 .without<DamageAssignmentComponent>()
+                .without<FirstCombatDamageStepEligibilityComponent>()
                 .without<DamageAssignmentOrderComponent>()
                 .without<AttackerOrderComponent>()
         }
