@@ -71,20 +71,51 @@ class ReplayFingerprintV3Test : FunSpec({
     test("v3 fingerprint includes semantic yields and canonicalizes unordered sets") {
         val player = EntityId("p1")
         val identity = AbilityIdentity("Test Card#TST-1", AbilityId("test-ability"))
+        val secondIdentity = AbilityIdentity("Second Card#TST-2", AbilityId("second-ability"))
         val yielded = GameState(
             priorityPassedBy = linkedSetOf(EntityId("p2"), EntityId("p1")),
             yieldsByPlayer = mapOf(
-                player to PlayerYields(autoAnswer = mapOf(identity to true)),
+                player to PlayerYields(
+                    untilEndOfTurn = linkedSetOf(identity, secondIdentity),
+                    wholeGame = linkedSetOf(secondIdentity, identity),
+                    autoAnswer = mapOf(identity to true),
+                ),
             ),
         )
         val reordered = yielded.copy(
             priorityPassedBy = linkedSetOf(EntityId("p1"), EntityId("p2")),
+            yieldsByPlayer = linkedMapOf(
+                player to PlayerYields(
+                    untilEndOfTurn = linkedSetOf(secondIdentity, identity),
+                    wholeGame = linkedSetOf(identity, secondIdentity),
+                    autoAnswer = mapOf(identity to true),
+                ),
+            ),
         )
 
         ReplayFingerprint.of(reordered, 3) shouldBe ReplayFingerprint.of(yielded, 3)
         ReplayFingerprint.of(
             yielded.copy(yieldsByPlayer = mapOf(player to PlayerYields(autoAnswer = mapOf(identity to false))))
         ) shouldNotBe ReplayFingerprint.of(yielded, 3)
+    }
+
+    test("v3 fingerprint canonicalizes structured map iteration order") {
+        val p1Library = ZoneKey(EntityId("p1"), Zone.LIBRARY)
+        val p2Library = ZoneKey(EntityId("p2"), Zone.LIBRARY)
+        val first = GameState(
+            zones = linkedMapOf(
+                p1Library to listOf(EntityId("p1-card")),
+                p2Library to listOf(EntityId("p2-card")),
+            ),
+        )
+        val reordered = first.copy(
+            zones = linkedMapOf(
+                p2Library to listOf(EntityId("p2-card")),
+                p1Library to listOf(EntityId("p1-card")),
+            ),
+        )
+
+        ReplayFingerprint.of(first, 3) shouldBe ReplayFingerprint.of(reordered, 3)
     }
 
     test("nonce changes are ignored but decision semantics remain fingerprinted") {
