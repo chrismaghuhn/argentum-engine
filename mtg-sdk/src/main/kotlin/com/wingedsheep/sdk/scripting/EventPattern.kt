@@ -778,6 +778,10 @@ sealed interface EventPattern : TextReplaceable<EventPattern> {
         val minAttackers: Int = 1,
         val attackerFilter: GameObjectFilter? = null
     ) : EventPattern {
+        init {
+            require(minAttackers >= 1) { "minAttackers must be at least 1" }
+        }
+
         override val description: String = buildString {
             append("you attack ")
             if (minAttackers <= 1) {

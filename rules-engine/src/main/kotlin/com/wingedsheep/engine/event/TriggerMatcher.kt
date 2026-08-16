@@ -835,7 +835,7 @@ class TriggerMatcher(
         }
         if (qualifyingAttacks.isEmpty()) return emptyList()
 
-        val required = trigger.minAttackers.coerceAtLeast(1)
+        val required = trigger.minAttackers
         return state.turnOrder.filter { playerId ->
             qualifyingAttacks.count { it.defenderId == playerId } >= required
         }

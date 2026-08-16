@@ -7,14 +7,17 @@ import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.DelayedTriggeredAbility
+import com.wingedsheep.engine.event.GlobalGrantedTriggeredAbility
 import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
@@ -26,6 +29,8 @@ import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggerSpec
+import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.TriggeredAbility
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
@@ -86,6 +91,16 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         typeLine = "Enchantment"
         triggeredAbility {
             trigger = Triggers.YouAttackPlayerWithFilter(qualifyingFilter)
+            effect = Effects.DrawCards(1)
+        }
+    }
+
+    val commandZoneWatcher = card("Command Zone Per Player Attack Watcher") {
+        manaCost = "{2}"
+        typeLine = "Legendary Enchantment"
+        triggeredAbility {
+            trigger = Triggers.YouAttackPlayerWithFilter(qualifyingFilter)
+            triggerZones = setOf(Zone.COMMAND)
             effect = Effects.DrawCards(1)
         }
     }
@@ -166,6 +181,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
                 otherQualifyingCreature,
                 testWalker,
                 perPlayerWatcher,
+                commandZoneWatcher,
                 perPlayerMinTwoWatcher,
                 declarationWatcher,
                 existingFilteredDeclarationWatcher,
@@ -389,6 +405,53 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             setOf(pod.playerB, pod.playerC)
     }
 
+    test("command-zone per-player attack triggers fan out with player bindings") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val sourceId = pod.driver.putCardInCommandZone(pod.attackingPlayer, commandZoneWatcher.name)
+
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(
+                pod.driver.state,
+                listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
+            )
+            .filter { it.sourceId == sourceId }
+
+        pending shouldHaveSize 2
+        pending.map { it.triggerContext.triggeringPlayerId }.toSet() shouldBe
+            setOf(pod.playerB, pod.playerC)
+    }
+
+    test("global-granted per-player attack triggers fan out with player bindings") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val sourceId = EntityId.generate()
+        val global = GlobalGrantedTriggeredAbility(
+            ability = TriggeredAbility.create(
+                trigger = EventPattern.YouAttackPlayerEvent(attackerFilter = qualifyingFilter),
+                binding = TriggerBinding.ANY,
+                effect = Effects.DrawCards(1),
+            ),
+            controllerId = pod.attackingPlayer,
+            sourceId = sourceId,
+            sourceName = "Global Per Player Attack Watcher",
+            duration = Duration.Permanent,
+        )
+
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(
+                pod.driver.state.copy(globalGrantedTriggeredAbilities = listOf(global)),
+                listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
+            )
+            .filter { it.sourceId == sourceId }
+
+        pending shouldHaveSize 2
+        pending.map { it.triggerContext.triggeringPlayerId }.toSet() shouldBe
+            setOf(pod.playerB, pod.playerC)
+    }
+
     test("minAttackers is applied per attacked player after qualification") {
         val pod = pod()
         val attackers = List(3) {
@@ -508,6 +571,31 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val forkOrder = bindingOrder(pod.driver.state.copy())
 
         forkOrder shouldBe originalOrder
+    }
+
+    test("serialized game-state fork preserves per-player grouping and bindings") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
+        val event = attackEvent(pod, first to pod.playerB, second to pod.playerC)
+        val detector = TriggerDetector(pod.driver.cardRegistry)
+        val json = Json {
+            serializersModule = engineSerializersModule
+            allowStructuredMapKeys = true
+        }
+
+        fun bindingOrder(state: GameState): List<EntityId> =
+            detector.detectTriggers(state, listOf(event))
+                .filter { it.sourceName == perPlayerWatcher.name }
+                .map { requireNotNull(it.triggerContext.triggeringPlayerId) }
+
+        val originalOrder = bindingOrder(pod.driver.state)
+        val restoredState = json.decodeFromString<GameState>(
+            json.encodeToString(GameState.serializer(), pod.driver.state)
+        )
+
+        bindingOrder(restoredState) shouldBe originalOrder
     }
 
     test("historical attack events without declared target data fail closed") {

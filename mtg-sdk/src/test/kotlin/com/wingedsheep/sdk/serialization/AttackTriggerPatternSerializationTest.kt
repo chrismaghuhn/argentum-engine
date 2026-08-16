@@ -4,6 +4,7 @@ import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.serialization.CardSerialization
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -30,5 +31,14 @@ class AttackTriggerPatternSerializationTest : FunSpec({
             minAttackers = 1,
             attackerFilter = filter,
         )
+    }
+
+    test("YouAttackPlayerEvent rejects a non-positive minimum") {
+        shouldThrow<IllegalArgumentException> {
+            EventPattern.YouAttackPlayerEvent(minAttackers = 0)
+        }
+        shouldThrow<IllegalArgumentException> {
+            EventPattern.YouAttackPlayerEvent(minAttackers = -1)
+        }
     }
 })

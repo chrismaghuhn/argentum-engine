@@ -4209,9 +4209,12 @@ sealed set for attack-time facts beyond the basics.
   two qualifying attackers against the same player produce one trigger, while qualifying
   attackers against two different players produce one trigger for each player. The new
   `EventPattern.YouAttackPlayerEvent(minAttackers, attackerFilter)` applies `minAttackers`
-  independently to each player group. A planeswalker or battle is not converted through its
+  independently to each player group; `minAttackers` must be at least 1 and invalid SDK data is
+  rejected at construction/deserialization. A planeswalker or battle is not converted through its
   controller, so attacking one does not count as attacking that player. Each emitted trigger binds
-  that player as `TriggerContext.triggeringPlayerId` for `Player.TriggeringPlayer` effects.
+  that player as `TriggerContext.triggeringPlayerId` for `Player.TriggeringPlayer` effects. The
+  per-player expansion is preserved for battlefield, non-battlefield, globally granted, and
+  event-based delayed trigger detection paths.
 - `CreaturesAttackYou` — defender side; fires once per `AttackersDeclaredEvent`,
   not per attacker. Excludes creatures attacking a planeswalker you control
   (CR 509.1b). Pair with `DynamicAmounts.creaturesAttackingYou()` for
