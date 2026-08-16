@@ -1,6 +1,6 @@
 # A6 Replay Determinism, Snapshot/Fork Equivalence, and Reconstruction Foundation
 
-Status: specification for review
+Status: reviewed with required edits incorporated; ready for implementation planning
 
 Design checkpoint: APPROVED_WITH_REQUIRED_CHANGE
 
@@ -13,9 +13,10 @@ format, an ML export, or a second observation model.
 ## 1. Decision summary
 
 CompactReplay v3 is required because the meaning of the persisted replay checkpoints changes. v1 and
-v2 remain readable and verifiable with their historical semantics. v3 is the first version that uses
-the transition-complete canonical GameState fingerprint defined below. A replay with a version above
-v3 is rejected explicitly before best-effort decoding.
+v2 remain readable, with their historical verification semantics preserved. v3 is the first version
+that uses the transition-complete canonical GameState fingerprint defined below. Every v3 replay also
+stores a checkpoint at the current action-stream tail. A replay with a version above v3 is rejected
+explicitly before best-effort decoding.
 
 The v3 fingerprint treats a GameState as the complete authoritative transition state. It includes
 hidden information, RNG continuation, ordered zones, stack order, pending decisions, continuations,
@@ -44,8 +45,10 @@ The A4 files remain untouched:
   reconstruction paths.
 * Prove independent replay reconstruction and live-versus-replay prefix equality.
 * Replace the incomplete current replay fingerprint with the versioned v3 canonical fingerprint.
+* Add a matching v3 checkpoint at the action-stream tail and require it for v3 EXACT fidelity.
 * Preserve v1 and v2 decode and verification behavior.
 * Reject unsupported future replay versions explicitly.
+* Route unsupported-version records to the existing durable-presentation fallback when available.
 * Prove codec round-trip semantics.
 * Prove entity-ID and seeded-RNG determinism.
 * Prove pending-decision replay for decisions already represented by GameAction.
@@ -56,6 +59,7 @@ The A4 files remain untouched:
   fork isolation.
 * Reconstruct a perspective observation through the existing ObservationBuilder as a secondary
   bridge test.
+* Audit pending-decision presentation fields and add a checkpoint-boundary performance sanity gate.
 * Preserve the existing public replay privacy boundary.
 
 ### Out of scope
@@ -96,7 +100,7 @@ worktree and is not part of A6.
 | Persistent yields | ReplayYieldEntry events keyed to afterActionCount and reapplied during reconstruction |
 | Pinned definitions | Compact serialized card definitions overlay the live registry for captured replay cards |
 | Current fingerprint | Short SHA-256 digest over turn metadata, stack size, zone sizes, and life totals |
-| Checkpoints | Sparse checkpoints at every 20 actions; no guaranteed final checkpoint |
+| Checkpoints | Sparse checkpoints at every 20 actions; current records have no guaranteed final checkpoint |
 | Fidelity | EXACT, UNVERIFIED, or DIVERGED, with truncation at the last verifiable frame |
 | Gym snapshot | Immutable GameState plus player IDs and step count in SnapshotCodec; GameGymEnv currently saves stepCount as 0 |
 | Gym fork | Shares immutable GameState, copies player IDs and step count, and clears event history |
@@ -115,6 +119,10 @@ worktree and is not part of A6.
 4. GameGymEnv.snapshot passes stepCount = 0 instead of environment.stepCount.
 5. Existing focused replay and Gym tests are green but do not prove full-state prefix equality,
    decision-nonce normalization, or horizon-preserving snapshot restore.
+6. The current reconstructor reports EXACT after any non-empty checkpoint set matches, even when the
+   unchecked action suffix has drifted.
+7. ReplayStore drops a row when CompactReplay decoding throws, so an archived presentation cannot
+   currently be selected for an unsupported future compact version.
 
 ## 4. CompactReplay v3 compatibility contract
 
@@ -179,6 +187,51 @@ version, rather than an ad hoc prefix inside the string, identifies the algorith
 the version and the expected representation length so an old short value cannot be mistaken for a
 v3 value.
 
+### 4.5 v3 tail checkpoint
+
+Every newly written v3 CompactReplay contains exactly one checkpoint at the current action-stream
+tail:
+
+~~~text
+ReplayCheckpoint(
+    afterActionCount = replay.actions.size,
+    fingerprint = fingerprint of exactly that resulting GameState,
+)
+~~~
+
+The rule also applies to an empty action stream, where the tail count is zero and the checkpoint
+describes the initialized state after any action-count-zero yields have been applied. The live
+ReplayRecordingSnapshot already captures a coherent fingerprint beside its action list; v3 record
+creation uses that value for the tail checkpoint. If an interval checkpoint already exists at the
+tail count, the writer keeps one checkpoint at that count and does not append a duplicate.
+
+This is a v3 write requirement, not a migration rule. v1 and v2 records are not rewritten and do not
+gain a retroactive tail checkpoint. A v3 record missing its tail checkpoint can never be classified
+as EXACT; if all actions apply and no checkpoint disagrees, it is UNVERIFIED with an explicit missing
+tail reason rather than trusted as an exact replay.
+
+### 4.6 Unsupported versions at the service boundary
+
+ReplayCodec.decode rejects a version above CURRENT_VERSION deterministically. The exception must not
+escape as an uncontrolled HTTP 500 and must not be converted into a fabricated CompactReplay.
+
+The persistence read path handles the rejection separately from ordinary corrupt-payload failures:
+
+1. It retains the row's replay metadata and independently decodable archived presentation, together
+   with an unsupported-version marker. It does not construct a partial CompactReplay from unknown
+   fields.
+2. ReplayService does not invoke ReplayReconstructor for that marker. If presentation is available,
+   it serves that durable presentation through the existing viewer payload with fidelity DIVERGED,
+   stateReproducible = false, and a controlled reason such as "unsupported CompactReplay version".
+   It never reports EXACT.
+3. If no presentation is available, the ordinary replay API returns the existing controlled
+   unavailable/not-found response rather than a 500 or a partial reconstruction. The response does
+   not expose a stack trace or raw future-version payload.
+
+This preserves the existing archive fallback while making the decode failure visible and controlled.
+VERSION-03A covers deterministic codec rejection. VERSION-03B covers the store/service/API behavior
+with and without an archived presentation.
+
 ## 5. Transition-complete canonical GameState fingerprint
 
 ### 5.1 Authority
@@ -187,13 +240,18 @@ ReplayFingerprint remains the single replay equality and checkpoint authority. T
 does not create a second state-hash system. It canonicalizes the existing serializable GameState
 graph and hashes that canonical representation.
 
-The fingerprint represents full engine semantics, not merely visible board data and not merely
-TrainingObservation.stateDigest. A matching observation digest never proves a matching full state.
+The fingerprint authority is the complete transition-semantic GameState, not byte-for-byte
+presentation state and not merely visible board data. It is not TrainingObservation.stateDigest. A
+matching observation digest never proves a matching full state. A serialized field is included by
+default, but a presentation-only field may be excluded only after the audit gate in Section 5.3
+proves that it cannot affect an engine transition, decision validation, or replay-authoritative
+observable state.
 
 ### 5.2 Included state
 
-The v3 canonical representation includes every GameState constructor field unless a field is
-explicitly proven derived and transition-independent. At minimum, the representation includes:
+The v3 canonical representation includes every transition-semantic GameState constructor field
+unless it is explicitly proven derived or presentation-only. At minimum, the representation
+includes:
 
 * Turn number, phase, step, active player, priority player, timestamp, turn order, game-over state,
   winner, and priority-passed state.
@@ -203,9 +261,9 @@ explicitly proven derived and transition-independent. At minimum, the representa
 * Zone keys and each zone's semantic contents. Lists such as Library and any ordered zone retain
   their order.
 * Stack contents and stack order, including every stack entity and its components.
-* Pending decision type and complete semantics: acting player, source and context, prompt and
-  effect semantics, targets and legal candidates, options, min/max, mode shape, payment
-  requirements, and all structured decision fields.
+* Pending decision type and complete transition semantics: acting player, source and subject
+  identities, target and candidate identities, options, min/max, mode shape, payment requirements,
+  constraints, and all structured decision fields. Presentation strings follow Section 5.3.
 * The complete continuation stack, including continuation type, order, all resume data, and
   decision-reference aliases.
 * Trigger queues, delayed triggers, floating and granted effects, pending spell state, combat
@@ -213,14 +271,45 @@ explicitly proven derived and transition-independent. At minimum, the representa
 * Commander state, command-zone movement and cast-history data, commander tax/history, and
   commander damage where represented.
 * RNG state, nextEntityId, and all state-threaded counters.
-* Persistent yields and their semantic identity and scope.
+* The applied GameState.yieldsByPlayer configuration and its semantic identity and scope.
+
+CompactReplay.yields is a separate out-of-band input log. A future ReplayYieldEntry whose
+afterActionCount is greater than the current state does not enter that earlier GameState fingerprint.
+Once reconstruction applies the entry at its recorded action count, the resulting
+GameState.yieldsByPlayer value is included in every later checkpoint and tail fingerprint.
 
 Transient-looking fields are included when they can affect the next transition. This includes
 pending sacrifice/discard causes, active replacement chains, pending decision data, and other
 short-lived resume fields. A field is not excluded because it is usually empty or because it exists
 only between two engine calls.
 
-### 5.3 Canonical encoding
+### 5.3 Pending-decision field classification
+
+The v3 contract distinguishes transition semantics from presentation text. The following table is
+the required classification boundary:
+
+| Field | Class | v3 rule |
+| --- | --- | --- |
+| PendingDecision.id | VOLATILE_ROUTING | Replace with the global deterministic decision alias |
+| ContinuationFrame.decisionId | VOLATILE_ROUTING | Replace with the same alias table as PendingDecision.id |
+| Decision kind / polymorphic type | SEMANTIC | Include; it selects the response and validator shape |
+| Acting player / playerId | SEMANTIC | Include |
+| Source, subject, triggering entity, targets, options, legal candidates | SEMANTIC | Include identities and semantic order |
+| Min/max, constraints, mode structure, payment requirements | SEMANTIC | Include all values used to validate or resume the choice |
+| Continuation relationship | SEMANTIC plus VOLATILE_ROUTING | Include the relationship after alias substitution |
+| prompt | AUDIT_REQUIRED | Exclude only after proving it is presentation-only; include if any transition, validator, or replay-authoritative observable uses its value |
+| effectHint | AUDIT_REQUIRED | Apply the same proof rule as prompt |
+| yesText, noText, hint, display labels, and card-info display metadata | AUDIT_REQUIRED | Exclude when proven presentation-only; do not assume that from the field name |
+
+The audit must search engine transition handlers, decision validators, continuation resumers,
+action-error construction, and the existing observation boundary. A value used only to render a
+prompt, build a log/event message, or display a UI hint is presentation-only for the v3 transition
+fingerprint. A value that changes legal response validation, continuation data, or the next state is
+semantic and remains in the fingerprint. The audit result is recorded in the implementation change
+and protected by a regression test; v3 is not considered complete while an AUDIT_REQUIRED field is
+silently classified.
+
+### 5.4 Canonical encoding
 
 The canonicalizer uses the existing serializer-visible state graph and a type-aware canonical form:
 
@@ -241,7 +330,7 @@ No list is sorted merely to make a test pass. A list may be treated as unordered
 field-specific semantic proof and a regression test. Any new GameState constructor field must be
 reviewed for inclusion before the v3 fingerprint contract is considered complete.
 
-### 5.4 Explicit exclusions
+### 5.5 Explicit exclusions
 
 The initial exclusion set contains only derived caches that are recomputed from the authoritative
 GameState, especially the lazy projected-state cache. It excludes no authoritative constructor field,
@@ -251,6 +340,19 @@ The projected-state exclusion is valid only if tests show that materializing or 
 does not change the v3 fingerprint and that all projected values are derivable from included state.
 If a later audit shows that a cache influences a transition or observable full state, it becomes
 fingerprint input. The implementation records the exclusion and its proof next to the canonicalizer.
+
+### 5.6 Performance sanity boundary
+
+V3 canonicalization runs only at replay verification boundaries: interval checkpoints, the mandatory
+tail checkpoint, in-progress resume capture, and explicit replay-state comparisons. It is not added
+to the per-action engine transition path or called after every action merely because the state is
+immutable.
+
+The A6 performance gate is a sanity check, not a B1 benchmark. A fixed fixture records the expected
+number of v3 fingerprint evaluations for its checkpoints, tail, and resume operation, and a code
+audit verifies that no full-state canonicalization call was added to ActionProcessor's ordinary
+action path. The result is reported as PERF_SANITY = PASS. No wall-clock threshold or optimization
+claim is part of A6.
 
 ## 6. Decision nonce normalization
 
@@ -289,8 +391,9 @@ The canonicalizer does not normalize:
 * Decision kind or polymorphic type.
 * Acting/player identity.
 * Source, subject, triggering entity, targets, legal candidates, or options.
-* Prompts, context, effect hints, mode shape, min/max, ordering flags, payment requirements, or
-  structured decision constraints.
+* Semantic decision context, mode shape, min/max, ordering flags, payment requirements, and
+  structured decision constraints. prompt, effectHint, and other presentation labels follow
+  Section 5.3 and are not normalized when they remain in the canonical form.
 * Entity IDs, stack IDs, component identities, card identities, or any non-decision UUID.
 * The relationship between a pending decision and its continuation or yield references.
 
@@ -323,13 +426,20 @@ the next transition that can consume it.
 Checkpoint evaluation selects the fingerprint algorithm from CompactReplay.version. The expected
 fidelity behavior is:
 
-* EXACT: all applicable checkpoints match and the action stream applies without error.
+* v3 EXACT: every recorded action applies, every checkpoint matches, a tail checkpoint exists at
+  afterActionCount = replay.actions.size, and that tail fingerprint matches the resulting state.
+  Equivalently, the verified tail action count equals the replay action count.
+* v1/v2 EXACT: the existing historical rule remains unchanged; v1/v2 are not retroactively required
+  to gain a tail checkpoint.
 * UNVERIFIED: the replay has no historical checkpoints or no stored resume fingerprint, under the
-  existing compatibility policy.
+  existing compatibility policy. A v3 replay with an absent tail checkpoint is also UNVERIFIED, with
+  a specific missing-tail reason, even when its available checkpoints match.
 * DIVERGED: a recorded action fails, a checkpoint differs, or the replay cannot prove the next
   frame. The first mismatch reports the first divergent checkpoint/action window.
 
 An old v2 checkpoint is never compared with v3 merely because the current executable is new.
+Only EXACT satisfies a DATA_TRUSTED replay gate; UNVERIFIED may be rendered under the existing
+degraded policy but cannot be used as proof of full replay fidelity.
 
 ## 8. Gym snapshot and fork contract
 
@@ -411,7 +521,11 @@ reported as ALREADY_GREEN. Tests are added only for missing proof; no artificial
 | DECISION-02 | At least one structured decision replays exactly where current infrastructure represents it |
 | YIELD-01..03 | Yield codec, application point, and future-state effect are preserved |
 | PINNED-DEFS-01..02 | Pinned definition wins over a deliberately changed fixture registry and survives persistence |
-| VERSION-01..03 | v3 round-trip, v1/v2 historical fixtures, and explicit future-version rejection |
+| VERSION3-SHORT-GAME | A v3 replay with fewer than 20 actions still has a matching tail checkpoint and can be EXACT |
+| VERSION3-NON-MULTIPLE | A 43-action v3 replay has checkpoints at 20, 40, and 43, and action 43 is authoritative |
+| VERSION-01..02 | v3 round-trip and v1/v2 historical fixtures preserve their version-specific behavior |
+| VERSION-03A | ReplayCodec rejects v > CURRENT_VERSION deterministically before reconstruction |
+| VERSION-03B | Store/service/API serves archived presentation for unsupported versions, or a controlled unavailable response without it |
 | Nonce normalization | Positive and negative aliasing tests from Section 6.3 |
 | COMMANDER-REPLAY-01..03 | Command-zone identity, replacement choice, tax/history, and commander damage where supported |
 | COMBAT-REPLAY-01..02 | Pre-assignment snapshot and modern combat continuation match |
@@ -421,6 +535,7 @@ reported as ALREADY_GREEN. Tests are added only for missing proof; no artificial
 | OBS-BRIDGE-01 | Reconstructed pre-action state reaches the same existing perspective observation boundary |
 | Public replay privacy | Existing endpoint masking regression remains green |
 | Gym horizon | Snapshot at step 73 with maxSteps 100 truncates after 27 restored steps |
+| PERF_SANITY | V3 hashing occurs only at checkpoint, tail, resume, and explicit comparison boundaries |
 
 The required full gates remain the repository task gates:
 
@@ -441,17 +556,34 @@ npm run test -- --run
 FrozenBaseline must remain 6ff9ded1403d59ac. A changed hash stops the A6 verification; snapshots are
 not reblessed.
 
+On Windows, run the repository's just recipes first. If the direct PowerShell invocation fails with
+WinError 193 because an extensionless helper is executed as a program, use the already installed
+Git-Bash fallback from the A6 worktree without editing repository scripts:
+
+~~~powershell
+& 'C:\Program Files\Git\bin\bash.exe' -lc './scripts/gradle-locked :game-server:test'
+~~~
+
+The same fallback applies to the other Gradle module gates. The final report records when this
+environment fallback was used and keeps the direct-just failure separate from test results.
+
 ## 12. Expected implementation boundary
 
 Expected production changes are limited to:
 
 * game-server replay version constants, codec version inspection, legacy/current fingerprint
-  dispatch, canonical v3 fingerprinting, checkpoint verification, and resume-gate selection.
+  dispatch, canonical v3 fingerprinting, checkpoint verification, resume-gate selection, and the
+  mandatory v3 tail checkpoint at record creation/finalization.
+* game-server persistence/service handling for unsupported future versions, retaining an independently
+  decodable archived presentation when available and returning a controlled unavailable response
+  otherwise.
 * Gym snapshot step-count capture if the current bug is confirmed by the RED test.
 
-Expected test changes are replay reconstruction/durability/codec/fidelity tests, canonical fingerprint
-and nonce-alias tests, Commander/combat/LKI regression fixtures where needed, Gym snapshot/fork
-continuation tests, and the replay-to-observation bridge test.
+Expected test changes are replay reconstruction/durability/codec/fidelity tests, tail-checkpoint
+fixtures, canonical fingerprint and nonce-alias tests, the pending-decision presentation-field audit,
+Commander/combat/LKI regression fixtures where needed, unsupported-version service fallback tests, Gym
+snapshot/fork continuation tests, the replay-to-observation bridge test, and PERF_SANITY call-boundary
+coverage.
 
 Documentation may update the replay contract if implementation details require it. The A4 contract
 files, card definitions, decklists, ML/trajectory files, and unrelated feature work remain outside
