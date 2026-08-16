@@ -15,7 +15,7 @@
 - New recordings and every v3 in-progress flush use `CompactReplay.CURRENT_VERSION = 3` and contain one checkpoint at `afterActionCount == actions.size`. A checkpoint already present at that count is replaced/retained rather than duplicated.
 - v1/v2 records never receive a synthetic tail checkpoint and continue to use the old 16-hex legacy fingerprint and legacy fidelity rules.
 - v3 `EXACT` means: every recorded action applied; every checkpoint encountered and matched; the checkpoint at the exact action-stream tail exists and matched; and the verified tail count equals `actions.size`.
-- v3 canonicalization represents the complete transition-semantic `GameState`, including RNG, next entity ID, ordered zones/stack, pending decision semantics, continuations, yields already applied to the state, commander/combat/replacement/resume state, and all other constructor fields unless an audit proves a field is derived and transition-independent.
+- v3 canonicalization represents the complete transition-semantic `GameState`, including RNG, next entity ID, ordered zones/stack, pending decision semantics, continuations, yields already applied to the state, commander/combat/replacement/resume state, and all other constructor fields unless an audit proves a field is derived and transition-independent. Typed volatile routing-ID slots remain represented through canonical aliases; only the raw runtime nonce is excluded.
 - `PendingDecision.id` and typed continuation decision references are routing identities only. They are normalized through one state-local alias table; arbitrary entity IDs, card IDs, ability identities, and unrelated strings are never normalized.
 - `prompt` and `effectHint` remain an explicit audit point. The current source audit finds only UI/log/error/event-construction/observation uses, not action validation or continuation semantics, so they are expected to be excluded from v3. If the implementation audit finds a transition read, include the field and update the spec/tests before proceeding.
 - `GameState.yieldsByPlayer` is fingerprint input. `CompactReplay.yields` is an out-of-band replay input log and is only reflected in a fingerprint after its `afterActionCount` mutation has been applied.
@@ -56,7 +56,7 @@
   - changing only the runtime nonce (`abc` versus `xyz`) produces the same fingerprint, while changing decision semantics with either nonce produces a different fingerprint;
   - the existing legacy fixture still produces the exact pre-v3 16-hex value for both replay versions 1 and 2.
 
-- [ ] Add a test proving that derived `GameState.projectedState`/other caches do not enter the canonical input, while no constructor field is silently omitted. The test should serialize a baseline state and assert that the canonical field inventory contains every serialized constructor property except the explicitly audited presentation-only fields and routing-ID fields.
+- [ ] Add a test proving that derived `GameState.projectedState`/other caches do not enter the canonical input, while no constructor field is silently omitted. The test should serialize a baseline state and assert that every transition-semantic constructor property remains represented; typed volatile routing-ID slots also remain represented through their canonical aliases and alias relationships. Only the raw runtime nonce and the explicitly audited presentation-only fields may be absent from the canonical byte stream.
 
 - [ ] Add a test fixture for `GameState.yieldsByPlayer` versus `CompactReplay.yields`: changing a future `ReplayYieldEntry` must not alter a fingerprint of the earlier state; applying that entry at its recorded action count must alter the resulting state fingerprint when the yield changes future behavior.
 
@@ -117,12 +117,13 @@
 
 - [ ] Set `CompactReplay.CURRENT_VERSION` to `3` and update comments to say: v1 is the original format, v2 has legacy fingerprint/checkpoint semantics, v3 has the complete canonical fingerprint and tail-checkpoint contract. Remove the current claim that unknown future records are deliberately tolerated.
 
-- [ ] Add a codec version probe that decodes only the top-level JSON version after gzip/base64 decoding. Missing `version` means v1. Versions 1, 2, and 3 follow their defined decode paths. A version greater than `CURRENT_VERSION` throws `UnsupportedReplayVersionException` carrying the encountered and supported versions before `CompactReplay.serializer()` can construct a value. Invalid versions below the historical range remain a controlled format error.
+- [ ] Add a codec version probe that decodes only the top-level JSON version after gzip/base64 decoding. When the wire JSON has no `version`, normalize the root JSON by injecting `"version": 1` before `CompactReplay.serializer()` runs; never rely on `CompactReplay.version`'s constructor default after `CURRENT_VERSION` becomes 3. Versions 1, 2, and 3 then follow their defined decode paths. A version greater than `CURRENT_VERSION` throws `UnsupportedReplayVersionException` carrying the encountered and supported versions before `CompactReplay.serializer()` can construct a value. Invalid versions below the historical range remain a controlled format error.
 
 - [ ] Keep the existing `wasKicked` migration for supported historical records. Make sure the version probe and future-version rejection happen before any migration can turn a future payload into a partially decoded current record.
 
 - [ ] Add tests for:
   - v1 JSON with omitted version decodes as version 1;
+  - `VERSION-01-MISSING`: omitted-version JSON decodes to `version == 1`, re-encodes with `version == 1`, and dispatches to the legacy fingerprint algorithm;
   - v2 round-trips and uses legacy fingerprint semantics;
   - v3 round-trips with a 64-hex checkpoint fingerprint;
   - a payload whose version is 4 or higher deterministically throws `UnsupportedReplayVersionException`;
@@ -146,7 +147,7 @@
 
 **Steps:**
 
-- [ ] Implement `ensureV3Tail(checkpoints, actionCount, fingerprint)` so it produces a unique checkpoint at `actionCount`, updates an existing same-count entry without duplication, and leaves v1/v2 lists untouched. Use it in every v3 writer path, not only at game over.
+- [ ] Implement `ensureV3Tail(checkpoints, actionCount, fingerprint)` so it produces a unique checkpoint at `actionCount`, updates an existing same-count entry without duplication, and leaves v1/v2 lists untouched. The helper returns a derived checkpoint list for the `CompactReplay` being persisted; it must not append the tail to `GameSession.recordedCheckpoints` unless that action count is also a normal cadence checkpoint. Use it in every v3 writer path, not only at game over.
 
 - [ ] Change `GameSession.stampCheckpointIfDue()` and `replayRecordingSnapshot()` to use the explicit current-v3 fingerprint. The snapshot’s fingerprint must describe exactly the state represented by its copied actions/yields, including applied `GameState.yieldsByPlayer`.
 
@@ -166,6 +167,7 @@
   - a changed action 41–43 with checkpoints through 40 does not qualify as `EXACT`;
   - a manually constructed v3 record without a tail is `UNVERIFIED` with a missing-tail reason;
   - a zero-action v3 replay verifies its checkpoint at 0;
+  - two successive in-progress flushes at the same non-cadence action count persist one tail checkpoint each time while the session’s cadence-only `recordedCheckpoints` does not accumulate derived tails;
   - v1/v2 fixtures do not gain a retroactive tail.
 
 - [ ] Commit as `fix: enforce v3 replay tail fidelity` after focused reconstruction/durability tests pass.
@@ -212,6 +214,8 @@
   Change `ReplayStore.find(gameId)` and `ReplayService.findStored(gameId)` to return `ReplayRead?`; keep `findInProgress()` as `List<StoredReplay>` and filter unsupported rows before that boundary. The unsupported variant must never contain a synthetic or partial `CompactReplay`.
 
 - [ ] Change `ReplayStore` reads so `JdbcReplayStore` catches `UnsupportedReplayVersionException` separately from ordinary corruption. It returns the unsupported marker with row metadata and presentation; it logs and drops only genuinely malformed/corrupt records as before. `findInProgress()` must not hand unsupported records to `GameSession.restoreReplayRecording`; it should skip them with a controlled warning. In-memory records remain decoded read results.
+
+- [ ] Decode the archived presentation while constructing the marker: `row.presentation?.let { runCatching { ReplayCodec.decodeText(it) }.getOrNull() }`. `ReplayRead.UnsupportedVersion.presentation` is the decoded `{initialSnapshot,deltas}` viewer JSON, never the raw gzip/base64 database column. A valid compact payload with a corrupt presentation produces no archive and follows the controlled unavailable path; the raw encoded text is never passed to `ReplayViewerPayload.body`.
 
 - [ ] Keep save/resume/finalize paths fail-closed: an unsupported marker cannot be overwritten by an in-progress flush, resumed, or converted into a fabricated partial replay. Normal decoded records retain all existing behavior.
 
@@ -303,6 +307,17 @@
   Do not describe the fallback as a `just` pass. If the lock helper is unavailable under Git Bash, state that limitation and use the repository’s direct Gradle wrapper only as a clearly labeled fallback.
 
 - [ ] Run the replay and Gym module suites, then the repository’s required broader gates through `just`: `:game-server:test`, `:gym:test`, `:gym-server:test`, `:gym-trainer:test`, `:rules-engine:test`, `:mtg-sdk:test`, the relevant `:mtg-sets:<era>:test`/scenario gates, `:ai:test`, and `:oracle-assay:test`. No web-client files are in A6 scope, so no frontend change or frontend snapshot update is authorized by this plan.
+
+- [ ] Run the web regression gates from `web-client` even though A6 must not change frontend files:
+
+  ```powershell
+  npm run build
+  npm run test -- --run
+  ```
+
+  Record `WEB_FILES_CHANGED = NO` from the final diff audit. These are regression gates only; do not alter snapshots or frontend behavior as part of A6.
+
+- [ ] Add an explicit service test for a fully applied v3 replay with a missing tail: it remains `ReplayFidelity.UNVERIFIED`, and the test records the chosen legacy-compatible `stateReproducible`/share-frame behavior rather than leaving it implicit. The implementation must not label this record `EXACT`; if the existing service keeps `stateReproducible=true` for a complete but unverified reconstruction, preserve that only as an asserted compatibility behavior and keep `DATA_TRUSTED`/new v3 trust decisions gated on `EXACT`.
 
 - [ ] Run the frozen baseline test `com.wingedsheep.ai.evaluation.FrozenBaselineTest` and require the existing digest `6ff9ded1403d59ac`; do not re-bless snapshots. If an unrelated pre-existing failure appears, preserve the user’s changes, report it with the passing gates, and stop rather than fixing adjacent code.
 
