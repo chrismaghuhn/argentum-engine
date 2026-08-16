@@ -26,7 +26,11 @@ data class ReplacementChoiceContinuation(
     override val decisionId: String,
     val pendingEvent: PendingGameEvent,
     val options: List<GatheredReplacement>,
-    /** Optional candidates get one explicit decline option in the same CR 616 group. */
+    /**
+     * Legacy optional-decline entries retained for decoding older internal frames.
+     * Newly created CR 616 frames route optional candidates through their own prompt
+     * and leave this list empty.
+     */
     val declineOptional: List<GatheredReplacement> = emptyList(),
     val alreadyApplied: Set<ReplacementEffectIdentity>,
     val context: EffectContext? = null

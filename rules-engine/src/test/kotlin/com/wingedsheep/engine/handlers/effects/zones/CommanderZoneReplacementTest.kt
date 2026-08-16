@@ -968,6 +968,51 @@ class CommanderZoneReplacementTest : FunSpec({
         declined.state.getZone(ZoneKey(playerId, Zone.EXILE)) shouldBe listOf(commanderId)
     }
 
+    test("CTRL-DECLINE-01: CR 616 ordering has no controller-owned Commander decline option") {
+        val replacementSourceId = EntityId.generate()
+        val replacementSource = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = "Controlled Exile",
+                name = "Controlled Exile",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+                ownerId = opponentId,
+            ),
+            OwnerComponent(opponentId),
+            ControllerComponent(opponentId),
+            ReplacementEffectSourceComponent(
+                listOf(
+                    RedirectZoneChange(
+                        newDestination = Zone.EXILE,
+                        appliesTo = EventPattern.ZoneChangeEvent(
+                            filter = GameObjectFilter.Any,
+                            from = Zone.BATTLEFIELD,
+                            to = Zone.HAND,
+                        ),
+                    )
+                )
+            ),
+        )
+        val state = stateWithCommanderOnControllerBattlefield()
+            .withEntity(replacementSourceId, replacementSource)
+            .addToZone(ZoneKey(opponentId, Zone.BATTLEFIELD), replacementSourceId)
+
+        val initial = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+            .moveToZoneWithReplacements(
+                state = state,
+                entityId = commanderId,
+                destinationZone = Zone.HAND,
+                fromZoneKey = ZoneKey(opponentId, Zone.BATTLEFIELD),
+                context = EffectContext(sourceId = null, controllerId = opponentId),
+            )
+
+        val ordering = initial.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+        ordering.playerId shouldBe opponentId
+        ordering.options.any { it.startsWith("Test Commander -") } shouldBe true
+        ordering.options.any { it.startsWith("Controlled Exile -") } shouldBe true
+        ordering.options.none { it.startsWith("Decline:") } shouldBe true
+    }
+
     test("optional Commander YES preserves ordinary replacement identities already applied") {
         val replacementSourceId = EntityId.generate()
         val ordinaryReplacement = RedirectZoneChange(

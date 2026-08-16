@@ -347,9 +347,10 @@ class ReplacementContinuationResumer(
             return ExecutionResult.error(state, "Invalid replacement choice index: $chosenIndex")
         }
 
-        // A mixed-priority-group choice can explicitly decline an optional
-        // replacement. The mandatory candidates remain applicable and are
-        // reconsidered by the normal processor pass.
+        // Backward compatibility for an older internal continuation that already
+        // contained an explicit optional-decline entry. Newly created CR 616 frames
+        // leave declineOptional empty, so the ordering player can no longer bypass
+        // the optional replacement's own choice owner.
         if (chosenIndex >= continuation.options.size) {
             val declineIndex = chosenIndex - continuation.options.size
             val declined = continuation.declineOptional.getOrNull(declineIndex)

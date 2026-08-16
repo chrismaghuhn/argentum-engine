@@ -172,9 +172,10 @@ class ReplacementEffectProcessor {
             }
 
             // An optional and a mandatory effect in the same priority group are both part of the
-            // CR 616 choice set. Include explicit decline options for the optional candidates;
-            // choosing a mandatory effect applies it first, while choosing a decline leaves the
-            // mandatory candidate available for the next pass.
+            // CR 616 choice set. The ordering player chooses the next effect, but does not get a
+            // second player's optional-effect decision. Selecting an optional candidate below
+            // routes through its own domain prompt; if that prompt is declined, the processor
+            // suppresses only that candidate for the unchanged event and re-runs CR 616.
             if (mandatory.isNotEmpty() && optional.isNotEmpty()) {
                 return presentChoice(
                     state = state,
@@ -182,7 +183,6 @@ class ReplacementEffectProcessor {
                     options = groupEffects,
                     alreadyApplied = alreadyApplied,
                     context = context,
-                    declineOptional = optional,
                 )
             }
 
@@ -354,7 +354,6 @@ class ReplacementEffectProcessor {
         options: List<GatheredReplacement>,
         alreadyApplied: Set<ReplacementEffectIdentity>,
         context: EffectContext?,
-        declineOptional: List<GatheredReplacement> = emptyList(),
     ): ProcessorResult.Paused {
         val playerId = event.replacementOrderingPlayerId(state)
         val decisionId = UUID.randomUUID().toString()
@@ -369,8 +368,7 @@ class ReplacementEffectProcessor {
                 phase = DecisionPhase.RESOLUTION
             ),
             options = disambiguate(
-                options.map { it.description } +
-                    declineOptional.map { "Decline: ${it.description}" }
+                options.map { it.description }
             ),
             canCancel = false
         )
@@ -379,7 +377,6 @@ class ReplacementEffectProcessor {
             decisionId = decisionId,
             pendingEvent = event,
             options = options,
-            declineOptional = declineOptional,
             alreadyApplied = alreadyApplied,
             context = context
         )
