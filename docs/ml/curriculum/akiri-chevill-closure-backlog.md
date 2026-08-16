@@ -57,16 +57,26 @@ This should be a reusable condition/trigger vocabulary, not a Chevill-only callb
 
 Severity: HIGH. Curriculum importance: commander.
 
-Needed definition and scenario coverage:
+Status: **SUPPORTED_AND_TESTED for the exact ZNR card slice by A8-CARD-001R2**;
+isolated Draft PR review remains required.
 
-- equipped-creature attack trigger with “one or more” cardinality;
-- draw choice;
-- Equipment attachment state;
-- unattach as a cost;
-- temporary indestructible until end of turn;
-- commander identity and repeated commander removal/recast once A8-FEATURE-001 is green.
+Evidence:
 
-The current SDK appears to contain relevant generic attack-batch, equipment, draw, cost, and temporary-ability vocabulary, so this is presently classified as a missing exact card definition rather than a new mechanic by itself.
+- `AkiriFearlessVoyager.kt` defines the canonical ZNR #220 card with the
+  per-defending-player equipped-attacker trigger and the `{W}` activation cost;
+- `AkiriFearlessVoyagerScenarioTest.kt` covers the AKIRI-01 through AKIRI-22
+  acceptance matrix, including distinct defending players, resolution-time
+  host-first and Equipment choices, opponent-controlled Equipment, attachment
+  invariants, source/trigger lifetime, no-legal-resolution domains, and
+  end-of-turn indestructible expiry;
+- `just check-card-printing "Akiri, Fearless Voyager"` passes, and the ZNR
+  snapshot contains only the intentional new Akiri object. The repository-wide
+  card-tree snapshot gate still reports the pre-existing Windows CRLF/LF drift;
+  all card JSON round-trips pass.
+
+The exact card definition is no longer classified as missing. Commander-zone
+removal/recast behavior remains deferred to A8-FEATURE-001 and is not claimed
+as resolved by this card closure.
 
 ## A8-CARD-002 — Chevill, Bane of Monsters
 

@@ -188,4 +188,3 @@ Out of scope:
 - new SDK vocabulary or an Akiri-specific engine hack;
 - broad snapshot reblessing or unrelated backlog cleanup;
 - merging, marking the PR ready, or enabling auto-merge.
-

@@ -1,3 +1,194 @@
+// Akiri, Fearless Voyager
+{
+    "name": "Akiri, Fearless Voyager",
+    "manaCost": "{1}{R}{W}",
+    "typeLine": "Legendary Creature — Kor Warrior",
+    "oracleText": "Whenever you attack a player with one or more equipped creatures, draw a card.\n{W}: You may unattach an Equipment from a creature you control. If you do, tap that creature and it gains indestructible until end of turn.",
+    "creatureStats": {
+        "power": 3,
+        "toughness": 3
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "YouAttackPlayerEvent",
+                    "attackerFilter": {
+                        "cardPredicates": [
+                            "IsCreature"
+                        ],
+                        "statePredicates": [
+                            "IsEquipped"
+                        ],
+                        "controllerPredicate": "ControlledByYou"
+                    }
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "descriptionOverride": "Whenever you attack a player with one or more equipped creatures, draw a card."
+            }
+        ],
+        "activatedAbilities": [
+            {
+                "id": "ability_2",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomMana",
+                        "cost": "{W}"
+                    }
+                },
+                "effect": {
+                    "type": "Gated",
+                    "gate": {
+                        "type": "Gate.MayDecide",
+                        "feasibility": {
+                            "type": "ControlsPermanentMatching",
+                            "filter": {
+                                "cardPredicates": [
+                                    "IsCreature"
+                                ],
+                                "statePredicates": [
+                                    "IsEquipped"
+                                ],
+                                "controllerPredicate": "ControlledByYou"
+                            }
+                        }
+                    },
+                    "then": {
+                        "type": "Gated",
+                        "gate": {
+                            "type": "Gate.DoAction",
+                            "action": {
+                                "type": "Composite",
+                                "effects": [
+                                    {
+                                        "type": "GatherCards",
+                                        "source": {
+                                            "type": "BattlefieldMatching",
+                                            "filter": {
+                                                "cardPredicates": [
+                                                    "IsCreature"
+                                                ],
+                                                "statePredicates": [
+                                                    "IsEquipped"
+                                                ],
+                                                "controllerPredicate": "ControlledByYou"
+                                            }
+                                        },
+                                        "storeAs": "hostCandidates"
+                                    },
+                                    {
+                                        "type": "SelectFromCollection",
+                                        "from": "hostCandidates",
+                                        "selection": {
+                                            "type": "ChooseExactly",
+                                            "count": {
+                                                "type": "Fixed",
+                                                "amount": 1
+                                            }
+                                        },
+                                        "storeSelected": "host",
+                                        "prompt": "Choose a creature you control with an attached Equipment",
+                                        "alwaysPrompt": true
+                                    },
+                                    {
+                                        "type": "GatherCards",
+                                        "source": {
+                                            "type": "AttachedToTarget",
+                                            "host": {
+                                                "type": "PipelineTarget",
+                                                "collectionName": "host"
+                                            },
+                                            "filter": "artifact Equipment"
+                                        },
+                                        "storeAs": "equipmentCandidates"
+                                    },
+                                    {
+                                        "type": "SelectFromCollection",
+                                        "from": "equipmentCandidates",
+                                        "selection": {
+                                            "type": "ChooseExactly",
+                                            "count": {
+                                                "type": "Fixed",
+                                                "amount": 1
+                                            }
+                                        },
+                                        "storeSelected": "chosenEquipment",
+                                        "prompt": "Choose an Equipment to unattach",
+                                        "alwaysPrompt": true
+                                    },
+                                    {
+                                        "type": "ForEach",
+                                        "space": {
+                                            "type": "IterationSpace.Collection",
+                                            "collection": "chosenEquipment"
+                                        },
+                                        "body": "UnattachEquipment"
+                                    }
+                                ]
+                            },
+                            "successCriterion": {
+                                "type": "SuccessCriterion.CollectionNonEmpty",
+                                "name": "chosenEquipment"
+                            }
+                        },
+                        "then": {
+                            "type": "Composite",
+                            "effects": [
+                                {
+                                    "type": "TapUntap",
+                                    "target": {
+                                        "type": "PipelineTarget",
+                                        "collectionName": "host"
+                                    }
+                                },
+                                {
+                                    "type": "GrantKeyword",
+                                    "keyword": "INDESTRUCTIBLE",
+                                    "target": {
+                                        "type": "PipelineTarget",
+                                        "collectionName": "host"
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                },
+                "descriptionOverride": "{W}: You may unattach an Equipment from a creature you control. If you do, tap that creature and it gains indestructible until end of turn."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "220",
+        "rarity": "RARE",
+        "artist": "Ekaterina Burmak",
+        "flavorText": "\"No angel bars our ascent. Emeria waits above!\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/6/9/69e42511-f653-4a6f-a5d4-50e21dfc8077.jpg",
+        "rulings": [
+            {
+                "date": "2020-09-25",
+                "text": "You choose which Equipment to unattach as Akiri's second ability resolves. Other Equipment remain attached, and no player can act between the Equipment becoming unattached and the creature being tapped and gaining indestructible."
+            },
+            {
+                "date": "2020-09-25",
+                "text": "The Equipment remains on the battlefield after it becomes unattached."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "RED",
+        "WHITE"
+    ]
+}
+
 // Broken Wings
 {
     "name": "Broken Wings",
