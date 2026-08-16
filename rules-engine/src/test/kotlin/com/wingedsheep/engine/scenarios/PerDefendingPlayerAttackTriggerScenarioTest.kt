@@ -1,6 +1,11 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
+import com.wingedsheep.engine.core.ActionProcessor
+import com.wingedsheep.engine.core.DeclaredAttack
+import com.wingedsheep.engine.core.DeclareAttackers
+import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.support.GameTestDriver
@@ -8,6 +13,7 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
@@ -22,6 +28,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
+import kotlinx.serialization.json.Json
 
 /**
  * Generic acceptance matrix for "whenever you attack a player with one or more
@@ -390,20 +397,88 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         val pod = pod()
         val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
+        val detector = TriggerDetector(pod.driver.cardRegistry)
 
-        val forward = triggers(
-            pod,
-            perPlayerWatcher.name,
-            attackEvent(pod, first to pod.playerB, second to pod.playerC),
-        ).map { it.triggerContext.triggeringPlayerId }
+        val forward = detector
+            .detectTriggers(
+                pod.driver.state,
+                listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)),
+            )
+            .filter { it.sourceName == perPlayerWatcher.name }
+            .map { it.triggerContext.triggeringPlayerId }
 
-        val reverse = triggers(
-            pod,
-            perPlayerWatcher.name,
-            attackEvent(pod, second to pod.playerC, first to pod.playerB),
-        ).map { it.triggerContext.triggeringPlayerId }
+        val reverse = detector
+            .detectTriggers(
+                pod.driver.state,
+                listOf(attackEvent(pod, second to pod.playerC, first to pod.playerB)),
+            )
+            .filter { it.sourceName == perPlayerWatcher.name }
+            .map { it.triggerContext.triggeringPlayerId }
 
         reverse shouldBe forward
+    }
+
+    test("equivalent declaration map iteration orders produce identical serialized attack events") {
+        val pod = pod()
+        pod.driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        pod.driver.removeSummoningSickness(first)
+        pod.driver.removeSummoningSickness(second)
+        pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
+        pod.driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        val baseState = pod.driver.state
+        val processor = ActionProcessor(pod.driver.cardRegistry)
+
+        val forward = processor.process(
+            baseState,
+            DeclareAttackers(
+                pod.attackingPlayer,
+                linkedMapOf(first to pod.playerB, second to pod.playerC),
+            ),
+        ).result
+        val reverse = processor.process(
+            baseState,
+            DeclareAttackers(
+                pod.attackingPlayer,
+                linkedMapOf(second to pod.playerC, first to pod.playerB),
+            ),
+        ).result
+        val forwardEvent = forward.events.filterIsInstance<AttackersDeclaredEvent>().single()
+        val reverseEvent = reverse.events.filterIsInstance<AttackersDeclaredEvent>().single()
+        val json = Json { serializersModule = engineSerializersModule }
+
+        json.encodeToString(GameEvent.serializer(), forwardEvent) shouldBe
+            json.encodeToString(GameEvent.serializer(), reverseEvent)
+
+        val detector = TriggerDetector(pod.driver.cardRegistry)
+        val forwardOrder = detector.detectTriggers(baseState, listOf(forwardEvent))
+            .filter { it.sourceName == perPlayerWatcher.name }
+            .map { it.triggerContext.triggeringPlayerId }
+        val reverseOrder = detector.detectTriggers(baseState, listOf(reverseEvent))
+            .filter { it.sourceName == perPlayerWatcher.name }
+            .map { it.triggerContext.triggeringPlayerId }
+        reverseOrder shouldBe forwardOrder
+    }
+
+    test("equivalent immutable state forks preserve per-player grouping and bindings") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, perPlayerWatcher.name)
+        val event = attackEvent(pod, first to pod.playerB, second to pod.playerC)
+        val detector = TriggerDetector(pod.driver.cardRegistry)
+
+        fun bindingOrder(state: com.wingedsheep.engine.state.GameState): List<EntityId> =
+            detector.detectTriggers(state, listOf(event))
+                .filter { it.sourceName == perPlayerWatcher.name }
+                .map { requireNotNull(it.triggerContext.triggeringPlayerId) }
+
+        val originalOrder = bindingOrder(pod.driver.state)
+        val forkOrder = bindingOrder(pod.driver.state.copy())
+
+        forkOrder shouldBe originalOrder
     }
 
     test("historical attack events without declared target data fail closed") {
@@ -455,4 +530,3 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         ) shouldHaveSize 2
     }
 })
-
