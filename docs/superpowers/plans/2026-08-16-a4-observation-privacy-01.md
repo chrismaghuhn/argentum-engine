@@ -312,6 +312,7 @@ if (!visibility.isZoneVisibleTo(state, key, perspective)) return HIDDEN
 if (!faceDown) return VISIBLE_IDENTITY
 if (visibility.isCardRevealedTo(state, entityId, perspective)) return VISIBLE_IDENTITY
 if (zone == Zone.BATTLEFIELD && controller == perspective && visibility.hasLookAtFaceDownCreatures(state, perspective)) return VISIBLE_IDENTITY
+if (zone == Zone.EXILE) return HIDDEN
 return PUBLIC_FACE_DOWN_ONLY
 ~~~
 
@@ -397,6 +398,11 @@ Return ActionRegistry.EMPTY for the non-owner. The owner continues to receive on
 - [ ] **Step 3: Preserve structured action semantics without hashing descriptions.**
 
 Keep LegalActionView.description available only in the actor’s observation. Do not use it to identify or digest an action. Ensure sourceEntityId, targetEntityIds, costs, bounds, distribution flags, mana flags, and decision-option flags are populated from structured engine data.
+
+If a required structured action-identity field is not generically available from
+the engine, classify it as an A5 contract dependency. Do not broaden
+rules-engine scope and do not substitute description text for the missing
+structured field.
 
 - [ ] **Step 4: Populate public stack source and target metadata.**
 
@@ -606,13 +612,35 @@ Remove revealAll from OpenAPI descriptions and examples. Unknown JSON fields may
 
 - [ ] **Step 2: Add HTTP hardening tests.**
 
-Create an environment through POST /envs, call GET /envs/{id} with and without ?revealAll=true, and assert both decoded observations are masked, have the same schema ID, and have the same digest. Send a create payload containing "revealAll": true and assert it also produces the normal masked observation.
+Create an environment through POST /envs, call GET /envs/{id} with and without ?revealAll=true, and assert both decoded observations are masked, have the same schema ID, and have the same digest. The obsolete create payload containing "revealAll": true must satisfy either safe behavior:
+
+~~~
+request rejected with a 4xx unknown/invalid-field response
+
+or
+
+request accepted, but the returned observation remains masked and revealAll has zero effect
+~~~
+
+The test must fail if the request produces an unmasked observation.
 
 - [ ] **Step 3: Add direct/HTTP parity tests.**
 
 For the same created environment and perspective, compare the direct MultiEnvService observation with the decoded HTTP observation field-for-field after transport envelope removal. Assert identical visible content, hidden content, schema ID, and digest. Assert the HTTP layer does not perform a second independent masking transformation.
 
-- [ ] **Step 4: Search every production path and commit.**
+- [ ] **Step 4: Prove server wire-byte stability.**
+
+Call the same unchanged GET observation twice without advancing the environment:
+
+~~~
+val first = mockMvc.get("/envs/$id").andReturn().response.contentAsString
+val second = mockMvc.get("/envs/$id").andReturn().response.contentAsString
+first shouldBe second
+~~~
+
+The response body must be byte-identical. Only explicitly external HTTP envelope data would be exempt; the current observation endpoint returns the observation body directly, so no exemption is expected.
+
+- [ ] **Step 5: Search every production path and commit.**
 
 ~~~
 rg -n "revealAll|defaultRevealAll" gym/src/main gym-server/src/main
@@ -845,5 +873,7 @@ Use A4_OBSERVATION_PRIVACY_01_PASS only when all privacy, canonical, digest, API
 - [x] Structured action fields are hashed; descriptions are not.
 - [x] Meaningful list order is preserved; only proven unordered collections are sorted.
 - [x] Direct JVM and HTTP parity, revealAll removal, FrozenBaseline, web gates, and diff hygiene are explicit.
+- [x] Obsolete HTTP revealAll input may be rejected or ignored, but can never produce an unmasked observation; repeated unchanged GET bodies must be byte-stable.
+- [x] Missing generic structured action identity is an A5 dependency, never a description-text workaround or broad rules-engine change.
 - [x] Windows launcher fallback records availability, reason, and exact commands without treating the launcher failure as a product regression.
 - [x] No step requires card, combat, Commander-rules, replay, ML, snapshot, rebase, or force-push work.
