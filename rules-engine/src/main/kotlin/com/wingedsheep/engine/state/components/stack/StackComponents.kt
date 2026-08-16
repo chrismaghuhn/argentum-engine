@@ -283,9 +283,9 @@ data class TriggeredAbilityOnStackComponent(
      * ability itself is no longer reachable by the time this resolves — the trigger has been
      * detected, the source may have left the battlefield, and the granting static may be gone.
      *
-     * [com.wingedsheep.engine.mechanics.stack.StackResolver] evaluates it as the last thing before
-     * the effect runs; false removes the object from the stack with an `AbilityFizzledEvent`.
-     * Null for every ability with no intervening-"if", and for a
+     * [com.wingedsheep.engine.mechanics.stack.StackResolver] evaluates it as the CR 608.2a check,
+     * before target legality is checked; false removes the object from the stack with an
+     * `AbilityFizzledEvent`. Null for every ability with no intervening-"if", and for a
      * [com.wingedsheep.sdk.scripting.TriggeredAbility.triggerRestriction], which CR 603.2 checks
      * only when the trigger would fire.
      */
