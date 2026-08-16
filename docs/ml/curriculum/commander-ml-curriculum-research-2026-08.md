@@ -630,7 +630,7 @@ These ranges refer to future curated 100-card lists with approximately 34–38 l
 | Balmor                                                                                                         | 64–67 | 20–27 | 7–11  | 14–18 | 9  |
 | Raff                                                                                                           | 63–67 | 25–32 | 9–13  | 15–19 | 8  |
 | Rishkar                                                                                                        | 62–66 | 19–25 | 8–12  | 11–14 | 10 |
-| Florian                                                                                                        | 63–66 | 25–32 | 8–12 | 14–18 | 8  |
+| Florian                                                                                                        | 63–66 | 25–32 | 8–12  | 14–18 | 8  |
 | Adeline                                                                                                        | 63–67 | 22–30 | 10–15 | 13–17 | 9  |
 | Gisa and Geralf                                                                                                | 62–66 | 25–33 | 10–15 | 15–20 | 9  |
 | Rashmi                                                                                                         | 62–66 | 30–38 | 12–18 | 18–24 | 8  |
