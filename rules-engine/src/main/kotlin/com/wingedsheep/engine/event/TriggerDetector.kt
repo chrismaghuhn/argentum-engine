@@ -974,9 +974,13 @@ class TriggerDetector(
             // attack pattern, and the general "when a [filtered] creature next attacks"
             // (AttackEvent).
             is com.wingedsheep.sdk.scripting.EventPattern.YouAttackEvent,
-            is com.wingedsheep.sdk.scripting.EventPattern.YouAttackPlayerEvent,
             is com.wingedsheep.sdk.scripting.EventPattern.AttackEvent ->
                 matcher.matchesTrigger(specEvent, spec.binding, event, sourceId, controllerId, state)
+            // A per-defending-player attack trigger has no entity/recipient scope. Reject a
+            // delayed spec carrying one rather than falling through to a single unbound trigger.
+            is com.wingedsheep.sdk.scripting.EventPattern.YouAttackPlayerEvent ->
+                watchedEntityId == null && watchedRecipientId == null &&
+                    matcher.matchesTrigger(specEvent, spec.binding, event, sourceId, controllerId, state)
             // Spell-cast delayed triggers ("whenever you cast a [filtered] spell this turn, …",
             // Rediscover the Way chapter III) are filter-scoped: delegate to the canonical
             // spell-cast matcher so the spell filter and casting-player predicate are honored.
@@ -3479,6 +3483,8 @@ class TriggerDetector(
      * count as the cause; if the trigger names a specific attacker (per-attacker AttackEvent), that
      * attacker must match.
      *
+     * A per-defending-player attack trigger is caused only for the player whose bound group
+     * contains a matching doubler attacker; its other player-bound instances are independent.
      * Multiple copies are additive: N copies add N extra firings of each affected trigger.
      */
     private fun duplicateAttackTriggers(
@@ -3557,6 +3563,19 @@ class TriggerDetector(
                     // attacker (e.g. "whenever you attack") are caused by the attack as a whole.
                     val triggeringAttacker = trigger.triggerContext.triggeringEntityId
                     if (triggeringAttacker != null && triggeringAttacker !in matchingAttackers) continue
+
+                    // Per-defending-player instances are independent trigger occurrences. The
+                    // doubler only duplicates the occurrence for the directly attacked player
+                    // whose group contains a matching cause attacker; do not duplicate another
+                    // player's instance from the same declaration event.
+                    if (triggerEvent is EventPattern.YouAttackPlayerEvent) {
+                        val attackedPlayer = trigger.triggerContext.triggeringPlayerId
+                        if (attackedPlayer == null || attackedPlayer !in state.turnOrder) continue
+                        if (attackEvent.declaredAttacks.none { declaration ->
+                                declaration.attackerId in matchingAttackers &&
+                                    declaration.defenderId == attackedPlayer
+                            }) continue
+                    }
 
                     duplicates.add(trigger)
                 }
