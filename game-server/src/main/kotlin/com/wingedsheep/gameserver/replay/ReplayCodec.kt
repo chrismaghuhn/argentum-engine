@@ -8,7 +8,9 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Base64
@@ -23,17 +25,50 @@ import java.util.zip.GZIPOutputStream
  * frame after frame — so gzip typically shaves 80–95%. base64 keeps them portable TEXT columns
  * across databases (no `bytea` round-tripping in Spring Data JDBC).
  *
- * Decoding is deliberately tolerant: [persistenceJson] ignores unknown keys and every field added to
- * [CompactReplay] since v1 has a default, so a record written by a newer build stays readable by an
- * older one — the situation you are in for the minutes a rolling deploy takes.
+ * Decoding is tolerant of unknown fields on supported versions. Version selection is deliberately
+ * fail-closed: a payload newer than [CompactReplay.CURRENT_VERSION] is rejected before the
+ * serializer can construct a partial current-version object. A payload written before the version
+ * field existed is normalized to explicit v1 before deserialization; it must never inherit the
+ * current [CompactReplay.version] constructor default.
  */
 object ReplayCodec {
 
     fun encode(replay: CompactReplay): String =
         encodeText(persistenceJson.encodeToString(CompactReplay.serializer(), replay))
 
-    fun decode(encoded: String): CompactReplay =
-        persistenceJson.decodeFromString(CompactReplay.serializer(), migrateKickerFlag(decodeText(encoded)))
+    fun decode(encoded: String): CompactReplay {
+        val normalized = normalizeVersion(decodeText(encoded))
+        return persistenceJson.decodeFromString(
+            CompactReplay.serializer(),
+            migrateKickerFlag(normalized),
+        )
+    }
+
+    /**
+     * Read and materialize the wire version before [CompactReplay.serializer] applies defaults.
+     * Missing version is the pre-versioned v1 format, not the current version.
+     */
+    private fun normalizeVersion(json: String): String {
+        val root = persistenceJson.parseToJsonElement(json).jsonObject
+        val versionElement = root["version"]
+        val wireVersion = when {
+            versionElement == null -> 1
+            versionElement is JsonPrimitive -> versionElement.intOrNull
+                ?: throw InvalidReplayVersionException(null)
+            else -> throw InvalidReplayVersionException(null)
+        }
+        if (wireVersion < 1) {
+            throw InvalidReplayVersionException(wireVersion)
+        }
+        if (wireVersion > CompactReplay.CURRENT_VERSION) {
+            throw UnsupportedReplayVersionException(wireVersion, CompactReplay.CURRENT_VERSION)
+        }
+        if (root.containsKey("version")) return json
+        return persistenceJson.encodeToString(
+            JsonElement.serializer(),
+            JsonObject(root + ("version" to JsonPrimitive(1))),
+        )
+    }
 
     /**
      * Rewrite the pre-Bargain `CastSpell.wasKicked: Boolean` into the `declaredCostSlot: ChoiceSlot?`
@@ -95,3 +130,14 @@ object ReplayCodec {
         encoded?.let { persistenceJson.decodeFromString(ListSerializer(String.serializer()), decodeText(it)) }
             ?: emptyList()
 }
+
+class UnsupportedReplayVersionException(
+    val encounteredVersion: Int,
+    val supportedVersion: Int,
+) : IllegalArgumentException(
+    "Unsupported CompactReplay version $encounteredVersion; supported through $supportedVersion",
+)
+
+class InvalidReplayVersionException(val encounteredVersion: Int?) : IllegalArgumentException(
+    "Invalid CompactReplay version ${encounteredVersion ?: "value"}",
+)

@@ -35,6 +35,8 @@ dependencies {
     // Engine scenario harness (ScenarioTestBase, GameTestDriver, TestCards) — the canonical
     // home for the static-board scenario builder; game-server's ScenarioTestBase is a shim over it.
     testImplementation(testFixtures(project(":rules-engine")))
+    // Replay acceptance tests must cross the same Gym observation boundary as live execution.
+    testImplementation(project(":gym"))
     testImplementation(libs.springBootStarterTest)
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)

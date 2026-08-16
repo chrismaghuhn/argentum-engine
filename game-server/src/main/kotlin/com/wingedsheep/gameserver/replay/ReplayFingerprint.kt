@@ -19,16 +19,25 @@ import java.security.MessageDigest
  * pins divergence to a window of actions and downgrades the replay's
  * [ReplayFidelity] instead of pretending nothing happened.
  *
- * The fields below are the ones that move when the engine disagrees with its past self: the entity
- * counter (every minted id is drawn from it, so any extra/missing object shifts it), the game clock,
- * turn/phase/priority, zone sizes, and life totals. Deliberately *not* the whole state — this runs
- * inside the live game loop, and a full serialize-and-hash per checkpoint would be real work for a
- * marginally sharper signal.
+ * Version 1 and 2 use the historical short digest below. Version 3 uses the complete
+ * transition-semantic GameState canonicalizer and a full SHA-256 digest. Keeping the algorithms in
+ * separate named paths prevents a new fingerprint meaning from silently reinterpreting old
+ * persisted checkpoints.
  */
 object ReplayFingerprint {
 
-    /** A 16-hex-char digest of [state]'s observable position. */
-    fun of(state: GameState): String {
+    /** Current recorder/replay fingerprint: the v3 complete transition-semantic digest. */
+    fun of(state: GameState): String = v3(state)
+
+    /** Select the fingerprint semantics recorded by a specific CompactReplay version. */
+    fun of(state: GameState, replayVersion: Int): String = when (replayVersion) {
+        1, 2 -> legacy(state)
+        3 -> v3(state)
+        else -> throw UnsupportedReplayVersionException(replayVersion, CompactReplay.CURRENT_VERSION)
+    }
+
+    /** The historical v1/v2 16-hex digest. Never change its input fields or encoding. */
+    internal fun legacy(state: GameState): String {
         val sb = StringBuilder(256)
         sb.append(state.turnNumber).append('|')
             .append(state.phase).append('|')
@@ -58,10 +67,23 @@ object ReplayFingerprint {
         return digest(sb.toString())
     }
 
+    /** The v3 complete canonical state digest. */
+    internal fun v3(state: GameState): String {
+        val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(state)
+        return fullDigest("argentum-engine/replay-fingerprint/v3\n$canonical")
+    }
+
     private fun digest(value: String): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
         return buildString(16) {
             for (i in 0 until 8) append("%02x".format(bytes[i]))
+        }
+    }
+
+    private fun fullDigest(value: String): String {
+        val bytes = MessageDigest.getInstance("SHA-256").digest(value.toByteArray(Charsets.UTF_8))
+        return buildString(64) {
+            bytes.forEach { append("%02x".format(it)) }
         }
     }
 }

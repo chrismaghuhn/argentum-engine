@@ -23,10 +23,7 @@ enum class ReplayFidelity {
     /** Every recorded action applied, and every checkpoint matched. This is the real game. */
     EXACT,
 
-    /**
-     * Every recorded action applied, but the record carries no checkpoints to verify against — a v1
-     * replay. Almost certainly fine; we just can't prove it.
-     */
+    /** Every recorded action applied, but the replay proof is absent or incomplete. */
     UNVERIFIED,
 
     /**
@@ -44,7 +41,7 @@ data class ReconstructedReplay(
     val fidelity: ReplayFidelity = ReplayFidelity.UNVERIFIED,
     /** Frame index the re-simulation stopped at, when [fidelity] is [ReplayFidelity.DIVERGED]. */
     val divergedAtFrame: Int? = null,
-    /** Human-readable cause of the divergence, for logs and the viewer's degraded badge. */
+    /** Human-readable cause of divergence or an unverified v3 proof, for logs and the viewer badge. */
     val divergenceReason: String? = null,
 ) {
     val frameCount: Int get() = 1 + deltas.size
@@ -98,8 +95,20 @@ class ReplayReconstructor(
         val initial = previous
         val deltas = ArrayList<SpectatorReplayDelta>(replay.actions.size)
         var divergence: String? = null
+        var tailVerified = false
+
+        // v3 includes the zero-action state in the same tail-checkpoint contract. Legacy records
+        // deliberately retain their previous behavior and did not verify an initial checkpoint.
+        if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version)) {
+            when (val initialCheck = engine.verifyCheckpoint(replay, state, afterActionCount = 0)) {
+                is CheckpointCheck.Mismatch -> divergence = initialCheck.failure
+                CheckpointCheck.Match -> if (replay.actions.isEmpty()) tailVerified = true
+                CheckpointCheck.None -> Unit
+            }
+        }
 
         for ((index, action) in replay.actions.withIndex()) {
+            if (divergence != null) break
             val step = engine.applyAction(replay, state, action, index)
             if (step.failure != null) {
                 divergence = step.failure
@@ -111,13 +120,32 @@ class ReplayReconstructor(
                 break
             }
             state = step.state!!
+            if (step.checkpointVerified && index + 1 == replay.actions.size) {
+                tailVerified = true
+            }
             val snapshot = engine.spectatorStateBuilder.buildState(state, seats, setup.seatRoster, replay.gameId)
             deltas.add(SpectatorReplayDiffCalculator.computeDelta(previous, snapshot))
             previous = snapshot
         }
 
+        val unverifiedReason = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version) && divergence == null) {
+            val tailCount = replay.checkpoints.count { it.afterActionCount == replay.actions.size }
+            when {
+                tailCount == 0 ->
+                    "v3 replay has no checkpoint for the action-stream tail at ${replay.actions.size}"
+                tailCount > 1 ->
+                    "v3 replay has duplicate tail checkpoints at ${replay.actions.size}"
+                !tailVerified ->
+                    "v3 replay tail checkpoint at ${replay.actions.size} was not verified"
+                replay.checkpoints.any { it.afterActionCount !in 0..replay.actions.size } ->
+                    "v3 replay contains a checkpoint outside the applied action stream"
+                else -> null
+            }
+        } else null
+
         val fidelity = when {
             divergence != null -> ReplayFidelity.DIVERGED
+            unverifiedReason != null -> ReplayFidelity.UNVERIFIED
             replay.checkpoints.isEmpty() -> ReplayFidelity.UNVERIFIED
             else -> ReplayFidelity.EXACT
         }
@@ -126,7 +154,7 @@ class ReplayReconstructor(
             deltas = deltas,
             fidelity = fidelity,
             divergedAtFrame = if (divergence != null) deltas.size else null,
-            divergenceReason = divergence,
+            divergenceReason = divergence ?: unverifiedReason,
         )
     }
 
@@ -163,7 +191,17 @@ class ReplayReconstructor(
 }
 
 /** Outcome of folding one recorded action: a new state, or the reason we can't trust it. */
-private class StepResult(val state: GameState?, val failure: String?)
+private class StepResult(
+    val state: GameState?,
+    val failure: String?,
+    val checkpointVerified: Boolean = false,
+)
+
+private sealed interface CheckpointCheck {
+    data object None : CheckpointCheck
+    data object Match : CheckpointCheck
+    data class Mismatch(val failure: String) : CheckpointCheck
+}
 
 /**
  * A [ReplayReconstructor] run bound to one replay's card corpus — the engine plumbing plus the
@@ -217,18 +255,29 @@ private class ReplayEngine(
         // auto-answers reproduce on the next iteration exactly as they did live.
         val next = applyYields(result.state, replay.yields, afterActionCount)
 
-        val checkpoint = replay.checkpoints.firstOrNull { it.afterActionCount == afterActionCount }
-        if (checkpoint != null) {
-            val actual = ReplayFingerprint.of(next)
-            if (actual != checkpoint.fingerprint) {
-                return StepResult(
-                    null,
-                    "position drifted from the recording after action $index " +
-                        "(recorded ${checkpoint.fingerprint}, re-simulated $actual)",
-                )
-            }
+        return when (val checkpoint = verifyCheckpoint(replay, next, afterActionCount)) {
+            CheckpointCheck.None -> StepResult(next, null)
+            CheckpointCheck.Match -> StepResult(next, null, checkpointVerified = true)
+            is CheckpointCheck.Mismatch -> StepResult(null, checkpoint.failure)
         }
-        return StepResult(next, null)
+    }
+
+    fun verifyCheckpoint(
+        replay: CompactReplay,
+        state: GameState,
+        afterActionCount: Int,
+    ): CheckpointCheck {
+        val checkpoints = replay.checkpoints.filter { it.afterActionCount == afterActionCount }
+        if (checkpoints.isEmpty()) return CheckpointCheck.None
+
+        val actual = ReplayFingerprint.of(state, replay.version)
+        if (checkpoints.all { it.fingerprint == actual }) return CheckpointCheck.Match
+
+        val expected = checkpoints.joinToString { it.fingerprint }
+        return CheckpointCheck.Mismatch(
+            "position drifted from the recording after $afterActionCount actions " +
+                "(recorded [$expected], re-simulated $actual)",
+        )
     }
 
     /**
