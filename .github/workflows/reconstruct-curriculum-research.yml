@@ -1,0 +1,48 @@
+name: Reconstruct curriculum research artifact
+
+on:
+  push:
+    branches:
+      - agent/commander-curriculum-research-authority
+    paths:
+      - .github/workflows/reconstruct-curriculum-research.yml
+
+permissions:
+  contents: write
+
+jobs:
+  reconstruct:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout branch
+        uses: actions/checkout@v6
+        with:
+          ref: agent/commander-curriculum-research-authority
+          fetch-depth: 0
+
+      - name: Reconstruct and verify exact source artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='docs/ml/curriculum/commander-ml-curriculum-research-2026-08.md'
+          cat .tmp-curriculum-gz/*.b64 > /tmp/curriculum.md.gz.b64
+          base64 --decode /tmp/curriculum.md.gz.b64 > /tmp/curriculum.md.gz
+          gzip --decompress --stdout /tmp/curriculum.md.gz > "$target"
+
+          test "$(wc -c < "$target")" -eq 95782
+          echo '479df89c50e8d318c3050c4a3436555b2cbb07fd9ff1e7e8e8ed32a93c5bfa9c  '"$target" | sha256sum --check --strict
+          test "$(git hash-object "$target")" = '79022c7a27b53f9f0ac9045cd7f891b17d18210a'
+
+          git diff --check -- "$target"
+
+      - name: Commit exact artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          target='docs/ml/curriculum/commander-ml-curriculum-research-2026-08.md'
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add "$target"
+          git diff --cached --check
+          git commit -m 'docs: preserve exact Commander ML curriculum research'
+          git push origin HEAD:agent/commander-curriculum-research-authority
