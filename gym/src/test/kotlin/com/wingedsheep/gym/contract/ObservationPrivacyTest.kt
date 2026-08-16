@@ -48,6 +48,32 @@ class ObservationPrivacyTest : FunSpec({
         it.register(KhansOfTarkirSet.cards)
     }
 
+    fun abilityCard(firstAbilityId: AbilityId, secondAbilityId: AbilityId? = null) =
+        KhansOfTarkirSet.cards.single { it.name == "Abzan Banner" }.let { template ->
+            val sourceAbility = template.script.activatedAbilities.first()
+            val abilities = if (secondAbilityId == null) {
+                template.script.activatedAbilities.mapIndexed { index, ability ->
+                    if (index == 0) ability.copy(id = firstAbilityId) else ability
+                }
+            } else {
+                listOf(
+                    sourceAbility.copy(id = firstAbilityId),
+                    sourceAbility.copy(id = secondAbilityId)
+                )
+            }
+            template.copy(script = template.script.copy(activatedAbilities = abilities))
+        }
+
+    fun stateWithAbilityCard(
+        state: GameState,
+        playerId: EntityId,
+        cardDefinition: com.wingedsheep.sdk.model.CardDefinition
+    ): Pair<GameState, EntityId> {
+        val sourceId = state.getHand(playerId).first()
+        val entity = CardEntityFactory.create(cardDefinition, playerId)
+        return state.copy(entities = state.entities + (sourceId to entity)) to sourceId
+    }
+
     fun environment(): GameEnvironment {
         val env = GameEnvironment.create(registry())
         env.reset(
@@ -447,6 +473,66 @@ class ObservationPrivacyTest : FunSpec({
 
         first.legalActions.single().description shouldBe second.legalActions.single().description
         first.stateDigest shouldNotBe second.stateDigest
+    }
+
+    test("generated ability handles alone do not change the semantic digest") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val firstCard = abilityCard(AbilityId("ability_123"))
+        val secondCard = abilityCard(AbilityId("ability_987"))
+        val firstRegistry = registry().also { it.register(firstCard) }
+        val secondRegistry = registry().also { it.register(secondCard) }
+        val (firstState, sourceId) = stateWithAbilityCard(env.state, actor, firstCard)
+        val (secondState, secondSourceId) = stateWithAbilityCard(env.state, actor, secondCard)
+        secondSourceId shouldBe sourceId
+
+        fun observationFor(
+            state: GameState,
+            cardRegistry: CardRegistry,
+            abilityId: AbilityId
+        ): TrainingObservation = ObservationBuilder(cardRegistry = cardRegistry)
+            .build(
+                state,
+                actor,
+                listOf(
+                    LegalAction(
+                        action = ActivateAbility(actor, sourceId, abilityId),
+                        actionType = "ACTIVATE_ABILITY",
+                        description = "Activate ability"
+                    )
+                )
+            ).observation as TrainingObservation
+
+        val first = observationFor(firstState, firstRegistry, AbilityId("ability_123"))
+        val second = observationFor(secondState, secondRegistry, AbilityId("ability_987"))
+
+        ObservationCanonicalizer.semanticJson(first) shouldBe ObservationCanonicalizer.semanticJson(second)
+        first.stateDigest shouldBe second.stateDigest
+    }
+
+    test("distinct activated-ability ordinals remain digest-distinct when their handles differ") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val card = abilityCard(AbilityId("ability_101"), AbilityId("ability_202"))
+        val cardRegistry = registry().also { it.register(card) }
+        val (state, sourceId) = stateWithAbilityCard(env.state, actor, card)
+
+        fun observationFor(abilityId: AbilityId): TrainingObservation = ObservationBuilder(
+            cardRegistry = cardRegistry
+        ).build(
+            state,
+            actor,
+            listOf(
+                LegalAction(
+                    action = ActivateAbility(actor, sourceId, abilityId),
+                    actionType = "ACTIVATE_ABILITY",
+                    description = "Activate ability"
+                )
+            )
+        ).observation as TrainingObservation
+
+        observationFor(AbilityId("ability_101")).stateDigest shouldNotBe
+            observationFor(AbilityId("ability_202")).stateDigest
     }
 
     test("different structured cast choices change the semantic digest") {

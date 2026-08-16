@@ -49,6 +49,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
+import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
@@ -70,9 +71,12 @@ import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComp
 import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Converts `(GameState, perspectivePlayerId)` into a [TrainingObservation].
@@ -94,7 +98,7 @@ import kotlinx.serialization.json.jsonObject
  */
 class ObservationBuilder(
     private val schemaHash: String = SchemaHash.CURRENT,
-    cardRegistry: CardRegistry
+    private val cardRegistry: CardRegistry
 ) {
     private val visibility = Visibility(cardRegistry)
     private val actionSerialization = Json {
@@ -136,7 +140,7 @@ class ObservationBuilder(
             legalActionViews = buildDecisionOptionViews(state.pendingDecision!!, responses)
             actionRegistry = decisionRegistry
         } else {
-            legalActionViews = legalActions.mapIndexed { idx, la -> legalActionToView(idx, la) }
+            legalActionViews = legalActions.mapIndexed { idx, la -> legalActionToView(state, idx, la) }
             actionRegistry = ActionRegistry.ofLegalActions(legalActions)
         }
 
@@ -457,7 +461,7 @@ class ObservationBuilder(
     // Legal actions
     // =========================================================================
 
-    private fun legalActionToView(actionId: Int, la: LegalAction): LegalActionView {
+    private fun legalActionToView(state: GameState, actionId: Int, la: LegalAction): LegalActionView {
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
@@ -472,13 +476,86 @@ class ObservationBuilder(
             maxTargets = la.targetCount,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
-            actionSemantics = actionSemantic(la.action),
+            actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )
     }
 
-    private fun actionSemantic(action: GameAction): JsonObject =
-        actionSerialization.encodeToJsonElement(GameAction.serializer(), action).jsonObject
+    private fun actionSemantic(state: GameState, action: GameAction): JsonObject {
+        val encoded = actionSerialization
+            .encodeToJsonElement(GameAction.serializer(), action)
+            .jsonObject
+        if (action !is ActivateAbility) return encoded
+
+        return buildJsonObject {
+            encoded.forEach { (key, value) ->
+                if (key != "abilityId") put(key, value)
+            }
+            put("abilityKey", stableAbilityKey(state, action))
+        }
+    }
+
+    /**
+     * AbilityId is an engine handle and the default generated value contains a JVM-global counter.
+     * Resolve printed abilities back to their definition-scoped ordinal before they enter the
+     * semantic observation. The structural payload protects against two abilities with the same
+     * ordinal accidentally being treated as equivalent; the ordinal protects against two
+     * genuinely separate but structurally identical abilities.
+     */
+    private fun stableAbilityKey(state: GameState, action: ActivateAbility): JsonObject {
+        val source = state.getEntity(action.sourceId)
+        val card = source?.get<CardComponent>()
+        val cardDefinition = card?.cardDefinitionId?.let(cardRegistry::getCard)
+        val classLevel = source?.get<ClassLevelComponent>()?.currentLevel
+        val printedAbilities = cardDefinition?.script
+            ?.effectiveActivatedAbilities(classLevel)
+            .orEmpty()
+        val printedOrdinal = printedAbilities.indexOfFirst { it.id == action.abilityId }
+        if (printedOrdinal >= 0) {
+            return abilityKey(
+                origin = "printed",
+                ordinal = printedOrdinal,
+                ability = printedAbilities[printedOrdinal],
+                cardDefinitionId = card?.cardDefinitionId
+            )
+        }
+
+        val grantedAbilities = state.grantedActivatedAbilities
+            .asSequence()
+            .filter { it.entityId == action.sourceId }
+            .map { it.ability }
+            .toList()
+        val grantedOrdinal = grantedAbilities.indexOfFirst { it.id == action.abilityId }
+        if (grantedOrdinal >= 0) {
+            return abilityKey("granted", grantedOrdinal, grantedAbilities[grantedOrdinal], card?.cardDefinitionId)
+        }
+
+        val id = action.abilityId.value
+        return buildJsonObject {
+            when {
+                id.removePrefix("ability_").toLongOrNull() != null -> put("unresolvedGenerated", true)
+                else -> put("explicitId", id)
+            }
+        }
+    }
+
+    private fun abilityKey(
+        origin: String,
+        ordinal: Int,
+        ability: ActivatedAbility,
+        cardDefinitionId: String?
+    ): JsonObject = buildJsonObject {
+        put("origin", origin)
+        put("ordinal", ordinal)
+        cardDefinitionId?.let { put("cardDefinitionId", it) }
+        val encoded = actionSerialization
+            .encodeToJsonElement(ActivatedAbility.serializer(), ability)
+            .jsonObject
+        put(
+            "ability",
+            JsonObject(encoded.filterKeys { it != "id" && it != "descriptionOverride" })
+        )
+    }
 
     private fun decisionSemantic(response: DecisionResponse): JsonObject {
         val encoded = actionSerialization

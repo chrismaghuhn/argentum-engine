@@ -7,8 +7,8 @@ import java.security.MessageDigest
  * SHA-256 over [ObservationCanonicalizer]'s perspective-safe semantic projection.
  *
  * The semantic projection includes structured legal-action payloads/fingerprints but excludes
- * transport handles (`actionId` and `decisionId`), presentation-only text, and the digest field
- * itself.
+ * transport handles (`actionId`, `decisionId`, and generated activated-ability handles),
+ * presentation-only text, and the digest field itself.
  */
 object StateDigest {
 
