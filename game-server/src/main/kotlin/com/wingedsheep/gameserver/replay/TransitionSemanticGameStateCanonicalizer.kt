@@ -25,8 +25,10 @@ import kotlin.reflect.KClass
  * JSON object keys are sorted, serializer-described unordered collections are sorted by their
  * canonical element bytes, and semantically ordered arrays (notably library, stack, turn order,
  * and options) retain their source order. Runtime decision nonces are replaced only in the typed
- * pending-decision and continuation-reference slots. Presentation-only decision text is omitted
- * after the replay field audit; semantic decision shape remains in the representation.
+ * pending-decision and continuation-reference slots. Allocation-order generated AbilityId handles
+ * are replaced only in serializer-typed AbilityId slots, using one state-local alias table so
+ * relationships remain represented. Presentation-only decision text is omitted after the replay
+ * field audit; semantic decision shape remains in the representation.
  */
 @OptIn(ExperimentalSerializationApi::class)
 internal object TransitionSemanticGameStateCanonicalizer {
@@ -95,34 +97,346 @@ internal object TransitionSemanticGameStateCanonicalizer {
 
     fun canonicalJson(state: GameState): String {
         val serialized = persistenceJson.encodeToJsonElement(GameState.serializer(), state)
-        val aliases = DecisionNonceAliasTable()
+        val decisionAliases = DecisionNonceAliasTable()
+        val abilityPlan = collectAbilityAliases(serialized, GameState.serializer().descriptor)
+        val abilityAliases = AbilityIdAliasTable(abilityPlan.aliases, abilityPlan.reservedRawIds)
         val canonical = canonicalize(
             element = serialized,
             path = emptyList(),
-            aliases = aliases,
+            decisionAliases = decisionAliases,
+            abilityAliases = abilityAliases,
             descriptor = GameState.serializer().descriptor,
         )
         return persistenceJson.encodeToString(JsonElement.serializer(), canonical)
     }
 
-    private fun canonicalize(
+    private data class AbilityOccurrence(
+        val rawId: String,
+        val signature: String,
+        val specificity: Int,
+        val encounter: Int,
+    )
+
+    private data class AbilityAliasPlan(
+        val aliases: Map<String, String>,
+        val reservedRawIds: Set<String>,
+    )
+
+    /**
+     * Assign aliases before canonicalization so an unordered collection cannot decide an alias
+     * merely by its source iteration order. The scan records normalized paths (map/set ranks are
+     * based on an ID-free shape) for every occurrence, then assigns aliases by those semantic
+     * occurrence signatures. Repeated references remain grouped by raw handle.
+     */
+    private fun collectAbilityAliases(
+        element: JsonElement,
+        descriptor: SerialDescriptor?,
+    ): AbilityAliasPlan {
+        val occurrences = mutableListOf<AbilityOccurrence>()
+        val rawIds = linkedSetOf<String>()
+        collectAbilityOccurrences(element, emptyList(), descriptor, occurrences, rawIds)
+        val generatedIds = occurrences.mapTo(hashSetOf()) { it.rawId }
+        val sortedGeneratedIds = occurrences
+            .groupBy { it.rawId }
+            .entries
+            .sortedWith(
+                compareBy<Map.Entry<String, List<AbilityOccurrence>>>(
+                    { entry ->
+                        entry.value
+                            .sortedWith(compareByDescending<AbilityOccurrence> { it.specificity }.thenBy { it.signature })
+                            .joinToString("\u0000") { "${it.specificity}:${it.signature}" }
+                    },
+                    { entry -> entry.value.minOf { it.encounter } },
+                )
+            )
+            .map { (rawId, _) -> rawId }
+        val aliasTable = AbilityIdAliasTable(reservedRawIds = rawIds - generatedIds)
+        val aliases = sortedGeneratedIds.associateWithTo(LinkedHashMap()) { rawId ->
+            aliasTable.aliasIfGenerated(rawId)
+        }
+        return AbilityAliasPlan(aliases, rawIds - generatedIds)
+    }
+
+    private fun collectAbilityOccurrences(
         element: JsonElement,
         path: List<String>,
-        aliases: DecisionNonceAliasTable,
+        descriptor: SerialDescriptor?,
+        occurrences: MutableList<AbilityOccurrence>,
+        rawIds: MutableSet<String>,
+    ) {
+        when (element) {
+            is JsonObject -> {
+                val decisionTree = path.contains("pendingDecision") || path.contains("continuationStack")
+                val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
+                val mapDescriptor = concreteDescriptor?.takeIf { it.kind == StructureKind.MAP }
+                val entries = if (mapDescriptor != null) {
+                    val keyDescriptor = mapDescriptor.getElementDescriptor(0)
+                    val valueDescriptor = mapDescriptor.getElementDescriptor(1)
+                    element.entries.sortedBy { (rawKey, value) ->
+                        render(
+                            JsonArray(
+                                listOf(
+                                    shapeMapKey(rawKey, keyDescriptor),
+                                    shape(value, path + "map-value", valueDescriptor),
+                                )
+                            )
+                        )
+                    }
+                } else {
+                    element.entries.sortedBy { it.key }
+                }
+
+                entries.forEachIndexed { index, (key, value) ->
+                    if (decisionTree && isPresentationOnlyField(key, concreteDescriptor)) return@forEachIndexed
+                    if (mapDescriptor != null) {
+                        val keyDescriptor = mapDescriptor.getElementDescriptor(0)
+                        if (keyDescriptor.isAbilityIdDescriptor()) {
+                            rawIds += key
+                            if (AbilityIdAliasTable.isGenerated(key)) {
+                                occurrences += AbilityOccurrence(
+                                    rawId = key,
+                                    signature = (path + "map[$index].key" + keyDescriptor.serialName).joinToString("/"),
+                                    // A map key carries the associated map value's semantic
+                                    // distinction; let it outrank a bare Set occurrence when the same
+                                    // handle is referenced by both structures.
+                                    specificity = path.size + 100,
+                                    encounter = occurrences.size,
+                                )
+                            }
+                        }
+                        collectAbilityOccurrences(
+                            element = value,
+                            path = path + "map[$index].value",
+                            descriptor = mapDescriptor.getElementDescriptor(1),
+                            occurrences = occurrences,
+                            rawIds = rawIds,
+                        )
+                    } else {
+                        collectAbilityOccurrences(
+                            element = value,
+                            path = path + key,
+                            descriptor = concreteDescriptor?.fieldDescriptor(key),
+                            occurrences = occurrences,
+                            rawIds = rawIds,
+                        )
+                    }
+                }
+            }
+
+            is JsonArray -> {
+                if (descriptor?.kind == StructureKind.MAP) {
+                    val keyDescriptor = descriptor.getElementDescriptor(0)
+                    val valueDescriptor = descriptor.getElementDescriptor(1)
+                    val pairIndexes = (0 until element.size / 2).sortedBy { index ->
+                        render(
+                            JsonArray(
+                                listOf(
+                                    shape(element[index * 2], path + "map-key", keyDescriptor),
+                                    shape(element[index * 2 + 1], path + "map-value", valueDescriptor),
+                                )
+                            )
+                        )
+                    }
+                    pairIndexes.forEachIndexed { rank, index ->
+                        collectAbilityOccurrences(
+                            element = element[index * 2],
+                            path = path + "map[$rank].key",
+                            descriptor = keyDescriptor,
+                            occurrences = occurrences,
+                            rawIds = rawIds,
+                        )
+                        collectAbilityOccurrences(
+                            element = element[index * 2 + 1],
+                            path = path + "map[$rank].value",
+                            descriptor = valueDescriptor,
+                            occurrences = occurrences,
+                            rawIds = rawIds,
+                        )
+                    }
+                    return
+                }
+
+                val elementDescriptor = descriptor?.getElementDescriptorOrNull()
+                val indexes = if (descriptor.isUnorderedSetDescriptor()) {
+                    element.indices.sortedBy { index ->
+                        render(shape(element[index], path + "set-value", elementDescriptor))
+                    }
+                } else {
+                    element.indices
+                }
+                indexes.forEachIndexed { rank, index ->
+                    collectAbilityOccurrences(
+                        element = element[index],
+                        path = path + "[$rank]",
+                        descriptor = elementDescriptor,
+                        occurrences = occurrences,
+                        rawIds = rawIds,
+                    )
+                }
+            }
+
+            is JsonPrimitive -> {
+                if (element.isString && descriptor.isAbilityIdDescriptor()) {
+                    rawIds += element.content
+                }
+                if (
+                    element.isString &&
+                    descriptor.isAbilityIdDescriptor() &&
+                    AbilityIdAliasTable.isGenerated(element.content)
+                ) {
+                    occurrences += AbilityOccurrence(
+                        rawId = element.content,
+                        signature = (path + (descriptor?.serialName ?: "unknown")).joinToString("/"),
+                        specificity = path.size,
+                        encounter = occurrences.size,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Raw-ID-free shape used only to order unordered collection members during alias discovery. */
+    private fun shape(
+        element: JsonElement,
+        path: List<String>,
         descriptor: SerialDescriptor?,
     ): JsonElement = when (element) {
         is JsonObject -> {
             val decisionTree = path.contains("pendingDecision") || path.contains("continuationStack")
             val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
-            val sorted = element.entries
+            val mapDescriptor = concreteDescriptor?.takeIf { it.kind == StructureKind.MAP }
+            if (mapDescriptor != null) {
+                val keyDescriptor = mapDescriptor.getElementDescriptor(0)
+                val valueDescriptor = mapDescriptor.getElementDescriptor(1)
+                JsonArray(
+                    element.entries
+                        .map { (key, value) ->
+                            JsonArray(
+                                listOf(
+                                    shapeMapKey(key, keyDescriptor),
+                                    shape(value, path + "map-value", valueDescriptor),
+                                )
+                            )
+                        }
+                        .sortedBy { render(it) }
+                )
+            } else {
+                val entries = element.entries
+                    .asSequence()
+                    .filterNot { (key, _) -> decisionTree && isPresentationOnlyField(key, concreteDescriptor) }
+                    .map { (key, value) ->
+                        key to shape(value, path + key, concreteDescriptor?.fieldDescriptor(key))
+                    }
+                    .sortedBy { it.first }
+                    .toList()
+                JsonObject(LinkedHashMap<String, JsonElement>().apply {
+                    entries.forEach { (key, value) -> put(key, value) }
+                })
+            }
+        }
+
+        is JsonArray -> {
+            if (descriptor?.kind == StructureKind.MAP) {
+                val keyDescriptor = descriptor.getElementDescriptor(0)
+                val valueDescriptor = descriptor.getElementDescriptor(1)
+                val pairs = (0 until element.size / 2)
+                    .map { index ->
+                        JsonArray(
+                            listOf(
+                                shape(element[index * 2], path + "map-key", keyDescriptor),
+                                shape(element[index * 2 + 1], path + "map-value", valueDescriptor),
+                            )
+                        )
+                    }
+                    .sortedBy { render(it) }
+                JsonArray(pairs)
+            } else {
+                val elementDescriptor = descriptor?.getElementDescriptorOrNull()
+                val shaped = element.map { child -> shape(child, path + "array-value", elementDescriptor) }
+                if (descriptor.isUnorderedSetDescriptor()) {
+                    JsonArray(shaped.sortedBy { render(it) })
+                } else {
+                    JsonArray(shaped)
+                }
+            }
+        }
+
+        is JsonPrimitive -> {
+            if (
+                element.isString &&
+                descriptor.isAbilityIdDescriptor() &&
+                AbilityIdAliasTable.isGenerated(element.content)
+            ) {
+                JsonPrimitive("<generated-ability>")
+            } else {
+                element
+            }
+        }
+    }
+
+    private fun shapeMapKey(rawKey: String, descriptor: SerialDescriptor): JsonPrimitive =
+        if (descriptor.isAbilityIdDescriptor() && AbilityIdAliasTable.isGenerated(rawKey)) {
+            JsonPrimitive("<generated-ability>")
+        } else {
+            JsonPrimitive(rawKey)
+        }
+
+    private fun canonicalize(
+        element: JsonElement,
+        path: List<String>,
+        decisionAliases: DecisionNonceAliasTable,
+        abilityAliases: AbilityIdAliasTable,
+        descriptor: SerialDescriptor?,
+    ): JsonElement = when (element) {
+        is JsonObject -> {
+            val decisionTree = path.contains("pendingDecision") || path.contains("continuationStack")
+            val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
+            val mapDescriptor = concreteDescriptor?.takeIf { it.kind == StructureKind.MAP }
+            val entries = if (
+                mapDescriptor != null &&
+                mapDescriptor.getElementDescriptor(0).isAbilityIdDescriptor()
+            ) {
+                val keyDescriptor = mapDescriptor.getElementDescriptor(0)
+                val valueDescriptor = mapDescriptor.getElementDescriptor(1)
+                element.entries.sortedBy { (rawKey, value) ->
+                    val localDecisionAliases = DecisionNonceAliasTable()
+                    val localAbilityAliases = AbilityIdAliasTable()
+                    val canonicalKey = canonicalizeMapKey(rawKey, keyDescriptor, localAbilityAliases)
+                    val canonicalValue = canonicalize(
+                        element = value,
+                        path = path + rawKey,
+                        decisionAliases = localDecisionAliases,
+                        abilityAliases = localAbilityAliases,
+                        descriptor = valueDescriptor,
+                    )
+                    render(JsonArray(listOf(JsonPrimitive(canonicalKey), canonicalValue)))
+                }
+            } else {
+                element.entries
+            }
+            val sorted = entries
                 .asSequence()
                 .filterNot { (key, _) -> decisionTree && isPresentationOnlyField(key, concreteDescriptor) }
                 .map { (key, value) ->
-                    key to canonicalize(
+                    val canonicalKey = if (mapDescriptor != null) {
+                        canonicalizeMapKey(
+                            rawKey = key,
+                            descriptor = mapDescriptor.getElementDescriptor(0),
+                            abilityAliases = abilityAliases,
+                        )
+                    } else {
+                        key
+                    }
+                    canonicalKey to canonicalize(
                         element = value,
                         path = path + key,
-                        aliases = aliases,
-                        descriptor = concreteDescriptor?.fieldDescriptor(key),
+                        decisionAliases = decisionAliases,
+                        abilityAliases = abilityAliases,
+                        descriptor = if (mapDescriptor != null) {
+                            mapDescriptor.getElementDescriptor(1)
+                        } else {
+                            concreteDescriptor?.fieldDescriptor(key)
+                        },
                     )
                 }
                 .sortedBy { it.first }
@@ -139,19 +453,40 @@ internal object TransitionSemanticGameStateCanonicalizer {
                 // allowStructuredMapKeys encodes a map with structured keys as interleaved
                 // key/value entries. Keep that wire shape, but sort the key/value pairs.
                 if (keyDescriptor.kind is StructureKind || keyDescriptor.kind is PolymorphicKind) {
-                    val pairs = (0 until element.size / 2).map { index ->
+                    val pairIndexes = (0 until element.size / 2).sortedBy { index ->
+                        val localDecisionAliases = DecisionNonceAliasTable()
+                        val localAbilityAliases = AbilityIdAliasTable()
+                        val key = canonicalize(
+                            element = element[index * 2],
+                            path = path + "key",
+                            decisionAliases = localDecisionAliases,
+                            abilityAliases = localAbilityAliases,
+                            descriptor = keyDescriptor,
+                        )
+                        val value = canonicalize(
+                            element = element[index * 2 + 1],
+                            path = path + "value",
+                            decisionAliases = localDecisionAliases,
+                            abilityAliases = localAbilityAliases,
+                            descriptor = valueDescriptor,
+                        )
+                        render(JsonArray(listOf(key, value)))
+                    }
+                    val pairs = pairIndexes.map { index ->
                         canonicalize(
                             element = element[index * 2],
                             path = path + "key",
-                            aliases = aliases,
+                            decisionAliases = decisionAliases,
+                            abilityAliases = abilityAliases,
                             descriptor = keyDescriptor,
                         ) to canonicalize(
                             element = element[index * 2 + 1],
                             path = path + "value",
-                            aliases = aliases,
+                            decisionAliases = decisionAliases,
+                            abilityAliases = abilityAliases,
                             descriptor = valueDescriptor,
                         )
-                    }.sortedBy { (key) -> render(key) }
+                    }
                     return JsonArray(pairs.flatMap { (key, value) -> listOf(key, value) })
                 }
 
@@ -159,13 +494,20 @@ internal object TransitionSemanticGameStateCanonicalizer {
                     val pair = entry as? JsonArray ?: return@map canonicalize(
                         element = entry,
                         path = path + "entry",
-                        aliases = aliases,
+                        decisionAliases = decisionAliases,
+                        abilityAliases = abilityAliases,
                         descriptor = null,
                     )
                     JsonArray(
                         listOf(
-                            canonicalize(pair[0], path + "key", aliases, keyDescriptor),
-                            canonicalize(pair[1], path + "value", aliases, valueDescriptor),
+                            canonicalize(
+                                pair[0],
+                                path + "key",
+                                decisionAliases,
+                                abilityAliases,
+                                keyDescriptor,
+                            ),
+                            canonicalize(pair[1], path + "value", decisionAliases, abilityAliases, valueDescriptor),
                         )
                     )
                 }
@@ -176,11 +518,30 @@ internal object TransitionSemanticGameStateCanonicalizer {
             }
 
             val elementDescriptor = descriptor?.getElementDescriptorOrNull()
-            val canonicalElements = element.mapIndexed { index, child ->
+            val indexes = if (descriptor.isUnorderedSetDescriptor()) {
+                element.indices.sortedBy { index ->
+                    val localDecisionAliases = DecisionNonceAliasTable()
+                    val localAbilityAliases = AbilityIdAliasTable()
+                    render(
+                        canonicalize(
+                            element = element[index],
+                            path = path + index.toString(),
+                            decisionAliases = localDecisionAliases,
+                            abilityAliases = localAbilityAliases,
+                            descriptor = elementDescriptor,
+                        )
+                    )
+                }
+            } else {
+                element.indices
+            }
+            val canonicalElements = indexes.map { index ->
+                val child = element[index]
                 canonicalize(
                     element = child,
                     path = path + index.toString(),
-                    aliases = aliases,
+                    decisionAliases = decisionAliases,
+                    abilityAliases = abilityAliases,
                     descriptor = elementDescriptor,
                 )
             }
@@ -191,7 +552,7 @@ internal object TransitionSemanticGameStateCanonicalizer {
             }
         }
 
-        is JsonPrimitive -> canonicalizePrimitive(element, path, aliases)
+        is JsonPrimitive -> canonicalizePrimitive(element, path, decisionAliases, abilityAliases, descriptor)
     }
 
     private fun resolvePolymorphicDescriptor(
@@ -200,7 +561,24 @@ internal object TransitionSemanticGameStateCanonicalizer {
     ): SerialDescriptor? {
         if (descriptor == null || descriptor.kind !is PolymorphicKind) return descriptor
         val typeName = element["type"]?.jsonPrimitive?.contentOrNull ?: return descriptor
-        return polymorphicDescriptors[typeName] ?: descriptor
+        return polymorphicDescriptors[typeName]
+            ?: descriptor.findConcreteDescriptor(typeName)
+            ?: descriptor
+    }
+
+    private fun SerialDescriptor.findConcreteDescriptor(
+        typeName: String,
+        seen: MutableSet<String> = mutableSetOf(),
+    ): SerialDescriptor? {
+        if (!seen.add(serialName)) return null
+        if (serialName == typeName || serialName.substringAfterLast('.') == typeName.substringAfterLast('.')) {
+            return this
+        }
+        for (index in 0 until elementsCount) {
+            val match = getElementDescriptor(index).findConcreteDescriptor(typeName, seen)
+            if (match != null) return match
+        }
+        return null
     }
 
     private fun isPresentationOnlyField(key: String, descriptor: SerialDescriptor?): Boolean {
@@ -230,14 +608,32 @@ internal object TransitionSemanticGameStateCanonicalizer {
     private fun canonicalizePrimitive(
         primitive: JsonPrimitive,
         path: List<String>,
-        aliases: DecisionNonceAliasTable,
+        decisionAliases: DecisionNonceAliasTable,
+        abilityAliases: AbilityIdAliasTable,
+        descriptor: SerialDescriptor?,
     ): JsonPrimitive {
         if (!primitive.isString) return primitive
+        if (descriptor.isAbilityIdDescriptor()) {
+            return JsonPrimitive(abilityAliases.aliasIfGenerated(primitive.content))
+        }
         val key = path.lastOrNull() ?: return primitive
         val pendingDecisionId = key == "id" && path.contains("pendingDecision")
         val continuationDecisionId = key == "decisionId" && path.contains("continuationStack")
         if (!pendingDecisionId && !continuationDecisionId) return primitive
-        return JsonPrimitive(aliases.alias(primitive.content))
+        return JsonPrimitive(decisionAliases.alias(primitive.content))
+    }
+
+    private fun SerialDescriptor?.isAbilityIdDescriptor(): Boolean =
+        this?.serialName == "com.wingedsheep.sdk.scripting.AbilityId"
+
+    private fun canonicalizeMapKey(
+        rawKey: String,
+        descriptor: SerialDescriptor,
+        abilityAliases: AbilityIdAliasTable,
+    ): String = if (descriptor.isAbilityIdDescriptor()) {
+        abilityAliases.aliasIfGenerated(rawKey)
+    } else {
+        rawKey
     }
 
     private fun render(element: JsonElement): String =

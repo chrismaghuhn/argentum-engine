@@ -26,9 +26,25 @@ import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.PlayerYields
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.event.GrantedActivatedAbility
+import com.wingedsheep.engine.event.GrantedTriggeredAbility
+import com.wingedsheep.engine.state.ComponentContainer
+import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
+import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
+import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.gameserver.persistence.persistenceJson
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.AbilityIdentity
+import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.Gate
+import com.wingedsheep.sdk.scripting.effects.GatedEffect
+import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
@@ -136,6 +152,179 @@ class ReplayFingerprintV3Test : FunSpec({
         )
 
         ReplayFingerprint.of(first, 3) shouldBe ReplayFingerprint.of(reordered, 3)
+    }
+
+    test("v3 ignores allocation-order generated AbilityId handles but preserves ability semantics") {
+        fun stateWithGrantedAbility(id: String, effect: Effect = Effects.DrawCards(1)) =
+            GameState(
+                grantedActivatedAbilities = listOf(
+                    GrantedActivatedAbility(
+                        entityId = EntityId("e1"),
+                        ability = ActivatedAbility(
+                            id = AbilityId(id),
+                            cost = Costs.Free,
+                            effect = effect,
+                        ),
+                        duration = Duration.Permanent,
+                    ),
+                ),
+            )
+
+        ReplayFingerprint.of(stateWithGrantedAbility("ability_123"), 3) shouldBe
+            ReplayFingerprint.of(stateWithGrantedAbility("ability_987"), 3)
+
+        ReplayFingerprint.of(stateWithGrantedAbility("ability_123")) shouldNotBe
+            ReplayFingerprint.of(stateWithGrantedAbility("ability_987", Effects.GainLife(3)), 3)
+        ReplayFingerprint.of(stateWithGrantedAbility("printed_draw"), 3) shouldNotBe
+            ReplayFingerprint.of(stateWithGrantedAbility("printed_gain", Effects.GainLife(3)), 3)
+    }
+
+    test("v3 aliases every serialized AbilityId path through one shared relation table") {
+        fun stateWithHandle(handle: String) = GameState(
+            entities = mapOf(
+                EntityId("e1") to ComponentContainer.of(
+                    AbilityActivatedThisTurnComponent(
+                        abilityIds = setOf(AbilityId(handle)),
+                        activationCounts = mapOf(AbilityId(handle) to 1),
+                    ),
+                ),
+            ),
+            grantedActivatedAbilities = listOf(
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(handle),
+                        cost = Costs.Free,
+                        effect = Effects.DrawCards(1),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+            ),
+            yieldsByPlayer = mapOf(
+                EntityId("p1") to PlayerYields(
+                    wholeGame = setOf(AbilityIdentity("Card#1", AbilityId(handle))),
+                ),
+            ),
+        )
+
+        val stateA = stateWithHandle("ability_123")
+        val stateB = stateWithHandle("ability_987")
+        ReplayFingerprint.of(stateA, 3) shouldBe ReplayFingerprint.of(stateB, 3)
+
+        val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(stateA)
+        canonical.contains("ability_123").shouldBeFalse()
+        canonical shouldContain "\"A0\""
+
+        fun stateWithCounts(entries: LinkedHashMap<AbilityId, Int>) = GameState(
+            entities = mapOf(
+                EntityId("e1") to ComponentContainer.of(
+                    AbilityActivatedThisTurnComponent(
+                        abilityIds = entries.keys,
+                        activationCounts = entries,
+                    ),
+                ),
+            ),
+        )
+        val countsA = stateWithCounts(
+            linkedMapOf(AbilityId("ability_1") to 1, AbilityId("ability_2") to 2)
+        )
+        val countsB = stateWithCounts(
+            linkedMapOf(AbilityId("ability_2") to 2, AbilityId("ability_1") to 1)
+        )
+        ReplayFingerprint.of(countsA, 3) shouldBe ReplayFingerprint.of(countsB, 3)
+    }
+
+    test("v3 keeps distinct generated ability ordinals and structures distinguishable") {
+        fun state(firstId: String, secondId: String, reverseEffects: Boolean = false) = GameState(
+            grantedActivatedAbilities = listOf(
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(firstId),
+                        cost = Costs.Free,
+                        effect = if (reverseEffects) Effects.GainLife(3) else Effects.DrawCards(1),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(secondId),
+                        cost = Costs.Free,
+                        effect = if (reverseEffects) Effects.DrawCards(1) else Effects.GainLife(3),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+            ),
+        )
+
+        ReplayFingerprint.of(state("ability_101", "ability_102"), 3) shouldBe
+            ReplayFingerprint.of(state("ability_201", "ability_202"), 3)
+        ReplayFingerprint.of(state("ability_101", "ability_102"), 3) shouldBe
+            ReplayFingerprint.of(state("ability_202", "ability_201"), 3)
+        ReplayFingerprint.of(state("ability_101", "ability_102"), 3) shouldNotBe
+            ReplayFingerprint.of(state("ability_201", "ability_202", reverseEffects = true), 3)
+    }
+
+    test("v3 keeps stable AbilityIds distinct from generated aliases") {
+        fun state(stableId: String, generatedId: String, reverseEffects: Boolean = false) = GameState(
+            grantedActivatedAbilities = listOf(
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(stableId),
+                        cost = Costs.Free,
+                        effect = if (reverseEffects) Effects.GainLife(3) else Effects.DrawCards(1),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(generatedId),
+                        cost = Costs.Free,
+                        effect = if (reverseEffects) Effects.DrawCards(1) else Effects.GainLife(3),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+            ),
+        )
+
+        ReplayFingerprint.of(state("A0", "ability_123"), 3) shouldNotBe
+            ReplayFingerprint.of(state("A0", "ability_987", reverseEffects = true), 3)
+    }
+
+    test("v3 aliases nested triggered, stack, and effect ability references") {
+        fun stateWithHandle(handle: String) = GameState(
+            entities = mapOf(
+                EntityId("e1") to ComponentContainer.of(
+                    AbilityOnStackComponent(
+                        sourceId = EntityId("e1"),
+                        controllerId = EntityId("p1"),
+                        abilityId = AbilityId(handle),
+                        effect = GatedEffect(
+                            gate = Gate.OnceEachTurn(AbilityId(handle)),
+                            then = Effects.DrawCards(1),
+                        ),
+                    ),
+                ),
+            ),
+            grantedTriggeredAbilities = listOf(
+                GrantedTriggeredAbility(
+                    entityId = EntityId("e1"),
+                    ability = TriggeredAbility(
+                        id = AbilityId(handle),
+                        trigger = EventPattern.StepEvent(Step.END, Player.You),
+                        effect = Effects.DrawCards(1),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+            ),
+        )
+
+        val stateA = stateWithHandle("ability_301")
+        val stateB = stateWithHandle("ability_999")
+        ReplayFingerprint.of(stateA, 3) shouldBe ReplayFingerprint.of(stateB, 3)
     }
 
     test("nonce changes are ignored but decision semantics remain fingerprinted") {
