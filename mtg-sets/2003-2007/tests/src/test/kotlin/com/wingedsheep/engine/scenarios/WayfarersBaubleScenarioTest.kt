@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -35,6 +36,9 @@ class WayfarersBaubleScenarioTest : FunSpec({
         val bauble = driver.putPermanentOnBattlefield(player, "Wayfarer's Bauble")
         val mountain = driver.putCardOnTopOfLibrary(player, "Mountain")
         driver.giveColorlessMana(player, 2)
+        val shufflesBefore = driver.events.count {
+            it is LibraryShuffledEvent && it.playerId == player
+        }
 
         val activation = driver.submit(
             ActivateAbility(playerId = player, sourceId = bauble, abilityId = abilityId)
@@ -53,6 +57,9 @@ class WayfarersBaubleScenarioTest : FunSpec({
         driver.findPermanent(player, "Mountain") shouldNotBe null
         val foundMountain = driver.findPermanent(player, "Mountain")!!
         driver.isTapped(foundMountain) shouldBe true
+        driver.events.count {
+            it is LibraryShuffledEvent && it.playerId == player
+        } shouldBe shufflesBefore + 1
     }
 
     test("Wayfarer's Bauble cannot activate without {2}") {
