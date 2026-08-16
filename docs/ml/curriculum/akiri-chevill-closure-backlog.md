@@ -64,7 +64,7 @@ Evidence:
 
 - `AkiriFearlessVoyager.kt` defines the canonical ZNR #220 card with the
   per-defending-player equipped-attacker trigger and the `{W}` activation cost;
-- `AkiriFearlessVoyagerScenarioTest.kt` covers the AKIRI-01 through AKIRI-22
+- `AkiriFearlessVoyagerScenarioTest.kt` covers the AKIRI-01 through AKIRI-24
   acceptance matrix, including distinct defending players, resolution-time
   host-first and Equipment choices, opponent-controlled Equipment, attachment
   invariants, source/trigger lifetime, no-legal-resolution domains, and

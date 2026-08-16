@@ -50,19 +50,21 @@ capability instead of adding an Akiri-specific workaround.
 - [x] Build the test with the existing `ScenarioTestBase`/`GameTestDriver`
   helpers and existing card names; do not create a production Akiri definition
   yet.
-- [x] Cover `AKIRI-01` through `AKIRI-10`: equipped-attack grouping, repeated
+- [x] Cover `AKIRI-01` through `AKIRI-10` plus the post-trigger leave cases:
+  equipped-attack grouping, repeated
   Equipment/attacker cases, distinct attacked players, mixed player/non-player
-  defenders, and trigger resolution after Akiri or Equipment leaves.
+  defenders, and trigger resolution after Akiri or Equipment leaves the
+  battlefield.
 - [x] Cover `AKIRI-11` through `AKIRI-18`: pay `{W}`, answer the resolution
   `may`, expose host and Equipment decisions, detach the selected Equipment,
   tap/grant indestructible to the stored host, decline without mutation, keep
   the unselected Equipment attached, allow an opponent-controlled Equipment,
   handle an already-tapped host, expire indestructible, and retain attachment
   invariants.
-- [x] Cover `AKIRI-19` through `AKIRI-22`: activation with no legal resolution
+- [x] Cover `AKIRI-19` through `AKIRI-24`: activation with no legal resolution
   Equipment, resolution-time legal domains, no priority gap between subchoices
   and follow-up effects, and registry/snapshot/serialization/continuation
-  boundaries exposed by existing helpers.
+  boundaries, including a card-specific fork/serialization continuation test.
 - [x] Assert explicitly that host and Equipment decisions are non-targeting
   `SelectCardsDecision` instances, that both decisions preserve their selected
   IDs, and that no test uses `first()`, random selection, or collection order.

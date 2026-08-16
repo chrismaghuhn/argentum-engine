@@ -128,11 +128,13 @@ new trigger, or Akiri-specific executor is permitted.
 7. A host choice and an Equipment choice are continuation boundaries only for
    the decision protocol. The engine must not return normal priority between
    them or between unattach and the tap/indestructible follow-up.
-8. Empty or stale-at-resolution domains fail closed without inventing an
+8. Unattach removes only the attachment relationship. The Equipment remains
+   on the battlefield under its controller's control.
+9. Empty or stale-at-resolution domains fail closed without inventing an
    Equipment, controller, host, target, or automatic choice. Activation remains
    legal when `{W}` can be paid.
-9. The normal serializable effect tree and continuation state preserve both
-   named collection slots across fork, pause, serialization, and resume.
+10. The normal serializable effect tree and continuation state preserve both
+    named collection slots across fork, pause, serialization, and resume.
 
 ## Trigger semantics
 
@@ -145,19 +147,21 @@ are not changed by this card. The card definition must therefore prove:
 - one trigger per distinct player directly attacked;
 - no trigger for an unequipped attack, a planeswalker/battle-only attack, or a
   mixed declaration with no qualifying player attack;
-- the trigger still resolves if Akiri or the Equipment leaves after trigger
-  creation.
+- the trigger still resolves if Akiri or the Equipment leaves the battlefield
+  after trigger creation.
 
 ## Test contract
 
 `AkiriFearlessVoyagerScenarioTest.kt` is the only card test file. It covers the
-full `AKIRI-01` through `AKIRI-22` acceptance matrix from the closure request,
+extended `AKIRI-01` through `AKIRI-24` acceptance matrix for this closure,
 including:
 
 - one-per-player trigger grouping and non-player defender exclusion;
 - the `{W}` activation cost and resolution-time `may` decline;
 - explicit host and Equipment decisions with no arbitrary selection;
 - multiple Equipment where the selected one detaches and the other remains;
+- trigger resolution after Akiri or the attached Equipment leaves the battlefield;
+- forked and serialized continuation state between the host and Equipment choices;
 - a Player 1 creature carrying a Player 2-controlled Equipment;
 - an already-tapped host, end-of-turn indestructible expiry, and attachment
   invariants;

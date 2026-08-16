@@ -3,12 +3,14 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.support.TestCards
@@ -25,6 +27,9 @@ import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /**
  * Scenario coverage for Akiri, Fearless Voyager (ZNR #220).
@@ -113,7 +118,7 @@ class AkiriFearlessVoyagerScenarioTest : ScenarioTestBase() {
     }
 
     init {
-        context("AKIRI-01 through AKIRI-10 — equipped attack trigger") {
+        context("AKIRI-01 through AKIRI-10 and AKIRI-23 — equipped attack trigger") {
 
             test("AKIRI-01: one equipped attacker draws exactly one card") {
                 val game = scenario()
@@ -307,6 +312,29 @@ class AkiriFearlessVoyagerScenarioTest : ScenarioTestBase() {
                 game.librarySize(1) shouldBe 0
             }
 
+            test("AKIRI-23: the attack trigger resolves after Equipment leaves the battlefield") {
+                val game = scenario()
+                    .withPlayers()
+                    .withCardOnBattlefield(1, AKIRI)
+                    .withCardOnBattlefield(1, HOST, summoningSickness = false)
+                    .withCardAttachedTo(1, EQUIPMENT, HOST)
+                    .withCardInLibrary(1, "Plains")
+                    .withActivePlayer(1)
+                    .inPhase(Phase.COMBAT, Step.DECLARE_ATTACKERS)
+                    .build()
+
+                game.declareAttackers(mapOf(HOST to 2)).error shouldBe null
+                val equipmentId = game.findPermanent(EQUIPMENT)!!
+                game.state = game.state
+                    .withoutEntity(equipmentId)
+                    .removeFromZone(ZoneKey(game.player1Id, Zone.BATTLEFIELD), equipmentId)
+
+                game.resolveStack()
+
+                game.isOnBattlefield(EQUIPMENT) shouldBe false
+                game.librarySize(1) shouldBe 0
+            }
+
             test("AKIRI-07: attacking a planeswalker with an equipped creature does not trigger") {
                 val game = scenario()
                     .withPlayers()
@@ -328,7 +356,7 @@ class AkiriFearlessVoyagerScenarioTest : ScenarioTestBase() {
             }
         }
 
-        context("AKIRI-11 through AKIRI-22 — host-first activated ability") {
+        context("AKIRI-11 through AKIRI-24 — host-first activated ability") {
 
             test("AKIRI-11: paying {W} and choosing host plus Equipment detaches and protects the host") {
                 val game = scenario()
@@ -681,6 +709,60 @@ class AkiriFearlessVoyagerScenarioTest : ScenarioTestBase() {
                 decoded.metadata shouldBe definition.metadata
                 decoded.script.triggeredAbilities.size shouldBe 1
                 decoded.script.activatedAbilities.size shouldBe 1
+            }
+
+            test("AKIRI-24: host-first continuation survives fork and serialization") {
+                val game = scenario()
+                    .withPlayers()
+                    .withCardOnBattlefield(1, AKIRI)
+                    .withCardOnBattlefield(1, HOST, summoningSickness = false)
+                    .withCardAttachedTo(1, EQUIPMENT, HOST)
+                    .withLandsOnBattlefield(1, "Plains", 1)
+                    .withActivePlayer(1)
+                    .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                    .build()
+
+                activateAkiri(game).error shouldBe null
+                game.resolveStack()
+                game.answerYesNo(true).error shouldBe null
+
+                val hostId = game.findPermanent(HOST)!!
+                val equipmentId = game.findPermanent(EQUIPMENT)!!
+                val json = Json {
+                    serializersModule = engineSerializersModule
+                    allowStructuredMapKeys = true
+                }
+
+                val hostPending = json.decodeFromString<GameState>(
+                    json.encodeToString(GameState.serializer(), game.state)
+                )
+                game.state = hostPending
+                game.getPendingDecision()
+                    .shouldBeInstanceOf<SelectCardsDecision>()
+                    .options shouldContain hostId
+                game.selectCards(listOf(hostId)).error shouldBe null
+
+                val forkedAtEquipment = game.state.copy()
+                val serializedAtEquipment = json.decodeFromString<GameState>(
+                    json.encodeToString(GameState.serializer(), game.state)
+                )
+                serializedAtEquipment.pendingDecision
+                    .shouldBeInstanceOf<SelectCardsDecision>()
+                    .options shouldContain equipmentId
+
+                fun finishFrom(state: GameState): GameState {
+                    game.state = state
+                    game.selectCards(listOf(equipmentId)).error shouldBe null
+                    return game.state
+                }
+
+                val serializedResult = finishFrom(serializedAtEquipment)
+                val forkedResult = finishFrom(forkedAtEquipment)
+                forkedResult shouldBe serializedResult
+
+                game.state.getEntity(hostId)?.has<TappedComponent>() shouldBe true
+                game.state.projectedState.hasKeyword(hostId, Keyword.INDESTRUCTIBLE) shouldBe true
+                game.state.getEntity(equipmentId)?.get<AttachedToComponent>() shouldBe null
             }
         }
     }
