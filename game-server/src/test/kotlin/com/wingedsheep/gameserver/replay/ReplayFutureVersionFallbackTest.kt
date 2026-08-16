@@ -43,7 +43,10 @@ class ReplayFutureVersionFallbackTest : FunSpec({
         actions = emptyList(),
     )
 
-    fun row(presentation: String? = ReplayCodec.encodeText(archive)) =
+    fun row(
+        presentation: String? = ReplayCodec.encodeText(archive),
+        statusValue: String = ReplayStatus.FINISHED.name,
+    ) =
         GameReplayRow(
             gameId = gameId,
             winnerName = "Alice",
@@ -51,7 +54,7 @@ class ReplayFutureVersionFallbackTest : FunSpec({
             endedAt = Instant.parse("2026-01-01T00:01:00Z"),
             frameCount = 1,
             playerNames = "Alice, Bob",
-            status = ReplayStatus.FINISHED.name,
+            status = statusValue,
             engineVersion = "future-build",
             data = ReplayCodec.encode(futureReplay()),
             presentation = presentation,
@@ -97,5 +100,21 @@ class ReplayFutureVersionFallbackTest : FunSpec({
 
             val service = ReplayService(store, mockk(relaxed = true), mockk(relaxed = true))
             service.viewerPayload(gameId).shouldBeNull()
+    }
+
+    test("unsupported in-progress rows are skipped for resume and cannot be overwritten") {
+        val repository = mockk<GameReplayRepository> {
+            every { findByGameId(gameId) } returns row(statusValue = ReplayStatus.IN_PROGRESS.name)
+            every { findByStatus(ReplayStatus.IN_PROGRESS.name) } returns
+                listOf(row(statusValue = ReplayStatus.IN_PROGRESS.name))
+        }
+        val store = JdbcReplayStore(repository)
+        store.findInProgress() shouldBe emptyList()
+
+        val service = ReplayService(store, mockk(relaxed = true), mockk(relaxed = true))
+        service.saveInProgress(futureReplay(), resumeFingerprint = "future")
+
+        verify(exactly = 0) { repository.save(any()) }
+        verify(exactly = 0) { repository.updateRecording(any(), any(), any(), any(), any(), any(), any()) }
     }
 })

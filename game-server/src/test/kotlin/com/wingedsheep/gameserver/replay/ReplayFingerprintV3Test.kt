@@ -4,7 +4,11 @@ import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.LegendRuleContinuation
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.PlayerYields
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.gameserver.persistence.persistenceJson
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AbilityIdentity
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
@@ -15,6 +19,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
+import kotlinx.serialization.json.jsonObject
 
 class ReplayFingerprintV3Test : FunSpec({
 
@@ -63,6 +68,25 @@ class ReplayFingerprintV3Test : FunSpec({
         ) shouldNotBe ReplayFingerprint.of(base)
     }
 
+    test("v3 fingerprint includes semantic yields and canonicalizes unordered sets") {
+        val player = EntityId("p1")
+        val identity = AbilityIdentity("Test Card#TST-1", AbilityId("test-ability"))
+        val yielded = GameState(
+            priorityPassedBy = linkedSetOf(EntityId("p2"), EntityId("p1")),
+            yieldsByPlayer = mapOf(
+                player to PlayerYields(autoAnswer = mapOf(identity to true)),
+            ),
+        )
+        val reordered = yielded.copy(
+            priorityPassedBy = linkedSetOf(EntityId("p1"), EntityId("p2")),
+        )
+
+        ReplayFingerprint.of(reordered, 3) shouldBe ReplayFingerprint.of(yielded, 3)
+        ReplayFingerprint.of(
+            yielded.copy(yieldsByPlayer = mapOf(player to PlayerYields(autoAnswer = mapOf(identity to false))))
+        ) shouldNotBe ReplayFingerprint.of(yielded, 3)
+    }
+
     test("nonce changes are ignored but decision semantics remain fingerprinted") {
         val withAbc = GameState(pendingDecision = decision("abc"))
         val withXyz = GameState(pendingDecision = decision("xyz"))
@@ -99,5 +123,17 @@ class ReplayFingerprintV3Test : FunSpec({
         canonical shouldContain "\"id\":\"D0\""
         canonical shouldContain "\"decisionId\":\"D0\""
         canonical.contains("abc").shouldBeFalse()
+    }
+
+    test("canonical inventory covers every serialized GameState constructor field") {
+        val canonical = persistenceJson.parseToJsonElement(
+            TransitionSemanticGameStateCanonicalizer.canonicalJson(GameState())
+        ).jsonObject
+        val descriptor = GameState.serializer().descriptor
+
+        (0 until descriptor.elementsCount).forEach { index ->
+            canonical.containsKey(descriptor.getElementName(index)).shouldBeTrue()
+        }
+        canonical.containsKey("projectedState").shouldBeFalse()
     }
 })
