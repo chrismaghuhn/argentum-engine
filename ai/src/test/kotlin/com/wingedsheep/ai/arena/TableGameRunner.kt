@@ -267,7 +267,10 @@ object TableGameRunner {
                         actionCount++
                         val response = aiFor(decision.playerId).respondToDecision(state, decision)
                         trainingObserver?.decision(decision.playerId, response)
-                        record("D$actionCount|${seatOf(decision.playerId)}|${decision::class.simpleName}|$response\n")
+                        record(
+                            "D$actionCount|${seatOf(decision.playerId)}|${decision::class.simpleName}|" +
+                                "${canonicalDecisionResponse(response)}\n"
+                        )
                         val r = processor.process(state, SubmitDecision(decision.playerId, response)).result
                         if (r.error != null) {
                             drawReason = "decisionError(${r.error})"
@@ -293,7 +296,10 @@ object TableGameRunner {
                     actionCount++
                     val action = aiFor(priorityPlayer).chooseAction(state)
                     trainingObserver?.action(action)
-                    record("A$actionCount|${seatOf(priorityPlayer)}|${state.step.name}|$action\n")
+                    record(
+                        "A$actionCount|${seatOf(priorityPlayer)}|${state.step.name}|" +
+                            "${canonicalActionTrace(action)}\n"
+                    )
                     val r = processor.process(state, action).result
                     val next = if (r.error != null) {
                         val subjectId = when (action) {
