@@ -706,6 +706,7 @@ class GamePlayHandler(
             val tournamentRound = replayTournament?.getRoundForMatch(gameSessionId)?.roundNumber
 
             val replay = CompactReplay(
+                version = replaySnapshot.version,
                 gameId = gameSessionId,
                 players = gameSession.getPlayers().map {
                     ReplayPlayerInfo(it.playerId.value, it.playerName)
@@ -720,11 +721,15 @@ class GamePlayHandler(
                 yields = replaySnapshot.yields,
                 engineVersion = engineVersion.value,
                 pinnedCards = gameSession.getPinnedCards(),
-                checkpoints = ReplayCheckpointPolicy.withV3Tail(
-                    checkpoints = replaySnapshot.checkpoints,
-                    actionCount = replaySnapshot.actions.size,
-                    fingerprint = replaySnapshot.fingerprint,
-                ),
+                checkpoints = if (replaySnapshot.version == CompactReplay.CURRENT_VERSION) {
+                    ReplayCheckpointPolicy.withV3Tail(
+                        checkpoints = replaySnapshot.checkpoints,
+                        actionCount = replaySnapshot.actions.size,
+                        fingerprint = replaySnapshot.fingerprint,
+                    )
+                } else {
+                    replaySnapshot.checkpoints
+                },
             )
             // AI-only games (e.g. the LLM tournament) are stored — that page links straight at their
             // replays — but skip the archived frame stream, which is orders of magnitude larger than

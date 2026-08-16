@@ -113,6 +113,7 @@ class ReplayCheckpointFlusher(
 
         replayService.saveInProgress(
             replay = CompactReplay(
+                version = snapshot.version,
                 gameId = session.sessionId,
                 players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
                 startedAt = (snapshot.startedAt ?: Instant.now()).toString(),
@@ -126,11 +127,15 @@ class ReplayCheckpointFlusher(
                 pinnedCards = session.getPinnedCards(),
                 // The tail is a persistence-only view of this coherent snapshot. Do not append it
                 // to GameSession.recordedCheckpoints, or every sweep would accumulate duplicates.
-                checkpoints = ReplayCheckpointPolicy.withV3Tail(
-                    checkpoints = snapshot.checkpoints,
-                    actionCount = snapshot.actions.size,
-                    fingerprint = snapshot.fingerprint,
-                ),
+                checkpoints = if (snapshot.version == CompactReplay.CURRENT_VERSION) {
+                    ReplayCheckpointPolicy.withV3Tail(
+                        checkpoints = snapshot.checkpoints,
+                        actionCount = snapshot.actions.size,
+                        fingerprint = snapshot.fingerprint,
+                    )
+                } else {
+                    snapshot.checkpoints
+                },
             ),
             resumeFingerprint = snapshot.fingerprint,
         )

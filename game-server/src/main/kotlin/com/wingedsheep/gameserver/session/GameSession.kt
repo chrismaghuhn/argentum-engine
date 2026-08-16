@@ -257,6 +257,8 @@ class GameSession(
     // stream is re-derived on demand by ReplayReconstructor.
     @Volatile
     private var replaySetup: com.wingedsheep.gameserver.replay.ReplaySetup? = null
+    /** Fingerprint/checkpoint semantics for the active recording; legacy resumes retain their version. */
+    private var replayVersion = com.wingedsheep.gameserver.replay.CompactReplay.CURRENT_VERSION
     private val recordedActions = CopyOnWriteArrayList<GameAction>()
     // Persistent-yield mutations applied out-of-band of [recordedActions]. Captured in turn order so
     // the reconstructor can re-apply each at the action position it was set (see [CompactReplay.yields]).
@@ -1364,7 +1366,9 @@ class GameSession(
         recordedCheckpoints.add(
             com.wingedsheep.gameserver.replay.ReplayCheckpoint(
                 afterActionCount = count,
-                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(state),
+                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(
+                    state, replayVersion,
+                ),
             )
         )
     }
@@ -1440,11 +1444,14 @@ class GameSession(
             val setup = replaySetup ?: return null
             val state = gameState ?: return null
             com.wingedsheep.gameserver.replay.ReplayRecordingSnapshot(
+                version = replayVersion,
                 setup = setup,
                 actions = recordedActions.toList(),
                 yields = recordedYields.toList(),
                 checkpoints = recordedCheckpoints.toList(),
-                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(state),
+                fingerprint = com.wingedsheep.gameserver.replay.ReplayFingerprint.of(
+                    state, replayVersion,
+                ),
                 startedAt = replayStartedAt,
                 gameOver = state.gameOver,
             )
@@ -1683,12 +1690,24 @@ class GameSession(
         }
 
         replaySetup = record.setup
+        replayVersion = record.version
         recordedActions.clear()
         recordedActions.addAll(record.actions)
         recordedYields.clear()
         recordedYields.addAll(record.yields)
         recordedCheckpoints.clear()
-        recordedCheckpoints.addAll(record.checkpoints)
+        recordedCheckpoints.addAll(
+            if (record.version == com.wingedsheep.gameserver.replay.CompactReplay.CURRENT_VERSION) {
+                // The persisted tail proves the flushed prefix but is a derived persistence view,
+                // not a live cadence checkpoint. Keep only cadence stamps in the resumed session;
+                // the next flush will derive one fresh tail for its own coherent snapshot.
+                record.checkpoints.filter {
+                    it.afterActionCount % com.wingedsheep.gameserver.replay.ReplayRecordingPolicy.CHECKPOINT_EVERY_ACTIONS == 0
+                }
+            } else {
+                record.checkpoints
+            }
+        )
         replayStartedAt = runCatching { Instant.parse(record.startedAt) }.getOrNull()
         return true
     }

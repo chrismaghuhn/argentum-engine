@@ -109,6 +109,8 @@ data class ReplayCheckpoint(
  * makes that a live race, since the game thread advances between calls.
  */
 data class ReplayRecordingSnapshot(
+    /** Replay semantics carried by the recording being flushed; new sessions use v3. */
+    val version: Int = CompactReplay.CURRENT_VERSION,
     val setup: ReplaySetup,
     val actions: List<com.wingedsheep.engine.core.GameAction>,
     val yields: List<ReplayYieldEntry>,

@@ -71,6 +71,7 @@ class ReplayStorageTest : ScenarioTestBase() {
     private fun GameSession.flushRecord(): Pair<CompactReplay, String> {
         val snapshot = replayRecordingSnapshot().shouldNotBeNull()
         return CompactReplay(
+            version = snapshot.version,
             gameId = sessionId,
             players = getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
             startedAt = (snapshot.startedAt ?: Instant.now()).toString(),
@@ -79,11 +80,13 @@ class ReplayStorageTest : ScenarioTestBase() {
             setup = snapshot.setup,
             actions = snapshot.actions,
             yields = snapshot.yields,
-            checkpoints = ReplayCheckpointPolicy.withV3Tail(
-                checkpoints = snapshot.checkpoints,
-                actionCount = snapshot.actions.size,
-                fingerprint = snapshot.fingerprint,
-            ),
+            checkpoints = if (snapshot.version == CompactReplay.CURRENT_VERSION) {
+                ReplayCheckpointPolicy.withV3Tail(
+                    checkpoints = snapshot.checkpoints,
+                    actionCount = snapshot.actions.size,
+                    fingerprint = snapshot.fingerprint,
+                )
+            } else snapshot.checkpoints,
         ) to snapshot.fingerprint
     }
 
@@ -184,6 +187,19 @@ class ReplayStorageTest : ScenarioTestBase() {
             val replayed = ReplayReconstructor(cardRegistry, null)
                 .reconstructStateAt(record, record.actions.size).shouldNotBeNull()
             ReplayFingerprint.of(replayed) shouldBe fingerprint
+        }
+
+        test("per-flush v3 tails do not accumulate in the live cadence checkpoint list") {
+            val session = playPartialGame()
+            val cadenceCounts = session.getReplayCheckpoints().map { it.afterActionCount }
+            val first = session.flushRecord().first
+            val second = session.flushRecord().first
+
+            first.version shouldBe CompactReplay.CURRENT_VERSION
+            second.version shouldBe CompactReplay.CURRENT_VERSION
+            session.getReplayCheckpoints().map { it.afterActionCount } shouldBe cadenceCounts
+            first.checkpoints.count { it.afterActionCount == first.actions.size } shouldBe 1
+            second.checkpoints.count { it.afterActionCount == second.actions.size } shouldBe 1
         }
 
         test("a recording whose flush captured the live position resumes") {

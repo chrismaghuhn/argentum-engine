@@ -66,6 +66,7 @@ class ReplayDurabilityTest : ScenarioTestBase() {
 
         val snapshot = session.replayRecordingSnapshot().shouldNotBeNull()
         return CompactReplay(
+            version = snapshot.version,
             gameId = session.sessionId,
             players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
             startedAt = (snapshot.startedAt ?: Instant.now()).toString(),
@@ -76,11 +77,13 @@ class ReplayDurabilityTest : ScenarioTestBase() {
             yields = snapshot.yields,
             engineVersion = "test-build",
             pinnedCards = session.getPinnedCards(),
-            checkpoints = ReplayCheckpointPolicy.withV3Tail(
-                checkpoints = snapshot.checkpoints,
-                actionCount = snapshot.actions.size,
-                fingerprint = snapshot.fingerprint,
-            ),
+            checkpoints = if (snapshot.version == CompactReplay.CURRENT_VERSION) {
+                ReplayCheckpointPolicy.withV3Tail(
+                    checkpoints = snapshot.checkpoints,
+                    actionCount = snapshot.actions.size,
+                    fingerprint = snapshot.fingerprint,
+                )
+            } else snapshot.checkpoints,
         )
     }
 
