@@ -19,10 +19,13 @@ import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.ktk.KhansOfTarkirSet
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.mtg.sets.definitions.blb.cards.BuildersTalent
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
@@ -41,6 +44,8 @@ import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class ObservationPrivacyTest : FunSpec({
 
@@ -78,6 +83,15 @@ class ObservationPrivacyTest : FunSpec({
         val sourceId = state.getHand(playerId).first()
         val entity = CardEntityFactory.create(cardDefinition, playerId)
         return state.copy(entities = state.entities + (sourceId to entity)) to sourceId
+    }
+
+    fun moveCardToBattlefield(state: GameState, playerId: EntityId, cardId: EntityId): GameState {
+        val handKey = ZoneKey(playerId, Zone.HAND)
+        val battlefieldKey = ZoneKey(playerId, Zone.BATTLEFIELD)
+        val zones = state.zones.toMutableMap()
+        zones[handKey] = state.getHand(playerId).filterNot { it == cardId }
+        zones[battlefieldKey] = state.getBattlefield(playerId) + cardId
+        return state.copy(zones = zones)
     }
 
     fun environment(): GameEnvironment {
@@ -649,6 +663,77 @@ class ObservationPrivacyTest : FunSpec({
             .stateDigest shouldNotBe
             observationForAbility(stateWithEmblemAbility(secondAbility), actor, sourceId, secondAbility.id)
                 .stateDigest
+    }
+
+    test("distinct intrinsic mana abilities remain resolved and digest-distinct") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val dualLand = registry().requireCard("Mountain").copy(
+            name = "Gym Dual Basic Land",
+            typeLine = TypeLine.parse("Basic Land — Mountain Forest")
+        )
+        val cardRegistry = registry().also { it.register(dualLand) }
+        val (stateWithLand, sourceId) = stateWithAbilityCard(env.state, actor, dualLand)
+        val state = moveCardToBattlefield(stateWithLand, actor, sourceId)
+
+        val redObservation = observationForAbility(
+            state,
+            actor,
+            sourceId,
+            AbilityId.intrinsicMana('R'),
+            cardRegistry
+        )
+        val greenObservation = observationForAbility(
+            state,
+            actor,
+            sourceId,
+            AbilityId.intrinsicMana('G'),
+            cardRegistry
+        )
+        val red = redObservation.legalActions.single()
+        val green = greenObservation.legalActions.single()
+        val redKey = checkNotNull(red.actionSemantics)["abilityKey"]!!.jsonObject
+        val greenKey = checkNotNull(green.actionSemantics)["abilityKey"]!!.jsonObject
+
+        redKey["origin"]!!.jsonPrimitive.content shouldBe "intrinsic"
+        greenKey["origin"]!!.jsonPrimitive.content shouldBe "intrinsic"
+        redKey["ability"]!!.jsonObject["effect"]!!.jsonObject["color"]!!.jsonPrimitive.content shouldBe "RED"
+        greenKey["ability"]!!.jsonObject["effect"]!!.jsonObject["color"]!!.jsonPrimitive.content shouldBe "GREEN"
+        redKey["unresolved"] shouldBe null
+        greenKey["unresolved"] shouldBe null
+        redObservation.stateDigest shouldNotBe greenObservation.stateDigest
+    }
+
+    test("class level-up ability is resolved with its next-level semantics") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val cardRegistry = registry().also { it.register(BuildersTalent) }
+        val (stateWithClass, sourceId) = stateWithAbilityCard(env.state, actor, BuildersTalent)
+        val leveledEntity = checkNotNull(stateWithClass.getEntity(sourceId))
+            .with(ClassLevelComponent(currentLevel = 1))
+        val state = moveCardToBattlefield(
+            stateWithClass.copy(entities = stateWithClass.entities + (sourceId to leveledEntity)),
+            actor,
+            sourceId
+        )
+
+        val action = observationForAbility(
+            state,
+            actor,
+            sourceId,
+            AbilityId.classLevelUp(2),
+            cardRegistry
+        ).legalActions.single()
+        val abilityKey = checkNotNull(action.actionSemantics)["abilityKey"]!!.jsonObject
+        val ability = abilityKey["ability"]!!.jsonObject
+        val cardDefinitionId = checkNotNull(state.getEntity(sourceId)).get<CardComponent>()!!.cardDefinitionId
+
+        abilityKey["origin"]!!.jsonPrimitive.content shouldBe "classLevelUp"
+        abilityKey["ordinal"]!!.jsonPrimitive.content shouldBe "2"
+        abilityKey["cardDefinitionId"]!!.jsonPrimitive.content shouldBe cardDefinitionId
+        ability["cost"]!!.jsonObject["atom"]!!.jsonObject["cost"]!!.jsonPrimitive.content shouldBe "{W}"
+        ability["effect"]!!.jsonObject["targetLevel"]!!.jsonPrimitive.content shouldBe "2"
+        abilityKey["unresolved"] shouldBe null
     }
 
     test("different structured cast choices change the semantic digest") {
