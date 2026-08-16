@@ -252,9 +252,9 @@ data class LegalActionView(
     /**
      * Structured, presentation-free action identity used by semantic equality and StateDigest.
      * This includes the engine action/decision payload but excludes the transport handle and
-     * human-readable description. Generated activated-ability handles are replaced by a
-     * definition-scoped ordinal plus structural ability payload. It is not a second rules or
-     * visibility model.
+     * human-readable description. Generated activated-ability handles are replaced by
+     * provenance-specific stable ordinals plus structural ability payloads; no runtime handle or
+     * donor EntityId is used as a semantic key. It is not a second rules or visibility model.
      */
     val actionSemantics: JsonObject? = null,
     /** True when this entry was generated from [PendingDecisionView], not a GameAction. */

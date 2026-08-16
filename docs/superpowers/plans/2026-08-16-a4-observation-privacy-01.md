@@ -403,9 +403,9 @@ If a required structured action-identity field is not generically available from
 the engine, classify it as an A5 contract dependency. Do not broaden
 rules-engine scope and do not substitute description text for the missing
 structured field. The observation contract carries a deterministic structured
-engine-action/decision payload for fields such as definition-scoped ability
-ordinal/structure and cast choices; generated ability handles, transport IDs,
-and presentation text remain outside the digest.
+engine-action/decision payload for fields such as provenance-specific ability
+ordinal/structure and cast choices; generated ability handles, donor EntityIds,
+transport IDs, and presentation text remain outside the digest.
 
 - [ ] **Step 4: Populate public stack source and target metadata.**
 
@@ -504,7 +504,7 @@ buildJsonObject {
 }
 ~~~
 
-Add the deterministic structured engine-action/decision payload to the fingerprint so fields such as definition-scoped ability ordinal/structure, `castFaceDown`, `faceIndex`, modes, payments, and repeat counts remain distinguishable. Never add description as a fallback or a JVM-generated ability handle as a semantic key. If two actions remain distinguishable only by prose, fail the focused test and record that as an explicit structured contract gap.
+Add the deterministic structured engine-action/decision payload to the fingerprint so fields such as provenance-specific ability ordinal/structure, `castFaceDown`, `faceIndex`, modes, payments, and repeat counts remain distinguishable. Resolve printed, granted, static, emblem, class-level, intrinsic, and donor-derived abilities through their authoritative sources; never add description, a donor EntityId, or a JVM-generated ability handle as a semantic key. If two actions remain distinguishable only by prose, fail the focused test and record that as an explicit structured contract gap.
 
 - [ ] **Step 5: Test transport-ID and ordering semantics.**
 

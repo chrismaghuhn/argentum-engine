@@ -12,6 +12,7 @@ import com.wingedsheep.engine.event.GrantedStaticAbility
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.EmblemActivatedAbilityComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -22,12 +23,17 @@ import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.ktk.KhansOfTarkirSet
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.LookAtTopOfLibrary
 import com.wingedsheep.sdk.scripting.RevealTopOfLibrary
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -185,6 +191,25 @@ class ObservationPrivacyTest : FunSpec({
             )
         )
     }
+
+    fun observationForAbility(
+        state: GameState,
+        perspective: EntityId,
+        sourceId: EntityId,
+        abilityId: AbilityId,
+        cardRegistry: CardRegistry = registry()
+    ): TrainingObservation = ObservationBuilder(cardRegistry = cardRegistry)
+        .build(
+            state,
+            perspective,
+            listOf(
+                LegalAction(
+                    action = ActivateAbility(perspective, sourceId, abilityId),
+                    actionType = "ACTIVATE_ABILITY",
+                    description = "Activate ability"
+                )
+            )
+        ).observation as TrainingObservation
 
     test("opponent hand identity is absent from the complete masked observation") {
         val base = environment()
@@ -456,7 +481,9 @@ class ObservationPrivacyTest : FunSpec({
     test("different structured abilities on one source change the semantic digest") {
         val env = environment()
         val actor = env.playerIds[0]
-        val sourceId = env.state.getHand(actor).first()
+        val card = abilityCard(AbilityId("ability_a"), AbilityId("ability_b"))
+        val cardRegistry = registry().also { it.register(card) }
+        val (state, sourceId) = stateWithAbilityCard(env.state, actor, card)
 
         fun observationFor(abilityId: String): TrainingObservation {
             val action = LegalAction(
@@ -464,12 +491,12 @@ class ObservationPrivacyTest : FunSpec({
                 actionType = "ACTIVATE_ABILITY",
                 description = "Activate ability"
             )
-            return ObservationBuilder(cardRegistry = registry())
-                .build(env.state, actor, listOf(action)).observation as TrainingObservation
+            return ObservationBuilder(cardRegistry = cardRegistry)
+                .build(state, actor, listOf(action)).observation as TrainingObservation
         }
 
-        val first = observationFor("ability-a")
-        val second = observationFor("ability-b")
+        val first = observationFor("ability_a")
+        val second = observationFor("ability_b")
 
         first.legalActions.single().description shouldBe second.legalActions.single().description
         first.stateDigest shouldNotBe second.stateDigest
@@ -533,6 +560,95 @@ class ObservationPrivacyTest : FunSpec({
 
         observationFor(AbilityId("ability_101")).stateDigest shouldNotBe
             observationFor(AbilityId("ability_202")).stateDigest
+    }
+
+    test("distinct statically granted generated abilities remain digest-distinct") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val firstAbility = ActivatedAbility(
+            id = AbilityId("ability_123"),
+            cost = Costs.Free,
+            effect = Effects.DrawCards(1)
+        )
+        val secondAbility = ActivatedAbility(
+            id = AbilityId("ability_456"),
+            cost = Costs.Free,
+            effect = Effects.GainLife(3)
+        )
+        val firstGrant = GrantActivatedAbility(
+            ability = firstAbility,
+            filter = GroupFilter.source()
+        )
+        val secondGrant = GrantActivatedAbility(
+            ability = secondAbility,
+            filter = GroupFilter.source()
+        )
+        val stateWithFirstGrant = grantStaticAbilityToBattlefieldCard(env.state, actor, firstGrant)
+        val sourceId = stateWithFirstGrant.getBattlefield(actor).last()
+        val state = stateWithFirstGrant.copy(
+            grantedStaticAbilities = stateWithFirstGrant.grantedStaticAbilities +
+                GrantedStaticAbility(sourceId, secondGrant, Duration.Permanent)
+        )
+
+        observationForAbility(state, actor, sourceId, firstAbility.id).stateDigest shouldNotBe
+            observationForAbility(state, actor, sourceId, secondAbility.id).stateDigest
+    }
+
+    test("donor-derived generated handles alone do not change the semantic digest") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val firstAbility = ActivatedAbility(
+            id = AbilityId("donor_101_ability_7"),
+            cost = Costs.Free,
+            effect = Effects.DrawCards(1)
+        )
+        val secondAbility = firstAbility.copy(id = AbilityId("donor_202_ability_7"))
+        val firstGrant = GrantActivatedAbility(
+            ability = firstAbility,
+            filter = GroupFilter.source()
+        )
+        val stateWithFirstGrant = grantStaticAbilityToBattlefieldCard(env.state, actor, firstGrant)
+        val sourceId = stateWithFirstGrant.getBattlefield(actor).last()
+        val secondGrant = firstGrant.copy(ability = secondAbility)
+        val secondState = stateWithFirstGrant.copy(
+            grantedStaticAbilities = listOf(
+                GrantedStaticAbility(sourceId, secondGrant, Duration.Permanent)
+            )
+        )
+
+        val first = observationForAbility(stateWithFirstGrant, actor, sourceId, firstAbility.id)
+        val second = observationForAbility(secondState, actor, sourceId, secondAbility.id)
+        ObservationCanonicalizer.semanticJson(first) shouldBe ObservationCanonicalizer.semanticJson(second)
+        first.stateDigest shouldBe second.stateDigest
+    }
+
+    test("distinct emblem-granted generated abilities remain digest-distinct") {
+        val env = environment()
+        val actor = env.playerIds[0]
+        val sourceId = env.state.getHand(actor).first()
+        val emblemId = env.state.getHand(actor).last()
+        val firstAbility = ActivatedAbility(
+            id = AbilityId("ability_700"),
+            cost = Costs.Free,
+            effect = Effects.DrawCards(1)
+        )
+        val secondAbility = ActivatedAbility(
+            id = AbilityId("ability_701"),
+            cost = Costs.Free,
+            effect = Effects.GainLife(3)
+        )
+
+        fun stateWithEmblemAbility(ability: ActivatedAbility): GameState {
+            val emblem = checkNotNull(env.state.getEntity(emblemId)).with(
+                EmblemActivatedAbilityComponent(GroupFilter.source(), listOf(ability))
+            )
+            return env.state.copy(entities = env.state.entities + (emblemId to emblem))
+        }
+
+        observationForAbility(stateWithEmblemAbility(firstAbility), actor, sourceId, firstAbility.id)
+            .stateDigest shouldNotBe
+            observationForAbility(stateWithEmblemAbility(secondAbility), actor, sourceId, secondAbility.id)
+                .stateDigest
     }
 
     test("different structured cast choices change the semantic digest") {

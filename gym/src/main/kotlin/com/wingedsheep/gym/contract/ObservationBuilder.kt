@@ -42,7 +42,12 @@ import com.wingedsheep.engine.core.TypecycleCard
 import com.wingedsheep.engine.core.UnlockRoomDoor
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
+import com.wingedsheep.engine.handlers.ConditionEvaluator
+import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
+import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -55,6 +60,7 @@ import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.EmblemActivatedAbilityComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
@@ -71,7 +77,12 @@ import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComp
 import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.effects.LevelUpClassEffect
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -101,6 +112,11 @@ class ObservationBuilder(
     private val cardRegistry: CardRegistry
 ) {
     private val visibility = Visibility(cardRegistry)
+    private val predicateEvaluator = PredicateEvaluator()
+    private val conditionEvaluator = ConditionEvaluator()
+    private val castPermissionUtils by lazy {
+        CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
+    }
     private val actionSerialization = Json {
         encodeDefaults = true
         explicitNulls = false
@@ -497,10 +513,10 @@ class ObservationBuilder(
 
     /**
      * AbilityId is an engine handle and the default generated value contains a JVM-global counter.
-     * Resolve printed abilities back to their definition-scoped ordinal before they enter the
-     * semantic observation. The structural payload protects against two abilities with the same
-     * ordinal accidentally being treated as equivalent; the ordinal protects against two
-     * genuinely separate but structurally identical abilities.
+     * Resolve the action against the same authoritative provenance sources used by legal-action
+     * enumeration before it enters the semantic observation. The structural payload protects
+     * against two abilities with the same ordinal accidentally being treated as equivalent; the
+     * canonical ordinal protects against genuinely separate but structurally identical grants.
      */
     private fun stableAbilityKey(state: GameState, action: ActivateAbility): JsonObject {
         val source = state.getEntity(action.sourceId)
@@ -520,6 +536,16 @@ class ObservationBuilder(
             )
         }
 
+        val classLevelUp = classLevelUpAbility(cardDefinition, source, action.abilityId)
+        if (classLevelUp != null) {
+            return abilityKey(
+                origin = "classLevelUp",
+                ordinal = classLevelUpOrdinal(source),
+                ability = classLevelUp,
+                cardDefinitionId = card?.cardDefinitionId
+            )
+        }
+
         val grantedAbilities = state.grantedActivatedAbilities
             .asSequence()
             .filter { it.entityId == action.sourceId }
@@ -527,16 +553,108 @@ class ObservationBuilder(
             .toList()
         val grantedOrdinal = grantedAbilities.indexOfFirst { it.id == action.abilityId }
         if (grantedOrdinal >= 0) {
-            return abilityKey("granted", grantedOrdinal, grantedAbilities[grantedOrdinal], card?.cardDefinitionId)
+            return abilityKey(
+                origin = "granted",
+                ordinal = stableAbilityOrdinal(grantedAbilities, grantedOrdinal),
+                ability = grantedAbilities[grantedOrdinal],
+                cardDefinitionId = card?.cardDefinitionId
+            )
         }
 
-        val id = action.abilityId.value
-        return buildJsonObject {
-            when {
-                id.removePrefix("ability_").toLongOrNull() != null -> put("unresolvedGenerated", true)
-                else -> put("explicitId", id)
-            }
+        val staticGrants = castPermissionUtils.getStaticGrantedAbilitiesWithGranter(action.sourceId, state)
+        val staticOrdinal = staticGrants.indexOfFirst { it.ability.id == action.abilityId }
+        if (staticOrdinal >= 0) {
+            val grant = staticGrants[staticOrdinal]
+            val granterCardDefinitionId = state.getEntity(grant.granterId)
+                ?.get<CardComponent>()
+                ?.cardDefinitionId
+            return abilityKey(
+                origin = "static",
+                ordinal = stableAbilityOrdinal(staticGrants.map { it.ability }, staticOrdinal),
+                ability = grant.ability,
+                cardDefinitionId = granterCardDefinitionId
+            )
         }
+
+        val emblemAbilities = activeEmblemAbilities(state, action.sourceId)
+        val emblemOrdinal = emblemAbilities.indexOfFirst { it.id == action.abilityId }
+        if (emblemOrdinal >= 0) {
+            return abilityKey(
+                origin = "emblem",
+                ordinal = stableAbilityOrdinal(emblemAbilities, emblemOrdinal),
+                ability = emblemAbilities[emblemOrdinal],
+                cardDefinitionId = null
+            )
+        }
+
+        val intrinsicAbilities = IntrinsicManaAbilities.forEntity(state, state.projectedState, action.sourceId)
+        val intrinsicOrdinal = intrinsicAbilities.indexOfFirst { it.id == action.abilityId }
+        if (intrinsicOrdinal >= 0) {
+            return abilityKey(
+                origin = "intrinsic",
+                ordinal = stableAbilityOrdinal(intrinsicAbilities, intrinsicOrdinal),
+                ability = intrinsicAbilities[intrinsicOrdinal],
+                cardDefinitionId = null
+            )
+        }
+
+        // A legal ActivateAbility must come from one of the authoritative sources above. Keep
+        // synthetic/manual caller input fail-closed rather than reintroducing the runtime handle
+        // (including donor_<entity>_<printedId>) into semantic equality or StateDigest.
+        return buildJsonObject { put("unresolved", true) }
+    }
+
+    private fun classLevelUpAbility(
+        cardDefinition: com.wingedsheep.sdk.model.CardDefinition?,
+        source: ComponentContainer?,
+        abilityId: AbilityId,
+    ): ActivatedAbility? {
+        val currentLevel = source?.get<ClassLevelComponent>()?.currentLevel ?: return null
+        val targetLevel = currentLevel + 1
+        if (abilityId != AbilityId.classLevelUp(targetLevel)) return null
+        val level = cardDefinition?.classLevels?.find { it.level == targetLevel } ?: return null
+        return ActivatedAbility(
+            id = abilityId,
+            cost = AbilityCost.Atom(CostAtom.Mana(level.cost)),
+            effect = LevelUpClassEffect(targetLevel),
+            timing = TimingRule.SorcerySpeed,
+            descriptionOverride = "Level up to level $targetLevel"
+        )
+    }
+
+    private fun classLevelUpOrdinal(source: ComponentContainer?): Int =
+        source?.get<ClassLevelComponent>()?.currentLevel?.plus(1) ?: 0
+
+    private fun activeEmblemAbilities(state: GameState, sourceId: EntityId): List<ActivatedAbility> =
+        state.entities.flatMap { (emblemId, emblemContainer) ->
+            val grant = emblemContainer.get<EmblemActivatedAbilityComponent>() ?: return@flatMap emptyList()
+            val controllerId = emblemContainer.get<ControllerComponent>()?.playerId ?: return@flatMap emptyList()
+            val matches = predicateEvaluator.matches(
+                state,
+                state.projectedState,
+                sourceId,
+                grant.filter.baseFilter,
+                PredicateContext(controllerId = controllerId, sourceId = emblemId),
+            ) && (!grant.filter.excludeSelf || sourceId != emblemId)
+            if (matches) grant.abilities else emptyList()
+        }
+
+    private fun stableAbilityOrdinal(abilities: List<ActivatedAbility>, targetIndex: Int): Int {
+        val targetSignature = structuralAbilitySignature(abilities[targetIndex])
+        val structurallyBefore = abilities
+            .take(targetIndex)
+            .count { structuralAbilitySignature(it) == targetSignature }
+        return abilities.count { structuralAbilitySignature(it) < targetSignature } + structurallyBefore
+    }
+
+    private fun structuralAbilitySignature(ability: ActivatedAbility): String =
+        structuralAbilityJson(ability).toString()
+
+    private fun structuralAbilityJson(ability: ActivatedAbility): JsonObject {
+        val encoded = actionSerialization
+            .encodeToJsonElement(ActivatedAbility.serializer(), ability)
+            .jsonObject
+        return JsonObject(encoded.filterKeys { it != "id" && it != "descriptionOverride" })
     }
 
     private fun abilityKey(
@@ -548,12 +666,9 @@ class ObservationBuilder(
         put("origin", origin)
         put("ordinal", ordinal)
         cardDefinitionId?.let { put("cardDefinitionId", it) }
-        val encoded = actionSerialization
-            .encodeToJsonElement(ActivatedAbility.serializer(), ability)
-            .jsonObject
         put(
             "ability",
-            JsonObject(encoded.filterKeys { it != "id" && it != "descriptionOverride" })
+            structuralAbilityJson(ability)
         )
     }
 

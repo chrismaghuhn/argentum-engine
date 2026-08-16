@@ -105,7 +105,9 @@ The fields that matter most for spotting bugs:
   `DECISION`, …), `description`, `affordable`, `manaCost`, target counts, and an
   `actionSemantics` object containing the structured action identity used by the digest. The
   `description` is presentation-only and is never used for semantic identity; generated
-  activated-ability handles are normalized to definition-scoped ordinals and structural payloads.
+  activated-ability handles are normalized through their printed, granted, static, emblem,
+  class-level, or intrinsic provenance into stable ordinals and structural payloads. Donor
+  EntityIds embedded in runtime handles are never semantic identity.
 - `zones[]` → `cards[]` → `EntityFeatures` — the projected (post-layers) truth about each object:
   `oracleText`, `power`/`toughness`, `types`/`subtypes`/`keywords`/`colors`, `tapped`, `counters`,
   `attachedTo`. **`oracleText` is your oracle**: read what the card *says*, then watch whether the
