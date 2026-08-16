@@ -10,6 +10,7 @@ import com.wingedsheep.gym.service.SnapshotHandle
 import com.wingedsheep.gym.service.StepRequest
 import com.wingedsheep.gym.server.dto.CreateEnvResponse
 import com.wingedsheep.gym.server.dto.DisposeBody
+import com.wingedsheep.gym.server.dto.ResetEnvResponse
 import com.wingedsheep.gym.server.dto.RestoreBody
 import com.wingedsheep.gym.server.dto.StepBatchItem
 import com.wingedsheep.gym.server.dto.StepBatchResult
@@ -57,7 +58,7 @@ class EnvController(
         summary = "Create a new env",
         description = """
             Reserves an `envId`, initialises a game per `EnvConfig`, and
-            returns the opening observation.
+            returns the opening observation plus the exact seed used.
 
             `players` must have at least two entries. Each player's `deck`
             is a discriminated union:
@@ -70,10 +71,12 @@ class EnvController(
               to generate a sealed deck on demand from a registered set.
 
             Defaults: `skipMulligans=true` (faster rollouts),
-            `startingPlayerIndex=null` (random), `perspectivePlayerIndex=0`.
-            Start with an explicit deck until you're
-            confident the set's basic-land variants are registered —
-            sealed requires variant registration.
+            `startingPlayerIndex=null` (random),
+            `perspectiveMode=FIXED_SEAT`, `perspectivePlayerIndex=0`.
+            Self-play trainers should set `perspectiveMode=AGENT_TO_ACT` so
+            each response belongs to the player who must make the next choice.
+            Start with an explicit deck until you're confident the set's
+            basic-land variants are registered — sealed requires variant registration.
         """,
         requestBody = io.swagger.v3.oas.annotations.parameters.RequestBody(
             required = true,
@@ -111,7 +114,9 @@ class EnvController(
   ],
   "skipMulligans": true,
   "startingPlayerIndex": 0,
-  "perspectivePlayerIndex": 0
+  "perspectiveMode": "AGENT_TO_ACT",
+  "perspectivePlayerIndex": 0,
+  "seed": 12345
 }
                         """
                     ),
@@ -141,7 +146,7 @@ class EnvController(
     @PostMapping
     fun create(@RequestBody config: EnvConfig): CreateEnvResponse {
         val created = multiEnvService.create(config)
-        return CreateEnvResponse(created.envId, created.observation.observation)
+        return CreateEnvResponse(created.envId, created.observation.observation, created.seed)
     }
 
     @Operation(
@@ -166,7 +171,7 @@ class EnvController(
     @PostMapping("/deckbuild")
     fun createDeckbuild(@RequestBody config: DeckbuildConfig): CreateEnvResponse {
         val created = multiEnvService.createDeckbuild(config)
-        return CreateEnvResponse(created.envId, created.observation.observation)
+        return CreateEnvResponse(created.envId, created.observation.observation, created.seed)
     }
 
     @Operation(summary = "List live env IDs")
@@ -175,14 +180,16 @@ class EnvController(
 
     @Operation(
         summary = "Reset an existing env",
-        description = "Keeps the same `envId` and reruns game initialisation with the supplied config."
+        description = "Keeps the same `envId`, reruns game initialisation, and returns the exact episode seed."
     )
     @PostMapping("/{id}/reset")
     fun reset(
         @PathVariable id: String,
         @RequestBody config: EnvConfig
-    ): Observation =
-        multiEnvService.reset(EnvId(id), config).observation
+    ): ResetEnvResponse {
+        val reset = multiEnvService.resetWithMetadata(EnvId(id), config)
+        return ResetEnvResponse(reset.observation.observation, reset.seed)
+    }
 
     @Operation(
         summary = "Dispose a batch of envs",

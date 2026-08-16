@@ -1,5 +1,6 @@
 package com.wingedsheep.gym.service
 
+import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 
@@ -33,10 +34,26 @@ data class EnvConfig(
     val startingPlayerIndex: Int? = null,
 
     /**
-     * Which player's information-set the default [com.wingedsheep.gym.contract.TrainingObservation]
-     * represents. Callers can still override per-request when observing.
+     * Seat used by [PerspectiveMode.FIXED_SEAT], and the deterministic fallback
+     * for terminal [PerspectiveMode.AGENT_TO_ACT] observations that have no actor.
      */
     val perspectivePlayerIndex: Int = 0,
+
+    /**
+     * How the information-set owner is selected. Existing clients retain the
+     * fixed-seat default; self-play clients should explicitly request
+     * [PerspectiveMode.AGENT_TO_ACT].
+     */
+    val perspectiveMode: PerspectiveMode = PerspectiveMode.FIXED_SEAT,
+
+    /** Runtime game rules. Commander setup is driven through [PlayerSpec.commanderCardName]. */
+    val format: Format = Format.Standard,
+
+    /**
+     * Deterministic game seed. `null` keeps live-play randomness, while the
+     * resolved seed is returned by [CreatedEnv.seed] for replayability.
+     */
+    val seed: Long? = null,
 
 ) {
     init {
@@ -45,6 +62,16 @@ data class EnvConfig(
             "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${players.size} players"
         }
     }
+}
+
+/** How a game observation chooses its perspective owner. */
+@Serializable
+enum class PerspectiveMode {
+    /** Always observe from [EnvConfig.perspectivePlayerIndex]. */
+    FIXED_SEAT,
+
+    /** Observe from the player who currently has priority or owns the pending decision. */
+    AGENT_TO_ACT,
 }
 
 /**
@@ -78,7 +105,9 @@ data class PlayerSpec(
     val name: String,
     val deck: DeckSpec,
     val startingLife: Int = 20,
-    val playerId: EntityId? = null
+    val playerId: EntityId? = null,
+    /** Commander card name for formats whose [Format.usesCommanders] flag is true. */
+    val commanderCardName: String? = null,
 )
 
 /** A single environment's `step()` input — batched into [com.wingedsheep.gym.service.MultiEnvService.stepBatch]. */

@@ -11,7 +11,6 @@ import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.deckbuild.DeckbuildEnvironment
 import com.wingedsheep.engine.registry.CardRegistry
-import com.wingedsheep.sdk.model.EntityId
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
 
@@ -55,17 +54,18 @@ class MultiEnvService(
      * is the opening state (post-mulligan if [EnvConfig.skipMulligans]).
      */
     fun create(config: EnvConfig): CreatedEnv {
-        val gameConfig = config.toGameConfig()
+        val resolved = config.toResolvedGameConfig()
         val env = GameEnvironment.create(cardRegistry)
-        env.reset(gameConfig)
+        env.reset(resolved.gameConfig)
         val gymEnv = GameGymEnv(
             environment = env,
             perspectivePlayerIndex = config.perspectivePlayerIndex,
-            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+            perspectiveMode = config.perspectiveMode,
         )
         val envId = EnvId.generate()
         envs[envId] = gymEnv
-        return CreatedEnv(envId, gymEnv.observe())
+        return CreatedEnv(envId, gymEnv.observe(), seed = resolved.seed)
     }
 
     /**
@@ -86,7 +86,22 @@ class MultiEnvService(
 
     /** Reset an existing game env while keeping the same [EnvId]. */
     fun reset(envId: EnvId, config: EnvConfig): ObservationResult =
-        requireGameEnv(envId).reset(config.toGameConfig())
+        resetWithMetadata(envId, config).observation
+
+    /**
+     * Reset an existing game env and return the exact seed resolved for the new
+     * episode. The HTTP transport uses this v2 contract so a trainer can persist
+     * replay metadata even when [EnvConfig.seed] was null.
+     */
+    fun resetWithMetadata(envId: EnvId, config: EnvConfig): ResetEnv {
+        val resolved = config.toResolvedGameConfig()
+        val observation = requireGameEnv(envId).reset(
+            gameConfig = resolved.gameConfig,
+            perspectiveMode = config.perspectiveMode,
+            perspectivePlayerIndex = config.perspectivePlayerIndex,
+        )
+        return ResetEnv(observation, seed = resolved.seed)
+    }
 
     /** Drop envs from the registry. Idempotent. */
     fun dispose(envIds: Collection<EnvId>) {
@@ -150,20 +165,33 @@ class MultiEnvService(
     // Internals
     // =========================================================================
 
-    private fun EnvConfig.toGameConfig(): GameConfig = GameConfig(
-        players = players.map { spec ->
-            PlayerConfig(
-                name = spec.name,
-                deck = deckResolver.resolve(spec.deck),
-                startingLife = spec.startingLife,
-                playerId = spec.playerId
-            )
-        },
-        startingHandSize = startingHandSize,
-        skipMulligans = skipMulligans,
-        useHandSmoother = useHandSmoother,
-        startingPlayerIndex = startingPlayerIndex
-    )
+    /**
+     * Resolve the entropy boundary before entering the engine so the exact seed
+     * can be returned to the trainer and persisted with the episode.
+     */
+    private fun EnvConfig.toResolvedGameConfig(): ResolvedGameConfig {
+        val resolvedSeed = seed ?: System.nanoTime()
+        return ResolvedGameConfig(
+            gameConfig = GameConfig(
+                players = players.map { spec ->
+                    PlayerConfig(
+                        name = spec.name,
+                        deck = deckResolver.resolve(spec.deck),
+                        startingLife = spec.startingLife,
+                        playerId = spec.playerId,
+                        commanderCardName = spec.commanderCardName,
+                    )
+                },
+                startingHandSize = startingHandSize,
+                skipMulligans = skipMulligans,
+                useHandSmoother = useHandSmoother,
+                startingPlayerIndex = startingPlayerIndex,
+                format = format,
+                seed = resolvedSeed,
+            ),
+            seed = resolvedSeed,
+        )
+    }
 
     private fun requireEnv(envId: EnvId): GymEnv =
         envs[envId] ?: throw NoSuchElementException("Unknown envId: $envId")
@@ -171,10 +199,23 @@ class MultiEnvService(
     private fun requireGameEnv(envId: EnvId): GameGymEnv =
         requireEnv(envId) as? GameGymEnv
             ?: throw IllegalStateException("Env $envId is not a game env; operation not supported")
+
+    private data class ResolvedGameConfig(
+        val gameConfig: GameConfig,
+        val seed: Long,
+    )
 }
 
 /** Result of [MultiEnvService.create] — the new env's ID plus its opening observation. */
 data class CreatedEnv(
     val envId: EnvId,
-    val observation: ObservationResult
+    val observation: ObservationResult,
+    /** Exact deterministic seed used for game envs; null for non-game envs. */
+    val seed: Long? = null,
+)
+
+/** Result of resetting an existing game environment. */
+data class ResetEnv(
+    val observation: ObservationResult,
+    val seed: Long,
 )

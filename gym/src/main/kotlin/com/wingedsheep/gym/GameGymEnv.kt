@@ -7,8 +7,10 @@ import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ResolvedAction
+import com.wingedsheep.gym.service.PerspectiveMode
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.SnapshotHandle
+import com.wingedsheep.sdk.model.EntityId
 
 /**
  * [GymEnv] adapter over a [GameEnvironment] — a game of Magic.
@@ -20,12 +22,19 @@ import com.wingedsheep.gym.service.SnapshotHandle
  */
 class GameGymEnv(
     val environment: GameEnvironment,
-    private val perspectivePlayerIndex: Int,
-    private val observationBuilder: ObservationBuilder
+    private var perspectivePlayerIndex: Int,
+    private val observationBuilder: ObservationBuilder,
+    private var perspectiveMode: PerspectiveMode = PerspectiveMode.FIXED_SEAT,
 ) : GymEnv {
 
     @Volatile
     private var registry: ActionRegistry = ActionRegistry.EMPTY
+
+    /**
+     * Last valid information-set owner. Used only when an agent-to-act env reaches
+     * a terminal state, where the engine no longer has an actor to select.
+     */
+    private var lastPerspectivePlayerId: EntityId? = null
 
     override val isTerminal: Boolean get() = environment.state.gameOver
 
@@ -36,16 +45,40 @@ class GameGymEnv(
         return build()
     }
 
-    override fun fork(): GymEnv =
-        GameGymEnv(environment.fork(), perspectivePlayerIndex, observationBuilder)
-            .also { it.build() }
+    override fun fork(): GymEnv {
+        val forked = GameGymEnv(
+            environment = environment.fork(),
+            perspectivePlayerIndex = perspectivePlayerIndex,
+            observationBuilder = observationBuilder,
+            perspectiveMode = perspectiveMode,
+        )
+        forked.lastPerspectivePlayerId = lastPerspectivePlayerId
+        forked.build()
+        return forked
+    }
 
     // --- game-only operations (used by MultiEnvService via cast) -------------
 
-    /** Re-initialise the underlying game in place. */
+    /** Re-initialise the underlying game in place, preserving perspective configuration. */
     fun reset(gameConfig: GameConfig): ObservationResult {
+        lastPerspectivePlayerId = null
         environment.reset(gameConfig)
         return build()
+    }
+
+    /**
+     * Re-initialise the game and atomically replace its perspective contract.
+     * This prevents an env reused by a trainer from retaining stale fixed-seat
+     * settings from its previous episode.
+     */
+    fun reset(
+        gameConfig: GameConfig,
+        perspectiveMode: PerspectiveMode,
+        perspectivePlayerIndex: Int,
+    ): ObservationResult {
+        this.perspectiveMode = perspectiveMode
+        this.perspectivePlayerIndex = perspectivePlayerIndex
+        return reset(gameConfig)
     }
 
     /** Submit a raw `DecisionResponse` while paused on a complex decision. */
@@ -75,13 +108,29 @@ class GameGymEnv(
     // --- internals -----------------------------------------------------------
 
     private fun build(): ObservationResult {
-        val perspective = environment.playerIds.getOrNull(perspectivePlayerIndex)
-            ?: throw IllegalStateException("Env has no player at index $perspectivePlayerIndex")
+        val perspective = resolvePerspectivePlayer()
         val result = observationBuilder.build(
             environment.state, perspective, environment.legalActions()
         )
         registry = result.registry
         return result
+    }
+
+    private fun resolvePerspectivePlayer(): EntityId {
+        val fixedSeat = environment.playerIds.getOrNull(perspectivePlayerIndex)
+            ?: throw IllegalStateException("Env has no player at index $perspectivePlayerIndex")
+
+        val perspective = when (perspectiveMode) {
+            PerspectiveMode.FIXED_SEAT -> fixedSeat
+            PerspectiveMode.AGENT_TO_ACT ->
+                environment.agentToAct ?: lastPerspectivePlayerId ?: fixedSeat
+        }
+
+        check(perspective in environment.playerIds) {
+            "Perspective player $perspective is not part of this environment"
+        }
+        lastPerspectivePlayerId = perspective
+        return perspective
     }
 
     private fun executeResolved(resolved: ResolvedAction, actionId: Int) {

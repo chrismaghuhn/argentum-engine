@@ -14,7 +14,17 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class CreateEnvResponse(
     val envId: EnvId,
-    val observation: Observation
+    val observation: Observation,
+    /** Exact seed used to initialise a game env; null for deckbuild envs. */
+    val seed: Long? = null,
+)
+
+/** Response for `POST /envs/{id}/reset` under the v2 gym contract. */
+@Serializable
+data class ResetEnvResponse(
+    val observation: Observation,
+    /** Exact seed used to initialise the replacement episode. */
+    val seed: Long,
 )
 
 /** Body for `POST /envs/{id}/step`. */
