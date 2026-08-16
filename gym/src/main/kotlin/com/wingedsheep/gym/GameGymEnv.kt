@@ -14,16 +14,14 @@ import com.wingedsheep.gym.service.SnapshotHandle
  * [GymEnv] adapter over a [GameEnvironment] — a game of Magic.
  *
  * Holds the per-env bookkeeping that used to live in `MultiEnvService.EnvEntry`
- * (perspective, default reveal flag, the live [ActionRegistry] from the last
- * observation) so the service layer can treat every env type the same. The
- * underlying [GameEnvironment] is left untouched, since the trainer SPI drives
- * it directly.
+ * (perspective, the live [ActionRegistry] from the last observation) so the
+ * service layer can treat every env type the same. The underlying
+ * [GameEnvironment] is left untouched, since the trainer SPI drives it directly.
  */
 class GameGymEnv(
     val environment: GameEnvironment,
     private val perspectivePlayerIndex: Int,
-    private val defaultRevealAll: Boolean,
-    private val observationBuilder: ObservationBuilder = ObservationBuilder()
+    private val observationBuilder: ObservationBuilder
 ) : GymEnv {
 
     @Volatile
@@ -31,24 +29,23 @@ class GameGymEnv(
 
     override val isTerminal: Boolean get() = environment.state.gameOver
 
-    override fun observe(revealAll: Boolean?): ObservationResult =
-        build(revealAll ?: defaultRevealAll)
+    override fun observe(): ObservationResult = build()
 
     override fun step(actionId: Int): ObservationResult {
         executeResolved(registry.resolve(actionId), actionId)
-        return build(defaultRevealAll)
+        return build()
     }
 
     override fun fork(): GymEnv =
-        GameGymEnv(environment.fork(), perspectivePlayerIndex, defaultRevealAll, observationBuilder)
-            .also { it.build(defaultRevealAll) }
+        GameGymEnv(environment.fork(), perspectivePlayerIndex, observationBuilder)
+            .also { it.build() }
 
     // --- game-only operations (used by MultiEnvService via cast) -------------
 
     /** Re-initialise the underlying game in place. */
     fun reset(gameConfig: GameConfig): ObservationResult {
         environment.reset(gameConfig)
-        return build(defaultRevealAll)
+        return build()
     }
 
     /** Submit a raw `DecisionResponse` while paused on a complex decision. */
@@ -59,7 +56,7 @@ class GameGymEnv(
             "Decision ID mismatch: response=${response.decisionId}, pending=${pending.id}"
         }
         environment.step(SubmitDecision(pending.playerId, response))
-        return build(defaultRevealAll)
+        return build()
     }
 
     fun snapshot(codec: SnapshotCodec): SnapshotHandle =
@@ -68,16 +65,16 @@ class GameGymEnv(
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
         val snap = codec.load(handle)
         environment.restore(snap.state, snap.playerIds, snap.stepCount)
-        return build(defaultRevealAll)
+        return build()
     }
 
     // --- internals -----------------------------------------------------------
 
-    private fun build(revealAll: Boolean): ObservationResult {
+    private fun build(): ObservationResult {
         val perspective = environment.playerIds.getOrNull(perspectivePlayerIndex)
             ?: throw IllegalStateException("Env has no player at index $perspectivePlayerIndex")
         val result = observationBuilder.build(
-            environment.state, perspective, environment.legalActions(), revealAll
+            environment.state, perspective, environment.legalActions()
         )
         registry = result.registry
         return result

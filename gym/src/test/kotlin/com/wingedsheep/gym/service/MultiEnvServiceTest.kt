@@ -13,6 +13,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.booleans.shouldBeTrue
 import io.kotest.matchers.collections.shouldContainAll
+import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.ints.shouldBeGreaterThan
@@ -235,11 +236,10 @@ class MultiEnvServiceTest : FunSpec({
         val handle = svc.snapshot(envId)
         val openingDigest = opening.observation.stateDigest
 
-        // Advance a few steps so the restore has something to undo.
-        repeat(3) {
-            val actionId = svc.observe(envId).observation.legalActions.first().actionId
-            svc.step(StepRequest(envId, actionId))
-        }
+        // Advance one actor-owned step. A fixed perspective receives no
+        // actions after priority moves to the other player.
+        val actionId = svc.observe(envId).observation.legalActions.first().actionId
+        svc.step(StepRequest(envId, actionId))
         svc.observe(envId).observation.stateDigest shouldNotBe openingDigest
 
         val restored = svc.restore(envId, handle)
@@ -322,7 +322,7 @@ class MultiEnvServiceTest : FunSpec({
     // Perspective / masking wiring
     // =========================================================================
 
-    test("opening observation uses the configured perspective and reveal flag") {
+    test("opening observation uses the configured perspective and stays masked") {
         val svc = MultiEnvService(registry())
         val created = svc.create(twoPlayerConfig(perspective = 1))
 
@@ -336,13 +336,13 @@ class MultiEnvServiceTest : FunSpec({
             .first { it.ownerId == opponent.id && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND }
         opponentHand.hidden.shouldBeTrue()
 
-        // Now observe with revealAll=true — opponent hand becomes visible.
-        val revealed = svc.observe(created.envId, revealAll = true).observation.asGame
-        val openedHand = revealed.zones.first {
+        // Repeated observations remain masked; there is no production bypass.
+        val observedAgain = svc.observe(created.envId).observation.asGame
+        val openedHand = observedAgain.zones.first {
             it.ownerId == opponent.id && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND
         }
-        openedHand.hidden.shouldBeFalse()
-        openedHand.cards.size shouldBe openedHand.size
+        openedHand.hidden.shouldBeTrue()
+        openedHand.cards.shouldBeEmpty()
     }
 
     // =========================================================================

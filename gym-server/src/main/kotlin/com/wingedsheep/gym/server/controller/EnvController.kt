@@ -70,8 +70,8 @@ class EnvController(
               to generate a sealed deck on demand from a registered set.
 
             Defaults: `skipMulligans=true` (faster rollouts),
-            `startingPlayerIndex=null` (random), `perspectivePlayerIndex=0`,
-            `revealAll=false`. Start with an explicit deck until you're
+            `startingPlayerIndex=null` (random), `perspectivePlayerIndex=0`.
+            Start with an explicit deck until you're
             confident the set's basic-land variants are registered —
             sealed requires variant registration.
         """,
@@ -111,8 +111,7 @@ class EnvController(
   ],
   "skipMulligans": true,
   "startingPlayerIndex": 0,
-  "perspectivePlayerIndex": 0,
-  "revealAll": false
+  "perspectivePlayerIndex": 0
 }
                         """
                     ),
@@ -132,33 +131,6 @@ class EnvController(
     }
   ],
   "skipMulligans": true
-}
-                        """
-                    ),
-                    ExampleObject(
-                        name = "Debug — reveal all, hand-smoothed",
-                        summary = "Opponent hand + libraries visible and MTGA-style hand smoothing on. Never use for real self-play.",
-                        value = """
-{
-  "players": [
-    {
-      "name": "Alice",
-      "deck": {
-        "type": "Explicit",
-        "cards": { "Mountain": 17, "Raging Goblin": 3 }
-      }
-    },
-    {
-      "name": "Bob",
-      "deck": {
-        "type": "Explicit",
-        "cards": { "Mountain": 17, "Raging Goblin": 3 }
-      }
-    }
-  ],
-  "skipMulligans": true,
-  "useHandSmoother": true,
-  "revealAll": true
 }
                         """
                     )
@@ -228,14 +200,11 @@ class EnvController(
 
     @Operation(
         summary = "Observe an env without advancing",
-        description = "Pass `revealAll=true` only for debug tooling — never for real self-play, since it leaks opponent hand and libraries."
+        description = "Returns the perspective-safe observation without advancing the environment."
     )
     @GetMapping("/{id}")
-    fun observe(
-        @PathVariable id: String,
-        @RequestParam(required = false) revealAll: Boolean?
-    ): Observation =
-        multiEnvService.observe(EnvId(id), revealAll).observation
+    fun observe(@PathVariable id: String): Observation =
+        multiEnvService.observe(EnvId(id)).observation
 
     // =========================================================================
     // Stepping
