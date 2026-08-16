@@ -294,6 +294,50 @@ class ReplayFingerprintV3Test : FunSpec({
             ReplayFingerprint.of(state("A0", "ability_987", reverseEffects = true), 3)
     }
 
+    test("v3 ignores unordered tracking insertion order when generated ability shapes tie") {
+        fun state(firstId: String, secondId: String, reverseTrackingOrder: Boolean) = GameState(
+            entities = mapOf(
+                EntityId("e1") to ComponentContainer.of(
+                    AbilityActivatedThisTurnComponent(
+                        abilityIds = if (reverseTrackingOrder) {
+                            linkedSetOf(AbilityId(secondId), AbilityId(firstId))
+                        } else {
+                            linkedSetOf(AbilityId(firstId), AbilityId(secondId))
+                        },
+                        activationCounts = if (reverseTrackingOrder) {
+                            linkedMapOf(AbilityId(secondId) to 1, AbilityId(firstId) to 1)
+                        } else {
+                            linkedMapOf(AbilityId(firstId) to 1, AbilityId(secondId) to 1)
+                        },
+                    ),
+                ),
+            ),
+            grantedActivatedAbilities = listOf(
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(firstId),
+                        cost = Costs.Free,
+                        effect = Effects.DrawCards(1),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+                GrantedActivatedAbility(
+                    entityId = EntityId("e1"),
+                    ability = ActivatedAbility(
+                        id = AbilityId(secondId),
+                        cost = Costs.Free,
+                        effect = Effects.GainLife(3),
+                    ),
+                    duration = Duration.Permanent,
+                ),
+            ),
+        )
+
+        ReplayFingerprint.of(state("ability_401", "ability_402", reverseTrackingOrder = false), 3) shouldBe
+            ReplayFingerprint.of(state("ability_901", "ability_902", reverseTrackingOrder = true), 3)
+    }
+
     test("v3 aliases nested triggered, stack, and effect ability references") {
         fun stateWithHandle(handle: String) = GameState(
             entities = mapOf(

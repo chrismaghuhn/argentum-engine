@@ -114,7 +114,6 @@ internal object TransitionSemanticGameStateCanonicalizer {
         val rawId: String,
         val signature: String,
         val specificity: Int,
-        val encounter: Int,
     )
 
     private data class AbilityAliasPlan(
@@ -122,11 +121,17 @@ internal object TransitionSemanticGameStateCanonicalizer {
         val reservedRawIds: Set<String>,
     )
 
+    private data class UnorderedMember(
+        val index: Int,
+        val pathToken: String,
+    )
+
     /**
      * Assign aliases before canonicalization so an unordered collection cannot decide an alias
-     * merely by its source iteration order. The scan records normalized paths (map/set ranks are
-     * based on an ID-free shape) for every occurrence, then assigns aliases by those semantic
-     * occurrence signatures. Repeated references remain grouped by raw handle.
+     * merely by its source iteration order. The scan records normalized paths (unique map/set
+     * shapes receive ranks; tied shapes share one path token) for every occurrence, then assigns
+     * aliases by those semantic occurrence signatures. Repeated references remain grouped by raw
+     * handle.
      */
     private fun collectAbilityAliases(
         element: JsonElement,
@@ -146,7 +151,6 @@ internal object TransitionSemanticGameStateCanonicalizer {
                             .sortedWith(compareByDescending<AbilityOccurrence> { it.specificity }.thenBy { it.signature })
                             .joinToString("\u0000") { "${it.specificity}:${it.signature}" }
                     },
-                    { entry -> entry.value.minOf { it.encounter } },
                 )
             )
             .map { (rawId, _) -> rawId }
@@ -169,25 +173,32 @@ internal object TransitionSemanticGameStateCanonicalizer {
                 val decisionTree = path.contains("pendingDecision") || path.contains("continuationStack")
                 val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
                 val mapDescriptor = concreteDescriptor?.takeIf { it.kind == StructureKind.MAP }
-                val entries = if (mapDescriptor != null) {
+                val entries = element.entries.toList()
+                val orderedEntries = if (mapDescriptor != null) {
                     val keyDescriptor = mapDescriptor.getElementDescriptor(0)
                     val valueDescriptor = mapDescriptor.getElementDescriptor(1)
-                    element.entries.sortedBy { (rawKey, value) ->
-                        render(
-                            JsonArray(
-                                listOf(
-                                    shapeMapKey(rawKey, keyDescriptor),
-                                    shape(value, path + "map-value", valueDescriptor),
-                                )
+                    unorderedMembers(
+                        size = entries.size,
+                        tokenPrefix = "map",
+                    ) { index ->
+                        val (rawKey, value) = entries[index]
+                        JsonArray(
+                            listOf(
+                                shapeMapKey(rawKey, keyDescriptor),
+                                shape(value, path + "map-value", valueDescriptor),
                             )
                         )
                     }
                 } else {
-                    element.entries.sortedBy { it.key }
+                    entries.indices
+                        .sortedBy { entries[it].key }
+                        .map { index -> UnorderedMember(index, entries[index].key) }
                 }
 
-                entries.forEachIndexed { index, (key, value) ->
-                    if (decisionTree && isPresentationOnlyField(key, concreteDescriptor)) return@forEachIndexed
+                orderedEntries.forEach { member ->
+                    val index = member.index
+                    val (key, value) = entries[index]
+                    if (decisionTree && isPresentationOnlyField(key, concreteDescriptor)) return@forEach
                     if (mapDescriptor != null) {
                         val keyDescriptor = mapDescriptor.getElementDescriptor(0)
                         if (keyDescriptor.isAbilityIdDescriptor()) {
@@ -195,18 +206,17 @@ internal object TransitionSemanticGameStateCanonicalizer {
                             if (AbilityIdAliasTable.isGenerated(key)) {
                                 occurrences += AbilityOccurrence(
                                     rawId = key,
-                                    signature = (path + "map[$index].key" + keyDescriptor.serialName).joinToString("/"),
+                                    signature = (path + member.pathToken + ".key" + keyDescriptor.serialName).joinToString("/"),
                                     // A map key carries the associated map value's semantic
                                     // distinction; let it outrank a bare Set occurrence when the same
                                     // handle is referenced by both structures.
                                     specificity = path.size + 100,
-                                    encounter = occurrences.size,
                                 )
                             }
                         }
                         collectAbilityOccurrences(
                             element = value,
-                            path = path + "map[$index].value",
+                            path = path + member.pathToken + ".value",
                             descriptor = mapDescriptor.getElementDescriptor(1),
                             occurrences = occurrences,
                             rawIds = rawIds,
@@ -227,27 +237,29 @@ internal object TransitionSemanticGameStateCanonicalizer {
                 if (descriptor?.kind == StructureKind.MAP) {
                     val keyDescriptor = descriptor.getElementDescriptor(0)
                     val valueDescriptor = descriptor.getElementDescriptor(1)
-                    val pairIndexes = (0 until element.size / 2).sortedBy { index ->
-                        render(
-                            JsonArray(
-                                listOf(
-                                    shape(element[index * 2], path + "map-key", keyDescriptor),
-                                    shape(element[index * 2 + 1], path + "map-value", valueDescriptor),
-                                )
+                    val pairIndexes = unorderedMembers(
+                        size = element.size / 2,
+                        tokenPrefix = "map",
+                    ) { index ->
+                        JsonArray(
+                            listOf(
+                                shape(element[index * 2], path + "map-key", keyDescriptor),
+                                shape(element[index * 2 + 1], path + "map-value", valueDescriptor),
                             )
                         )
                     }
-                    pairIndexes.forEachIndexed { rank, index ->
+                    pairIndexes.forEach { member ->
+                        val index = member.index
                         collectAbilityOccurrences(
                             element = element[index * 2],
-                            path = path + "map[$rank].key",
+                            path = path + member.pathToken + ".key",
                             descriptor = keyDescriptor,
                             occurrences = occurrences,
                             rawIds = rawIds,
                         )
                         collectAbilityOccurrences(
                             element = element[index * 2 + 1],
-                            path = path + "map[$rank].value",
+                            path = path + member.pathToken + ".value",
                             descriptor = valueDescriptor,
                             occurrences = occurrences,
                             rawIds = rawIds,
@@ -258,16 +270,17 @@ internal object TransitionSemanticGameStateCanonicalizer {
 
                 val elementDescriptor = descriptor?.getElementDescriptorOrNull()
                 val indexes = if (descriptor.isUnorderedSetDescriptor()) {
-                    element.indices.sortedBy { index ->
-                        render(shape(element[index], path + "set-value", elementDescriptor))
-                    }
+                    unorderedMembers(
+                        size = element.size,
+                        tokenPrefix = "set",
+                    ) { index -> shape(element[index], path + "set-value", elementDescriptor) }
                 } else {
-                    element.indices
+                    element.indices.map { index -> UnorderedMember(index, "[$index]") }
                 }
-                indexes.forEachIndexed { rank, index ->
+                indexes.forEach { member ->
                     collectAbilityOccurrences(
-                        element = element[index],
-                        path = path + "[$rank]",
+                        element = element[member.index],
+                        path = path + member.pathToken,
                         descriptor = elementDescriptor,
                         occurrences = occurrences,
                         rawIds = rawIds,
@@ -288,11 +301,36 @@ internal object TransitionSemanticGameStateCanonicalizer {
                         rawId = element.content,
                         signature = (path + (descriptor?.serialName ?: "unknown")).joinToString("/"),
                         specificity = path.size,
-                        encounter = occurrences.size,
                     )
                 }
             }
         }
+    }
+
+    /**
+     * Sort unordered members by their raw-ID-free shape. Members whose shapes tie share one path
+     * token instead of receiving a source-order rank; they are semantically interchangeable in
+     * that collection, so source insertion order must not influence the alias plan.
+     */
+    private fun unorderedMembers(
+        size: Int,
+        tokenPrefix: String,
+        shapeAt: (Int) -> JsonElement,
+    ): List<UnorderedMember> {
+        val shaped = (0 until size)
+            .map { index -> index to render(shapeAt(index)) }
+            .sortedBy { (_, shapeKey) -> shapeKey }
+        return shaped
+            .groupBy { (_, shapeKey) -> shapeKey }
+            .entries
+            .flatMapIndexed { groupIndex, (_, members) ->
+                val pathToken = if (members.size == 1) {
+                    "$tokenPrefix[$groupIndex]"
+                } else {
+                    "$tokenPrefix[tie-$groupIndex]"
+                }
+                members.map { (index, _) -> UnorderedMember(index, pathToken) }
+            }
     }
 
     /** Raw-ID-free shape used only to order unordered collection members during alias discovery. */
