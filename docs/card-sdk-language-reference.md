@@ -5188,6 +5188,11 @@ Dominant back faces that "stay" instead self-exile on their final chapter, dodgi
     control on your next attack). With `fireOnce = false` (default) it fires on every matching event
     until expiry (double-strike combat damage). One-shot consumption happens when the trigger goes
     on the stack (`TriggerProcessor`), so a second matching event the same turn won't re-fire it.
+    For `YouAttackPlayerEvent`, a single declaration can contain multiple simultaneous matching
+    player occurrences. That bounded case currently fails closed when `fireOnce = true`: the engine
+    emits no trigger rather than choosing a player by turn order or collection order. Exact CR 603.7b
+    controller choice for those simultaneous occurrences is a separate generic decision follow-up;
+    do not treat this combination as fully rules-complete yet.
   - `expiry` — when the resident delayed trigger is removed. `DelayedTriggerExpiry.EndOfTurn`
     (default) drops it in the end-of-turn cleanup ("this turn" riders).
     `DelayedTriggerExpiry.UntilControllersNextTurn` is the delayed-trigger analogue of
