@@ -72,8 +72,9 @@ data class TrainingObservation(
 
     /**
      * Per-zone entity views. A `(ownerId, zoneType)` pair appears at most once.
-     * Hidden zones (opponent hand, libraries) expose [ZoneView.hidden] = true
-     * and [ZoneView.cards] is empty (only [ZoneView.size] is populated).
+     * Hidden members are omitted from [ZoneView.cards], while [ZoneView.size]
+     * always reports the total number of entities in the zone. A zone may be
+     * mixed-visibility (for example, face-down exile).
      */
     val zones: List<ZoneView>,
 
@@ -131,8 +132,9 @@ data class ManaPoolView(
 /**
  * A zone's contents from [TrainingObservation.perspectivePlayerId]'s point of view.
  *
- * When [hidden] is true (opponent's hand, any library), [cards] is empty and
- * only [size] is meaningful. This mirrors real-MTG information hiding.
+ * [size] is the total zone size. [cards] contains only cards whose identity or
+ * public projection is visible to the perspective; fully hidden cards do not
+ * contribute entity IDs to the observation.
  */
 @Serializable
 data class ZoneView(
@@ -209,6 +211,8 @@ data class EntityFeatures(
 data class StackItemView(
     val entityId: EntityId,
     val controllerId: EntityId?,
+    /** Public source object for an ability, or the spell object itself for a spell. */
+    val sourceEntityId: EntityId? = null,
     val name: String,
     val kind: StackItemKind,
     /** Printed oracle text of the card backing this stack item — empty for stackless triggers. */
@@ -260,7 +264,7 @@ data class LegalActionView(
  */
 @Serializable
 data class PendingDecisionView(
-    val decisionId: String,
+    val decisionId: String?,
     val kind: PendingDecisionKind,
     val playerId: EntityId,
     val prompt: String,
@@ -276,6 +280,7 @@ data class PendingDecisionView(
 
 @Serializable
 enum class PendingDecisionKind {
+    GENERIC,
     CHOOSE_TARGETS,
     SELECT_CARDS,
     YES_NO,

@@ -38,11 +38,6 @@ data class EnvConfig(
      */
     val perspectivePlayerIndex: Int = 0,
 
-    /**
-     * If `true`, opponent hand and libraries are revealed — debug only,
-     * must never be enabled in production self-play.
-     */
-    val revealAll: Boolean = false
 ) {
     init {
         require(players.size >= 2) { "Need at least 2 players" }

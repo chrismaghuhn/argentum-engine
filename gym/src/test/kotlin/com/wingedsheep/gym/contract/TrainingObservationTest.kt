@@ -62,8 +62,8 @@ class TrainingObservationTest : FunSpec({
         obs.stateDigest shouldMatch Regex("[0-9a-f]{64}")
         obs.legalActions.shouldNotBeEmpty()
 
-        // Hand + library + graveyard + exile + battlefield for each player.
-        obs.zones.size shouldBe 2 * 5
+        // Hand + library + graveyard + exile + battlefield + command for each player.
+        obs.zones.size shouldBe 2 * 6
 
         val encoded = json.encodeToString(TrainingObservation.serializer(), obs)
         val decoded = json.decodeFromString(TrainingObservation.serializer(), encoded)
@@ -87,7 +87,7 @@ class TrainingObservationTest : FunSpec({
         env.stepCount shouldBeGreaterThan 0
     }
 
-    test("opponent hand is hidden by default, visible when revealAll=true") {
+    test("opponent hand and every library stay masked") {
         val env = newEnv()
         val me = env.playerIds[0]
         val opponent = env.playerIds[1]
@@ -105,11 +105,6 @@ class TrainingObservationTest : FunSpec({
         // Every library is hidden regardless of perspective.
         masked.zones.filter { it.zoneType == Zone.LIBRARY }.forEach { it.hidden.shouldBeTrue() }
 
-        val revealed = ObservationBuilder().build(env.state, me, env.legalActions(), revealAll = true)
-            .observation as TrainingObservation
-        val theirHandRevealed = revealed.zones.single { it.ownerId == opponent && it.zoneType == Zone.HAND }
-        theirHandRevealed.hidden.shouldBeFalse()
-        theirHandRevealed.cards.size shouldBe theirHandRevealed.size
     }
 
     test("oracle text is serialized for cards in visible zones") {

@@ -29,6 +29,20 @@ import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.BottomCards
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CrewVehicle
+import com.wingedsheep.engine.core.CycleCard
+import com.wingedsheep.engine.core.ForetellCard
+import com.wingedsheep.engine.core.PlotCard
+import com.wingedsheep.engine.core.PlayLand
+import com.wingedsheep.engine.core.SaddleMount
+import com.wingedsheep.engine.core.SuspendCardFromHand
+import com.wingedsheep.engine.core.TurnFaceUp
+import com.wingedsheep.engine.core.TypecycleCard
+import com.wingedsheep.engine.core.UnlockRoomDoor
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -40,11 +54,19 @@ import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComp
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
+import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
+import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 
@@ -53,10 +75,9 @@ import com.wingedsheep.sdk.model.EntityId
  *
  * ## Information hiding
  *
- * By default, opponent hand and everyone's library are hidden
- * ([ZoneView.hidden] = true, [ZoneView.cards] empty). Set [revealAll] to
- * `true` to disable masking — only appropriate for debug scripts; never
- * for real self-play training.
+ * Opponent hand and everyone's library are always perspective-masked
+ * ([ZoneView.hidden] = true, [ZoneView.cards] empty when no individual card is
+ * visible). There is no production bypass for this boundary.
  *
  * ## Projected vs. base state
  *
@@ -67,24 +88,29 @@ import com.wingedsheep.sdk.model.EntityId
  * zones — see `GameState.getBattlefield`).
  */
 class ObservationBuilder(
-    private val schemaHash: String = SchemaHash.CURRENT
+    private val schemaHash: String = SchemaHash.CURRENT,
+    cardRegistry: CardRegistry = CardRegistry()
 ) {
+    private val visibility = Visibility(cardRegistry)
+
     fun build(
         state: GameState,
         perspectivePlayerId: EntityId,
-        legalActions: List<LegalAction>,
-        revealAll: Boolean = false
+        legalActions: List<LegalAction>
     ): ObservationResult {
-        val projected = state.projectedState
-
         val players = state.turnOrder.map { buildPlayerView(state, it, perspectivePlayerId) }
 
-        val zones = buildZones(state, perspectivePlayerId, revealAll)
+        val zones = buildZones(state, perspectivePlayerId)
 
-        val stack = state.stack.map { entityId -> buildStackItem(state, entityId) }
+        val agentToAct = state.pendingDecision?.playerId ?: state.priorityPlayerId
+        val mayReceiveActions = !state.gameOver && perspectivePlayerId == agentToAct
+
+        val stack = state.stack.map { entityId ->
+            buildStackItem(state, entityId, perspectivePlayerId)
+        }
 
         val pendingDecisionAndRegistry = state.pendingDecision
-            ?.let { buildPendingDecision(it) }
+            ?.let { buildPendingDecision(it, mayReceiveActions) }
         val pendingDecisionView = pendingDecisionAndRegistry?.first
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
 
@@ -92,7 +118,10 @@ class ObservationBuilder(
         // engine's `legalActions` is empty — we use the decision options instead.
         val legalActionViews: List<LegalActionView>
         val actionRegistry: ActionRegistry
-        if (state.pendingDecision != null) {
+        if (!mayReceiveActions) {
+            legalActionViews = emptyList()
+            actionRegistry = ActionRegistry.EMPTY
+        } else if (state.pendingDecision != null) {
             val responses = decisionRegistry.decisionResponses.map { it.second }
             legalActionViews = buildDecisionOptionViews(state.pendingDecision!!, responses)
             actionRegistry = decisionRegistry
@@ -104,7 +133,7 @@ class ObservationBuilder(
         val obs = TrainingObservation(
             schemaHash = schemaHash,
             perspectivePlayerId = perspectivePlayerId,
-            agentToAct = state.pendingDecision?.playerId ?: state.priorityPlayerId,
+            agentToAct = agentToAct,
             turnNumber = state.turnNumber,
             phase = state.phase,
             step = state.step,
@@ -169,25 +198,35 @@ class ObservationBuilder(
 
     private fun buildZones(
         state: GameState,
-        perspectivePlayerId: EntityId,
-        revealAll: Boolean
+        perspectivePlayerId: EntityId
     ): List<ZoneView> {
         // Emit a view for every (player, zone) in turn order so trainers see a
         // consistent shape regardless of whether a zone happens to be empty.
         val perPlayerZones = listOf(
-            Zone.HAND, Zone.LIBRARY, Zone.GRAVEYARD, Zone.EXILE, Zone.BATTLEFIELD
+            Zone.HAND,
+            Zone.LIBRARY,
+            Zone.GRAVEYARD,
+            Zone.EXILE,
+            Zone.BATTLEFIELD,
+            Zone.COMMAND
         )
         val views = mutableListOf<ZoneView>()
         for (playerId in state.turnOrder) {
             for (zone in perPlayerZones) {
                 val key = ZoneKey(playerId, zone)
                 val ids = state.getZone(key)
-                val hidden = !revealAll && isHiddenFrom(zone, playerId, perspectivePlayerId)
-                val cards = if (hidden) emptyList() else ids.map { buildEntityFeatures(state, it, zone) }
+                val cards = ids.mapNotNull { entityId ->
+                    when (cardVisibility(state, key, entityId, perspectivePlayerId, zone)) {
+                        CardVisibility.HIDDEN -> null
+                        CardVisibility.VISIBLE_IDENTITY -> buildEntityFeatures(state, entityId, zone)
+                        CardVisibility.PUBLIC_FACE_DOWN_ONLY ->
+                            buildEntityFeatures(state, entityId, zone, maskFaceDownIdentity = true)
+                    }
+                }
                 views += ZoneView(
                     ownerId = playerId,
                     zoneType = zone,
-                    hidden = hidden,
+                    hidden = cards.size != ids.size,
                     size = ids.size,
                     cards = cards
                 )
@@ -196,10 +235,39 @@ class ObservationBuilder(
         return views
     }
 
-    private fun isHiddenFrom(zone: Zone, owner: EntityId, perspective: EntityId): Boolean = when (zone) {
-        Zone.LIBRARY -> true
-        Zone.HAND -> owner != perspective
-        else -> false
+    private enum class CardVisibility {
+        HIDDEN,
+        VISIBLE_IDENTITY,
+        PUBLIC_FACE_DOWN_ONLY
+    }
+
+    private fun cardVisibility(
+        state: GameState,
+        key: ZoneKey,
+        entityId: EntityId,
+        perspective: EntityId,
+        zone: Zone
+    ): CardVisibility {
+        if (zone == Zone.LIBRARY) return CardVisibility.HIDDEN
+        if (!visibility.isZoneVisibleTo(state, key, perspective)) return CardVisibility.HIDDEN
+
+        val container = state.getEntity(entityId) ?: return CardVisibility.HIDDEN
+        if (!container.has<FaceDownComponent>()) return CardVisibility.VISIBLE_IDENTITY
+        if (visibility.isCardRevealedTo(state, entityId, perspective)) {
+            return CardVisibility.VISIBLE_IDENTITY
+        }
+
+        val controller = state.projectedState.getController(entityId)
+            ?: container.get<ControllerComponent>()?.playerId
+        if (zone == Zone.BATTLEFIELD &&
+            controller == perspective &&
+            visibility.hasLookAtFaceDownCreatures(state, perspective)
+        ) {
+            return CardVisibility.VISIBLE_IDENTITY
+        }
+
+        if (zone == Zone.EXILE) return CardVisibility.HIDDEN
+        return CardVisibility.PUBLIC_FACE_DOWN_ONLY
     }
 
     // =========================================================================
@@ -209,7 +277,8 @@ class ObservationBuilder(
     private fun buildEntityFeatures(
         state: GameState,
         entityId: EntityId,
-        zone: Zone
+        zone: Zone,
+        maskFaceDownIdentity: Boolean = false
     ): EntityFeatures {
         val container = state.getEntity(entityId) ?: ComponentContainer.EMPTY
         val card = container.get<CardComponent>()
@@ -217,44 +286,64 @@ class ObservationBuilder(
         val pv = projected.getProjectedValues(entityId)
 
         val onBattlefield = zone == Zone.BATTLEFIELD
+        val publicFaceDown = maskFaceDownIdentity && container.has<FaceDownComponent>()
 
         val types: Set<String> = when {
+            publicFaceDown && onBattlefield -> pv?.types?.toSet() ?: setOf("CREATURE")
+            publicFaceDown -> emptySet()
             pv != null -> pv.types.toSet()
             card != null -> card.typeLine.cardTypes.mapTo(mutableSetOf()) { it.name }
             else -> emptySet()
         }
         val subtypes: Set<String> = when {
+            publicFaceDown -> if (onBattlefield) pv?.subtypes?.toSet() ?: emptySet() else emptySet()
             pv != null -> pv.subtypes.toSet()
             card != null -> card.typeLine.subtypes.mapTo(mutableSetOf()) { it.value }
             else -> emptySet()
         }
         val colors: Set<String> = when {
+            publicFaceDown -> if (onBattlefield) pv?.colors?.toSet() ?: emptySet() else emptySet()
             pv != null -> pv.colors.toSet()
             card != null -> card.colors.mapTo(mutableSetOf()) { it.name }
             else -> emptySet()
         }
         val keywords: Set<String> = when {
+            publicFaceDown -> if (onBattlefield) pv?.keywords?.toSet() ?: emptySet() else emptySet()
             pv != null -> pv.keywords.toSet()
             card != null -> card.baseKeywords.mapTo(mutableSetOf()) { it.name }
             else -> emptySet()
         }
 
+        val sortedTypes = types.sorted().toCollection(LinkedHashSet())
+        val sortedSubtypes = subtypes.sorted().toCollection(LinkedHashSet())
+        val sortedColors = colors.sorted().toCollection(LinkedHashSet())
+        val sortedKeywords = keywords.sorted().toCollection(LinkedHashSet())
+        val ownerId = container.get<OwnerComponent>()?.playerId ?: card?.ownerId
+
         return EntityFeatures(
             entityId = entityId,
-            cardDefinitionId = card?.cardDefinitionId,
-            name = card?.name ?: "",
+            cardDefinitionId = if (publicFaceDown) null else card?.cardDefinitionId,
+            name = if (publicFaceDown) {
+                if (onBattlefield) "Face-down permanent" else "Face-down card"
+            } else {
+                card?.name ?: ""
+            },
             zone = zone,
-            ownerId = container.get<OwnerComponent>()?.playerId ?: card?.ownerId,
+            ownerId = ownerId,
             controllerId = if (onBattlefield) projected.getController(entityId) else null,
-            types = types,
-            subtypes = subtypes,
-            colors = colors,
-            keywords = keywords,
-            manaCost = card?.manaCost?.toString() ?: "",
-            manaValue = card?.manaValue ?: 0,
-            oracleText = card?.oracleText ?: "",
-            power = if (onBattlefield) projected.getPower(entityId) else null,
-            toughness = if (onBattlefield) projected.getToughness(entityId) else null,
+            types = sortedTypes,
+            subtypes = sortedSubtypes,
+            colors = sortedColors,
+            keywords = sortedKeywords,
+            manaCost = if (publicFaceDown) "" else card?.manaCost?.toString() ?: "",
+            manaValue = if (publicFaceDown) 0 else card?.manaValue ?: 0,
+            oracleText = if (publicFaceDown) "" else card?.oracleText ?: "",
+            power = if (onBattlefield) {
+                if (publicFaceDown) pv?.power ?: 2 else projected.getPower(entityId)
+            } else null,
+            toughness = if (onBattlefield) {
+                if (publicFaceDown) pv?.toughness ?: 2 else projected.getToughness(entityId)
+            } else null,
             tapped = onBattlefield && container.get<TappedComponent>() != null,
             // Only creatures meaningfully suffer summoning sickness — the engine attaches the
             // marker to every entering permanent so Vehicles / animated lands inherit the
@@ -267,7 +356,8 @@ class ObservationBuilder(
             faceDown = container.get<FaceDownComponent>() != null,
             damageMarked = container.get<DamageComponent>()?.amount ?: 0,
             counters = container.get<CountersComponent>()?.counters
-                ?.mapKeys { it.key.name } ?: emptyMap(),
+                ?.mapKeys { it.key.name }
+                ?.toSortedMap() ?: emptyMap(),
             attachedTo = container.get<AttachedToComponent>()?.targetId,
             attachments = container.get<AttachmentsComponent>()?.attachedIds ?: emptyList()
         )
@@ -277,23 +367,60 @@ class ObservationBuilder(
     // Stack
     // =========================================================================
 
-    private fun buildStackItem(state: GameState, entityId: EntityId): StackItemView {
+    private fun buildStackItem(
+        state: GameState,
+        entityId: EntityId,
+        perspectivePlayerId: EntityId
+    ): StackItemView {
         val container = state.getEntity(entityId)
         val card = container?.get<CardComponent>()
-        // Stack kind inference — fall back to OTHER. A more precise classification
-        // can be added once the stack carries explicit metadata.
+        val spell = container?.get<SpellOnStackComponent>()
+        val triggered = container?.get<TriggeredAbilityOnStackComponent>()
+        val activated = container?.get<ActivatedAbilityOnStackComponent>()
+        val legacyAbility = container?.get<AbilityOnStackComponent>()
+
         val kind = when {
-            card?.spellEffect != null -> StackItemKind.SPELL
-            card != null -> StackItemKind.SPELL
+            spell != null || card?.spellEffect != null -> StackItemKind.SPELL
+            triggered != null -> StackItemKind.TRIGGERED_ABILITY
+            activated != null || legacyAbility != null -> StackItemKind.ACTIVATED_ABILITY
             else -> StackItemKind.OTHER
         }
+
+        val controllerId = spell?.casterId
+            ?: triggered?.controllerId
+            ?: activated?.controllerId
+            ?: legacyAbility?.controllerId
+            ?: state.projectedState.getController(entityId)
+            ?: container?.get<ControllerComponent>()?.playerId
+        val sourceEntityId = when {
+            spell != null -> entityId
+            triggered != null -> triggered.sourceId
+            activated != null -> activated.sourceId
+            legacyAbility != null -> legacyAbility.sourceId
+            else -> null
+        }
+        val faceDown = container?.has<FaceDownComponent>() == true
+        val identityVisible = !faceDown ||
+            visibility.isCardRevealedTo(state, entityId, perspectivePlayerId) ||
+            controllerId == perspectivePlayerId
+        val targets = container?.get<TargetsComponent>()?.targets
+            ?.map { target ->
+                when (target) {
+                    is ChosenTarget.Player -> target.playerId
+                    is ChosenTarget.Permanent -> target.entityId
+                    is ChosenTarget.Card -> target.cardId
+                    is ChosenTarget.Spell -> target.spellEntityId
+                }
+            } ?: emptyList()
+
         return StackItemView(
             entityId = entityId,
-            controllerId = state.projectedState.getController(entityId),
-            name = card?.name ?: "",
+            controllerId = controllerId,
+            sourceEntityId = sourceEntityId,
+            name = if (identityVisible) card?.name ?: "" else "Face-down spell",
             kind = kind,
-            oracleText = card?.oracleText ?: "",
-            targets = emptyList()
+            oracleText = if (identityVisible) card?.oracleText ?: "" else "",
+            targets = targets
         )
     }
 
@@ -307,7 +434,7 @@ class ObservationBuilder(
             kind = la.actionType,
             description = la.description,
             affordable = la.affordable,
-            sourceEntityId = null,
+            sourceEntityId = actionSourceEntityId(la),
             targetEntityIds = la.validTargets ?: emptyList(),
             manaCost = la.manaCostString,
             hasXCost = la.hasXCost,
@@ -318,6 +445,23 @@ class ObservationBuilder(
             isManaAbility = la.isManaAbility,
             isDecisionOption = false
         )
+    }
+
+    private fun actionSourceEntityId(legalAction: LegalAction): EntityId? = when (val action = legalAction.action) {
+        is CastSpell -> action.cardId
+        is ActivateAbility -> action.sourceId
+        is CycleCard -> action.cardId
+        is PlotCard -> action.cardId
+        is ForetellCard -> action.cardId
+        is SuspendCardFromHand -> action.cardId
+        is TypecycleCard -> action.cardId
+        is PlayLand -> action.cardId
+        is CrewVehicle -> action.vehicleId
+        is SaddleMount -> action.mountId
+        is TurnFaceUp -> action.sourceId
+        is UnlockRoomDoor -> action.roomId
+        is BottomCards -> action.cardIds.firstOrNull()
+        else -> null
     }
 
     // =========================================================================
@@ -333,8 +477,24 @@ class ObservationBuilder(
      * submits a `DecisionResponse` via a dedicated endpoint (Phase 3).
      */
     private fun buildPendingDecision(
-        decision: PendingDecision
+        decision: PendingDecision,
+        exposeToPerspective: Boolean
     ): Pair<PendingDecisionView, ActionRegistry> {
+        if (!exposeToPerspective) {
+            return PendingDecisionView(
+                decisionId = null,
+                kind = PendingDecisionKind.GENERIC,
+                playerId = decision.playerId,
+                prompt = "",
+                sourceEntityId = null,
+                sourceName = null,
+                triggeringEntityId = null,
+                effectHint = null,
+                requiresStructuredResponse = true,
+                shape = DecisionShape()
+            ) to ActionRegistry.EMPTY
+        }
+
         val ctx = decision.context
         val baseShape = DecisionShape()
 

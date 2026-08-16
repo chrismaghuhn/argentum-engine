@@ -16,6 +16,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
@@ -225,6 +226,28 @@ class ObservationPrivacyTest : FunSpec({
             mountainLibrary.size shouldBe goblinLibrary.size
             mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
         }
+    }
+
+    test("command zone is public with a stable entity identity") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val commandId = base.state.getHand(owner).first()
+        val handKey = ZoneKey(owner, Zone.HAND)
+        val commandKey = ZoneKey(owner, Zone.COMMAND)
+        val zones = base.state.zones.toMutableMap()
+        zones[handKey] = base.state.getHand(owner).drop(1)
+        zones[commandKey] = base.state.getZone(commandKey) + commandId
+        val state = base.state.copy(zones = zones)
+
+        val command = observation(state, base.playerIds[0]).zones.single {
+            it.ownerId == owner && it.zoneType == Zone.COMMAND
+        }
+
+        command.hidden.shouldBeFalse()
+        command.size shouldBe 1
+        command.cards.single().entityId shouldBe commandId
+        command.cards.single().ownerId shouldBe owner
+        command.cards.single().zone shouldBe Zone.COMMAND
     }
 
     test("non-acting perspective receives no legal actions or action registry") {

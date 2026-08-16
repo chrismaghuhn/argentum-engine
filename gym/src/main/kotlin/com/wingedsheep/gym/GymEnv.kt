@@ -19,12 +19,8 @@ interface GymEnv {
     /** True once the env reached a terminal state (game over, or deck finalized). */
     val isTerminal: Boolean
 
-    /**
-     * Current observation without advancing. [revealAll] is honoured by game envs
-     * (unmask opponent hand/libraries) and ignored by deckbuild envs, which have no
-     * hidden information. Passing null uses the env's configured default.
-     */
-    fun observe(revealAll: Boolean? = null): ObservationResult
+    /** Current perspective-safe observation without advancing. */
+    fun observe(): ObservationResult
 
     /**
      * Advance by the action with [actionId] from the most recent observation.
