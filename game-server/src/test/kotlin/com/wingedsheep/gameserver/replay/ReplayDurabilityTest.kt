@@ -64,18 +64,23 @@ class ReplayDurabilityTest : ScenarioTestBase() {
             state.priorityPlayerId?.let { session.executeAutoPass(it) }
         }
 
+        val snapshot = session.replayRecordingSnapshot().shouldNotBeNull()
         return CompactReplay(
             gameId = session.sessionId,
             players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
-            startedAt = Instant.now().toString(),
+            startedAt = (snapshot.startedAt ?: Instant.now()).toString(),
             endedAt = Instant.now().toString(),
             winnerName = null,
-            setup = session.getReplaySetup().shouldNotBeNull(),
-            actions = session.getRecordedActions(),
-            yields = session.getReplayYields(),
+            setup = snapshot.setup,
+            actions = snapshot.actions,
+            yields = snapshot.yields,
             engineVersion = "test-build",
             pinnedCards = session.getPinnedCards(),
-            checkpoints = session.getReplayCheckpoints(),
+            checkpoints = ReplayCheckpointPolicy.withV3Tail(
+                checkpoints = snapshot.checkpoints,
+                actionCount = snapshot.actions.size,
+                fingerprint = snapshot.fingerprint,
+            ),
         )
     }
 

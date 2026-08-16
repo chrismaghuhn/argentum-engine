@@ -79,7 +79,11 @@ class ReplayStorageTest : ScenarioTestBase() {
             setup = snapshot.setup,
             actions = snapshot.actions,
             yields = snapshot.yields,
-            checkpoints = snapshot.checkpoints,
+            checkpoints = ReplayCheckpointPolicy.withV3Tail(
+                checkpoints = snapshot.checkpoints,
+                actionCount = snapshot.actions.size,
+                fingerprint = snapshot.fingerprint,
+            ),
         ) to snapshot.fingerprint
     }
 

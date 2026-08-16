@@ -124,7 +124,13 @@ class ReplayCheckpointFlusher(
                 engineVersion = engineVersion.value,
                 // Independent of the action count — derived from the decklists, which never change.
                 pinnedCards = session.getPinnedCards(),
-                checkpoints = snapshot.checkpoints,
+                // The tail is a persistence-only view of this coherent snapshot. Do not append it
+                // to GameSession.recordedCheckpoints, or every sweep would accumulate duplicates.
+                checkpoints = ReplayCheckpointPolicy.withV3Tail(
+                    checkpoints = snapshot.checkpoints,
+                    actionCount = snapshot.actions.size,
+                    fingerprint = snapshot.fingerprint,
+                ),
             ),
             resumeFingerprint = snapshot.fingerprint,
         )
