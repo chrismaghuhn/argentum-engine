@@ -36,6 +36,6 @@ val FireDiamond = card("Fire Diamond") {
         rarity = Rarity.UNCOMMON
         collectorNumber = "302"
         artist = "Richard Thomas"
-        imageUri = "https://cards.scryfall.io/normal/front/b/c/bcca5bbe-df01-45ea-a6ac-4e3d1cf237c8.jpg"
+        imageUri = "https://cards.scryfall.io/normal/front/b/c/bcca5bbe-df01-45ea-a6ac-4e3d1cf237c8.jpg?1783947042"
     }
 }
