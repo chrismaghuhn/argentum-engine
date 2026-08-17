@@ -140,7 +140,7 @@ class TriggerProcessor(
                     .drop(index)
                     .takeWhile {
                         it.controllerId == liveTriggers[index].controllerId &&
-                            it.stage == liveTriggers[index].stage
+                            it.placementStage == liveTriggers[index].placementStage
                     }
                 if (sameControllerRun.size > 1) {
                     return raiseTriggerOrdering(
@@ -307,8 +307,8 @@ class TriggerProcessor(
         triggers: List<PendingTrigger>
     ): List<PendingTrigger> {
         val apnapPlayers = state.apnapOrder
-        return TriggerStage.values().flatMap { stage ->
-            val stageTriggers = triggers.filter { it.stage == stage }
+        return TriggerPlacementStage.values().flatMap { placementStage ->
+            val stageTriggers = triggers.filter { it.placementStage == placementStage }
             apnapPlayers.flatMap { controllerId ->
                 stageTriggers.filter { it.controllerId == controllerId }
             }

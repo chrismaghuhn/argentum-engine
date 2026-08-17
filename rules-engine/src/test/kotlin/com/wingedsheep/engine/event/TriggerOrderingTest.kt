@@ -115,7 +115,7 @@ class TriggerOrderingTest : FunSpec({
         activeOrder.objects.size shouldBe 2
     }
 
-    test("TO-14: detector-marked reflexive triggers enter the second CR 603.3b stage") {
+    test("TO-14: CR 603.12 reflexive triggers use the normal CR 603.3b placement stage") {
         val driver = newDriver()
         val reflexiveSource = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         val reflexive = TriggerDetector(driver.cardRegistry).detectTriggers(
@@ -133,6 +133,26 @@ class TriggerOrderingTest : FunSpec({
 
         val result = process(driver, listOf(
             reflexive,
+            syntheticTrigger(driver, "normal-first"),
+            syntheticTrigger(driver, "normal-second")
+        ))
+
+        val normalOrder = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        normalOrder.objects.size shouldBe 3
+        normalOrder.objectLabels!!.values.any { it.startsWith("reflexive:") } shouldBe true
+    }
+
+    test("TO-18: only an ability-triggering condition enters the second CR 603.3b stage") {
+        val driver = newDriver()
+        val abilityTriggeringCondition = syntheticTrigger(driver, "ability-triggered").let { trigger ->
+            trigger.copy(
+                ability = trigger.ability.copy(trigger = EventPattern.AbilityTriggeredEvent())
+            )
+        }
+        abilityTriggeringCondition.placementStage shouldBe TriggerPlacementStage.ABILITY_TRIGGERED
+
+        val result = process(driver, listOf(
+            abilityTriggeringCondition,
             syntheticTrigger(driver, "normal-first"),
             syntheticTrigger(driver, "normal-second")
         ))

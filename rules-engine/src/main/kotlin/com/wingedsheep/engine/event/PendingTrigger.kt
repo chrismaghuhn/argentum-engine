@@ -1,19 +1,32 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 
 /**
- * The CR 603.3b placement stage for a pending triggered ability.
+ * The semantic kind of a pending triggered ability.
  *
- * Ordinary triggers are placed in the first pass. Reflexive triggers, whose trigger condition is
- * another ability triggering, are placed in the second pass. Keeping this semantic distinction on
- * the serializable pending payload prevents detector order from collapsing the two rule stages.
+ * [REFLEXIVE] identifies a CR 603.12 "when you do" ability. It is deliberately separate from
+ * [TriggerPlacementStage], because a CR 603.12 reflexive ability's trigger condition is the action
+ * it watches for, not another ability triggering.
  */
 @kotlinx.serialization.Serializable
 enum class TriggerStage {
     NORMAL,
     REFLEXIVE
+}
+
+/**
+ * The CR 603.3b placement pass for a pending triggered ability.
+ *
+ * This is derived from the trigger condition rather than stored as a second semantic marker, so a
+ * queued trigger remains correct after serialization, replay, or a fork. The enum order is the
+ * order in which the two APNAP placement passes occur.
+ */
+enum class TriggerPlacementStage {
+    NORMAL,
+    ABILITY_TRIGGERED
 }
 
 /**
@@ -36,7 +49,7 @@ data class DelayedTriggerOccurrenceCandidate(
     val consumesDelayedTriggerId: String? = null,
     val sagaChapterInfo: SagaChapterInfo? = null,
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
-    /** CR 603.3b placement stage; ordinary triggers are the default. */
+    /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
 ) {
     fun toPendingTrigger(): PendingTrigger = PendingTrigger(
@@ -90,7 +103,7 @@ data class PendingTrigger(
      * when this pending trigger is placed on the stack. Null for ordinary triggered abilities.
      */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
-    /** CR 603.3b placement stage; ordinary triggers are the default. */
+    /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
     /**
      * CR 603.7b marker emitted by the delayed-trigger detector when several matching occurrences
@@ -100,6 +113,17 @@ data class PendingTrigger(
      */
     val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList()
 )
+
+/**
+ * Derive the CR 603.3b placement pass from the actual trigger condition. A trigger whose condition
+ * is an [EventPattern.AbilityTriggeredEvent] belongs to the second pass; CR 603.12 reflexive
+ * triggers remain ordinary first-pass triggers even though their [stage] is [TriggerStage.REFLEXIVE].
+ */
+val PendingTrigger.placementStage: TriggerPlacementStage
+    get() = when (ability.trigger) {
+        is EventPattern.AbilityTriggeredEvent -> TriggerPlacementStage.ABILITY_TRIGGERED
+        else -> TriggerPlacementStage.NORMAL
+    }
 
 fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
     DelayedTriggerOccurrenceCandidate(
