@@ -5,7 +5,9 @@ import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DamageEdgeDirection
+import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
 import com.wingedsheep.engine.handlers.EffectContext
@@ -673,6 +675,37 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         result.error shouldBe null
         decision?.defenders.orEmpty().shouldBeEmpty()
         decision?.edges?.none { it.targetId == setup.walker } shouldBe true
+    }
+
+    test("C14-P1-10 free division retains current defending creatures beyond the blockers") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, divideFreelyCreature.name)
+        val blocker = driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears")
+        val bystander = driver.putCreatureOnBattlefield(defenderPlayer, "Savannah Lions")
+        driver.removeSummoningSickness(attacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to defenderPlayer)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(defenderPlayer, mapOf(blocker to listOf(attacker))).error shouldBe null
+        driver.passPriorityUntil(Step.COMBAT_DAMAGE)
+
+        val decision = driver.pendingDecision.shouldBeInstanceOf<DistributeDecision>()
+        decision.targets.contains(bystander) shouldBe true
+        driver.submitDecision(
+            attackerPlayer,
+            DistributionResponse(decision.id, mapOf(bystander to 2, defenderPlayer to 3)),
+        ).error shouldBe null
+
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+        driver.findPermanent(defenderPlayer, "Savannah Lions").shouldBeNull()
+        driver.findPermanent(defenderPlayer, "Grizzly Bears").shouldNotBeNull()
+        driver.assertLifeTotal(defenderPlayer, 17)
     }
 
     test("C14-09 external plans must be complete and cannot invent a player recipient") {

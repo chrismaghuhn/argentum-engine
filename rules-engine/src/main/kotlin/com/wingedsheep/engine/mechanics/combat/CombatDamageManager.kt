@@ -835,8 +835,13 @@ internal class CombatDamageManager(
                                 defenderId,
                             )
                             val liveBlockers = blockers.filter { it in state.getBattlefield() }
-                            val validTargets = liveBlockers.toSet() +
-                                if (currentDefender) setOf(defenderId) else emptySet()
+                            val validTargets = validAttackerDamageTargets(
+                                state,
+                                projected,
+                                attackerId,
+                                attackingComponent,
+                                liveBlockers,
+                            )
                             val hasInvalidTarget = manualAssignment.assignments.any { (targetId, damage) ->
                                 damage > 0 && targetId !in validTargets
                             }
@@ -962,6 +967,44 @@ internal class CombatDamageManager(
         }
 
         return assignments
+    }
+
+    /**
+     * Return the complete current recipient domain for an attacker's manual assignment.
+     *
+     * Ordinary assignments may name only live blockers and the current attacked recipient.
+     * DivideCombatDamageFreely is the deliberate exception: its Oracle-defined domain also
+     * includes every current creature controlled by the historical defending player (CR 508.5).
+     * Keep the attacked-object predicate separate so a stale planeswalker/battle is never
+     * reintroduced merely because the attacker has that id in its declaration component.
+     */
+    private fun validAttackerDamageTargets(
+        state: GameState,
+        projected: ProjectedState,
+        attackerId: EntityId,
+        attackingComponent: AttackingComponent,
+        liveBlockers: List<EntityId>,
+    ): Set<EntityId> {
+        val defenderId = attackingComponent.defenderId
+        val targets = liveBlockers.toMutableSet()
+        if (CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId)) {
+            targets += defenderId
+        }
+
+        val attackerContainer = state.getEntity(attackerId)
+        val attackerCard = attackerContainer?.get<CardComponent>()
+        val dividesFreely = attackerCard != null &&
+            !attackerContainer.has<FaceDownComponent>() &&
+            cardRegistry.getCard(attackerCard.cardDefinitionId)
+                ?.staticAbilities
+                ?.any { it is DivideCombatDamageFreely } == true
+        if (dividesFreely) {
+            val defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent)
+            targets += state.getBattlefield().filter { entityId ->
+                projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
+            }
+        }
+        return targets
     }
 
     private fun dealsDamageThisStep(
@@ -1660,8 +1703,13 @@ internal class CombatDamageManager(
                     defenderId,
                 )
                 val liveBlockers = blockedBy.blockerIds.filter { it in state.getBattlefield() }
-                val validTargets = liveBlockers.toSet() +
-                    if (currentDefender) setOf(defenderId) else emptySet()
+                val validTargets = validAttackerDamageTargets(
+                    state,
+                    projected,
+                    attackerId,
+                    attackingComponent,
+                    liveBlockers,
+                )
                 val manualHasInvalidTarget = manualAssignment?.assignments?.any { (targetId, damage) ->
                     damage > 0 && targetId !in validTargets
                 } == true
