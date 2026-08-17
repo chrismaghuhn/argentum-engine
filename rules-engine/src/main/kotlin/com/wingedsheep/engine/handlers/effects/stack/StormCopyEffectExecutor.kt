@@ -165,7 +165,7 @@ class StormCopyEffectExecutor(
             }
 
             val copyNumber = effect.copyCount - copiesLeft + 1
-            val decisionId = "storm-copy-target-${sourceId.value}-$copyNumber"
+            val decisionId = "storm-copy-target-${java.util.UUID.randomUUID()}"
             val continuation = StormCopyTargetContinuation(
                 decisionId = decisionId,
                 remainingCopies = copiesLeft,
@@ -281,7 +281,7 @@ class StormCopyEffectExecutor(
                     }
 
                     val copyNumber = totalCopies - copiesLeft + 1
-                    val decisionId = "storm-copy-modal-target-${sourceId.value}-$copyNumber-${ordinal + 1}"
+                    val decisionId = "storm-copy-modal-target-${java.util.UUID.randomUUID()}"
                     val copyLabel = if (totalCopies > 1) "copy $copyNumber of $totalCopies of $spellName"
                         else "copy of $spellName"
                     val modeLabel = if (chosenModes.size > 1) " — mode ${ordinal + 1} of ${chosenModes.size}"

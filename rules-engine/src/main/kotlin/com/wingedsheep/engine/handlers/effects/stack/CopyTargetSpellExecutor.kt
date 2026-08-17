@@ -249,7 +249,7 @@ class CopyTargetSpellExecutor(
         stackResolver: StackResolver = StackResolver(cardRegistry = cardRegistry),
         resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
     ): EffectResult {
-        val decisionId = targetDecisionId(spellEntityId, 1)
+        val decisionId = targetDecisionId()
 
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
         for ((index, requirement) in targetRequirements.withIndex()) {
@@ -320,6 +320,6 @@ class CopyTargetSpellExecutor(
         return EffectResult.paused(stateWithContinuation, decision)
     }
 
-    private fun targetDecisionId(sourceSpellId: EntityId, copyNumber: Int): String =
-        "copy-spell-target-${sourceSpellId.value}-$copyNumber"
+    private fun targetDecisionId(): String =
+        "copy-spell-target-${java.util.UUID.randomUUID()}"
 }

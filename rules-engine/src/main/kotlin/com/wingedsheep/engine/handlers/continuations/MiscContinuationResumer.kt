@@ -419,8 +419,7 @@ class MiscContinuationResumer(
         }
 
         // Prompt for next copy's targets
-        val nextCopyNumber = continuation.totalCopies - remainingAfterThis + 1
-        val decisionId = "storm-copy-target-${continuation.sourceId.value}-$nextCopyNumber"
+        val decisionId = "storm-copy-target-${java.util.UUID.randomUUID()}"
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
         for ((index, requirement) in continuation.spellTargetRequirements.withIndex()) {
             val legalTargets = services.targetFinder.findLegalTargets(

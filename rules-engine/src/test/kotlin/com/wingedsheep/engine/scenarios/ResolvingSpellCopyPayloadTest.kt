@@ -124,7 +124,7 @@ class ResolvingSpellCopyPayloadTest : FunSpec({
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()
         driver.submitYesNo(you, true).error shouldBe null
         val retargetDecision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
-        retargetDecision.id shouldBe "copy-spell-target-${spell.value}-1"
+        retargetDecision.id.startsWith("copy-spell-target-") shouldBe true
         retargetDecision.legalTargets.values.flatten() shouldContain retargetCandidate
 
         val pausedState = driver.state
