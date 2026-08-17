@@ -2058,7 +2058,11 @@ class StackResolver(
         // that consumes "all targets" would swallow the spliced card's as well.
         // A spell with no effect of its own can't be a splice host in practice (a splice card is
         // spliced onto a spell that has text), so the tail lives inside the `spellEffect != null` guard.
-        val spliceEntries = buildSpliceEntries(spellComponent)
+        val targetEntryStamps = state.getEntity(spellId)
+            ?.get<TargetsComponent>()?.targetEntryStamps ?: emptyMap()
+        val spliceEntries = buildSpliceEntries(spellComponent).map { entry ->
+            entry.copy(targetEntryStamps = targetEntryStamps)
+        }
         val splicedRequirementCount = spellComponent.splicedCardNames.sumOf { name ->
             cardRegistry.getCard(name)?.script?.targetRequirements?.size ?: 0
         }
@@ -2088,6 +2092,8 @@ class StackResolver(
                 // references — ContextTarget(n), EntityReference.Target(n), ContextPlayer(n) —
                 // resolve by ORIGINAL slot and don't shift onto a later still-valid target.
                 alignedTargets = mainAlignedTargets,
+                targetEntryStamps = state.getEntity(spellId)
+                    ?.get<TargetsComponent>()?.targetEntryStamps ?: emptyMap(),
                 // A pay-X-life additional cost (AdditionalCost.PayXLife, e.g. Vicious Rivalry) feeds
                 // its declared X through the same X slot read by DynamicAmount.XValue and the
                 // ManaValue*X predicates. Such a card never also carries an {X} mana cost, so
@@ -2133,6 +2139,7 @@ class StackResolver(
                         controllerId = spellComponent.casterId,
                         sourceId = spellId,
                         sourceName = cardComponent?.name,
+                        legalTargets = alignedTargets.filterNotNull(),
                         remainingEntries = spliceEntries
                     )
                 )
@@ -2152,7 +2159,8 @@ class StackResolver(
                         sourceId = spellId,
                         sourceName = cardComponent?.name,
                         xValue = null,
-                        triggeringEntityId = null
+                        triggeringEntityId = null,
+                        legalTargets = alignedTargets.filterNotNull()
                     ),
                     effectExecutor = { s, e, c -> effectHandler.execute(s, e, c) },
                     targetValidator = spliceTargetValidator,
@@ -2847,7 +2855,7 @@ class StackResolver(
         // the intervening-if check and the effect itself; target legality remains CR 608.2b's job.
         val chosenTargets = targetsComponent?.targets ?: emptyList()
         val targetReqs = targetsComponent?.targetRequirements ?: emptyList()
-        val context = EffectContext.forTriggeredAbility(
+        val preResolutionContext = EffectContext.forTriggeredAbility(
             abilityComponent,
             targets = chosenTargets,
             targetRequirements = targetReqs
@@ -2858,7 +2866,7 @@ class StackResolver(
         // or executing any part of its effect. A triggerRestriction is a trigger-time CR 603.2
         // restriction and is intentionally not rechecked during resolution.
         abilityComponent.interveningIf?.let { condition ->
-            if (!conditionEvaluator.evaluate(state, condition, context)) {
+            if (!conditionEvaluator.evaluate(state, condition, preResolutionContext)) {
                 return ExecutionResult.success(
                     state.removeEntity(abilityId),
                     listOf(
@@ -2876,7 +2884,7 @@ class StackResolver(
         val sourceCard = state.getEntity(abilityComponent.sourceId)?.get<CardComponent>()
         val sourceColors = sourceCard?.colors ?: emptySet()
         val sourceSubtypes = sourceCard?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet()
-        if (targetsComponent != null && targetsComponent.targets.isNotEmpty()) {
+        val resolutionContext = if (targetsComponent != null && targetsComponent.targets.isNotEmpty()) {
             val validTargets = validateTargets(
                 state, targetsComponent.targets, sourceColors, sourceSubtypes,
                 abilityComponent.controllerId, targetsComponent.targetRequirements,
@@ -2902,10 +2910,19 @@ class StackResolver(
                     )
                 )
             }
+            EffectContext.forTriggeredAbility(
+                abilityComponent,
+                targets = validTargets,
+                targetRequirements = targetsComponent.targetRequirements,
+                alignedTargets = buildAlignedValidated(targetsComponent.targets, validTargets),
+                targetEntryStamps = targetsComponent.targetEntryStamps
+            )
+        } else {
+            preResolutionContext
         }
 
         // Execute the effect after CR 608.2a and CR 608.2b have both passed.
-        val effectResult = effectHandler.execute(state, abilityComponent.effect, context)
+        val effectResult = effectHandler.execute(state, abilityComponent.effect, resolutionContext)
 
         // If effect is paused awaiting a decision, return paused state
         // The ability entity stays removed (it's off the stack), but the decision must resolve
@@ -2976,6 +2993,7 @@ class StackResolver(
                 state, targetsComponent.targets, sourceColors, sourceSubtypes,
                 abilityComponent.controllerId, targetsComponent.targetRequirements,
                 sourceId = abilityComponent.sourceId,
+                targetingSourceType = TargetingSourceType.ABILITY,
                 xValue = abilityComponent.xValue,
                 targetEntryStamps = targetsComponent.targetEntryStamps
             )
@@ -3007,6 +3025,7 @@ class StackResolver(
             abilityIdentity = abilityComponent.abilityIdentity,
             targets = activatedTargets,
             alignedTargets = alignedActivatedTargets,
+            targetEntryStamps = targetsComponent?.targetEntryStamps ?: emptyMap(),
             sacrificedPermanents = abilityComponent.sacrificedPermanents,
             xValue = abilityComponent.xValue,
             tappedPermanents = abilityComponent.tappedPermanents,

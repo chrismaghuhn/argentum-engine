@@ -12,6 +12,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
@@ -40,6 +41,123 @@ private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()
  */
 class TargetValidator {
     private val predicateEvaluator = PredicateEvaluator()
+
+    /**
+     * The payload that remains after CR 608.2b re-checks each originally locked target.
+     *
+     * [targets] is the compact list consumed by effects. [alignedTargets] keeps the original
+     * target slots, replacing an illegal target with null, so positional references do not shift
+     * onto a later survivor. The target requirements remain the original requirements: resolution
+     * filters locked choices; it does not manufacture a new choice or retarget a slot.
+     */
+    data class ResolutionTargetPayload(
+        val targets: List<ChosenTarget>,
+        val alignedTargets: List<ChosenTarget?>
+    )
+
+    /**
+     * Filter a locked target payload for resolution without applying cast-time cardinality rules.
+     *
+     * CR 608.2b removes individually-illegal targets when at least one target remains legal. The
+     * announcement-time minimum/maximum and distinctness checks are deliberately not repeated here:
+     * the choices are already locked, and this function only determines which of those choices can
+     * still be affected. [allowedTargets], when supplied by the stack resolver, is the authoritative
+     * result of its source-aware resolution check; it prevents a per-mode queue from re-admitting a
+     * target that the flat spell/ability payload already rejected.
+     */
+    fun filterTargetsAtResolution(
+        state: GameState,
+        targets: List<ChosenTarget>,
+        requirements: List<TargetRequirement>,
+        casterId: EntityId,
+        sourceColors: Set<Color> = emptySet(),
+        sourceSubtypes: Set<String> = emptySet(),
+        sourceId: EntityId? = null,
+        xValue: Int? = null,
+        allowedTargets: List<ChosenTarget>? = null,
+        targetEntryStamps: Map<EntityId, Long> = emptyMap()
+    ): ResolutionTargetPayload {
+        if (targets.isEmpty()) return ResolutionTargetPayload(emptyList(), emptyList())
+
+        // A requirement's declared count describes its original target slots. An unlimited
+        // requirement consumes the remaining locked slots, which is also how the announcement
+        // validator treats it when no later requirement can follow it.
+        fun effectiveMaxCount(requirement: TargetRequirement, remaining: Int): Int {
+            if (requirement is TargetObject) {
+                val dynamic = requirement.dynamicMaxCount
+                if (dynamic == DynamicAmount.XValue) return xValue ?: if (requirement.unlimited) remaining else requirement.count
+                if (dynamic != null) {
+                    return try {
+                        DynamicAmountEvaluator().evaluate(
+                            state,
+                            dynamic,
+                            EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
+                        ).coerceAtLeast(0)
+                    } catch (_: Exception) {
+                        if (requirement.unlimited) remaining else requirement.count
+                    }
+                }
+            }
+            return if (requirement.unlimited) remaining else requirement.count
+        }
+
+        val legal = BooleanArray(targets.size)
+        var offset = 0
+        for (requirement in requirements) {
+            if (offset >= targets.size) break
+            val slotCount = effectiveMaxCount(requirement, targets.size - offset)
+                .coerceAtLeast(0)
+                .coerceAtMost(targets.size - offset)
+            val end = offset + slotCount
+            for (index in offset until end) {
+                val target = targets[index]
+                val sourceAwareLegal = allowedTargets == null || allowedTargets.any { it == target }
+                val sameObject = when (target) {
+                    is ChosenTarget.Permanent ->
+                        !TargetsComponent.isDifferentObject(state, target.entityId, targetEntryStamps)
+                    else -> true
+                }
+                legal[index] = sourceAwareLegal && sameObject &&
+                    validateSingleTarget(
+                        state = state,
+                        target = target,
+                        requirement = requirement,
+                        casterId = casterId,
+                        sourceColors = sourceColors,
+                        sourceSubtypes = sourceSubtypes,
+                        sourceId = sourceId,
+                        xValue = xValue,
+                        allTargets = targets
+                    ) == null
+            }
+            offset = end
+        }
+
+        // With no requirements, there is no target predicate to apply. This is useful for a
+        // malformed-but-serializable payload and preserves the caller's explicit legal-target
+        // gate without passing an illegal id to an executor.
+        if (requirements.isEmpty()) {
+            targets.forEachIndexed { index, target ->
+                legal[index] = (allowedTargets == null || allowedTargets.any { it == target }) &&
+                    when (target) {
+                        is ChosenTarget.Permanent ->
+                            !TargetsComponent.isDifferentObject(state, target.entityId, targetEntryStamps)
+                        else -> true
+                    }
+            }
+        }
+
+        val compact = mutableListOf<ChosenTarget>()
+        val aligned = targets.mapIndexed { index, target ->
+            if (legal[index]) {
+                compact += target
+                target
+            } else {
+                null
+            }
+        }
+        return ResolutionTargetPayload(compact, aligned)
+    }
 
     /**
      * Validate all targets for a spell/ability against their requirements.

@@ -93,7 +93,9 @@ data class ModalContinuation(
 data class PreTargetedEffectEntry(
     val effect: @Serializable Effect,
     val targets: List<ChosenTarget>,
-    val targetRequirements: List<@Serializable TargetRequirement>
+    val targetRequirements: List<@Serializable TargetRequirement>,
+    /** Object-identity stamps captured when these locked targets were chosen (CR 400.7). */
+    val targetEntryStamps: Map<EntityId, Long> = emptyMap()
 )
 
 /**
@@ -120,6 +122,8 @@ data class ModalPreChosenContinuation(
     val sourceName: String?,
     val xValue: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Flat source-aware legality result captured before the nested decision paused. */
+    val legalTargets: List<ChosenTarget>? = null,
     val remainingEntries: List<PreTargetedEffectEntry>
 ) : ContinuationFrame
 
@@ -144,6 +148,8 @@ data class SpliceTailContinuation(
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
+    /** Flat source-aware legality result captured before the main spell paused. */
+    val legalTargets: List<ChosenTarget>? = null,
     val remainingEntries: List<PreTargetedEffectEntry>
 ) : ContinuationFrame
 

@@ -79,7 +79,7 @@ data class EffectContext(
     /**
      * Positionally-aligned view of [targets]: the same length as the originally-chosen target
      * list, with `null` in any slot whose target was dropped by resolution-time legality
-     * validation (CR 608.2b). Populated on the spell-resolution path (and copied through
+     * validation (CR 608.2b). Populated on stack-object resolution (and copied through
      * composite/iteration sub-effects); empty elsewhere, where it coincides with [targets].
      *
      * Positional target references — [EffectTarget.ContextTarget], [EntityReference.Target],
@@ -91,6 +91,12 @@ data class EffectContext(
      * amount's `Target(0)` power read would land on the surviving opponent's creature.
      */
     val alignedTargets: List<ChosenTarget?> = emptyList(),
+    /**
+     * Object-identity stamps captured when the locked targets were chosen (CR 400.7). Kept on the
+     * resolution context so a pre-chosen modal/splice queue can re-check a target after an inner
+     * continuation without losing the original object identity.
+     */
+    val targetEntryStamps: Map<EntityId, Long> = emptyMap(),
     /**
      * The X chosen for an X-cost spell/ability. Also reused by `ChooseNumberThenEffect` to
      * carry a "choose a number" value into the inner effect (read via `CardPredicate.ManaValueEqualsX`,
@@ -530,13 +536,17 @@ data class EffectContext(
         fun forTriggeredAbility(
             ability: TriggeredAbilityOnStackComponent,
             targets: List<ChosenTarget> = emptyList(),
-            targetRequirements: List<TargetRequirement> = emptyList()
+            targetRequirements: List<TargetRequirement> = emptyList(),
+            alignedTargets: List<ChosenTarget?> = emptyList(),
+            targetEntryStamps: Map<EntityId, Long> = emptyMap()
         ): EffectContext = EffectContext(
             sourceId = ability.sourceId,
             controllerId = ability.controllerId,
             granterId = ability.granterId,
             abilityIdentity = ability.abilityIdentity,
             targets = targets,
+            alignedTargets = alignedTargets,
+            targetEntryStamps = targetEntryStamps,
             triggerDamageAmount = ability.triggerDamageAmount,
             triggerCounterCount = ability.triggerCounterCount,
             triggerTotalCounterCount = ability.triggerTotalCounterCount,
@@ -569,7 +579,10 @@ data class EffectContext(
             modeTargetsOrdered = ability.modeTargetsOrdered,
             modeTargetRequirements = ability.modeTargetRequirements,
             pipeline = PipelineState(
-                namedTargets = buildNamedTargets(targetRequirements, targets) +
+                namedTargets = buildNamedTargets(
+                    targetRequirements,
+                    if (alignedTargets.isEmpty()) targets else alignedTargets
+                ) +
                     (ability.carriedPipeline?.namedTargets ?: emptyMap()),
                 // Expose a batch trigger's captured permanents (the matching members of a
                 // PermanentsEnteredEvent batch) so a ForEachInCollectionEffect payoff can iterate

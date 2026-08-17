@@ -160,7 +160,7 @@ class EffectAndTriggerContinuationResumer(
                 )
             } ?: effect.totalDamage
             return createTriggerDamageDistributionDecision(
-                state, continuation, selectedTargets, total, checkForMore
+                state, continuation, selectedTargets, alignedRequirements, total, checkForMore
             )
         }
 
@@ -219,6 +219,7 @@ class EffectAndTriggerContinuationResumer(
         state: GameState,
         continuation: TriggeredAbilityContinuation,
         selectedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
+        targetRequirements: List<TargetRequirement>,
         totalDamage: Int,
         checkForMore: CheckForMore
     ): ExecutionResult {
@@ -268,7 +269,7 @@ class EffectAndTriggerContinuationResumer(
             triggerLastKnownDamageDealtByPlayers = continuation.triggerLastKnownDamageDealtByPlayers,
             triggerLastKnownBlockingOrBlockedByIds = continuation.triggerLastKnownBlockingOrBlockedByIds,
             selectedTargets = selectedTargets,
-            targetRequirements = continuation.targetRequirements,
+            targetRequirements = targetRequirements,
             totalDamage = totalDamage,
             interveningIf = continuation.interveningIf
         )

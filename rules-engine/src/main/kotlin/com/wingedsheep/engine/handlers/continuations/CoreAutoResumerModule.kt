@@ -156,7 +156,8 @@ class CoreAutoResumerModule(
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
                 xValue = continuation.xValue,
-                triggeringEntityId = continuation.triggeringEntityId
+                triggeringEntityId = continuation.triggeringEntityId,
+                legalTargets = continuation.legalTargets
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
                 state = state,
@@ -178,7 +179,8 @@ class CoreAutoResumerModule(
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
                 xValue = null,
-                triggeringEntityId = null
+                triggeringEntityId = null,
+                legalTargets = continuation.legalTargets
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
                 state = state,

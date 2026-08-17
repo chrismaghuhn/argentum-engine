@@ -180,14 +180,15 @@ class ModalEffectExecutor(
             chosenModes = context.chosenModes,
             modeTargetsOrdered = context.modeTargetsOrdered,
             modeTargetRequirements = context.modeTargetRequirements
-        )
+        ).map { entry -> entry.copy(targetEntryStamps = context.targetEntryStamps) }
         val sourceName = context.sourceId?.let { id -> state.getEntity(id)?.get<CardComponent>()?.name }
         val baseCtx = PreTargetedEffectContext(
             controllerId = context.controllerId,
             sourceId = context.sourceId,
             sourceName = sourceName,
             xValue = context.xValue,
-            triggeringEntityId = context.triggeringEntityId
+            triggeringEntityId = context.triggeringEntityId,
+            legalTargets = context.targets
         )
         return processPreTargetedEffectQueue(state, entries, baseCtx, effectExecutor, targetValidator, emptyList())
     }
@@ -237,7 +238,9 @@ internal data class PreTargetedEffectContext(
     val sourceId: com.wingedsheep.sdk.model.EntityId?,
     val sourceName: String?,
     val xValue: Int?,
-    val triggeringEntityId: com.wingedsheep.sdk.model.EntityId?
+    val triggeringEntityId: com.wingedsheep.sdk.model.EntityId?,
+    /** Flat stack-object legality result, when this queue belongs to a top-level resolution. */
+    val legalTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>? = null
 )
 
 /**
@@ -265,27 +268,33 @@ internal fun processPreTargetedEffectQueue(
     val head = entries.first()
     val tail = entries.drop(1)
 
-    // 608.2b per-mode fizzle: if the mode required targets and at least one is now illegal,
-    // skip the mode entirely. Partial per-target filtering is a future refinement — for now
-    // we mirror the all-or-nothing shape used by the resolution-time ModalContinuation path.
+    // CR 608.2b re-checks each locked target independently. The flat top-level resolution pass
+    // already decides whether the whole stack object fizzles; this per-entry pass only filters
+    // the mode/splice slice that this generic executor is about to consume.
     val cardComponent = ctx.sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
     val sourceColors = cardComponent?.colors ?: emptySet()
     val sourceSubtypes = cardComponent?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet()
 
-    val validationError = if (head.targetRequirements.isNotEmpty()) {
-        targetValidator.validateTargets(
+    val resolutionTargets = if (head.targetRequirements.isNotEmpty() || head.targets.isNotEmpty()) {
+        targetValidator.filterTargetsAtResolution(
             state = state,
             targets = head.targets,
             requirements = head.targetRequirements,
             casterId = ctx.controllerId,
             sourceColors = sourceColors,
             sourceSubtypes = sourceSubtypes,
-            sourceId = ctx.sourceId
+            sourceId = ctx.sourceId,
+            xValue = ctx.xValue,
+            allowedTargets = ctx.legalTargets,
+            targetEntryStamps = head.targetEntryStamps
         )
-    } else null
+    } else TargetValidator.ResolutionTargetPayload(emptyList(), emptyList())
 
-    if (validationError != null) {
-        // Skip this mode; drain the rest.
+    // A mode whose entire locked target slice is illegal contributes no effect. Do not invoke a
+    // target-consuming executor with an empty payload: many existing executors correctly reject a
+    // missing target when called directly, while CR 608.2b requires the parent spell to continue
+    // with its other legal modes/parts.
+    if (head.targets.isNotEmpty() && resolutionTargets.targets.isEmpty()) {
         return processPreTargetedEffectQueue(state, tail, ctx, effectExecutor, targetValidator, accumulatedEvents)
     }
 
@@ -293,9 +302,14 @@ internal fun processPreTargetedEffectQueue(
         sourceId = ctx.sourceId,
         controllerId = ctx.controllerId,
         xValue = ctx.xValue,
-        targets = head.targets,
+        targets = resolutionTargets.targets,
+        alignedTargets = resolutionTargets.alignedTargets,
+        targetEntryStamps = head.targetEntryStamps,
         pipeline = PipelineState(
-            namedTargets = EffectContext.buildNamedTargets(head.targetRequirements, head.targets)
+            namedTargets = EffectContext.buildNamedTargets(
+                head.targetRequirements,
+                resolutionTargets.alignedTargets
+            )
         ),
         triggeringEntityId = ctx.triggeringEntityId
     )
@@ -311,6 +325,7 @@ internal fun processPreTargetedEffectQueue(
                 sourceName = ctx.sourceName,
                 xValue = ctx.xValue,
                 triggeringEntityId = ctx.triggeringEntityId,
+                legalTargets = ctx.legalTargets,
                 remainingEntries = tail
             )
         )
