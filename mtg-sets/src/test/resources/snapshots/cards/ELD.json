@@ -354,6 +354,68 @@
     ]
 }
 
+// Fervent Champion
+{
+    "name": "Fervent Champion",
+    "manaCost": "{R}",
+    "typeLine": "Creature — Human Knight",
+    "oracleText": "First strike, haste\nWhenever this creature attacks, another target attacking Knight you control gets +1/+0 until end of turn.\nEquip abilities you activate that target this creature cost {3} less to activate.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "keywords": [
+        "FIRST_STRIKE",
+        "HASTE"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": "AttackEvent",
+                "effect": {
+                    "type": "ModifyStats",
+                    "powerModifier": {
+                        "type": "Fixed",
+                        "amount": 1
+                    },
+                    "toughnessModifier": {
+                        "type": "Fixed",
+                        "amount": 0
+                    },
+                    "target": {
+                        "type": "ContextTarget",
+                        "index": 0
+                    }
+                },
+                "targetRequirement": {
+                    "type": "TargetObject",
+                    "filter": {
+                        "baseFilter": "creature Knight attacking ctrl:you",
+                        "excludeSelf": true
+                    }
+                }
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "ReduceEquipCost",
+                "amount": 3,
+                "onlyIfTargetIsSource": true
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "124",
+        "rarity": "RARE",
+        "artist": "Steve Argyle",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/5/c52d66db-5570-48a1-99cf-e0417517747b.jpg?1783932624"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
 // Fierce Witchstalker
 {
     "name": "Fierce Witchstalker",
