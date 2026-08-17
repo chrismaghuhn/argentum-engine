@@ -82,20 +82,23 @@ operator mistakes from server faults:
 
 Anything else propagates as 500.
 
-### Action IDs stay per-step
+### Action IDs are opaque and never rebound
 
-The server does not stabilise action IDs across steps. Every `step`
-regenerates the `ActionRegistry`, and IDs from a prior observation
-become invalid. This matches the `:gym` contract — see its README
-for the rationale — and the test suite exercises the failure mode so a
-trainer that holds onto stale IDs fails loudly (400).
+Every `step` regenerates the `ActionRegistry`, while `GameGymEnv` assigns
+monotonically increasing, env-local handles to the resulting observation.
+Handles from a prior observation become invalid and cannot be rebound to a
+new action. This matches the `:gym` contract — see its README — and the test
+suite exercises the in-range stale-handle failure so a trainer that holds
+onto stale IDs fails loudly (400). Repeated reads of one unchanged state keep
+the same handle generation; reset and restore never reuse old handles.
 
 When a legal-action view has `requiresStructuredAction: true`, the action ID is a
 candidate handle, not a complete engine action. Copy its `actionSemantics` object,
-fill the controller's explicit target/payment/mode/X/etc. choices, and send that
-object in the optional `action` field of the same step body. The server binds the
-completed payload to the current candidate and lets the rules engine validate it;
-it does not choose missing fields for the trainer.
+fill every required target/payment/mode/X/combat choice field, and send that
+object in the optional `action` field of the same step body. Even an explicit
+empty choice must be present; the server binds the completed payload to the
+current candidate and lets the rules engine validate it. It does not choose
+missing fields or apply a hidden `AutoPay` default for the trainer.
 
 ### No authentication, no TTLs, no metrics
 

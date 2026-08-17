@@ -96,8 +96,9 @@ curl -s -X POST localhost:8081/envs/$ENV/step \
   -H 'Content-Type: application/json' -d '{"actionId": 3}'
 ```
 
-**Action IDs are per-step.** They are regenerated on every step/decision. Always pick from the
-*latest* observation; a stale id returns `400`.
+**Action IDs are opaque env-local handles.** A fresh observation generation gets fresh monotonically
+increasing handles, while repeated reads of the same state keep their handles. Always pick from the
+latest observation; a stale in-range handle cannot be rebound and returns `400`.
 
 ### Reading an observation
 

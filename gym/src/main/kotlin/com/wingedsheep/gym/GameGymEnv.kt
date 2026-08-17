@@ -9,6 +9,7 @@ import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ResolvedAction
+import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.SnapshotHandle
 import kotlinx.serialization.json.Json
@@ -33,6 +34,17 @@ class GameGymEnv(
 
     @Volatile
     private var registry: ActionRegistry = ActionRegistry.EMPTY
+
+    /** The last wire observation and registry; repeated reads of one state are a no-op. */
+    @Volatile
+    private var cachedObservation: ObservationResult? = null
+
+    /** Step generation, rather than the privacy-projected digest, guards the cache. */
+    @Volatile
+    private var cachedStepCount: Int? = null
+
+    /** Env-local action handles are never reused, including after reset/restore. */
+    private var nextActionId: Int = 0
 
     private val actionSerialization = Json {
         encodeDefaults = true
@@ -63,8 +75,8 @@ class GameGymEnv(
     /**
      * Execute an action-ID candidate with an external controller's explicit choice payload.
      * [actionPayload] is an overlay on the action's `actionSemantics`; the registry supplies
-     * opaque/runtime fields such as generated ability IDs. No target, payment, mode, or ordering
-     * is selected by this method.
+     * opaque/runtime fields such as generated ability IDs. The caller must include every
+     * required target, payment, mode, combat, or ordering field; this method selects none.
      */
     fun step(actionId: Int, actionPayload: JsonObject): ObservationResult {
         val resolved = registry.resolve(actionId)
@@ -72,6 +84,14 @@ class GameGymEnv(
             ?: throw IllegalArgumentException(
                 "Action ID $actionId does not resolve to a legal game-action candidate"
             )
+        val missingFields = ActionPayloadRequirements.missingRequiredFields(
+            legal.legalAction,
+            actionPayload
+        )
+        require(missingFields.isEmpty()) {
+            "Structured action payload is missing explicit field(s): ${missingFields.joinToString()}; " +
+                "copy actionSemantics and fill every required choice"
+        }
         val submitted = materializeAction(legal.action, actionPayload)
         environment.stepFromCandidate(legal.action, submitted)
         return build()
@@ -85,6 +105,8 @@ class GameGymEnv(
 
     /** Re-initialise the underlying game in place. */
     fun reset(gameConfig: GameConfig, maxSteps: Int? = null): ObservationResult {
+        cachedObservation = null
+        cachedStepCount = null
         environment.reset(gameConfig, maxSteps)
         return build()
     }
@@ -116,6 +138,8 @@ class GameGymEnv(
 
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
         val snap = codec.load(handle)
+        cachedObservation = null
+        cachedStepCount = null
         environment.restore(snap.state, snap.playerIds, snap.stepCount, snap.maxSteps)
         return build()
     }
@@ -131,8 +155,35 @@ class GameGymEnv(
             environment.legalActions(),
             truncated = environment.isTruncated
         )
-        registry = result.registry
-        return result
+        val rawObservation = result.observation as? TrainingObservation
+            ?: error("GameGymEnv requires a TrainingObservation")
+        val previous = cachedObservation
+        if (previous != null && cachedStepCount == environment.stepCount) {
+            registry = previous.registry
+            return previous
+        }
+
+        val rawIds = rawObservation.legalActions.map { it.actionId }
+        val freshIds = rawIds.map { allocateActionId() }
+        val idMapping = rawIds.zip(freshIds).toMap()
+        val remappedObservation = rawObservation.copy(
+            legalActions = rawObservation.legalActions.mapIndexed { index, action ->
+                action.copy(actionId = freshIds[index])
+            }
+        )
+        val remapped = ObservationResult(
+            observation = remappedObservation,
+            registry = result.registry.remapIds(idMapping)
+        )
+        cachedObservation = remapped
+        cachedStepCount = environment.stepCount
+        registry = remapped.registry
+        return remapped
+    }
+
+    private fun allocateActionId(): Int {
+        check(nextActionId != Int.MAX_VALUE) { "Action ID space exhausted for this environment" }
+        return nextActionId++
     }
 
     private fun executeResolved(resolved: ResolvedAction, actionId: Int) {

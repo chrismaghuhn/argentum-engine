@@ -30,7 +30,7 @@ sealed interface Observation {
     /** Non-null only for in-game complex decisions; always null for deckbuild. */
     val pendingDecision: PendingDecisionView?
 
-    /** Every action available to [agentToAct] this step. Action IDs are per-step. */
+    /** Every action available to [agentToAct] this step. Action IDs are opaque env-local handles. */
     val legalActions: List<LegalActionView>
 
     /** True once the env reached a terminal state (game over, or deck finalized). */
@@ -51,8 +51,10 @@ sealed interface Observation {
  * [EntityFeatures.types] / [EntityFeatures.subtypes] / [EntityFeatures.keywords]
  * rather than as new fields.
  *
- * Action IDs in [legalActions] are **per-step** — they are regenerated every
- * time the environment advances and must not be cached across steps.
+ * Action IDs in [legalActions] are opaque env-local handles. A fresh
+ * observation generation gets fresh handles; repeated reads of one unchanged
+ * state keep the same handles. Handles are never rebound after the environment
+ * advances, resets, or restores, and must not be cached by trainers.
  */
 @Serializable
 @SerialName("Game")
@@ -231,12 +233,12 @@ data class StackItemView(
 enum class StackItemKind { SPELL, TRIGGERED_ABILITY, ACTIVATED_ABILITY, OTHER }
 
 /**
- * Compact view of a single legal action. Trainers post back the [actionId]
+ * Compact view of a single legal action. Trainers post back the opaque [actionId]
  * to commit when [requiresStructuredAction] is false. If it is true, the
  * action is a target/payment/mode/etc. template and the trainer must copy and
  * complete [actionSemantics] in the structured step payload. The registry
- * mapping `Int → engine action` lives on the server and is regenerated every
- * step.
+ * mapping `Int → engine action` lives on the server; handles are env-local and
+ * are never rebound to a later observation generation.
  *
  * Decision options (when [TrainingObservation.pendingDecision] is set and
  * the decision is simple enough to fold in — YesNo, ChooseNumber, ChooseMode,

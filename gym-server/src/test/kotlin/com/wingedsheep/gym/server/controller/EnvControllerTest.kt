@@ -190,6 +190,18 @@ class EnvControllerTest : FunSpec() {
             val afterStep = json.decodeFromString<TrainingObservation>(stepResp.body())
             afterStep.stateDigest shouldNotBe created.observation.stateDigest
 
+            // The old handle is in range, but it belongs to the previous observation generation.
+            // It must not be rebound to whichever action now occupies that integer.
+            val staleStepResp = postJson(
+                "/envs/${created.envId.value}/step",
+                json.encodeToString(StepBody(actionId, firstAction.actionSemantics))
+            )
+            staleStepResp.statusCode() shouldBe 400
+            val afterStale = json.decodeFromString<TrainingObservation>(
+                get("/envs/${created.envId.value}").body()
+            )
+            afterStale.stateDigest shouldBe afterStep.stateDigest
+
             // -- list includes the env --
             val listResp = get("/envs")
             val ids = json.decodeFromString<List<EnvId>>(listResp.body())

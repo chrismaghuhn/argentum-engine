@@ -1,12 +1,18 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.DeclareAttackers
+import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -76,6 +82,11 @@ class GameGymEnvActionContractTest : FunSpec({
         }
         environment.stepCount shouldBe stepCountBefore
 
+        shouldThrow<IllegalArgumentException> {
+            gym.step(targeted.actionId, buildJsonObject {})
+        }
+        environment.stepCount shouldBe stepCountBefore
+
         val opponent = environment.playerIds[1]
         val payload = buildJsonObject {
             targeted.actionSemantics!!.forEach { (key, value) -> put(key, value) }
@@ -99,7 +110,28 @@ class GameGymEnvActionContractTest : FunSpec({
         }
         environment.stepCount shouldBe stepCountBefore
 
-        gym.step(targeted.actionId, payload)
+        val staleActionId = targeted.actionId
+        gym.step(staleActionId, payload)
         environment.stepCount shouldBe stepCountBefore + 1
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(staleActionId)
+        }
+        environment.stepCount shouldBe stepCountBefore + 1
+    }
+
+    test("combat declaration templates require explicit empty-or-populated choices") {
+        val player = EntityId("player")
+        val cases = listOf(
+            LegalAction(DeclareAttackers(player, emptyMap()), "DeclareAttackers", "attackers") to "attackers",
+            LegalAction(DeclareBlockers(player, emptyMap()), "DeclareBlockers", "blockers") to "blockers",
+            LegalAction(OrderBlockers(player, EntityId("attacker"), emptyList()), "OrderBlockers", "order") to
+                "orderedBlockers"
+        )
+
+        cases.forEach { (action, requiredField) ->
+            ActionPayloadRequirements.requiresStructuredAction(action) shouldBe true
+            ActionPayloadRequirements.missingRequiredFields(action, buildJsonObject {}) shouldBe listOf(requiredField)
+        }
     }
 })
