@@ -346,6 +346,52 @@
     ]
 }
 
+// Garruk's Packleader
+{
+    "name": "Garruk's Packleader",
+    "manaCost": "{4}{G}",
+    "typeLine": "Creature — Beast",
+    "oracleText": "Whenever another creature you control with power 3 or greater enters, you may draw a card.",
+    "creatureStats": {
+        "power": 4,
+        "toughness": 4
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "filter": "creature pow>=3 ctrl:you",
+                    "to": "Battlefield"
+                },
+                "binding": "OTHER",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "DrawCards",
+                        "count": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "177",
+        "rarity": "UNCOMMON",
+        "artist": "Nils Hamm",
+        "flavorText": "\"He has learned much in his long years. And unlike selfish humans, he's willing to share.\"\n—Garruk Wildspeaker",
+        "imageUri": "https://cards.scryfall.io/normal/front/d/f/dfaef299-7879-4f52-8ee4-701ed150b930.jpg?1783941798"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Hoarding Dragon
 {
     "name": "Hoarding Dragon",
