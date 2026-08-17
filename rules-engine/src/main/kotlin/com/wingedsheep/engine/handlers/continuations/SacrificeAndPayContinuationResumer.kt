@@ -9,7 +9,7 @@ import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -717,20 +717,19 @@ class SacrificeAndPayContinuationResumer(
         continuation: AnyPlayerMayPayContinuation,
         checkForMore: CheckForMore
     ): ExecutionResult {
-        val predicateEvaluator = PredicateEvaluator()
         val cost = continuation.cost
-        val projected = state.projectedState
         val decisionHandler = DecisionHandler()
 
         for ((index, nextPlayerId) in continuation.remainingPlayers.withIndex()) {
             val remainingAfter = continuation.remainingPlayers.drop(index + 1)
             when (val atom = (cost as? PayCost.Atom)?.atom) {
                 is CostAtom.Sacrifice -> {
-                    val battlefield = state.getZone(ZoneKey(nextPlayerId, Zone.BATTLEFIELD))
-                    val context = PredicateContext(controllerId = nextPlayerId)
-                    val validPermanents = battlefield.filter { permanentId ->
-                        predicateEvaluator.matches(state, projected, permanentId, atom.filter, context)
-                    }
+                    val validPermanents = BattlefieldFilterUtils.findMatchingOnBattlefield(
+                        state,
+                        atom.filter.youControl(),
+                        PredicateContext(controllerId = nextPlayerId),
+                        excludeSelfId = if (atom.excludeSelf) continuation.sourceId else null
+                    )
                     if (validPermanents.size >= atom.count) {
                         val prompt = "You may sacrifice ${atom.count} ${atom.filter.description}s to cause ${continuation.sourceName} to be sacrificed, or skip"
                         val decisionResult = decisionHandler.createCardSelectionDecision(
