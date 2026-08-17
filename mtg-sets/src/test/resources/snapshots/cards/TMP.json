@@ -300,6 +300,93 @@
     "colorIdentityOverride": []
 }
 
+// Bounty Hunter
+{
+    "name": "Bounty Hunter",
+    "manaCost": "{2}{B}{B}",
+    "typeLine": "Creature — Human Archer Minion",
+    "oracleText": "{T}: Put a bounty counter on target nonblack creature.\n{T}: Destroy target creature with a bounty counter on it.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "ability_1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddCounters",
+                    "counterType": "bounty",
+                    "count": 1,
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target nonblack creature"
+                    }
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": {
+                                "cardPredicates": [
+                                    "IsCreature",
+                                    {
+                                        "type": "NotColor",
+                                        "color": "BLACK"
+                                    }
+                                ]
+                            }
+                        },
+                        "id": "target nonblack creature"
+                    }
+                ]
+            },
+            {
+                "id": "ability_2",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target creature with a bounty counter on it"
+                    },
+                    "destination": "Graveyard",
+                    "byDestruction": true
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": {
+                                "cardPredicates": [
+                                    "IsCreature"
+                                ],
+                                "statePredicates": [
+                                    {
+                                        "type": "HasCounter",
+                                        "counterType": "bounty"
+                                    }
+                                ]
+                            }
+                        },
+                        "id": "target creature with a bounty counter on it"
+                    }
+                ]
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "110",
+        "rarity": "RARE",
+        "artist": "Brian Snõddy",
+        "imageUri": "https://cards.scryfall.io/normal/front/9/8/98319fd3-0aad-4fc3-bb83-3c027d0ed652.jpg?1783946646"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Caldera Lake
 {
     "name": "Caldera Lake",
