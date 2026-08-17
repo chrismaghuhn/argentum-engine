@@ -264,6 +264,42 @@
     ]
 }
 
+// Mirran Crusader
+{
+    "name": "Mirran Crusader",
+    "manaCost": "{1}{W}{W}",
+    "typeLine": "Creature — Human Knight",
+    "oracleText": "Double strike, protection from black and from green",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "keywords": [
+        "DOUBLE_STRIKE"
+    ],
+    "keywordAbilities": [
+        {
+            "type": "Protection",
+            "scope": {
+                "type": "ProtectionScope.Colors",
+                "colors": [
+                    "BLACK",
+                    "GREEN"
+                ]
+            }
+        }
+    ],
+    "metadata": {
+        "collectorNumber": "14",
+        "rarity": "RARE",
+        "artist": "Eric Deschamps",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/a/aaf7a821-3587-4aad-8411-fca5c96ab5c4.jpg?1783941390"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Ogre Resister
 {
     "name": "Ogre Resister",
