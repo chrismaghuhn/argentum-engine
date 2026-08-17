@@ -409,6 +409,55 @@
     ]
 }
 
+// Kemba, Kha Regent
+{
+    "name": "Kemba, Kha Regent",
+    "manaCost": "{1}{W}{W}",
+    "typeLine": "Legendary Creature — Cat Cleric",
+    "oracleText": "At the beginning of your upkeep, create a 2/2 white Cat creature token for each Equipment attached to Kemba.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 4
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "StepEvent",
+                    "step": "UPKEEP"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "CreateToken",
+                    "count": {
+                        "type": "EntityProperty",
+                        "entity": "Source",
+                        "numericProperty": "AttachmentCount"
+                    },
+                    "power": 2,
+                    "toughness": 2,
+                    "colors": [
+                        "WHITE"
+                    ],
+                    "creatureTypes": [
+                        "Cat"
+                    ]
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "12",
+        "rarity": "RARE",
+        "artist": "Todd Lockwood",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/9/1964ca48-3260-4e2d-9014-984c1efc9a43.jpg?1783941744"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Loxodon Wayfarer
 {
     "name": "Loxodon Wayfarer",
