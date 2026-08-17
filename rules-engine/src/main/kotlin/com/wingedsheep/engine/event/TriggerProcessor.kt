@@ -67,7 +67,11 @@ class TriggerProcessor(
      * @param triggers List of pending triggers in APNAP order
      * @return ExecutionResult - may be paused if a trigger requires targets
      */
-    fun processTriggers(state: GameState, triggers: List<PendingTrigger>): ExecutionResult {
+    fun processTriggers(
+        state: GameState,
+        triggers: List<PendingTrigger>,
+        preorderedTriggerCount: Int = 0
+    ): ExecutionResult {
         // Rule 704.6 / 800.4a: once the game has ended (or a player has left), triggered
         // abilities don't resolve. In particular, dies/leaves-battlefield triggers from a
         // creature whose controller just lost must not pause the game asking that player
@@ -99,6 +103,25 @@ class TriggerProcessor(
                 )
             }
 
+            // CR 603.3b: after APNAP has assigned this controller's trigger group, that
+            // controller chooses the relative order of every trigger it controls.  Detector order
+            // is only a deterministic transport order; it is not a legal choice.  A prefix marked
+            // by a TriggerOrderingContinuation has already been chosen and must pass through here
+            // without being asked a second time after a target/may pause.
+            if (index >= preorderedTriggerCount) {
+                val sameControllerRun = liveTriggers
+                    .drop(index)
+                    .takeWhile { it.controllerId == liveTriggers[index].controllerId }
+                if (sameControllerRun.size > 1) {
+                    return raiseTriggerOrdering(
+                        currentState,
+                        sameControllerRun,
+                        liveTriggers.drop(index + sameControllerRun.size),
+                        allEvents
+                    )
+                }
+            }
+
             // Batch the may-question for a run of structurally identical optional ("you may …
             // target …") triggers (MTGO's auto-stack-identical-triggers affordance). A run of ≥ 2
             // is answered once with a BatchYesNoDecision instead of one yes/no per trigger; the
@@ -106,7 +129,13 @@ class TriggerProcessor(
             val run = batchRunAt(currentState, liveTriggers, index)
             if (run != null) {
                 val remainingTriggers = liveTriggers.drop(index + run.size)
-                return raiseBatchMayDecision(currentState, run, remainingTriggers, allEvents)
+                return raiseBatchMayDecision(
+                    currentState,
+                    run,
+                    remainingTriggers,
+                    allEvents,
+                    preorderedTriggerCount = (preorderedTriggerCount - index - run.size).coerceAtLeast(0)
+                )
             }
 
             val trigger = liveTriggers[index]
@@ -132,7 +161,9 @@ class TriggerProcessor(
                 if (remainingTriggers.isNotEmpty()) {
                     val pendingContinuation = PendingTriggersContinuation(
                         decisionId = "pending-triggers-${java.util.UUID.randomUUID()}",
-                        remainingTriggers = remainingTriggers
+                        remainingTriggers = remainingTriggers,
+                        preorderedTriggerCount =
+                            (preorderedTriggerCount - index - 1).coerceAtLeast(0)
                     )
                     // Push BELOW the TriggeredAbilityContinuation that was just pushed
                     // by inserting at the bottom of what was just added
@@ -156,6 +187,56 @@ class TriggerProcessor(
 
         return ExecutionResult.success(currentState, allEvents)
     }
+
+    private fun raiseTriggerOrdering(
+        state: GameState,
+        triggers: List<PendingTrigger>,
+        remainingTriggers: List<PendingTrigger>,
+        priorEvents: List<GameEvent>
+    ): ExecutionResult {
+        val controllerId = triggers.firstOrNull()?.controllerId
+            ?: return ExecutionResult.error(state, "Trigger ordering group has no controller")
+        if (triggers.size < 2 || triggers.any { it.controllerId != controllerId }) {
+            return ExecutionResult.error(state, "Invalid same-controller trigger ordering group")
+        }
+
+        val objectIds = triggers.indices.map(::triggerOrderingObjectId)
+        val objectLabels = objectIds.zip(triggers).associate { (objectId, trigger) ->
+            objectId to "${trigger.sourceName}: ${trigger.ability.description}"
+        }
+        // This is only the routing handle for the pending decision.  The ordered domain itself is
+        // the deterministic ordinal object IDs above; do not make a runtime stack/entity ID the
+        // public identity of a trigger.
+        val decisionId = "trigger-order-${java.util.UUID.randomUUID()}"
+        val decision = OrderObjectsDecision(
+            id = decisionId,
+            playerId = controllerId,
+            prompt = "Choose the order for your simultaneous triggered abilities",
+            context = DecisionContext(phase = DecisionPhase.TRIGGER),
+            objects = objectIds,
+            objectLabels = objectLabels
+        )
+        val continuation = TriggerOrderingContinuation(
+            decisionId = decisionId,
+            objectIds = objectIds,
+            triggers = triggers,
+            remainingTriggers = remainingTriggers
+        )
+        val pausedState = state.withPendingDecision(decision).pushContinuation(continuation)
+        return ExecutionResult.paused(
+            pausedState,
+            decision,
+            priorEvents + DecisionRequestedEvent(
+                decisionId = decisionId,
+                playerId = controllerId,
+                decisionType = "ORDER_OBJECTS",
+                prompt = decision.prompt
+            )
+        )
+    }
+
+    private fun triggerOrderingObjectId(index: Int): EntityId =
+        EntityId("trigger-order-object-$index")
 
     /**
      * Externalize CR 603.7b instead of selecting an occurrence by detector order.  The candidates
@@ -312,7 +393,8 @@ class TriggerProcessor(
         state: GameState,
         run: List<PendingTrigger>,
         remainingTriggers: List<PendingTrigger>,
-        priorEvents: List<GameEvent>
+        priorEvents: List<GameEvent>,
+        preorderedTriggerCount: Int
     ): ExecutionResult {
         val first = run.first()
         val ability = first.ability
@@ -337,7 +419,8 @@ class TriggerProcessor(
             stateWithContinuations = stateWithContinuations.pushContinuation(
                 PendingTriggersContinuation(
                     decisionId = "pending-triggers-${java.util.UUID.randomUUID()}",
-                    remainingTriggers = remainingTriggers
+                    remainingTriggers = remainingTriggers,
+                    preorderedTriggerCount = preorderedTriggerCount
                 )
             )
         }

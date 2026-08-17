@@ -749,6 +749,7 @@ class ReplayFingerprintV3Test : FunSpec({
                     context = contextA,
                     objects = listOf(first, second),
                     cardInfo = mapOf(first to cardInfoA),
+                    objectLabels = mapOf(first to "Display label A"),
                 ),
             ) to GameState(
                 pendingDecision = OrderObjectsDecision(
@@ -758,6 +759,7 @@ class ReplayFingerprintV3Test : FunSpec({
                     context = contextB,
                     objects = listOf(first, second),
                     cardInfo = mapOf(first to cardInfoB),
+                    objectLabels = mapOf(first to "Display label B"),
                 ),
             ),
             GameState(

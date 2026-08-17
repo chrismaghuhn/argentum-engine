@@ -380,7 +380,8 @@ data class DistributeDecision(
 /**
  * Player must order objects for legacy or non-combat effects (e.g., scry).
  *
- * @property objects The entity IDs that need to be ordered
+ * @property objects The IDs in the ordering domain. These are usually entity IDs, but may be
+ * opaque decision-scoped handles when the objects do not yet exist as game entities.
  * @property cardInfo Optional card info for UI display in legacy callers
  */
 @Serializable
@@ -391,7 +392,14 @@ data class OrderObjectsDecision(
     override val prompt: String,
     override val context: DecisionContext,
     val objects: List<EntityId>,
-    val cardInfo: Map<EntityId, SearchCardInfo>? = null
+    val cardInfo: Map<EntityId, SearchCardInfo>? = null,
+    /**
+     * Optional actor-facing labels for opaque ordering objects.  Card-ordering callers normally
+     * use [cardInfo]; trigger ordering has no entity on the stack yet, so it supplies a stable,
+     * decision-scoped object ID plus this label without exposing a [PendingTrigger] serialization
+     * or a runtime stack ID as the public identity.
+     */
+    val objectLabels: Map<EntityId, String>? = null
 ) : PendingDecision
 
 /**

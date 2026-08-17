@@ -21,7 +21,11 @@ class CoreAutoResumerModule(
 
     override fun autoResumers(): List<AutoResumer<*>> = listOf(
         autoResumer(PendingTriggersContinuation::class) { state, continuation, events, _ ->
-            val result = services.triggerProcessor.processTriggers(state, continuation.remainingTriggers)
+            val result = services.triggerProcessor.processTriggers(
+                state,
+                continuation.remainingTriggers,
+                preorderedTriggerCount = continuation.preorderedTriggerCount
+            )
             mergeAndContinue(result, events)
         },
 

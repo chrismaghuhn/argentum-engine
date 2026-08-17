@@ -267,10 +267,36 @@ class GameTestDriver {
      */
     fun bothPass(): ExecutionResult {
         autoSubmitCombatDeclarationIfNeeded()
+        // Simultaneous triggered abilities now expose CR 603.3b's controller-owned relative
+        // order through the same generic decision contract used by production callers.  A
+        // helper named bothPass is still expected to advance the stack, so answer this test-only
+        // setup decision deterministically before passing priority; scenario tests that need to
+        // assert the domain submit the OrderObjectsDecision explicitly.
+        fun resolveOrderingIfPresent(): ExecutionResult? {
+            val decision = state.pendingDecision as? OrderObjectsDecision ?: return null
+            return submitDecision(
+                decision.playerId,
+                OrderedResponse(decision.id, decision.objects)
+            )
+        }
+
+        resolveOrderingIfPresent()?.let { result ->
+            if (state.pendingDecision != null) return result
+        }
         var result = passPriority(state.priorityPlayerId ?: player1)
+        // The order decision is raised while the first pass resolves the triggering object.  It
+        // may therefore appear as the result of that pass rather than at the start of this helper.
+        resolveOrderingIfPresent()?.let { orderingResult ->
+            result = orderingResult
+            if (state.pendingDecision != null) return result
+        }
         if (result.isSuccess && state.priorityPlayerId != null) {
             autoSubmitCombatDeclarationIfNeeded()
             result = passPriority(state.priorityPlayerId!!)
+            resolveOrderingIfPresent()?.let { orderingResult ->
+                result = orderingResult
+                if (state.pendingDecision != null) return result
+            }
         }
         return result
     }
@@ -1320,6 +1346,12 @@ class GameTestDriver {
             }
             is ReorderLibraryDecision -> {
                 submitOrderedResponse(decision.playerId, decision.cards)
+            }
+            is OrderObjectsDecision -> {
+                submitDecision(
+                    decision.playerId,
+                    OrderedResponse(decision.id, decision.objects)
+                )
             }
             is DistributeDecision -> {
                 // Auto-resolve: assign all to the first target

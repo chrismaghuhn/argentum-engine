@@ -479,6 +479,8 @@ export interface OrderObjectsDecision extends PendingDecisionBase {
   readonly type: 'OrderObjectsDecision'
   readonly objects: readonly EntityId[]
   readonly cardInfo?: Record<EntityId, SearchCardInfo>
+  /** Actor-facing labels for opaque decision-scoped objects such as triggered abilities. */
+  readonly objectLabels?: Record<EntityId, string>
 }
 
 /**
