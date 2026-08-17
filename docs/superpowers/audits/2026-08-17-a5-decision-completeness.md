@@ -10,8 +10,9 @@ projection is extended only to carry the engine's structured option metadata.
 | Item | Evidence/status |
 | --- | --- |
 | `BASE_SHA` | `c78db93c01f22b64d08725ee7a605cd0c9364f8d` |
-| Origin main at audit time | `c78db93c01f22b64d08725ee7a605cd0c9364f8d` |
-| Pinned baseline ancestor of origin main | Yes |
+| Origin main after PR #29 integration | `f0a0d28703dd7f0cde4d8aa124cbdd15a366da7a` |
+| Pinned baseline ancestor of origin main | Yes; PR #29 head `4b001b4476d8896ea61f353914df6fe3c01ed5d0` is also an ancestor |
+| A3 integration into this branch | Yes; normal merge commit `bdcc4d3bde` from `origin/main`, no rebase |
 | Exact Akiri/Chevill pair | `BLOCKED_BY_A8_CARD_CLOSURE`; no substitute cards used |
 | New decision primitive | Generic `ChooseOptionDecision` plus serializable `DelayedTriggerOccurrenceChoiceContinuation`; no card-specific or Commander-specific primitive |
 | Full exact-pair decision reachability | Not claimable until A8 closure and runtime boot |
@@ -115,11 +116,21 @@ fails before Gradle with the known Python 3.14 extensionless-helper
 `--command "C:\Program Files\Git\bin\bash.exe" scripts/gradle-locked` reached
 Gradle successfully. Evidence:
 
-* `PerDefendingPlayerAttackTriggerScenarioTest`: 28/28
-* `TrainingObservationTest`: 6/6; `ObservationPrivacyTest`: 27/27
-* `:rules-engine:test`: 2,981/2,981; `:gym:test`: 81/81
-* `:gym-server:test`: 12/12; `:game-server:test`: 529/529 (13 skipped)
+* `PerDefendingPlayerAttackTriggerScenarioTest`: 28/28 (focused rerun)
+* `TrainingObservationTest`: 6/6; `ObservationPrivacyTest`: 27/27 (focused rerun)
+* `EnvControllerTest`: 14/14; `MultiEnvServiceTest`: 20/20 (focused A3 routing/privacy rerun)
+* `:rules-engine:test`: 2,982/2,982; `:gym:test`: 92/92
+* `:gym-server:test`: 14/14; `:game-server:test`: 529/529 (13 skipped)
 * `:ai:test`: 507/507 (11 skipped)
+
+The post-A3 integration full gate was `BUILD SUCCESSFUL in 3m 48s`. The
+focused replay classes (`CompactReplayReconstructionTest`,
+`ReplayDecisionContinuationTest`, `ReplayDivergenceReproTest`,
+`ReplayDurabilityTest`, and `ReplayFingerprintV3Test`) passed; the two
+divergence reproducer cases remain intentionally skipped. `FrozenBaselineTest`
+also passed in a focused rerun. A fresh final-diff review classified P0/P1/P2
+as 0/0/0 for this bounded slice. Hosted CI for the new post-merge head remains
+pending until the branch is pushed.
 
 The full rules-engine gate passed after the final test additions. The frozen
 baseline fixture hash `6ff9ded1403d59ac` (distinct from the pinned source
