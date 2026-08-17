@@ -708,12 +708,24 @@ preview — in the turn-face-up handler.)
 - `Costs.pay.Discard(filter = Any, count = 1, random = false)` — discard cards matching `filter`.
   Random variant prompts a yes/no and the engine picks the discards (Pillaging Horde).
 - `Costs.pay.Sacrifice(filter = Any, count = 1)` — sacrifice permanents you control matching
-  `filter`. Source is auto-excluded. "...unless you sacrifice three Forests" (Primeval Force).
+  `filter`. **The source is included when it matches** — "sacrifice it unless you sacrifice an
+  artifact" on an artifact creature may name that creature. "...unless you sacrifice three Forests"
+  (Primeval Force).
+- `Costs.pay.SacrificeAnother(filter = Any, count = 1)` — the printed-"another" variant; same cost
+  with the source excluded.
 - `Costs.pay.Exile(filter = Any, zone = HAND, count = 1)` — exile cards from `zone` matching
   `filter`. "...unless you exile a blue card from your hand."
 - `Costs.pay.Tap(filter = Any, count = 1)` — tap untapped permanents you control matching `filter`.
-  Source is auto-excluded. Tapping each emits a `TappedEvent` so "becomes tapped" triggers fire.
+  **The source is included when it matches and is untapped** — Public Thoroughfare's and Command
+  Bridge's rulings both allow tapping the land itself when something untapped it in response.
+  Tapping each emits a `TappedEvent` so "becomes tapped" triggers fire.
   "...unless you tap an untapped permanent you control" (Command Bridge).
+- `Costs.pay.TapAnother(filter = Any, count = 1)` — the printed-"another" variant; same cost with
+  the source excluded.
+
+The word **"another"** is the only thing that decides self-exclusion, and it lives on the cost atom
+(`excludeSelf`). Both `PayOrSufferExecutor` and `CostPaymentService` read that flag; neither applies
+a blanket exclusion.
 - `Costs.pay.Choice(options)` — present several `PayCost`s; player picks one (or the suffer effect).
   Unaffordable options are hidden. "...unless they sacrifice a nonland permanent or discard a card."
 - `Costs.pay.ReturnToHand(filter, count = 1)` — return permanents you control to their owner's hand.
@@ -1023,6 +1035,11 @@ Atomic effect factories. For library/zone manipulation, prefer the pipelines in 
 - `Effects.Cascade` — CR 702.85a (`CascadeEffect`). Exile from the top of the controller's library
   until a nonland card with mana value **strictly less than** the triggering spell's is exiled,
   offer to cast it for free, bottom-randomize every exiled card that isn't cast.
+  **`Keyword.CASCADE` alone does nothing** — the engine never reads it. Cascade *is* a "when you cast
+  this spell" triggered ability, so a card with cascade carries the keyword (for the printed line)
+  **plus** `triggeredAbility { trigger = Triggers.WhenYouCastThisSpell(); effect = Effects.Cascade }`.
+  Quandrix, the Proof; Meteoric Mace; Annoyed Altisaur. The card type is irrelevant — it fires on an
+  Equipment spell exactly as on a creature spell.
 - `Effects.Discover(amount, storeDiscoveredAs?, thenEffect?)` — Discover N, CR 701.57 (`DiscoverEffect`).
   Exile from the top of the controller's library until a nonland card with mana value **≤ N** is exiled
   (the "discovered card"), then present a two-option prompt: **cast it for free** or **put it into your
@@ -7194,7 +7211,12 @@ composite abilities).
 - `Affinity(filter)` — cost reduction per matching permanent.
 - `Amplify(n)` — ETB reveal-creatures-for-counters.
 - `Devour(multiplier, sacrificeFilter, variant)` — "As this enters, you may sacrifice any number of [sacrificeFilter]. It enters with [multiplier] × that many +1/+1 counters." Plain Devour uses `sacrificeFilter = Creature` and `variant = ""`; the Edge of Eternities variant "Devour land N" uses `KeywordAbility.devourLand(n)` (`sacrificeFilter = Land`, `variant = "land"`). The keyword surfaces the rules text; pair with [`EntersWithDevour`](#15-replacement-effects) for the mechanical behavior.
-- `Annihilator(n)` — attacker forces sacrifices.
+- `Annihilator(n)` — attacker forces sacrifices. Display-only; nothing in the engine reads
+  `Keyword.ANNIHILATOR`. Lower it alongside the keyword ability as the trigger it abbreviates —
+  `triggeredAbility { trigger = Triggers.Attacks; effect = Effects.Sacrifice(GameObjectFilter.Permanent,
+  n, EffectTarget.PlayerRef(Player.DefendingPlayer)) }` (Nulldrifter). `Permanent`, not `Creature`:
+  annihilator eats any permanent, and the *defending player* chooses, which is why it's the edict
+  facade rather than a targeted sacrifice.
 - `Absorb(n)` — prevent N damage each time it would be dealt to this.
 - `Bushido(n)` — +N/+N when blocking or blocked.
 - `Rampage(n)` — +N/+N for each blocker past the first. Display-only; wire the behavior with the
@@ -7318,7 +7340,15 @@ composite abilities).
   and crews Vehicles as though its power were 2 greater” uses `modifier = 2`; “using its toughness
   rather than its power” uses `characteristic = CrewSaddleCharacteristic.TOUGHNESS`. Printed and
   token-granted instances use the same handler path.
-- `Modular(n)` — ETB with +1/+1 counters, transfer on death.
+- `Modular(n)` — ETB with +1/+1 counters, transfer on death. Display-only; nothing in the engine
+  reads `Keyword.MODULAR`. Lower it alongside the keyword ability as its two printed halves
+  (Arcbound Condor): `replacementEffect(EntersWithCounters(CounterTypeFilter.PlusOnePlusOne, n,
+  selfOnly = true))`, plus an **optional** `Triggers.Dies` trigger targeting an artifact creature
+  whose effect is `Effects.AddDynamicCounters(Counters.PLUS_ONE_PLUS_ONE,
+  DynamicAmount.ContextProperty(ContextPropertyKey.LAST_KNOWN_PLUS_ONE_COUNTER_COUNT), …)`. Read the
+  last-known **+1/+1** count specifically rather than reaching for `Effects.MoveAllLastKnownCounters`
+  (Servant of the Scale): that moves every counter kind, so a modular creature killed by -1/-1
+  counters would hand its leftover -1/-1 counters to the target too.
 - `Fading(n)` — ETB with N fade counters; removes one each upkeep, sacrifice if can't.
 - `Vanishing(n)` — same idea with time counters.
 - `Renown(n)` — first combat damage to a player grants renown counters.
@@ -7902,6 +7932,15 @@ answer it and would silently return `false`.
 - `YouControlAtLeast(count, filter)` — you control `count` or more matching permanents (the
   filtered-count generalization of `ControlCreaturesAtLeast`/`ControlLandsAtLeast`; e.g.
   `YouControlAtLeast(3, GameObjectFilter.Creature.attacking())` for Stormbeacon Blade).
+- `YouControlOtherAtLeast(count, filter)` / `YouControlOtherAtMost(count, filter)` — the same tally
+  with the source itself left out, i.e. `AggregateBattlefield(..., excludeSelf = true)`. These are
+  the "other" of the slow lands ("enters tapped unless you control two or more **other** lands" →
+  `YouControlOtherAtLeast(2, GameObjectFilter.Land)`) and the fast lands ("two or fewer other lands"
+  → `YouControlOtherAtMost(2, …)`). **Write these rather than counting the whole group against one
+  more:** the two agree only while the source itself matches `filter` and is already on the
+  battlefield when the condition is checked — true of a land testing lands, and of nothing the
+  signature promises. Self-exclusion is a property of the *count*, not a predicate on the filter,
+  which is why it is a separate entry and not a `GameObjectFilter` modifier.
 - `ControlCreature` — you control any creature.
 - `NoCreaturesOnBattlefield` — there are no creatures anywhere on the battlefield (global, either player;
   `Exists(Player.Each, …, negate = true)`). Used by Drop of Honey's "when there are no creatures on the
@@ -9910,11 +9949,14 @@ The priority groups are (CR 616.1a–f):
 - `EntersTapped(unlessCondition?, payLifeCost?)` — "this permanent enters tapped" (`unlessCondition = null`),
   or "enters tapped unless `<condition>`" when an `unlessCondition` is supplied. The "slow land" cycle
   (Deathcap Glade, Dreamroot Cascade, Sundown Pass — "enters tapped unless you control two or more other
-  lands") uses `unlessCondition = Conditions.YouControlAtLeast(3, GameObjectFilter.Land)`: the
-  `AggregateBattlefield` count includes the entering land itself, so "two or more *other* lands" is
-  "three or more lands total". The parallel "fast land" cycle (Blooming Marsh — "two or fewer other lands")
-  uses an `LTE`-direction `Compare(AggregateBattlefield(You, Land), LTE, Fixed(3))`. `payLifeCost` renders
-  the "you may pay N life; if you don't, it enters tapped" variant.
+  lands") uses `unlessCondition = Conditions.YouControlOtherAtLeast(2, GameObjectFilter.Land)`, and the
+  parallel "fast land" cycle (Blooming Marsh — "two or fewer other lands")
+  `Conditions.YouControlOtherAtMost(2, GameObjectFilter.Land)`. Both spell the printed "other" as
+  `AggregateBattlefield.excludeSelf`; counting the whole group against one more agrees arithmetically
+  *only* because the source is itself a land already on the battlefield when the condition is checked,
+  which is a fact about these twenty cards rather than about the shape. `payLifeCost` renders
+  the "you may pay N life; if you don't, it enters tapped" variant. Assay reads every shape of this
+  line — the condition is a slot over the whole condition vocabulary, not a rule per land cycle.
 - `EntersUntapped(appliesTo = ZoneChangeEvent(filter, to = Zone.BATTLEFIELD))` — the inverse of
   `EntersTapped`: "[filter] enter the battlefield untapped" (The Wandering Minstrel — "Lands you
   control enter untapped", `filter = GameObjectFilter.Land.youControl()`). Unlike `EntersTapped`,

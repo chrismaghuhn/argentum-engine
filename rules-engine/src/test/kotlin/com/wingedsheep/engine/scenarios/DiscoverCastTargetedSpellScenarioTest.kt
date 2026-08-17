@@ -119,7 +119,8 @@ class DiscoverCastTargetedSpellScenarioTest : ScenarioTestBase() {
 
             test("cascade hitting a targeted spell prompts for a target too") {
                 // Quandrix, the Proof — {4}{G}{U}, Cascade. Zombify (mana value 4 < 6) is the
-                // cascade hit. (Not Annoyed Altisaur: its bare CASCADE keyword is display-only.)
+                // cascade hit. Annoyed Altisaur now has the real cast trigger too; this case uses
+                // Quandrix because it specifically exercises a targeted cascade hit.
                 val game = scenario()
                     .withPlayers()
                     .withCardInHand(1, "Quandrix, the Proof")
