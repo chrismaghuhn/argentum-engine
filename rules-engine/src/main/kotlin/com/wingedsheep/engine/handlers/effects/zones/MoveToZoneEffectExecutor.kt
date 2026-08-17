@@ -17,6 +17,7 @@ import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.destroyPermanent
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionResult
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -42,6 +43,8 @@ class MoveToZoneEffectExecutor(
     private val cardRegistry: CardRegistry,
     private val targetFinder: TargetFinder = TargetFinder()
 ) : EffectExecutor<MoveToZoneEffect> {
+
+    private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
 
     override val effectType: KClass<MoveToZoneEffect> = MoveToZoneEffect::class
 
@@ -213,13 +216,10 @@ class MoveToZoneEffectExecutor(
         controllerId: EntityId,
         context: EffectContext
     ): EffectResult {
-        val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
-        val legalHosts = if (auraTarget == null) emptyList() else targetFinder.findLegalTargets(
+        val legalHosts = auraHostLegality.findLegalHosts(
             state = state,
-            requirement = auraTarget,
-            controllerId = controllerId,
-            sourceId = cardId,
-            ignoreTargetingRestrictions = true
+            auraId = cardId,
+            hostControllerId = controllerId,
         )
 
         // No legal host — the Aura can't enter and stays in its current zone (CR 303.4g).

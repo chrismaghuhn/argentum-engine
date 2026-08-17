@@ -21,6 +21,14 @@ import com.wingedsheep.sdk.scripting.ProtectionScope
  */
 object PlayerProtectionRules {
 
+    /** Characteristics used when a source has no entity yet, such as an Aura token copy. */
+    data class SourceCharacteristics(
+        val colors: Set<String> = emptySet(),
+        val subtypes: Set<String> = emptySet(),
+        val supertypes: Set<String> = emptySet(),
+        val cardTypes: Set<String> = emptySet(),
+    )
+
     /**
      * True if [playerId] has protection from the source [sourceId] (a spell or ability
      * source). [casterId] is the controller of that source, used for the
@@ -55,6 +63,31 @@ object PlayerProtectionRules {
         }
     }
 
+    /**
+     * The same protection check for a source represented only by its characteristics. A
+     * definition-only Aura token has no source entity or stable identity yet, but its printed
+     * colors and types still matter when the non-targeting attachment host is chosen.
+     */
+    fun isProtectedFromSourceCharacteristics(
+        state: GameState,
+        playerId: EntityId,
+        source: SourceCharacteristics,
+        casterId: EntityId?
+    ): Boolean {
+        val ownScopes = state.getEntity(playerId)?.get<PlayerProtectionComponent>()?.scopes.orEmpty()
+        if (ownScopes.any { scopeMatchesCharacteristics(it, source, playerId, casterId) }) return true
+
+        return state.getBattlefield().any { entityId ->
+            val container = state.getEntity(entityId) ?: return@any false
+            if (ControllerGrants.granterController(state, entityId) != playerId) return@any false
+            container.get<GrantsControllerProtectionComponent>()?.grants
+                ?.any {
+                    ControllerGrants.isActive(state, entityId, it.condition) &&
+                        scopeMatchesCharacteristics(it.scope, source, playerId, casterId)
+                } == true
+        }
+    }
+
     private fun scopeMatchesSource(
         state: GameState,
         protectedPlayerId: EntityId,
@@ -82,6 +115,21 @@ object PlayerProtectionRules {
             }
             ProtectionScope.Everything -> true
         }
+    }
+
+    private fun scopeMatchesCharacteristics(
+        scope: ProtectionScope,
+        source: SourceCharacteristics,
+        protectedPlayerId: EntityId,
+        casterId: EntityId?
+    ): Boolean = when (scope) {
+        is ProtectionScope.Color -> scope.color.name in source.colors
+        is ProtectionScope.Colors -> scope.colors.any { it.name in source.colors }
+        is ProtectionScope.Subtype -> source.subtypes.any { it.equals(scope.subtype, ignoreCase = true) }
+        is ProtectionScope.Supertype -> source.supertypes.any { it.equals(scope.supertype, ignoreCase = true) }
+        is ProtectionScope.CardType -> source.cardTypes.any { it.equals(scope.cardType, ignoreCase = true) }
+        ProtectionScope.Everything -> true
+        ProtectionScope.EachOpponent -> casterId != null && casterId != protectedPlayerId
     }
 
     /**

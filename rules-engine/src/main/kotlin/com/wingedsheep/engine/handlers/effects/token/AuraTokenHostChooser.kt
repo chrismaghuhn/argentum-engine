@@ -8,6 +8,7 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -104,14 +105,11 @@ internal object AuraTokenHostChooser {
         controllerId: EntityId,
         cardRegistry: CardRegistry?,
     ): List<EntityId> {
-        val auraTarget = cardRegistry?.getCard(auraDefinitionId)?.script?.auraTarget
-            ?: return emptyList()
-        return TargetFinder().findLegalTargets(
+        val registry = cardRegistry ?: return emptyList()
+        return AuraHostLegality(registry, TargetFinder()).findLegalHostsForDefinition(
             state = state,
-            requirement = auraTarget,
-            controllerId = controllerId,
-            sourceId = null,
-            ignoreTargetingRestrictions = true,
+            auraDefinitionId = auraDefinitionId,
+            hostControllerId = controllerId,
         )
     }
 }

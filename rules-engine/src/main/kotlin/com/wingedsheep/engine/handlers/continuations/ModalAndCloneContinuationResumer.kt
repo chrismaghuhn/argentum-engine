@@ -6,6 +6,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.modal.ChosenModeMemory
 import com.wingedsheep.engine.state.GameState
@@ -28,6 +30,7 @@ class ModalAndCloneContinuationResumer(
 ) : ContinuationResumerModule {
 
     private val dynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val auraHostLegality = AuraHostLegality(services.cardRegistry, TargetFinder())
 
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
         resumer(ModalContinuation::class, ::resumeModal),
@@ -1432,6 +1435,15 @@ class ModalAndCloneContinuationResumer(
 
         val hostId = response.selectedTargets[0]?.firstOrNull()
         if (hostId == null || hostId !in state.getBattlefield()) {
+            return checkForMore(state, emptyList())
+        }
+
+        val legalHosts = auraHostLegality.findLegalHostsForDefinition(
+            state = state,
+            auraDefinitionId = continuation.auraDefinitionId,
+            hostControllerId = continuation.controllerId,
+        )
+        if (hostId !in legalHosts) {
             return checkForMore(state, emptyList())
         }
 

@@ -3,9 +3,11 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.MoveCollectionAuraTargetContinuation
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectFromCollectionContinuation
 import com.wingedsheep.engine.core.SubmitDecision
+import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.state.ZoneKey
@@ -223,6 +225,41 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         }
     }
 
+    private val multiAuraSelectionProbe = card("Multi-Aura Selection Probe") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        oracleText = "Choose up to two Aura cards from the top of your library and put them onto the battlefield."
+        spell {
+            effect = CompositeEffect(
+                listOf(
+                    GatherCardsEffect(
+                        source = CardSource.TopOfLibrary(DynamicAmount.Fixed(2)),
+                        storeAs = "looked"
+                    ),
+                    SelectFromCollectionEffect(
+                        from = "looked",
+                        selection = SelectionMode.ChooseUpTo(DynamicAmount.Fixed(2)),
+                        filter = GameObjectFilter.Enchantment.withSubtype("Aura"),
+                        showAllCards = true,
+                        storeSelected = "selected",
+                        storeRemainder = "remainder"
+                    ),
+                    MoveCollectionEffect(
+                        from = "selected",
+                        destination = CardDestination.ToZone(Zone.BATTLEFIELD)
+                    ),
+                    MoveCollectionEffect(
+                        from = "remainder",
+                        destination = CardDestination.ToZone(
+                            Zone.LIBRARY,
+                            placement = ZonePlacement.Bottom
+                        )
+                    )
+                )
+            )
+        }
+    }
+
     private val artifactSelectionProbe = card("Artifact Selection Probe") {
         manaCost = "{0}"
         typeLine = "Sorcery"
@@ -264,6 +301,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         cardRegistry.register(equipment)
         cardRegistry.register(battlefieldSelectionProbe)
         cardRegistry.register(unrestrictedSelectionProbe)
+        cardRegistry.register(multiAuraSelectionProbe)
         cardRegistry.register(artifactSelectionProbe)
 
         test("does not offer an Aura with no legal host for a battlefield move") {
@@ -627,6 +665,104 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
 
             result.error shouldNotBe null
             game.state.pendingDecision shouldBe selection
+        }
+
+        test("revalidates Aura host legality when the host response is submitted") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Creatures")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+            val hostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Grizzly Bears"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            game.selectCards(listOf(auraId)).error shouldBe null
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain hostId
+
+            val originalContinuation = game.state.continuationStack
+                .filterIsInstance<MoveCollectionAuraTargetContinuation>()
+                .single()
+            val json = Json {
+                serializersModule = engineSerializersModule
+                encodeDefaults = true
+            }
+            val encodedContinuation = json.encodeToString(
+                ContinuationFrame.serializer(),
+                originalContinuation
+            )
+            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<MoveCollectionAuraTargetContinuation>()
+            decodedContinuation shouldBe originalContinuation
+            game.state = game.state.copy(
+                continuationStack = game.state.continuationStack.map { frame ->
+                    if (frame is MoveCollectionAuraTargetContinuation) decodedContinuation else frame
+                }
+            )
+
+            game.state = game.state.removeFromZone(
+                ZoneKey(game.player1Id, Zone.BATTLEFIELD),
+                hostId
+            )
+            val result = game.execute(
+                SubmitDecision(
+                    playerId = hostDecision.playerId,
+                    response = TargetsResponse(hostDecision.id, mapOf(0 to listOf(hostId)))
+                )
+            )
+
+            result.error shouldNotBe null
+            game.state.pendingDecision shouldBe hostDecision
+            game.state.getBattlefield(game.player1Id) shouldNotContain auraId
+        }
+
+        test("does not reuse a prior host response for a malformed remaining Aura") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInHand(1, "Multi-Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Creatures")
+                .withCardInLibrary(1, "Test Aura Without Host Requirement")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val creatureAuraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+            val malformedAuraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura Without Host Requirement"
+            }
+            val hostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Grizzly Bears"
+            }
+
+            game.castSpell(1, "Multi-Aura Selection Probe")
+            game.resolveStack()
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldContain creatureAuraId
+            selection.options shouldContain malformedAuraId
+            game.selectCards(listOf(creatureAuraId, malformedAuraId)).error shouldBe null
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.context.sourceId shouldBe creatureAuraId
+            game.selectTargets(listOf(hostId)).error shouldBe null
+
+            game.state.pendingDecision shouldBe null
+            game.state.getBattlefield(game.player1Id) shouldContain creatureAuraId
+            game.state.getBattlefield(game.player1Id) shouldNotContain malformedAuraId
         }
 
         test("does not expose host candidates through the actor-only selection payload") {

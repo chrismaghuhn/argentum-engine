@@ -10,18 +10,21 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.CardType
+import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
- * Evaluates Aura host legality for both collection selection and the later attachment decision.
+ * Evaluates Aura host legality for every non-cast Aura-entry path.
  *
- * This helper deliberately returns only a boolean. It never returns or serializes the legal host
- * IDs from [isSelectionEligible], so hidden-zone card selection and later Aura attachment remain
- * separate information domains. The host-stage caller may use [findLegalHosts] to populate its
- * own attachment decision. Missing card identity, Aura definition, target requirement, or legal
- * host fails closed.
+ * The Aura's printed target requirement supplies the candidate domain, but normal targeting
+ * restrictions are bypassed because the controller is choosing what the entering Aura enchants
+ * rather than targeting an object or player (CR 303.4f). Restrictions that govern the actual
+ * attachment — protection and [AbilityFlag.CANT_BE_ENCHANTED] — remain enforced here.
+ *
+ * [isSelectionEligible] returns only a boolean. It never returns or serializes host IDs, keeping
+ * hidden-zone card selection separate from the later attachment decision.
  */
 class AuraHostLegality(
     private val cardRegistry: CardRegistry,
@@ -45,16 +48,7 @@ class AuraHostLegality(
         return findLegalHosts(state, cardId, hostControllerId).isNotEmpty()
     }
 
-    /**
-     * Find an Aura's legal attachment hosts. The target requirement supplies the candidate domain,
-     * but normal targeting restrictions are bypassed because this is the non-targeting attachment
-     * choice made when an Aura enters the battlefield through a non-cast effect. Restrictions that
-     * govern what an Aura may actually enchant — protection and [AbilityFlag.CANT_BE_ENCHANTED] —
-     * remain enforced here.
-     *
-     * The returned IDs are for the later attachment decision only. Collection selection calls this
-     * method solely for its non-empty check and never places these IDs in its decision payload.
-     */
+    /** Find legal hosts for an Aura entity, including Auras still in a hidden zone. */
     fun findLegalHosts(
         state: GameState,
         auraId: EntityId,
@@ -62,30 +56,78 @@ class AuraHostLegality(
     ): List<EntityId> {
         val card = state.getEntity(auraId)?.get<CardComponent>() ?: return emptyList()
         if (!card.isAura) return emptyList()
-        val auraTarget = cardRegistry.getCard(card.cardDefinitionId)?.script?.auraTarget ?: return emptyList()
+        val definition = cardRegistry.getCard(card.cardDefinitionId) ?: return emptyList()
+        return findLegalHosts(
+            state = state,
+            definition = definition,
+            sourceId = auraId,
+            hostControllerId = hostControllerId,
+            source = sourceCharacteristics(state, auraId, card),
+        )
+    }
+
+    /**
+     * Find legal hosts for an Aura definition that does not have an entity yet, such as an Aura
+     * token copy. The definition supplies the printed Aura characteristics before token creation.
+     */
+    fun findLegalHostsForDefinition(
+        state: GameState,
+        auraDefinitionId: String,
+        hostControllerId: EntityId,
+    ): List<EntityId> {
+        val definition = cardRegistry.getCard(auraDefinitionId) ?: return emptyList()
+        if (!definition.typeLine.isAura) return emptyList()
+        return findLegalHosts(
+            state = state,
+            definition = definition,
+            sourceId = null,
+            hostControllerId = hostControllerId,
+            source = sourceCharacteristics(definition),
+        )
+    }
+
+    private fun findLegalHosts(
+        state: GameState,
+        definition: CardDefinition,
+        sourceId: EntityId?,
+        hostControllerId: EntityId,
+        source: PlayerProtectionRules.SourceCharacteristics,
+    ): List<EntityId> {
+        val auraTarget = definition.script.auraTarget ?: return emptyList()
         return targetFinder.findLegalTargets(
             state = state,
             requirement = auraTarget,
             controllerId = hostControllerId,
-            sourceId = auraId,
+            sourceId = sourceId,
             ignoreTargetingRestrictions = true,
-        ).filter { hostId -> isLegalAttachmentHost(state, auraId, hostId, hostControllerId, card) }
+        ).filter { hostId ->
+            isLegalAttachmentHost(state, sourceId, hostId, hostControllerId, source)
+        }
     }
 
     private fun isLegalAttachmentHost(
         state: GameState,
-        auraId: EntityId,
+        auraId: EntityId?,
         hostId: EntityId,
         auraControllerId: EntityId,
-        aura: CardComponent,
+        source: PlayerProtectionRules.SourceCharacteristics,
     ): Boolean {
         if (hostId in state.turnOrder) {
-            return !PlayerProtectionRules.isProtectedFromSource(
-                state = state,
-                playerId = hostId,
-                sourceId = auraId,
-                casterId = auraControllerId,
-            )
+            return if (auraId != null) {
+                !PlayerProtectionRules.isProtectedFromSource(
+                    state = state,
+                    playerId = hostId,
+                    sourceId = auraId,
+                    casterId = auraControllerId,
+                )
+            } else {
+                !PlayerProtectionRules.isProtectedFromSourceCharacteristics(
+                    state = state,
+                    playerId = hostId,
+                    source = source,
+                    casterId = auraControllerId,
+                )
+            }
         }
 
         if (hostId !in state.getBattlefield()) return false
@@ -102,49 +144,58 @@ class AuraHostLegality(
             return false
         }
 
-        val sourceIsProjected = auraId in state.getBattlefield()
-        val sourceColors = if (sourceIsProjected) {
-            projected.getColors(auraId)
-        } else {
-            aura.colors.map { it.name }.toSet()
-        }
-        if (sourceColors.any { color -> projected.hasKeyword(hostId, "PROTECTION_FROM_$color") }) {
+        if (source.colors.any { color -> projected.hasKeyword(hostId, "PROTECTION_FROM_$color") }) {
             return false
         }
-
-        val sourceSubtypes = if (sourceIsProjected) {
-            projected.getSubtypes(auraId)
-        } else {
-            aura.typeLine.subtypes.map { it.value }.toSet()
-        }
-        if (sourceSubtypes.any { subtype ->
+        if (source.subtypes.any { subtype ->
                 projected.hasKeyword(hostId, "PROTECTION_FROM_SUBTYPE_${subtype.uppercase()}")
             }
         ) {
             return false
         }
-
-        val sourceSupertypes = if (sourceIsProjected) {
-            projected.getSupertypes(auraId)
-        } else {
-            aura.typeLine.supertypes.map { it.name }.toSet()
-        }
-        if (sourceSupertypes.any { supertype ->
+        if (source.supertypes.any { supertype ->
                 projected.hasKeyword(hostId, "PROTECTION_FROM_SUPERTYPE_${supertype.uppercase()}")
             }
         ) {
             return false
         }
-
-        val sourceCardTypes = if (sourceIsProjected) {
-            CardType.entries.filter { cardType -> projected.hasType(auraId, cardType.name) }
-                .map { it.name }
-                .toSet()
-        } else {
-            aura.typeLine.cardTypes.map { it.name }.toSet()
-        }
-        return sourceCardTypes.none { cardType ->
+        return source.cardTypes.none { cardType ->
             projected.hasKeyword(hostId, "PROTECTION_FROM_CARDTYPE_${cardType.uppercase()}")
         }
     }
+
+    private fun sourceCharacteristics(
+        state: GameState,
+        auraId: EntityId,
+        aura: CardComponent,
+    ): PlayerProtectionRules.SourceCharacteristics {
+        val projected = state.projectedState
+        return if (auraId in state.getBattlefield()) {
+            PlayerProtectionRules.SourceCharacteristics(
+                colors = projected.getColors(auraId),
+                subtypes = projected.getSubtypes(auraId),
+                supertypes = projected.getSupertypes(auraId),
+                cardTypes = CardType.entries
+                    .filter { projected.hasType(auraId, it.name) }
+                    .map { it.name }
+                    .toSet(),
+            )
+        } else {
+            PlayerProtectionRules.SourceCharacteristics(
+                colors = aura.colors.map { it.name }.toSet(),
+                subtypes = aura.typeLine.subtypes.map { it.value }.toSet(),
+                supertypes = aura.typeLine.supertypes.map { it.name }.toSet(),
+                cardTypes = aura.typeLine.cardTypes.map { it.name }.toSet(),
+            )
+        }
+    }
+
+    private fun sourceCharacteristics(
+        definition: CardDefinition,
+    ): PlayerProtectionRules.SourceCharacteristics = PlayerProtectionRules.SourceCharacteristics(
+        colors = definition.colors.map { it.name }.toSet(),
+        subtypes = definition.typeLine.subtypes.map { it.value }.toSet(),
+        supertypes = definition.typeLine.supertypes.map { it.name }.toSet(),
+        cardTypes = definition.typeLine.cardTypes.map { it.name }.toSet(),
+    )
 }

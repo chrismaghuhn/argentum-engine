@@ -11,6 +11,7 @@ import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -52,6 +53,8 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
     private val targetFinder: TargetFinder
 ) : EffectExecutor<PutOntoBattlefieldAttachedToChosenEffect> {
 
+    private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
+
     override val effectType: KClass<PutOntoBattlefieldAttachedToChosenEffect> =
         PutOntoBattlefieldAttachedToChosenEffect::class
 
@@ -88,20 +91,12 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
 
         // For an Aura, narrow to hosts it can legally enchant (Rule 303.4f).
         if (isAura) {
-            val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
-            if (auraTarget != null) {
-                val auraLegal = targetFinder.findLegalTargets(
-                    state = state,
-                    requirement = auraTarget,
-                    controllerId = controllerId,
-                    sourceId = cardId,
-                    ignoreTargetingRestrictions = true
-                ).toSet()
-                legalHosts = legalHosts.filter { it in auraLegal }
-            } else {
-                // No enchant target defined — the Aura can't be attached to anything.
-                legalHosts = emptyList()
-            }
+            val auraLegal = auraHostLegality.findLegalHosts(
+                state = state,
+                auraId = cardId,
+                hostControllerId = controllerId,
+            ).toSet()
+            legalHosts = legalHosts.filter { it in auraLegal }
         }
 
         if (legalHosts.isEmpty()) {
