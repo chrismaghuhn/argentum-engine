@@ -317,7 +317,7 @@ class CostPaymentServiceTest : ScenarioTestBase() {
         // Sacrifice
         // -----------------------------------------------------------------------------------------
 
-        test("Sacrifice: excludes the source; paying sacrifices the chosen permanent") {
+        test("SacrificeAnother: excludes the source; paying sacrifices the chosen permanent") {
             val game = scenario().withPlayers()
                 .withCardOnBattlefield(1, "Goblin Guide") // source — must be excluded
                 .withCardOnBattlefield(1, "Savannah Lions") // the fodder
@@ -325,7 +325,7 @@ class CostPaymentServiceTest : ScenarioTestBase() {
             val service = CostPaymentService(EngineServices(cardRegistry))
             val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
             val fodder = bfCardByName(game.state, game.player1Id, "Savannah Lions")
-            val cost = Costs.pay.Sacrifice(GameObjectFilter.Any, 1)
+            val cost = PayCost.Atom(CostAtom.Sacrifice(GameObjectFilter.Any, excludeSelf = true))
 
             service.canAfford(game.state, game.player1Id, cost, source).shouldBeTrue()
             val pending = service.pay(game.state, game.player1Id, cost, source) as PaymentResult.Pending
@@ -336,11 +336,16 @@ class CostPaymentServiceTest : ScenarioTestBase() {
             game.state.getZone(ZoneKey(game.player1Id, Zone.GRAVEYARD)) shouldContain fodder
         }
 
-        test("Sacrifice: unaffordable when only the source is on the battlefield") {
+        test("SacrificeAnother: unaffordable when only the source is on the battlefield") {
             val game = scenario().withPlayers().withCardOnBattlefield(1, "Goblin Guide").build()
             val service = CostPaymentService(EngineServices(cardRegistry))
             val source = bfCardByName(game.state, game.player1Id, "Goblin Guide")
-            service.canAfford(game.state, game.player1Id, Costs.pay.Sacrifice(GameObjectFilter.Any, 1), source).shouldBeFalse()
+            service.canAfford(
+                game.state,
+                game.player1Id,
+                PayCost.Atom(CostAtom.Sacrifice(GameObjectFilter.Any, excludeSelf = true)),
+                source
+            ).shouldBeFalse()
         }
 
         // -----------------------------------------------------------------------------------------

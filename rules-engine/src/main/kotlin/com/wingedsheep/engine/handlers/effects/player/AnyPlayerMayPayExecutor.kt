@@ -130,7 +130,9 @@ class AnyPlayerMayPayExecutor(
     ): Boolean {
         return when (val atom = (cost as? PayCost.Atom)?.atom) {
             is CostAtom.Sacrifice -> {
-                val validPermanents = findValidPermanentsOnBattlefield(state, playerId, atom.filter, sourceId)
+                val validPermanents = findValidPermanentsOnBattlefield(
+                    state, playerId, atom.filter, sourceId, atom.excludeSelf
+                )
                 validPermanents.size >= atom.count
             }
             // CR 119.4: a player may pay life only if their life total is at least the amount.
@@ -153,7 +155,9 @@ class AnyPlayerMayPayExecutor(
         playerOrder: List<EntityId>,
         currentIndex: Int
     ): EffectResult {
-        val validPermanents = findValidPermanentsOnBattlefield(state, playerId, cost.filter, sourceId)
+        val validPermanents = findValidPermanentsOnBattlefield(
+            state, playerId, cost.filter, sourceId, cost.excludeSelf
+        )
 
         val prompt = "You may sacrifice ${cost.count} ${cost.filter.description}s to cause $sourceName to be sacrificed, or skip"
 
@@ -302,10 +306,14 @@ class AnyPlayerMayPayExecutor(
         state: GameState,
         playerId: EntityId,
         filter: com.wingedsheep.sdk.scripting.GameObjectFilter,
-        sourceId: EntityId
+        sourceId: EntityId,
+        excludeSelf: Boolean
     ): List<EntityId> {
         return BattlefieldFilterUtils.findMatchingOnBattlefield(
-            state, filter.youControl(), PredicateContext(controllerId = playerId)
+            state,
+            filter.youControl(),
+            PredicateContext(controllerId = playerId),
+            excludeSelfId = if (excludeSelf) sourceId else null
         )
     }
 }
