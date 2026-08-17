@@ -715,19 +715,21 @@ class StackResolver(
         modeTargetRequirements: Map<Int, List<TargetRequirement>>? = null,
         copyIndex: Int? = null,
         copyTotal: Int? = null,
-        controllerId: EntityId? = null
+        controllerId: EntityId? = null,
+        resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
     ): ExecutionResult {
         val sourceContainer = state.getEntity(sourceSpellId)
-            ?: return ExecutionResult.error(state, "Source spell not found: $sourceSpellId")
         // CR 707.10: a spell that can't be copied yields no copy. Succeed without change.
-        if (sourceContainer.has<com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent>()) {
+        val cantBeCopied = resolvingSpellCopyPayload?.cantBeCopied
+            ?: (sourceContainer?.has<com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent>() == true)
+        if (cantBeCopied) {
             return ExecutionResult.success(state)
         }
-        val sourceCard = sourceContainer.get<CardComponent>()
+        val sourceCard = resolvingSpellCopyPayload?.card ?: sourceContainer?.get<CardComponent>()
             ?: return ExecutionResult.error(state, "Source is not a card: $sourceSpellId")
-        val sourceSpell = sourceContainer.get<SpellOnStackComponent>()
+        val sourceSpell = resolvingSpellCopyPayload?.spell ?: sourceContainer?.get<SpellOnStackComponent>()
             ?: return ExecutionResult.error(state, "Source is not a spell on stack: $sourceSpellId")
-        val sourceTargets = sourceContainer.get<TargetsComponent>()
+        val sourceTargets = resolvingSpellCopyPayload?.targets ?: sourceContainer?.get<TargetsComponent>()
 
         val (copyId, stateWithId) = state.newEntity()
         val copyController = controllerId ?: sourceSpell.casterId
@@ -765,12 +767,30 @@ class StackResolver(
             casterId = copyController,
             chosenModes = effectiveModes,
             modeTargetsOrdered = effectiveModeTargets,
-            modeTargetRequirements = effectiveModeRequirements
+            modeTargetRequirements = effectiveModeRequirements,
+            resolvingSpellEffectOverride = resolvingSpellCopyPayload?.effectiveSpellEffect
+                ?: sourceSpell.resolvingSpellEffectOverride
         )
 
         var container = ComponentContainer.of(copiedCardComp, copiedSpellComp)
-        if (effectiveTargets.isNotEmpty()) {
-            container = container.with(TargetsComponent.capture(state, effectiveTargets, effectiveRequirements))
+        if (effectiveTargets.isNotEmpty() || effectiveRequirements.isNotEmpty()) {
+            val capturedTargets = TargetsComponent.capture(state, effectiveTargets, effectiveRequirements)
+            val inheritedEntryStamps = if (
+                targets.isEmpty() && modeTargetsOrdered == null && chosenModes == null
+            ) {
+                sourceTargets?.targetEntryStamps.orEmpty().filterKeys { entityId ->
+                    effectiveTargets.any { target ->
+                        target is ChosenTarget.Permanent && target.entityId == entityId
+                    }
+                }
+            } else {
+                emptyMap()
+            }
+            container = container.with(
+                capturedTargets.copy(
+                    targetEntryStamps = capturedTargets.targetEntryStamps + inheritedEntryStamps
+                )
+            )
         }
         container = container.with(
             CopyOfComponent(
@@ -2034,7 +2054,7 @@ class StackResolver(
         val faceSpellEffect = spellComponent.faceIndex?.let { idx ->
             resolvedCardDef?.cardFaces?.getOrNull(idx)?.script?.spellEffect
         }
-        val baseSpellEffect = when {
+        val baseSpellEffect = spellComponent.resolvingSpellEffectOverride ?: when {
             faceSpellEffect != null -> faceSpellEffect
             spellComponent.declaredCostSlot != null && cardComponent != null ->
                 resolvedCardDef?.script?.kickerSpellEffect ?: cardComponent.spellEffect
@@ -2051,6 +2071,20 @@ class StackResolver(
             rawSpellEffect.applyTextReplacement(textReplacement)
         } else {
             rawSpellEffect
+        }
+        // A resolution-time copy may answer its may/retarget decisions after this spell has left
+        // the stack. Capture the complete reusable spell payload before the zone change removes
+        // SpellOnStackComponent and TargetsComponent.
+        val resolvingSpellCopyPayload = cardComponent?.let { card ->
+            ResolvingSpellCopyPayload(
+                sourceSpellId = spellId,
+                card = card,
+                spell = spellComponent,
+                targets = state.getEntity(spellId)?.get<TargetsComponent>(),
+                effectiveSpellEffect = spellEffect,
+                cantBeCopied = state.getEntity(spellId)
+                    ?.has<com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent>() == true,
+            )
         }
         // Splice (CR 702.47): the spliced cards' text is a tail that runs after the main spell's own
         // effects (CR 702.47b). Its targets were appended to the end of the flat list at cast time, so
@@ -2120,7 +2154,8 @@ class StackResolver(
                     // resolves to null and fizzles (CR 608.2b).
                     namedTargets = EffectContext.buildNamedTargets(targetRequirements, mainAlignedTargets),
                     storedCollections = buildBeheldStoredCollections(spellComponent.beheldCards, resolvedCardDef)
-                )
+                ),
+                resolvingSpellCopyPayload = resolvingSpellCopyPayload
             )
 
             // Pre-push the splice tail so it runs whether the main spell's effect finishes here or

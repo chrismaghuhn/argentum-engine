@@ -6,6 +6,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
@@ -396,7 +397,12 @@ data class EffectContext(
      * fails closed instead of `StackOverflowError`. Lives on the (immutable) context rather than
      * on the shared registry so it stays correct under the AI's parallel state evaluation.
      */
-    val resolutionDepth: Int = 0
+    val resolutionDepth: Int = 0,
+    /**
+     * Snapshot used by a generic copy effect that resumes after the resolving spell has left the
+     * stack. It remains on the serialized effect context through may/retarget continuations.
+     */
+    val resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
 ) {
     /**
      * Resolve a symbolic effect target to a concrete entity id using just the context.
