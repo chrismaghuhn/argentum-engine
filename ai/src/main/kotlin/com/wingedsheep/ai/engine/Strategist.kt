@@ -32,13 +32,8 @@ import com.wingedsheep.engine.legalactions.MeaningfulActionFilter
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Format
-import com.wingedsheep.sdk.core.ManaCost
-import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.AdditionalCostPayment
-import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
-import com.wingedsheep.sdk.scripting.ConvokePayment
 
 /**
  * Chooses which [LegalAction] to take when the AI has priority.
@@ -768,151 +763,8 @@ class Strategist(
      * spells and activated abilities. The first candidate is deterministic and already filtered by
      * projected controller/type/counter legality.
      */
-    private fun withAutomaticPayments(action: LegalAction): GameAction {
-        val gameAction = withAutomaticTapForGeneric(action, withAutomaticConvoke(action))
-        val info = action.additionalCostInfo ?: return gameAction
-        val existing = when (gameAction) {
-            is CastSpell -> gameAction.additionalCostPayment
-            is ActivateAbility -> gameAction.costPayment
-            else -> null
-        } ?: AdditionalCostPayment()
-        val payment = when (info.costType) {
-            "Blight" -> existing.copy(blightTargets = info.validBlightTargets.take(1))
-            "Behold" -> existing.copy(beheldCards = info.validBeholdTargets.take(info.beholdCount))
-            "TapPermanents" -> existing.copy(tappedPermanents = info.validTapTargets.take(info.tapCount))
-            "DiscardCard" -> existing.copy(discardedCards = info.validDiscardTargets.take(info.discardCount))
-            "SacrificePermanent" -> existing.copy(
-                sacrificedPermanents = info.validSacrificeTargets.take(info.sacrificeCount)
-            )
-            "BouncePermanent" -> existing.copy(bouncedPermanents = info.validBounceTargets.take(info.bounceCount))
-            "ExileFromGraveyard" -> existing.copy(exiledCards = info.validExileTargets.take(info.exileMinCount))
-            // Teamwork N (CR 702.194a): tap as *few* creatures as will clear the total-power
-            // threshold, and among equally-few selections the *smallest* bodies — a board with a
-            // 5/5 and a 1/1 paying teamwork 1 should turn the 1/1 sideways and keep the better
-            // blocker up. So: the cheapest single creature that clears it on its own if there is
-            // one, else greedy biggest-first to keep the count down. Creatures at 0 or negative
-            // power never help a sum (and can only drag it down), so they are skipped.
-            "TapForTotalPower" -> {
-                val required = info.tapForPowerRequired
-                val contributors = info.tapForPowerCreatures.filter { it.power > 0 }
-                val cheapestSolo = contributors.filter { it.power >= required }.minByOrNull { it.power }
-                if (cheapestSolo != null) {
-                    existing.copy(variableCostPermanents = listOf(cheapestSolo.entityId))
-                } else {
-                    val chosen = mutableListOf<EntityId>()
-                    var total = 0
-                    for (creature in contributors.sortedByDescending { it.power }) {
-                        if (total >= required) break
-                        chosen += creature.entityId
-                        total += creature.power
-                    }
-                    // Unreachable while the enumerator marks an unpayable teamwork variant
-                    // unaffordable, but never submit a declaration we can't pay: fall back to the
-                    // undeclared cast rather than an action the handler will reject.
-                    if (total < required) {
-                        return when (gameAction) {
-                            is CastSpell -> gameAction.copy(declaredCostSlot = null)
-                            else -> gameAction
-                        }
-                    }
-                    existing.copy(variableCostPermanents = chosen)
-                }
-            }
-            else -> return gameAction
-        }
-        return when (gameAction) {
-            is CastSpell -> gameAction.copy(additionalCostPayment = payment)
-            is ActivateAbility -> gameAction.copy(costPayment = payment)
-            else -> gameAction
-        }
-    }
-
-    /**
-     * Turn the Convoke candidates advertised by the legal-action enumerator into the payment the
-     * cast handler consumes. Colored pips are satisfied first; remaining creatures pay only the
-     * generic part of the cost, so the AI never submits an invalid overpayment.
-     */
-    private fun withAutomaticConvoke(action: LegalAction): GameAction {
-        val cast = action.action as? CastSpell ?: return action.action
-        val creatures = action.convokeCreatures.orEmpty()
-        val costString = action.manaCostString
-        if (!action.hasConvoke || creatures.isEmpty() || costString == null) return cast
-
-        val cost = ManaCost.parse(costString)
-        val coloredNeeded = cost.symbols
-            .filterIsInstance<ManaSymbol.Colored>()
-            .groupingBy { it.color }
-            .eachCount()
-            .toMutableMap()
-        var genericNeeded = cost.genericAmount
-        val payments = linkedMapOf<EntityId, ConvokePayment>()
-        val unused = creatures.toMutableList()
-
-        for ((color, count) in coloredNeeded) {
-            repeat(count) {
-                val index = unused.indexOfFirst { color in it.colors }
-                if (index >= 0) {
-                    val creature = unused.removeAt(index)
-                    payments[creature.entityId] = ConvokePayment(color)
-                }
-            }
-        }
-        while (genericNeeded > 0 && unused.isNotEmpty()) {
-            val creature = unused.removeAt(0)
-            payments[creature.entityId] = ConvokePayment()
-            genericNeeded--
-        }
-        if (payments.isEmpty()) return cast
-
-        val existing = cast.alternativePayment ?: AlternativePaymentChoice.NONE
-        return cast.copy(
-            alternativePayment = existing.copy(
-                convokedCreatures = existing.convokedCreatures + payments
-            )
-        )
-    }
-
-    /**
-     * Fill in a tap-for-generic payment (improvise CR 702.126, waterbend) the enumerator offered.
-     *
-     * The enumerator counts these taps toward affordability, so a cast that is only payable *with*
-     * them is offered as affordable; submitting it with an empty payment would then be rejected at
-     * the mana step. Filling it here keeps the AI's chosen action payable.
-     *
-     * Deliberately **artifacts only**, even though a waterbend cost also accepts creatures: an
-     * artifact is rarely doing anything else this turn, whereas tapping a creature silently gives
-     * up an attack or a block. That covers improvise exactly (CR 702.126a is artifacts-only) and
-     * leaves waterbend no worse off than before.
-     *
-     * And only when the taps are actually *needed*. An improvise tap is optional, and filling an
-     * optional one can lose the cast: a tapped artifact stops being a mana source but credits only
-     * {1}, so tapping Arc Reactor ({T}: Add {C}{C}{C}) for improvise on a board of three lands
-     * turns a payable {5} into an unpayable {4} — the AI's own action then hard-errors at the mana
-     * step. `tapForGenericRequired == false` says mana alone covers it, so we leave the artifacts
-     * up; `true` means the enumerator's affordability check already validated tapping *all* of
-     * them, so filling to the cap is safe. Null is the waterbend paths, whose taps pay a cost that
-     * is owed either way — unchanged behaviour there.
-     */
-    private fun withAutomaticTapForGeneric(action: LegalAction, gameAction: GameAction): GameAction {
-        if (!action.hasTapForGeneric) return gameAction
-        if (action.tapForGenericRequired == false) return gameAction
-        val cast = gameAction as? CastSpell ?: return gameAction
-        val artifacts = action.tapForGenericPermanents.orEmpty().filterNot { it.isCreature }
-        if (artifacts.isEmpty()) return gameAction
-        val costString = action.manaCostString ?: return gameAction
-
-        // One tap per generic mana, and never more than the mechanic's own cap (waterbend's {N}).
-        val genericInCost = ManaCost.parse(costString).genericAmount
-        val cap = minOf(action.tapForGenericAmount ?: genericInCost, genericInCost)
-        if (cap <= 0) return gameAction
-
-        val existing = cast.alternativePayment ?: AlternativePaymentChoice.NONE
-        return cast.copy(
-            alternativePayment = existing.copy(
-                tapForGenericPermanents = artifacts.take(cap).mapTo(linkedSetOf()) { it.entityId }
-            )
-        )
-    }
+    private fun withAutomaticPayments(action: LegalAction): GameAction =
+        AutomaticPaymentSelection.fill(action)
 
     /**
      * When both a normal cast and a kicker/offspring variant of the same card are

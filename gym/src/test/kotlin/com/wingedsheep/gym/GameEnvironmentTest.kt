@@ -29,9 +29,9 @@ class GameEnvironmentTest : FunSpec({
 
     fun simpleDeck() = Deck.of("Mountain" to 17, "Raging Goblin" to 3)
 
-    /** Build a sealed deck from a random 90-card Bloomburrow pool. */
-    fun sealedDeck(): Deck {
-        val pool = BloomburrowSet.cards.shuffled().take(90)
+    /** Build a reproducible sealed deck from a 90-card Bloomburrow pool. */
+    fun sealedDeck(seed: Int): Deck {
+        val pool = BloomburrowSet.cards.shuffled(kotlin.random.Random(seed)).take(90)
         val deckMap = buildHeuristicSealedDeck(pool)
         val cards = deckMap.flatMap { (name, count) -> List(count) { name } }
         return Deck(cards)
@@ -200,11 +200,12 @@ class GameEnvironmentTest : FunSpec({
         val env = GameEnvironment.create(createRegistry())
         val config = GameConfig(
             players = listOf(
-                PlayerConfig("Alice", sealedDeck()),
-                PlayerConfig("Bob", sealedDeck())
+                PlayerConfig("Alice", sealedDeck(1)),
+                PlayerConfig("Bob", sealedDeck(2))
             ),
             skipMulligans = true,
-            startingPlayerIndex = 0
+            startingPlayerIndex = 0,
+            seed = 7L
         )
 
         val result = env.playGame(config)
@@ -217,11 +218,12 @@ class GameEnvironmentTest : FunSpec({
         val env = GameEnvironment.create(createRegistry())
         val config = GameConfig(
             players = listOf(
-                PlayerConfig("Alice", sealedDeck()),
-                PlayerConfig("Bob", sealedDeck())
+                PlayerConfig("Alice", sealedDeck(3)),
+                PlayerConfig("Bob", sealedDeck(4))
             ),
             skipMulligans = true,
-            startingPlayerIndex = 0
+            startingPlayerIndex = 0,
+            seed = 11L
         )
 
         env.reset(config)

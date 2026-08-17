@@ -259,21 +259,42 @@ class GameEnvironment private constructor(
             candidate is DeclareBlockers && submitted is DeclareBlockers ->
                 candidate.playerId == submitted.playerId
             candidate is CastSpell && submitted is CastSpell ->
-                candidate.copy(
-                    targets = emptyList(),
-                    damageDistribution = null,
-                    modeTargetsOrdered = emptyList(),
-                    modeDamageDistribution = emptyMap(),
-                ) == submitted.copy(
-                    targets = emptyList(),
-                    damageDistribution = null,
-                    modeTargetsOrdered = emptyList(),
-                    modeDamageDistribution = emptyMap(),
-                )
+                normalizeCastSpellForMembership(candidate) == normalizeCastSpellForMembership(submitted)
             candidate is ActivateAbility && submitted is ActivateAbility ->
-                candidate.copy(targets = emptyList()) == submitted.copy(targets = emptyList())
+                normalizeActivateAbilityForMembership(candidate) == normalizeActivateAbilityForMembership(submitted)
             else -> false
         }
+
+    /**
+     * Normalize caller-filled target/payment payloads while retaining the cast variant identity.
+     * LegalAction metadata is deliberately richer than the targetless engine action template: an
+     * AI may fill convoke, improvise, additional-cost, mode, X, or target choices before submit.
+     * The engine remains authoritative for validating those choices; Gym membership only checks
+     * that the underlying cast candidate is still current.
+     */
+    private fun normalizeCastSpellForMembership(action: CastSpell): CastSpell = action.copy(
+        targets = emptyList(),
+        damageDistribution = null,
+        modeTargetsOrdered = emptyList(),
+        modeDamageDistribution = emptyMap(),
+        paymentStrategy = PaymentStrategy.AutoPay,
+        additionalCostPayment = null,
+        alternativePayment = null,
+        chosenModes = emptyList(),
+        xValue = null,
+    )
+
+    /** Normalize caller-filled target/payment/choice payloads for an activated-ability template. */
+    private fun normalizeActivateAbilityForMembership(action: ActivateAbility): ActivateAbility = action.copy(
+        targets = emptyList(),
+        damageDistribution = null,
+        costPayment = null,
+        manaColorChoice = null,
+        xValue = null,
+        repeatCount = 1,
+        paymentStrategy = PaymentStrategy.AutoPay,
+        alternativePayment = null,
+    )
 
     /**
      * Evaluate the current board state from a player's perspective.
