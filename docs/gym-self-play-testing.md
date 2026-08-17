@@ -82,8 +82,12 @@ loop:
   if observation.pendingDecision != null and pendingDecision.requiresStructuredResponse:
         POST /envs/{id}/decision  with a typed DecisionResponse   (section 5)
   else:
-        pick an actionId from observation.legalActions
-        POST /envs/{id}/step  { "actionId": N }
+        pick an action from observation.legalActions
+        if action.requiresStructuredAction:
+            complete action.actionSemantics with the controller's explicit choices
+            POST /envs/{id}/step  { "actionId": N, "action": completedSemantics }
+        else:
+            POST /envs/{id}/step  { "actionId": N }
   -> response is the next observation; repeat
 ```
 
@@ -103,7 +107,9 @@ The fields that matter most for spotting bugs:
   `legalActions` list and no usable action registry.
 - `legalActions[]` — each has `actionId`, `kind` (`PLAY_CARD`, `ACTIVATE_ABILITY`, `PASS`,
   `DECISION`, …), `description`, `affordable`, `manaCost`, target counts, and an
-  `actionSemantics` object containing the structured action identity used by the digest. The
+  `requiresStructuredAction` flag, and an `actionSemantics` object containing the structured
+  action identity used by the digest. When the flag is true, the object is a template that the
+  controller must complete and send in the step body's optional `action` field. The
   `description` is presentation-only and is never used for semantic identity; generated
   activated-ability handles are normalized through their printed, granted, static, emblem,
   class-level, or intrinsic provenance into stable ordinals and structural payloads. Donor

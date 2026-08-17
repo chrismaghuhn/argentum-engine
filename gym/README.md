@@ -70,6 +70,23 @@ svc.dispose(listOf(envId))
 Both APIs share the same `GameState`, `LegalAction`, and `PendingDecision`
 types — there's no parallel type hierarchy.
 
+### Structured action candidates
+
+`LegalActionView.requiresStructuredAction` is true when the enumerated engine
+action is a target/payment/mode/X/etc. template. In that case the action ID is
+still the per-step candidate handle, but the caller must complete
+`actionSemantics` and submit it with the ID:
+
+```kotlin
+val action = opening.observation.legalActions.first { it.requiresStructuredAction }
+val completed = action.actionSemantics!! // fill explicit choice fields first
+svc.step(StepRequest(envId, action.actionId, completed))
+```
+
+The server-side registry supplies only opaque runtime fields (for example a
+generated activated-ability handle). Candidate binding and rules validation are
+authoritative; Gym never auto-selects a target or payment.
+
 ## Design choices worth knowing about
 
 ### Action IDs are per-step, not stable

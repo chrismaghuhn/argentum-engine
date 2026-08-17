@@ -495,6 +495,7 @@ class ObservationBuilder(
             maxTargets = la.targetCount,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
+            requiresStructuredAction = ActionPayloadRequirements.requiresStructuredAction(la),
             actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )

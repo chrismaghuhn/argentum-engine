@@ -232,8 +232,11 @@ enum class StackItemKind { SPELL, TRIGGERED_ABILITY, ACTIVATED_ABILITY, OTHER }
 
 /**
  * Compact view of a single legal action. Trainers post back the [actionId]
- * to commit. The registry mapping `Int → engine action` lives on the server
- * and is regenerated every step.
+ * to commit when [requiresStructuredAction] is false. If it is true, the
+ * action is a target/payment/mode/etc. template and the trainer must copy and
+ * complete [actionSemantics] in the structured step payload. The registry
+ * mapping `Int → engine action` lives on the server and is regenerated every
+ * step.
  *
  * Decision options (when [TrainingObservation.pendingDecision] is set and
  * the decision is simple enough to fold in — YesNo, ChooseNumber, ChooseMode,
@@ -255,6 +258,8 @@ data class LegalActionView(
     val maxTargets: Int = 0,
     val requiresDamageDistribution: Boolean = false,
     val isManaAbility: Boolean = false,
+    /** True when an action ID alone is not an executable player choice. */
+    val requiresStructuredAction: Boolean = false,
     /**
      * Structured, presentation-free action identity used by semantic equality and StateDigest.
      * This includes the engine action/decision payload but excludes the transport handle and

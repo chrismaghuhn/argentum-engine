@@ -3,6 +3,7 @@ package com.wingedsheep.gym.service
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.core.Format
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Everything needed to spin up a new gym environment.
@@ -106,7 +107,9 @@ data class PlayerSpec(
 @Serializable
 data class StepRequest(
     val envId: EnvId,
-    val actionId: Int
+    val actionId: Int,
+    /** Optional structured action overlay for candidates with player choices. */
+    val action: JsonObject? = null
 )
 
 /** Result of deck validation. Surfaced by [DeckResolver.validate]. */

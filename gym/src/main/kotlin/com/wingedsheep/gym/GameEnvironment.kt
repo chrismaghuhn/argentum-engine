@@ -183,6 +183,38 @@ class GameEnvironment private constructor(
         // action for the other player.  The rules engine validates the action's local shape, but
         // it intentionally does not know which candidate list this environment exposed.  Keep
         // stale/non-owner actions fail-closed here before simulation can advance the horizon.
+        validateActionMembership(action)
+        return simulateAndCommit(action)
+    }
+
+    /**
+     * Execute a caller-completed action while retaining the action-ID candidate binding.
+     *
+     * [candidate] is the targetless/payment-template action held by the current Gym registry;
+     * [submitted] contains the external controller's explicit choices. The current candidate is
+     * re-enumerated before execution, and the same membership normalization used by [step] is
+     * applied. The engine remains authoritative for target legality, costs, and all other rules.
+     */
+    fun stepFromCandidate(candidate: GameAction, submitted: GameAction): StepResult {
+        check(playerIds.isNotEmpty()) { "Call reset() before step()" }
+        check(!isTerminal) { "Cannot step a terminal environment" }
+        check(!isTruncated) { "Cannot step a truncated environment" }
+        require(candidate !is SubmitDecision && submitted !is SubmitDecision) {
+            "Structured action payloads are only valid for legal game actions"
+        }
+
+        val currentActions = legalActions()
+        require(currentActions.any { it.action == candidate }) {
+            "Action candidate is not in the current legal action set for ${agentToAct}: $candidate"
+        }
+        require(isCurrentActionCandidate(candidate, submitted)) {
+            "Structured action does not belong to the selected current legal candidate: $submitted"
+        }
+
+        return simulateAndCommit(submitted)
+    }
+
+    private fun validateActionMembership(action: GameAction) {
         if (action !is SubmitDecision) {
             val currentActions = legalActions()
             val isCurrentAction = currentActions.any { candidate ->
@@ -198,6 +230,9 @@ class GameEnvironment private constructor(
                 "Decision belongs to ${pending.playerId}, not ${action.playerId}"
             }
         }
+    }
+
+    private fun simulateAndCommit(action: GameAction): StepResult {
 
         val simResult = if (action is SubmitDecision) {
             simulator.simulateDecision(state, action.response)

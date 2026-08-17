@@ -212,14 +212,22 @@ class EnvController(
 
     @Operation(
         summary = "Advance an env by one action",
-        description = "`actionId` must come from the most recent observation. Stale IDs return 400."
+        description = """
+            `actionId` must come from the most recent observation. Stale IDs return 400.
+            For a `LegalActionView` with `requiresStructuredAction=true`, include the
+            presentation-free `actionSemantics` object (with the controller's explicit target,
+            payment, mode, X, or other choice fields) as the optional `action` body field.
+            The server binds that payload to the selected current candidate and the rules engine
+            validates the completed action; it never chooses missing fields on the controller's
+            behalf.
+        """
     )
     @PostMapping("/{id}/step")
     fun step(
         @PathVariable id: String,
         @RequestBody body: StepBody
     ): Observation =
-        multiEnvService.step(StepRequest(EnvId(id), body.actionId)).observation
+        multiEnvService.step(StepRequest(EnvId(id), body.actionId, body.action)).observation
 
     @Operation(
         summary = "Advance many envs in parallel",
@@ -227,7 +235,7 @@ class EnvController(
     )
     @PostMapping("/step-batch")
     fun stepBatch(@RequestBody items: List<StepBatchItem>): List<StepBatchResult> {
-        val requests = items.map { StepRequest(it.envId, it.actionId) }
+        val requests = items.map { StepRequest(it.envId, it.actionId, it.action) }
         return multiEnvService.stepBatch(requests).map { (envId, obs) ->
             StepBatchResult(envId, obs.observation)
         }

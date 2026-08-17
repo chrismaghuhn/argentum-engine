@@ -180,10 +180,11 @@ class EnvControllerTest : FunSpec() {
             observed.stateDigest shouldBe created.observation.stateDigest
 
             // -- step using an actionId from the opening observation --
-            val actionId = created.observation.legalActions.first().actionId
+            val firstAction = created.observation.legalActions.first()
+            val actionId = firstAction.actionId
             val stepResp = postJson(
                 "/envs/${created.envId.value}/step",
-                json.encodeToString(StepBody(actionId))
+                json.encodeToString(StepBody(actionId, firstAction.actionSemantics))
             )
             stepResp.statusCode() shouldBe 200
             val afterStep = json.decodeFromString<TrainingObservation>(stepResp.body())

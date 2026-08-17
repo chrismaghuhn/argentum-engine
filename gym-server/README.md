@@ -33,8 +33,8 @@ Default port **8081** so it coexists with the game server on 8080.
 | `DELETE /envs` | `dispose` | `{ "envIds": [...] }` |
 | `GET /envs/{id}` | `observe` | perspective-safe observation; no reveal bypass |
 | `POST /envs/{id}/reset` | `reset` | `EnvConfig` JSON |
-| `POST /envs/{id}/step` | `step` | `{ "actionId": 3 }` |
-| `POST /envs/step-batch` | `stepBatch` (parallel) | `[ { envId, actionId }, ...]` |
+| `POST /envs/{id}/step` | `step` | `{ "actionId": 3, "action": { ... } }` (`action` optional) |
+| `POST /envs/step-batch` | `stepBatch` (parallel) | `[ { envId, actionId, action? }, ...]` |
 | `POST /envs/{id}/decision` | `submitDecision` | `DecisionResponse` JSON; optional `actorId` query claim |
 | `POST /envs/{id}/fork` | `fork` | `?count=N` |
 | `POST /envs/{id}/snapshot` | `snapshot` | — |
@@ -89,6 +89,13 @@ regenerates the `ActionRegistry`, and IDs from a prior observation
 become invalid. This matches the `:gym` contract — see its README
 for the rationale — and the test suite exercises the failure mode so a
 trainer that holds onto stale IDs fails loudly (400).
+
+When a legal-action view has `requiresStructuredAction: true`, the action ID is a
+candidate handle, not a complete engine action. Copy its `actionSemantics` object,
+fill the controller's explicit target/payment/mode/X/etc. choices, and send that
+object in the optional `action` field of the same step body. The server binds the
+completed payload to the current candidate and lets the rules engine validate it;
+it does not choose missing fields for the trainer.
 
 ### No authentication, no TTLs, no metrics
 

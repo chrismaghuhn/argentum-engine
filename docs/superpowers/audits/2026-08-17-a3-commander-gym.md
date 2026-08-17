@@ -29,21 +29,22 @@ No substitute commander or card definition was added.
 
 | Contract | Current implementation | Focused coverage | Trust status | A3 gap | A4 dependency | A5/A6 dependency |
 | --- | --- | --- | --- | --- | --- | --- |
-| Commander reset | `EnvConfig` maps `Format.Commander`, seed, commander identity, and positive horizon through `MultiEnvService` to `GameConfig`/`GameInitializer`. | `CommanderGymContractTest` (5/5) | Implemented; focused runtime green through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | None beyond existing public observation | Existing rules Commander tests |
+| Commander reset | `EnvConfig` maps `Format.Commander`, seed, commander identity, and positive horizon through `MultiEnvService` to `GameConfig`/`GameInitializer`. | `CommanderGymContractTest` (5/5); full `:gym:test` (86/86) | Implemented; runtime green through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | None beyond existing public observation | Existing rules Commander tests |
 | 1v1 validation | Commander configs require exactly two players and a non-blank commander identity for each player. | Configuration rejection test | Implemented | Direct non-Gym `GameConfig` remains the rules layer's responsibility | None | None |
 | Command zone/life/tax/damage | Existing `GameInitializer` and Commander runtime own setup, tax, cast count, and commander damage. Gym does not duplicate state. | Existing rules coverage; controlled Gym fixture checks command-zone identity/life, cast/tax recast, zone replacement, commander damage, terminal/winner | Preserved; not reimplemented | Exact Akiri/Chevill boot remains blocked by A8 | Public fields remain an audit item if policy needs them | A5 owns external Commander-zone choices |
 | Same-seed reset | Explicit `seed` is threaded into the authoritative initializer; observation semantic digest is compared for identical configs. | `CommanderGymContractTest` | Static implementation plus blocked focused run | Different-seed trajectory evidence remains unrun | Existing digest/privacy contract | Replay/fingerprint regression remains unrun |
-| Step/action lifecycle | `GameEnvironment` rejects terminal/truncated steps, stale/non-owner actions, and illegal simulation results before mutating state or horizon; target templates are materialized and matched against current action semantics. | `GameEnvironmentTest`; full `:gym:test` (85/85) | Green locally through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | Observation remains perspective-safe | A5 audits candidate completeness |
+| Step/action lifecycle | `GameEnvironment` rejects terminal/truncated steps, stale/non-owner actions, and illegal simulation results before mutating state or horizon. Template actions advertise `requiresStructuredAction`; the structured step path binds completed payloads to the current candidate and leaves target/payment/mode validation to the rules engine. | `GameEnvironmentTest`; `GameGymEnvActionContractTest`; full `:gym:test` (86/86) | Regression green locally through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | Observation remains perspective-safe | A5 audits candidate completeness |
 | Structured decision handoff | Optional HTTP actor claim is checked against the pending decision owner before `SubmitDecision`. Decision ID and rules validation remain authoritative. | `EnvControllerTest`; full `:gym-server:test` (13/13) | Green locally through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | No raw state/reveal route added | A5 owns decision inventory |
 | Horizon | `ACTIVE`, `TERMINAL`, and `TRUNCATED` are distinct. Horizon preserves Magic winner semantics and blocks post-horizon action. | `CommanderGymContractTest`; full `:gym:test` | Green locally through Git Bash `just` fallback | No external time-limit policy beyond `maxSteps` | `truncated` added to versioned observation | Snapshot/fork state is preserved |
 | Fork/snapshot/restore | Existing immutable `GameState` path is reused; `stepCount` and `maxSteps` are carried in fork/snapshot entries. | `CommanderGymContractTest`; `EnvControllerTest`; full `:gym:test` and `:gym-server:test` | Green locally through Git Bash `just` fallback | In-process codec is not a durable wire serializer | Schema remains explicit | A6 replay parity gate remains separate |
-| HTTP/privacy | Production controller has no `revealAll` argument or bypass. Stale README query claims were removed; observe still uses `ObservationBuilder`. | `EnvControllerTest` 13/13, including real create/observe/step/fork/snapshot/restore/reset/dispose and opponent-hand masking | Green locally through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | Relies on accepted A4 builder | None |
+| HTTP/privacy/action transport | Production controller has no `revealAll` argument or bypass. `POST /step` accepts an optional structured action overlay, while observation masking remains in `ObservationBuilder`. | `EnvControllerTest` 13/13, including real create/observe/step/fork/snapshot/restore/reset/dispose and opponent-hand masking; targeted candidate regression in `GameGymEnvActionContractTest` | Focused and server integration green locally through Git Bash `just` fallback | Exact locked pair still awaits A8 closure | Relies on accepted A4 builder | None |
 
 ## Observation decision
 
-The only new wire field is `truncated`; the schema hash is bumped to
-`argentum-gym-contract@v1.4-privacy-horizon`. Hidden zones continue to use the
-existing `ObservationBuilder` masking path. Commander identity is already public
+The observation contract now carries `requiresStructuredAction` on each legal action;
+the schema hash is bumped to `argentum-gym-contract@v1.5-action-payload`. The HTTP
+step DTO also accepts an optional structured action overlay. Hidden zones continue
+to use the existing `ObservationBuilder` masking path. Commander identity is already public
 in the command zone. Commander tax/cast-count and the commander-damage matrix
 remain authoritative engine state; this branch does not invent observation-only
 tracking. If the locked Commander policy later needs those fields, that is a
@@ -57,12 +58,15 @@ helper with `WinError 193`. The equivalent repository `just` invocation with
 `--command "C:\Program Files\Git\bin\bash.exe" scripts/gradle-locked` reached
 the locked Gradle wrapper and produced these green results:
 
-* `:gym:test`: 85/85
+* `:rules-engine:test`: 2969/2969, 0 failures
+* `:gym:test`: 86/86, 0 failures
 * `:gym-server:test`: 13/13
+* `:ai:test`: 507 test cases, 0 failures, 11 existing skips
 * `CommanderGymContractTest`: 5/5
 * `ManaAbilityEnumeratorTest`: 8/8, including the costed-mana regression
 
-The local runtime evidence is therefore **GREEN_WITH_DOCUMENTED_LAUNCHER_FALLBACK**.
+The local runtime evidence is therefore **GREEN_WITH_DOCUMENTED_LAUNCHER_FALLBACK**;
+the AI suite has 11 skipped cases and those skips are not counted as passing tests.
 `EXACT_PAIR_BOOT` remains **BLOCKED_BY_A8_CARD_CLOSURE**; no substitute cards or
 definitions were used, so A3 remains **PARTIAL** at the overnight scope level
 even though the generic Gym and HTTP contracts are green.

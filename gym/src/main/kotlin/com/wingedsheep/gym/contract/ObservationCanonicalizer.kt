@@ -76,6 +76,7 @@ internal object ObservationCanonicalizer {
         put("maxTargets", action.maxTargets)
         put("requiresDamageDistribution", action.requiresDamageDistribution)
         put("isManaAbility", action.isManaAbility)
+        put("requiresStructuredAction", action.requiresStructuredAction)
         action.actionSemantics?.let { put("actionSemantics", it) }
         put("isDecisionOption", action.isDecisionOption)
     }
