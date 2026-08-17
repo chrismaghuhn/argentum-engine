@@ -298,6 +298,74 @@
     ]
 }
 
+// Stone Haven Outfitter
+{
+    "name": "Stone Haven Outfitter",
+    "manaCost": "{1}{W}",
+    "typeLine": "Creature — Kor Artificer",
+    "oracleText": "Equipped creatures you control get +1/+1.\nWhenever an equipped creature you control dies, draw a card.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "filter": {
+                        "cardPredicates": [
+                            "IsCreature"
+                        ],
+                        "statePredicates": [
+                            "IsEquipped"
+                        ],
+                        "controllerPredicate": "ControlledByYou"
+                    },
+                    "from": "Battlefield",
+                    "to": "Graveyard"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                }
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "ModifyStats",
+                "powerBonus": 1,
+                "toughnessBonus": 1,
+                "filter": {
+                    "baseFilter": {
+                        "cardPredicates": [
+                            "IsCreature"
+                        ],
+                        "statePredicates": [
+                            "IsEquipped"
+                        ],
+                        "controllerPredicate": "ControlledByYou"
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "37",
+        "rarity": "RARE",
+        "artist": "Jason Rainville",
+        "imageUri": "https://cards.scryfall.io/normal/front/e/1/e1b98e63-f23d-432a-86ae-f88bdad2f648.jpg?1783937922"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Tajuru Pathwarden
 {
     "name": "Tajuru Pathwarden",
