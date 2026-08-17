@@ -1026,14 +1026,19 @@ class StackResolver(
         emitActivationEvent: Boolean = true,
         costsTap: Boolean = false,
         isExhaust: Boolean = false,
-        cantBeCopied: Boolean = false
+        cantBeCopied: Boolean = false,
+        /** State at CR 602.2b's announcement/target-selection point, before costs are paid. */
+        targetLockState: GameState = state
     ): ExecutionResult {
         val (abilityId, stateWithId) = state.newEntity()
 
-        val sourceCard = state.getEntity(ability.sourceId)?.get<CardComponent>()
+        // CR 602.2b applies CR 601.2b-i: choices are locked before payment. The stack object is
+        // created in the post-payment state, but target requirements and object-identity stamps
+        // must come from the pre-payment choice state so a cost cannot rewrite the payload.
+        val sourceCard = targetLockState.getEntity(ability.sourceId)?.get<CardComponent>()
         val lockedTargetRequirements = if (targets.isNotEmpty()) {
             targetValidator.lockRequirementsForTargets(
-                state = state,
+                state = targetLockState,
                 targets = targets,
                 requirements = targetRequirements,
                 casterId = ability.controllerId,
@@ -1048,7 +1053,9 @@ class StackResolver(
         }
         var container = ComponentContainer.of(ability)
         if (targets.isNotEmpty()) {
-            container = container.with(TargetsComponent.capture(state, targets, lockedTargetRequirements))
+            container = container.with(
+                TargetsComponent.capture(targetLockState, targets, lockedTargetRequirements)
+            )
         }
         // CR 707.10e — "This ability can't be copied": tag the ability instance on the stack so a
         // copy-ability effect (e.g. Gogo, Master of Mimicry) makes no copy of it.

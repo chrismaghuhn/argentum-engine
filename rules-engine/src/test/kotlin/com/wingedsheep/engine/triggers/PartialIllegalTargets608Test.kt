@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.ModalTargetContinuation
 import com.wingedsheep.engine.core.ModalPreChosenContinuation
@@ -28,7 +29,9 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
@@ -36,6 +39,7 @@ import com.wingedsheep.sdk.dsl.splice
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.conditions.CreatureDiedThisTurnCondition
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
@@ -109,6 +113,16 @@ class PartialIllegalTargets608Test : FunSpec({
         spell {
             target("creature", TargetCreature())
             effect = Effects.Tap(EffectTarget.ContextTarget(0))
+        }
+    }
+
+    val activatedCostTarget = card("Synthetic 608 Activated Cost Target") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.SacrificeAnother(GameObjectFilter.Creature)
+            target = TargetCreature(count = 2, sameController = true)
+            effect = Effects.GainLife(targetCount)
         }
     }
 
@@ -877,6 +891,72 @@ class PartialIllegalTargets608Test : FunSpec({
         )
         json.decodeFromString(ModalPreChosenContinuation.serializer(), preChosenEncoded) shouldBe
             preChosenContinuation
+    }
+
+    test("608-21: activated targets and identity stamps are locked before costs move a target") {
+        val driver = driver()
+        driver.registerCard(activatedCostTarget)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val source = driver.putPermanentOnBattlefield(driver.player1, activatedCostTarget.name)
+        val sacrificedTarget = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val survivingTarget = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val announcementStamps = driver.state.objectIdentityStamps
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+        val abilityId = activatedCostTarget.activatedAbilities.single().id
+
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId,
+                targets = listOf(
+                    ChosenTarget.Permanent(sacrificedTarget),
+                    ChosenTarget.Permanent(survivingTarget)
+                ),
+                costPayment = AdditionalCostPayment(
+                    sacrificedPermanents = listOf(sacrificedTarget)
+                )
+            )
+        )
+
+        val stackId = driver.state.stack.single()
+        driver.state.getEntity(stackId)?.get<TargetsComponent>()?.targetEntryStamps shouldBe mapOf(
+            sacrificedTarget to announcementStamps.getValue(sacrificedTarget),
+            survivingTarget to announcementStamps.getValue(survivingTarget)
+        )
+
+        driver.bothPass()
+
+        // CR 608.2b: the sacrificed slot is illegal, but the surviving target still receives the
+        // non-targeted instruction. The assertion above proves the payload was locked before the
+        // cost moved the first target to a new zone/object.
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore + 1
+    }
+
+    test("608-22: an unavailable dynamic aggregate cap fails closed at resolution") {
+        val driver = driver()
+        val target = driver.putCardInGraveyard(driver.player2, "Grizzly Bears")
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+        // Negative aggregate caps are reserved for the serialized fail-closed marker used when
+        // the dynamic expression could not be evaluated against required relation data.
+        val unavailableCap = DynamicAmount.Fixed(-1)
+        val requirement = com.wingedsheep.sdk.scripting.targets.TargetObject(
+            filter = TargetFilter.CardInGraveyard,
+            totalManaValueAtMost = unavailableCap
+        )
+
+        putTriggeredAbility(
+            driver,
+            effect = Effects.GainLife(1),
+            targets = listOf(ChosenTarget.Card(target, driver.player2, Zone.GRAVEYARD)),
+            targetRequirements = listOf(requirement)
+        )
+        driver.bothPass()
+
+        // The dynamic cap cannot be evaluated at announcement or resolution. It is not an
+        // unlimited cap: the target is illegal, so CR 608.2b removes the all-illegal ability.
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
     }
 
     test("608-17: a dynamic up-to maximum is locked before resolution") {

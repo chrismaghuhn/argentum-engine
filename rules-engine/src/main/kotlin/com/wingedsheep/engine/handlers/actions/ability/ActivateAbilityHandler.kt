@@ -1851,7 +1851,10 @@ class ActivateAbilityHandler(
             targetRequirements = effectiveTargetReqs,
             costsTap = hasTapCost(effectiveCost),
             isExhaust = ability.isExhaust,
-            cantBeCopied = ability.cantBeCopied
+            cantBeCopied = ability.cantBeCopied,
+            // CR 602.2b -> 601.2c-d: targets, counts, and distribution are announced before
+            // costs mutate the board. Keep the original choice state for the stack payload.
+            targetLockState = state
         )
         currentState = stackResult.newState
         events.addAll(stackResult.events)

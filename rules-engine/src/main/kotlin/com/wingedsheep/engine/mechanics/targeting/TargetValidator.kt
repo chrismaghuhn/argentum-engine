@@ -33,6 +33,9 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  */
 private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()) { it.name }
 
+/** Negative caps cannot be legal target limits; this value marks an unavailable locked cap. */
+private const val UNAVAILABLE_DYNAMIC_AGGREGATE_CAP = -1
+
 /**
  * Validates that chosen targets match their target requirements.
  *
@@ -44,6 +47,22 @@ private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()
  */
 class TargetValidator {
     private val predicateEvaluator = PredicateEvaluator()
+
+    /**
+     * Evaluate a target aggregate cap without turning unavailable data into an unlimited cap.
+     * A negative fixed value is the serialized fail-closed marker produced when announcement-time
+     * locking could not resolve the dynamic expression. Valid locked caps are non-negative.
+     */
+    private fun evaluateAggregateCapOrNull(
+        state: GameState,
+        expression: DynamicAmount,
+        context: EffectContext
+    ): Int? {
+        if (expression is DynamicAmount.Fixed && expression.amount < 0) return null
+        return runCatching {
+            DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
+        }.getOrNull()
+    }
 
     /**
      * Lock the effective target-slot counts at announcement time. Resolution must consume this
@@ -206,9 +225,10 @@ class TargetValidator {
                 pipeline = EffectContext(sourceId = sourceId, controllerId = casterId).pipeline
                     .copy(storedCollections = storedCollections)
             )
-            val resolved = runCatching {
-                DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
-            }.getOrNull() ?: return requirement
+            val resolved = evaluateAggregateCapOrNull(state, expression, context)
+                ?: return requirement.copy(
+                    totalManaValueAtMost = DynamicAmount.Fixed(UNAVAILABLE_DYNAMIC_AGGREGATE_CAP)
+                )
             requirement.copy(totalManaValueAtMost = DynamicAmount.Fixed(resolved))
         } ?: requirement
         is TargetOther -> requirement.copy(
@@ -547,7 +567,6 @@ class TargetValidator {
         }
 
         val objectRequirement = requirement.objectRequirement() ?: return null
-        if (requirementTargets.size <= 1) return null
 
         // CR 115.9b says a target that has left its expected zone is ignored for a query about
         // whether something targets it; CR 608.2b separately makes that target illegal. The
@@ -555,6 +574,26 @@ class TargetValidator {
         // deliberately not a last-known-information fallback: LKI would reintroduce a departed
         // target into the live legality relation and could make a legal survivor illegal.
         val presentTargets = requirementTargets.filter { isCurrentTargetObject(state, it) }
+
+        // The aggregate cap applies to the complete chosen set, including a single target. Keep
+        // this check before the multi-target early return so an unavailable locked cap cannot be
+        // mistaken for an unlimited cap when only one slot was chosen.
+        objectRequirement.totalManaValueAtMost?.let { capExpression ->
+            val cap = evaluateAggregateCapOrNull(
+                state = state,
+                expression = capExpression,
+                context = EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
+            ) ?: return "Target aggregate mana value cap is unavailable"
+            val total = presentTargets.sumOf { target ->
+                (target as? ChosenTarget.Card)?.let { card ->
+                    state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue
+                        ?: return "Target characteristics are unavailable"
+                } ?: 0
+            }
+            if (total > cap) return "Targets must have total mana value $cap or less"
+        }
+
+        if (requirementTargets.size <= 1) return null
 
         if (objectRequirement.sameController) {
             val controllers = mutableListOf<EntityId>()
@@ -600,24 +639,6 @@ class TargetValidator {
             if (typeSets.isNotEmpty() && typeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
                 return "Targets must share a card type"
             }
-        }
-        objectRequirement.totalManaValueAtMost?.let { capExpression ->
-            val cap = try {
-                DynamicAmountEvaluator().evaluate(
-                    state,
-                    capExpression,
-                    EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
-                ).coerceAtLeast(0)
-            } catch (_: Exception) {
-                Int.MAX_VALUE
-            }
-            val total = presentTargets.sumOf { target ->
-                (target as? ChosenTarget.Card)?.let { card ->
-                    state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue
-                        ?: return "Target characteristics are unavailable"
-                } ?: 0
-            }
-            if (total > cap) return "Targets must have total mana value $cap or less"
         }
         if (objectRequirement.differentNames) {
             val names = presentTargets.mapNotNull { target ->
@@ -843,15 +864,11 @@ class TargetValidator {
             // targets, which contribute 0.
             val totalManaCap = (requirement as? TargetObject)?.totalManaValueAtMost
             if (totalManaCap != null && targetsForReq.isNotEmpty()) {
-                val cap = try {
-                    DynamicAmountEvaluator().evaluate(
-                        state,
-                        totalManaCap,
-                        EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
-                    ).coerceAtLeast(0)
-                } catch (_: Exception) {
-                    Int.MAX_VALUE
-                }
+                val cap = evaluateAggregateCapOrNull(
+                    state = state,
+                    expression = totalManaCap,
+                    context = EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
+                ) ?: return "Target aggregate mana value cap is unavailable"
                 val summedManaValue = targetsForReq.sumOf { target ->
                     (target as? ChosenTarget.Card)?.let { card ->
                         state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue ?: 0
