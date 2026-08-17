@@ -155,4 +155,29 @@ class ManaAbilityEnumeratorTest : FunSpec({
         mineActions.map { (it.action as com.wingedsheep.engine.core.ActivateAbility).sourceId }
             .toSet() shouldBe setOf(forest1, forest2)
     }
+
+    val CostedManaArtifact = card("Test Costed Mana Artifact") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            effect = Effects.AddManaOfChoice()
+            manaAbility = true
+        }
+    }
+
+    test("a costed mana ability is marked unaffordable when its mana cost cannot be paid") {
+        val driver = setupP1(
+            battlefield = listOf("Test Costed Mana Artifact"),
+            extraSetCards = listOf(CostedManaArtifact)
+        )
+        val artifactId = driver.game.state.getBattlefield(driver.player1).first { id ->
+            driver.game.state.getEntity(id)?.get<CardComponent>()?.name == "Test Costed Mana Artifact"
+        }
+
+        val actions = driver.enumerateFor(driver.player1).activatedAbilityActionsFor(artifactId)
+
+        actions shouldHaveSize 1
+        actions.single().isManaAbility shouldBe true
+        actions.single().affordable shouldBe false
+    }
 })

@@ -236,8 +236,8 @@ class MultiEnvServiceTest : FunSpec({
         val handle = svc.snapshot(envId)
         val openingDigest = opening.observation.stateDigest
 
-        // Advance one actor-owned step. A fixed perspective receives no
-        // actions after priority moves to the other player.
+        // Advance one actor-owned step. The next observation is routed to
+        // whichever player owns priority after the transition.
         val actionId = svc.observe(envId).observation.legalActions.first().actionId
         svc.step(StepRequest(envId, actionId))
         svc.observe(envId).observation.stateDigest shouldNotBe openingDigest
@@ -322,17 +322,36 @@ class MultiEnvServiceTest : FunSpec({
     // Perspective / masking wiring
     // =========================================================================
 
-    test("opening observation uses the configured perspective and stays masked") {
+    test("observation routing follows the acting player after priority changes") {
+        val svc = MultiEnvService(registry())
+        val created = svc.create(twoPlayerConfig(perspective = 0))
+        val opening = created.observation.observation.asGame
+        val openingActor = opening.agentToAct.shouldNotBeNull()
+        opening.perspectivePlayerId shouldBe openingActor
+
+        val passView = opening.legalActions
+            .first { it.kind.contains("Pass", ignoreCase = true) || it.description.contains("Pass", ignoreCase = true) }
+        val next = svc.step(StepRequest(created.envId, passView.actionId)).observation.asGame
+        val nextActor = next.agentToAct.shouldNotBeNull()
+
+        nextActor shouldNotBe openingActor
+        next.perspectivePlayerId shouldBe nextActor
+        next.players.first { it.isPerspective }.id shouldBe nextActor
+        next.legalActions.shouldNotBeEmpty()
+    }
+
+    test("active observation uses the acting player and stays masked") {
         val svc = MultiEnvService(registry())
         val created = svc.create(twoPlayerConfig(perspective = 1))
 
-        val me = created.observation.observation.asGame.perspectivePlayerId
-        created.observation.observation.asGame.players
-            .first { it.isPerspective }.id shouldBe me
+        val opening = created.observation.observation.asGame
+        val me = opening.perspectivePlayerId
+        me shouldBe opening.agentToAct
+        opening.players.first { it.isPerspective }.id shouldBe me
 
-        val opponent = created.observation.observation.asGame.players.first { !it.isPerspective }
+        val opponent = opening.players.first { !it.isPerspective }
         // Opponent hand should be hidden by default.
-        val opponentHand = created.observation.observation.asGame.zones
+        val opponentHand = opening.zones
             .first { it.ownerId == opponent.id && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND }
         opponentHand.hidden.shouldBeTrue()
 
