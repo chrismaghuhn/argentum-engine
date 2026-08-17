@@ -159,6 +159,11 @@ class DestinedConfrontationScenarioTest : FunSpec({
         // rejected as a whole; the engine must not silently trim it in response order.
         driver.giveMana(me, Color.WHITE, 4)
         driver.castSpell(me, spell)
+        var castGuard = 0
+        while (driver.pendingDecision == null && driver.state.stack.isNotEmpty() && castGuard < 100) {
+            driver.bothPass()
+            castGuard++
+        }
         val decision = driver.pendingDecision as SelectCardsDecision
         val invalid = driver.submitCardSelection(me, listOf(oneA, four))
         invalid.isSuccess shouldBe false
