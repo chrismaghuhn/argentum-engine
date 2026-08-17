@@ -8,8 +8,15 @@ import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.dsl.Conditions
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.Triggers
+import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.TriggerBinding
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -29,9 +36,37 @@ class GuardianProjectScenarioTest : FunSpec({
 
     val guardianProject = "Guardian Project"
 
+    /**
+     * Test-only partial probe for the existing generic vocabulary. It deliberately models only
+     * the battlefield half of Guardian Project's intervening-if clause. The missing comparison
+     * against creature cards in the controller's graveyard is the reusable blocker under test;
+     * this definition must never become production card code.
+     */
+    val characterizedGuardianProject = card(guardianProject) {
+        manaCost = "{3}{G}"
+        colorIdentity = "G"
+        typeLine = "Enchantment"
+        oracleText = "Whenever a nontoken creature you control enters, if it doesn't have the same " +
+            "name as another creature you control or a creature card in your graveyard, draw a card."
+
+        triggeredAbility {
+            trigger = Triggers.entersBattlefield(
+                filter = GameObjectFilter.Creature.nontoken().youControl(),
+                binding = TriggerBinding.ANY,
+            )
+            interveningIf = Conditions.EntityMatches(
+                EffectTarget.TriggeringEntity,
+                GameObjectFilter.Creature.nontoken()
+                    .youControl()
+                    .nameNotSharedWithAnotherControlledPermanent(),
+            )
+            effect = Effects.DrawCards(1)
+        }
+    }
+
     fun newDriver(): GameTestDriver {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all)
+        driver.registerCards(TestCards.all + characterizedGuardianProject)
         driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return driver
