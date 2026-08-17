@@ -562,6 +562,56 @@
     ]
 }
 
+// Toski, Bearer of Secrets
+{
+    "name": "Toski, Bearer of Secrets",
+    "manaCost": "{3}{G}",
+    "typeLine": "Legendary Creature — Squirrel",
+    "oracleText": "This spell can't be countered.\nIndestructible\nToski attacks each combat if able.\nWhenever a creature you control deals combat damage to a player, draw a card.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "keywords": [
+        "INDESTRUCTIBLE"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "DealsDamageEvent",
+                    "damageType": "DamageCombat",
+                    "recipient": "AnyPlayer",
+                    "sourceFilter": "creature ctrl:you"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "descriptionOverride": "Whenever a creature you control deals combat damage to a player, draw a card."
+            }
+        ],
+        "staticAbilities": [
+            "MustAttack"
+        ],
+        "cantBeCountered": true
+    },
+    "metadata": {
+        "collectorNumber": "197",
+        "rarity": "RARE",
+        "artist": "Jason Rainville",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/9/f9e79b59-94c8-4697-bf88-f0a0433170f5.jpg?1783928203"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Undersea Invader
 {
     "name": "Undersea Invader",
