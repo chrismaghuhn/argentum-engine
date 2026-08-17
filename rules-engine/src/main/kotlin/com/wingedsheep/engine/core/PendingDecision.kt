@@ -214,7 +214,7 @@ data class SelectCardsDecision(
      * Maximum sum of mana values across selected cards (Scout for Survivors). null
      * means no cap. {X} contributes 0 (CR 202.3e for cards not on the stack). The
      * UI is expected to disable cards whose mana value would push the running total
-     * over the cap; the server also trims oversubmits in selection order.
+     * over the cap; the server rejects oversubmits against the same domain.
      */
     val maxTotalManaValue: Int? = null,
     /**
@@ -236,7 +236,7 @@ data class SelectCardsDecision(
      * Maximum sum of (projected) power across selected creatures (Destined Confrontation).
      * null means no cap. A creature with undefined power contributes 0. The UI is expected
      * to disable creatures whose power would push the running total over the cap; the server
-     * also trims oversubmits in selection order.
+     * rejects oversubmits against the same domain.
      */
     val maxTotalPower: Int? = null,
     /** Conditional lower minimums for decisions like "discard two unless one is a creature". */

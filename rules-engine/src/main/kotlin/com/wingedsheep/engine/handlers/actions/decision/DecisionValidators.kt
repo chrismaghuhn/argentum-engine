@@ -79,7 +79,7 @@ object DecisionValidators {
             is CombatResolutionDecision -> validateCombatResolution(decision, response, state)
             is SearchLibraryDecision -> validateLibrarySearch(decision, response)
             is ReorderLibraryDecision -> validateLibraryReorder(decision, response)
-            is SelectManaSourcesDecision -> validateManaSourcesSelection(response)
+            is SelectManaSourcesDecision -> validateManaSourcesSelection(decision, response)
             is BatchYesNoDecision -> validateBatchYesNo(response)
         }
     }
@@ -140,6 +140,18 @@ object DecisionValidators {
         }
         if (response !is TargetsResponse) {
             return "Expected target selection response"
+        }
+
+        val requiredIndexes = decision.targetRequirements.map { it.index }.toSet()
+        val unknownIndexes = response.selectedTargets.keys - requiredIndexes
+        if (unknownIndexes.isNotEmpty()) {
+            return "Unknown target requirement(s): ${unknownIndexes.sorted()}"
+        }
+        val missingRequiredIndexes = decision.targetRequirements
+            .filter { it.minTargets > 0 && it.index !in response.selectedTargets }
+            .map { it.index }
+        if (missingRequiredIndexes.isNotEmpty()) {
+            return "Missing required target requirement(s): ${missingRequiredIndexes.sorted()}"
         }
 
         for ((reqIndex, selectedIds) in response.selectedTargets) {
@@ -209,6 +221,10 @@ object DecisionValidators {
             return "Expected card selection response"
         }
 
+        if (response.selectedCards.size != response.selectedCards.toSet().size) {
+            return "The same card cannot be selected more than once"
+        }
+
         for (cardId in response.selectedCards) {
             if (cardId !in decision.options) {
                 return "Invalid selection: $cardId is not a valid option"
@@ -249,6 +265,83 @@ object DecisionValidators {
                 return unmetConditionalMinimums.first().description ?: "Selection does not satisfy the conditional minimum"
             }
         }
+
+        val needsCurrentState = decision.onePerCardType ||
+            decision.onePerColor ||
+            decision.onePerCardName ||
+            decision.onePerBasicLandType ||
+            decision.onePerPower ||
+            decision.maxTotalManaValue != null ||
+            decision.maxTotalPower != null ||
+            decision.minTotalManaValue != null
+        if (needsCurrentState && state == null) {
+            return "Current game state is required to validate this card selection"
+        }
+        if (needsCurrentState) {
+            val claimedTypes = mutableSetOf<com.wingedsheep.sdk.core.CardType>()
+            val claimedColors = mutableSetOf<com.wingedsheep.sdk.core.Color>()
+            val claimedNames = mutableSetOf<String>()
+            val claimedLandTypes = mutableSetOf<com.wingedsheep.sdk.core.Subtype>()
+            val claimedPowers = mutableSetOf<Int>()
+            var totalManaValue = 0
+            var totalPower = 0
+
+            for (cardId in response.selectedCards) {
+                val card = state!!.getEntity(cardId)?.get<CardComponent>()
+                    ?: return "Cannot validate selected card $cardId against the current game state"
+
+                if (decision.onePerCardType) {
+                    val cardTypes = card.typeLine.cardTypes
+                    if (cardTypes.any { it in claimedTypes }) {
+                        return "Selection contains multiple cards of the same card type"
+                    }
+                    claimedTypes += cardTypes
+                }
+                if (decision.onePerColor) {
+                    val colors = card.colors
+                    if (colors.any { it in claimedColors }) {
+                        return "Selection contains multiple cards of the same color"
+                    }
+                    claimedColors += colors
+                }
+                if (decision.onePerCardName) {
+                    if (!claimedNames.add(card.name)) {
+                        return "Selection contains multiple cards with the same name"
+                    }
+                }
+                if (decision.onePerBasicLandType) {
+                    val basicLandTypes = card.typeLine.subtypes
+                        .filter { it.value in com.wingedsheep.sdk.core.Subtype.ALL_BASIC_LAND_TYPES }
+                        .toSet()
+                    if (basicLandTypes.isEmpty()) {
+                        return "Selection contains a card without a basic land type"
+                    }
+                    if (basicLandTypes.any { it in claimedLandTypes }) {
+                        return "Selection contains multiple cards sharing a basic land type"
+                    }
+                    claimedLandTypes += basicLandTypes
+                }
+                if (decision.onePerPower) {
+                    val power = card.baseStats?.basePower
+                        ?: return "Selection contains a card without a fixed power"
+                    if (!claimedPowers.add(power)) {
+                        return "Selection contains multiple cards with the same power"
+                    }
+                }
+                if (decision.maxTotalManaValue != null) {
+                    totalManaValue += card.manaValue
+                    if (totalManaValue > decision.maxTotalManaValue) {
+                        return "Selected cards exceed total mana value ${decision.maxTotalManaValue}"
+                    }
+                }
+                if (decision.maxTotalPower != null) {
+                    totalPower += state!!.projectedState.getPower(cardId) ?: 0
+                    if (totalPower > decision.maxTotalPower) {
+                        return "Selected cards exceed total power ${decision.maxTotalPower}"
+                    }
+                }
+            }
+        }
         return null
     }
 
@@ -285,6 +378,9 @@ object DecisionValidators {
         }
         if (response.selectedModes.size > decision.maxModes) {
             return "Too many modes selected: maximum is ${decision.maxModes}"
+        }
+        if (response.selectedModes.size != response.selectedModes.toSet().size) {
+            return "The same mode cannot be selected more than once"
         }
         return null
     }
@@ -329,6 +425,9 @@ object DecisionValidators {
             if (targetId !in decision.targets) {
                 return "Invalid target for distribution: $targetId"
             }
+            if (amount < 0) {
+                return "Distribution amount for $targetId cannot be negative"
+            }
             if (amount < decision.minPerTarget) {
                 return "Each target must receive at least ${decision.minPerTarget}"
             }
@@ -344,7 +443,10 @@ object DecisionValidators {
         if (response !is OrderedResponse) {
             return "Expected ordering response"
         }
-        if (response.orderedObjects.toSet() != decision.objects.toSet()) {
+        if (response.orderedObjects.size != decision.objects.size ||
+            response.orderedObjects.toSet() != decision.objects.toSet() ||
+            response.orderedObjects.size != response.orderedObjects.toSet().size
+        ) {
             return "Ordered objects must contain exactly the same objects as the decision"
         }
         return null
@@ -355,8 +457,12 @@ object DecisionValidators {
             return "Expected pile split response"
         }
 
-        val allCards = response.piles.flatten().toSet()
-        if (allCards != decision.cards.toSet()) {
+        val flattened = response.piles.flatten()
+        val allCards = flattened.toSet()
+        if (flattened.size != decision.cards.size ||
+            flattened.size != allCards.size ||
+            allCards != decision.cards.toSet()
+        ) {
             return "Piles must contain exactly the same cards as the decision"
         }
         if (response.piles.size != decision.numberOfPiles) {
@@ -417,6 +523,10 @@ object DecisionValidators {
             return "Expected damage assignment response"
         }
 
+        if (response.assignments.values.any { it < 0 }) {
+            return "Damage assignments cannot be negative"
+        }
+
         val totalDamage = response.assignments.values.sum()
         if (totalDamage > decision.availablePower) {
             return "Total damage ($totalDamage) exceeds available power (${decision.availablePower})"
@@ -450,6 +560,12 @@ object DecisionValidators {
                 return "Invalid selection: $cardId is not a valid option"
             }
         }
+        if (response.selectedCards.size != response.selectedCards.toSet().size) {
+            return "The same card cannot be selected more than once"
+        }
+        if (response.selectedCards.size < decision.minSelections) {
+            return "Not enough cards selected: need at least ${decision.minSelections}"
+        }
         if (response.selectedCards.size > decision.maxSelections) {
             return "Too many cards selected: maximum is ${decision.maxSelections}"
         }
@@ -472,9 +588,25 @@ object DecisionValidators {
         return null
     }
 
-    private fun validateManaSourcesSelection(response: DecisionResponse): String? {
+    private fun validateManaSourcesSelection(
+        decision: SelectManaSourcesDecision,
+        response: DecisionResponse
+    ): String? {
         if (response !is ManaSourcesSelectedResponse) {
             return "Expected mana sources selected response"
+        }
+        if (response.selectedSources.size != response.selectedSources.toSet().size) {
+            return "The same mana source cannot be selected more than once"
+        }
+        val validSources = decision.availableSources.map { it.entityId }.toSet()
+        val invalidSources = response.selectedSources.filter { it !in validSources }
+        if (invalidSources.isNotEmpty()) {
+            return "Invalid mana source(s): ${invalidSources.distinct()}"
+        }
+        val validWaterbendPermanents = decision.waterbendPermanents.map { it.entityId }.toSet()
+        val invalidWaterbend = response.waterbendPermanents.filter { it !in validWaterbendPermanents }
+        if (invalidWaterbend.isNotEmpty()) {
+            return "Invalid Waterbend permanent(s): ${invalidWaterbend.distinct()}"
         }
         return null
     }
