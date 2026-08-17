@@ -32,6 +32,8 @@ data class AttackingComponent(
     val defenderProtectorAtDeclaration: EntityId? = null,
     /** CR 400.7 identity of the battlefield object, when the entry tracker supplied one. */
     val defenderBattlefieldObjectTimestampAtDeclaration: Long? = null,
+    /** CR 506.4: once an attacked object leaves combat, restoring its relationship does not return it. */
+    val defenderRelationshipInvalidated: Boolean = false,
 ) : Component
 
 /**

@@ -73,6 +73,7 @@ object CombatDefenders {
     ): Boolean {
         val attacking = state.getEntity(attackerId)?.get<AttackingComponent>() ?: return false
         if (attacking.defenderId != targetId) return false
+        if (attacking.defenderRelationshipInvalidated) return false
 
         // Legacy/synthetic player-only components can still be inferred safely. An object target
         // without declaration metadata cannot prove the original relationship, so fail closed
@@ -100,11 +101,34 @@ object CombatDefenders {
         else -> null
     }
 
-    private fun isLivePlayer(state: GameState, entityId: EntityId): Boolean {
+    fun isLivePlayer(state: GameState, entityId: EntityId): Boolean {
         val container = state.getEntity(entityId) ?: return false
         return entityId in state.activePlayers &&
             container.get<LifeTotalComponent>() != null &&
             container.get<CardComponent>() == null
+    }
+
+    /**
+     * Latch CR 506.4 removal for attacked planeswalkers and battles. The current projected
+     * relationship is intentionally sampled before any later effect can restore it: once the
+     * controller/protector differs during combat, the object stays out of combat even if the
+     * relationship later returns (CR 506.4).
+     */
+    fun latchInvalidatedAttackRelationships(state: GameState): GameState {
+        val projected = state.projectedState
+        var latched = state
+        for (attackerId in state.getBattlefield()) {
+            val attacking = state.getEntity(attackerId)?.get<AttackingComponent>() ?: continue
+            if (attacking.defenderRelationshipInvalidated) continue
+            if (attacking.defenderKindAtDeclaration == AttackedDefenderKind.PLAYER) continue
+            if (attacking.defenderKindAtDeclaration == null) continue
+            if (isCurrentAttackedRecipient(state, projected, attackerId, attacking.defenderId)) continue
+
+            latched = latched.updateEntity(attackerId) { container ->
+                container.with(attacking.copy(defenderRelationshipInvalidated = true))
+            }
+        }
+        return latched
     }
 
     private fun isCurrentPlaneswalkerRecipient(
@@ -150,7 +174,7 @@ object CombatDefenders {
     /**
      * The player defending against an attack aimed at [defenderId]: a player defends as
      * themselves, a planeswalker defends on behalf of its controller (CR 508.5), and a **battle
-     * defends on behalf of its protector, not its controller** (CR 310.8d — for a battle being
+     * defends on behalf of its protector, not its controller** (CR 310.9d — for a battle being
      * attacked, every rule and effect that refers to the defending player means its protector).
      * That asymmetry is the whole point of a Siege: its controller attacks it while an opponent
      * defends it.

@@ -394,7 +394,7 @@ data class CountersComponent(
  * The player designated as this battle's protector (CR 310.8).
  *
  * A battle's protector — not its controller — is the defending player for every rule and effect
- * that refers to one while the battle is being attacked (CR 310.8d), may never attack it, and is
+ * that refers to one while the battle is being attacked (CR 310.9d), may never attack it, and is
  * the only player who may block creatures attacking it (CR 310.8b/c).
  *
  * Assigned and repaired as a state-based action by

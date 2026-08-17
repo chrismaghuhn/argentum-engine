@@ -75,11 +75,12 @@ internal class CombatDamageManager(
         // The first invocation of the first-strike step is the historical boundary needed by
         // CR 510.4. Capture it before any prevention or assignment decision can pause the step;
         // continuation re-entry sees the already stamped components and leaves them unchanged.
-        val state = if (firstStrike) {
+        val stateBeforeRelationshipLatch = if (firstStrike) {
             captureFirstCombatDamageStepEligibility(inputState)
         } else {
             inputState
         }
+        val state = CombatDefenders.latchInvalidatedAttackRelationships(stateBeforeRelationshipLatch)
         if (isAllCombatDamagePrevented(state)) {
             return ExecutionResult.success(state)
         }
@@ -147,7 +148,7 @@ internal class CombatDamageManager(
             val continuation = AssignAsUnblockedContinuation(
                 decisionId = decisionId,
                 attackerId = attackerId,
-                defendingPlayerId = attackingComponent.defenderId,
+                defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent),
                 firstStrike = firstStrike
             )
 
@@ -213,16 +214,14 @@ internal class CombatDamageManager(
             // not just the creatures blocking Butcher Orgg.
             val targets = mutableListOf<EntityId>()
             val defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent)
-            val defendingCreatures = state.getBattlefield().filter { entityId ->
-                projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
-            }
-            targets.addAll(defendingCreatures)
-            // A creature that is still attacking a current object/player may divide to that
-            // recipient. If the attacked planeswalker/battle left combat, CR 506.4c/510.1b
-            // leaves no recipient to add here; the historical defending player above is only
-            // used for CR 508.5's defending-player semantics and is not a retarget.
-            if (CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId)) {
-                targets.add(defenderId)
+            if (CombatDefenders.isLivePlayer(state, defendingPlayerId)) {
+                // CR 508.5: a planeswalker attack is an attack on its controller, and a battle
+                // attack is an attack on its protector for defending-player purposes. The attacked
+                // permanent itself is not part of DivideCombatDamageFreely's recipient domain.
+                targets.add(defendingPlayerId)
+                targets.addAll(state.getBattlefield().filter { entityId ->
+                    projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
+                })
             }
 
             if (targets.size <= 1) continue
@@ -247,7 +246,7 @@ internal class CombatDamageManager(
             val continuation = DamageAssignmentContinuation(
                 decisionId = decisionId,
                 attackerId = attackerId,
-                defendingPlayerId = defenderId,
+                defendingPlayerId = defendingPlayerId,
                 firstStrike = firstStrike
             )
 
@@ -810,7 +809,24 @@ internal class CombatDamageManager(
         for ((attackerId, attackingComponent) in attackers) {
             if (attackerId !in state.getBattlefield()) continue
             val attackerContainer = state.getEntity(attackerId) ?: continue
-            attackerContainer.get<CardComponent>() ?: continue
+            val attackerCard = attackerContainer.get<CardComponent>() ?: continue
+
+            val dividesFreely = !attackerContainer.has<FaceDownComponent>() &&
+                cardRegistry.getCard(attackerCard.cardDefinitionId)
+                    ?.staticAbilities
+                    ?.any { it is DivideCombatDamageFreely } == true
+            val currentAttackedRecipient = CombatDefenders.isCurrentAttackedRecipient(
+                state,
+                projected,
+                attackerId,
+                attackingComponent.defenderId,
+            )
+            val freeDefendingPlayerId = if (dividesFreely && currentAttackedRecipient) {
+                CombatDefenders.defendingPlayerOf(state, attackingComponent)
+                    .takeIf { CombatDefenders.isLivePlayer(state, it) }
+            } else {
+                null
+            }
 
             val blockedBy = attackerContainer.get<BlockedComponent>()
             val blockers = blockedBy?.blockerIds ?: emptyList()
@@ -854,8 +870,9 @@ internal class CombatDamageManager(
                                                 assignments.add(CombatDamageAssignment(attackerId, targetId, damage))
                                             }
                                         }
-                                } else if (currentDefender) {
-                                    assignments.add(CombatDamageAssignment(attackerId, defenderId, power))
+                                } else if (blockedBy == null && currentDefender) {
+                                    val fallbackTarget = freeDefendingPlayerId ?: defenderId
+                                    assignments.add(CombatDamageAssignment(attackerId, fallbackTarget, power))
                                 }
                             } else {
                                 manualAssignment.assignments.forEach { (targetId, damage) ->
@@ -869,14 +886,11 @@ internal class CombatDamageManager(
                             // CR 510.1b / 506.4c: an unblocked creature that no longer attacks
                             // anything assigns no combat damage. In particular, ordinary trample
                             // cannot turn a stale planeswalker/battle id into a player recipient.
-                            if (CombatDefenders.isCurrentAttackedRecipient(
-                                    state,
-                                    projected,
-                                    attackerId,
-                                    attackingComponent.defenderId,
-                                )
-                            ) {
-                                assignments.add(CombatDamageAssignment(attackerId, attackingComponent.defenderId, power))
+                            val currentDefender = currentAttackedRecipient
+                            val targetId = freeDefendingPlayerId
+                                ?: attackingComponent.defenderId.takeIf { currentDefender }
+                            if (targetId != null) {
+                                assignments.add(CombatDamageAssignment(attackerId, targetId, power))
                             }
                         }
                         else -> {
@@ -987,9 +1001,6 @@ internal class CombatDamageManager(
     ): Set<EntityId> {
         val defenderId = attackingComponent.defenderId
         val targets = liveBlockers.toMutableSet()
-        if (CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId)) {
-            targets += defenderId
-        }
 
         val attackerContainer = state.getEntity(attackerId)
         val attackerCard = attackerContainer?.get<CardComponent>()
@@ -1000,9 +1011,14 @@ internal class CombatDamageManager(
                 ?.any { it is DivideCombatDamageFreely } == true
         if (dividesFreely) {
             val defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent)
-            targets += state.getBattlefield().filter { entityId ->
-                projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
+            if (CombatDefenders.isLivePlayer(state, defendingPlayerId)) {
+                targets += defendingPlayerId
+                targets += state.getBattlefield().filter { entityId ->
+                    projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
+                }
             }
+        } else if (CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId)) {
+            targets += defenderId
         }
         return targets
     }

@@ -641,7 +641,7 @@ internal class AttackPhaseManager(
     /**
      * The player an attack aimed at [defenderId] is really aimed at: the player themselves, a
      * planeswalker's controller, or — for a battle — its protector rather than its controller
-     * (CR 310.8d).
+     * (CR 310.9d).
      */
     private fun defenderControllerOf(
         state: GameState,

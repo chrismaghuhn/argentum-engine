@@ -16,6 +16,7 @@ import com.wingedsheep.engine.mechanics.combat.DamageCalculator
 import com.wingedsheep.engine.mechanics.layers.Layer
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
+import com.wingedsheep.engine.mechanics.sba.permanent.ProtectorAssignment
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.ProtectorComponent
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
@@ -186,14 +187,14 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
             it.sourceId == sourceId && it.targetId == walkerId && it.isCombatDamage
         }
 
-    fun readyBlockedBattle(): BlockedBattleSetup {
+    fun readyBlockedBattle(attackerName: String = "Trample Beast"): BlockedBattleSetup {
         val driver = driver()
         driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
         val attackerPlayer = driver.activePlayer!!
         val defenderPlayer = driver.getOpponent(attackerPlayer)
 
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
-        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast")
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, attackerName)
         val blocker = driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears")
         val battle = driver.putPermanentOnBattlefield(defenderPlayer, testSiege.name)
         driver.replaceState(driver.state.updateEntity(battle) {
@@ -706,6 +707,132 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         driver.findPermanent(defenderPlayer, "Savannah Lions").shouldBeNull()
         driver.findPermanent(defenderPlayer, "Grizzly Bears").shouldNotBeNull()
         driver.assertLifeTotal(defenderPlayer, 17)
+    }
+
+    test("C14-P1-15 unblocked free division against a planeswalker auto-assigns to its controller") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, divideFreelyCreature.name)
+        val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        seedLoyalty(driver, walker, loyalty = 10)
+        driver.removeSummoningSickness(attacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer).error shouldBe null
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 15)
+        driver.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == walker } shouldBe true
+    }
+
+    test("C14-P1-16 unblocked free division against a battle auto-assigns to its protector") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, divideFreelyCreature.name)
+        val battle = driver.putPermanentOnBattlefield(defenderPlayer, testSiege.name)
+        driver.replaceState(driver.state.updateEntity(battle) {
+            it.with(ProtectorComponent(defenderPlayer))
+        })
+        driver.removeSummoningSickness(attacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to battle)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer).error shouldBe null
+        driver.passPriorityUntil(Step.POSTCOMBAT_MAIN)
+
+        driver.assertLifeTotal(defenderPlayer, 15)
+        driver.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == battle } shouldBe true
+    }
+
+    test("C14-P1-11 free division against a planeswalker uses its controller, not the attacked object") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, divideFreelyCreature.name)
+        val blocker = driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears")
+        val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        seedLoyalty(driver, walker, loyalty = 10)
+        driver.removeSummoningSickness(attacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(defenderPlayer, mapOf(blocker to listOf(attacker))).error shouldBe null
+        driver.passPriorityUntil(Step.COMBAT_DAMAGE)
+
+        val decision = driver.pendingDecision.shouldBeInstanceOf<DistributeDecision>()
+        decision.targets.toSet() shouldBe setOf(blocker, defenderPlayer)
+        decision.targets.contains(walker) shouldBe false
+        driver.submitDecision(
+            attackerPlayer,
+            DistributionResponse(decision.id, mapOf(blocker to 1, defenderPlayer to 4)),
+        ).error shouldBe null
+        driver.events.filterIsInstance<DamageDealtEvent>().any {
+            it.sourceId == attacker && it.targetId == defenderPlayer && it.amount == 4
+        } shouldBe true
+    }
+
+    test("C14-P1-12 free division against a battle uses its protector, not the attacked object") {
+        val setup = readyBlockedBattle(attackerName = divideFreelyCreature.name)
+        val decision = setup.driver.pendingDecision.shouldBeInstanceOf<DistributeDecision>()
+
+        decision.targets.toSet() shouldBe setOf(setup.blocker, setup.defenderPlayer)
+        decision.targets.contains(setup.battle) shouldBe false
+        setup.driver.submitDecision(
+            setup.attackerPlayer,
+            DistributionResponse(decision.id, mapOf(setup.blocker to 1, setup.defenderPlayer to 4)),
+        ).error shouldBe null
+        setup.driver.events.filterIsInstance<DamageDealtEvent>().any {
+            it.sourceId == setup.attacker && it.targetId == setup.defenderPlayer && it.amount == 4
+        } shouldBe true
+    }
+
+    test("C14-P1-13 a planeswalker that changes controller away and back stays out of combat") {
+        val setup = readyBlockedPlane(blockerNames = listOf("Grizzly Bears"))
+        val stateBeforeChange = setup.driver.state
+        val changed = stateBeforeChange.addFloatingEffect(
+            layer = Layer.CONTROL,
+            modification = SerializableModification.ChangeController(setup.attackerPlayer),
+            affectedEntities = setOf(setup.walker),
+            duration = Duration.EndOfTurn,
+            context = EffectContext(sourceId = null, controllerId = setup.attackerPlayer),
+        )
+        setup.driver.replaceState(changed.copy(floatingEffects = stateBeforeChange.floatingEffects))
+
+        val result = rerunCombatDamage(setup.driver)
+        val decision = result.pendingDecision as? CombatResolutionDecision
+
+        result.error shouldBe null
+        decision?.defenders.orEmpty().shouldBeEmpty()
+        decision?.edges?.none { it.targetId == setup.walker } shouldBe true
+    }
+
+    test("C14-P1-14 a battle whose protector changes away and back stays out of combat") {
+        val setup = readyBlockedBattle()
+        val changed = ProtectorAssignment.assign(setup.driver.state, setup.battle, setup.attackerPlayer)
+        val restored = ProtectorAssignment.assign(changed, setup.battle, setup.defenderPlayer)
+        setup.driver.replaceState(restored)
+
+        val result = rerunCombatDamage(setup.driver)
+        val decision = result.pendingDecision as? CombatResolutionDecision
+
+        result.error shouldBe null
+        decision?.defenders.orEmpty().shouldBeEmpty()
+        decision?.edges?.none { it.targetId == setup.battle } shouldBe true
     }
 
     test("C14-09 external plans must be complete and cannot invent a player recipient") {
