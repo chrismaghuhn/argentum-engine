@@ -12,7 +12,7 @@ introduced on `agent/a5-decision-completeness`.
 | Origin main at audit time | `c78db93c01f22b64d08725ee7a605cd0c9364f8d` |
 | Pinned baseline ancestor of origin main | Yes |
 | Exact Akiri/Chevill pair | `BLOCKED_BY_A8_CARD_CLOSURE`; no substitute cards used |
-| New decision primitive | None; this commit closes structural validator gaps |
+| New decision primitive | Generic `ChooseOptionDecision` plus serializable `DelayedTriggerOccurrenceChoiceContinuation`; no card-specific or Commander-specific primitive |
 | Full exact-pair decision reachability | Not claimable until A8 closure and runtime boot |
 
 ## Inventory matrix
@@ -62,7 +62,7 @@ validators remain authoritative.
 
 | Finding | Classification |
 | --- | --- |
-| Ambiguous one-shot delayed trigger matching multiple simultaneous attacked players | `NEEDS_CHARACTERIZATION`; existing code fails closed rather than selecting `first()` |
+| Ambiguous one-shot delayed trigger matching multiple simultaneous attacked players | `IMPLEMENTED_EXTERNAL_CHOICE`; detector preserves the complete per-occurrence domain and the controller selects through a serialized continuation |
 | `GameEnvironment.playGame` fallback selector | `NOT_POLICY_RELEVANT`; convenience simulation API, not production Gym action selection |
 | Mana solver `first`/`minBy` choices | `EXTERNAL_PLAYER_CHOICE_ALREADY_CAPTURED` when AutoPay is explicitly selected; not changed by A5 |
 | Trigger detector `first`/`take(1)` in unambiguous or already-filtered paths | `UNIQUE_LEGAL_CHOICE` only where the surrounding predicate proves uniqueness; Issue #22 path is excluded |
@@ -73,40 +73,50 @@ validators remain authoritative.
 
 The official Comprehensive Rules text is the current source for rule 603.7b:
 <https://media.wizards.com/2026/downloads/MagicCompRules%2020260808.txt>.
-The existing characterization `ATTACK-GROUP-DELAYED-01` proves the safe RED
-behavior: when a one-shot delayed trigger matches multiple simultaneous
-occurrences, `TriggerDetector` returns no trigger rather than selecting an
-occurrence by `first()` or collection order.
+Issue #22 is now **IMPLEMENTED** for the bounded reusable delayed-trigger
+surface. `TriggerDetector` groups all matching occurrences from the same event
+for a fire-once delayed ability into a serializable marker. It does not combine
+separate events or choose by `first()`/collection order. `TriggerProcessor`
+converts the marker into an owner-bound generic `ChooseOptionDecision`, while
+`DelayedTriggerOccurrenceChoiceContinuation` carries every occurrence's bound
+`TriggerContext` and any trailing triggers. The resumer processes only the
+selected occurrence, removes the delayed-trigger ID exactly once, preserves the
+unselected candidates, and resumes trailing triggers through the normal APNAP
+pipeline. Unambiguous fire-once and reusable delayed triggers retain their
+previous behavior.
 
-Issue #22 remains **BLOCKED/DEFERRED**, not complete. `PendingTrigger` currently
-contains the already-bound `TriggerContext`, and `TriggerDetector.detectTriggers`
-returns only `List<PendingTrigger>` at roughly 32 engine call sites. A correct
-choice requires a result/continuation seam that can carry every occurrence,
-raise an owner-bound decision, preserve the selected occurrence's context,
-consume the delayed trigger exactly once, and resume APNAP processing. Adding a
-local `PendingDecision` without that seam would either lose context or fall back
-to an implicit ordering policy. No such unsafe implementation was added.
+The focused acceptance matrix now covers domain completeness, per-occurrence
+context, invalid index, wrong-owner rejection, marker/continuation serialization,
+full paused-`GameState` serialization/replay, immutable fork divergence, and
+separate-event non-combination in `PerDefendingPlayerAttackTriggerScenarioTest`.
 
 ## Serialization, privacy, and determinism
 
-No new polymorphic decision or continuation type was introduced, so no new
-serialization registration or replay fingerprint shape was invented. Existing
-decision IDs remain routing nonces; semantic state/action identity remains the
-existing canonical path. The A4 observation contract is not broadened by this
-branch, and hidden library domains stay inside the acting player's pending
-decision rather than the opponent's observation.
+The new occurrence candidate payload and continuation are serializable and are
+registered in `engineSerializersModule`. Decision IDs remain routing handles;
+the selected occurrence is carried by its preserved semantic context rather
+than by a client-supplied object. Options are generic occurrence slots, so no
+hidden entity identity is copied into the decision label. The focused test
+round-trips the full paused `GameState`, replays a selection, and proves two
+immutable forks can choose different occurrences. The A4 observation contract
+is not broadened by this branch, and hidden library domains stay inside the
+acting player's pending decision rather than the opponent's observation.
 
 ## Verification and review status
 
-`git diff --check` is clean. The focused A5 validator gate and the required
-rules-engine gate were attempted through `just`, but the launcher did not reach
-Gradle: WSL2 virtualization is unavailable and the Python 3.14 path produced
-Windows `WinError 193`. Local regression is therefore **UNVERIFIED**, not
-green. Frozen baseline `6ff9ded1403d59ac` was not reblessed and no snapshots
-were changed.
+`git diff --check` is clean. The native Windows `just test-class` path still
+fails before Gradle with the known Python 3.14 extensionless-helper
+`WinError 193`; the equivalent repository `just` invocation with
+`--command "C:\Program Files\Git\bin\bash.exe" scripts/gradle-locked` reached
+Gradle successfully. Evidence:
 
-No P0 was introduced. P1 remains for the unresolved, potentially reachable
-Issue #22 and trigger-ordering decision surface; this keeps the branch review
-honest. A5 is **PARTIAL** and is not safe to merge until those gaps are either
-implemented with continuation/replay evidence or explicitly accepted as a
-follow-up.
+* `PerDefendingPlayerAttackTriggerScenarioTest`: 28/28
+* `:rules-engine:test`: 2,980/2,980
+
+The full rules-engine gate passed after the final test additions. Frozen
+baseline `6ff9ded1403d59ac` was not reblessed and no snapshots were changed.
+No P0 was introduced. Trigger-ordering remains a separate
+`NEEDS_RULES_CHARACTERIZATION` item; it was not conflated with occurrence
+selection. Generic A5 implementation status is **GREEN_WITH_DOCUMENTED_LAUNCHER_FALLBACK**;
+the overnight exact-pair status remains **PARTIAL** because
+`EXACT_PAIR_BOOT = BLOCKED_BY_A8_CARD_CLOSURE`.

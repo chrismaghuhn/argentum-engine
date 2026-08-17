@@ -39,7 +39,8 @@ class EffectAndTriggerContinuationResumer(
         resumer(MayRevealCardFromHandContinuation::class, ::resumeMayRevealCardFromHand),
         resumer(BeholdContinuation::class, ::resumeBehold),
         resumer(MayTriggerContinuation::class, ::resumeMayTrigger),
-        resumer(BatchMayTriggerContinuation::class, ::resumeBatchMayTrigger)
+        resumer(BatchMayTriggerContinuation::class, ::resumeBatchMayTrigger),
+        resumer(DelayedTriggerOccurrenceChoiceContinuation::class, ::resumeDelayedTriggerOccurrenceChoice)
     )
 
     private fun resumeEffect(
@@ -367,6 +368,29 @@ class EffectAndTriggerContinuationResumer(
             return result
         }
 
+        return checkForMore(result.newState, result.events.toList())
+    }
+
+    private fun resumeDelayedTriggerOccurrenceChoice(
+        state: GameState,
+        continuation: DelayedTriggerOccurrenceChoiceContinuation,
+        response: DecisionResponse,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        if (response !is OptionChosenResponse) {
+            return ExecutionResult.error(state, "Expected occurrence option response for delayed trigger")
+        }
+        val selected = continuation.candidates.getOrNull(response.optionIndex)
+            ?: return ExecutionResult.error(state, "Invalid delayed-trigger occurrence index: ${response.optionIndex}")
+
+        // Process the selected occurrence first and retain the detector's remaining trigger list.
+        // TriggerProcessor will queue that list below any target/decision continuation it raises,
+        // preserving APNAP order without choosing another occurrence implicitly.
+        val result = services.triggerProcessor.processTriggers(
+            state,
+            listOf(selected) + continuation.remainingTriggers
+        )
+        if (result.isPaused || !result.isSuccess) return result
         return checkForMore(result.newState, result.events.toList())
     }
 

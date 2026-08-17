@@ -88,6 +88,17 @@ class TriggerProcessor(
 
         var index = 0
         while (index < liveTriggers.size) {
+            val occurrenceChoices = liveTriggers[index].occurrenceChoice
+            if (occurrenceChoices.size > 1) {
+                val remainingTriggers = liveTriggers.drop(index + 1)
+                return raiseDelayedTriggerOccurrenceChoice(
+                    currentState,
+                    occurrenceChoices.map { it.toPendingTrigger() },
+                    remainingTriggers,
+                    allEvents
+                )
+            }
+
             // Batch the may-question for a run of structurally identical optional ("you may …
             // target …") triggers (MTGO's auto-stack-identical-triggers affordance). A run of ≥ 2
             // is answered once with a BatchYesNoDecision instead of one yes/no per trigger; the
@@ -144,6 +155,62 @@ class TriggerProcessor(
         }
 
         return ExecutionResult.success(currentState, allEvents)
+    }
+
+    /**
+     * Externalize CR 603.7b instead of selecting an occurrence by detector order.  The candidates
+     * are ordinary pending triggers carrying their own trigger contexts; only the selected one is
+     * later sent through [processSingleTrigger], so one-shot delayed state is consumed exactly
+     * once and the unselected simultaneous occurrences remain untouched.
+     */
+    private fun raiseDelayedTriggerOccurrenceChoice(
+        state: GameState,
+        candidates: List<PendingTrigger>,
+        remainingTriggers: List<PendingTrigger>,
+        priorEvents: List<GameEvent>
+    ): ExecutionResult {
+        val first = candidates.firstOrNull()
+            ?: return ExecutionResult.error(state, "Delayed-trigger occurrence choice has no candidates")
+        val delayedId = candidates.firstNotNullOfOrNull { it.consumesDelayedTriggerId }
+        val decisionId = buildString {
+            append("delayed-occurrence-")
+            append(delayedId ?: first.sourceId.value)
+            append('-')
+            append(state.turnNumber)
+            append('-')
+            append(candidates.size)
+        }
+        val decision = ChooseOptionDecision(
+            id = decisionId,
+            playerId = first.controllerId,
+            prompt = "Choose which simultaneous occurrence causes ${first.sourceName} to trigger",
+            context = DecisionContext(
+                sourceId = first.sourceId,
+                sourceName = first.sourceName,
+                phase = DecisionPhase.TRIGGER
+            ),
+            // The option is an occurrence slot, not a projection of the candidate's object.
+            // Keep the label generic: source/entity identifiers may be hidden or irrelevant to
+            // the chooser, while the deterministic index is sufficient to select the preserved
+            // trigger context below.
+            options = candidates.indices.map { index -> "Occurrence ${index + 1}" }
+        )
+        val continuation = DelayedTriggerOccurrenceChoiceContinuation(
+            decisionId = decisionId,
+            candidates = candidates,
+            remainingTriggers = remainingTriggers
+        )
+        val pausedState = state.withPendingDecision(decision).pushContinuation(continuation)
+        return ExecutionResult.paused(
+            pausedState,
+            decision,
+            priorEvents + DecisionRequestedEvent(
+                decisionId = decisionId,
+                playerId = first.controllerId,
+                decisionType = "DELAYED_TRIGGER_OCCURRENCE",
+                prompt = decision.prompt
+            )
+        )
     }
 
     /**
