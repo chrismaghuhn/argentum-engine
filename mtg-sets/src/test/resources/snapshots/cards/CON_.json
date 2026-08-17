@@ -149,6 +149,108 @@
     ]
 }
 
+// Path to Exile
+{
+    "name": "Path to Exile",
+    "manaCost": "{W}",
+    "typeLine": "Instant",
+    "oracleText": "Exile target creature. Its controller may search their library for a basic land card, put that card onto the battlefield tapped, then shuffle.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target creature"
+                    },
+                    "destination": "Exile"
+                },
+                {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "Composite",
+                        "effects": [
+                            {
+                                "type": "GatherCards",
+                                "source": {
+                                    "type": "FromZone",
+                                    "zone": "Library",
+                                    "player": {
+                                        "type": "ControllerOf",
+                                        "targetDescription": "target creature"
+                                    },
+                                    "filter": "basicland"
+                                },
+                                "storeAs": "searchable"
+                            },
+                            {
+                                "type": "SelectFromCollection",
+                                "from": "searchable",
+                                "selection": {
+                                    "type": "ChooseUpTo",
+                                    "count": {
+                                        "type": "Fixed",
+                                        "amount": 1
+                                    }
+                                },
+                                "chooser": "ControllerOfTarget",
+                                "storeSelected": "found",
+                                "prompt": "Search your library for a basic land card"
+                            },
+                            {
+                                "type": "MoveCollection",
+                                "from": "found",
+                                "destination": {
+                                    "type": "ToZone",
+                                    "zone": "Battlefield",
+                                    "player": {
+                                        "type": "ControllerOf",
+                                        "targetDescription": "target creature"
+                                    },
+                                    "placement": "Tapped"
+                                }
+                            },
+                            {
+                                "type": "ShuffleLibrary",
+                                "target": {
+                                    "type": "PlayerRef",
+                                    "player": {
+                                        "type": "ControllerOf",
+                                        "targetDescription": "target creature"
+                                    }
+                                }
+                            }
+                        ]
+                    },
+                    "decisionMaker": "TargetController",
+                    "descriptionOverride": "Its controller may search their library for a basic land card, put that card onto the battlefield tapped, then shuffle."
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "creature"
+                },
+                "id": "target creature"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "15",
+        "rarity": "UNCOMMON",
+        "artist": "Todd Lockwood",
+        "imageUri": "https://cards.scryfall.io/normal/front/2/9/29b7a8b1-b98e-483a-87a4-73bd831c03d4.jpg?1783942491"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Progenitus
 {
     "name": "Progenitus",
