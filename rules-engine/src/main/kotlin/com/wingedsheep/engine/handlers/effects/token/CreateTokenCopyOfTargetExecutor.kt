@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.event.DelayedTriggeredAbility
 import com.wingedsheep.engine.event.GrantedActivatedAbility
@@ -20,7 +21,6 @@ import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
-import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.DoubleFacedComponent
@@ -169,7 +169,13 @@ class CreateTokenCopyOfTargetExecutor(
                     .resolveDefendingPlayer(context, newState)
                     ?: newState.getOpponents(controllerId).firstOrNull()
                 if (defenderId != null) {
-                    components.add(AttackingComponent(defenderId))
+                    components.add(
+                        CombatDefenders.attackingComponentFor(
+                            state = newState,
+                            projected = newState.projectedState,
+                            defenderId = defenderId,
+                        )
+                    )
                 }
             }
             // CR 707.8a: a token copy of a double-faced permanent has both faces and enters

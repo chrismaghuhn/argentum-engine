@@ -5,8 +5,24 @@ import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DamageEdgeDirection
+import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
+import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.combat.CombatDamageManager
+import com.wingedsheep.engine.mechanics.combat.DamageCalculator
+import com.wingedsheep.engine.mechanics.layers.Layer
+import com.wingedsheep.engine.mechanics.layers.SerializableModification
+import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
+import com.wingedsheep.engine.state.components.battlefield.ProtectorComponent
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
+import com.wingedsheep.engine.state.components.combat.DamageAssignmentComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.player.LossReason
+import com.wingedsheep.engine.state.components.player.PlayerLeftGameComponent
+import com.wingedsheep.engine.state.components.player.PlayerLostComponent
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.CounterType
@@ -17,8 +33,12 @@ import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AssignCombatDamageAsUnblocked
+import com.wingedsheep.sdk.scripting.DivideCombatDamageFreely
+import com.wingedsheep.sdk.scripting.Duration
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
@@ -47,6 +67,13 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         }
     }
 
+    val testSiege = card("C14 Test Siege") {
+        manaCost = "{2}{B}"
+        typeLine = "Battle — Siege"
+        startingDefense = 10
+        oracleText = "(As this Siege enters, choose an opponent to protect it.)"
+    }
+
     val doubleStrikeTrampler = CardDefinition.creature(
         name = "C14 Double Strike Trampler",
         manaCost = ManaCost.parse("{1}{R}"),
@@ -56,8 +83,37 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         keywords = setOf(Keyword.DOUBLE_STRIKE, Keyword.TRAMPLE),
     )
 
+    val assignAsUnblockedCreature = CardDefinition.creature(
+        name = "C14 Assign As Unblocked",
+        manaCost = ManaCost.parse("{1}{R}"),
+        subtypes = setOf(Subtype("Beast")),
+        power = 5,
+        toughness = 5,
+        script = CardScript(staticAbilities = listOf(AssignCombatDamageAsUnblocked())),
+    )
+
+    val divideFreelyCreature = CardDefinition.creature(
+        name = "C14 Divide Freely",
+        manaCost = ManaCost.parse("{1}{R}"),
+        subtypes = setOf(Subtype("Beast")),
+        power = 5,
+        toughness = 5,
+        script = CardScript(staticAbilities = listOf(DivideCombatDamageFreely())),
+    )
+
     fun driver(): GameTestDriver = GameTestDriver().also {
-        it.registerCards(TestCards.all + testWalker)
+        it.registerCards(TestCards.all + testWalker + testSiege + assignAsUnblockedCreature + divideFreelyCreature)
+    }
+
+    fun rerunCombatDamage(driver: GameTestDriver): ExecutionResult {
+        // The driver has already exposed the normal combat-resolution pause. These
+        // characterizations deliberately mutate the pre-damage state and re-enter the
+        // production manager, without bypassing its candidate, assignment, or prevention paths.
+        driver.replaceState(driver.state.copy(pendingDecision = null))
+        return CombatDamageManager(
+            driver.cardRegistry,
+            DamageCalculator(driver.cardRegistry),
+        ).applyCombatDamage(driver.state)
     }
 
     fun seedLoyalty(driver: GameTestDriver, walkerId: com.wingedsheep.sdk.model.EntityId, loyalty: Int) {
@@ -78,6 +134,15 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         val blockers: List<EntityId>,
         val walker: EntityId,
         val decision: CombatResolutionDecision,
+    )
+
+    data class BlockedBattleSetup(
+        val driver: GameTestDriver,
+        val attackerPlayer: EntityId,
+        val defenderPlayer: EntityId,
+        val attacker: EntityId,
+        val blocker: EntityId,
+        val battle: EntityId,
     )
 
     fun readyBlockedPlane(
@@ -118,6 +183,37 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         driver.events.filterIsInstance<DamageDealtEvent>().filter {
             it.sourceId == sourceId && it.targetId == walkerId && it.isCombatDamage
         }
+
+    fun readyBlockedBattle(): BlockedBattleSetup {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast")
+        val blocker = driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears")
+        val battle = driver.putPermanentOnBattlefield(defenderPlayer, testSiege.name)
+        driver.replaceState(driver.state.updateEntity(battle) {
+            it.with(ProtectorComponent(defenderPlayer))
+        })
+        driver.removeSummoningSickness(attacker)
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to battle)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(defenderPlayer, mapOf(blocker to listOf(attacker))).error shouldBe null
+        driver.passPriorityUntil(Step.COMBAT_DAMAGE)
+
+        return BlockedBattleSetup(
+            driver = driver,
+            attackerPlayer = attackerPlayer,
+            defenderPlayer = defenderPlayer,
+            attacker = attacker,
+            blocker = blocker,
+            battle = battle,
+        )
+    }
 
     test("C14-01 unblocked ordinary trample damages the attacked planeswalker only") {
         val driver = driver()
@@ -323,6 +419,262 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         driver.assertLifeTotal(defenderPlayer, 20)
     }
 
+    test("C14-P1-01 an unblocked attacker has no recipient after its planeswalker leaves") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast")
+        val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer).error shouldBe null
+
+        driver.moveToGraveyard(walker)
+        val result = rerunCombatDamage(driver)
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == walker } shouldBe true
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == defenderPlayer } shouldBe true
+    }
+
+    test("C14-P1-01b unblocked divide-freely damage has no decision after its planeswalker leaves") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, divideFreelyCreature.name)
+        val defenderCreatures = listOf(
+            driver.putCreatureOnBattlefield(defenderPlayer, "Savannah Lions"),
+            driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears"),
+        )
+        val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer).error shouldBe null
+
+        driver.moveToGraveyard(walker)
+        val result = rerunCombatDamage(driver)
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        result.events.filterIsInstance<DamageDealtEvent>().none { event ->
+            event.sourceId == attacker || event.targetId in (defenderCreatures + defenderPlayer)
+        } shouldBe true
+    }
+
+    test("C14-P1-02 a stale planeswalker is absent from prevention recipients") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attackers = listOf(
+            driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast"),
+            driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast"),
+        )
+        val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        attackers.forEach(driver::removeSummoningSickness)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, attackers.associateWith { walker }).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer).error shouldBe null
+
+        driver.moveToGraveyard(walker)
+        driver.replaceState(
+            driver.state.addFloatingEffect(
+                layer = Layer.ABILITY,
+                modification = SerializableModification.PreventNextDamage(1),
+                affectedEntities = setOf(walker),
+                duration = Duration.EndOfTurn,
+                context = EffectContext(sourceId = null, controllerId = defenderPlayer),
+            )
+        )
+        val result = rerunCombatDamage(driver)
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == walker } shouldBe true
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == defenderPlayer } shouldBe true
+    }
+
+    test("C14-P1-03 a stale planeswalker manual assignment falls back to the live blocker") {
+        val setup = readyBlockedPlane(blockerNames = listOf("Grizzly Bears"))
+        setup.driver.moveToGraveyard(setup.walker)
+        setup.driver.replaceState(setup.driver.state.updateEntity(setup.attacker) {
+            it.with(DamageAssignmentComponent(mapOf(setup.walker to 5)))
+        })
+
+        val result = rerunCombatDamage(setup.driver)
+        val blockerDamage = result.events.filterIsInstance<DamageDealtEvent>().single {
+            it.targetId == setup.blockers.single()
+        }
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        blockerDamage.amount shouldBe 5
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == setup.walker } shouldBe true
+    }
+
+    test("C14-P1-03b a response shaped before removal cannot apply a stale planeswalker edge") {
+        val setup = readyBlockedPlane(blockerNames = listOf("Grizzly Bears"))
+        val response = CombatResolutionResponse(
+            decisionId = setup.decision.id,
+            edges = setup.decision.edges.map { DamageEdgeAmount(it.id, it.amount) },
+        )
+        setup.driver.moveToGraveyard(setup.walker)
+
+        val result = setup.driver.submitDecision(setup.decision.playerId, response)
+        val blockerDamage = result.events.filterIsInstance<DamageDealtEvent>().single {
+            it.targetId == setup.blockers.single()
+        }
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        blockerDamage.amount shouldBe 5
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == setup.walker } shouldBe true
+    }
+
+    test("C14-P1-03c assign-as-unblocked does not pause for a stale planeswalker") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, assignAsUnblockedCreature.name)
+        val blocker = driver.putCreatureOnBattlefield(defenderPlayer, "Grizzly Bears")
+        val walker = driver.putPermanentOnBattlefield(defenderPlayer, testWalker.name)
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to walker)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareBlockers(defenderPlayer, mapOf(blocker to listOf(attacker))).error shouldBe null
+        driver.passPriorityUntil(Step.COMBAT_DAMAGE)
+        driver.pendingDecision.shouldNotBeNull()
+
+        driver.moveToGraveyard(walker)
+        val result = rerunCombatDamage(driver)
+        val blockerDamage = result.events.filterIsInstance<DamageDealtEvent>().single {
+            it.sourceId == attacker && it.targetId == blocker
+        }
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        blockerDamage.amount shouldBe 5
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == walker } shouldBe true
+    }
+
+    test("C14-P1-04 a departed player is not a live unblocked damage recipient") {
+        val driver = driver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
+        val attackerPlayer = driver.activePlayer!!
+        val defenderPlayer = driver.getOpponent(attackerPlayer)
+
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Trample Beast")
+        driver.removeSummoningSickness(attacker)
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, mapOf(attacker to defenderPlayer)).error shouldBe null
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+        driver.declareNoBlockers(defenderPlayer).error shouldBe null
+        driver.replaceState(driver.state.updateEntity(defenderPlayer) {
+            it.with(PlayerLostComponent(LossReason.CONCESSION)).with(PlayerLeftGameComponent)
+        })
+
+        val result = rerunCombatDamage(driver)
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == defenderPlayer } shouldBe true
+    }
+
+    test("C14-P1-05 a planeswalker controller change removes its damage recipient") {
+        val setup = readyBlockedPlane(blockerNames = listOf("Grizzly Bears"))
+        setup.driver.replaceState(setup.driver.state.updateEntity(setup.walker) {
+            it.with(ControllerComponent(setup.attackerPlayer))
+        })
+
+        val result = rerunCombatDamage(setup.driver)
+        val decision = result.pendingDecision as? CombatResolutionDecision
+
+        result.error shouldBe null
+        decision?.defenders.orEmpty().shouldBeEmpty()
+        decision?.edges?.none { it.targetId == setup.walker } shouldBe true
+    }
+
+    test("C14-P1-06 a stale battle manual assignment falls back to the live blocker") {
+        val setup = readyBlockedBattle()
+        setup.driver.moveToGraveyard(setup.battle)
+        setup.driver.replaceState(setup.driver.state.updateEntity(setup.attacker) {
+            it.with(DamageAssignmentComponent(mapOf(setup.battle to 5)))
+        })
+
+        val result = rerunCombatDamage(setup.driver)
+        val blockerDamage = result.events.filterIsInstance<DamageDealtEvent>().single {
+            it.targetId == setup.blocker
+        }
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        blockerDamage.amount shouldBe 5
+        result.events.filterIsInstance<DamageDealtEvent>().none { it.targetId == setup.battle } shouldBe true
+    }
+
+    test("C14-P1-07 a battle controller change removes its damage recipient") {
+        val setup = readyBlockedBattle()
+        setup.driver.replaceState(setup.driver.state.updateEntity(setup.battle) {
+            it.with(ControllerComponent(setup.attackerPlayer))
+        })
+
+        val result = rerunCombatDamage(setup.driver)
+        val decision = result.pendingDecision as? CombatResolutionDecision
+
+        result.error shouldBe null
+        decision?.defenders.orEmpty().shouldBeEmpty()
+        decision?.edges?.none { it.targetId == setup.battle } shouldBe true
+    }
+
+    test("C14-P1-08 a battle protector change removes its damage recipient") {
+        val setup = readyBlockedBattle()
+        setup.driver.replaceState(setup.driver.state.updateEntity(setup.battle) {
+            it.with(ProtectorComponent(setup.attackerPlayer))
+        })
+
+        val result = rerunCombatDamage(setup.driver)
+        val decision = result.pendingDecision as? CombatResolutionDecision
+
+        result.error shouldBe null
+        decision?.defenders.orEmpty().shouldBeEmpty()
+        decision?.edges?.none { it.targetId == setup.battle } shouldBe true
+    }
+
+    test("C14-P1-09 object-target attacks without declaration relationship metadata fail closed") {
+        val setup = readyBlockedPlane(blockerNames = listOf("Grizzly Bears"))
+        setup.driver.replaceState(
+            setup.driver.state
+                .updateEntity(setup.attacker) { it.with(AttackingComponent(setup.walker)) }
+                .updateEntity(setup.walker) { it.with(ControllerComponent(setup.attackerPlayer)) },
+        )
+
+        val result = rerunCombatDamage(setup.driver)
+        val decision = result.pendingDecision as? CombatResolutionDecision
+
+        result.error shouldBe null
+        decision?.defenders.orEmpty().shouldBeEmpty()
+        decision?.edges?.none { it.targetId == setup.walker } shouldBe true
+    }
+
     test("C14-09 external plans must be complete and cannot invent a player recipient") {
         val setup = readyBlockedPlane(blockerNames = listOf("Savannah Lions"))
         val decision = setup.decision
@@ -349,13 +701,22 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         ).shouldNotBeNull()
     }
 
-    test("C14-10 replay, fork, and edge iteration are deterministic; trample-over-planeswalkers is NOT_APPLICABLE") {
+    test("C14-10 serialization and behavioral replay/fork are deterministic; trample-over-planeswalkers is NOT_APPLICABLE") {
         val setup = readyBlockedPlane(blockerNames = listOf("Savannah Lions"))
         val decision = setup.decision
-        val json = Json { encodeDefaults = true }
+        val json = Json {
+            encodeDefaults = true
+            allowStructuredMapKeys = true
+            serializersModule = engineSerializersModule
+        }
         val encoded = json.encodeToString(CombatResolutionDecision.serializer(), decision)
         val decoded = json.decodeFromString(CombatResolutionDecision.serializer(), encoded)
         decoded shouldBe decision
+
+        val stateEncoded = json.encodeToString(GameState.serializer(), setup.driver.state)
+        val stateDecoded = json.decodeFromString(GameState.serializer(), stateEncoded)
+        stateDecoded.getEntity(setup.attacker)?.get<AttackingComponent>() shouldBe
+            setup.driver.state.getEntity(setup.attacker)?.get<AttackingComponent>()
 
         val ordered = CombatResolutionResponse(
             decisionId = decision.id,
@@ -365,8 +726,16 @@ class Combat14PlaneswalkerTrampleTest : FunSpec({
         DecisionValidators.validate(decision, ordered) shouldBe null
         DecisionValidators.validate(decision, reversed) shouldBe null
 
-        val fork = setup.driver.state.copy(pendingDecision = decoded)
-        fork.pendingDecision shouldBe decoded
+        val forkDriver = driver()
+        forkDriver.replaceState(setup.driver.state.copy(pendingDecision = decoded))
+        val originalResult = setup.driver.submitDecision(decision.playerId, ordered)
+        val forkResult = forkDriver.submitDecision(decoded.playerId, ordered)
+
+        originalResult.error shouldBe null
+        forkResult.error shouldBe null
+        originalResult.state shouldBe forkResult.state
+        originalResult.events.filterIsInstance<DamageDealtEvent>() shouldBe
+            forkResult.events.filterIsInstance<DamageDealtEvent>()
 
         // NOT_APPLICABLE: CR 702.19c-f defines the separate named "trample over planeswalkers"
         // variant. This SDK exposes ordinary trample only; this task characterizes CR 702.19b,

@@ -68,9 +68,9 @@ object Battles {
     fun eligibleProtectors(state: GameState, battleId: EntityId): List<EntityId> {
         val controller = state.projectedState.getController(battleId) ?: return emptyList()
         return if (isSiege(state, battleId)) {
-            state.turnOrder.filter { it != controller }
+            state.activePlayers.filter { it != controller }
         } else {
-            listOf(controller).filter { it in state.turnOrder }
+            listOf(controller).filter { it in state.activePlayers }
         }
     }
 
