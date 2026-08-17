@@ -312,6 +312,73 @@
     ]
 }
 
+// Prowler's Helm
+{
+    "name": "Prowler's Helm",
+    "manaCost": "{2}",
+    "typeLine": "Artifact — Equipment",
+    "oracleText": "Equipped creature can't be blocked except by Walls.\nEquip {2}",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "ability_1",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomMana",
+                        "cost": "{2}"
+                    }
+                },
+                "effect": {
+                    "type": "AttachEquipment",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "creature you control"
+                    }
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "creature ctrl:you"
+                        },
+                        "id": "creature you control"
+                    }
+                ],
+                "timing": "SorcerySpeed",
+                "isEquipAbility": true
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "CantBeBlockedExceptBy",
+                "blockerFilter": {
+                    "cardPredicates": [
+                        "IsCreature",
+                        {
+                            "type": "HasSubtype",
+                            "subtype": "Wall"
+                        }
+                    ]
+                },
+                "filter": {
+                    "baseFilter": "permanent",
+                    "scope": "AttachedTo"
+                }
+            }
+        ]
+    },
+    "equipCost": "{2}",
+    "metadata": {
+        "collectorNumber": "219",
+        "rarity": "UNCOMMON",
+        "artist": "Igor Kieryluk",
+        "flavorText": "\"The youths prattle on about heroic deeds, but avoiding the noose is a feat more daring than their entire careers.\"\n—Basarios the Blade",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/1/c100a22c-bf34-42b7-9339-4733698c0935.jpg?1783939718"
+    },
+    "colorIdentityOverride": []
+}
+
 // Read the Bones
 {
     "name": "Read the Bones",
