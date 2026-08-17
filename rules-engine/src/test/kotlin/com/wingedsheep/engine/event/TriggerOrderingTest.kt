@@ -3,6 +3,8 @@ package com.wingedsheep.engine.event
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.player.LossReason
+import com.wingedsheep.engine.state.components.player.PlayerLostComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -168,6 +170,41 @@ class TriggerOrderingTest : FunSpec({
         labels.all { it.startsWith("same: same") } shouldBe true
         labels.none { it.contains("damage", ignoreCase = true) } shouldBe true
         labels.none { it.contains("trigger-order-object") } shouldBe true
+    }
+
+    test("TO-16: a lost preordered trigger does not consume the trailing order domain") {
+        val driver = newDriver()
+        val orderedPrefix = listOf(
+            syntheticTrigger(driver, "A1", targetRequirement = Targets.Player),
+            syntheticTrigger(driver, "A2")
+        )
+        val trailing = listOf(
+            syntheticTrigger(driver, "B1", controllerId = driver.player2),
+            syntheticTrigger(driver, "B2", controllerId = driver.player2)
+        )
+
+        val ordering = process(driver, orderedPrefix + trailing)
+        val order = ordering.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        driver.replaceState(ordering.state)
+        val paused = driver.submitDecision(
+            driver.player1,
+            OrderedResponse(order.id, order.objects)
+        )
+        paused.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        val pending = paused.state.continuationStack.filterIsInstance<PendingTriggersContinuation>().single()
+        pending.remainingTriggers.map { it.sourceName } shouldBe listOf("A2", "B1", "B2")
+        pending.preorderedTriggerCount shouldBe 1
+
+        val stateAfterLoss = paused.state.updateEntity(driver.player1) {
+            it.with(PlayerLostComponent(LossReason.CONCESSION))
+        }
+        driver.replaceState(stateAfterLoss)
+        val resumed = driver.submitTargetSelection(driver.player1, listOf(driver.player2))
+
+        val trailingOrder = resumed.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        trailingOrder.playerId shouldBe driver.player2
+        trailingOrder.objects.size shouldBe 2
+        trailingOrder.objectLabels!!.values.all { it.startsWith("B") } shouldBe true
     }
 
     test("TO-04: invalid ordering responses fail closed without consuming the continuation") {
@@ -383,8 +420,16 @@ private fun newDriver(): GameTestDriver = GameTestDriver().also {
     it.initMirrorMatch(Deck.of("Forest" to 40))
 }
 
-private fun process(driver: GameTestDriver, triggers: List<PendingTrigger>): ExecutionResult =
-    EngineServices(driver.cardRegistry).triggerProcessor.processTriggers(driver.state, triggers)
+private fun process(
+    driver: GameTestDriver,
+    triggers: List<PendingTrigger>,
+    preorderedTriggerCount: Int = 0
+): ExecutionResult =
+    EngineServices(driver.cardRegistry).triggerProcessor.processTriggers(
+        driver.state,
+        triggers,
+        preorderedTriggerCount
+    )
 
 private fun syntheticTrigger(
     driver: GameTestDriver,

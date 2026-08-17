@@ -80,9 +80,20 @@ class TriggerProcessor(
         if (state.gameOver) {
             return ExecutionResult.success(state)
         }
-        var liveTriggers = triggers.filterNot { trigger ->
-            state.getEntity(trigger.controllerId)?.has<PlayerLostComponent>() == true
+        // A positive prefix is the controller's already-selected order, so filter it separately
+        // from the still-unordered suffix.  Filtering the concatenated list and reusing the old
+        // count would let a lost prefix entry consume the first live suffix entry's order domain
+        // (for example, [A2, B1, B2] with count 1 becoming [B1, B2] with stale count 1).
+        val requestedPreorderedCount = preorderedTriggerCount.coerceIn(0, triggers.size)
+        val preorderedPrefix = triggers.take(requestedPreorderedCount)
+        val unorderedSuffix = triggers.drop(requestedPreorderedCount)
+        val isLive: (PendingTrigger) -> Boolean = { trigger ->
+            state.getEntity(trigger.controllerId)?.has<PlayerLostComponent>() != true
         }
+        val livePreorderedPrefix = preorderedPrefix.filter(isLive)
+        val liveUnorderedSuffix = unorderedSuffix.filter(isLive)
+        var liveTriggers = livePreorderedPrefix + liveUnorderedSuffix
+        val livePreorderedTriggerCount = livePreorderedPrefix.size
         if (liveTriggers.isEmpty()) {
             return ExecutionResult.success(state)
         }
@@ -93,7 +104,7 @@ class TriggerProcessor(
         // requires the normal stage to precede the reflexive stage. Normalize only an unchosen
         // wave; a positive prefix is the controller's already-selected order and must remain an
         // immutable prefix while target/may/continuation frames resume.
-        if (preorderedTriggerCount == 0) {
+        if (livePreorderedTriggerCount == 0) {
             liveTriggers = normalizeTriggerWave(state, liveTriggers)
         }
 
@@ -118,7 +129,7 @@ class TriggerProcessor(
             // is only a deterministic transport order; it is not a legal choice.  A prefix marked
             // by a TriggerOrderingContinuation has already been chosen and must pass through here
             // without being asked a second time after a target/may pause.
-            if (index >= preorderedTriggerCount) {
+            if (index >= livePreorderedTriggerCount) {
                 val sameControllerRun = liveTriggers
                     .drop(index)
                     .takeWhile {
@@ -147,7 +158,8 @@ class TriggerProcessor(
                     run,
                     remainingTriggers,
                     allEvents,
-                    preorderedTriggerCount = (preorderedTriggerCount - index - run.size).coerceAtLeast(0)
+                    preorderedTriggerCount =
+                        (livePreorderedTriggerCount - index - run.size).coerceAtLeast(0)
                 )
             }
 
@@ -176,7 +188,7 @@ class TriggerProcessor(
                         decisionId = "pending-triggers-${java.util.UUID.randomUUID()}",
                         remainingTriggers = remainingTriggers,
                         preorderedTriggerCount =
-                            (preorderedTriggerCount - index - 1).coerceAtLeast(0)
+                            (livePreorderedTriggerCount - index - 1).coerceAtLeast(0)
                     )
                     // Push BELOW the TriggeredAbilityContinuation that was just pushed
                     // by inserting at the bottom of what was just added
