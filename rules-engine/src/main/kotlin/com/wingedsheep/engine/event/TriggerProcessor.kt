@@ -100,8 +100,8 @@ class TriggerProcessor(
 
         // Callers may assemble one complete trigger wave from independently sorted batches (for
         // example, event triggers + SBA triggers + a state-trigger poll), yielding A1, N1, A2.
-        // CR 603.3b requires all ordinary triggers for a controller to be one choice domain, and
-        // requires the normal stage to precede the reflexive stage. Normalize only an unchosen
+        // CR 603.3b requires all first-pass triggers for a controller to be one choice domain, and
+        // requires that pass to precede the ability-triggered pass. Normalize only an unchosen
         // wave; a positive prefix is the controller's already-selected order and must remain an
         // immutable prefix while target/may/continuation frames resume.
         if (livePreorderedTriggerCount == 0) {
