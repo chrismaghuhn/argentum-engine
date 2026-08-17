@@ -50,6 +50,24 @@ class StateProgressTest : FunSpec({
         }
     }
 
+    test("runtime object identity bookkeeping is not a semantic position") {
+        val base = state()
+        val here = StateProgress.digest(base)
+
+        // CR 400.7 identity stamps protect locked targets at runtime, but they do not describe
+        // the semantic game position. A resolution that only creates or retains those stamps
+        // must remain comparable to its starting position for AI loop detection.
+        withClue("nextObjectIdentityStamp") {
+            StateProgress.digest(base.copy(nextObjectIdentityStamp = base.nextObjectIdentityStamp + 17L)) shouldBe here
+        }
+        withClue("objectIdentityStamps") {
+            val objectId = base.turnOrder.first()
+            StateProgress.digest(
+                base.copy(objectIdentityStamps = base.objectIdentityStamps + (objectId to 999L)),
+            ) shouldBe here
+        }
+    }
+
     test("a turn-level rider an ability can set without touching a permanent is a change") {
         val base = state()
         val here = StateProgress.digest(base)

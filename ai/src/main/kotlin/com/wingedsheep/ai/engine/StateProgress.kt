@@ -102,6 +102,8 @@ object StateProgress {
      * What is stripped, and why none of it is a game fact:
      * - `entities` — read separately by [objectHash], which drops [IGNORED_COMPONENTS].
      * - `rng`, `nextEntityId`, `timestamp` — advanced by resolving anything at all.
+     * - `nextObjectIdentityStamp`, `objectIdentityStamps` — runtime-only CR 400.7 bookkeeping
+     *   used to validate locked object identities, not semantic game facts.
      * - `priorityPlayerId`, `priorityPassedBy` — whose turn it is to speak, not what is true. This
      *   is what makes an action's own resolution comparable with the position it started from.
      * - `continuationStack` — counted instead; see [digest].
@@ -115,6 +117,8 @@ object StateProgress {
         rng = GameRng(0L),
         nextEntityId = 0L,
         timestamp = 0L,
+        nextObjectIdentityStamp = 0L,
+        objectIdentityStamps = emptyMap(),
         priorityPlayerId = null,
         priorityPassedBy = emptySet(),
         continuationStack = emptyList(),
