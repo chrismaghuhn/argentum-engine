@@ -1098,7 +1098,7 @@
 {
     "name": "Loran of the Third Path",
     "manaCost": "{2}{W}",
-    "typeLine": "Legendary Creature � Human Artificer",
+    "typeLine": "Legendary Creature — Human Artificer",
     "oracleText": "Vigilance\nWhen Loran enters, destroy up to one target artifact or enchantment.\n{T}: You and target opponent each draw a card.",
     "creatureStats": {
         "power": 2,
