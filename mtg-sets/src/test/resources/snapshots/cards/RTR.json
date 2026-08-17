@@ -1,3 +1,42 @@
+// Abrupt Decay
+{
+    "name": "Abrupt Decay",
+    "manaCost": "{B}{G}",
+    "typeLine": "Instant",
+    "oracleText": "This spell can't be countered.\nDestroy target nonland permanent with mana value 3 or less.",
+    "script": {
+        "spellEffect": {
+            "type": "MoveToZone",
+            "target": {
+                "type": "BoundVariable",
+                "name": "target nonland permanent with mana value 3 or less"
+            },
+            "destination": "Graveyard",
+            "byDestruction": true
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "nonland permanent mv<=3"
+                },
+                "id": "target nonland permanent with mana value 3 or less"
+            }
+        ],
+        "cantBeCountered": true
+    },
+    "metadata": {
+        "collectorNumber": "141",
+        "rarity": "RARE",
+        "artist": "Svetlin Velinov",
+        "imageUri": "https://cards.scryfall.io/normal/front/3/b/3b1e92b4-6e53-4dba-a572-c67e01965ac5.jpg?1783940344"
+    },
+    "colorIdentityOverride": [
+        "BLACK",
+        "GREEN"
+    ]
+}
+
 // Axebane Stag
 {
     "name": "Axebane Stag",
