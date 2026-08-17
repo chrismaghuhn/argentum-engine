@@ -435,6 +435,44 @@
     ]
 }
 
+// Leyline Prowler
+{
+    "name": "Leyline Prowler",
+    "manaCost": "{1}{B}{G}",
+    "typeLine": "Creature — Nightmare Beast",
+    "oracleText": "Deathtouch, lifelink\n{T}: Add one mana of any color.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 3
+    },
+    "keywords": [
+        "DEATHTOUCH",
+        "LIFELINK"
+    ],
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "ability_1",
+                "cost": "CostTap",
+                "effect": "AddManaOfChoice",
+                "timing": "ManaAbility",
+                "isManaAbility": true,
+                "descriptionOverride": "{T}: Add one mana of any color."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "202",
+        "rarity": "UNCOMMON",
+        "artist": "YW Tang",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/5/c56b4e8f-d48e-4bb0-883d-29f978033f65.jpg?1783933395"
+    },
+    "colorIdentityOverride": [
+        "BLACK",
+        "GREEN"
+    ]
+}
+
 // Liliana, Dreadhorde General
 {
     "name": "Liliana, Dreadhorde General",
