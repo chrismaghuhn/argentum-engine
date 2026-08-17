@@ -73,7 +73,7 @@ types — there's no parallel type hierarchy.
 ### Structured action candidates
 
 `LegalActionView.requiresStructuredAction` is true when the enumerated engine
-action is a target/payment/mode/X/combat template. In that case the action ID
+action is a target/payment/mode/X/combat/order/Crew/Saddle template. In that case the action ID
 is an opaque candidate handle, but the caller must complete every required
 field in `actionSemantics` and submit it with the ID:
 
@@ -86,6 +86,12 @@ svc.step(StepRequest(envId, action.actionId, completed))
 The server-side registry supplies only opaque runtime fields (for example a
 generated activated-ability handle). Candidate binding and rules validation are
 authoritative; Gym never auto-selects a target or payment.
+
+Choice-bearing combat and keyword actions require their explicit slots even when
+the choice is empty: `attackers` plus `bands`, `blockers`, `orderedBlockers`,
+`crewCreatures`, or `saddleCreatures`. The candidate matcher still requires the
+original actor and source/card identity, so a completed payload cannot be rebound
+to another action.
 
 ## Design choices worth knowing about
 
@@ -162,10 +168,15 @@ just test-gym                   # this module only
 ./gradlew :gym:test      # same via gradle
 ```
 
-35 tests across:
+The module suite covers:
 
 - `GameEnvironmentTest` — core reset/step/fork/evaluate/playGame.
+- `GameGymEnvActionContractTest` — structured action payload completeness,
+  action-candidate identity binding, and fail-closed stale handles.
+- `GameGymEnvSnapshotTest` — horizon-preserving snapshot/restore.
 - `TrainingObservationTest` — observation contract, masking, digest stability.
+- `ObservationCanonicalizationTest` and `ObservationPrivacyTest` — stable
+  semantic bytes and perspective-safe information hiding.
 - `MultiEnvServiceTest` — lifecycle, step-batch, fork/snapshot/restore,
   deck validation, perspective masking.
 

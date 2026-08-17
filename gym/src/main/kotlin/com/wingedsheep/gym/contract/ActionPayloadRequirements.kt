@@ -2,10 +2,12 @@ package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.OrderBlockers
+import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.legalactions.LegalAction
 import kotlinx.serialization.json.JsonObject
 
@@ -28,7 +30,14 @@ object ActionPayloadRequirements {
         }
         if (action.requiresManaColorChoice) add("manaColorChoice")
         if (action.requiresDamageDistribution) add("damageDistribution")
-        if (action.tapForPower) add(additionalPaymentField(action.action))
+        when (action.action) {
+            // Crew and Saddle are their own action shapes. Their selected creatures are not an
+            // AdditionalCostPayment, so mapping tapForPower through the generic spell/ability
+            // payment field would advertise a payload that the action decoder silently ignores.
+            is CrewVehicle -> add("crewCreatures")
+            is SaddleMount -> add("saddleCreatures")
+            else -> if (action.tapForPower) add(additionalPaymentField(action.action))
+        }
         if (action.maxRepeatableActivations != null) add("repeatCount")
         if (action.requiresForage) add("additionalCostPayment")
         if (action.additionalLifeCost > 0) add("graveyardLifeCost")
@@ -40,7 +49,10 @@ object ActionPayloadRequirements {
         // Empty combat maps/lists are valid choices, but they must be submitted explicitly. The
         // default constructors otherwise silently declare no attackers/blockers/order.
         when (action.action) {
-            is DeclareAttackers -> add("attackers")
+            is DeclareAttackers -> {
+                add("attackers")
+                add("bands")
+            }
             is DeclareBlockers -> add("blockers")
             is OrderBlockers -> add("orderedBlockers")
             else -> Unit

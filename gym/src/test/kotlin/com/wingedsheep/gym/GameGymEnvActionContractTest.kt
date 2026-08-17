@@ -2,9 +2,14 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
+import com.wingedsheep.engine.core.CrewVehicle
+import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.SaddleMount
+import com.wingedsheep.engine.core.TurnFaceUp
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
@@ -123,15 +128,106 @@ class GameGymEnvActionContractTest : FunSpec({
     test("combat declaration templates require explicit empty-or-populated choices") {
         val player = EntityId("player")
         val cases = listOf(
-            LegalAction(DeclareAttackers(player, emptyMap()), "DeclareAttackers", "attackers") to "attackers",
-            LegalAction(DeclareBlockers(player, emptyMap()), "DeclareBlockers", "blockers") to "blockers",
+            LegalAction(DeclareAttackers(player, emptyMap()), "DeclareAttackers", "attackers") to
+                listOf("attackers", "bands"),
+            LegalAction(DeclareBlockers(player, emptyMap()), "DeclareBlockers", "blockers") to
+                listOf("blockers"),
             LegalAction(OrderBlockers(player, EntityId("attacker"), emptyList()), "OrderBlockers", "order") to
-                "orderedBlockers"
+                listOf("orderedBlockers")
         )
 
-        cases.forEach { (action, requiredField) ->
+        cases.forEach { (action, requiredFields) ->
             ActionPayloadRequirements.requiresStructuredAction(action) shouldBe true
-            ActionPayloadRequirements.missingRequiredFields(action, buildJsonObject {}) shouldBe listOf(requiredField)
+            ActionPayloadRequirements.missingRequiredFields(action, buildJsonObject {}) shouldBe requiredFields
         }
+
+        ActionPayloadRequirements.missingRequiredFields(
+            LegalAction(
+                action = DeclareAttackers(player, emptyMap()),
+                actionType = "DeclareAttackers",
+                description = "attackers"
+            ),
+            buildJsonObject { put("attackers", buildJsonObject {}) }
+        ) shouldBe listOf("bands")
+    }
+
+    test("structured payload fields name the action's actual choice slots") {
+        val player = EntityId("player")
+        val vehicle = EntityId("vehicle")
+        val mount = EntityId("mount")
+
+        ActionPayloadRequirements.requiredPayloadFields(
+            LegalAction(
+                action = CrewVehicle(player, vehicle, emptyList()),
+                actionType = "CrewVehicle",
+                description = "crew",
+                tapForPower = true
+            )
+        ) shouldBe setOf("crewCreatures")
+        ActionPayloadRequirements.requiredPayloadFields(
+            LegalAction(
+                action = SaddleMount(player, mount, emptyList()),
+                actionType = "SaddleMount",
+                description = "saddle",
+                tapForPower = true
+            )
+        ) shouldBe setOf("saddleCreatures")
+        ActionPayloadRequirements.requiredPayloadFields(
+            LegalAction(
+                action = CycleCard(player, EntityId("cycling-card")),
+                actionType = "CycleCard",
+                description = "cycle",
+                manaCostString = "{X}",
+                hasXCost = true
+            )
+        ) shouldBe setOf("xValue", "paymentStrategy")
+        ActionPayloadRequirements.requiredPayloadFields(
+            LegalAction(
+                action = TurnFaceUp(player, EntityId("face-down")),
+                actionType = "TurnFaceUp",
+                description = "turn face up",
+                manaCostString = "{X}",
+                hasXCost = true
+            )
+        ) shouldBe setOf("xValue", "paymentStrategy")
+    }
+
+    test("structured candidate binding accepts choices but preserves action identity") {
+        val environment = GameEnvironment.create(registry())
+        val player = EntityId("player")
+        val opponent = EntityId("opponent")
+        val card = EntityId("card")
+        val vehicle = EntityId("vehicle")
+        val mount = EntityId("mount")
+        val attacker = EntityId("attacker")
+
+        environment.isCurrentActionCandidate(
+            OrderBlockers(player, attacker, emptyList()),
+            OrderBlockers(player, attacker, listOf(EntityId("blocker")))
+        ) shouldBe true
+        environment.isCurrentActionCandidate(
+            OrderBlockers(player, attacker, emptyList()),
+            OrderBlockers(player, EntityId("other-attacker"), emptyList())
+        ) shouldBe false
+        environment.isCurrentActionCandidate(
+            CycleCard(player, card),
+            CycleCard(player, card, PaymentStrategy.FromPool, xValue = 2)
+        ) shouldBe true
+        environment.isCurrentActionCandidate(
+            CycleCard(player, card),
+            CycleCard(opponent, card, PaymentStrategy.FromPool, xValue = 2)
+        ) shouldBe false
+        environment.isCurrentActionCandidate(
+            CrewVehicle(player, vehicle, emptyList()),
+            CrewVehicle(player, vehicle, listOf(EntityId("creature")))
+        ) shouldBe true
+        environment.isCurrentActionCandidate(
+            SaddleMount(player, mount, emptyList()),
+            SaddleMount(player, EntityId("other-mount"), listOf(EntityId("creature")))
+        ) shouldBe false
+        environment.isCurrentActionCandidate(
+            TurnFaceUp(player, card),
+            TurnFaceUp(player, card, PaymentStrategy.FromPool, xValue = 3)
+        ) shouldBe true
     }
 })

@@ -94,7 +94,7 @@ the same handle generation; reset and restore never reuse old handles.
 
 When a legal-action view has `requiresStructuredAction: true`, the action ID is a
 candidate handle, not a complete engine action. Copy its `actionSemantics` object,
-fill every required target/payment/mode/X/combat choice field, and send that
+fill every required target/payment/mode/X/combat/order/Crew/Saddle choice field, and send that
 object in the optional `action` field of the same step body. Even an explicit
 empty choice must be present; the server binds the completed payload to the
 current candidate and lets the rules engine validate it. It does not choose
@@ -157,7 +157,7 @@ just test-gym-server                    # this module only
 ./gradlew :gym-server:test       # same via gradle
 ```
 
-7 integration tests covering the happy path (`create → observe → step →
+13 integration tests covering the happy path (`create → observe → step →
 dispose` round-trip), error paths (unknown env → 404, unknown set code
 → 400, stale action ID → 400), schema hash / health, and multi-step
 turn advancement.

@@ -281,22 +281,48 @@ class GameEnvironment private constructor(
 
     /**
      * Match a submitted action against the current enumerator templates without treating
-     * caller-supplied target assignments as stale. The enumerator deliberately emits targetless
-     * CastSpell/ActivateAbility templates with target metadata; the client, AI, or random
-     * selector fills those targets before submitting the action. Combat declarations use the
-     * same template pattern for their attacker/blocker maps.
+     * caller-supplied choice assignments as stale. Enumerators deliberately emit templates for
+     * casts, abilities, combat, cycling, turn-face-up, Crew, Saddle, and payment-only special
+     * actions; the client or AI fills the choice fields before submitting the action. Every
+     * branch below retains the candidate's actor and runtime/source identity fields. The rules
+     * engine remains authoritative for validating the submitted choices.
      */
-    private fun isCurrentActionCandidate(candidate: GameAction, submitted: GameAction): Boolean =
+    internal fun isCurrentActionCandidate(candidate: GameAction, submitted: GameAction): Boolean =
         when {
             candidate == submitted -> true
             candidate is DeclareAttackers && submitted is DeclareAttackers ->
                 candidate.playerId == submitted.playerId
             candidate is DeclareBlockers && submitted is DeclareBlockers ->
                 candidate.playerId == submitted.playerId
+            candidate is OrderBlockers && submitted is OrderBlockers ->
+                candidate.playerId == submitted.playerId &&
+                    candidate.attackerId == submitted.attackerId
             candidate is CastSpell && submitted is CastSpell ->
                 normalizeCastSpellForMembership(candidate) == normalizeCastSpellForMembership(submitted)
             candidate is ActivateAbility && submitted is ActivateAbility ->
                 normalizeActivateAbilityForMembership(candidate) == normalizeActivateAbilityForMembership(submitted)
+            candidate is CycleCard && submitted is CycleCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is PlotCard && submitted is PlotCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is ForetellCard && submitted is ForetellCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is SuspendCardFromHand && submitted is SuspendCardFromHand ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is TypecycleCard && submitted is TypecycleCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is CrewVehicle && submitted is CrewVehicle ->
+                candidate.playerId == submitted.playerId && candidate.vehicleId == submitted.vehicleId
+            candidate is SaddleMount && submitted is SaddleMount ->
+                candidate.playerId == submitted.playerId && candidate.mountId == submitted.mountId
+            candidate is TurnFaceUp && submitted is TurnFaceUp ->
+                candidate.playerId == submitted.playerId &&
+                    candidate.sourceId == submitted.sourceId &&
+                    candidate.procedureIndex == submitted.procedureIndex
+            candidate is UnlockRoomDoor && submitted is UnlockRoomDoor ->
+                candidate.playerId == submitted.playerId &&
+                    candidate.roomId == submitted.roomId &&
+                    candidate.faceId == submitted.faceId
             else -> false
         }
 
