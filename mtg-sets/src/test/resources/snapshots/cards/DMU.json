@@ -2733,6 +2733,66 @@
     ]
 }
 
+// Tear Asunder
+{
+    "name": "Tear Asunder",
+    "manaCost": "{1}{G}",
+    "typeLine": "Instant",
+    "oracleText": "Kicker {1}{B} (You may pay an additional {1}{B} as you cast this spell.)\nExile target artifact or enchantment. If this spell was kicked, exile target nonland permanent instead.",
+    "keywordAbilities": [
+        {
+            "type": "Kicker",
+            "manaCost": "{1}{B}"
+        }
+    ],
+    "script": {
+        "spellEffect": {
+            "type": "MoveToZone",
+            "target": {
+                "type": "BoundVariable",
+                "name": "target artifact or enchantment"
+            },
+            "destination": "Exile"
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "artifact|enchantment"
+                },
+                "id": "target artifact or enchantment"
+            }
+        ],
+        "kickerTargetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "nonland permanent"
+                },
+                "id": "target nonland permanent"
+            }
+        ],
+        "kickerSpellEffect": {
+            "type": "MoveToZone",
+            "target": {
+                "type": "BoundVariable",
+                "name": "target nonland permanent"
+            },
+            "destination": "Exile"
+        }
+    },
+    "metadata": {
+        "collectorNumber": "183",
+        "rarity": "UNCOMMON",
+        "artist": "Dave Kendall",
+        "imageUri": "https://cards.scryfall.io/normal/front/6/2/629aa907-9533-4681-9bf2-9e56450a4cc2.jpg?1783921294"
+    },
+    "colorIdentityOverride": [
+        "BLACK",
+        "GREEN"
+    ]
+}
+
 // Territorial Maro
 {
     "name": "Territorial Maro",
