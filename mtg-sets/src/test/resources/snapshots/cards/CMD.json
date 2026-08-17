@@ -1,3 +1,77 @@
+// Chaos Warp
+{
+    "name": "Chaos Warp",
+    "manaCost": "{2}{R}",
+    "typeLine": "Instant",
+    "oracleText": "The owner of target permanent shuffles it into their library, then reveals the top card of their library. If it's a permanent card, they put it onto the battlefield.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "permanent"
+                    },
+                    "destination": "Library",
+                    "placement": "Shuffled"
+                },
+                {
+                    "type": "GatherCards",
+                    "source": {
+                        "type": "TopOfLibrary",
+                        "count": {
+                            "type": "Fixed",
+                            "amount": 1
+                        },
+                        "player": {
+                            "type": "OwnerOf",
+                            "targetDescription": "target permanent"
+                        }
+                    },
+                    "storeAs": "revealed",
+                    "revealed": true
+                },
+                {
+                    "type": "SelectFromCollection",
+                    "from": "revealed",
+                    "selection": "SelectAll",
+                    "filter": "permanent",
+                    "storeSelected": "permanentCard"
+                },
+                {
+                    "type": "MoveCollection",
+                    "from": "permanentCard",
+                    "destination": {
+                        "type": "ToZone",
+                        "zone": "Battlefield"
+                    },
+                    "underOwnersControl": true
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "permanent"
+                },
+                "id": "permanent"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "114",
+        "rarity": "RARE",
+        "artist": "Trevor Claxton",
+        "imageUri": "https://cards.scryfall.io/normal/front/0/4/042431bc-0b21-4920-802f-6dd02e4c8721.jpg?1783941212"
+    },
+    "colorIdentityOverride": [
+        "RED"
+    ]
+}
+
 // Command Tower
 {
     "name": "Command Tower",

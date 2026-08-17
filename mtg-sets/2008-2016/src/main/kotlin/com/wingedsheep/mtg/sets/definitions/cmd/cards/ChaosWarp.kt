@@ -1,4 +1,4 @@
-package com.wingedsheep.mtg.sets.definitions.blc.cards
+package com.wingedsheep.mtg.sets.definitions.cmd.cards
 
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
@@ -12,18 +12,15 @@ import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
 import com.wingedsheep.sdk.scripting.effects.MoveCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.SelectFromCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.SelectionMode
-import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.references.Player.OwnerOf
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
- * Chaos Warp
- * {2}{R}
- * Instant
+ * Chaos Warp — Commander 2011 #114 (canonical printing).
+ * {2}{R} · Instant
  *
- * The owner of target permanent shuffles it into their library, then reveals the
- * top card of their library. If it's a permanent card, they put it onto the
- * battlefield.
+ * The owner of target permanent shuffles it into their library, then reveals the top card of
+ * their library. If it's a permanent card, they put it onto the battlefield.
  */
 val ChaosWarp = card("Chaos Warp") {
     manaCost = "{2}{R}"
@@ -63,8 +60,8 @@ val ChaosWarp = card("Chaos Warp") {
 
     metadata {
         rarity = Rarity.RARE
-        collectorNumber = "115"
-        artist = "Zoltan Boros"
-        imageUri = "https://cards.scryfall.io/normal/front/7/a/7a050532-1e75-4212-acb0-ec740378af10.jpg?1721428740"
+        collectorNumber = "114"
+        artist = "Trevor Claxton"
+        imageUri = "https://cards.scryfall.io/normal/front/0/4/042431bc-0b21-4920-802f-6dd02e4c8721.jpg?1783941212"
     }
 }
