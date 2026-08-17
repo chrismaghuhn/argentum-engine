@@ -10,7 +10,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
 /**
- * Deathreap Ritual (NCC #336) — {2}{B}{G} Enchantment
+ * Deathreap Ritual (CNS #44; reprinted NCC #336) — {2}{B}{G} Enchantment
  *
  * "Morbid — At the beginning of each end step, if a creature died this turn, you may draw a card."
  *
