@@ -34,6 +34,6 @@ val NightsWhisper = card("Night's Whisper") {
         collectorNumber = "55"
         artist = "David Martin"
         flavorText = "The Moriok call the black moon the Whisperer. At her apex, she whispers of power."
-        imageUri = "https://cards.scryfall.io/normal/front/6/1/61f0c6f6-b90d-4eb1-a5db-86e0a3997501.jpg"
+        imageUri = "https://cards.scryfall.io/normal/front/6/1/61f0c6f6-b90d-4eb1-a5db-86e0a3997501.jpg?1783944398"
     }
 }
