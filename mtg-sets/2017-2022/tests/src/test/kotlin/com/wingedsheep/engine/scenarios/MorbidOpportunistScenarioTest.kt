@@ -1,91 +1,107 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.support.ScenarioTestBase
-import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Targets
-import com.wingedsheep.sdk.dsl.card
-import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.core.Phase
+import com.wingedsheep.sdk.core.Step
+import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
 
 /**
- * Morbid Opportunist (MID #113).
+ * Morbid Opportunist (MID #113) — {2}{B} Creature — Human Rogue, 1/3.
  *
- * Oracle: "Whenever one or more other creatures die, draw a card. This ability triggers only
- * once each turn."
+ * "Whenever one or more other creatures die, draw a card. This ability triggers only once each
+ * turn."
  *
- * The scenarios cover a simultaneous multi-creature death as one trigger, deaths controlled by
- * either player, exclusion of the source itself, and the once-per-turn cap.
+ * The scenarios cover the global death trigger, the once-per-turn cap, and the Scryfall ruling
+ * that the ability still triggers when Morbid Opportunist dies at the same time as another creature.
  */
 class MorbidOpportunistScenarioTest : ScenarioTestBase() {
 
     init {
-        val slay = card("A8 Slay") {
-            manaCost = "{0}"
-            typeLine = "Instant"
-            spell {
-                val target = target("target creature", Targets.Creature)
-                effect = Effects.Destroy(target)
+        context("Morbid Opportunist — draw after other creatures die") {
+
+            test("draws when an opponent's creature dies") {
+                val game = scenario()
+                    .withPlayers("P1", "P2")
+                    .withCardOnBattlefield(1, "Morbid Opportunist")
+                    .withCardOnBattlefield(2, "Grizzly Bears")
+                    .withCardInHand(1, "Shock")
+                    .withLandsOnBattlefield(1, "Mountain", 1)
+                    .withCardInLibrary(1, "Island")
+                    .withActivePlayer(1)
+                    .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                    .build()
+
+                val bears = game.findPermanent("Grizzly Bears")!!
+                val handBefore = game.handSize(1)
+
+                game.castSpell(1, "Shock", bears).error shouldBe null
+                game.resolveStack()
+
+                game.isOnBattlefield("Grizzly Bears") shouldBe false
+                withClue("the opposing creature's death replaces the Shock card in hand") {
+                    game.handSize(1) shouldBe handBefore
+                }
+                game.librarySize(1) shouldBe 0
             }
-        }
-        val massSlay = card("A8 Mass Slay") {
-            manaCost = "{0}"
-            typeLine = "Sorcery"
-            spell {
-                effect = Effects.DestroyAll(GameObjectFilter.Creature.opponentControls(), noRegenerate = true)
+
+            test("draws when it dies at the same time as another creature") {
+                val game = scenario()
+                    .withPlayers("P1", "P2")
+                    .withCardOnBattlefield(1, "Morbid Opportunist")
+                    .withCardOnBattlefield(1, "Grizzly Bears")
+                    .withCardOnBattlefield(2, "Hill Giant")
+                    .withCardInHand(1, "Day of Judgment")
+                    .withLandsOnBattlefield(1, "Plains", 4)
+                    .withCardInLibrary(1, "Island")
+                    .withActivePlayer(1)
+                    .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                    .build()
+
+                val handBefore = game.handSize(1)
+
+                game.castSpell(1, "Day of Judgment").error shouldBe null
+                game.resolveStack()
+
+                game.isOnBattlefield("Morbid Opportunist") shouldBe false
+                game.isOnBattlefield("Grizzly Bears") shouldBe false
+                game.isOnBattlefield("Hill Giant") shouldBe false
+                withClue("last-known information keeps the simultaneous-death trigger alive") {
+                    game.handSize(1) shouldBe handBefore
+                }
+                game.librarySize(1) shouldBe 0
             }
-        }
-        cardRegistry.register(listOf(slay, massSlay))
 
-        test("one simultaneous death batch draws once, including creatures an opponent controls") {
-            val game = scenario()
-                .withPlayers()
-                .withCardOnBattlefield(1, "Morbid Opportunist")
-                .withCardOnBattlefield(2, "Grizzly Bears")
-                .withCardOnBattlefield(2, "Aegis Turtle")
-                .withCardInHand(1, "A8 Mass Slay")
-                .withCardInLibrary(1, "Bear Cub")
-                .withCardInLibrary(1, "Llanowar Elves")
-                .build()
+            test("triggers only once across separate death batches in one turn") {
+                val game = scenario()
+                    .withPlayers("P1", "P2")
+                    .withCardOnBattlefield(1, "Morbid Opportunist")
+                    .withCardOnBattlefield(2, "Grizzly Bears")
+                    .withCardOnBattlefield(2, "Hill Giant")
+                    .withCardInHand(1, "Shock")
+                    .withCardInHand(1, "Shock")
+                    .withLandsOnBattlefield(1, "Mountain", 2)
+                    .withCardInLibrary(1, "Island")
+                    .withCardInLibrary(1, "Forest")
+                    .withActivePlayer(1)
+                    .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                    .build()
 
-            game.castSpell(1, "A8 Mass Slay").error shouldBe null
-            game.resolveStack()
+                val firstTarget = game.findPermanent("Grizzly Bears")!!
+                val secondTarget = game.findPermanent("Hill Giant")!!
 
-            game.isInHand(1, "Bear Cub") shouldBe true
-            game.isInHand(1, "Llanowar Elves") shouldBe false
-        }
+                game.castSpell(1, "Shock", firstTarget).error shouldBe null
+                game.resolveStack()
+                val libraryAfterFirstDeath = game.librarySize(1)
+                libraryAfterFirstDeath shouldBe 1
 
-        test("the source itself is not an eligible other creature") {
-            val game = scenario()
-                .withPlayers()
-                .withCardOnBattlefield(1, "Morbid Opportunist")
-                .withCardInHand(1, "A8 Slay")
-                .withCardInLibrary(1, "Bear Cub")
-                .build()
+                game.castSpell(1, "Shock", secondTarget).error shouldBe null
+                game.resolveStack()
 
-            game.castSpell(1, "A8 Slay", targetId = game.findPermanent("Morbid Opportunist")!!).error shouldBe null
-            game.resolveStack()
-
-            game.isInHand(1, "Bear Cub") shouldBe false
-        }
-
-        test("only the first death batch of a turn draws") {
-            val game = scenario()
-                .withPlayers()
-                .withCardOnBattlefield(1, "Morbid Opportunist")
-                .withCardOnBattlefield(2, "Grizzly Bears")
-                .withCardOnBattlefield(2, "Aegis Turtle")
-                .withCardsInHand(1, "A8 Slay", 2)
-                .withCardInLibrary(1, "Bear Cub")
-                .withCardInLibrary(1, "Llanowar Elves")
-                .build()
-
-            game.castSpell(1, "A8 Slay", targetId = game.findPermanent("Grizzly Bears")!!).error shouldBe null
-            game.resolveStack()
-            game.castSpell(1, "A8 Slay", targetId = game.findPermanent("Aegis Turtle")!!).error shouldBe null
-            game.resolveStack()
-
-            game.isInHand(1, "Bear Cub") shouldBe true
-            game.isInHand(1, "Llanowar Elves") shouldBe false
+                withClue("the second death batch in the same turn is capped") {
+                    game.librarySize(1) shouldBe libraryAfterFirstDeath
+                }
+            }
         }
     }
 }

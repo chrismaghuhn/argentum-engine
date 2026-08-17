@@ -2066,7 +2066,13 @@
         "collectorNumber": "113",
         "rarity": "UNCOMMON",
         "artist": "Tyler Walpole",
-        "imageUri": "https://cards.scryfall.io/normal/front/5/a/5a53982e-3d66-4808-bcb5-46ff40567872.jpg?1782703660"
+        "imageUri": "https://cards.scryfall.io/normal/front/5/a/5a53982e-3d66-4808-bcb5-46ff40567872.jpg?1782703660",
+        "rulings": [
+            {
+                "date": "2024-11-08",
+                "text": "If Morbid Opportunist dies at the same time as one or more other creatures, Morbid Opportunist's ability still triggers."
+            }
+        ]
     },
     "colorIdentityOverride": [
         "BLACK"
