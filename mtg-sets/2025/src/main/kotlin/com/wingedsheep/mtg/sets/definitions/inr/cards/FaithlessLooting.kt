@@ -17,7 +17,7 @@ val FaithlessLootingReprint = Printing(
     setCode = "INR",
     collectorNumber = "151",
     artist = "Gabor Szikszai",
-    imageUri = "https://cards.scryfall.io/normal/front/5/2/52e47757-0aa9-48b0-8b43-e2483d7eed67.jpg",
+    imageUri = "https://cards.scryfall.io/normal/front/5/2/52e47757-0aa9-48b0-8b43-e2483d7eed67.jpg?1783908121",
     releaseDate = "2025-01-24",
     rarity = Rarity.COMMON,
 )
