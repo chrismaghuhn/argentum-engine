@@ -135,6 +135,7 @@ internal fun canonicalActionTrace(action: GameAction): String = when (action) {
         "playerId=${action.playerId}",
         "vehicleId=${action.vehicleId}",
         "crewCreatures=${action.crewCreatures}",
+        "crewAbilityKey=${action.crewAbilityKey}",
     )
     is SaddleMount -> fields(
         "SaddleMount",

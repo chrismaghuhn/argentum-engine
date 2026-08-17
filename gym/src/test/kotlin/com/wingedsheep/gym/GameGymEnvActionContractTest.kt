@@ -222,6 +222,14 @@ class GameGymEnvActionContractTest : FunSpec({
             CrewVehicle(player, vehicle, listOf(EntityId("creature")))
         ) shouldBe true
         environment.isCurrentActionCandidate(
+            CrewVehicle(player, vehicle, emptyList(), crewAbilityKey = "crew-1"),
+            CrewVehicle(player, vehicle, listOf(EntityId("creature")), crewAbilityKey = "crew-1")
+        ) shouldBe true
+        environment.isCurrentActionCandidate(
+            CrewVehicle(player, vehicle, emptyList(), crewAbilityKey = "crew-1"),
+            CrewVehicle(player, vehicle, listOf(EntityId("creature")), crewAbilityKey = "crew-3")
+        ) shouldBe false
+        environment.isCurrentActionCandidate(
             SaddleMount(player, mount, emptyList()),
             SaddleMount(player, EntityId("other-mount"), listOf(EntityId("creature")))
         ) shouldBe false

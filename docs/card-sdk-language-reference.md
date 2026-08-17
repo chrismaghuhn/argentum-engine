@@ -5436,6 +5436,13 @@ staticAbility {
 - `SetToughness(t)` — overwrite toughness.
 - `SetStats(p, t)` — overwrite both.
 - `GrantKeyword(keyword)` — grant a keyword.
+- `GrantKeywordAbility(ability, filter = attachedCreature())` — grant a parameterized keyword
+  ability without flattening its value into the projected keyword-name set. Point-of-use readers
+  resolve the intact ability alongside printed and runtime grants; this is the generic shape for
+  dynamic values such as `GrantKeywordAbility(KeywordAbility.crew(1),
+  GroupFilter(GameObjectFilter.Artifact.withSubtype(Subtype.VEHICLE).youControl()))`. Crew action
+  enumeration and validation carry a deterministic serialized ability key, so replay/fork/Gym
+  paths cannot silently choose a different requirement when several Crew instances apply.
 - `RemoveKeyword(keyword)` — remove a keyword.
 - `GrantProtection(color)` — grant protection from a color.
 - `Custom(...)` — escape hatch for one-off modifications.

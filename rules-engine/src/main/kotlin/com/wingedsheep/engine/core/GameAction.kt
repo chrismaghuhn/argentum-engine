@@ -662,13 +662,17 @@ data class Concede(
  * @property playerId The player crewing the vehicle
  * @property vehicleId The Vehicle permanent being crewed
  * @property crewCreatures Creatures to tap as the crew cost
+ * @property crewAbilityKey Stable identity of the effective Crew instance being activated. It is
+ *           populated by legal-action enumeration; null is retained for legacy/direct callers
+ *           and is accepted only when the selected creatures identify one unambiguous Crew value.
  */
 @Serializable
 @SerialName("CrewVehicle")
 data class CrewVehicle(
     override val playerId: EntityId,
     val vehicleId: EntityId,
-    val crewCreatures: List<EntityId>
+    val crewCreatures: List<EntityId>,
+    val crewAbilityKey: String? = null
 ) : GameAction
 
 // =============================================================================

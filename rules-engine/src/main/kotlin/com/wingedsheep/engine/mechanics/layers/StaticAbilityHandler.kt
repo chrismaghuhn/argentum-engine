@@ -176,6 +176,7 @@ import com.wingedsheep.sdk.scripting.conditions.Exists
 import com.wingedsheep.sdk.scripting.conditions.IsYourTurn
 import com.wingedsheep.sdk.scripting.conditions.NotCondition
 import com.wingedsheep.sdk.scripting.GrantKeyword
+import com.wingedsheep.sdk.scripting.GrantKeywordAbility
 import com.wingedsheep.sdk.scripting.GrantLandwalkOfChosenType
 import com.wingedsheep.sdk.scripting.RemoveKeywordStatic
 import com.wingedsheep.sdk.scripting.CantBeBlockedWhilePropertyAtMost
@@ -909,6 +910,10 @@ class StaticAbilityHandler(
             is AdditionalETBOrLTBTriggers,
             is AdditionalSourceTriggers,
             is GrantTriggeredAbility,
+
+            // Parameterized keyword grants are resolved at their point of use. The layer
+            // projection can retain the simple keyword name, but not values such as Crew 1.
+            is GrantKeywordAbility,
 
             // Mana production (ManaSolver / ActivateAbilityHandler / ManaAbilityEnumerator):
             is AdditionalManaOnSourceTap,
