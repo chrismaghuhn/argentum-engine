@@ -149,7 +149,12 @@ class DamageCalculator(
         }
 
         val defenderId = state.getEntity(attackerId)?.get<AttackingComponent>()?.defenderId
-        if (remaining > 0 && defenderId != null) {
+        val hasLiveDefender = defenderId != null && (
+            defenderId in state.turnOrder ||
+                (defenderId in state.getBattlefield() &&
+                    (projected.isPlaneswalker(defenderId) || projected.isBattle(defenderId)))
+            )
+        if (remaining > 0 && hasLiveDefender) {
             assignments[defenderId] = remaining
             return DamageDistribution(assignments, attackerPower, 0)
         }

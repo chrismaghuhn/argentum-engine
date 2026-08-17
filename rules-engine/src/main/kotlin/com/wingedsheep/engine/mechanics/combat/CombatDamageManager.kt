@@ -553,6 +553,7 @@ internal class CombatDamageManager(
         val defenderNodes = defenderIds.mapNotNull { defenderId ->
             val container = state.getEntity(defenderId) ?: return@mapNotNull null
             val isPlayer = container.get<LifeTotalComponent>() != null && container.get<CardComponent>() == null
+            if (!isPlayer && defenderId !in battlefield) return@mapNotNull null
             when {
                 isPlayer -> ResolutionDefender(defenderId, ResolutionTargetKind.PLAYER, "Player",
                     state.lifeTotal(defenderId)) // CR 810.9a — team's shared total
@@ -561,9 +562,10 @@ internal class CombatDamageManager(
                     container.get<CountersComponent>()?.getCount(CounterType.LOYALTY))
                 // A battle's remaining "life" is its defense — its defense-counter count
                 // (CR 310.4c) — so the damage-division UI can show how much is left to remove.
-                else -> ResolutionDefender(defenderId, ResolutionTargetKind.BATTLE,
+                projected.isBattle(defenderId) -> ResolutionDefender(defenderId, ResolutionTargetKind.BATTLE,
                     container.get<CardComponent>()?.name ?: "Battle",
                     container.get<CountersComponent>()?.getCount(CounterType.DEFENSE))
+                else -> null
             }
         }
 
@@ -596,6 +598,10 @@ internal class CombatDamageManager(
                 val defenderId = c.attackingComponent.defenderId
                 val container = state.getEntity(defenderId)
                 val isPlayer = container?.get<LifeTotalComponent>() != null && container.get<CardComponent>() == null
+                val hasLiveDefender = defenderId in state.turnOrder ||
+                    (defenderId in battlefield &&
+                        (projected.isPlaneswalker(defenderId) || projected.isBattle(defenderId)))
+                if (!hasLiveDefender) continue
                 val direction = when {
                     isPlayer -> DamageEdgeDirection.ATTACKER_TO_PLAYER
                     projected.isPlaneswalker(defenderId) -> DamageEdgeDirection.ATTACKER_TO_PLANESWALKER
