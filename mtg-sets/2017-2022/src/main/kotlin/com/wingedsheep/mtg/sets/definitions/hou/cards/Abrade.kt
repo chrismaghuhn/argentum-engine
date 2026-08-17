@@ -44,6 +44,6 @@ val Abrade = card("Abrade") {
         collectorNumber = "83"
         artist = "Jonas De Ro"
         flavorText = "The desert is a voracious beast, devouring both flesh and stone."
-        imageUri = "https://cards.scryfall.io/normal/front/8/4/84319dfb-eaf7-4b98-8c4f-30f5e779591b.jpg"
+        imageUri = "https://cards.scryfall.io/normal/front/8/4/84319dfb-eaf7-4b98-8c4f-30f5e779591b.jpg?1783936033"
     }
 }
