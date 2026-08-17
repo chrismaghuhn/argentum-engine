@@ -770,8 +770,9 @@
                 "effect": {
                     "type": "DrawCards",
                     "count": {
-                        "type": "AggregateBattlefield",
-                        "player": "You"
+                        "type": "EntityProperty",
+                        "entity": "Source",
+                        "numericProperty": "AttachmentCount"
                     }
                 }
             }
