@@ -1183,6 +1183,58 @@
     ]
 }
 
+// Loran's Escape
+{
+    "name": "Loran's Escape",
+    "manaCost": "{W}",
+    "typeLine": "Instant",
+    "oracleText": "Target artifact or creature gains hexproof and indestructible until end of turn. Scry 1.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "GrantEvasionKeyword",
+                    "keyword": "HEXPROOF",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target artifact or creature"
+                    }
+                },
+                {
+                    "type": "GrantKeyword",
+                    "keyword": "INDESTRUCTIBLE",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target artifact or creature"
+                    }
+                },
+                {
+                    "type": "Scry",
+                    "count": 1
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "creature|artifact"
+                },
+                "id": "target artifact or creature"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "14",
+        "artist": "Matt Stewart",
+        "imageUri": "https://cards.scryfall.io/normal/front/3/7/3765610d-a0c1-4de9-a81b-ffa3eb06454b.jpg?1783920128"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Machine Over Matter
 {
     "name": "Machine Over Matter",
