@@ -87,6 +87,47 @@ class DecisionCompletenessValidatorTest : FunSpec({
         ).shouldNotBeNull()
     }
 
+    test("state-dependent target restrictions fail closed without current state") {
+        val cases = listOf(
+            TargetRequirementInfo(
+                index = 0,
+                description = "same graveyard",
+                minTargets = 2,
+                maxTargets = 2,
+                sameOwner = true
+            ),
+            TargetRequirementInfo(
+                index = 0,
+                description = "mana value cap",
+                minTargets = 2,
+                maxTargets = 2,
+                totalManaValueAtMost = 1
+            ),
+            TargetRequirementInfo(
+                index = 0,
+                description = "different names",
+                minTargets = 2,
+                maxTargets = 2,
+                differentNames = true
+            )
+        )
+
+        cases.forEach { requirement ->
+            val decision = ChooseTargetsDecision(
+                id = "state-required-${requirement.description}",
+                playerId = chooser,
+                prompt = requirement.description,
+                context = context,
+                targetRequirements = listOf(requirement),
+                legalTargets = mapOf(0 to listOf(first, second))
+            )
+            DecisionValidators.validate(
+                decision,
+                TargetsResponse(decision.id, mapOf(0 to listOf(first, second)))
+            ).shouldNotBeNull()
+        }
+    }
+
     test("ordinary modal choice rejects repeated modes") {
         val decision = ChooseModeDecision(
             id = "modes",

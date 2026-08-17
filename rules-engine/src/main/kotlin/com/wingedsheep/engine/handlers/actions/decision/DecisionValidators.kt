@@ -177,7 +177,11 @@ object DecisionValidators {
                     return "Too many targets for requirement $reqIndex: maximum is ${req.maxTargets}"
                 }
                 // "... from a single graveyard" — every chosen card target must share an owner.
-                if (req.sameOwner && selectedIds.size > 1 && state != null) {
+                // The public validator API can be called without a state, but that is not enough
+                // to prove state-dependent restrictions. Fail closed instead of accepting a
+                // response that only the rules engine could have checked with current state.
+                if (req.sameOwner && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target ownership"
                     val owners = selectedIds.mapNotNull { id ->
                         state.getEntity(id)?.get<OwnerComponent>()?.playerId
                     }
@@ -189,7 +193,8 @@ object DecisionValidators {
                 // targets may not exceed the resolved cap (Fire Lord Sozin's "total mana value X or
                 // less"; the cap was baked to a concrete int at decision-build time). CR 601.2c.
                 val manaCap = req.totalManaValueAtMost
-                if (manaCap != null && state != null) {
+                if (manaCap != null && selectedIds.isNotEmpty()) {
+                    if (state == null) return "Current game state is required to validate target mana value"
                     val totalManaValue = selectedIds.sumOf { id ->
                         state.getEntity(id)?.get<CardComponent>()?.manaValue ?: 0
                     }
@@ -199,7 +204,8 @@ object DecisionValidators {
                 }
                 // "... with different names" — no two chosen targets may share a name (Behold the
                 // Sinister Six!). TargetValidator is authoritative; this rejects it interactively too.
-                if (req.differentNames && selectedIds.size > 1 && state != null) {
+                if (req.differentNames && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target names"
                     val names = selectedIds.map { id ->
                         state.projectedState.getName(id) ?: state.getEntity(id)?.get<CardComponent>()?.name
                     }

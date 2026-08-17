@@ -6,8 +6,9 @@
    baseline and independent of A3.
 2. Inventory all current `PendingDecision`/`DecisionResponse` pairs, validators,
    continuation registrations, and hidden-choice call sites.
-3. Preserve the existing fail-closed ambiguity behavior for delayed attack-player
-   triggers while documenting the missing result/continuation seam.
+3. Implement the bounded delayed attack-player occurrence choice when a generic,
+   serializable result/continuation seam is safe; preserve fail-closed behavior
+   for any deeper trigger-ordering gap rather than choosing by iteration order.
 
 ## TDD validator slice
 
@@ -22,7 +23,8 @@
 ## Final audit and handoff
 
 1. Classify decision families as complete, partial, disabled/versioned, or blocked;
-   list hidden-policy findings separately from engine-random effects.
+   list hidden-policy findings separately from engine-random effects and record
+   the bounded Issue #22 occurrence-choice result.
 2. Run `git diff --check` and all available `just` gates; distinguish launcher
    failures from code failures.
 3. Commit, push, and open one draft PR against

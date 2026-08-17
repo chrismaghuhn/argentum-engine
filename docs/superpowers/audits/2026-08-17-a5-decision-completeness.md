@@ -111,10 +111,11 @@ fails before Gradle with the known Python 3.14 extensionless-helper
 Gradle successfully. Evidence:
 
 * `PerDefendingPlayerAttackTriggerScenarioTest`: 28/28
-* `:rules-engine:test`: 2,980/2,980
+* `:rules-engine:test`: 2,981/2,981
 
-The full rules-engine gate passed after the final test additions. Frozen
-baseline `6ff9ded1403d59ac` was not reblessed and no snapshots were changed.
+The full rules-engine gate passed after the final test additions. The frozen
+baseline fixture hash `6ff9ded1403d59ac` (distinct from the pinned source
+`BASE_SHA`) was not reblessed and no snapshots were changed.
 No P0 was introduced. Trigger-ordering remains a separate
 `NEEDS_RULES_CHARACTERIZATION` item; it was not conflated with occurrence
 selection. Generic A5 implementation status is **GREEN_WITH_DOCUMENTED_LAUNCHER_FALLBACK**;
