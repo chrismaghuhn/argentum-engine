@@ -10505,7 +10505,11 @@ Counter effects live in §4 (`AddCounters`, `RemoveCounters`, `Proliferate`, `Mo
   `DynamicAmount.XValue` for "with total mana value X or less"; the executor resolves it to a fixed cap up front so every
   downstream consumer sees an integer — The Rise of Sozin // Fire Lord Sozin),
   `TotalPowerAtMost(max)`, `OnePerBasicLandType`, `ReducedMinimumIfMatches(reducedMinimum, filter, requiredMatches?)`, and
-  `MaxAffordablePayment(manaPerSelected, payer?)`. `TotalPowerAtMost(max)` caps the sum of selected creatures'
+  `MaxAffordablePayment(manaPerSelected, payer?)`, and the opt-in `AuraMustHaveLegalHost` restriction. The latter
+  removes an Aura from the selectable card domain when its registered Aura target requirement has no currently legal
+  host for the acting player; missing Aura definitions/requirements fail closed, while non-Aura cards including
+  Equipment are unaffected. The host IDs are not part of the selection payload and are chosen only by the later
+  attachment decision. `TotalPowerAtMost(max)` caps the sum of selected creatures'
   **projected** power at `max` (a creature with undefined power contributes 0); it is the power analogue of
   `TotalManaValueAtMost` and surfaces `maxTotalPower` on `SelectCardsDecision` so the UI shows a running "Total power: X / N"
   and disables over-cap picks while the server trims oversubmits in response order — used for "choose any number of

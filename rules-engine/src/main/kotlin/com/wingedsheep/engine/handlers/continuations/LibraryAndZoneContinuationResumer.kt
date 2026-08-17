@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.effects.library.CascadeExecutor
 import com.wingedsheep.engine.handlers.effects.library.ChooseOnePerCategoryExecutor
 import com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithoutPayingCostExecutor
 import com.wingedsheep.engine.handlers.effects.library.ExileFromTopRepeatingExecutor
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -34,6 +35,7 @@ class LibraryAndZoneContinuationResumer(
 
     private val castSpellHandler: CastSpellHandler by lazy { CastSpellHandler.create(services) }
     private val targetFinder = TargetFinder()
+    private val auraHostLegality = AuraHostLegality(services.cardRegistry, targetFinder)
     private val moveCollectionExecutor by lazy {
         MoveCollectionExecutor(cardRegistry = services.cardRegistry, targetFinder = targetFinder)
     }
@@ -512,6 +514,15 @@ class LibraryAndZoneContinuationResumer(
             return ExecutionResult.error(state, "Expected card selection response for SelectFromCollection")
         }
 
+        // Rebuild the selection context from the serialized continuation. A legal option can
+        // become stale in a replay/fork, so do not normalize an Aura whose host disappeared;
+        // reject the response instead of silently substituting a different card.
+        val selectionContext = EffectContext(
+            sourceId = continuation.sourceId,
+            controllerId = continuation.playerId,
+            pipeline = PipelineState(storedCollections = continuation.storedCollections)
+        )
+
         // DecisionValidators rejects restriction-violating responses before this continuation
         // runs. Keep this defense-in-depth check fail-closed: a malformed response must never be
         // normalized by silently dropping later cards into the remainder collection.
@@ -590,6 +601,8 @@ class LibraryAndZoneContinuationResumer(
                             // state can't change while the decision is pending, so there is
                             // nothing to re-check per card here.
                             true
+                        is SelectionRestriction.AuraMustHaveLegalHost ->
+                            auraHostLegality.isSelectionEligible(state, cardId, selectionContext)
                     }
                 }
                 if (acceptsAllRestrictions) {
@@ -632,6 +645,9 @@ class LibraryAndZoneContinuationResumer(
                             }
                             is SelectionRestriction.MaxAffordablePayment -> {
                                 // Count cap — no per-card bookkeeping (see the accept check above).
+                            }
+                            is SelectionRestriction.AuraMustHaveLegalHost -> {
+                                // Per-card legality is re-evaluated above; it has no aggregate state.
                             }
                         }
                     }
