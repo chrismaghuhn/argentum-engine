@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ContinuationFrame
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectFromCollectionContinuation
@@ -9,12 +10,21 @@ import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.core.AbilityFlag
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.GrantHexproofToController
+import com.wingedsheep.sdk.scripting.GrantKeyword
+import com.wingedsheep.sdk.scripting.GrantShroudToController
+import com.wingedsheep.sdk.scripting.KeywordAbility
+import com.wingedsheep.sdk.scripting.ProtectionScope
 import com.wingedsheep.sdk.scripting.effects.CardDestination
 import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
@@ -24,6 +34,7 @@ import com.wingedsheep.sdk.scripting.effects.SelectFromCollectionEffect
 import com.wingedsheep.sdk.scripting.effects.SelectionMode
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
@@ -46,9 +57,90 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
 
     private val creatureAura = card("Test Aura for Creatures") {
         manaCost = "{1}{G}"
+        colorIdentity = "G"
         typeLine = "Enchantment — Aura"
         oracleText = "Enchant creature"
         auraTarget = Targets.Creature
+    }
+
+    private val playerAura = card("Test Aura for Players") {
+        manaCost = "{1}{W}"
+        colorIdentity = "W"
+        typeLine = "Enchantment — Aura"
+        oracleText = "Enchant player"
+        auraTarget = Targets.Player
+    }
+
+    private val opponentAura = card("Test Aura for Opponents") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Enchantment — Aura"
+        oracleText = "Enchant opponent"
+        auraTarget = Targets.Opponent
+    }
+
+    private val creatureOrPlayerAura = card("Test Aura for Creatures or Players") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Enchantment — Aura"
+        oracleText = "Enchant creature or player"
+        auraTarget = Targets.CreatureOrPlayer
+    }
+
+    private val shroudedCreature = card("Test Shrouded Creature") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Creature — Illusion"
+        oracleText = "Shroud"
+        power = 2
+        toughness = 2
+        keywords(Keyword.SHROUD)
+    }
+
+    private val playerShroudSource = card("Test Player Shroud Source") {
+        manaCost = "{2}"
+        typeLine = "Artifact"
+        oracleText = "You have shroud."
+        staticAbility { ability = GrantShroudToController }
+    }
+
+    private val opponentHexproofSource = card("Test Opponent Hexproof Source") {
+        manaCost = "{2}"
+        typeLine = "Artifact"
+        oracleText = "You have hexproof."
+        staticAbility { ability = GrantHexproofToController }
+    }
+
+    private val protectedCreature = card("Test Green-Protected Creature") {
+        manaCost = "{1}{W}"
+        colorIdentity = "W"
+        typeLine = "Creature — Human"
+        oracleText = "Protection from green"
+        power = 2
+        toughness = 2
+        keywordAbility(KeywordAbility.Protection(ProtectionScope.Color(Color.GREEN)))
+    }
+
+    private val cantBeEnchantedCreature = card("Test Creature That Cannot Be Enchanted") {
+        manaCost = "{1}{W}"
+        colorIdentity = "W"
+        typeLine = "Creature — Human"
+        oracleText = "This creature can't be enchanted."
+        power = 2
+        toughness = 2
+        staticAbility {
+            ability = GrantKeyword(AbilityFlag.CANT_BE_ENCHANTED.name, GroupFilter.source())
+        }
+    }
+
+    private val ordinaryCreatureTargetingProbe = card("Ordinary Creature Targeting Probe") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        oracleText = "Destroy target creature."
+        spell {
+            val target = target("target creature", Targets.Creature)
+            effect = Effects.Destroy(target)
+        }
     }
 
     private val planeswalkerAura = card("Test Aura for Planeswalkers") {
@@ -158,6 +250,15 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
 
     init {
         cardRegistry.register(creatureAura)
+        cardRegistry.register(playerAura)
+        cardRegistry.register(opponentAura)
+        cardRegistry.register(creatureOrPlayerAura)
+        cardRegistry.register(shroudedCreature)
+        cardRegistry.register(playerShroudSource)
+        cardRegistry.register(opponentHexproofSource)
+        cardRegistry.register(protectedCreature)
+        cardRegistry.register(cantBeEnchantedCreature)
+        cardRegistry.register(ordinaryCreatureTargetingProbe)
         cardRegistry.register(planeswalkerAura)
         cardRegistry.register(malformedAura)
         cardRegistry.register(equipment)
@@ -217,6 +318,181 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
             selection.options shouldBe listOf(creatureAuraId)
             selection.nonSelectableOptions shouldContain planeswalkerAuraId
+        }
+
+        test("ignores creature shroud at both the collection and attachment-host decisions") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Shrouded Creature")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Creatures")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+            val hostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Shrouded Creature"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldContain auraId
+            game.selectCards(listOf(auraId)).error shouldBe null
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain hostId
+            game.selectTargets(listOf(hostId)).error shouldBe null
+        }
+
+        test("ignores player shroud for a TargetPlayer Aura host") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Player Shroud Source")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Players")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Players"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldContain auraId
+            game.selectCards(listOf(auraId)).error shouldBe null
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain game.player1Id
+            game.selectTargets(listOf(game.player1Id)).error shouldBe null
+        }
+
+        test("ignores opponent hexproof for a TargetOpponent Aura host") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(2, "Test Opponent Hexproof Source")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Opponents")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Opponents"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldContain auraId
+            game.selectCards(listOf(auraId)).error shouldBe null
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain game.player2Id
+            game.selectTargets(listOf(game.player2Id)).error shouldBe null
+        }
+
+        test("ignores shroud for the specialized creature-or-player union requirement") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Player Shroud Source")
+                .withCardOnBattlefield(2, "Test Player Shroud Source")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Creatures or Players")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures or Players"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldContain auraId
+            game.selectCards(listOf(auraId)).error shouldBe null
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain game.player1Id
+            game.selectTargets(listOf(game.player1Id)).error shouldBe null
+        }
+
+        test("keeps protection from the Aura's color as an attachment restriction") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Green-Protected Creature")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Creatures")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldNotContain auraId
+            selection.nonSelectableOptions shouldContain auraId
+        }
+
+        test("keeps a projected can't-be-enchanted restriction at attachment time") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Creature That Cannot Be Enchanted")
+                .withCardInHand(1, "Battlefield Aura Selection Probe")
+                .withCardInLibrary(1, "Test Aura for Creatures")
+                .withCardInLibrary(1, "Plains")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.LIBRARY).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+
+            game.castSpell(1, "Battlefield Aura Selection Probe")
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldNotContain auraId
+            selection.nonSelectableOptions shouldContain auraId
+        }
+
+        test("does not bypass shroud for ordinary spell targeting") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Shrouded Creature")
+                .withCardInHand(1, "Ordinary Creature Targeting Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val hostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Shrouded Creature"
+            }
+
+            val result = game.castSpell(1, "Ordinary Creature Targeting Probe", hostId)
+            result.error shouldNotBe null
         }
 
         test("does not apply the Aura restriction when a collection effect does not request it") {

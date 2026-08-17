@@ -3,6 +3,7 @@ package com.wingedsheep.engine.mechanics.targeting
 import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.GrantsControllerProtectionComponent
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.player.PlayerProtectionComponent
 import com.wingedsheep.sdk.model.EntityId
@@ -66,13 +67,13 @@ object PlayerProtectionRules {
 
         val projected = state.projectedState
         return when (scope) {
-            is ProtectionScope.Color -> scope.color.name in projected.getColors(sourceId)
-            is ProtectionScope.Colors -> scope.colors.any { it.name in projected.getColors(sourceId) }
+            is ProtectionScope.Color -> scope.color.name in sourceColors(state, projected, sourceId)
+            is ProtectionScope.Colors -> scope.colors.any { it.name in sourceColors(state, projected, sourceId) }
             is ProtectionScope.Subtype ->
-                projected.getSubtypes(sourceId).any { it.equals(scope.subtype, ignoreCase = true) }
+                sourceSubtypes(state, projected, sourceId).any { it.equals(scope.subtype, ignoreCase = true) }
             is ProtectionScope.Supertype ->
-                projected.getSupertypes(sourceId).any { it.equals(scope.supertype, ignoreCase = true) }
-            is ProtectionScope.CardType -> projected.hasType(sourceId, scope.cardType.uppercase())
+                sourceSupertypes(state, projected, sourceId).any { it.equals(scope.supertype, ignoreCase = true) }
+            is ProtectionScope.CardType -> scope.cardType.uppercase() in sourceCardTypes(state, projected, sourceId)
             is ProtectionScope.EachOpponent -> {
                 val sourceController = casterId
                     ?: projected.getController(sourceId)
@@ -81,5 +82,50 @@ object PlayerProtectionRules {
             }
             ProtectionScope.Everything -> true
         }
+    }
+
+    /**
+     * A source Aura selected from a library is not in the battlefield projection yet. Its base
+     * characteristics still define the quality that player protection is from; battlefield
+     * sources continue to use projected characteristics so continuous effects remain visible.
+     */
+    private fun sourceColors(
+        state: GameState,
+        projected: com.wingedsheep.engine.mechanics.layers.ProjectedState,
+        sourceId: EntityId
+    ): Set<String> = if (sourceId in state.getBattlefield()) {
+        projected.getColors(sourceId)
+    } else {
+        state.getEntity(sourceId)?.get<CardComponent>()?.colors?.map { it.name }?.toSet().orEmpty()
+    }
+
+    private fun sourceSubtypes(
+        state: GameState,
+        projected: com.wingedsheep.engine.mechanics.layers.ProjectedState,
+        sourceId: EntityId
+    ): Set<String> = if (sourceId in state.getBattlefield()) {
+        projected.getSubtypes(sourceId)
+    } else {
+        state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.subtypes?.map { it.value }?.toSet().orEmpty()
+    }
+
+    private fun sourceSupertypes(
+        state: GameState,
+        projected: com.wingedsheep.engine.mechanics.layers.ProjectedState,
+        sourceId: EntityId
+    ): Set<String> = if (sourceId in state.getBattlefield()) {
+        projected.getSupertypes(sourceId)
+    } else {
+        state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.supertypes?.map { it.name }?.toSet().orEmpty()
+    }
+
+    private fun sourceCardTypes(
+        state: GameState,
+        projected: com.wingedsheep.engine.mechanics.layers.ProjectedState,
+        sourceId: EntityId
+    ): Set<String> = if (sourceId in state.getBattlefield()) {
+        projected.getTypes(sourceId)
+    } else {
+        state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.cardTypes?.map { it.name }?.toSet().orEmpty()
     }
 }
