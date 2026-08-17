@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 
@@ -49,12 +50,17 @@ class ChaosWarpScenarioTest : FunSpec({
         driver.castSpell(caster, warp, listOf(target)).error shouldBe null
         driver.bothPass()
 
-        driver.findPermanent(owner, "Mind Stone") shouldBe null
-        driver.state.getLibrary(owner) shouldContain target
-        // The target is shuffled before the reveal, so the exact revealed entity is intentionally
-        // not deterministic. The test deck contains only permanent cards, so the reveal must
-        // produce a creature under the target owner's control.
-        driver.findPermanent(owner, "Grizzly Bears") shouldNotBe null
+        // The target is shuffled before the reveal, so it may itself be the revealed permanent.
+        // The test must therefore accept either the target returning to the battlefield or a
+        // Grizzly Bears card being revealed, while still proving that a permanent was put there.
+        val targetReturned = driver.findPermanent(owner, "Mind Stone") != null
+        val creatureRevealed = driver.findPermanent(owner, "Grizzly Bears") != null
+        (targetReturned xor creatureRevealed) shouldBe true
+        if (targetReturned) {
+            driver.state.getLibrary(owner) shouldNotContain target
+        } else {
+            driver.state.getLibrary(owner) shouldContain target
+        }
         driver.events.count { it is LibraryShuffledEvent && it.playerId == owner } shouldBe shufflesBefore + 1
     }
 
