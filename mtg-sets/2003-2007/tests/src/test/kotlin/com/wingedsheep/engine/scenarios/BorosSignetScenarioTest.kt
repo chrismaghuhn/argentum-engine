@@ -18,6 +18,13 @@ class BorosSignetScenarioTest : FunSpec({
 
     val abilityId = BorosSignet.activatedAbilities.single().id
 
+    test("Boros Signet keeps the canonical RAV printing metadata") {
+        BorosSignet.metadata.collectorNumber shouldBe "255"
+        BorosSignet.metadata.artist shouldBe "Greg Hildebrandt"
+        BorosSignet.metadata.imageUri shouldBe
+            "https://cards.scryfall.io/normal/front/1/b/1bae1f86-4639-4424-b47b-fdc826bf6e97.jpg?1783943601"
+    }
+
     fun createDriver(): GameTestDriver {
         val driver = GameTestDriver()
         driver.registerCards(TestCards.all + BorosSignet)
@@ -65,5 +72,28 @@ class BorosSignetScenarioTest : FunSpec({
 
         result.isSuccess shouldBe false
         driver.isTapped(signet) shouldBe false
+    }
+
+    test("Boros Signet cannot activate while already tapped") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        val signet = driver.putPermanentOnBattlefield(player, "Boros Signet")
+        driver.tapPermanent(signet)
+        driver.giveColorlessMana(player, 1)
+
+        val result = driver.submit(
+            ActivateAbility(
+                playerId = player,
+                sourceId = signet,
+                abilityId = abilityId,
+                paymentStrategy = PaymentStrategy.FromPool,
+            )
+        )
+
+        result.isSuccess shouldBe false
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
+        pool.red shouldBe 0
+        pool.white shouldBe 0
+        pool.colorless shouldBe 1
     }
 })
