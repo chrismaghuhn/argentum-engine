@@ -969,6 +969,30 @@
     ]
 }
 
+// Chapel Geist
+{
+    "name": "Chapel Geist",
+    "manaCost": "{1}{W}{W}",
+    "typeLine": "Creature — Spirit",
+    "oracleText": "Flying",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 3
+    },
+    "keywords": [
+        "FLYING"
+    ],
+    "metadata": {
+        "collectorNumber": "7",
+        "artist": "Peter Mohrbacher",
+        "flavorText": "Death has bound it with chains of past regrets. Forever it searches for atonement, each kindness removing a single link.",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/9/790cdf67-80d6-4ade-aecf-f77120b509b0.jpg"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Clifftop Retreat
 {
     "name": "Clifftop Retreat",
@@ -1031,30 +1055,6 @@
     "colorIdentityOverride": [
         "WHITE",
         "RED"
-    ]
-}
-
-// Chapel Geist
-{
-    "name": "Chapel Geist",
-    "manaCost": "{1}{W}{W}",
-    "typeLine": "Creature — Spirit",
-    "oracleText": "Flying",
-    "creatureStats": {
-        "power": 2,
-        "toughness": 3
-    },
-    "keywords": [
-        "FLYING"
-    ],
-    "metadata": {
-        "collectorNumber": "7",
-        "artist": "Peter Mohrbacher",
-        "flavorText": "Death has bound it with chains of past regrets. Forever it searches for atonement, each kindness removing a single link.",
-        "imageUri": "https://cards.scryfall.io/normal/front/7/9/790cdf67-80d6-4ade-aecf-f77120b509b0.jpg"
-    },
-    "colorIdentityOverride": [
-        "WHITE"
     ]
 }
 
