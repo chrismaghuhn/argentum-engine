@@ -220,6 +220,9 @@ class CastSpellHandler(
         if (state.priorityPlayerId != action.playerId) {
             return "You don't have priority"
         }
+        if (action.alternativePayment?.equipPayment != null) {
+            return "Equip payment mode is only valid for equip abilities"
+        }
 
         val container = state.getEntity(action.cardId)
             ?: return "Card not found: ${action.cardId}"
@@ -1165,7 +1168,7 @@ class CastSpellHandler(
         }
 
         // Account for Delve/Convoke reduction before validating payment
-        val costAfterAltPayment = if (action.alternativePayment != null && !action.alternativePayment.isEmpty && cardDef != null) {
+        val costAfterAltPayment = if (action.alternativePayment != null && action.alternativePayment.hasResourcePayment && cardDef != null) {
             alternativePaymentHandler.calculateReducedCost(
                 effectiveCost,
                 action.alternativePayment,
@@ -3089,7 +3092,7 @@ class CastSpellHandler(
             else harmonizePaymentXValue(currentState, action, cardDef, effectiveCost)
 
         // Apply alternative payment (Delve/Convoke/Harmonize)
-        if (action.alternativePayment != null && !action.alternativePayment.isEmpty && cardDef != null) {
+        if (action.alternativePayment != null && action.alternativePayment.hasResourcePayment && cardDef != null) {
             val altPaymentResult = alternativePaymentHandler.apply(
                 currentState,
                 effectiveCost,

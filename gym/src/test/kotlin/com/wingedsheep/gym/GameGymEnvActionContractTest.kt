@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.GameConfig
@@ -18,6 +19,9 @@ import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -190,6 +194,21 @@ class GameGymEnvActionContractTest : FunSpec({
                 hasXCost = true
             )
         ) shouldBe setOf("xValue", "paymentStrategy")
+
+        ActionPayloadRequirements.requiredPayloadFields(
+            LegalAction(
+                action = ActivateAbility(
+                    playerId = player,
+                    sourceId = EntityId("equipment"),
+                    abilityId = AbilityId("equip"),
+                    alternativePayment = AlternativePaymentChoice(
+                        equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP
+                    )
+                ),
+                actionType = "ActivateAbility",
+                description = "Equip {0}"
+            )
+        ) shouldBe setOf("alternativePayment")
     }
 
     test("structured candidate binding accepts choices but preserves action identity") {
@@ -229,5 +248,21 @@ class GameGymEnvActionContractTest : FunSpec({
             TurnFaceUp(player, card),
             TurnFaceUp(player, card, PaymentStrategy.FromPool, xValue = 3)
         ) shouldBe true
+
+        val normalEquip = ActivateAbility(
+            playerId = player,
+            sourceId = EntityId("equipment"),
+            abilityId = AbilityId("equip"),
+            alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.NORMAL)
+        )
+        val freeEquip = normalEquip.copy(
+            alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP)
+        )
+        environment.isCurrentActionCandidate(
+            normalEquip,
+            normalEquip.copy(targets = listOf(com.wingedsheep.engine.state.components.stack.ChosenTarget.Permanent(EntityId("creature"))))
+        ) shouldBe true
+        environment.isCurrentActionCandidate(normalEquip, freeEquip) shouldBe false
+        environment.isCurrentActionCandidate(freeEquip, normalEquip) shouldBe false
     }
 })

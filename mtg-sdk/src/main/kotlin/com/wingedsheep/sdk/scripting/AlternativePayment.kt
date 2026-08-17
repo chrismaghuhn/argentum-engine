@@ -31,20 +31,29 @@ import kotlinx.serialization.Serializable
  * @property tapForGenericPermanents Untapped permanents you control tapped to pay generic mana —
  *           each pays {1} generic. Used by Improvise (artifacts) and Waterbend
  *           (artifacts/creatures); the paying mechanic supplies the eligibility filter and cap.
+ * @property equipPayment Explicit payment mode for an equip ability when a static permission
+ *           offers an alternative equip cost. This is kept alongside the other action-level
+ *           payment choices so the selected mode is serialized with the action and replayed
+ *           verbatim.
  */
 @Serializable
 data class AlternativePaymentChoice(
     val delvedCards: List<EntityId> = emptyList(),
     val convokedCreatures: Map<EntityId, ConvokePayment> = emptyMap(),
     val harmonizeCreature: EntityId? = null,
-    val tapForGenericPermanents: Set<EntityId> = emptySet()
+    val tapForGenericPermanents: Set<EntityId> = emptySet(),
+    val equipPayment: EquipPaymentChoice? = null
 ) {
+    /** Whether this choice contains a Delve/Convoke/Harmonize/tap-for-generic payment. */
+    val hasResourcePayment: Boolean
+        get() = delvedCards.isNotEmpty() || convokedCreatures.isNotEmpty() ||
+            harmonizeCreature != null || tapForGenericPermanents.isNotEmpty()
+
     /**
-     * Whether any alternative payment is being used.
+     * Whether no payment choice was supplied.
      */
     val isEmpty: Boolean
-        get() = delvedCards.isEmpty() && convokedCreatures.isEmpty() &&
-            harmonizeCreature == null && tapForGenericPermanents.isEmpty()
+        get() = !hasResourcePayment && equipPayment == null
 
     /**
      * Total generic mana reduction from Delve.
@@ -67,6 +76,17 @@ data class AlternativePaymentChoice(
     companion object {
         val NONE = AlternativePaymentChoice()
     }
+}
+
+/**
+ * Explicit mode for an equip ability's cost when a [FreeFirstEquipEachTurn] permission is active.
+ * [NORMAL] pays the effective printed equip cost; [FREE_FIRST_EQUIP] replaces the entire equip
+ * cost with {0}. The engine never infers this choice from the available mana.
+ */
+@Serializable
+enum class EquipPaymentChoice {
+    NORMAL,
+    FREE_FIRST_EQUIP,
 }
 
 /**

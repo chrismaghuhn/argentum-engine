@@ -208,6 +208,7 @@ private fun canonicalAlternativePayment(payment: AlternativePaymentChoice?): Str
             "convokedCreatures=${it.convokedCreatures}",
             "harmonizeCreature=${it.harmonizeCreature}",
             "tapForGenericPermanents=${it.tapForGenericPermanents}",
+            *listOfNotNull(it.equipPayment?.let { mode -> "equipPayment=$mode" }).toTypedArray(),
         )
     } ?: "null"
 

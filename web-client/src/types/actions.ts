@@ -95,6 +95,8 @@ export interface AlternativePaymentChoice {
    * each paying {1} generic.
    */
   readonly tapForGenericPermanents?: readonly EntityId[]
+  /** Explicit equip payment mode offered by FreeFirstEquipEachTurn. */
+  readonly equipPayment?: 'NORMAL' | 'FREE_FIRST_EQUIP' | null
 }
 
 export interface ConvokePayment {
@@ -109,7 +111,7 @@ export interface CastSpellAction {
   readonly xValue?: number | null
   readonly paymentStrategy?: PaymentStrategy
   readonly additionalCostPayment?: AdditionalCostPayment
-  /** Alternative payment choices (Delve, Convoke) */
+  /** Alternative payment choices (Delve, Convoke, or an explicit equip mode) */
   readonly alternativePayment?: AlternativePaymentChoice
   /** Whether to cast this card face-down (for Morph creatures) */
   readonly castFaceDown?: boolean
@@ -195,7 +197,7 @@ export interface ActivateAbilityAction {
   /** Number of times to repeat this activation (for batch activation) */
   readonly repeatCount?: number
   readonly paymentStrategy?: PaymentStrategy
-  /** Alternative payment choices (e.g., convoke for abilities like Heirloom Epic) */
+  /** Alternative payment choices (e.g., convoke or an explicit equip mode) */
   readonly alternativePayment?: AlternativePaymentChoice
   /**
    * Pre-chosen damage distribution for a "N damage divided as you choose" ability

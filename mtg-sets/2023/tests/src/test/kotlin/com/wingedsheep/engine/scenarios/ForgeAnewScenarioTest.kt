@@ -10,6 +10,8 @@ import com.wingedsheep.mtg.sets.definitions.mrd.cards.Bonesplitter
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -19,7 +21,7 @@ import io.kotest.matchers.shouldBe
  */
 class ForgeAnewScenarioTest : FunSpec({
 
-    val equipId = Bonesplitter.activatedAbilities.first().id
+    val equipId = Bonesplitter.activatedAbilities.single().id
 
     fun createDriver(): GameTestDriver {
         val driver = GameTestDriver()
@@ -56,7 +58,13 @@ class ForgeAnewScenarioTest : FunSpec({
 
         // First equip this turn is free even with no mana.
         driver.submit(
-            ActivateAbility(you, sword, equipId, targets = listOf(ChosenTarget.Permanent(a)))
+            ActivateAbility(
+                you,
+                sword,
+                equipId,
+                targets = listOf(ChosenTarget.Permanent(a)),
+                alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP),
+            )
         ).isSuccess shouldBe true
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe a
@@ -114,9 +122,10 @@ class ForgeAnewScenarioTest : FunSpec({
             services.predicateEvaluator, services.conditionEvaluator, services.turnManager
         )
         val pid = driver.state.priorityPlayerId!!
-        val equip = enumerator.enumerate(driver.state, pid).first {
+        val equip = enumerator.enumerate(driver.state, pid).single {
             val a = it.action
-            a is ActivateAbility && a.sourceId == sword
+            a is ActivateAbility && a.sourceId == sword &&
+                a.alternativePayment?.equipPayment == EquipPaymentChoice.FREE_FIRST_EQUIP
         }
         // The first equip each turn is free — it must read as {0}, not blank (which the client
         // would render as the Equipment's printed {3} via `manaCostString || cardInfo.manaCost`).
@@ -133,11 +142,17 @@ class ForgeAnewScenarioTest : FunSpec({
         val courser = driver.putCreatureOnBattlefield(you, "Centaur Courser")
         val sword = driver.putPermanentOnBattlefield(you, "Bonesplitter")
         driver.putPermanentOnBattlefield(you, "Forge Anew")
-        driver.giveColorlessMana(you, 1) // ensure it's timing, not the free discount, being tested
 
         driver.passPriorityUntil(Step.BEGIN_COMBAT)
+        driver.giveColorlessMana(you, 1) // ensure it's timing, not the free discount, being tested
         driver.submit(
-            ActivateAbility(you, sword, equipId, targets = listOf(ChosenTarget.Permanent(courser)))
+            ActivateAbility(
+                you,
+                sword,
+                equipId,
+                targets = listOf(ChosenTarget.Permanent(courser)),
+                alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.NORMAL),
+            )
         ).isSuccess shouldBe true
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe courser

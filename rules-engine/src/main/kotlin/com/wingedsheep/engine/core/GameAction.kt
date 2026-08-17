@@ -47,7 +47,8 @@ data class PassPriority(
  *           use [modeTargetsOrdered] to recover per-mode bindings)
  * @property xValue The value of X for X-cost spells
  * @property paymentStrategy How the player intends to pay the mana cost
- * @property alternativePayment Optional alternative payment choices (Delve, Convoke)
+ * @property alternativePayment Optional alternative payment choices (Delve, Convoke, or an
+ * explicit equip payment mode)
  * @property castFaceDown If true, cast as a face-down 2/2 creature for {3} (morph)
  * @property damageDistribution Pre-chosen damage distribution for DividedDamageEffect spells (target ID -> damage amount)
  * @property chosenModes Cast-time mode choices for modal spells (rules 700.2). Ordered; the same index
