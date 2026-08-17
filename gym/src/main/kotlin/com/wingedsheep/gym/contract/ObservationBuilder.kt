@@ -26,6 +26,7 @@ import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
+import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PendingDecision
 import com.wingedsheep.engine.core.PlayLand
@@ -676,11 +677,25 @@ class ObservationBuilder(
         )
     }
 
-    private fun decisionSemantic(response: DecisionResponse): JsonObject {
+    private fun decisionSemantic(decision: PendingDecision, response: DecisionResponse): JsonObject {
         val encoded = actionSerialization
             .encodeToJsonElement(DecisionResponse.serializer(), response)
             .jsonObject
-        return JsonObject(encoded.filterKeys { it != "decisionId" })
+        val transportFree = encoded.filterKeys { it != "decisionId" }
+        if (response !is OptionChosenResponse) return JsonObject(transportFree)
+
+        val metadata = (decision as? ChooseOptionDecision)
+            ?.optionMetadata
+            ?.getOrNull(response.optionIndex)
+            ?: return JsonObject(transportFree)
+
+        return buildJsonObject {
+            transportFree.forEach { (key, value) -> put(key, value) }
+            put(
+                "optionMetadata",
+                actionSerialization.encodeToJsonElement(OptionMetadata.serializer(), metadata)
+            )
+        }
     }
 
     private fun actionSourceEntityId(legalAction: LegalAction): EntityId? = when (val action = legalAction.action) {
@@ -898,7 +913,7 @@ class ObservationBuilder(
                 kind = "DECISION",
                 description = describeResponse(decision, response),
                 affordable = true,
-                actionSemantics = decisionSemantic(response),
+                actionSemantics = decisionSemantic(decision, response),
                 isDecisionOption = true
             )
         }
@@ -912,9 +927,12 @@ class ObservationBuilder(
             (decision as? ChooseModeDecision)?.modes?.getOrNull(idx)?.text ?: idx.toString()
         }
         is ColorChosenResponse -> response.color.name
-        is OptionChosenResponse ->
-            (decision as? ChooseOptionDecision)?.options?.getOrNull(response.optionIndex)
+        is OptionChosenResponse -> {
+            val chooseOption = decision as? ChooseOptionDecision
+            chooseOption?.optionMetadata?.getOrNull(response.optionIndex)?.description
+                ?: chooseOption?.options?.getOrNull(response.optionIndex)
                 ?: response.optionIndex.toString()
+        }
         is CardsSelectedResponse -> response.selectedCards.joinToString(",") { it.value }
         else -> response.toString()
     }

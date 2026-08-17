@@ -6,6 +6,9 @@ import com.wingedsheep.engine.core.CardEntityFactory
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.DecisionPhase
+import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.event.GrantedStaticAbility
@@ -790,6 +793,31 @@ class ObservationPrivacyTest : FunSpec({
         generic.requiresStructuredResponse shouldBe true
         otherResult.observation.legalActions.shouldBeEmpty()
         otherResult.registry shouldBe ActionRegistry.EMPTY
+    }
+
+    test("delayed-trigger candidate metadata is not exposed to a non-owner perspective") {
+        val env = environment()
+        val owner = env.playerIds[1]
+        val other = env.playerIds[0]
+        val state = env.state.copy(
+            pendingDecision = ChooseOptionDecision(
+                id = "delayed-occurrence-private",
+                playerId = owner,
+                prompt = "Choose a simultaneous occurrence",
+                context = DecisionContext(phase = DecisionPhase.TRIGGER),
+                options = listOf("Trigger for player ${owner.value}", "Trigger for player ${other.value}"),
+                optionMetadata = listOf(
+                    OptionMetadata(triggeringPlayerId = owner),
+                    OptionMetadata(triggeringPlayerId = other)
+                )
+            )
+        )
+
+        val hidden = result(state, other)
+        hidden.observation.pendingDecision!!.kind shouldBe PendingDecisionKind.GENERIC
+        hidden.observation.pendingDecision!!.prompt shouldBe ""
+        hidden.observation.legalActions.shouldBeEmpty()
+        hidden.registry shouldBe ActionRegistry.EMPTY
     }
 
     test("face-down exile omits unauthorized card objects but keeps total size") {

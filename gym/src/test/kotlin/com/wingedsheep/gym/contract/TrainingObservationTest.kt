@@ -1,6 +1,10 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.DecisionPhase
+import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.gym.GameEnvironment
@@ -19,6 +23,10 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldMatch
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 class TrainingObservationTest : FunSpec({
 
@@ -145,5 +153,64 @@ class TrainingObservationTest : FunSpec({
         env.step(pass.action)
         val c = ObservationBuilder(cardRegistry = createRegistry()).build(env.state, me, env.legalActions()).observation
         c.stateDigest shouldNotBe a.stateDigest
+    }
+
+    test("structured delayed-trigger candidates survive observation, digest, and wire round-trip") {
+        val env = newEnv()
+        val chooser = env.playerIds[0]
+        val firstTriggeringPlayer = env.playerIds[0]
+        val secondTriggeringPlayer = env.playerIds[1]
+        val decision = ChooseOptionDecision(
+            id = "delayed-occurrence",
+            playerId = chooser,
+            prompt = "Choose a simultaneous occurrence",
+            context = DecisionContext(phase = DecisionPhase.TRIGGER),
+            options = listOf(
+                "Trigger for player ${firstTriggeringPlayer.value}",
+                "Trigger for player ${secondTriggeringPlayer.value}"
+            ),
+            optionMetadata = listOf(
+                OptionMetadata(
+                    id = firstTriggeringPlayer.value,
+                    description = "Trigger for player ${firstTriggeringPlayer.value}",
+                    triggeringPlayerId = firstTriggeringPlayer
+                ),
+                OptionMetadata(
+                    id = secondTriggeringPlayer.value,
+                    description = "Trigger for player ${secondTriggeringPlayer.value}",
+                    triggeringPlayerId = secondTriggeringPlayer
+                )
+            )
+        )
+        val obs = ObservationBuilder(cardRegistry = createRegistry())
+            .build(env.state.copy(pendingDecision = decision), chooser, emptyList())
+            .observation as TrainingObservation
+
+        val firstAction = obs.legalActions.first()
+        firstAction.description shouldBe "Trigger for player ${firstTriggeringPlayer.value}"
+        firstAction.actionSemantics!!["optionMetadata"]!!.jsonObject["triggeringPlayerId"]!!
+            .jsonPrimitive.content shouldBe firstTriggeringPlayer.value
+
+        val encoded = json.encodeToString(TrainingObservation.serializer(), obs)
+        json.decodeFromString(TrainingObservation.serializer(), encoded) shouldBe obs
+
+        val changed = obs.copy(
+            legalActions = obs.legalActions.mapIndexed { index, action ->
+                if (index == 0) {
+                    val semantics = action.actionSemantics!!
+                    val metadata = semantics["optionMetadata"]!!.jsonObject
+                    action.copy(
+                        actionSemantics = JsonObject(
+                            semantics + (
+                                "optionMetadata" to JsonObject(
+                                    metadata + ("triggeringPlayerId" to JsonPrimitive(secondTriggeringPlayer.value))
+                                )
+                            )
+                        )
+                    )
+                } else action
+            }
+        )
+        StateDigest.compute(changed) shouldNotBe StateDigest.compute(obs)
     }
 })

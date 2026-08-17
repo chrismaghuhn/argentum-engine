@@ -181,6 +181,19 @@ data class PendingTriggersContinuation(
 ) : ContinuationFrame
 
 /**
+ * Resume a controller's CR 603.7b choice when one fire-once delayed ability matched several
+ * simultaneous occurrences.  The candidates retain their per-occurrence [TriggerContext]; only
+ * the selected candidate is handed to [TriggerProcessor], so the delayed trigger is consumed once
+ * and unselected occurrences remain unconsumed.
+ */
+@Serializable
+data class DelayedTriggerOccurrenceChoiceContinuation(
+    override val decisionId: String,
+    val candidates: List<PendingTrigger>,
+    val remainingTriggers: List<PendingTrigger> = emptyList()
+) : ContinuationFrame
+
+/**
  * Resume spell resolution after target or mode selection.
  *
  * @property spellId The spell entity on the stack
