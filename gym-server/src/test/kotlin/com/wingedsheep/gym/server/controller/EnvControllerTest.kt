@@ -218,6 +218,34 @@ class EnvControllerTest : FunSpec() {
             get("/envs/${created.envId.value}").statusCode() shouldBe 404
         }
 
+        test("HTTP observation routes legal actions to the player who has priority") {
+            val created = json.decodeFromString<CreateEnvResponse>(
+                postJson("/envs", json.encodeToString(twoPlayerConfig())).body()
+            )
+            val opening = created.observation as TrainingObservation
+            val openingActor = opening.agentToAct
+            openingActor shouldNotBe null
+            opening.perspectivePlayerId shouldBe openingActor
+
+            val pass = opening.legalActions.first {
+                it.kind.contains("Pass", ignoreCase = true) ||
+                    it.description.contains("Pass", ignoreCase = true)
+            }
+            val stepped = postJson(
+                "/envs/${created.envId.value}/step",
+                json.encodeToString(StepBody(pass.actionId, pass.actionSemantics))
+            )
+            stepped.statusCode() shouldBe 200
+
+            val afterStep = json.decodeFromString<TrainingObservation>(stepped.body())
+            afterStep.agentToAct shouldNotBe openingActor
+            afterStep.perspectivePlayerId shouldBe afterStep.agentToAct
+            afterStep.legalActions.shouldNotBeEmpty()
+
+            deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
+                .statusCode() shouldBe 204
+        }
+
         test("POST /envs with an unknown set code surfaces 400") {
             val bogus = EnvConfig(
                 players = listOf(

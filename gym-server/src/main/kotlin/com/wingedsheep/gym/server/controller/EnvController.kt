@@ -70,7 +70,9 @@ class EnvController(
               to generate a sealed deck on demand from a registered set.
 
             Defaults: `skipMulligans=true` (faster rollouts),
-            `startingPlayerIndex=null` (random), `perspectivePlayerIndex=0`.
+            `startingPlayerIndex=null` (random), `perspectivePlayerIndex=0` as the
+            fallback perspective when no player is currently acting. During active
+            play, observations and legal actions are routed to the current actor.
             Start with an explicit deck until you're
             confident the set's basic-land variants are registered —
             sealed requires variant registration.

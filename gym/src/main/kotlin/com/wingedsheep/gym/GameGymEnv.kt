@@ -22,15 +22,21 @@ import kotlinx.serialization.json.jsonObject
  * [GymEnv] adapter over a [GameEnvironment] — a game of Magic.
  *
  * Holds the per-env bookkeeping that used to live in `MultiEnvService.EnvEntry`
- * (perspective, the live [ActionRegistry] from the last observation) so the
- * service layer can treat every env type the same. The underlying
+ * (fallback perspective, the live [ActionRegistry] from the last observation)
+ * so the service layer can treat every env type the same. While a game is
+ * active, observations are routed to [GameEnvironment.agentToAct] so every
+ * player can drive the same 1v1 environment. The configured perspective is
+ * retained only for states without an acting player (terminal or truncated).
+ * The underlying
  * [GameEnvironment] is left untouched, since the trainer SPI drives it directly.
  */
 class GameGymEnv(
     val environment: GameEnvironment,
-    private val perspectivePlayerIndex: Int,
+    perspectivePlayerIndex: Int,
     private val observationBuilder: ObservationBuilder
 ) : GymEnv {
+
+    private var fallbackPerspectivePlayerIndex: Int = perspectivePlayerIndex
 
     @Volatile
     private var registry: ActionRegistry = ActionRegistry.EMPTY
@@ -42,6 +48,10 @@ class GameGymEnv(
     /** Step generation, rather than the privacy-projected digest, guards the cache. */
     @Volatile
     private var cachedStepCount: Int? = null
+
+    /** The perspective used to build [cachedObservation], not just its game-state generation. */
+    @Volatile
+    private var cachedPerspectivePlayerId: com.wingedsheep.sdk.model.EntityId? = null
 
     /** Env-local action handles are never reused, including after reset/restore. */
     private var nextActionId: Int = 0
@@ -98,16 +108,25 @@ class GameGymEnv(
     }
 
     override fun fork(): GymEnv =
-        GameGymEnv(environment.fork(), perspectivePlayerIndex, observationBuilder)
+        GameGymEnv(environment.fork(), fallbackPerspectivePlayerIndex, observationBuilder)
             .also { it.build() }
 
     // --- game-only operations (used by MultiEnvService via cast) -------------
 
     /** Re-initialise the underlying game in place. */
-    fun reset(gameConfig: GameConfig, maxSteps: Int? = null): ObservationResult {
+    fun reset(
+        gameConfig: GameConfig,
+        perspectivePlayerIndex: Int = fallbackPerspectivePlayerIndex,
+        maxSteps: Int? = null
+    ): ObservationResult {
         cachedObservation = null
         cachedStepCount = null
+        cachedPerspectivePlayerId = null
         environment.reset(gameConfig, maxSteps)
+        require(perspectivePlayerIndex in environment.playerIds.indices) {
+            "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${environment.playerIds.size} players"
+        }
+        fallbackPerspectivePlayerIndex = perspectivePlayerIndex
         return build()
     }
 
@@ -140,6 +159,7 @@ class GameGymEnv(
         val snap = codec.load(handle)
         cachedObservation = null
         cachedStepCount = null
+        cachedPerspectivePlayerId = null
         environment.restore(snap.state, snap.playerIds, snap.stepCount, snap.maxSteps)
         return build()
     }
@@ -147,8 +167,11 @@ class GameGymEnv(
     // --- internals -----------------------------------------------------------
 
     private fun build(): ObservationResult {
-        val perspective = environment.playerIds.getOrNull(perspectivePlayerIndex)
-            ?: throw IllegalStateException("Env has no player at index $perspectivePlayerIndex")
+        val perspective = environment.agentToAct
+            ?: environment.playerIds.getOrNull(fallbackPerspectivePlayerIndex)
+            ?: throw IllegalStateException(
+                "Env has no player at fallback perspective index $fallbackPerspectivePlayerIndex"
+            )
         val result = observationBuilder.build(
             environment.state,
             perspective,
@@ -158,7 +181,10 @@ class GameGymEnv(
         val rawObservation = result.observation as? TrainingObservation
             ?: error("GameGymEnv requires a TrainingObservation")
         val previous = cachedObservation
-        if (previous != null && cachedStepCount == environment.stepCount) {
+        if (previous != null &&
+            cachedStepCount == environment.stepCount &&
+            cachedPerspectivePlayerId == perspective
+        ) {
             registry = previous.registry
             return previous
         }
@@ -177,6 +203,7 @@ class GameGymEnv(
         )
         cachedObservation = remapped
         cachedStepCount = environment.stepCount
+        cachedPerspectivePlayerId = perspective
         registry = remapped.registry
         return remapped
     }

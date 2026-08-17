@@ -64,8 +64,8 @@ Key config fields:
   registered).
 - **Privacy boundary** — observations always hide unauthorized hand/library identities, while
   individually revealed or Visibility-authorized top-library cards may be shown; there is no reveal-all
-  bypass. `legalActions` and the action registry are exposed only when the configured perspective is
-  `agentToAct`; use separate perspective-configured environments when driving both seats.
+  bypass. During active play, `legalActions` and the action registry are routed to the current
+  `agentToAct`; `perspectivePlayerIndex` is only the fallback for terminal/truncated observations.
 - **`skipMulligans: true`** — skip the mulligan back-and-forth.
 - `startingPlayerIndex` — pin it for reproducibility (null = random).
 

@@ -86,7 +86,11 @@ class MultiEnvService(
 
     /** Reset an existing game env while keeping the same [EnvId]. */
     fun reset(envId: EnvId, config: EnvConfig): ObservationResult =
-        requireGameEnv(envId).reset(config.toGameConfig(), maxSteps = config.maxSteps)
+        requireGameEnv(envId).reset(
+            config.toGameConfig(),
+            perspectivePlayerIndex = config.perspectivePlayerIndex,
+            maxSteps = config.maxSteps
+        )
 
     /** Drop envs from the registry. Idempotent. */
     fun dispose(envIds: Collection<EnvId>) {

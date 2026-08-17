@@ -44,8 +44,9 @@ data class EnvConfig(
     val maxSteps: Int? = null,
 
     /**
-     * Which player's information-set the default [com.wingedsheep.gym.contract.TrainingObservation]
-     * represents. Callers can still override per-request when observing.
+     * Which player's information-set a [com.wingedsheep.gym.contract.TrainingObservation] uses
+     * when the game has no acting player (terminal or truncated). During active play, observations
+     * are routed to the current acting player so the same environment can drive both sides.
      */
     val perspectivePlayerIndex: Int = 0,
 
