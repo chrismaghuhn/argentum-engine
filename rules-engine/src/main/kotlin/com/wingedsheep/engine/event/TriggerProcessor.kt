@@ -214,9 +214,7 @@ class TriggerProcessor(
         }
 
         val objectIds = triggers.indices.map(::triggerOrderingObjectId)
-        val objectLabels = objectIds.zip(triggers).associate { (objectId, trigger) ->
-            objectId to "${trigger.sourceName}: ${trigger.ability.description}"
-        }
+        val objectLabels = triggerOrderingLabels(triggers)
         // This is only the routing handle for the pending decision.  The ordered domain itself is
         // the deterministic ordinal object IDs above; do not make a runtime stack/entity ID the
         // public identity of a trigger.
@@ -250,6 +248,35 @@ class TriggerProcessor(
 
     private fun triggerOrderingObjectId(index: Int): EntityId =
         EntityId("trigger-order-object-$index")
+
+    /**
+     * Build actor-facing labels without serializing the pending trigger or its context.
+     *
+     * Source and ability text is normally enough, but repeated instances can have different
+     * triggering entities, players, damage, or last-known information.  Those values are not a
+     * privacy-safe display contract, so equal public labels receive a deterministic occurrence
+     * suffix within this already-normalized decision domain.  The suffix identifies the row for
+     * the actor; the opaque object ID remains the only response handle.
+     */
+    private fun triggerOrderingLabels(triggers: List<PendingTrigger>): Map<EntityId, String> {
+        val baseLabels = triggers.map { trigger ->
+            "${trigger.sourceName}: ${trigger.ability.description}"
+        }
+        val duplicateCounts = baseLabels.groupingBy { it }.eachCount()
+        val occurrenceByLabel = mutableMapOf<String, Int>()
+
+        return baseLabels.mapIndexed { index, baseLabel ->
+            val occurrence = (occurrenceByLabel[baseLabel] ?: 0) + 1
+            occurrenceByLabel[baseLabel] = occurrence
+            val duplicateCount = duplicateCounts.getValue(baseLabel)
+            val label = if (duplicateCount == 1) {
+                baseLabel
+            } else {
+                "$baseLabel (simultaneous instance $occurrence of $duplicateCount)"
+            }
+            triggerOrderingObjectId(index) to label
+        }.toMap()
+    }
 
     /**
      * Put a complete trigger wave into the deterministic APNAP transport order required by

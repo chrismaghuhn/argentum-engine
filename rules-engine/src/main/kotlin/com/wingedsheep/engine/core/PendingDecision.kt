@@ -396,8 +396,10 @@ data class OrderObjectsDecision(
     /**
      * Optional actor-facing labels for opaque ordering objects.  Card-ordering callers normally
      * use [cardInfo]; trigger ordering has no entity on the stack yet, so it supplies a stable,
-     * decision-scoped object ID plus this label without exposing a [PendingTrigger] serialization
-     * or a runtime stack ID as the public identity.
+     * decision-scoped object ID plus this label without exposing a [PendingTrigger] serialization,
+     * trigger context, or a runtime stack ID as the public identity.  Trigger labels may include a
+     * deterministic occurrence suffix when otherwise-equal instances need actor-facing
+     * disambiguation; clients must render the label but use [objects] for the response identity.
      */
     val objectLabels: Map<EntityId, String>? = null
 ) : PendingDecision

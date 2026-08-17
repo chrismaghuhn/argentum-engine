@@ -28,6 +28,8 @@ export function OrderObjectsUI({ decision, responsive }: OrderObjectsUIProps) {
     })
   }, [orderedObjects.length])
 
+  // Trigger ordering labels are server-projected, privacy-safe display text. The opaque object ID
+  // remains only in the submitted ordering response and is never rendered as a runtime identity.
   const labelFor = (objectId: EntityId): string =>
     decision.objectLabels?.[objectId] ?? decision.cardInfo?.[objectId]?.name ?? objectId
 

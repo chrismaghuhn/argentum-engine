@@ -140,6 +140,36 @@ class TriggerOrderingTest : FunSpec({
         normalOrder.objectLabels!!.values.all { it.startsWith("normal-") } shouldBe true
     }
 
+    test("TO-15: duplicate trigger labels are disambiguated without exposing trigger context") {
+        val driver = newDriver()
+        val result = process(driver, listOf(
+            syntheticTrigger(
+                driver,
+                "same",
+                triggerContext = TriggerContext(
+                    triggeringPlayerId = driver.player1,
+                    damageAmount = 1
+                )
+            ),
+            syntheticTrigger(
+                driver,
+                "same",
+                triggerContext = TriggerContext(
+                    triggeringPlayerId = driver.player1,
+                    damageAmount = 2
+                )
+            )
+        ))
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        val labels = decision.objects.map { decision.objectLabels!!.getValue(it) }
+
+        labels.toSet().size shouldBe 2
+        labels.all { it.startsWith("same: same") } shouldBe true
+        labels.none { it.contains("damage", ignoreCase = true) } shouldBe true
+        labels.none { it.contains("trigger-order-object") } shouldBe true
+    }
+
     test("TO-04: invalid ordering responses fail closed without consuming the continuation") {
         val driver = newDriver()
         val result = process(driver, listOf(
