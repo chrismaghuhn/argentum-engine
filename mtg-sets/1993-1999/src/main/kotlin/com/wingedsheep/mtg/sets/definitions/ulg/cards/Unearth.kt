@@ -26,7 +26,10 @@ val Unearth = card("Unearth") {
     typeLine = "Sorcery"
     oracleText = "Return target creature card with mana value 3 or less from your graveyard to the battlefield.\nCycling {2} ({2}, Discard this card: Draw a card.)"
     spell {
-        val t = target("target", TargetObject(filter = TargetFilter.CreatureInYourGraveyard))
+        val t = target(
+            "target",
+            TargetObject(filter = TargetFilter.CreatureInYourGraveyard.manaValueAtMost(3))
+        )
         effect = Effects.Move(t, Zone.BATTLEFIELD, fromZone = Zone.GRAVEYARD)
     }
     keywordAbility(KeywordAbility.cycling("{2}"))
