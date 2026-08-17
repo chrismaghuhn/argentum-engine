@@ -152,6 +152,7 @@ class ManaAbilityEnumerator : ActionEnumerator {
                         is CostAtom.TapPermanents -> {
                             tapCost = atom
                             tapTargets = context.costUtils.findAbilityTapTargets(state, playerId, atom.filter)
+                                .let { targets -> if (atom.excludeSelf) targets.filter { it != entityId } else targets }
                             if (tapTargets.size < atom.count) affordable = false
                         }
                         is CostAtom.Sacrifice -> {
@@ -218,6 +219,7 @@ class ManaAbilityEnumerator : ActionEnumerator {
                                     is CostAtom.TapPermanents -> {
                                         tapCost = atom
                                         tapTargets = context.costUtils.findAbilityTapTargets(state, playerId, atom.filter)
+                                            .let { targets -> if (atom.excludeSelf) targets.filter { it != entityId } else targets }
                                         if (tapTargets.size < atom.count) {
                                             affordable = false; break
                                         }

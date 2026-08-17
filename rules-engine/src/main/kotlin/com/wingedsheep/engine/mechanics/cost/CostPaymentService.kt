@@ -73,8 +73,9 @@ class CostPaymentService(private val services: EngineServices) {
     // ---------------------------------------------------------------------------------------------
 
     /**
-     * Whether [payerId] can pay [cost]. For battlefield selection costs the [sourceId] is excluded
-     * from the candidate pool (you can't sacrifice/return/tap the very permanent whose cost this is).
+     * Whether [payerId] can pay [cost]. For battlefield selection atoms, the atom's own
+     * `excludeSelf` flag controls whether [sourceId] is excluded. Costs without that flag keep
+     * their existing source-exclusion policy through [excludeSource].
      *
      * Delegates to the [companion][Companion] form so legal-action enumerators
      * (e.g. `TurnFaceUpEnumerator`) can call affordability directly with just a [ManaSolver] —
@@ -147,7 +148,11 @@ class CostPaymentService(private val services: EngineServices) {
                 is CostAtom.RevealFromHand ->
                     selectionPrompt(state, payerId, resolved, sourceId, sourceName, ctx, cardsInHand(state, payerId, atom.filter), atom.count, useTargetingUI = false)
                 is CostAtom.Sacrifice ->
-                    selectionPrompt(state, payerId, resolved, sourceId, sourceName, ctx, controlledMatching(state, payerId, atom.filter, sourceId), atom.count, useTargetingUI = true)
+                    selectionPrompt(
+                        state, payerId, resolved, sourceId, sourceName, ctx,
+                        controlledMatching(state, payerId, atom.filter, if (atom.excludeSelf) sourceId else null),
+                        atom.count, useTargetingUI = true
+                    )
                 is CostAtom.ReturnToHand ->
                     selectionPrompt(state, payerId, resolved, sourceId, sourceName, ctx, controlledMatching(state, payerId, atom.filter, sourceId), atom.count, useTargetingUI = true)
                 is CostAtom.TapPermanents ->
@@ -668,7 +673,7 @@ class CostPaymentService(private val services: EngineServices) {
                     is CostAtom.RevealFromHand -> cardsInHand(state, payerId, atom.filter).size >= atom.count
                     is CostAtom.Sacrifice -> {
                         val candidates = controlledMatching(
-                            state, payerId, atom.filter, if (excludeSource) sourceId else null
+                            state, payerId, atom.filter, if (atom.excludeSelf) sourceId else null
                         )
                         if (atom.distinctNames) distinctNameCount(state, candidates) >= atom.count
                         else candidates.size >= atom.count
