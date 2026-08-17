@@ -120,7 +120,13 @@ class TriggerProcessor(
                     currentState,
                     occurrenceChoices.map { it.toPendingTrigger() },
                     remainingTriggers,
-                    allEvents
+                    allEvents,
+                    // The selected occurrence is prepended by the resumer.  Count it as part of
+                    // the retained prefix, while excluding entries already consumed before the
+                    // occurrence marker.  This keeps a confirmed [A, marker, B] order from being
+                    // reopened as [marker, B] after the occurrence decision.
+                    preorderedTriggerCount =
+                        (livePreorderedTriggerCount - index).coerceAtLeast(0)
                 )
             }
 
@@ -319,7 +325,8 @@ class TriggerProcessor(
         state: GameState,
         candidates: List<PendingTrigger>,
         remainingTriggers: List<PendingTrigger>,
-        priorEvents: List<GameEvent>
+        priorEvents: List<GameEvent>,
+        preorderedTriggerCount: Int
     ): ExecutionResult {
         val first = candidates.firstOrNull()
             ?: return ExecutionResult.error(state, "Delayed-trigger occurrence choice has no candidates")
@@ -358,7 +365,8 @@ class TriggerProcessor(
         val continuation = DelayedTriggerOccurrenceChoiceContinuation(
             decisionId = decisionId,
             candidates = candidates,
-            remainingTriggers = remainingTriggers
+            remainingTriggers = remainingTriggers,
+            preorderedTriggerCount = preorderedTriggerCount
         )
         val pausedState = state.withPendingDecision(decision).pushContinuation(continuation)
         return ExecutionResult.paused(

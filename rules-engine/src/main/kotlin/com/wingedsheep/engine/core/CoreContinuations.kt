@@ -212,7 +212,9 @@ data class TriggerOrderingContinuation(
 data class DelayedTriggerOccurrenceChoiceContinuation(
     override val decisionId: String,
     val candidates: List<PendingTrigger>,
-    val remainingTriggers: List<PendingTrigger> = emptyList()
+    val remainingTriggers: List<PendingTrigger> = emptyList(),
+    /** Number of already-ordered entries in the selected occurrence plus [remainingTriggers] after resumption. */
+    val preorderedTriggerCount: Int = 0
 ) : ContinuationFrame
 
 /**

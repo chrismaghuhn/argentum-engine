@@ -335,6 +335,59 @@ class TriggerOrderingTest : FunSpec({
         laterOrder.objects.size shouldBe 3
     }
 
+    test("TO-17: delayed occurrence choice preserves a confirmed prefix before its marker") {
+        val driver = newDriver()
+        val prefix = syntheticTrigger(driver, "already-ordered")
+        val candidateA = syntheticTrigger(
+            driver,
+            "delayed-marker",
+            triggerContext = TriggerContext(triggeringPlayerId = driver.player1),
+            consumesDelayedTriggerId = "delayed-once"
+        )
+        val candidateB = syntheticTrigger(
+            driver,
+            "delayed-alternative",
+            triggerContext = TriggerContext(triggeringPlayerId = driver.player1),
+            consumesDelayedTriggerId = "delayed-once"
+        )
+        val marker = candidateA.copy(
+            occurrenceChoice = listOf(candidateA.toOccurrenceCandidate(), candidateB.toOccurrenceCandidate())
+        )
+        val result = process(
+            driver,
+            listOf(
+                prefix,
+                marker,
+                syntheticTrigger(driver, "after-marker-first"),
+                syntheticTrigger(driver, "after-marker-second")
+            ),
+            preorderedTriggerCount = 2
+        )
+        val occurrence = result.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+        val delayedContinuation = result.state.peekContinuation()
+            .shouldBeInstanceOf<DelayedTriggerOccurrenceChoiceContinuation>()
+        delayedContinuation.preorderedTriggerCount shouldBe 1
+
+        val json = Json {
+            serializersModule = engineSerializersModule
+            encodeDefaults = true
+            allowStructuredMapKeys = true
+        }
+        val restored = json.decodeFromString<GameState>(
+            json.encodeToString(GameState.serializer(), result.state)
+        )
+        restored shouldBe result.state
+
+        driver.replaceState(restored)
+        val afterOccurrence = driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(occurrence.id, optionIndex = 0)
+        )
+        val laterOrder = afterOccurrence.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        laterOrder.objects.size shouldBe 2
+        laterOrder.objectLabels!!.values.none { it.contains("delayed-marker") } shouldBe true
+    }
+
     test("TO-09: ordering keeps delayed, saga, granter, and reflexive payloads intact") {
         val driver = newDriver()
         val granter = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")

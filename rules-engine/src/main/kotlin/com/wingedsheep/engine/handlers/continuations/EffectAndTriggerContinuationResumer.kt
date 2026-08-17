@@ -389,7 +389,8 @@ class EffectAndTriggerContinuationResumer(
         // preserving APNAP order without choosing another occurrence implicitly.
         val result = services.triggerProcessor.processTriggers(
             state,
-            listOf(selected) + continuation.remainingTriggers
+            listOf(selected) + continuation.remainingTriggers,
+            preorderedTriggerCount = continuation.preorderedTriggerCount
         )
         if (result.isPaused || !result.isSuccess) return result
         return checkForMore(result.newState, result.events.toList())
