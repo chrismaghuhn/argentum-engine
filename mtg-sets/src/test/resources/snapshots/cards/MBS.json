@@ -1,3 +1,57 @@
+// Brass Squire
+{
+    "name": "Brass Squire",
+    "manaCost": "{3}",
+    "typeLine": "Artifact Creature — Myr",
+    "oracleText": "{T}: Attach target Equipment you control to target creature you control.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 3
+    },
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "ability_1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AttachTargetEquipmentToCreature",
+                    "equipmentTarget": {
+                        "type": "BoundVariable",
+                        "name": "target Equipment you control"
+                    },
+                    "creatureTarget": {
+                        "type": "BoundVariable",
+                        "name": "target creature you control"
+                    }
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "artifact Equipment ctrl:you"
+                        },
+                        "id": "target Equipment you control"
+                    },
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "creature ctrl:you"
+                        },
+                        "id": "target creature you control"
+                    }
+                ]
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "101",
+        "rarity": "UNCOMMON",
+        "artist": "Ryan Pancoast",
+        "imageUri": "https://cards.scryfall.io/normal/front/3/7/37928b90-ab31-4c73-99b2-fe31feb2afea.jpg?1783941370"
+    },
+    "colorIdentityOverride": []
+}
+
 // Hexplate Golem
 {
     "name": "Hexplate Golem",
