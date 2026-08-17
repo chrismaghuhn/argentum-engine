@@ -1,0 +1,51 @@
+// Ohran Frostfang
+{
+    "name": "Ohran Frostfang",
+    "manaCost": "{3}{G}{G}",
+    "typeLine": "Snow Creature — Snake",
+    "oracleText": "Attacking creatures you control have deathtouch.\nWhenever a creature you control deals combat damage to a player, draw a card.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 6
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "DealsDamageEvent",
+                    "damageType": "DamageCombat",
+                    "recipient": "AnyPlayer",
+                    "sourceFilter": "creature ctrl:you"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "descriptionOverride": "Whenever a creature you control deals combat damage to a player, draw a card."
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "GrantKeyword",
+                "keyword": "DEATHTOUCH",
+                "filter": {
+                    "baseFilter": "creature attacking ctrl:you"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "33",
+        "rarity": "RARE",
+        "artist": "Torstein Nordstrand",
+        "imageUri": "https://cards.scryfall.io/normal/front/9/e/9eb08e11-c247-404c-9f40-a12cb7087d0c.jpg?1783932803"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
