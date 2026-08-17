@@ -15,8 +15,8 @@ import com.wingedsheep.sdk.model.CreatureStats
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
-import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Rip, Spawn Hunter (DSK #228) — {2}{G}{W} 4/4 Legendary Creature — Human Survivor.
@@ -30,7 +30,8 @@ import io.kotest.matchers.shouldBe
  * reveal → select → bottom pipeline:
  *  - X equals the source's power (reveals exactly that many cards);
  *  - the controller keeps any number of creature/Vehicle cards with *different* powers;
- *  - a second card sharing an already-chosen power is rejected server-side and bottoms instead;
+ *  - a response containing a second card sharing an already-chosen power is rejected server-side
+ *    without silently coercing the response;
  *  - non-creature/non-Vehicle revealed cards and unpicked cards go to the bottom of the library;
  *  - the intervening-if (Rip tapped) gates the whole trigger.
  */
@@ -173,7 +174,7 @@ class RipSpawnHunterScenarioTest : ScenarioTestBase() {
 
         context("Survival — different-powers restriction (OnePerPower)") {
 
-            test("a second card sharing an already-chosen power is rejected and bottoms instead") {
+            test("a duplicate-power response is rejected and can be retried") {
                 // Top 4: two power-2 creatures, a power-3 creature, a power-5 Vehicle.
                 val game = scenario()
                     .withPlayers("Player1", "Player2")
@@ -188,24 +189,33 @@ class RipSpawnHunterScenarioTest : ScenarioTestBase() {
 
                 val decision = resolveToSelection(game)
 
-                // Try to keep both power-2 creatures plus the power-3 creature. The second power-2
-                // pick is rejected (different powers required); Hunt Rig was never selected.
-                game.selectCards(
+                // Try to keep both power-2 creatures plus the power-3 creature. The response is
+                // rejected as a whole; the engine must not silently drop the duplicate-power card.
+                val invalid = game.selectCards(
                     listOf(
                         optionFor(game, decision, "Spawn Two A"),
                         optionFor(game, decision, "Spawn Two B"),
                         optionFor(game, decision, "Spawn Three"),
                     )
                 )
+                invalid.isSuccess shouldBe false
+                invalid.error shouldNotBe null
+                game.getPendingDecision()?.id shouldBe decision.id
+
+                // A legal retry is accepted and only then does the reveal → hand/bottom
+                // continuation run.
+                game.selectCards(
+                    listOf(
+                        optionFor(game, decision, "Spawn Two A"),
+                        optionFor(game, decision, "Spawn Three"),
+                    )
+                ).isSuccess shouldBe true
                 game.resolveStack()
 
                 withClue("only the first power-2 card and the power-3 card reached hand") {
                     handNames(game) shouldContainExactlyInAnyOrder listOf("Spawn Two A", "Spawn Three")
                 }
-                withClue("the duplicate-power card was rejected and is no longer in hand") {
-                    handNames(game) shouldNotContain "Spawn Two B"
-                }
-                withClue("the rejected duplicate and the un-picked Vehicle bottomed out") {
+                withClue("the duplicate-power card and the un-picked Vehicle bottomed out") {
                     libraryNames(game) shouldContainExactlyInAnyOrder listOf("Spawn Two B", "Hunt Rig")
                 }
             }

@@ -14,6 +14,7 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 
 /**
  * Destined Confrontation (TLA) — {2}{W}{W} Sorcery.
@@ -25,8 +26,8 @@ import io.kotest.matchers.shouldBe
  * gather → `SelectFromCollectionEffect(ChooseAnyNumber, TotalPowerAtMost(4))` → sacrifice the
  * remainder) and, crucially, the new aggregate **total-power** selection cap: each player keeps
  * any subset of their own creatures whose combined projected power is at most 4, and everything
- * unkept is sacrificed. The cap is enforced server-side, not cosmetic — an over-4 selection has
- * its excess creatures trimmed (in response order) into the sacrificed remainder.
+ * unkept is sacrificed. The cap is enforced server-side, not cosmetic — an over-4 response is
+ * rejected without silently coercing it into a legal subset.
  */
 class DestinedConfrontationScenarioTest : FunSpec({
 
@@ -59,8 +60,8 @@ class DestinedConfrontationScenarioTest : FunSpec({
 
     /**
      * Cast Destined Confrontation (already in [caster]'s hand) and drive it to completion,
-     * answering each player's keep-selection from [keepByPlayer]. Players with no creatures
-     * (or whose every keep is illegal) are never prompted — the loop just resolves the stack.
+     * answering each player's keep-selection from [keepByPlayer]. Players with no creatures are
+     * never prompted — the loop just resolves the stack.
      */
     fun GameTestDriver.castAndResolve(
         caster: EntityId,
@@ -141,7 +142,7 @@ class DestinedConfrontationScenarioTest : FunSpec({
         driver.getGraveyard(me).contains(myTwo) shouldBe true
     }
 
-    test("the total-power cap is enforced: an over-4 selection has its excess creature trimmed and sacrificed") {
+    test("the total-power cap rejects an over-4 response without coercion") {
         val driver = createDriver()
         val me = driver.activePlayer!!
 
@@ -154,9 +155,26 @@ class DestinedConfrontationScenarioTest : FunSpec({
         val four = driver.putCreatureOnBattlefield(me, "Power Four Bear")
 
         val spell = driver.putCardInHand(me, "Destined Confrontation")
-        // Attempt to keep {1-power, 4-power} = total power 5 (illegal). In response order the 1 is
-        // accepted (running 1) and the 4 is rejected (running 5 > 4), so only the 1-power is kept.
-        driver.castAndResolve(caster = me, spellId = spell, keepByPlayer = mapOf(me to listOf(oneA, four)))
+        // Attempt to keep {1-power, 4-power} = total power 5 (illegal). The response must be
+        // rejected as a whole; the engine must not silently trim it in response order.
+        driver.giveMana(me, Color.WHITE, 4)
+        driver.castSpell(me, spell)
+        val decision = driver.pendingDecision as SelectCardsDecision
+        val invalid = driver.submitCardSelection(me, listOf(oneA, four))
+        invalid.isSuccess shouldBe false
+        invalid.error shouldNotBe null
+        driver.pendingDecision?.id shouldBe decision.id
+
+        // A legal retry is accepted and the spell can then resolve normally.
+        driver.submitCardSelection(me, listOf(oneA)).isSuccess shouldBe true
+        var guard = 0
+        while ((driver.pendingDecision != null || driver.state.stack.isNotEmpty()) && guard < 100) {
+            driver.pendingDecision shouldBe null
+            driver.bothPass()
+            guard++
+        }
+        driver.pendingDecision shouldBe null
+        driver.state.stack.isEmpty() shouldBe true
 
         val battlefield = driver.state.getBattlefield().toSet()
         // Only the accepted 1-power bear survives; the over-cap 4-power and the unchosen 1-power are sacrificed.
