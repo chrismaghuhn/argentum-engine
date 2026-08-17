@@ -630,7 +630,7 @@
 {
     "name": "Leonin Shikari",
     "manaCost": "{1}{W}",
-    "typeLine": "Creature � Cat Soldier",
+    "typeLine": "Creature — Cat Soldier",
     "oracleText": "You may activate equip abilities any time you could cast an instant.",
     "creatureStats": {
         "power": 2,
@@ -650,11 +650,11 @@
         "rulings": [
             {
                 "date": "2004-12-01",
-                "text": "An equip ability uses the keyword ability �equip.� Normally, equip abilities can be activated only any time you could cast a sorcery."
+                "text": "An equip ability uses the keyword ability “equip.” Normally, equip abilities can be activated only any time you could cast a sorcery."
             },
             {
                 "date": "2004-12-01",
-                "text": "Leonin Shikari allows you to move your Equipment around during the combat phase or in response to a spell or ability. You�re still subject to any other restrictions on activating equip abilities."
+                "text": "Leonin Shikari allows you to move your Equipment around during the combat phase or in response to a spell or ability. You’re still subject to any other restrictions on activating equip abilities."
             }
         ]
     },
