@@ -671,7 +671,7 @@
 {
     "name": "Reyav, Master Smith",
     "manaCost": "{R}{W}",
-    "typeLine": "Legendary Creature � Dwarf Artificer",
+    "typeLine": "Legendary Creature — Dwarf Artificer",
     "oracleText": "Whenever a creature you control that's enchanted or equipped attacks, that creature gains double strike until end of turn.",
     "creatureStats": {
         "power": 2,
