@@ -107,6 +107,10 @@ class GameEnvironment private constructor(
     var stepCount: Int = 0
         private set
 
+    /** Optional episode horizon configured by the Gym adapter. */
+    var maxSteps: Int? = null
+        private set
+
     // =========================================================================
     // Queries
     // =========================================================================
@@ -114,12 +118,17 @@ class GameEnvironment private constructor(
     /** True if the game has ended (someone won, drew, or decked out). */
     val isTerminal: Boolean get() = state.gameOver
 
+    /** True when the configured horizon ended an otherwise non-terminal episode. */
+    val isTruncated: Boolean
+        get() = !isTerminal && maxSteps?.let { stepCount >= it } == true
+
     /** The winner's entity ID, or null if the game is ongoing or a draw. */
     val winnerId: EntityId? get() = state.winnerId
 
     /** The player who currently needs to act (has priority or a pending decision). */
     val agentToAct: EntityId?
-        get() = state.pendingDecision?.playerId ?: state.priorityPlayerId
+        get() = if (isTerminal || isTruncated) null
+        else state.pendingDecision?.playerId ?: state.priorityPlayerId
 
     /** Non-null when the engine is paused waiting for a player decision. */
     val pendingDecision: PendingDecision? get() = state.pendingDecision
@@ -137,7 +146,8 @@ class GameEnvironment private constructor(
      * Replaces any existing game state. Set [GameConfig.skipMulligans] to `true`
      * for training runs where you don't want the mulligan phase.
      */
-    fun reset(config: GameConfig): StepResult {
+    fun reset(config: GameConfig, maxSteps: Int? = null): StepResult {
+        require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
         val initializer = GameInitializer(cardRegistry)
         val initResult = initializer.initializeGame(config)
         state = initResult.state
@@ -145,6 +155,7 @@ class GameEnvironment private constructor(
         events = initResult.events
         lastStepEvents = initResult.events
         stepCount = 0
+        this.maxSteps = maxSteps
         return buildStepResult(initResult.events)
     }
 
@@ -164,11 +175,75 @@ class GameEnvironment private constructor(
      */
     fun step(action: GameAction): StepResult {
         check(playerIds.isNotEmpty()) { "Call reset() before step()" }
+        check(!isTerminal) { "Cannot step a terminal environment" }
+        check(!isTruncated) { "Cannot step a truncated environment" }
+
+        // The Gym boundary is an action-space boundary, not merely a thin wrapper around the
+        // processor.  A caller may hold an action from an older observation, or may submit an
+        // action for the other player.  The rules engine validates the action's local shape, but
+        // it intentionally does not know which candidate list this environment exposed.  Keep
+        // stale/non-owner actions fail-closed here before simulation can advance the horizon.
+        validateActionMembership(action)
+        return simulateAndCommit(action)
+    }
+
+    /**
+     * Execute a caller-completed action while retaining the action-ID candidate binding.
+     *
+     * [candidate] is the targetless/payment-template action held by the current Gym registry;
+     * [submitted] contains the external controller's explicit choices. The current candidate is
+     * re-enumerated before execution, and the same membership normalization used by [step] is
+     * applied. The engine remains authoritative for target legality, costs, and all other rules.
+     */
+    fun stepFromCandidate(candidate: GameAction, submitted: GameAction): StepResult {
+        check(playerIds.isNotEmpty()) { "Call reset() before step()" }
+        check(!isTerminal) { "Cannot step a terminal environment" }
+        check(!isTruncated) { "Cannot step a truncated environment" }
+        require(candidate !is SubmitDecision && submitted !is SubmitDecision) {
+            "Structured action payloads are only valid for legal game actions"
+        }
+
+        val currentActions = legalActions()
+        require(currentActions.any { it.action == candidate }) {
+            "Action candidate is not in the current legal action set for ${agentToAct}: $candidate"
+        }
+        require(isCurrentActionCandidate(candidate, submitted)) {
+            "Structured action does not belong to the selected current legal candidate: $submitted"
+        }
+
+        return simulateAndCommit(submitted)
+    }
+
+    private fun validateActionMembership(action: GameAction) {
+        if (action !is SubmitDecision) {
+            val currentActions = legalActions()
+            val isCurrentAction = currentActions.any { candidate ->
+                isCurrentActionCandidate(candidate.action, action)
+            }
+            require(isCurrentAction) {
+                "Action is not in the current legal action set for ${agentToAct}: $action"
+            }
+        } else {
+            val pending = state.pendingDecision
+            require(pending != null) { "No pending decision to respond to" }
+            require(action.playerId == pending.playerId) {
+                "Decision belongs to ${pending.playerId}, not ${action.playerId}"
+            }
+        }
+    }
+
+    private fun simulateAndCommit(action: GameAction): StepResult {
 
         val simResult = if (action is SubmitDecision) {
             simulator.simulateDecision(state, action.response)
         } else {
             simulator.simulate(state, action)
+        }
+
+        // Do not install an illegal simulation result as if it were a successful step.  Besides
+        // hiding the error, doing that would incorrectly consume one unit of the Gym horizon.
+        if (simResult is SimulationResult.Illegal) {
+            throw IllegalArgumentException(simResult.reason)
         }
 
         state = simResult.state
@@ -194,9 +269,93 @@ class GameEnvironment private constructor(
     fun legalActions(): List<LegalAction> {
         val playerId = agentToAct ?: return emptyList()
         if (state.pendingDecision != null) return emptyList()
-        if (state.gameOver) return emptyList()
+        if (state.gameOver || isTruncated) return emptyList()
+        // A multi-requirement spell can have a legal first slot while a later mandatory slot has
+        // no candidate. The engine keeps that metadata for client diagnostics, but it is not an
+        // executable Gym action: selecting it would only produce "No valid targets available" at
+        // simulation time. Keep the action space executable so random agents cannot manufacture
+        // an Illegal result from a supposedly legal observation.
         return enumerator.enumerate(state, playerId, EnumerationMode.ACTIONS_ONLY)
+            .filterNot { it.hasUnfillableTargetRequirement }
     }
+
+    /**
+     * Match a submitted action against the current enumerator templates without treating
+     * caller-supplied choice assignments as stale. Enumerators deliberately emit templates for
+     * casts, abilities, combat, cycling, turn-face-up, Crew, Saddle, and payment-only special
+     * actions; the client or AI fills the choice fields before submitting the action. Every
+     * branch below retains the candidate's actor and runtime/source identity fields. The rules
+     * engine remains authoritative for validating the submitted choices.
+     */
+    internal fun isCurrentActionCandidate(candidate: GameAction, submitted: GameAction): Boolean =
+        when {
+            candidate == submitted -> true
+            candidate is DeclareAttackers && submitted is DeclareAttackers ->
+                candidate.playerId == submitted.playerId
+            candidate is DeclareBlockers && submitted is DeclareBlockers ->
+                candidate.playerId == submitted.playerId
+            candidate is OrderBlockers && submitted is OrderBlockers ->
+                candidate.playerId == submitted.playerId &&
+                    candidate.attackerId == submitted.attackerId
+            candidate is CastSpell && submitted is CastSpell ->
+                normalizeCastSpellForMembership(candidate) == normalizeCastSpellForMembership(submitted)
+            candidate is ActivateAbility && submitted is ActivateAbility ->
+                normalizeActivateAbilityForMembership(candidate) == normalizeActivateAbilityForMembership(submitted)
+            candidate is CycleCard && submitted is CycleCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is PlotCard && submitted is PlotCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is ForetellCard && submitted is ForetellCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is SuspendCardFromHand && submitted is SuspendCardFromHand ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is TypecycleCard && submitted is TypecycleCard ->
+                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+            candidate is CrewVehicle && submitted is CrewVehicle ->
+                candidate.playerId == submitted.playerId && candidate.vehicleId == submitted.vehicleId
+            candidate is SaddleMount && submitted is SaddleMount ->
+                candidate.playerId == submitted.playerId && candidate.mountId == submitted.mountId
+            candidate is TurnFaceUp && submitted is TurnFaceUp ->
+                candidate.playerId == submitted.playerId &&
+                    candidate.sourceId == submitted.sourceId &&
+                    candidate.procedureIndex == submitted.procedureIndex
+            candidate is UnlockRoomDoor && submitted is UnlockRoomDoor ->
+                candidate.playerId == submitted.playerId &&
+                    candidate.roomId == submitted.roomId &&
+                    candidate.faceId == submitted.faceId
+            else -> false
+        }
+
+    /**
+     * Normalize caller-filled target/payment payloads while retaining the cast variant identity.
+     * LegalAction metadata is deliberately richer than the targetless engine action template: an
+     * AI may fill convoke, improvise, additional-cost, mode, X, or target choices before submit.
+     * The engine remains authoritative for validating those choices; Gym membership only checks
+     * that the underlying cast candidate is still current.
+     */
+    private fun normalizeCastSpellForMembership(action: CastSpell): CastSpell = action.copy(
+        targets = emptyList(),
+        damageDistribution = null,
+        modeTargetsOrdered = emptyList(),
+        modeDamageDistribution = emptyMap(),
+        paymentStrategy = PaymentStrategy.AutoPay,
+        additionalCostPayment = null,
+        alternativePayment = null,
+        chosenModes = emptyList(),
+        xValue = null,
+    )
+
+    /** Normalize caller-filled target/payment/choice payloads for an activated-ability template. */
+    private fun normalizeActivateAbilityForMembership(action: ActivateAbility): ActivateAbility = action.copy(
+        targets = emptyList(),
+        damageDistribution = null,
+        costPayment = null,
+        manaColorChoice = null,
+        xValue = null,
+        repeatCount = 1,
+        paymentStrategy = PaymentStrategy.AutoPay,
+        alternativePayment = null,
+    )
 
     /**
      * Evaluate the current board state from a player's perspective.
@@ -230,6 +389,7 @@ class GameEnvironment private constructor(
         forked.events = emptyList() // forked environments start with clean event history
         forked.lastStepEvents = emptyList()
         forked.stepCount = stepCount
+        forked.maxSteps = maxSteps
         return forked
     }
 
@@ -244,12 +404,20 @@ class GameEnvironment private constructor(
      * @param playerIds The player turn order associated with [state].
      * @param stepCount Optional step-counter to restore; defaults to 0.
      */
-    fun restore(state: GameState, playerIds: List<EntityId>, stepCount: Int = 0) {
+    fun restore(
+        state: GameState,
+        playerIds: List<EntityId>,
+        stepCount: Int = 0,
+        maxSteps: Int? = this.maxSteps
+    ) {
+        require(stepCount >= 0) { "stepCount must not be negative" }
+        require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
         this.state = state
         this.playerIds = playerIds
         this.events = emptyList()
         this.lastStepEvents = emptyList()
         this.stepCount = stepCount
+        this.maxSteps = maxSteps
     }
 
     /**
@@ -291,9 +459,9 @@ class GameEnvironment private constructor(
         agents: Map<EntityId, ActionSelector> = emptyMap(),
         maxSteps: Int = 2000
     ): StepResult {
-        reset(config)
+        reset(config, maxSteps = maxSteps)
 
-        while (!isTerminal && stepCount < maxSteps) {
+        while (!isTerminal && !isTruncated) {
             val player = agentToAct ?: break
             val selector = agents[player]
 
@@ -334,7 +502,7 @@ class GameEnvironment private constructor(
             events = stepEvents,
             reward = terminalRewards(),
             terminated = isTerminal,
-            truncated = false,
+            truncated = isTruncated,
             agentToAct = agentToAct,
             pendingDecision = pendingDecision,
             info = StepInfo(

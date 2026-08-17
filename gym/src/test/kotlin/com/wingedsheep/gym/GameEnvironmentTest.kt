@@ -7,6 +7,7 @@ import com.wingedsheep.mtg.sets.definitions.blb.BloomburrowSet
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.model.Deck
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.booleans.shouldBeTrue
@@ -28,9 +29,9 @@ class GameEnvironmentTest : FunSpec({
 
     fun simpleDeck() = Deck.of("Mountain" to 17, "Raging Goblin" to 3)
 
-    /** Build a sealed deck from a random 90-card Bloomburrow pool. */
-    fun sealedDeck(): Deck {
-        val pool = BloomburrowSet.cards.shuffled().take(90)
+    /** Build a reproducible sealed deck from a 90-card Bloomburrow pool. */
+    fun sealedDeck(seed: Int): Deck {
+        val pool = BloomburrowSet.cards.shuffled(kotlin.random.Random(seed)).take(90)
         val deckMap = buildHeuristicSealedDeck(pool)
         val cards = deckMap.flatMap { (name, count) -> List(count) { name } }
         return Deck(cards)
@@ -101,6 +102,38 @@ class GameEnvironmentTest : FunSpec({
         result.state.shouldNotBeNull()
     }
 
+    test("step rejects stale and non-owner actions before consuming the horizon") {
+        val env = GameEnvironment.create(createRegistry())
+        env.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", simpleDeck()),
+                    PlayerConfig("Bob", simpleDeck())
+                ),
+                skipMulligans = true,
+                startingPlayerIndex = 0
+            )
+        )
+
+        val opening = env.legalActions().first { it.action is PassPriority }.action
+        val openingStepCount = env.stepCount
+        env.step(opening)
+        val stateAfterOpening = env.state
+        val stepCountAfterOpening = env.stepCount
+
+        shouldThrow<IllegalArgumentException> { env.step(opening) }
+        env.state shouldBe stateAfterOpening
+        env.stepCount shouldBe stepCountAfterOpening
+        stepCountAfterOpening shouldBe openingStepCount + 1
+
+        val actingPlayer = env.agentToAct
+        val otherPlayer = env.playerIds.first { it != actingPlayer }
+        shouldThrow<IllegalArgumentException> {
+            env.step(PassPriority(otherPlayer))
+        }
+        env.stepCount shouldBe stepCountAfterOpening
+    }
+
     test("fork creates an independent copy") {
         val env = GameEnvironment.create(createRegistry())
         env.reset(
@@ -167,11 +200,12 @@ class GameEnvironmentTest : FunSpec({
         val env = GameEnvironment.create(createRegistry())
         val config = GameConfig(
             players = listOf(
-                PlayerConfig("Alice", sealedDeck()),
-                PlayerConfig("Bob", sealedDeck())
+                PlayerConfig("Alice", sealedDeck(1)),
+                PlayerConfig("Bob", sealedDeck(2))
             ),
             skipMulligans = true,
-            startingPlayerIndex = 0
+            startingPlayerIndex = 0,
+            seed = 7L
         )
 
         val result = env.playGame(config)
@@ -184,15 +218,18 @@ class GameEnvironmentTest : FunSpec({
         val env = GameEnvironment.create(createRegistry())
         val config = GameConfig(
             players = listOf(
-                PlayerConfig("Alice", sealedDeck()),
-                PlayerConfig("Bob", sealedDeck())
+                PlayerConfig("Alice", sealedDeck(3)),
+                PlayerConfig("Bob", sealedDeck(4))
             ),
             skipMulligans = true,
-            startingPlayerIndex = 0
+            startingPlayerIndex = 0,
+            seed = 11L
         )
 
         env.reset(config)
-        val agents = env.playerIds.associateWith<EntityId, ActionSelector> { RandomActionSelector() }
+        val agents = env.playerIds.associateWith<EntityId, ActionSelector> {
+            RandomActionSelector(java.util.Random(7L))
+        }
 
         val result = env.playGame(config, agents)
         (result.terminated || env.stepCount >= 2000).shouldBeTrue()

@@ -126,14 +126,16 @@ class ObservationBuilder(
     fun build(
         state: GameState,
         perspectivePlayerId: EntityId,
-        legalActions: List<LegalAction>
+        legalActions: List<LegalAction>,
+        truncated: Boolean = false
     ): ObservationResult {
         val players = state.turnOrder.map { buildPlayerView(state, it, perspectivePlayerId) }
 
         val zones = buildZones(state, perspectivePlayerId)
 
-        val agentToAct = state.pendingDecision?.playerId ?: state.priorityPlayerId
-        val mayReceiveActions = !state.gameOver && perspectivePlayerId == agentToAct
+        val agentToAct = if (state.gameOver || truncated) null
+        else state.pendingDecision?.playerId ?: state.priorityPlayerId
+        val mayReceiveActions = !state.gameOver && !truncated && perspectivePlayerId == agentToAct
 
         val stack = state.stack.map { entityId ->
             buildStackItem(state, entityId, perspectivePlayerId)
@@ -175,6 +177,7 @@ class ObservationBuilder(
             pendingDecision = pendingDecisionView,
             legalActions = legalActionViews,
             terminated = state.gameOver,
+            truncated = truncated,
             winnerId = state.winnerId,
             stateDigest = ""
         )
@@ -492,6 +495,7 @@ class ObservationBuilder(
             maxTargets = la.targetCount,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
+            requiresStructuredAction = ActionPayloadRequirements.requiresStructuredAction(la),
             actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )

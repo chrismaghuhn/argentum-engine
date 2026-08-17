@@ -47,6 +47,7 @@ data class DeckbuildObservation(
     override val pendingDecision: PendingDecisionView? = null,
     override val legalActions: List<LegalActionView>,
     override val terminated: Boolean,
+    override val truncated: Boolean = false,
     override val stateDigest: String
 ) : Observation
 

@@ -54,6 +54,7 @@ class DeckbuildEnvironment(
     private var actions: List<DeckbuildAction> = emptyList()
 
     override val isTerminal: Boolean get() = finalized
+    override val isTruncated: Boolean get() = false
 
     /** The finished decklist once finalized, else null. */
     val finalDeck: Map<String, Int>? get() = if (finalized) LinkedHashMap(selected) else null
@@ -79,6 +80,7 @@ class DeckbuildEnvironment(
             deckScore = if (finalized) scoreDeck() else null,
             legalActions = acts.mapIndexed { idx, a -> a.toView(idx) },
             terminated = finalized,
+            truncated = false,
             stateDigest = digest()
         )
         return ObservationResult(obs, ActionRegistry.EMPTY)

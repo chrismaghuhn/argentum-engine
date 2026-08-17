@@ -24,17 +24,20 @@ sealed interface Observation {
     /** Contract identifier — clients compare it to abort on privacy/schema drift. */
     val schemaHash: String
 
-    /** The player/agent who must act next, or null when [terminated]. */
+    /** The player/agent who must act next, or null when [terminated] or [truncated]. */
     val agentToAct: EntityId?
 
     /** Non-null only for in-game complex decisions; always null for deckbuild. */
     val pendingDecision: PendingDecisionView?
 
-    /** Every action available to [agentToAct] this step. Action IDs are per-step. */
+    /** Every action available to [agentToAct] this step. Action IDs are opaque env-local handles. */
     val legalActions: List<LegalActionView>
 
     /** True once the env reached a terminal state (game over, or deck finalized). */
     val terminated: Boolean
+
+    /** True when an episode horizon stopped a non-terminal game. */
+    val truncated: Boolean
 
     /** Deterministic hash of the observable state, for MCTS transposition tables. */
     val stateDigest: String
@@ -48,8 +51,10 @@ sealed interface Observation {
  * [EntityFeatures.types] / [EntityFeatures.subtypes] / [EntityFeatures.keywords]
  * rather than as new fields.
  *
- * Action IDs in [legalActions] are **per-step** — they are regenerated every
- * time the environment advances and must not be cached across steps.
+ * Action IDs in [legalActions] are opaque env-local handles. A fresh
+ * observation generation gets fresh handles; repeated reads of one unchanged
+ * state keep the same handles. Handles are never rebound after the environment
+ * advances, resets, or restores, and must not be cached by trainers.
  */
 @Serializable
 @SerialName("Game")
@@ -60,7 +65,7 @@ data class TrainingObservation(
     /** The player whose information-set this observation represents. */
     val perspectivePlayerId: EntityId,
 
-    /** The player who needs to act next, or null if the game is over. */
+    /** The player who needs to act next, or null if the episode is over or truncated. */
     override val agentToAct: EntityId?,
 
     val turnNumber: Int,
@@ -85,11 +90,14 @@ data class TrainingObservation(
     /** Non-null when the engine paused for a player decision. */
     override val pendingDecision: PendingDecisionView?,
 
-    /** All actions available to [agentToAct]. Empty when the game is over. */
+    /** All actions available to [agentToAct]. Empty when the game is over or truncated. */
     override val legalActions: List<LegalActionView>,
 
     /** True if the game ended naturally. */
     override val terminated: Boolean,
+
+    /** True if the Gym horizon ended the episode before a Magic terminal state. */
+    override val truncated: Boolean,
 
     /** Set if [terminated] and there is a winner (null = draw or ongoing). */
     val winnerId: EntityId?,
@@ -225,9 +233,12 @@ data class StackItemView(
 enum class StackItemKind { SPELL, TRIGGERED_ABILITY, ACTIVATED_ABILITY, OTHER }
 
 /**
- * Compact view of a single legal action. Trainers post back the [actionId]
- * to commit. The registry mapping `Int → engine action` lives on the server
- * and is regenerated every step.
+ * Compact view of a single legal action. Trainers post back the opaque [actionId]
+ * to commit when [requiresStructuredAction] is false. If it is true, the
+ * action is a target/payment/mode/etc. template and the trainer must copy and
+ * complete [actionSemantics] in the structured step payload. The registry
+ * mapping `Int → engine action` lives on the server; handles are env-local and
+ * are never rebound to a later observation generation.
  *
  * Decision options (when [TrainingObservation.pendingDecision] is set and
  * the decision is simple enough to fold in — YesNo, ChooseNumber, ChooseMode,
@@ -249,6 +260,8 @@ data class LegalActionView(
     val maxTargets: Int = 0,
     val requiresDamageDistribution: Boolean = false,
     val isManaAbility: Boolean = false,
+    /** True when an action ID alone is not an executable player choice. */
+    val requiresStructuredAction: Boolean = false,
     /**
      * Structured, presentation-free action identity used by semantic equality and StateDigest.
      * This includes the engine action/decision payload but excludes the transport handle and

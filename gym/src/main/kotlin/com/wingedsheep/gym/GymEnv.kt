@@ -19,6 +19,9 @@ interface GymEnv {
     /** True once the env reached a terminal state (game over, or deck finalized). */
     val isTerminal: Boolean
 
+    /** True when an episode horizon ended before a natural terminal state. */
+    val isTruncated: Boolean
+
     /** Current perspective-safe observation without advancing. */
     fun observe(): ObservationResult
 

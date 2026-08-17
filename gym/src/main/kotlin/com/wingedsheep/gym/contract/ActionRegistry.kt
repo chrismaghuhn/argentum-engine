@@ -11,13 +11,16 @@ import com.wingedsheep.engine.legalactions.LegalAction
  * ## Lifecycle
  *
  * A new registry is built every time [TrainingObservation] is produced
- * (i.e., after every `reset()` / `step()`). IDs are **not stable across
- * steps** — the same integer means different things at different times.
- * Consumers must treat them as opaque handles valid only for the current
- * observation.
+ * (i.e., after every `reset()` / `step()`). The environment adapter remaps
+ * those builder-local IDs to monotonically increasing, env-local handles, so
+ * a handle from an older observation can never resolve to a different action
+ * in a later observation. Consumers must still treat them as opaque handles
+ * valid only for the current observation.
  *
- * This is documented as a contract guarantee: the server can regenerate
- * IDs freely between steps, and trainers must not cache them.
+ * This is documented as a contract guarantee: the server can regenerate the
+ * registry between steps, and trainers must not cache handles. If a stale
+ * handle is submitted anyway, it is rejected rather than being rebound to a
+ * newly enumerated action.
  */
 class ActionRegistry private constructor(
     private val legalActionsById: Map<Int, LegalAction>,
@@ -39,6 +42,28 @@ class ActionRegistry private constructor(
         get() = decisionResponsesById.entries.sortedBy { it.key }.map { it.key to it.value }
 
     val size: Int get() = legalActionsById.size + decisionResponsesById.size
+
+    /**
+     * Rebind the builder-local IDs to an environment-owned handle space.
+     *
+     * The mapping must cover every registry entry and must be injective. Keeping
+     * this operation on the registry ensures legal actions and folded decision
+     * responses cannot drift apart when an observation is remapped.
+     */
+    fun remapIds(idMapping: Map<Int, Int>): ActionRegistry {
+        val ids = legalActionsById.keys + decisionResponsesById.keys
+        require(ids.all(idMapping::containsKey)) {
+            "Action ID remapping is missing registry entries"
+        }
+        val mappedIds = ids.map(idMapping::getValue)
+        require(mappedIds.size == mappedIds.toSet().size) {
+            "Action ID remapping must be injective"
+        }
+        return ActionRegistry(
+            legalActionsById = legalActionsById.mapKeys { (id, _) -> idMapping.getValue(id) },
+            decisionResponsesById = decisionResponsesById.mapKeys { (id, _) -> idMapping.getValue(id) }
+        )
+    }
 
     companion object {
         val EMPTY = ActionRegistry(emptyMap(), emptyMap())

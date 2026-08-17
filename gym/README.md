@@ -70,22 +70,46 @@ svc.dispose(listOf(envId))
 Both APIs share the same `GameState`, `LegalAction`, and `PendingDecision`
 types — there's no parallel type hierarchy.
 
+### Structured action candidates
+
+`LegalActionView.requiresStructuredAction` is true when the enumerated engine
+action is a target/payment/mode/X/combat/order/Crew/Saddle template. In that case the action ID
+is an opaque candidate handle, but the caller must complete every required
+field in `actionSemantics` and submit it with the ID:
+
+```kotlin
+val action = opening.observation.legalActions.first { it.requiresStructuredAction }
+val completed = action.actionSemantics!! // fill explicit choice fields first
+svc.step(StepRequest(envId, action.actionId, completed))
+```
+
+The server-side registry supplies only opaque runtime fields (for example a
+generated activated-ability handle). Candidate binding and rules validation are
+authoritative; Gym never auto-selects a target or payment.
+
+Choice-bearing combat and keyword actions require their explicit slots even when
+the choice is empty: `attackers` plus `bands`, `blockers`, `orderedBlockers`,
+`crewCreatures`, or `saddleCreatures`. The candidate matcher still requires the
+original actor and source/card identity, so a completed payload cannot be rebound
+to another action.
+
 ## Design choices worth knowing about
 
-### Action IDs are per-step, not stable
+### Action IDs are opaque and never rebound
 
 `ActionRegistry` assigns integer IDs to legal actions / folded decisions
-for the current observation. **They are regenerated on every `step` /
-`reset` and should not be cached across steps.** A training loop fetches
-IDs from one observation and uses them immediately; if an old ID leaks
-into a later step, `MultiEnvService.step` throws `IllegalArgumentException`
-(which `:gym-server` maps to a 400).
+for the current observation. `GameGymEnv` remaps those builder-local values
+to monotonically increasing, env-local handles. The same state returned by a
+repeated `observe()` keeps the same wire handles; a successful `step`,
+`reset`, or `restore` gets a fresh handle generation. Trainers should still
+use only the IDs from their latest observation. If an old ID leaks into a
+later step, it cannot resolve to a newly enumerated action and
+`MultiEnvService.step` throws `IllegalArgumentException` (which
+`:gym-server` maps to a 400).
 
-Why not stable? Because MTG's action space is dynamic — different games
-expose different actions, and the same position at different times
-exposes a different legal set. Making IDs stable across steps would have
-required an up-front enumeration of the full action space, which neither
-scales across sets nor survives custom card sets.
+Handles are scoped to one environment and are never reused after reset or
+restore. The action space remains dynamic; the handle is only a fail-closed
+transport reference, not a stable semantic action identity.
 
 ### Simple decisions fold into the action space
 
@@ -108,9 +132,8 @@ multi-mode `ChooseModeDecision`, `BudgetModalDecision`) flag
 
 `ObservationBuilder` hides opponent hand and every library when building
 a `TrainingObservation`. Only zone sizes are reported for hidden zones.
-A `revealAll = true` flag is available for debug tooling and must not be
-enabled in real self-play (the agent would be training on leaked
-information).
+There is no production `revealAll` bypass. The observation also distinguishes
+natural termination from a configured Gym horizon through `truncated`.
 
 ### State digest for transposition tables
 
@@ -145,10 +168,15 @@ just test-gym                   # this module only
 ./gradlew :gym:test      # same via gradle
 ```
 
-35 tests across:
+The module suite covers:
 
 - `GameEnvironmentTest` — core reset/step/fork/evaluate/playGame.
+- `GameGymEnvActionContractTest` — structured action payload completeness,
+  action-candidate identity binding, and fail-closed stale handles.
+- `GameGymEnvSnapshotTest` — horizon-preserving snapshot/restore.
 - `TrainingObservationTest` — observation contract, masking, digest stability.
+- `ObservationCanonicalizationTest` and `ObservationPrivacyTest` — stable
+  semantic bytes and perspective-safe information hiding.
 - `MultiEnvServiceTest` — lifecycle, step-batch, fork/snapshot/restore,
   deck validation, perspective masking.
 

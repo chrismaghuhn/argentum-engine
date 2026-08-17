@@ -37,12 +37,18 @@ class SnapshotCodec {
     data class Entry(
         val state: GameState,
         val playerIds: List<EntityId>,
-        val stepCount: Int
+        val stepCount: Int,
+        val maxSteps: Int?
     )
 
-    fun save(state: GameState, playerIds: List<EntityId>, stepCount: Int): SnapshotHandle.Slot {
+    fun save(
+        state: GameState,
+        playerIds: List<EntityId>,
+        stepCount: Int,
+        maxSteps: Int?
+    ): SnapshotHandle.Slot {
         val id = nextId.getAndIncrement()
-        slots[id] = Entry(state, playerIds, stepCount)
+        slots[id] = Entry(state, playerIds, stepCount, maxSteps)
         return SnapshotHandle.Slot(id)
     }
 
