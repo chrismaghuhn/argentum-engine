@@ -4,7 +4,7 @@ import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
-import com.wingedsheep.mtg.sets.definitions.dom.cards.WoodlandCemetery
+import com.wingedsheep.mtg.sets.definitions.isd.cards.WoodlandCemetery
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
@@ -12,7 +12,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 
 /**
- * Woodland Cemetery (DOM #248)
+ * Woodland Cemetery (ISD #249)
  * Enters tapped unless its controller has a Swamp or Forest; {T}: add {B} or {G}.
  */
 class WoodlandCemeteryScenarioTest : FunSpec({

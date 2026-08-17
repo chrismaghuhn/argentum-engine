@@ -1,4 +1,4 @@
-package com.wingedsheep.mtg.sets.definitions.dom.cards
+package com.wingedsheep.mtg.sets.definitions.isd.cards
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
@@ -14,7 +14,7 @@ import com.wingedsheep.sdk.scripting.effects.AddManaEffect
 import com.wingedsheep.sdk.scripting.references.Player
 
 /**
- * Woodland Cemetery
+ * Woodland Cemetery — Innistrad #249 (canonical printing).
  * Land
  * This land enters tapped unless you control a Swamp or a Forest.
  * {T}: Add {B} or {G}.
@@ -47,9 +47,8 @@ val WoodlandCemetery = card("Woodland Cemetery") {
 
     metadata {
         rarity = Rarity.RARE
-        collectorNumber = "248"
-        artist = "Christine Choi"
-        flavorText = "They never found the body of young Josu, or that of his murderous sister.\n—\"The Fall of the House of Vess\""
-        imageUri = "https://cards.scryfall.io/normal/front/b/a/ba05cf47-9823-41f9-b893-321ea89e473e.jpg?1562741876"
+        collectorNumber = "249"
+        artist = "Lars Grant-West"
+        imageUri = "https://cards.scryfall.io/normal/front/6/7/67139101-ec5e-434b-be3a-21338cc33840.jpg?1783940892"
     }
 }
