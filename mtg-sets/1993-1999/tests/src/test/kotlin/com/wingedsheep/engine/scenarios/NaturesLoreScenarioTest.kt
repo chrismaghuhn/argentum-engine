@@ -21,6 +21,11 @@ import io.kotest.matchers.types.shouldBeInstanceOf
  */
 class NaturesLoreScenarioTest : FunSpec({
 
+    test("uses the current Oracle text for the canonical definition") {
+        NaturesLore.oracleText shouldBe
+            "Search your library for a Forest card, put that card onto the battlefield, then shuffle."
+    }
+
     fun createDriver(): GameTestDriver {
         val driver = GameTestDriver()
         driver.registerCards(TestCards.all)
@@ -47,8 +52,22 @@ class NaturesLoreScenarioTest : FunSpec({
         driver.bothPass()
 
         val decision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
-        decision.options shouldContain matching
+        decision.playerId shouldBe player
+        decision.context.sourceId shouldBe spell
+        decision.minSelections shouldBe 0
+        decision.maxSelections shouldBe 1
+        decision.options.toSet() shouldBe setOf(matching)
+        decision.cardInfo?.keys shouldBe setOf(matching)
         decision.options shouldNotContain invalid
+
+        val invalidSelection = driver.submitCardSelection(player, listOf(invalid))
+        invalidSelection.error shouldNotBe null
+        driver.pendingDecision shouldBe decision
+        driver.state.getLibrary(player) shouldContain invalid
+        driver.events.count {
+            it is LibraryShuffledEvent && it.playerId == player
+        } shouldBe shufflesBefore
+
         driver.submitCardSelection(player, listOf(matching)).isSuccess shouldBe true
 
         val forest = driver.findPermanent(player, "Forest")
