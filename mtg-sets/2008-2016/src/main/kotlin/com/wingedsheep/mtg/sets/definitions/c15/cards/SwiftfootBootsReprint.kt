@@ -1,0 +1,16 @@
+package com.wingedsheep.mtg.sets.definitions.c15.cards
+
+import com.wingedsheep.sdk.model.Printing
+import com.wingedsheep.sdk.model.Rarity
+
+val SwiftfootBootsReprint = Printing(
+    oracleId = "c8b143ad-43ec-4e0d-a440-e348daa31391",
+    name = "Swiftfoot Boots",
+    setCode = "C15",
+    collectorNumber = "271",
+    scryfallId = "b79b931d-93b6-46fa-8dff-87abe6dd7170",
+    artist = "Svetlin Velinov",
+    imageUri = "https://cards.scryfall.io/normal/front/b/7/b79b931d-93b6-46fa-8dff-87abe6dd7170.jpg?1783938047",
+    releaseDate = "2015-11-13",
+    rarity = Rarity.UNCOMMON,
+)
