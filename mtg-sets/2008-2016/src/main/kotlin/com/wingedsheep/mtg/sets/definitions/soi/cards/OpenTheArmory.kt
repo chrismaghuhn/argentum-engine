@@ -24,7 +24,8 @@ val OpenTheArmory = card("Open the Armory") {
     oracleText = "Search your library for an Aura or Equipment card, reveal it, put it into your hand, then shuffle."
     spell {
         effect = Patterns.Library.searchLibrary(
-            filter = GameObjectFilter.Enchantment.withSubtype("Aura"),
+            filter = GameObjectFilter.Enchantment.withSubtype("Aura") or
+                GameObjectFilter.Artifact.withSubtype("Equipment"),
             destination = SearchDestination.HAND,
             reveal = true
         )
