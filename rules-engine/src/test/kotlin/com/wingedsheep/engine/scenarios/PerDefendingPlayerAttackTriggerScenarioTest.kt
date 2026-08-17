@@ -815,6 +815,16 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
         paused.isPaused shouldBe true
         val decision = paused.pendingDecision as ChooseOptionDecision
         decision.options shouldHaveSize 2
+        decision.options shouldBe listOf(
+            "Trigger for player ${pod.playerB.value}",
+            "Trigger for player ${pod.playerC.value}"
+        )
+        decision.optionMetadata.map { it.triggeringPlayerId } shouldBe listOf(pod.playerB, pod.playerC)
+        decision.optionMetadata.map { it.id } shouldBe listOf(pod.playerB.value, pod.playerC.value)
+        decision.optionMetadata.map { it.description } shouldBe listOf(
+            "Trigger for player ${pod.playerB.value}",
+            "Trigger for player ${pod.playerC.value}"
+        )
         val continuation = paused.state.peekContinuation()
             ?: error("Delayed-trigger occurrence choice did not leave a continuation")
 
@@ -839,6 +849,8 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             json.encodeToString(GameState.serializer(), paused.state)
         )
         restoredPausedState shouldBe paused.state
+        (restoredPausedState.pendingDecision as ChooseOptionDecision).optionMetadata shouldBe
+            decision.optionMetadata
 
         val processor = ActionProcessor(pod.driver.cardRegistry)
         val invalid = processor.process(

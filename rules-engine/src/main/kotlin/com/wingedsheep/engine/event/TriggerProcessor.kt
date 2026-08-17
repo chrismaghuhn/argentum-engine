@@ -189,11 +189,19 @@ class TriggerProcessor(
                 sourceName = first.sourceName,
                 phase = DecisionPhase.TRIGGER
             ),
-            // The option is an occurrence slot, not a projection of the candidate's object.
-            // Keep the label generic: source/entity identifiers may be hidden or irrelevant to
-            // the chooser, while the deterministic index is sufficient to select the preserved
-            // trigger context below.
-            options = candidates.indices.map { index -> "Occurrence ${index + 1}" }
+            options = candidates.mapIndexed { index, candidate ->
+                candidate.triggerContext.triggeringPlayerId?.let { playerId ->
+                    "Trigger for player ${playerId.value}"
+                } ?: "Occurrence ${index + 1}"
+            },
+            optionMetadata = candidates.map { candidate ->
+                val triggeringPlayerId = candidate.triggerContext.triggeringPlayerId
+                OptionMetadata(
+                    id = triggeringPlayerId?.value,
+                    description = triggeringPlayerId?.let { "Trigger for player ${it.value}" },
+                    triggeringPlayerId = triggeringPlayerId
+                )
+            }
         )
         val continuation = DelayedTriggerOccurrenceChoiceContinuation(
             decisionId = decisionId,

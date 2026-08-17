@@ -5309,7 +5309,9 @@ Dominant back faces that "stay" instead self-exile on their final chapter, dodgi
       on the stack (`TriggerProcessor`), so a second matching event the same turn won't re-fire it.
       For `YouAttackPlayerEvent`, a single declaration can contain multiple simultaneous matching
       player occurrences. When `fireOnce = true`, the engine preserves the complete occurrence
-      domain and raises an owner-bound generic occurrence decision; the selected occurrence retains
+      domain and raises an owner-bound generic occurrence decision. Each candidate carries aligned
+      public `OptionMetadata.triggeringPlayerId` semantics so a controller can distinguish the
+      attacked player instead of receiving opaque ordinal slots. The selected occurrence retains
       its `TriggerContext`, the delayed watcher is consumed exactly once, and unselected
       occurrences are not silently chosen or consumed. Separate events are not combined into one
       choice. This is the CR 603.7b controller-choice path, not a collection-order fallback.

@@ -420,12 +420,16 @@ data class SplitPilesDecision(
  * - [description] is optional rules-text shown alongside the option label.
  * - [iconKey] is an optional asset identifier the frontend can map to an SVG
  *   icon. Cards may omit it for a purely textual choice.
+ * - [triggeringPlayerId] identifies the public player associated with a delayed-trigger
+ *   occurrence candidate. It is null for ordinary choices and for candidates without a
+ *   triggering player.
  */
 @Serializable
 data class OptionMetadata(
     val id: String? = null,
     val description: String? = null,
-    val iconKey: String? = null
+    val iconKey: String? = null,
+    val triggeringPlayerId: EntityId? = null
 )
 
 /**

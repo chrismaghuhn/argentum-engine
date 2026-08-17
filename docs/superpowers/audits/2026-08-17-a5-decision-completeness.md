@@ -2,7 +2,8 @@
 
 This audit is deliberately bounded to reusable decision plumbing. No card
 definition, Commander-specific policy, training code, or second rules engine is
-introduced on `agent/a5-decision-completeness`.
+introduced on `agent/a5-decision-completeness`; the existing Gym observation
+projection is extended only to carry the engine's structured option metadata.
 
 ## Provenance and reachability
 
@@ -62,7 +63,7 @@ validators remain authoritative.
 
 | Finding | Classification |
 | --- | --- |
-| Ambiguous one-shot delayed trigger matching multiple simultaneous attacked players | `IMPLEMENTED_EXTERNAL_CHOICE`; detector preserves the complete per-occurrence domain and the controller selects through a serialized continuation |
+| Ambiguous one-shot delayed trigger matching multiple simultaneous attacked players | `IMPLEMENTED_EXTERNAL_CHOICE_WITH_STRUCTURED_DOMAIN`; detector preserves the complete per-occurrence domain, exposes public `triggeringPlayerId` metadata, and the controller selects through a serialized continuation |
 | `GameEnvironment.playGame` fallback selector | `NOT_POLICY_RELEVANT`; convenience simulation API, not production Gym action selection |
 | Mana solver `first`/`minBy` choices | `EXTERNAL_PLAYER_CHOICE_ALREADY_CAPTURED` when AutoPay is explicitly selected; not changed by A5 |
 | Trigger detector `first`/`take(1)` in unambiguous or already-filtered paths | `UNIQUE_LEGAL_CHOICE` only where the surrounding predicate proves uniqueness; Issue #22 path is excluded |
@@ -73,17 +74,19 @@ validators remain authoritative.
 
 The official Comprehensive Rules text is the current source for rule 603.7b:
 <https://media.wizards.com/2026/downloads/MagicCompRules%2020260808.txt>.
-Issue #22 is now **IMPLEMENTED** for the bounded reusable delayed-trigger
-surface. `TriggerDetector` groups all matching occurrences from the same event
-for a fire-once delayed ability into a serializable marker. It does not combine
-separate events or choose by `first()`/collection order. `TriggerProcessor`
-converts the marker into an owner-bound generic `ChooseOptionDecision`, while
-`DelayedTriggerOccurrenceChoiceContinuation` carries every occurrence's bound
-`TriggerContext` and any trailing triggers. The resumer processes only the
-selected occurrence, removes the delayed-trigger ID exactly once, preserves the
-unselected candidates, and resumes trailing triggers through the normal APNAP
-pipeline. Unambiguous fire-once and reusable delayed triggers retain their
-previous behavior.
+Issue #22 remains **OPEN** on GitHub until its maintainer closes it, but the
+bounded reusable delayed-trigger implementation now has a meaningful external
+candidate domain. `TriggerDetector` groups all matching occurrences from the
+same event for a fire-once delayed ability into a serializable marker. It does
+not combine separate events or choose by `first()`/collection order.
+`TriggerProcessor` converts the marker into an owner-bound generic
+`ChooseOptionDecision` whose options and aligned `OptionMetadata` identify the
+public `triggeringPlayerId` for each occurrence. `DelayedTriggerOccurrenceChoiceContinuation`
+carries every occurrence's bound `TriggerContext` and any trailing triggers.
+The resumer processes only the selected occurrence, removes the delayed-trigger
+ID exactly once, preserves the unselected candidates, and resumes trailing
+triggers through the normal APNAP pipeline. Unambiguous fire-once and reusable
+delayed triggers retain their previous behavior.
 
 The focused acceptance matrix now covers domain completeness, per-occurrence
 context, invalid index, wrong-owner rejection, marker/continuation serialization,
@@ -92,15 +95,17 @@ separate-event non-combination in `PerDefendingPlayerAttackTriggerScenarioTest`.
 
 ## Serialization, privacy, and determinism
 
-The new occurrence candidate payload and continuation are serializable and are
-registered in `engineSerializersModule`. Decision IDs remain routing handles;
-the selected occurrence is carried by its preserved semantic context rather
-than by a client-supplied object. Options are generic occurrence slots, so no
-hidden entity identity is copied into the decision label. The focused test
-round-trips the full paused `GameState`, replays a selection, and proves two
-immutable forks can choose different occurrences. The A4 observation contract
-is not broadened by this branch, and hidden library domains stay inside the
-acting player's pending decision rather than the opponent's observation.
+The new occurrence candidate payload, option metadata, and continuation are
+serializable and are registered in `engineSerializersModule`. Decision IDs
+remain routing handles; the selected occurrence is carried by its preserved
+semantic context rather than by a client-supplied object. The public player ID
+is already present in the acting player's visible player projection, so the
+structured `triggeringPlayerId` field does not reveal hidden card/entity
+identity. `ObservationBuilder` folds the selected metadata into each legal
+decision action's `actionSemantics`, which makes it part of `StateDigest`; it
+does so only for the pending decision owner. The focused tests round-trip the
+full paused `GameState`, replay a selection, verify observation wire bytes and
+digest sensitivity, and prove non-owner masking plus immutable fork divergence.
 
 ## Verification and review status
 
@@ -111,12 +116,15 @@ fails before Gradle with the known Python 3.14 extensionless-helper
 Gradle successfully. Evidence:
 
 * `PerDefendingPlayerAttackTriggerScenarioTest`: 28/28
-* `:rules-engine:test`: 2,981/2,981
+* `TrainingObservationTest`: 6/6; `ObservationPrivacyTest`: 27/27
+* `:rules-engine:test`: 2,981/2,981; `:gym:test`: 81/81
+* `:gym-server:test`: 12/12; `:game-server:test`: 529/529 (13 skipped)
+* `:ai:test`: 507/507 (11 skipped)
 
 The full rules-engine gate passed after the final test additions. The frozen
 baseline fixture hash `6ff9ded1403d59ac` (distinct from the pinned source
 `BASE_SHA`) was not reblessed and no snapshots were changed.
-No P0 was introduced. Trigger-ordering remains a separate
+No P0/P1 remains in this bounded occurrence-domain slice. Trigger-ordering remains a separate
 `NEEDS_RULES_CHARACTERIZATION` item; it was not conflated with occurrence
 selection. Generic A5 implementation status is **GREEN_WITH_DOCUMENTED_LAUNCHER_FALLBACK**;
 the overnight exact-pair status remains **PARTIAL** because

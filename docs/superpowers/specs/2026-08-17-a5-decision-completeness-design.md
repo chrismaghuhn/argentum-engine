@@ -12,12 +12,15 @@ may choose `first`, random, or iteration order for a meaningful player choice.
 The first implementation slice fixes validator holes that can admit malformed
 responses: duplicate card selections, incomplete target maps, duplicate modes,
 negative distributions, and mana-source IDs outside the advertised domain. Each
-change is generic and does not add a card-specific path or touch Gym.
+validator change is generic and does not add a card-specific path; the later
+occurrence-domain projection is the only Gym-facing addition.
 
 The delayed-trigger ambiguity from Issue #22 is externalized through a generic,
 serializable occurrence decision plus continuation. The detector preserves each
 occurrence-specific `TriggerContext`; the controller chooses one occurrence, and
-the resumer consumes the fire-once trigger exactly once. Any deeper trigger-order
+the decision domain exposes aligned public `triggeringPlayerId` metadata so a
+controller can distinguish B from C rather than receiving opaque ordinal slots.
+The resumer consumes the fire-once trigger exactly once. Any deeper trigger-order
 gap remains explicitly fail-closed; no first-match or iteration-order fallback is
 permitted.
 
