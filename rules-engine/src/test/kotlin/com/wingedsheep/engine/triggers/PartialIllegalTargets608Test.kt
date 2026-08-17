@@ -184,6 +184,50 @@ class PartialIllegalTargets608Test : FunSpec({
         lifeBefore + 1 shouldBe driver.getLifeTotal(driver.player1)
     }
 
+    test("608-05b: an illegal mode target does not suppress its non-targeted sibling") {
+        val driver = driver()
+        val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val second = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature()
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.Composite(
+                        Effects.Destroy(EffectTarget.ContextTarget(0)),
+                        Effects.GainLife(1)
+                    ),
+                    targetRequirements = listOf(requirement),
+                    description = "Destroy a target creature and gain 1 life"
+                ),
+                Mode(
+                    effect = Effects.Destroy(EffectTarget.ContextTarget(0)),
+                    targetRequirements = listOf(requirement),
+                    description = "Destroy another target creature"
+                )
+            ),
+            chooseCount = 2
+        )
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+
+        putTriggeredAbility(
+            driver,
+            effect = modal,
+            targets = listOf(ChosenTarget.Permanent(first), ChosenTarget.Permanent(second)),
+            targetRequirements = listOf(requirement, requirement),
+            chosenModes = listOf(0, 1),
+            modeTargetsOrdered = listOf(
+                listOf(ChosenTarget.Permanent(first)),
+                listOf(ChosenTarget.Permanent(second))
+            ),
+            modeTargetRequirements = mapOf(0 to listOf(requirement), 1 to listOf(requirement))
+        )
+        driver.moveToGraveyard(first)
+        driver.bothPass()
+
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore + 1
+        (second in driver.state.getBattlefield()) shouldBe false
+    }
+
     test("608-06: legal target portions and non-targeted instructions both resolve") {
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")

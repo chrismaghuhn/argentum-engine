@@ -290,13 +290,13 @@ internal fun processPreTargetedEffectQueue(
         )
     } else TargetValidator.ResolutionTargetPayload(emptyList(), emptyList())
 
-    // A mode whose entire locked target slice is illegal contributes no effect. Do not invoke a
-    // target-consuming executor with an empty payload: many existing executors correctly reject a
-    // missing target when called directly, while CR 608.2b requires the parent spell to continue
-    // with its other legal modes/parts.
-    if (head.targets.isNotEmpty() && resolutionTargets.targets.isEmpty()) {
-        return processPreTargetedEffectQueue(state, tail, ctx, effectExecutor, targetValidator, accumulatedEvents)
-    }
+    // A mode whose entire locked target slice is illegal has no target payload, but the mode's
+    // other instructions still belong to the resolving parent object if another mode has a legal
+    // target (CR 608.2b). Execute with the empty payload so a CompositeEffect can skip only its
+    // target-consuming child and continue to a non-targeted sibling. A direct target-consuming
+    // executor may report its missing target as an error; that error is treated as the no-op for
+    // this illegal slice below, rather than aborting the remaining mode queue.
+    val allTargetsIllegalForEntry = head.targets.isNotEmpty() && resolutionTargets.targets.isEmpty()
 
     val effectContext = EffectContext(
         sourceId = ctx.sourceId,
@@ -338,6 +338,22 @@ internal fun processPreTargetedEffectQueue(
         return EffectResult.paused(result.state, result.pendingDecision!!, nextEvents)
     }
     if (result.error != null) {
+        if (allTargetsIllegalForEntry) {
+            val nextState = if (tail.isNotEmpty()) {
+                val (_, afterPop) = result.state.popContinuation()
+                afterPop
+            } else {
+                result.state
+            }
+            return processPreTargetedEffectQueue(
+                nextState,
+                tail,
+                ctx,
+                effectExecutor,
+                targetValidator,
+                nextEvents
+            )
+        }
         return EffectResult(state = result.state, events = nextEvents, error = result.error)
     }
 
