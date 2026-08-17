@@ -246,7 +246,7 @@
 {
     "name": "Sram, Senior Edificer",
     "manaCost": "{1}{W}",
-    "typeLine": "Legendary Creature � Dwarf Advisor",
+    "typeLine": "Legendary Creature — Dwarf Advisor",
     "oracleText": "Whenever you cast an Aura, Equipment, or Vehicle spell, draw a card.",
     "creatureStats": {
         "power": 2,
