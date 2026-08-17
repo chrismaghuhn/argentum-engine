@@ -30,6 +30,13 @@ class TempleOfTriumphScenarioTest : FunSpec({
         return driver
     }
 
+    test("keeps the canonical THS printing metadata") {
+        TempleOfTriumph.metadata.collectorNumber shouldBe "228"
+        TempleOfTriumph.metadata.artist shouldBe "Jason Felix"
+        TempleOfTriumph.metadata.imageUri shouldBe
+            "https://cards.scryfall.io/normal/front/4/f/4f53049c-2491-4d20-aa19-00eb5c55b438.jpg?1783939714"
+    }
+
     test("enters tapped and its scry trigger can keep the top card") {
         val driver = createDriver()
         val player = driver.activePlayer!!
@@ -73,5 +80,19 @@ class TempleOfTriumphScenarioTest : FunSpec({
         driver.submit(ActivateAbility(player, temple, whiteAbilityId)).isSuccess shouldBe true
         val afterWhite = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
         afterWhite.white shouldBe 1
+    }
+
+    test("neither mana ability can activate while the temple is tapped") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        val temple = driver.putPermanentOnBattlefield(player, "Temple of Triumph")
+        driver.tapPermanent(temple)
+
+        val result = driver.submit(ActivateAbility(player, temple, redAbilityId))
+
+        result.isSuccess shouldBe false
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
+        pool.red shouldBe 0
+        pool.white shouldBe 0
     }
 })
