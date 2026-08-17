@@ -268,6 +268,8 @@ data class TriggeredAbilityOnStackComponent(
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),
     /** Per-mode requirements in chosen-mode ordinal order, with cast-time slot counts locked. */
     val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
+    /** Original flat target-payload start for each chosen mode, including outer trigger targets. */
+    val modeTargetSlotStarts: List<Int> = emptyList(),
     val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     /** Entities a batch trigger captured (the matching permanents in a `PermanentsEnteredEvent`
      *  batch). Seeded into the resolving ability's pipeline under

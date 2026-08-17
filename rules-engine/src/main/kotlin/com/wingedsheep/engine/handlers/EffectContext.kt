@@ -172,6 +172,8 @@ data class EffectContext(
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),
     /** Per-mode requirements in chosen-mode ordinal order, with cast-time slot counts locked. */
     val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
+    /** Original flat target-payload start for each chosen mode, including outer trigger targets. */
+    val modeTargetSlotStarts: List<Int> = emptyList(),
     /** Number of cards exiled as an additional cost (for ExileVariableCards) */
     val exiledCardCount: Int = 0,
     /** X chosen for [com.wingedsheep.sdk.scripting.AdditionalCost.BlightVariable] */
@@ -621,6 +623,7 @@ data class EffectContext(
             modeTargetsOrdered = ability.modeTargetsOrdered,
             modeTargetRequirements = ability.modeTargetRequirements,
             modeTargetRequirementsOrdered = ability.modeTargetRequirementsOrdered,
+            modeTargetSlotStarts = ability.modeTargetSlotStarts,
             pipeline = PipelineState(
                 namedTargets = buildNamedTargets(
                     targetRequirements,

@@ -145,6 +145,10 @@ data class ModalPreChosenContinuation(
      */
     @Deprecated("Use each PreTargetedEffectEntry.alignedTargets slot mask")
     val legalTargets: List<ChosenTarget>? = null,
+    /** Outer target scope retained for targetless pre-chosen modes after a nested pause. */
+    val outerTargets: List<ChosenTarget> = emptyList(),
+    val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
+    val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
     val remainingEntries: List<PreTargetedEffectEntry>
 ) : ContinuationFrame
 

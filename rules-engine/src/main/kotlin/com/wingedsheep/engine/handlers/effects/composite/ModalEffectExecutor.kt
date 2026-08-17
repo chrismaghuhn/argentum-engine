@@ -182,9 +182,12 @@ class ModalEffectExecutor(
             modeTargetsOrdered = context.modeTargetsOrdered,
             modeTargetRequirements = context.modeTargetRequirements,
             modeTargetRequirementsOrdered = context.modeTargetRequirementsOrdered,
-            alignedTargets = context.alignedTargets
+            alignedTargets = context.alignedTargets,
+            modeTargetSlotStarts = context.modeTargetSlotStarts
         ).map { entry -> entry.copy(targetEntryStamps = context.targetEntryStamps) }
         val sourceName = context.sourceId?.let { id -> state.getEntity(id)?.get<CardComponent>()?.name }
+        val outerSlotCount = context.modeTargetSlotStarts.firstOrNull()?.coerceAtLeast(0) ?: 0
+        val outerAlignedTargets = context.alignedTargets.take(outerSlotCount)
         val baseCtx = PreTargetedEffectContext(
             controllerId = context.controllerId,
             sourceId = context.sourceId,
@@ -193,7 +196,10 @@ class ModalEffectExecutor(
             triggeringEntityId = context.triggeringEntityId,
             triggeringPlayerId = context.triggeringPlayerId,
             storedCollections = context.pipeline.storedCollections,
-            targetingSourceType = context.targetingSourceType
+            targetingSourceType = context.targetingSourceType,
+            outerTargets = outerAlignedTargets.filterNotNull(),
+            outerAlignedTargets = outerAlignedTargets,
+            outerNamedTargets = context.pipeline.namedTargets
         )
         return processPreTargetedEffectQueue(state, entries, baseCtx, effectExecutor, targetValidator, emptyList())
     }
@@ -212,9 +218,12 @@ class ModalEffectExecutor(
             modeTargetsOrdered: List<List<com.wingedsheep.engine.state.components.stack.ChosenTarget>>,
             modeTargetRequirements: Map<Int, List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>>,
             modeTargetRequirementsOrdered: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList(),
-            alignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?> = emptyList()
+            alignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?> = emptyList(),
+            modeTargetSlotStarts: List<Int> = emptyList()
         ): List<PreTargetedEffectEntry> {
-            var flatSlotStart = 0
+            val explicitSlotStarts = modeTargetSlotStarts.isNotEmpty()
+            var derivedFlatSlotStart = 0
+            var previousExplicitEnd = 0
             var prefixMetadataLocked = true
             return chosenModes.mapIndexed { ordinal, modeIndex ->
                 val mode = effect.modes.getOrNull(modeIndex)
@@ -225,6 +234,16 @@ class ModalEffectExecutor(
                     ?: modeTargetRequirements[modeIndex]
                     ?: emptyList()
                 val slotCount = reqs.sumOf { it.count.coerceAtLeast(0) }
+                val flatSlotStart = if (explicitSlotStarts) {
+                    modeTargetSlotStarts.getOrNull(ordinal) ?: -1
+                } else {
+                    derivedFlatSlotStart
+                }
+                val offsetMetadataValid = !explicitSlotStarts || (
+                    modeTargetSlotStarts.size == chosenModes.size &&
+                        flatSlotStart >= 0 &&
+                        (ordinal == 0 || flatSlotStart == previousExplicitEnd)
+                    )
                 val alignmentAvailable = flatSlotStart >= 0 &&
                     flatSlotStart + slotCount <= alignedTargets.size
                 val alignedSlice = if (alignmentAvailable) {
@@ -235,7 +254,7 @@ class ModalEffectExecutor(
                 val targetShapeLocked = rawTargets.size == slotCount
                 val slotMetadataLocked = prefixMetadataLocked &&
                     (hasLockedRequirements || (slotCount == 0 && rawTargets.isEmpty())) &&
-                    targetShapeLocked && alignmentAvailable
+                    targetShapeLocked && alignmentAvailable && offsetMetadataValid
                 val targets = if (slotMetadataLocked) {
                     alignedSlice.mapIndexed { index, aligned -> aligned ?: rawTargets[index] }
                 } else {
@@ -252,7 +271,11 @@ class ModalEffectExecutor(
                     slotMetadataLocked = slotMetadataLocked
                 )
                 prefixMetadataLocked = slotMetadataLocked
-                flatSlotStart += slotCount
+                if (explicitSlotStarts) {
+                    previousExplicitEnd = flatSlotStart + slotCount
+                } else {
+                    derivedFlatSlotStart += slotCount
+                }
                 entry
             }
         }
@@ -279,7 +302,10 @@ internal data class PreTargetedEffectContext(
     val triggeringPlayerId: com.wingedsheep.sdk.model.EntityId? = null,
     val storedCollections: Map<String, List<com.wingedsheep.sdk.model.EntityId>> = emptyMap(),
     val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
-        com.wingedsheep.engine.handlers.TargetingSourceType.ANY
+        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
+    val outerTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget> = emptyList(),
+    val outerAlignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?> = emptyList(),
+    val outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget> = emptyMap()
 )
 
 /**
@@ -352,19 +378,27 @@ internal fun processPreTargetedEffectQueue(
         !slotMetadataValid || head.targets.isEmpty() || resolutionTargets.alignedTargets.any { it == null }
     )
 
+    val modeTargets = if (targetedEntry) resolutionTargets.targets else ctx.outerTargets
+    val modeAlignedTargets = if (targetedEntry) {
+        resolutionTargets.alignedTargets
+    } else {
+        ctx.outerAlignedTargets
+    }
+    val modeNamedTargets = if (targetedEntry) {
+        EffectContext.buildNamedTargets(head.targetRequirements, resolutionTargets.alignedTargets)
+    } else {
+        ctx.outerNamedTargets
+    }
     val effectContext = EffectContext(
         sourceId = ctx.sourceId,
         controllerId = ctx.controllerId,
         xValue = ctx.xValue,
-        targets = resolutionTargets.targets,
-        alignedTargets = resolutionTargets.alignedTargets,
+        targets = modeTargets,
+        alignedTargets = modeAlignedTargets,
         targetEntryStamps = head.targetEntryStamps,
         targetingSourceType = ctx.targetingSourceType,
         pipeline = PipelineState(
-            namedTargets = EffectContext.buildNamedTargets(
-                head.targetRequirements,
-                resolutionTargets.alignedTargets
-            ),
+            namedTargets = modeNamedTargets,
             storedCollections = ctx.storedCollections
         ),
         triggeringEntityId = ctx.triggeringEntityId,
@@ -385,6 +419,9 @@ internal fun processPreTargetedEffectQueue(
                 triggeringPlayerId = ctx.triggeringPlayerId,
                 storedCollections = ctx.storedCollections,
                 targetingSourceType = ctx.targetingSourceType,
+                outerTargets = ctx.outerTargets,
+                outerAlignedTargets = ctx.outerAlignedTargets,
+                outerNamedTargets = ctx.outerNamedTargets,
                 remainingEntries = tail
             )
         )

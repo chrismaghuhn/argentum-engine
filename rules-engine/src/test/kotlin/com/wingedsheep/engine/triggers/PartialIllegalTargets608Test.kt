@@ -3,11 +3,13 @@ package com.wingedsheep.engine.triggers
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.ModalTargetContinuation
+import com.wingedsheep.engine.core.ModalPreChosenContinuation
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.PreTargetedEffectEntry
 import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
+import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -550,6 +552,95 @@ class PartialIllegalTargets608Test : FunSpec({
         driver.state.getEntity(survivor)?.has<TappedComponent>() shouldBe false
     }
 
+    test("608-11e: pre-chosen modal trigger keeps mode target after an illegal outer target") {
+        val driver = driver()
+        val outerTarget = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val modeTarget = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.Tap(EffectTarget.ContextTarget(0)),
+                    targetRequirements = listOf(TargetCreature()),
+                    description = "Tap the mode target"
+                )
+            ),
+            chooseCount = 1
+        )
+
+        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = processor.presentTriggerModalTargetDecision(
+            state = driver.state,
+            ability = TriggeredAbilityOnStackComponent(
+                sourceId = driver.player1,
+                sourceName = "Synthetic pre-chosen modal trigger",
+                controllerId = driver.player1,
+                effect = modal,
+                description = "Synthetic pre-chosen modal trigger"
+            ),
+            outerTargets = listOf(ChosenTarget.Permanent(outerTarget)),
+            outerTargetRequirements = listOf(TargetCreature()),
+            modes = modal.modes,
+            chosenModeIndices = listOf(0),
+            resolvedModeTargets = listOf(listOf(ChosenTarget.Permanent(modeTarget))),
+            currentOrdinal = 1,
+            resolvedModeTargetRequirements = listOf(listOf(TargetCreature())),
+            causedByAttack = false,
+            recordChosenModesOnSource = false,
+            recordChosenModesThisTurn = false
+        )
+        result.error shouldBe null
+        driver.replaceState(result.newState)
+        driver.state.getEntity(driver.state.stack.single())
+            ?.get<TriggeredAbilityOnStackComponent>()?.modeTargetSlotStarts shouldBe listOf(1)
+        driver.moveToGraveyard(outerTarget)
+        driver.bothPass()
+
+        driver.state.getEntity(modeTarget)?.has<TappedComponent>() shouldBe true
+    }
+
+    test("608-11f: pre-chosen targetless modal trigger inherits outer target scope") {
+        val driver = driver()
+        val outerTarget = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.Tap(EffectTarget.ContextTarget(0)),
+                    description = "Tap the outer target"
+                )
+            ),
+            chooseCount = 1
+        )
+
+        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+        val result = processor.presentTriggerModalTargetDecision(
+            state = driver.state,
+            ability = TriggeredAbilityOnStackComponent(
+                sourceId = driver.player1,
+                sourceName = "Synthetic targetless modal trigger",
+                controllerId = driver.player1,
+                effect = modal,
+                description = "Synthetic targetless modal trigger"
+            ),
+            outerTargets = listOf(ChosenTarget.Permanent(outerTarget)),
+            outerTargetRequirements = listOf(TargetCreature()),
+            modes = modal.modes,
+            chosenModeIndices = listOf(0),
+            resolvedModeTargets = listOf(emptyList()),
+            currentOrdinal = 1,
+            resolvedModeTargetRequirements = listOf(emptyList()),
+            causedByAttack = false,
+            recordChosenModesOnSource = false,
+            recordChosenModesThisTurn = false
+        )
+        result.error shouldBe null
+        driver.replaceState(result.newState)
+        driver.state.getEntity(driver.state.stack.single())
+            ?.get<TriggeredAbilityOnStackComponent>()?.modeTargetSlotStarts shouldBe listOf(1)
+        driver.bothPass()
+
+        driver.state.getEntity(outerTarget)?.has<TappedComponent>() shouldBe true
+    }
+
     test("608-12: a direct target executor no-ops and the modal tail continues") {
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
@@ -771,6 +862,21 @@ class PartialIllegalTargets608Test : FunSpec({
         )
         val modalEncoded = json.encodeToString(ModalTargetContinuation.serializer(), modalContinuation)
         json.decodeFromString(ModalTargetContinuation.serializer(), modalEncoded) shouldBe modalContinuation
+
+        val preChosenContinuation = ModalPreChosenContinuation(
+            decisionId = "608-16b-pre-chosen",
+            controllerId = driver.player1,
+            sourceId = null,
+            sourceName = null,
+            outerTargets = listOf(ChosenTarget.Permanent(target)),
+            outerAlignedTargets = listOf(null, ChosenTarget.Permanent(target)),
+            remainingEntries = listOf(entry)
+        )
+        val preChosenEncoded = json.encodeToString(
+            ModalPreChosenContinuation.serializer(), preChosenContinuation
+        )
+        json.decodeFromString(ModalPreChosenContinuation.serializer(), preChosenEncoded) shouldBe
+            preChosenContinuation
     }
 
     test("608-17: a dynamic up-to maximum is locked before resolution") {

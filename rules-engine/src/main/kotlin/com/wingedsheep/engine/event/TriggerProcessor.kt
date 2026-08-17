@@ -1315,6 +1315,27 @@ class TriggerProcessor(
             )
         }
 
+        // CR 603.3d locks the triggered ability's complete flat target payload before it reaches
+        // the stack. Preserve each mode's original offset rather than making the resolution
+        // executor infer it from a compact target list; the first mode follows the trigger's own
+        // target slots, and later modes follow the preceding mode slots, including zero-slot modes.
+        val modeTargetSlotStarts = if (
+            resolvedModeTargets.size == chosenModeIndices.size &&
+            resolvedModeTargetRequirements.size == chosenModeIndices.size
+        ) {
+            buildList {
+                var nextStart = outerTargets.size
+                resolvedModeTargets.forEach { modeTargets ->
+                    add(nextStart)
+                    nextStart += modeTargets.size
+                }
+            }
+        } else {
+            // Malformed pre-chosen payloads must fail closed in the generic queue rather than
+            // falling back to a recomputed offset.
+            List(chosenModeIndices.size) { -1 }
+        }
+
         val component = ability.copy(
             chosenModes = chosenModeIndices,
             modeTargetsOrdered = resolvedModeTargets,
@@ -1323,7 +1344,8 @@ class TriggerProcessor(
                 resolvedModeTargetRequirements.getOrNull(ordinal)
                     ?: modes[modeIndex].targetRequirements
             },
-            modeTargetRequirementsOrdered = resolvedModeTargetRequirements
+            modeTargetRequirementsOrdered = resolvedModeTargetRequirements,
+            modeTargetSlotStarts = modeTargetSlotStarts
         )
         val flatTargets = outerTargets + resolvedModeTargets.flatten()
         val flatRequirements = outerTargetRequirements +
