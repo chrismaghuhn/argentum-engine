@@ -667,6 +667,53 @@
     ]
 }
 
+// Reyav, Master Smith
+{
+    "name": "Reyav, Master Smith",
+    "manaCost": "{R}{W}",
+    "typeLine": "Legendary Creature � Dwarf Artificer",
+    "oracleText": "Whenever a creature you control that's enchanted or equipped attacks, that creature gains double strike until end of turn.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "AttackEvent",
+                    "filter": {
+                        "cardPredicates": [
+                            "IsCreature"
+                        ],
+                        "statePredicates": [
+                            "IsEquipped"
+                        ],
+                        "controllerPredicate": "ControlledByYou"
+                    }
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "GrantKeyword",
+                    "keyword": "DOUBLE_STRIKE",
+                    "target": "TriggeringEntity"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "290",
+        "rarity": "UNCOMMON",
+        "artist": "Scott Murphy",
+        "imageUri": "https://cards.scryfall.io/normal/front/9/0/90307dd6-196d-4d51-9b3f-6ff339882d31.jpg?1783928769"
+    },
+    "colorIdentityOverride": [
+        "RED",
+        "WHITE"
+    ]
+}
+
 // Slash the Ranks
 {
     "name": "Slash the Ranks",
