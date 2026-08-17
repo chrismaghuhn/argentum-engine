@@ -28,6 +28,7 @@ class GameGymEnv(
     private var registry: ActionRegistry = ActionRegistry.EMPTY
 
     override val isTerminal: Boolean get() = environment.state.gameOver
+    override val isTruncated: Boolean get() = environment.isTruncated
 
     override fun observe(): ObservationResult = build()
 
@@ -43,15 +44,21 @@ class GameGymEnv(
     // --- game-only operations (used by MultiEnvService via cast) -------------
 
     /** Re-initialise the underlying game in place. */
-    fun reset(gameConfig: GameConfig): ObservationResult {
-        environment.reset(gameConfig)
+    fun reset(gameConfig: GameConfig, maxSteps: Int? = null): ObservationResult {
+        environment.reset(gameConfig, maxSteps)
         return build()
     }
 
     /** Submit a raw `DecisionResponse` while paused on a complex decision. */
-    fun submitDecision(response: DecisionResponse): ObservationResult {
+    fun submitDecision(
+        response: DecisionResponse,
+        actorId: com.wingedsheep.sdk.model.EntityId? = null
+    ): ObservationResult {
         val pending = environment.state.pendingDecision
             ?: throw IllegalStateException("Env is not paused on a decision")
+        check(actorId == null || actorId == pending.playerId) {
+            "Decision actor mismatch: actor=$actorId, expected=${pending.playerId}"
+        }
         check(response.decisionId == pending.id) {
             "Decision ID mismatch: response=${response.decisionId}, pending=${pending.id}"
         }
@@ -64,11 +71,12 @@ class GameGymEnv(
             state = environment.state,
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
+            maxSteps = environment.maxSteps,
         )
 
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
         val snap = codec.load(handle)
-        environment.restore(snap.state, snap.playerIds, snap.stepCount)
+        environment.restore(snap.state, snap.playerIds, snap.stepCount, snap.maxSteps)
         return build()
     }
 
@@ -78,7 +86,10 @@ class GameGymEnv(
         val perspective = environment.playerIds.getOrNull(perspectivePlayerIndex)
             ?: throw IllegalStateException("Env has no player at index $perspectivePlayerIndex")
         val result = observationBuilder.build(
-            environment.state, perspective, environment.legalActions()
+            environment.state,
+            perspective,
+            environment.legalActions(),
+            truncated = environment.isTruncated
         )
         registry = result.registry
         return result

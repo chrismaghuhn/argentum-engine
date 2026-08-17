@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.service
 
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Format
 import kotlinx.serialization.Serializable
 
 /**
@@ -12,6 +13,9 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class EnvConfig(
     val players: List<PlayerSpec>,
+
+    /** Runtime rules format. Commander Gym is restricted to a two-player slice. */
+    val format: Format = Format.Standard,
 
     /** Opening-hand size. Standard MTG = 7. */
     val startingHandSize: Int = 7,
@@ -32,6 +36,12 @@ data class EnvConfig(
      */
     val startingPlayerIndex: Int? = null,
 
+    /** Explicit seed for reproducible reset/fork experiments; null preserves live entropy. */
+    val seed: Long? = null,
+
+    /** Optional episode horizon. Reaching it truncates the episode without changing Magic state. */
+    val maxSteps: Int? = null,
+
     /**
      * Which player's information-set the default [com.wingedsheep.gym.contract.TrainingObservation]
      * represents. Callers can still override per-request when observing.
@@ -41,6 +51,15 @@ data class EnvConfig(
 ) {
     init {
         require(players.size >= 2) { "Need at least 2 players" }
+        if (format is Format.Commander) {
+            require(players.size == 2) {
+                "Commander Gym currently requires exactly 2 players, got ${players.size}"
+            }
+            require(players.all { !it.commanderCardName.isNullOrBlank() }) {
+                "Commander Gym requires a non-blank commander identity for every player"
+            }
+        }
+        require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
         require(perspectivePlayerIndex in players.indices) {
             "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${players.size} players"
         }
@@ -78,7 +97,9 @@ data class PlayerSpec(
     val name: String,
     val deck: DeckSpec,
     val startingLife: Int = 20,
-    val playerId: EntityId? = null
+    val playerId: EntityId? = null,
+    /** Commander card identity, required by the rules engine for Commander format. */
+    val commanderCardName: String? = null
 )
 
 /** A single environment's `step()` input — batched into [com.wingedsheep.gym.service.MultiEnvService.stepBatch]. */

@@ -57,7 +57,7 @@ class MultiEnvService(
     fun create(config: EnvConfig): CreatedEnv {
         val gameConfig = config.toGameConfig()
         val env = GameEnvironment.create(cardRegistry)
-        env.reset(gameConfig)
+        env.reset(gameConfig, maxSteps = config.maxSteps)
         val gymEnv = GameGymEnv(
             environment = env,
             perspectivePlayerIndex = config.perspectivePlayerIndex,
@@ -86,7 +86,7 @@ class MultiEnvService(
 
     /** Reset an existing game env while keeping the same [EnvId]. */
     fun reset(envId: EnvId, config: EnvConfig): ObservationResult =
-        requireGameEnv(envId).reset(config.toGameConfig())
+        requireGameEnv(envId).reset(config.toGameConfig(), maxSteps = config.maxSteps)
 
     /** Drop envs from the registry. Idempotent. */
     fun dispose(envIds: Collection<EnvId>) {
@@ -121,8 +121,12 @@ class MultiEnvService(
      * Submit a raw `DecisionResponse` for a game env paused on a complex pending
      * decision. Simple decisions are driven via [step] with a folded action ID.
      */
-    fun submitDecision(envId: EnvId, response: DecisionResponse): ObservationResult =
-        requireGameEnv(envId).submitDecision(response)
+    fun submitDecision(
+        envId: EnvId,
+        response: DecisionResponse,
+        actorId: EntityId? = null
+    ): ObservationResult =
+        requireGameEnv(envId).submitDecision(response, actorId)
 
     // =========================================================================
     // Fork / snapshot / restore
@@ -156,13 +160,16 @@ class MultiEnvService(
                 name = spec.name,
                 deck = deckResolver.resolve(spec.deck),
                 startingLife = spec.startingLife,
-                playerId = spec.playerId
+                playerId = spec.playerId,
+                commanderCardName = spec.commanderCardName
             )
         },
         startingHandSize = startingHandSize,
         skipMulligans = skipMulligans,
         useHandSmoother = useHandSmoother,
-        startingPlayerIndex = startingPlayerIndex
+        startingPlayerIndex = startingPlayerIndex,
+        format = format,
+        seed = seed
     )
 
     private fun requireEnv(envId: EnvId): GymEnv =

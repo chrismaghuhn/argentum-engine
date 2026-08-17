@@ -107,6 +107,10 @@ class GameEnvironment private constructor(
     var stepCount: Int = 0
         private set
 
+    /** Optional episode horizon configured by the Gym adapter. */
+    var maxSteps: Int? = null
+        private set
+
     // =========================================================================
     // Queries
     // =========================================================================
@@ -114,12 +118,17 @@ class GameEnvironment private constructor(
     /** True if the game has ended (someone won, drew, or decked out). */
     val isTerminal: Boolean get() = state.gameOver
 
+    /** True when the configured horizon ended an otherwise non-terminal episode. */
+    val isTruncated: Boolean
+        get() = !isTerminal && maxSteps?.let { stepCount >= it } == true
+
     /** The winner's entity ID, or null if the game is ongoing or a draw. */
     val winnerId: EntityId? get() = state.winnerId
 
     /** The player who currently needs to act (has priority or a pending decision). */
     val agentToAct: EntityId?
-        get() = state.pendingDecision?.playerId ?: state.priorityPlayerId
+        get() = if (isTerminal || isTruncated) null
+        else state.pendingDecision?.playerId ?: state.priorityPlayerId
 
     /** Non-null when the engine is paused waiting for a player decision. */
     val pendingDecision: PendingDecision? get() = state.pendingDecision
@@ -137,7 +146,8 @@ class GameEnvironment private constructor(
      * Replaces any existing game state. Set [GameConfig.skipMulligans] to `true`
      * for training runs where you don't want the mulligan phase.
      */
-    fun reset(config: GameConfig): StepResult {
+    fun reset(config: GameConfig, maxSteps: Int? = null): StepResult {
+        require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
         val initializer = GameInitializer(cardRegistry)
         val initResult = initializer.initializeGame(config)
         state = initResult.state
@@ -145,6 +155,7 @@ class GameEnvironment private constructor(
         events = initResult.events
         lastStepEvents = initResult.events
         stepCount = 0
+        this.maxSteps = maxSteps
         return buildStepResult(initResult.events)
     }
 
@@ -164,6 +175,8 @@ class GameEnvironment private constructor(
      */
     fun step(action: GameAction): StepResult {
         check(playerIds.isNotEmpty()) { "Call reset() before step()" }
+        check(!isTerminal) { "Cannot step a terminal environment" }
+        check(!isTruncated) { "Cannot step a truncated environment" }
 
         val simResult = if (action is SubmitDecision) {
             simulator.simulateDecision(state, action.response)
@@ -194,7 +207,7 @@ class GameEnvironment private constructor(
     fun legalActions(): List<LegalAction> {
         val playerId = agentToAct ?: return emptyList()
         if (state.pendingDecision != null) return emptyList()
-        if (state.gameOver) return emptyList()
+        if (state.gameOver || isTruncated) return emptyList()
         return enumerator.enumerate(state, playerId, EnumerationMode.ACTIONS_ONLY)
     }
 
@@ -230,6 +243,7 @@ class GameEnvironment private constructor(
         forked.events = emptyList() // forked environments start with clean event history
         forked.lastStepEvents = emptyList()
         forked.stepCount = stepCount
+        forked.maxSteps = maxSteps
         return forked
     }
 
@@ -244,12 +258,20 @@ class GameEnvironment private constructor(
      * @param playerIds The player turn order associated with [state].
      * @param stepCount Optional step-counter to restore; defaults to 0.
      */
-    fun restore(state: GameState, playerIds: List<EntityId>, stepCount: Int = 0) {
+    fun restore(
+        state: GameState,
+        playerIds: List<EntityId>,
+        stepCount: Int = 0,
+        maxSteps: Int? = this.maxSteps
+    ) {
+        require(stepCount >= 0) { "stepCount must not be negative" }
+        require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
         this.state = state
         this.playerIds = playerIds
         this.events = emptyList()
         this.lastStepEvents = emptyList()
         this.stepCount = stepCount
+        this.maxSteps = maxSteps
     }
 
     /**
@@ -291,9 +313,9 @@ class GameEnvironment private constructor(
         agents: Map<EntityId, ActionSelector> = emptyMap(),
         maxSteps: Int = 2000
     ): StepResult {
-        reset(config)
+        reset(config, maxSteps = maxSteps)
 
-        while (!isTerminal && stepCount < maxSteps) {
+        while (!isTerminal && !isTruncated) {
             val player = agentToAct ?: break
             val selector = agents[player]
 
@@ -334,7 +356,7 @@ class GameEnvironment private constructor(
             events = stepEvents,
             reward = terminalRewards(),
             terminated = isTerminal,
-            truncated = false,
+            truncated = isTruncated,
             agentToAct = agentToAct,
             pendingDecision = pendingDecision,
             info = StepInfo(

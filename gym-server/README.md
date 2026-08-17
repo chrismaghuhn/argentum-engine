@@ -31,11 +31,11 @@ Default port **8081** so it coexists with the game server on 8080.
 | `POST /envs` | `MultiEnvService.create` | `EnvConfig` JSON |
 | `GET /envs` | `listEnvs` | — |
 | `DELETE /envs` | `dispose` | `{ "envIds": [...] }` |
-| `GET /envs/{id}` | `observe` | `?revealAll=true` optional |
+| `GET /envs/{id}` | `observe` | perspective-safe observation; no reveal bypass |
 | `POST /envs/{id}/reset` | `reset` | `EnvConfig` JSON |
 | `POST /envs/{id}/step` | `step` | `{ "actionId": 3 }` |
 | `POST /envs/step-batch` | `stepBatch` (parallel) | `[ { envId, actionId }, ...]` |
-| `POST /envs/{id}/decision` | `submitDecision` | `DecisionResponse` JSON |
+| `POST /envs/{id}/decision` | `submitDecision` | `DecisionResponse` JSON; optional `actorId` query claim |
 | `POST /envs/{id}/fork` | `fork` | `?count=N` |
 | `POST /envs/{id}/snapshot` | `snapshot` | — |
 | `POST /envs/{id}/restore` | `restore` | `SnapshotHandle` JSON |

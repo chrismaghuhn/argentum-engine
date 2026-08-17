@@ -24,7 +24,7 @@ sealed interface Observation {
     /** Contract identifier — clients compare it to abort on privacy/schema drift. */
     val schemaHash: String
 
-    /** The player/agent who must act next, or null when [terminated]. */
+    /** The player/agent who must act next, or null when [terminated] or [truncated]. */
     val agentToAct: EntityId?
 
     /** Non-null only for in-game complex decisions; always null for deckbuild. */
@@ -35,6 +35,9 @@ sealed interface Observation {
 
     /** True once the env reached a terminal state (game over, or deck finalized). */
     val terminated: Boolean
+
+    /** True when an episode horizon stopped a non-terminal game. */
+    val truncated: Boolean
 
     /** Deterministic hash of the observable state, for MCTS transposition tables. */
     val stateDigest: String
@@ -60,7 +63,7 @@ data class TrainingObservation(
     /** The player whose information-set this observation represents. */
     val perspectivePlayerId: EntityId,
 
-    /** The player who needs to act next, or null if the game is over. */
+    /** The player who needs to act next, or null if the episode is over or truncated. */
     override val agentToAct: EntityId?,
 
     val turnNumber: Int,
@@ -85,11 +88,14 @@ data class TrainingObservation(
     /** Non-null when the engine paused for a player decision. */
     override val pendingDecision: PendingDecisionView?,
 
-    /** All actions available to [agentToAct]. Empty when the game is over. */
+    /** All actions available to [agentToAct]. Empty when the game is over or truncated. */
     override val legalActions: List<LegalActionView>,
 
     /** True if the game ended naturally. */
     override val terminated: Boolean,
+
+    /** True if the Gym horizon ended the episode before a Magic terminal state. */
+    override val truncated: Boolean,
 
     /** Set if [terminated] and there is a winner (null = draw or ongoing). */
     val winnerId: EntityId?,

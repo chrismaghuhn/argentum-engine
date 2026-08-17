@@ -246,9 +246,14 @@ class EnvController(
     @PostMapping("/{id}/decision")
     fun submitDecision(
         @PathVariable id: String,
-        @RequestBody response: DecisionResponse
+        @RequestBody response: DecisionResponse,
+        @RequestParam(required = false) actorId: String?
     ): Observation =
-        multiEnvService.submitDecision(EnvId(id), response).observation
+        multiEnvService.submitDecision(
+            EnvId(id),
+            response,
+            actorId?.let { com.wingedsheep.sdk.model.EntityId.of(it) }
+        ).observation
 
     // =========================================================================
     // Fork / snapshot / restore
@@ -272,7 +277,7 @@ class EnvController(
 
     @Operation(
         summary = "Restore an env from a snapshot",
-        description = "Perspective and reveal settings are preserved; only the underlying `GameState` changes."
+        description = "Perspective and horizon settings are preserved; only the underlying immutable game state changes."
     )
     @PostMapping("/{id}/restore")
     fun restore(

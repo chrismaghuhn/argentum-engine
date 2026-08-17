@@ -248,7 +248,7 @@ A transport-agnostic Kotlin library that wraps the rules engine in a stateful `r
 - **Batch stepping** — `MultiEnvService.stepBatch()` fans out per-env steps across a work-stealing pool, so vectorised rollouts run in parallel.
 - **Decision-aware** — pauses on `PendingDecision`s (scry, targets, search, distribute…); simple decisions fold into the numeric action-ID space, complex ones expose a structured response channel.
 - **Stable observation schema** — `TrainingObservation` has a `schemaHash` so Python clients fail fast on contract drift; every observation carries a `stateDigest` usable as an MCTS transposition-table key.
-- **Information hiding** — opponent hand and libraries are masked by default; `revealAll` is available for debug scripts.
+- **Information hiding** — opponent hand and libraries are masked by default; there is no production `revealAll` bypass.
 
 ### HTTP transport — `gym-server`
 

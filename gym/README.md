@@ -108,9 +108,8 @@ multi-mode `ChooseModeDecision`, `BudgetModalDecision`) flag
 
 `ObservationBuilder` hides opponent hand and every library when building
 a `TrainingObservation`. Only zone sizes are reported for hidden zones.
-A `revealAll = true` flag is available for debug tooling and must not be
-enabled in real self-play (the agent would be training on leaked
-information).
+There is no production `revealAll` bypass. The observation also distinguishes
+natural termination from a configured Gym horizon through `truncated`.
 
 ### State digest for transposition tables
 
