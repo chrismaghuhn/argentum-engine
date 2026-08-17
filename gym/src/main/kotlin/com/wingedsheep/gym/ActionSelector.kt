@@ -1,5 +1,6 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.ai.engine.TargetSelection
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.PendingDecision
@@ -43,7 +44,16 @@ class RandomActionSelector(
 
     override fun selectAction(state: GameState, legalActions: List<LegalAction>): GameAction {
         val affordable = legalActions.filter { it.affordable }
-        return affordable[random.nextInt(affordable.size)].action
+        val selected = affordable[random.nextInt(affordable.size)]
+        // LegalAction carries a target template for the client/agent boundary. Materialize a
+        // valid target list before handing the action to the engine; submitting the raw template
+        // for a targeted spell would be rejected as "No valid targets available".
+        return TargetSelection.fillHeuristically(
+            state = state,
+            action = selected,
+            playerId = selected.action.playerId,
+            fillPartialRequirements = true,
+        )
     }
 
     override fun respondToDecision(state: GameState, decision: PendingDecision): DecisionResponse {

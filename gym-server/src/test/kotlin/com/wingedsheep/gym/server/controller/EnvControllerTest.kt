@@ -7,8 +7,10 @@ import com.wingedsheep.gym.service.EnvConfig
 import com.wingedsheep.gym.service.EnvId
 import com.wingedsheep.gym.service.PlayerSpec
 import com.wingedsheep.gym.service.MultiEnvService
+import com.wingedsheep.gym.service.SnapshotHandle
 import com.wingedsheep.gym.server.dto.CreateEnvResponse
 import com.wingedsheep.gym.server.dto.DisposeBody
+import com.wingedsheep.gym.server.dto.RestoreBody
 import com.wingedsheep.gym.server.dto.SchemaHashResponse
 import com.wingedsheep.gym.server.dto.StepBody
 import io.kotest.core.spec.style.FunSpec
@@ -25,6 +27,7 @@ import kotlinx.serialization.json.Json
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.beans.factory.annotation.Autowired
+import com.wingedsheep.sdk.core.Format
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -70,6 +73,26 @@ class EnvControllerTest : FunSpec() {
             ),
             skipMulligans = true,
             startingPlayerIndex = 0
+        )
+
+        fun commanderConfig() = EnvConfig(
+            players = listOf(
+                PlayerSpec(
+                    "Alice",
+                    DeckSpec.Explicit(mapOf("Mountain" to 99)),
+                    commanderCardName = "Raging Goblin"
+                ),
+                PlayerSpec(
+                    "Bob",
+                    DeckSpec.Explicit(mapOf("Mountain" to 99)),
+                    commanderCardName = "Raging Goblin"
+                )
+            ),
+            format = Format.Commander(),
+            seed = 7L,
+            skipMulligans = true,
+            startingPlayerIndex = 0,
+            perspectivePlayerIndex = 0
         )
 
         fun get(path: String): HttpResponse<String> = client.send(
@@ -286,6 +309,65 @@ class EnvControllerTest : FunSpec() {
             opponentHand.hidden.shouldBeTrue()
             opponentHand.cards.shouldBeEmpty()
             deleteJson("/envs", json.encodeToString(DisposeBody(listOf(created.envId))))
+        }
+
+        test("Commander HTTP lifecycle preserves snapshot, fork, reset, and privacy contracts") {
+            val created = json.decodeFromString<CreateEnvResponse>(
+                postJson("/envs", json.encodeToString(commanderConfig())).body()
+            )
+            val opening = created.observation as TrainingObservation
+            opening.players.forEach { it.lifeTotal shouldBe 40 }
+            opening.zones.count { it.zoneType == com.wingedsheep.sdk.core.Zone.COMMAND } shouldBe 2
+
+            val snapshotResponse = postJson("/envs/${created.envId.value}/snapshot", "{}")
+            snapshotResponse.statusCode() shouldBe 200
+            val snapshot = json.decodeFromString<SnapshotHandle>(snapshotResponse.body())
+
+            val actionId = opening.legalActions.first().actionId
+            val stepped = postJson(
+                "/envs/${created.envId.value}/step",
+                json.encodeToString(StepBody(actionId))
+            )
+            stepped.statusCode() shouldBe 200
+            val steppedObservation = json.decodeFromString<TrainingObservation>(stepped.body())
+            steppedObservation.stateDigest shouldNotBe opening.stateDigest
+
+            val forkedResponse = postJson("/envs/${created.envId.value}/fork?count=1", "{}")
+            forkedResponse.statusCode() shouldBe 200
+            val forked = json.decodeFromString<List<EnvId>>(forkedResponse.body())
+            forked.size shouldBe 1
+            val forkObservation = json.decodeFromString<TrainingObservation>(
+                get("/envs/${forked.single().value}").body()
+            )
+            forkObservation.stateDigest shouldBe steppedObservation.stateDigest
+
+            val restored = postJson(
+                "/envs/${created.envId.value}/restore",
+                json.encodeToString(RestoreBody(snapshot))
+            )
+            restored.statusCode() shouldBe 200
+            val restoredObservation = json.decodeFromString<TrainingObservation>(restored.body())
+            restoredObservation.stateDigest shouldBe opening.stateDigest
+
+            val reset = postJson(
+                "/envs/${created.envId.value}/reset",
+                json.encodeToString(commanderConfig())
+            )
+            reset.statusCode() shouldBe 200
+            val resetObservation = json.decodeFromString<TrainingObservation>(reset.body())
+            resetObservation.stateDigest shouldBe opening.stateDigest
+
+            val opponentId = resetObservation.players.first { !it.isPerspective }.id
+            resetObservation.zones.first {
+                it.ownerId == opponentId && it.zoneType == com.wingedsheep.sdk.core.Zone.HAND
+            }.cards shouldBe emptyList()
+
+            deleteJson(
+                "/envs",
+                json.encodeToString(DisposeBody(listOf(created.envId) + forked))
+            ).statusCode() shouldBe 204
+            get("/envs/${created.envId.value}").statusCode() shouldBe 404
+            get("/envs/${forked.single().value}").statusCode() shouldBe 404
         }
     }
 }

@@ -7,6 +7,7 @@ import com.wingedsheep.mtg.sets.definitions.blb.BloomburrowSet
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.model.Deck
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.booleans.shouldBeTrue
@@ -101,6 +102,38 @@ class GameEnvironmentTest : FunSpec({
         result.state.shouldNotBeNull()
     }
 
+    test("step rejects stale and non-owner actions before consuming the horizon") {
+        val env = GameEnvironment.create(createRegistry())
+        env.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", simpleDeck()),
+                    PlayerConfig("Bob", simpleDeck())
+                ),
+                skipMulligans = true,
+                startingPlayerIndex = 0
+            )
+        )
+
+        val opening = env.legalActions().first { it.action is PassPriority }.action
+        val openingStepCount = env.stepCount
+        env.step(opening)
+        val stateAfterOpening = env.state
+        val stepCountAfterOpening = env.stepCount
+
+        shouldThrow<IllegalArgumentException> { env.step(opening) }
+        env.state shouldBe stateAfterOpening
+        env.stepCount shouldBe stepCountAfterOpening
+        stepCountAfterOpening shouldBe openingStepCount + 1
+
+        val actingPlayer = env.agentToAct
+        val otherPlayer = env.playerIds.first { it != actingPlayer }
+        shouldThrow<IllegalArgumentException> {
+            env.step(PassPriority(otherPlayer))
+        }
+        env.stepCount shouldBe stepCountAfterOpening
+    }
+
     test("fork creates an independent copy") {
         val env = GameEnvironment.create(createRegistry())
         env.reset(
@@ -192,7 +225,9 @@ class GameEnvironmentTest : FunSpec({
         )
 
         env.reset(config)
-        val agents = env.playerIds.associateWith<EntityId, ActionSelector> { RandomActionSelector() }
+        val agents = env.playerIds.associateWith<EntityId, ActionSelector> {
+            RandomActionSelector(java.util.Random(7L))
+        }
 
         val result = env.playGame(config, agents)
         (result.terminated || env.stepCount >= 2000).shouldBeTrue()

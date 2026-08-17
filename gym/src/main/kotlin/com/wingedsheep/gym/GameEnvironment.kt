@@ -178,10 +178,37 @@ class GameEnvironment private constructor(
         check(!isTerminal) { "Cannot step a terminal environment" }
         check(!isTruncated) { "Cannot step a truncated environment" }
 
+        // The Gym boundary is an action-space boundary, not merely a thin wrapper around the
+        // processor.  A caller may hold an action from an older observation, or may submit an
+        // action for the other player.  The rules engine validates the action's local shape, but
+        // it intentionally does not know which candidate list this environment exposed.  Keep
+        // stale/non-owner actions fail-closed here before simulation can advance the horizon.
+        if (action !is SubmitDecision) {
+            val currentActions = legalActions()
+            val isCurrentAction = currentActions.any { candidate ->
+                isCurrentActionCandidate(candidate.action, action)
+            }
+            require(isCurrentAction) {
+                "Action is not in the current legal action set for ${agentToAct}: $action"
+            }
+        } else {
+            val pending = state.pendingDecision
+            require(pending != null) { "No pending decision to respond to" }
+            require(action.playerId == pending.playerId) {
+                "Decision belongs to ${pending.playerId}, not ${action.playerId}"
+            }
+        }
+
         val simResult = if (action is SubmitDecision) {
             simulator.simulateDecision(state, action.response)
         } else {
             simulator.simulate(state, action)
+        }
+
+        // Do not install an illegal simulation result as if it were a successful step.  Besides
+        // hiding the error, doing that would incorrectly consume one unit of the Gym horizon.
+        if (simResult is SimulationResult.Illegal) {
+            throw IllegalArgumentException(simResult.reason)
         }
 
         state = simResult.state
@@ -208,8 +235,45 @@ class GameEnvironment private constructor(
         val playerId = agentToAct ?: return emptyList()
         if (state.pendingDecision != null) return emptyList()
         if (state.gameOver || isTruncated) return emptyList()
+        // A multi-requirement spell can have a legal first slot while a later mandatory slot has
+        // no candidate. The engine keeps that metadata for client diagnostics, but it is not an
+        // executable Gym action: selecting it would only produce "No valid targets available" at
+        // simulation time. Keep the action space executable so random agents cannot manufacture
+        // an Illegal result from a supposedly legal observation.
         return enumerator.enumerate(state, playerId, EnumerationMode.ACTIONS_ONLY)
+            .filterNot { it.hasUnfillableTargetRequirement }
     }
+
+    /**
+     * Match a submitted action against the current enumerator templates without treating
+     * caller-supplied target assignments as stale. The enumerator deliberately emits targetless
+     * CastSpell/ActivateAbility templates with target metadata; the client, AI, or random
+     * selector fills those targets before submitting the action. Combat declarations use the
+     * same template pattern for their attacker/blocker maps.
+     */
+    private fun isCurrentActionCandidate(candidate: GameAction, submitted: GameAction): Boolean =
+        when {
+            candidate == submitted -> true
+            candidate is DeclareAttackers && submitted is DeclareAttackers ->
+                candidate.playerId == submitted.playerId
+            candidate is DeclareBlockers && submitted is DeclareBlockers ->
+                candidate.playerId == submitted.playerId
+            candidate is CastSpell && submitted is CastSpell ->
+                candidate.copy(
+                    targets = emptyList(),
+                    damageDistribution = null,
+                    modeTargetsOrdered = emptyList(),
+                    modeDamageDistribution = emptyMap(),
+                ) == submitted.copy(
+                    targets = emptyList(),
+                    damageDistribution = null,
+                    modeTargetsOrdered = emptyList(),
+                    modeDamageDistribution = emptyMap(),
+                )
+            candidate is ActivateAbility && submitted is ActivateAbility ->
+                candidate.copy(targets = emptyList()) == submitted.copy(targets = emptyList())
+            else -> false
+        }
 
     /**
      * Evaluate the current board state from a player's perspective.
