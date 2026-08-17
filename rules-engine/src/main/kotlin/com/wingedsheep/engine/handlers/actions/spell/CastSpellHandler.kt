@@ -3793,7 +3793,7 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
                         )
                     }
                 } else emptyList()
@@ -3830,7 +3830,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()
@@ -3867,7 +3868,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()

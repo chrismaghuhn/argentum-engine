@@ -80,11 +80,21 @@ class TriggerProcessor(
         if (state.gameOver) {
             return ExecutionResult.success(state)
         }
-        val liveTriggers = triggers.filterNot { trigger ->
+        var liveTriggers = triggers.filterNot { trigger ->
             state.getEntity(trigger.controllerId)?.has<PlayerLostComponent>() == true
         }
         if (liveTriggers.isEmpty()) {
             return ExecutionResult.success(state)
+        }
+
+        // Callers may assemble one complete trigger wave from independently sorted batches (for
+        // example, event triggers + SBA triggers + a state-trigger poll), yielding A1, N1, A2.
+        // CR 603.3b requires all ordinary triggers for a controller to be one choice domain, and
+        // requires the normal stage to precede the reflexive stage. Normalize only an unchosen
+        // wave; a positive prefix is the controller's already-selected order and must remain an
+        // immutable prefix while target/may/continuation frames resume.
+        if (preorderedTriggerCount == 0) {
+            liveTriggers = normalizeTriggerWave(state, liveTriggers)
         }
 
         var currentState = state
@@ -111,7 +121,10 @@ class TriggerProcessor(
             if (index >= preorderedTriggerCount) {
                 val sameControllerRun = liveTriggers
                     .drop(index)
-                    .takeWhile { it.controllerId == liveTriggers[index].controllerId }
+                    .takeWhile {
+                        it.controllerId == liveTriggers[index].controllerId &&
+                            it.stage == liveTriggers[index].stage
+                    }
                 if (sameControllerRun.size > 1) {
                     return raiseTriggerOrdering(
                         currentState,
@@ -237,6 +250,25 @@ class TriggerProcessor(
 
     private fun triggerOrderingObjectId(index: Int): EntityId =
         EntityId("trigger-order-object-$index")
+
+    /**
+     * Put a complete trigger wave into the deterministic APNAP transport order required by
+     * CR 603.3b, retaining detector order only inside one controller's still-unordered group.
+     * The controller's relative order is exposed separately by [OrderObjectsDecision]; this
+     * helper never chooses that order.
+     */
+    private fun normalizeTriggerWave(
+        state: GameState,
+        triggers: List<PendingTrigger>
+    ): List<PendingTrigger> {
+        val apnapPlayers = state.apnapOrder
+        return TriggerStage.values().flatMap { stage ->
+            val stageTriggers = triggers.filter { it.stage == stage }
+            apnapPlayers.flatMap { controllerId ->
+                stageTriggers.filter { it.controllerId == controllerId }
+            }
+        }
+    }
 
     /**
      * Externalize CR 603.7b instead of selecting an occurrence by detector order.  The candidates

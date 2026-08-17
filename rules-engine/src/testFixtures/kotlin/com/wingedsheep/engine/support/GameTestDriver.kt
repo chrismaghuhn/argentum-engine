@@ -1467,6 +1467,16 @@ class GameTestDriver {
         )
     }
 
+    /** Submit the complete semantic handle order for a CR 603.3b trigger-ordering decision. */
+    fun submitObjectOrdering(playerId: EntityId, orderedObjects: List<EntityId>): ExecutionResult {
+        val decision = pendingDecision as? OrderObjectsDecision
+            ?: throw IllegalStateException("No pending OrderObjectsDecision")
+        return submitDecision(
+            playerId,
+            OrderedResponse(decision.id, orderedObjects)
+        )
+    }
+
     /**
      * Submit an auto-pay response for a mana source selection decision.
      */

@@ -1177,6 +1177,13 @@ abstract class ScenarioTestBase : FunSpec() {
             return execute(SubmitDecision(playerId, response))
         }
 
+        /** Submit the complete semantic handle order for a CR 603.3b trigger-ordering decision. */
+        fun submitObjectOrdering(orderedObjects: List<EntityId>): ExecutionResult {
+            val decision = state.pendingDecision as? OrderObjectsDecision
+                ?: error("No pending OrderObjectsDecision")
+            return submitDecision(OrderedResponse(decision.id, orderedObjects))
+        }
+
         /**
          * Submit a card selection decision (select specific cards).
          */

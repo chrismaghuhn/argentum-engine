@@ -4,6 +4,19 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 
 /**
+ * The CR 603.3b placement stage for a pending triggered ability.
+ *
+ * Ordinary triggers are placed in the first pass. Reflexive triggers, whose trigger condition is
+ * another ability triggering, are placed in the second pass. Keeping this semantic distinction on
+ * the serializable pending payload prevents detector order from collapsing the two rule stages.
+ */
+@kotlinx.serialization.Serializable
+enum class TriggerStage {
+    NORMAL,
+    REFLEXIVE
+}
+
+/**
  * The serializable payload for one possible occurrence of a delayed trigger.
  *
  * This deliberately mirrors the state carried by [PendingTrigger] without referring back to
@@ -23,6 +36,8 @@ data class DelayedTriggerOccurrenceCandidate(
     val consumesDelayedTriggerId: String? = null,
     val sagaChapterInfo: SagaChapterInfo? = null,
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /** CR 603.3b placement stage; ordinary triggers are the default. */
+    val stage: TriggerStage = TriggerStage.NORMAL,
 ) {
     fun toPendingTrigger(): PendingTrigger = PendingTrigger(
         ability = ability,
@@ -34,6 +49,7 @@ data class DelayedTriggerOccurrenceCandidate(
         consumesDelayedTriggerId = consumesDelayedTriggerId,
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
+        stage = stage,
     )
 }
 
@@ -74,6 +90,8 @@ data class PendingTrigger(
      * when this pending trigger is placed on the stack. Null for ordinary triggered abilities.
      */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /** CR 603.3b placement stage; ordinary triggers are the default. */
+    val stage: TriggerStage = TriggerStage.NORMAL,
     /**
      * CR 603.7b marker emitted by the delayed-trigger detector when several matching occurrences
      * happen simultaneously. The marker is converted into a normal pending decision by
@@ -94,6 +112,7 @@ fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
         consumesDelayedTriggerId = consumesDelayedTriggerId,
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
+        stage = stage,
     )
 
 /**

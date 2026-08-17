@@ -98,6 +98,48 @@ class TriggerOrderingTest : FunSpec({
         )
     }
 
+    test("TO-13: APNAP normalization reunites a controller split by detector batches") {
+        val driver = newDriver()
+        val active = driver.state.activePlayerId!!
+        val nonActive = driver.state.turnOrder.first { it != active }
+        val result = process(driver, listOf(
+            syntheticTrigger(driver, "active-first", controllerId = active),
+            syntheticTrigger(driver, "nap-only", controllerId = nonActive),
+            syntheticTrigger(driver, "active-second", controllerId = active)
+        ))
+
+        val activeOrder = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        activeOrder.playerId shouldBe active
+        activeOrder.objects.size shouldBe 2
+    }
+
+    test("TO-14: detector-marked reflexive triggers enter the second CR 603.3b stage") {
+        val driver = newDriver()
+        val reflexiveSource = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val reflexive = TriggerDetector(driver.cardRegistry).detectTriggers(
+            driver.state,
+            listOf(
+                ReflexiveAbilityTriggeredEvent(
+                    sourceId = reflexiveSource,
+                    sourceName = "reflexive",
+                    controllerId = driver.player1,
+                    reflexiveEffect = Effects.DrawCards(1)
+                )
+            )
+        ).single()
+        reflexive.stage shouldBe TriggerStage.REFLEXIVE
+
+        val result = process(driver, listOf(
+            reflexive,
+            syntheticTrigger(driver, "normal-first"),
+            syntheticTrigger(driver, "normal-second")
+        ))
+
+        val normalOrder = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        normalOrder.objects.size shouldBe 2
+        normalOrder.objectLabels!!.values.all { it.startsWith("normal-") } shouldBe true
+    }
+
     test("TO-04: invalid ordering responses fail closed without consuming the continuation") {
         val driver = newDriver()
         val result = process(driver, listOf(
@@ -234,7 +276,12 @@ class TriggerOrderingTest : FunSpec({
             syntheticTrigger(driver, "delayed", consumesDelayedTriggerId = "delayed-id"),
             syntheticTrigger(driver, "saga", sagaChapterInfo = SagaChapterInfo(2, 3)),
             syntheticTrigger(driver, "granted", granterId = granter),
-            syntheticTrigger(driver, "reflexive", carriedPipeline = pipeline)
+            syntheticTrigger(
+                driver,
+                "reflexive",
+                carriedPipeline = pipeline,
+                stage = TriggerStage.REFLEXIVE
+            )
         ))
         val order = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
 
@@ -253,8 +300,8 @@ class TriggerOrderingTest : FunSpec({
     test("TO-10: paused trigger ordering serializes as a full GameState") {
         val driver = newDriver()
         val result = process(driver, listOf(
-            syntheticTrigger(driver, "first"),
-            syntheticTrigger(driver, "second")
+            syntheticTrigger(driver, "first", stage = TriggerStage.REFLEXIVE),
+            syntheticTrigger(driver, "second", stage = TriggerStage.REFLEXIVE)
         ))
         val json = Json {
             serializersModule = engineSerializersModule
@@ -320,7 +367,8 @@ private fun syntheticTrigger(
     consumesDelayedTriggerId: String? = null,
     sagaChapterInfo: SagaChapterInfo? = null,
     granterId: EntityId? = null,
-    carriedPipeline: PipelineState? = null
+    carriedPipeline: PipelineState? = null,
+    stage: TriggerStage = TriggerStage.NORMAL
 ): PendingTrigger = PendingTrigger(
     ability = TriggeredAbility.create(
         trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
@@ -335,7 +383,8 @@ private fun syntheticTrigger(
     consumesDelayedTriggerId = consumesDelayedTriggerId,
     sagaChapterInfo = sagaChapterInfo,
     granterId = granterId,
-    carriedPipeline = carriedPipeline
+    carriedPipeline = carriedPipeline,
+    stage = stage
 )
 
 private fun stackedTriggers(state: GameState): List<TriggeredAbilityOnStackComponent> =

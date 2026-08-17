@@ -2386,7 +2386,8 @@ class TriggerDetector(
                     controllerId = event.controllerId,
                     granterId = event.granterId,
                     triggerContext = event.carriedTriggerContext,
-                    carriedPipeline = event.carriedPipeline
+                    carriedPipeline = event.carriedPipeline,
+                    stage = TriggerStage.REFLEXIVE
                 )
             )
         }

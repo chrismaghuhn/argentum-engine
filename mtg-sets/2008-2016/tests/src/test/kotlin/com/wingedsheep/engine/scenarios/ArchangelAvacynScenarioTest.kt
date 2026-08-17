@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.mechanics.layers.StateProjector
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -49,7 +50,17 @@ class ArchangelAvacynScenarioTest : FunSpec({
     fun advanceToNextUpkeep(driver: GameTestDriver) {
         driver.passPriorityUntil(Step.UPKEEP, maxPasses = 200)
         var guard = 0
-        while (guard++ < 20 && driver.state.stack.isNotEmpty()) driver.bothPass()
+        while (guard++ < 20 &&
+            (driver.state.stack.isNotEmpty() || driver.state.pendingDecision != null)
+        ) {
+            when (val decision = driver.state.pendingDecision) {
+                is OrderObjectsDecision -> {
+                    driver.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+                }
+                null -> driver.bothPass()
+                else -> error("Unexpected pending decision during upkeep trigger drain: $decision")
+            }
+        }
     }
 
     test("entering grants your creatures indestructible until end of turn") {
