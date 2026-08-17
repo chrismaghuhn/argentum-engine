@@ -149,6 +149,18 @@ class ManaAbilityEnumerator : ActionEnumerator {
                         if (!context.costUtils.canPayTapAttachedCreatureCost(state, entityId)) affordable = false
                     }
                     is AbilityCost.Atom -> when (val atom = effectiveCost.atom) {
+                        is CostAtom.Mana -> {
+                            if (!context.manaSolver.canPay(
+                                    state,
+                                    playerId,
+                                    atom.cost,
+                                    precomputedSources = context.availableManaSources,
+                                    spellContext = manaAbilityContext,
+                                )
+                            ) {
+                                affordable = false
+                            }
+                        }
                         is CostAtom.TapPermanents -> {
                             tapCost = atom
                             tapTargets = context.costUtils.findAbilityTapTargets(state, playerId, atom.filter)

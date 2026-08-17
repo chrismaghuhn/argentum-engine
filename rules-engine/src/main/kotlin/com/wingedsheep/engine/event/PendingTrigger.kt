@@ -4,6 +4,40 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 
 /**
+ * The serializable payload for one possible occurrence of a delayed trigger.
+ *
+ * This deliberately mirrors the state carried by [PendingTrigger] without referring back to
+ * [PendingTrigger] itself.  A recursive `PendingTrigger -> List<PendingTrigger>` field would make
+ * the generated kotlinx-serialization descriptor recursive and, more importantly, would make it
+ * too easy for a queued occurrence marker to disappear when a pending-trigger continuation is
+ * snapshotted.  The detector-only marker therefore carries these ordinary, replay-safe candidates.
+ */
+@kotlinx.serialization.Serializable
+data class DelayedTriggerOccurrenceCandidate(
+    val ability: TriggeredAbility,
+    val sourceId: EntityId,
+    val sourceName: String,
+    val controllerId: EntityId,
+    val granterId: EntityId? = null,
+    val triggerContext: TriggerContext,
+    val consumesDelayedTriggerId: String? = null,
+    val sagaChapterInfo: SagaChapterInfo? = null,
+    val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+) {
+    fun toPendingTrigger(): PendingTrigger = PendingTrigger(
+        ability = ability,
+        sourceId = sourceId,
+        sourceName = sourceName,
+        controllerId = controllerId,
+        granterId = granterId,
+        triggerContext = triggerContext,
+        consumesDelayedTriggerId = consumesDelayedTriggerId,
+        sagaChapterInfo = sagaChapterInfo,
+        carriedPipeline = carriedPipeline,
+    )
+}
+
+/**
  * A triggered ability that is waiting to go on the stack.
  */
 @kotlinx.serialization.Serializable
@@ -39,8 +73,28 @@ data class PendingTrigger(
      * reflexive ability, threaded onto [com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent]
      * when this pending trigger is placed on the stack. Null for ordinary triggered abilities.
      */
-    val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null
+    val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /**
+     * CR 603.7b marker emitted by the delayed-trigger detector when several matching occurrences
+     * happen simultaneously. The marker is converted into a normal pending decision by
+     * [com.wingedsheep.engine.event.TriggerProcessor]. It is intentionally serializable because
+     * callers may queue detected triggers below another continuation before processing them.
+     */
+    val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList()
 )
+
+fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
+    DelayedTriggerOccurrenceCandidate(
+        ability = ability,
+        sourceId = sourceId,
+        sourceName = sourceName,
+        controllerId = controllerId,
+        granterId = granterId,
+        triggerContext = triggerContext,
+        consumesDelayedTriggerId = consumesDelayedTriggerId,
+        sagaChapterInfo = sagaChapterInfo,
+        carriedPipeline = carriedPipeline,
+    )
 
 /**
  * Identifies a Saga chapter ability and which chapter it is, carried from trigger detection

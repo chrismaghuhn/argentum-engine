@@ -31,11 +31,11 @@ Default port **8081** so it coexists with the game server on 8080.
 | `POST /envs` | `MultiEnvService.create` | `EnvConfig` JSON |
 | `GET /envs` | `listEnvs` | — |
 | `DELETE /envs` | `dispose` | `{ "envIds": [...] }` |
-| `GET /envs/{id}` | `observe` | `?revealAll=true` optional |
+| `GET /envs/{id}` | `observe` | perspective-safe observation; no reveal bypass |
 | `POST /envs/{id}/reset` | `reset` | `EnvConfig` JSON |
-| `POST /envs/{id}/step` | `step` | `{ "actionId": 3 }` |
-| `POST /envs/step-batch` | `stepBatch` (parallel) | `[ { envId, actionId }, ...]` |
-| `POST /envs/{id}/decision` | `submitDecision` | `DecisionResponse` JSON |
+| `POST /envs/{id}/step` | `step` | `{ "actionId": 3, "action": { ... } }` (`action` optional) |
+| `POST /envs/step-batch` | `stepBatch` (parallel) | `[ { envId, actionId, action? }, ...]` |
+| `POST /envs/{id}/decision` | `submitDecision` | `DecisionResponse` JSON; optional `actorId` query claim |
 | `POST /envs/{id}/fork` | `fork` | `?count=N` |
 | `POST /envs/{id}/snapshot` | `snapshot` | — |
 | `POST /envs/{id}/restore` | `restore` | `SnapshotHandle` JSON |
@@ -82,13 +82,23 @@ operator mistakes from server faults:
 
 Anything else propagates as 500.
 
-### Action IDs stay per-step
+### Action IDs are opaque and never rebound
 
-The server does not stabilise action IDs across steps. Every `step`
-regenerates the `ActionRegistry`, and IDs from a prior observation
-become invalid. This matches the `:gym` contract — see its README
-for the rationale — and the test suite exercises the failure mode so a
-trainer that holds onto stale IDs fails loudly (400).
+Every `step` regenerates the `ActionRegistry`, while `GameGymEnv` assigns
+monotonically increasing, env-local handles to the resulting observation.
+Handles from a prior observation become invalid and cannot be rebound to a
+new action. This matches the `:gym` contract — see its README — and the test
+suite exercises the in-range stale-handle failure so a trainer that holds
+onto stale IDs fails loudly (400). Repeated reads of one unchanged state keep
+the same handle generation; reset and restore never reuse old handles.
+
+When a legal-action view has `requiresStructuredAction: true`, the action ID is a
+candidate handle, not a complete engine action. Copy its `actionSemantics` object,
+fill every required target/payment/mode/X/combat/order/Crew/Saddle choice field, and send that
+object in the optional `action` field of the same step body. Even an explicit
+empty choice must be present; the server binds the completed payload to the
+current candidate and lets the rules engine validate it. It does not choose
+missing fields or apply a hidden `AutoPay` default for the trainer.
 
 ### No authentication, no TTLs, no metrics
 
@@ -147,7 +157,7 @@ just test-gym-server                    # this module only
 ./gradlew :gym-server:test       # same via gradle
 ```
 
-7 integration tests covering the happy path (`create → observe → step →
+13 integration tests covering the happy path (`create → observe → step →
 dispose` round-trip), error paths (unknown env → 404, unknown set code
 → 400, stale action ID → 400), schema hash / health, and multi-step
 turn advancement.

@@ -512,9 +512,9 @@ class LibraryAndZoneContinuationResumer(
             return ExecutionResult.error(state, "Expected card selection response for SelectFromCollection")
         }
 
-        // Apply any selection restrictions server-side. Iterate the player's
-        // response order so earlier picks win when a restriction rejects a later
-        // one; rejected cards fall through into the remainder collection.
+        // DecisionValidators rejects restriction-violating responses before this continuation
+        // runs. Keep this defense-in-depth check fail-closed: a malformed response must never be
+        // normalized by silently dropping later cards into the remainder collection.
         val acceptedSet: Set<EntityId> = if (continuation.restrictions.isEmpty()) {
             response.selectedCards.toSet()
         } else {
@@ -635,6 +635,11 @@ class LibraryAndZoneContinuationResumer(
                             }
                         }
                     }
+                } else {
+                    return ExecutionResult.error(
+                        state,
+                        "Selection violates a card-selection restriction for $cardId"
+                    )
                 }
             }
             kept

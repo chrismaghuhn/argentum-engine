@@ -5301,17 +5301,20 @@ Dominant back faces that "stay" instead self-exile on their final chapter, dodgi
      `YouAttackPlayerEvent` is also filter-scoped and emits one instance per distinct directly
      attacked player whose group reaches `minAttackers`; it does not accept `watchedTarget` or
      `watchedRecipient` scope.
-  - `fireOnce = true` makes it a **one-shot**: it's consumed the first time it fires, then gone —
-    "when you **next** [event] this turn". Combine with `trigger = Triggers.YouAttack` for the
-    common "when you next attack this turn, …" template (All-Out Assault: untap each creature you
-    control on your next attack). With `fireOnce = false` (default) it fires on every matching event
-    until expiry (double-strike combat damage). One-shot consumption happens when the trigger goes
-    on the stack (`TriggerProcessor`), so a second matching event the same turn won't re-fire it.
-    For `YouAttackPlayerEvent`, a single declaration can contain multiple simultaneous matching
-    player occurrences. That bounded case currently fails closed when `fireOnce = true`: the engine
-    emits no trigger rather than choosing a player by turn order or collection order. Exact CR 603.7b
-    controller choice for those simultaneous occurrences is a separate generic decision follow-up;
-    do not treat this combination as fully rules-complete yet.
+    - `fireOnce = true` makes it a **one-shot**: it's consumed the first time it fires, then gone —
+      "when you **next** [event] this turn". Combine with `trigger = Triggers.YouAttack` for the
+      common "when you next attack this turn, …" template (All-Out Assault: untap each creature you
+      control on your next attack). With `fireOnce = false` (default) it fires on every matching event
+      until expiry (double-strike combat damage). One-shot consumption happens when the trigger goes
+      on the stack (`TriggerProcessor`), so a second matching event the same turn won't re-fire it.
+      For `YouAttackPlayerEvent`, a single declaration can contain multiple simultaneous matching
+      player occurrences. When `fireOnce = true`, the engine preserves the complete occurrence
+      domain and raises an owner-bound generic occurrence decision. Each candidate carries aligned
+      public `OptionMetadata.triggeringPlayerId` semantics so a controller can distinguish the
+      attacked player instead of receiving opaque ordinal slots. The selected occurrence retains
+      its `TriggerContext`, the delayed watcher is consumed exactly once, and unselected
+      occurrences are not silently chosen or consumed. Separate events are not combined into one
+      choice. This is the CR 603.7b controller-choice path, not a collection-order fallback.
   - `expiry` — when the resident delayed trigger is removed. `DelayedTriggerExpiry.EndOfTurn`
     (default) drops it in the end-of-turn cleanup ("this turn" riders).
     `DelayedTriggerExpiry.UntilControllersNextTurn` is the delayed-trigger analogue of

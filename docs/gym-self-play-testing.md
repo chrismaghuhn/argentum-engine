@@ -64,8 +64,8 @@ Key config fields:
   registered).
 - **Privacy boundary** — observations always hide unauthorized hand/library identities, while
   individually revealed or Visibility-authorized top-library cards may be shown; there is no reveal-all
-  bypass. `legalActions` and the action registry are exposed only when the configured perspective is
-  `agentToAct`; use separate perspective-configured environments when driving both seats.
+  bypass. During active play, `legalActions` and the action registry are routed to the current
+  `agentToAct`; `perspectivePlayerIndex` is only the fallback for terminal/truncated observations.
 - **`skipMulligans: true`** — skip the mulligan back-and-forth.
 - `startingPlayerIndex` — pin it for reproducibility (null = random).
 
@@ -82,8 +82,12 @@ loop:
   if observation.pendingDecision != null and pendingDecision.requiresStructuredResponse:
         POST /envs/{id}/decision  with a typed DecisionResponse   (section 5)
   else:
-        pick an actionId from observation.legalActions
-        POST /envs/{id}/step  { "actionId": N }
+        pick an action from observation.legalActions
+        if action.requiresStructuredAction:
+            complete action.actionSemantics with the controller's explicit choices
+            POST /envs/{id}/step  { "actionId": N, "action": completedSemantics }
+        else:
+            POST /envs/{id}/step  { "actionId": N }
   -> response is the next observation; repeat
 ```
 
@@ -92,8 +96,9 @@ curl -s -X POST localhost:8081/envs/$ENV/step \
   -H 'Content-Type: application/json' -d '{"actionId": 3}'
 ```
 
-**Action IDs are per-step.** They are regenerated on every step/decision. Always pick from the
-*latest* observation; a stale id returns `400`.
+**Action IDs are opaque env-local handles.** A fresh observation generation gets fresh monotonically
+increasing handles, while repeated reads of the same state keep their handles. Always pick from the
+latest observation; a stale in-range handle cannot be rebound and returns `400`.
 
 ### Reading an observation
 
@@ -103,7 +108,9 @@ The fields that matter most for spotting bugs:
   `legalActions` list and no usable action registry.
 - `legalActions[]` — each has `actionId`, `kind` (`PLAY_CARD`, `ACTIVATE_ABILITY`, `PASS`,
   `DECISION`, …), `description`, `affordable`, `manaCost`, target counts, and an
-  `actionSemantics` object containing the structured action identity used by the digest. The
+  `requiresStructuredAction` flag, and an `actionSemantics` object containing the structured
+  action identity used by the digest. When the flag is true, the object is a template that the
+  controller must complete and send in the step body's optional `action` field. The
   `description` is presentation-only and is never used for semantic identity; generated
   activated-ability handles are normalized through their printed, granted, static, emblem,
   class-level, or intrinsic provenance into stable ordinals and structural payloads. Donor

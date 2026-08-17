@@ -834,13 +834,18 @@ class TriggerDetector(
         val eventBased = state.delayedTriggers.filter { it.trigger != null }
         if (eventBased.isEmpty()) return
 
-        // A one-shot delayed trigger ([DelayedTriggeredAbility.fireOnce]) must fire at most
-        // once even if several events in this batch match it — track which ids have already
-        // produced a pending trigger this pass.
-        val firedOnceIds = mutableSetOf<String>()
+        /** Keep detector order for reusable delayed triggers while grouping only the occurrences
+         * produced by one event for the CR 603.7b choice. */
+        data class Encounter(
+            val delayed: DelayedTriggeredAbility,
+            val candidates: List<PendingTrigger>,
+        )
+
+        val encounters = mutableListOf<Encounter>()
+        val matchedFireOnceIds = mutableSetOf<String>()
         for (event in events) {
             for (delayed in eventBased) {
-                if (delayed.fireOnce && delayed.id in firedOnceIds) continue
+                if (delayed.fireOnce && delayed.id in matchedFireOnceIds) continue
                 val spec = delayed.trigger ?: continue
                 val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
                     trigger = spec.event,
@@ -866,11 +871,15 @@ class TriggerDetector(
                     )
                 ) continue
 
+                val eventCandidates = mutableListOf<PendingTrigger>()
+
                 // A filter-scoped attack delayed trigger ("this turn, whenever a creature you control
                 // attacks alone, do X to it" — The Last Ronin III) must fan out one trigger per
                 // declared attacker so EffectTarget.TriggeringEntity resolves to each attacker.
                 // AttackersDeclaredEvent carries no single triggering entity (fromEvent returns none),
-                // so mirror the non-delayed per-attacker path (Rule 603.2c).
+                // so mirror the non-delayed per-attacker path (Rule 603.2c). If this is a fire-once
+                // trigger, all matching attackers from this one event remain candidates for the
+                // controller; a later event is not part of the same occurrence choice.
                 val specEvent = spec.event
                 if (specEvent is com.wingedsheep.sdk.scripting.EventPattern.AttackEvent &&
                     event is AttackersDeclaredEvent && delayed.watchedEntityId == null
@@ -878,13 +887,11 @@ class TriggerDetector(
                     val attackFilter = specEvent.filter
                     for (attackerId in event.attackers) {
                         if (attackFilter != null && !predicateEvaluator.matches(
-                                state, state.projectedState, attackerId, attackFilter,
+                            state, state.projectedState, attackerId, attackFilter,
                                 PredicateContext(controllerId = delayed.controllerId, sourceId = delayed.sourceId)
                             )
                         ) continue
-                        if (delayed.fireOnce && delayed.id in firedOnceIds) continue
-                        if (delayed.fireOnce) firedOnceIds.add(delayed.id)
-                        triggers.add(
+                        eventCandidates.add(
                             PendingTrigger(
                                 ability = TriggeredAbility.create(
                                     trigger = spec.event,
@@ -901,17 +908,13 @@ class TriggerDetector(
                             )
                         )
                     }
-                    continue
-                }
-
-                // A per-defending-player delayed attack trigger keeps the same multiplicity and
-                // explicit player binding as a battlefield-resident trigger. A fire-once delayed
-                // ability is consumed by the first resulting instance, while a reusable delayed
-                // ability emits one instance per matching player.
-                if (specEvent is com.wingedsheep.sdk.scripting.EventPattern.YouAttackPlayerEvent &&
+                } else if (specEvent is com.wingedsheep.sdk.scripting.EventPattern.YouAttackPlayerEvent &&
                     event is AttackersDeclaredEvent &&
                     delayed.watchedEntityId == null && delayed.watchedRecipientId == null
                 ) {
+                    // A per-defending-player delayed attack trigger keeps the same multiplicity and
+                    // explicit player binding as a battlefield-resident trigger. A fire-once delayed
+                    // ability presents every matching player from this declaration as a choice.
                     val delayedAbility = TriggeredAbility.create(
                         trigger = spec.event,
                         binding = spec.binding,
@@ -919,54 +922,64 @@ class TriggerDetector(
                         targetRequirement = delayed.targetRequirement,
                         additionalTargetRequirements = delayed.additionalTargetRequirements,
                     )
-                    if (delayed.fireOnce && matchingAttackedPlayers!!.size > 1) {
-                        // CR 603.7b requires the delayed-trigger controller to choose which
-                        // simultaneous occurrence causes a one-shot delayed ability to trigger.
-                        // This detector has no choice continuation at the occurrence boundary yet;
-                        // do not substitute turn-order for that player decision. Leaving the
-                        // delayed ability resident is safer than emitting a trigger for an
-                        // engine-chosen player and keeps the case available to a future choice
-                        // primitive.
-                        continue
+                    for (attackedPlayer in matchingAttackedPlayers!!) {
+                        eventCandidates.add(
+                            PendingTrigger(
+                                ability = delayedAbility,
+                                sourceId = delayed.sourceId,
+                                sourceName = delayed.sourceName,
+                                controllerId = delayed.controllerId,
+                                triggerContext = TriggerContext(triggeringPlayerId = attackedPlayer),
+                                consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
+                            )
+                        )
                     }
-                    val playersToTrigger = if (delayed.fireOnce) {
-                        matchingAttackedPlayers!!.take(1)
-                    } else {
-                        matchingAttackedPlayers!!
-                    }
-                    addPerPlayerAttackTriggers(
-                        ability = delayedAbility,
-                        sourceId = delayed.sourceId,
-                        sourceName = delayed.sourceName,
-                        controllerId = delayed.controllerId,
-                        attackedPlayers = playersToTrigger,
-                        triggers = triggers,
-                        consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null,
+                } else {
+                    eventCandidates.add(
+                        PendingTrigger(
+                            ability = TriggeredAbility.create(
+                                trigger = spec.event,
+                                binding = spec.binding,
+                                effect = delayed.effect,
+                                targetRequirement = delayed.targetRequirement,
+                                additionalTargetRequirements = delayed.additionalTargetRequirements
+                            ),
+                            sourceId = delayed.sourceId,
+                            sourceName = delayed.sourceName,
+                            controllerId = delayed.controllerId,
+                            triggerContext = TriggerContext.fromEvent(event).copy(
+                                triggeringEntityId = delayed.watchedEntityId
+                                    ?: TriggerContext.fromEvent(event).triggeringEntityId
+                            ),
+                            consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
+                        )
                     )
-                    if (delayed.fireOnce && playersToTrigger.isNotEmpty()) firedOnceIds.add(delayed.id)
-                    continue
                 }
 
-                if (delayed.fireOnce) firedOnceIds.add(delayed.id)
+                if (eventCandidates.isEmpty()) continue
+                if (delayed.fireOnce) {
+                    encounters.add(Encounter(delayed, eventCandidates.toList()))
+                    matchedFireOnceIds.add(delayed.id)
+                } else {
+                    eventCandidates.forEach { encounters.add(Encounter(delayed, listOf(it))) }
+                }
+            }
+        }
+
+        // A fire-once delayed trigger that matched several simultaneous occurrences cannot choose
+        // by event/turn order (CR 603.7b). Convert that one event's candidate group into a marker;
+        // ordinary and reusable delayed triggers keep their original encounter order unchanged.
+        for (encounter in encounters) {
+            if (encounter.delayed.fireOnce && encounter.candidates.size > 1) {
+                val first = encounter.candidates.first()
                 triggers.add(
-                    PendingTrigger(
-                        ability = TriggeredAbility.create(
-                            trigger = spec.event,
-                            binding = spec.binding,
-                            effect = delayed.effect,
-                            targetRequirement = delayed.targetRequirement,
-                            additionalTargetRequirements = delayed.additionalTargetRequirements
-                        ),
-                        sourceId = delayed.sourceId,
-                        sourceName = delayed.sourceName,
-                        controllerId = delayed.controllerId,
-                        triggerContext = TriggerContext.fromEvent(event).copy(
-                            triggeringEntityId = delayed.watchedEntityId
-                                ?: TriggerContext.fromEvent(event).triggeringEntityId
-                        ),
-                        consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
+                    first.copy(
+                        consumesDelayedTriggerId = null,
+                        occurrenceChoice = encounter.candidates.map { it.toOccurrenceCandidate() }
                     )
                 )
+            } else {
+                triggers.addAll(encounter.candidates)
             }
         }
     }

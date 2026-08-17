@@ -4,6 +4,7 @@ import com.wingedsheep.gym.contract.Observation
 import com.wingedsheep.gym.service.EnvId
 import com.wingedsheep.gym.service.SnapshotHandle
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Response for `POST /envs` (and `POST /envs/deckbuild`). Combines the new env's ID
@@ -19,13 +20,18 @@ data class CreateEnvResponse(
 
 /** Body for `POST /envs/{id}/step`. */
 @Serializable
-data class StepBody(val actionId: Int)
+data class StepBody(
+    val actionId: Int,
+    /** Optional overlay copied from the selected LegalActionView.actionSemantics. */
+    val action: JsonObject? = null
+)
 
 /** Single entry for `POST /envs/step-batch`. */
 @Serializable
 data class StepBatchItem(
     val envId: EnvId,
-    val actionId: Int
+    val actionId: Int,
+    val action: JsonObject? = null
 )
 
 /** Result entry for `POST /envs/step-batch`. */

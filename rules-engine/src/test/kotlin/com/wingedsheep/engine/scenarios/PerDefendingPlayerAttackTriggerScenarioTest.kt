@@ -2,9 +2,14 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.ActionProcessor
+import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.ContinuationFrame
 import com.wingedsheep.engine.core.DeclaredAttack
 import com.wingedsheep.engine.core.DeclareAttackers
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.OptionChosenResponse
+import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.DelayedTriggeredAbility
 import com.wingedsheep.engine.event.GlobalGrantedTriggeredAbility
@@ -34,6 +39,7 @@ import com.wingedsheep.sdk.scripting.TriggeredAbility
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 
@@ -704,7 +710,7 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             setOf(pod.playerB, pod.playerC)
     }
 
-    test("ATTACK-GROUP-DELAYED-01: ambiguous fire-once player matches fail closed") {
+    test("ATTACK-GROUP-DELAYED-01: ambiguous fire-once player matches externalize occurrence choice") {
         val pod = pod()
         val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
         val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
@@ -732,9 +738,189 @@ class PerDefendingPlayerAttackTriggerScenarioTest : FunSpec({
             )
             .filter { it.sourceName == delayedWatcher.name }
 
-        // There is no existing generic decision continuation at this boundary. Until one exists,
-        // the engine must not choose a player by canonical ordering (CR 603.7b).
-        pending.shouldBeEmpty()
+        // CR 603.7b is now an explicit controller choice. The detector emits one transient marker
+        // carrying every per-occurrence context; TriggerProcessor turns it into a pending choice.
+        pending shouldHaveSize 1
+        pending.single().occurrenceChoice.map { it.triggerContext.triggeringPlayerId }.toSet() shouldBe
+            setOf(pod.playerB, pod.playerC)
+
+        // The marker itself may be queued below another continuation before TriggerProcessor
+        // sees it, so its candidate payload must survive ordinary engine-state serialization.
+        val json = Json {
+            serializersModule = engineSerializersModule
+            encodeDefaults = true
+            allowStructuredMapKeys = true
+        }
+        val encoded = json.encodeToString(PendingTrigger.serializer(), pending.single())
+        json.decodeFromString(PendingTrigger.serializer(), encoded) shouldBe pending.single()
+    }
+
+    test("fire-once delayed trigger does not combine separate events into one occurrence choice") {
+        val pod = pod()
+        val attacker = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val sourceId = pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, delayedWatcher.name)
+        val delayedId = "per-player-delayed-first-event"
+        val delayed = DelayedTriggeredAbility(
+            id = delayedId,
+            effect = Effects.DrawCards(1),
+            sourceId = sourceId,
+            sourceName = delayedWatcher.name,
+            controllerId = pod.attackingPlayer,
+            trigger = TriggerSpec(
+                event = EventPattern.YouAttackPlayerEvent(attackerFilter = qualifyingFilter),
+                binding = TriggerBinding.ANY,
+            ),
+            fireOnce = true,
+        )
+
+        val pending = TriggerDetector(pod.driver.cardRegistry).detectTriggers(
+            pod.driver.state.copy(delayedTriggers = listOf(delayed)),
+            listOf(
+                attackEvent(pod, attacker to pod.playerB),
+                attackEvent(pod, attacker to pod.playerC),
+            ),
+        ).filter { it.sourceName == delayedWatcher.name }
+
+        pending shouldHaveSize 1
+        pending.single().occurrenceChoice shouldBe emptyList()
+        pending.single().triggerContext.triggeringPlayerId shouldBe pod.playerB
+        pending.single().consumesDelayedTriggerId shouldBe delayedId
+    }
+
+    test("ATTACK-GROUP-DELAYED-02: selected occurrence keeps context and consumes fire-once exactly once") {
+        val pod = pod()
+        val first = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val second = pod.driver.putCreatureOnBattlefield(pod.attackingPlayer, qualifyingCreature.name)
+        val sourceId = pod.driver.putPermanentOnBattlefield(pod.attackingPlayer, delayedWatcher.name)
+        val delayedId = "per-player-delayed-choice"
+        val delayed = DelayedTriggeredAbility(
+            id = delayedId,
+            effect = Effects.DrawCards(1),
+            sourceId = sourceId,
+            sourceName = delayedWatcher.name,
+            controllerId = pod.attackingPlayer,
+            trigger = TriggerSpec(
+                event = EventPattern.YouAttackPlayerEvent(attackerFilter = qualifyingFilter),
+                binding = TriggerBinding.ANY,
+            ),
+            fireOnce = true,
+        )
+        val state = pod.driver.state.copy(delayedTriggers = listOf(delayed))
+        val pending = TriggerDetector(pod.driver.cardRegistry)
+            .detectTriggers(state, listOf(attackEvent(pod, first to pod.playerB, second to pod.playerC)))
+            .filter { it.sourceName == delayedWatcher.name }
+        val services = EngineServices(pod.driver.cardRegistry)
+        val paused = services.triggerProcessor.processTriggers(state, pending)
+
+        paused.isPaused shouldBe true
+        val decision = paused.pendingDecision as ChooseOptionDecision
+        decision.options shouldHaveSize 2
+        decision.options shouldBe listOf(
+            "Trigger for player ${pod.playerB.value}",
+            "Trigger for player ${pod.playerC.value}"
+        )
+        decision.optionMetadata.map { it.triggeringPlayerId } shouldBe listOf(pod.playerB, pod.playerC)
+        decision.optionMetadata.map { it.id } shouldBe listOf(pod.playerB.value, pod.playerC.value)
+        decision.optionMetadata.map { it.description } shouldBe listOf(
+            "Trigger for player ${pod.playerB.value}",
+            "Trigger for player ${pod.playerC.value}"
+        )
+        val continuation = paused.state.peekContinuation()
+            ?: error("Delayed-trigger occurrence choice did not leave a continuation")
+
+        val json = Json {
+            serializersModule = engineSerializersModule
+            encodeDefaults = true
+            allowStructuredMapKeys = true
+        }
+
+        val wrongOwner = ActionProcessor(pod.driver.cardRegistry).process(
+            paused.state,
+            SubmitDecision(
+                pod.playerB,
+                OptionChosenResponse(decision.id, optionIndex = 0)
+            )
+        ).result
+        wrongOwner.error.shouldNotBeNull()
+        wrongOwner.state shouldBe paused.state
+
+        val restoredPausedState = json.decodeFromString(
+            GameState.serializer(),
+            json.encodeToString(GameState.serializer(), paused.state)
+        )
+        restoredPausedState shouldBe paused.state
+        (restoredPausedState.pendingDecision as ChooseOptionDecision).optionMetadata shouldBe
+            decision.optionMetadata
+
+        val processor = ActionProcessor(pod.driver.cardRegistry)
+        val invalid = processor.process(
+            paused.state,
+            SubmitDecision(
+                pod.attackingPlayer,
+                OptionChosenResponse(decision.id, optionIndex = 99)
+            )
+        ).result
+        invalid.error shouldBe "Invalid option index: 99"
+        invalid.state shouldBe paused.state
+
+        val resumed = processor.process(
+            paused.state,
+            SubmitDecision(
+                pod.attackingPlayer,
+                OptionChosenResponse(decision.id, optionIndex = 1)
+            )
+        ).result
+        resumed.error shouldBe null
+        resumed.state.delayedTriggers.any { it.id == delayedId } shouldBe false
+        val stackTop = resumed.state.getTopOfStack()
+        val stackTrigger = stackTop?.let {
+            resumed.state.getEntity(it)?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+        }
+        stackTrigger?.triggeringPlayerId shouldBe pod.playerC
+
+        val encoded = json.encodeToString(ContinuationFrame.serializer(), continuation)
+        val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
+        decoded shouldBe continuation
+
+        val replayed = processor.process(
+            restoredPausedState,
+            SubmitDecision(
+                pod.attackingPlayer,
+                OptionChosenResponse(decision.id, optionIndex = 0)
+            )
+        ).result
+        replayed.error shouldBe null
+        replayed.state.delayedTriggers.any { it.id == delayedId } shouldBe false
+        replayed.state.getTopOfStack()?.let {
+            replayed.state.getEntity(it)
+                ?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+                ?.triggeringPlayerId
+        } shouldBe pod.playerB
+
+        val forkB = processor.process(
+            paused.state.copy(),
+            SubmitDecision(
+                pod.attackingPlayer,
+                OptionChosenResponse(decision.id, optionIndex = 0)
+            )
+        ).result
+        val forkC = processor.process(
+            paused.state.copy(),
+            SubmitDecision(
+                pod.attackingPlayer,
+                OptionChosenResponse(decision.id, optionIndex = 1)
+            )
+        ).result
+        forkB.state.getTopOfStack()?.let {
+            forkB.state.getEntity(it)
+                ?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+                ?.triggeringPlayerId
+        } shouldBe pod.playerB
+        forkC.state.getTopOfStack()?.let {
+            forkC.state.getEntity(it)
+                ?.get<com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent>()
+                ?.triggeringPlayerId
+        } shouldBe pod.playerC
     }
 
     test("watched-target scope fails closed for per-player delayed attack triggers") {
