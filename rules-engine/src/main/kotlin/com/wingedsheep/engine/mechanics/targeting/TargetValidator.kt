@@ -245,9 +245,9 @@ class TargetValidator {
      * CR 608.2b removes individually-illegal targets when at least one target remains legal. The
      * announcement-time minimum/maximum and distinctness checks are deliberately not repeated here:
      * the choices are already locked, and this function only determines which of those choices can
-     * still be affected. [allowedTargets], when supplied by the stack resolver, is the authoritative
-     * result of its source-aware resolution check; it prevents a per-mode queue from re-admitting a
-     * target that the flat spell/ability payload already rejected.
+     * still be affected. [allowedTargetSlots], when supplied by a nested queue, is the
+     * position-preserving source-aware result captured by the outer resolution check; it prevents
+     * a per-mode queue from re-admitting a target into a different original slot.
      */
     fun filterTargetsAtResolution(
         state: GameState,
@@ -258,7 +258,12 @@ class TargetValidator {
         sourceSubtypes: Set<String> = emptySet(),
         sourceId: EntityId? = null,
         xValue: Int? = null,
-        allowedTargets: List<ChosenTarget>? = null,
+        /**
+         * Position-preserving source-aware target gate captured for a nested modal/splice
+         * queue. A target is allowed only when it occupies the same original slot; membership
+         * anywhere in the list would let a survivor fill an earlier illegal slot.
+         */
+        allowedTargetSlots: List<ChosenTarget?>? = null,
         targetEntryStamps: Map<EntityId, Long> = emptyMap(),
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
         triggeringEntityId: EntityId? = null,
@@ -289,7 +294,8 @@ class TargetValidator {
             )
             for (index in offset until end) {
                 val target = targets[index]
-                val sourceAwareLegal = allowedTargets == null || allowedTargets.any { it == target }
+                val sourceAwareLegal = allowedTargetSlots == null ||
+                    (index < allowedTargetSlots.size && allowedTargetSlots[index] == target)
                 val sameObject = target.entityIdOrNull()?.let {
                     !TargetsComponent.isDifferentObject(state, it, targetEntryStamps)
                 } ?: true
@@ -321,7 +327,8 @@ class TargetValidator {
         // gate without passing an illegal id to an executor.
         if (requirements.isEmpty()) {
             targets.forEachIndexed { index, target ->
-                legal[index] = (allowedTargets == null || allowedTargets.any { it == target }) &&
+                legal[index] = (allowedTargetSlots == null ||
+                    (index < allowedTargetSlots.size && allowedTargetSlots[index] == target)) &&
                     (target.entityIdOrNull()?.let {
                         !TargetsComponent.isDifferentObject(state, it, targetEntryStamps)
                     } ?: true)
@@ -542,41 +549,55 @@ class TargetValidator {
         val objectRequirement = requirement.objectRequirement() ?: return null
         if (requirementTargets.size <= 1) return null
 
+        // CR 115.9b says a target that has left its expected zone is ignored for a query about
+        // whether something targets it; CR 608.2b separately makes that target illegal. The
+        // relationship checks therefore compare only currently-present target objects. This is
+        // deliberately not a last-known-information fallback: LKI would reintroduce a departed
+        // target into the live legality relation and could make a legal survivor illegal.
+        val presentTargets = requirementTargets.filter { isCurrentTargetObject(state, it) }
+
         if (objectRequirement.sameController) {
-            val controllers = requirementTargets.mapNotNull { target ->
-                (target as? ChosenTarget.Permanent)?.let { permanent ->
-                    state.projectedState.getController(permanent.entityId)
-                        ?: state.getEntity(permanent.entityId)?.get<ControllerComponent>()?.playerId
-                }
+            val controllers = mutableListOf<EntityId>()
+            for (target in presentTargets) {
+                val permanent = target as? ChosenTarget.Permanent ?: continue
+                val controller = state.projectedState.getController(permanent.entityId)
+                    ?: state.getEntity(permanent.entityId)?.get<ControllerComponent>()?.playerId
+                    ?: return "Target controller is unavailable"
+                controllers += controller
             }
             if (controllers.toSet().size > 1) return "Targets must be controlled by the same player"
         }
         if (objectRequirement.sameOwner) {
-            val owners = requirementTargets.mapNotNull { (it as? ChosenTarget.Card)?.ownerId }
+            val owners = mutableListOf<EntityId>()
+            for (target in presentTargets) {
+                val card = target as? ChosenTarget.Card ?: continue
+                state.getEntity(card.cardId)?.get<CardComponent>()
+                    ?: return "Target characteristics are unavailable"
+                owners += card.ownerId
+            }
             if (owners.toSet().size > 1) return "Targets must be from a single graveyard"
         }
         if (objectRequirement.sameCreatureType) {
-            val subtypeSets = requirementTargets.map { target ->
-                (target as? ChosenTarget.Permanent)
-                    ?.takeIf { it.entityId in state.getBattlefield() }
-                    ?.let { state.projectedState.getSubtypes(it.entityId) }
-                    ?: emptySet()
+            val subtypeSets = presentTargets.mapNotNull { target ->
+                val permanent = target as? ChosenTarget.Permanent ?: return@mapNotNull null
+                state.getEntity(permanent.entityId)?.get<CardComponent>()
+                    ?: return "Target characteristics are unavailable"
+                state.projectedState.getSubtypes(permanent.entityId)
             }
-            if (subtypeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
+            if (subtypeSets.isNotEmpty() && subtypeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
                 return "Targets must share a creature type"
             }
         }
         if (objectRequirement.sameCardType) {
-            val typeSets = requirementTargets.map { target ->
-                (target as? ChosenTarget.Permanent)
-                    ?.takeIf { it.entityId in state.getBattlefield() }
-                    ?.let { permanent ->
-                        state.projectedState.getTypes(permanent.entityId)
-                            .filterTo(mutableSetOf()) { it in CARD_TYPE_NAMES }
-                    }
-                    ?: emptySet()
+            val typeSets = presentTargets.mapNotNull { target ->
+                val permanent = target as? ChosenTarget.Permanent ?: return@mapNotNull null
+                state.getEntity(permanent.entityId)?.get<CardComponent>()
+                    ?: return "Target characteristics are unavailable"
+                state.projectedState.getTypes(permanent.entityId)
+                    .filter { it in CARD_TYPE_NAMES }
+                    .toSet()
             }
-            if (typeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
+            if (typeSets.isNotEmpty() && typeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
                 return "Targets must share a card type"
             }
         }
@@ -590,22 +611,39 @@ class TargetValidator {
             } catch (_: Exception) {
                 Int.MAX_VALUE
             }
-            val total = requirementTargets.sumOf { target ->
+            val total = presentTargets.sumOf { target ->
                 (target as? ChosenTarget.Card)?.let { card ->
-                    state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue ?: 0
+                    state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue
+                        ?: return "Target characteristics are unavailable"
                 } ?: 0
             }
             if (total > cap) return "Targets must have total mana value $cap or less"
         }
         if (objectRequirement.differentNames) {
-            val names = requirementTargets.map { target ->
+            val names = presentTargets.mapNotNull { target ->
                 val id = (target as? ChosenTarget.Permanent)?.entityId
                     ?: (target as? ChosenTarget.Card)?.cardId
-                id?.let { state.projectedState.getName(it) ?: state.getEntity(it)?.get<CardComponent>()?.name }
+                id?.let {
+                    state.getEntity(it)?.get<CardComponent>()
+                        ?: return "Target characteristics are unavailable"
+                    state.projectedState.getName(it) ?: state.getEntity(it)?.get<CardComponent>()?.name
+                }
             }
             if (names.size != names.toSet().size) return "Targets must have different names"
         }
         return null
+    }
+
+    /** Whether a locked target object is still present in the zone in which it was chosen. */
+    private fun isCurrentTargetObject(state: GameState, target: ChosenTarget): Boolean = when (target) {
+        is ChosenTarget.Player -> state.getEntity(target.playerId) != null
+        is ChosenTarget.Permanent ->
+            target.entityId in state.getBattlefield() && state.getEntity(target.entityId) != null
+        is ChosenTarget.Card ->
+            target.cardId in state.getZone(ZoneKey(target.ownerId, target.zone)) &&
+                state.getEntity(target.cardId) != null
+        is ChosenTarget.Spell -> target.spellEntityId in state.stack &&
+            state.getEntity(target.spellEntityId) != null
     }
 
     private fun TargetRequirement.objectRequirement(): TargetObject? = when (this) {

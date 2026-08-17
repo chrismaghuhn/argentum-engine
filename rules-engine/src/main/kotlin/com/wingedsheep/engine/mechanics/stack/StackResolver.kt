@@ -121,17 +121,60 @@ class StackResolver(
      * A spliced card contributes its *rules text*, so what is queued is its `spellEffect`; a splice
      * card with no spell effect (nothing splice-able) simply drops out.
      */
-    private fun buildSpliceEntries(spellComponent: SpellOnStackComponent): List<PreTargetedEffectEntry> =
-        spellComponent.splicedCardNames.mapIndexedNotNull { index, name ->
+    private fun buildSpliceEntries(
+        spellComponent: SpellOnStackComponent,
+        flatTargets: List<ChosenTarget>,
+        alignedTargets: List<ChosenTarget?>
+    ): List<PreTargetedEffectEntry> {
+        val lockedRequirements = spellComponent.splicedTargetRequirementsOrdered
+        val metadataComplete = lockedRequirements.size == spellComponent.splicedCardNames.size
+        val totalSpliceSlots = if (metadataComplete) {
+            lockedRequirements.sumOf { requirements -> requirements.sumOf { it.count.coerceAtLeast(0) } }
+        } else {
+            0
+        }
+        var flatSlotStart = (flatTargets.size - totalSpliceSlots).coerceAtLeast(0)
+
+        return spellComponent.splicedCardNames.mapIndexedNotNull { index, name ->
             val splicedDef = cardRegistry.getCard(name) ?: return@mapIndexedNotNull null
             val effect = splicedDef.script.spellEffect ?: return@mapIndexedNotNull null
-            PreTargetedEffectEntry(
+            val requirements = lockedRequirements.getOrNull(index) ?: emptyList()
+            val slotCount = requirements.sumOf { it.count.coerceAtLeast(0) }
+            val rangeAvailable = metadataComplete &&
+                flatSlotStart >= 0 &&
+                flatSlotStart + slotCount <= flatTargets.size &&
+                flatSlotStart + slotCount <= alignedTargets.size
+            val rawSlice = if (rangeAvailable) {
+                flatTargets.subList(flatSlotStart, flatSlotStart + slotCount)
+            } else {
+                spellComponent.splicedTargetsOrdered.getOrNull(index) ?: emptyList()
+            }
+            val alignedSlice = if (rangeAvailable) {
+                alignedTargets.subList(flatSlotStart, flatSlotStart + slotCount)
+            } else {
+                emptyList()
+            }
+            val slotMetadataLocked = rangeAvailable && rawSlice.size == slotCount &&
+                alignedSlice.size == slotCount
+            val entryTargets = if (slotMetadataLocked) {
+                alignedSlice.mapIndexed { targetIndex, aligned -> aligned ?: rawSlice[targetIndex] }
+            } else {
+                rawSlice
+            }
+            val entry = PreTargetedEffectEntry(
                 effect = effect,
-                targets = spellComponent.splicedTargetsOrdered.getOrNull(index) ?: emptyList(),
-                targetRequirements = spellComponent.splicedTargetRequirementsOrdered.getOrNull(index)
-                    ?: splicedDef.script.targetRequirements
+                targets = entryTargets,
+                targetRequirements = requirements,
+                flatSlotStart = flatSlotStart,
+                flatSlotCount = slotCount,
+                alignedTargets = alignedSlice,
+                targetSlotLegality = alignedSlice.map { it != null },
+                slotMetadataLocked = slotMetadataLocked
             )
+            flatSlotStart += slotCount
+            entry
         }
+    }
 
     /** Split the normalized flat requirement list without consulting dynamic/card-definition counts. */
     private fun splitSplicedRequirements(
@@ -2243,20 +2286,24 @@ class StackResolver(
         // spliced onto a spell that has text), so the tail lives inside the `spellEffect != null` guard.
         val targetEntryStamps = state.getEntity(spellId)
             ?.get<TargetsComponent>()?.targetEntryStamps ?: emptyMap()
-        val spliceEntries = buildSpliceEntries(spellComponent).map { entry ->
+        // The queue needs the original flat slots, including illegal ones. A compact fallback
+        // would lose the range identity and let a survivor slide into a different splice entry;
+        // missing flat metadata therefore fails closed in buildSpliceEntries.
+        val flatTargets = state.getEntity(spellId)?.get<TargetsComponent>()?.targets ?: emptyList()
+        val spliceEntries = buildSpliceEntries(spellComponent, flatTargets, alignedTargets).map { entry ->
             entry.copy(targetEntryStamps = targetEntryStamps)
         }
-        val splicedRequirementCount = if (spellComponent.splicedTargetRequirementsOrdered.isNotEmpty()) {
+        val spliceMetadataComplete = spellComponent.splicedTargetRequirementsOrdered.size ==
+            spellComponent.splicedCardNames.size
+        val splicedRequirementCount = if (spliceMetadataComplete) {
             spellComponent.splicedTargetRequirementsOrdered.sumOf { it.size }
         } else {
-            spellComponent.splicedCardNames.sumOf { name ->
-                cardRegistry.getCard(name)?.script?.targetRequirements?.size ?: 0
-            }
+            0
         }
-        val splicedSlotCount = if (spellComponent.splicedTargetRequirementsOrdered.isNotEmpty()) {
+        val splicedSlotCount = if (spliceMetadataComplete) {
             SpliceCasts.splicedTargetSlotCounts(spellComponent.splicedTargetRequirementsOrdered).sum()
         } else {
-            SpliceCasts.splicedTargetSlotCounts(spellComponent.splicedCardNames, cardRegistry).sum()
+            0
         }
 
         if (spellEffect != null) {
@@ -2333,7 +2380,6 @@ class StackResolver(
                         sourceName = cardComponent?.name,
                         xValue = spellComponent.xValue ?: spellComponent.additionalCostPayXLifeAmount,
                         targetingSourceType = TargetingSourceType.SPELL,
-                        legalTargets = alignedTargets.filterNotNull(),
                         remainingEntries = spliceEntries
                     )
                 )
@@ -2355,7 +2401,6 @@ class StackResolver(
                         xValue = spellComponent.xValue ?: spellComponent.additionalCostPayXLifeAmount,
                         triggeringEntityId = null,
                         targetingSourceType = TargetingSourceType.SPELL,
-                        legalTargets = alignedTargets.filterNotNull()
                     ),
                     effectExecutor = { s, e, c -> effectHandler.execute(s, e, c) },
                     targetValidator = spliceTargetValidator,

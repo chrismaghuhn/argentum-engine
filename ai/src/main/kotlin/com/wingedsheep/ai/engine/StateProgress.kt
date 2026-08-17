@@ -6,6 +6,7 @@ import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisT
 import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedComponent
 import com.wingedsheep.engine.state.components.battlefield.TargetedByControllerThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.TimestampComponent
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
@@ -137,7 +138,14 @@ object StateProgress {
         for (component in container.all()) {
             val type = component::class.java
             if (type in IGNORED_COMPONENTS) continue
-            components += type.name.hashCode().toLong().mix(component.hashCode())
+            // CR 400.7 stamps protect the runtime identity of locked targets, but the stamp
+            // itself is not a semantic game fact. Keep the target choices and requirements in
+            // the digest while omitting only this transient resolution bookkeeping; otherwise
+            // retargeting/stamping can make an inert action look like progress to the AI.
+            val semanticComponent = (component as? TargetsComponent)
+                ?.copy(targetEntryStamps = emptyMap())
+                ?: component
+            components += type.name.hashCode().toLong().mix(semanticComponent.hashCode())
         }
         return entityId.hashCode().toLong().mix(components)
     }

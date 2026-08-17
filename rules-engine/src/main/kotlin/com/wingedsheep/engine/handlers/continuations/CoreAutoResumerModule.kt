@@ -159,8 +159,7 @@ class CoreAutoResumerModule(
                 triggeringEntityId = continuation.triggeringEntityId,
                 triggeringPlayerId = continuation.triggeringPlayerId,
                 storedCollections = continuation.storedCollections,
-                targetingSourceType = continuation.targetingSourceType,
-                legalTargets = continuation.legalTargets
+                targetingSourceType = continuation.targetingSourceType
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
                 state = state,
@@ -184,8 +183,7 @@ class CoreAutoResumerModule(
                 xValue = continuation.xValue,
                 triggeringEntityId = continuation.triggeringEntityId,
                 storedCollections = continuation.storedCollections,
-                targetingSourceType = continuation.targetingSourceType,
-                legalTargets = continuation.legalTargets
+                targetingSourceType = continuation.targetingSourceType
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
                 state = state,
@@ -213,6 +211,7 @@ class CoreAutoResumerModule(
                 triggeringEntityId = continuation.triggeringEntityId,
                 allowCancelBackToModesList = null,
                 outerTargets = continuation.outerTargets,
+                outerAlignedTargets = continuation.outerAlignedTargets,
                 outerNamedTargets = continuation.outerNamedTargets,
                 accumulatedEvents = events,
                 checkForMore = checkForMore

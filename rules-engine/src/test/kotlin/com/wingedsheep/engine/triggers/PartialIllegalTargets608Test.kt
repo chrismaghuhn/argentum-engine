@@ -1,7 +1,12 @@
 package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
+import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.ModalTargetContinuation
+import com.wingedsheep.engine.core.OptionChosenResponse
+import com.wingedsheep.engine.core.PreTargetedEffectEntry
 import com.wingedsheep.engine.core.SpellFizzledEvent
+import com.wingedsheep.engine.core.SpliceTailContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
@@ -93,6 +98,16 @@ class PartialIllegalTargets608Test : FunSpec({
         manaCost = "{0}"
         typeLine = "Instant — Arcane"
         spell { effect = Effects.GainLife(1) }
+    }
+
+    val retargetableSplice = card("Synthetic 608 Retargetable Splice") {
+        manaCost = "{0}"
+        typeLine = "Instant — Arcane"
+        splice("{0}")
+        spell {
+            target("creature", TargetCreature())
+            effect = Effects.Tap(EffectTarget.ContextTarget(0))
+        }
     }
 
     fun dynamicDriver(): GameTestDriver = driver().also {
@@ -439,6 +454,102 @@ class PartialIllegalTargets608Test : FunSpec({
         driver.state.getEntity(second)?.has<TappedComponent>() shouldBe true
     }
 
+    test("608-11b: a retargeted splice consumes the replacement in its original slot") {
+        val driver = driver()
+        driver.registerCards(listOf(dynamicSlotHost, retargetableSplice))
+        val oldTarget = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val newTarget = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val hostId = driver.putCardInHand(driver.player1, dynamicSlotHost.name)
+        val announcementState = driver.state
+        val cast = StackResolver(driver.cardRegistry).castSpell(
+            state = announcementState,
+            cardId = hostId,
+            casterId = driver.player1,
+            targetLockState = announcementState,
+            targets = listOf(ChosenTarget.Permanent(oldTarget)),
+            targetRequirements = listOf(TargetCreature()),
+            splicedCardNames = listOf(retargetableSplice.name)
+        )
+
+        cast.error shouldBe null
+        val stackId = cast.newState.stack.single()
+        // Contested retargeting and ChangeTarget both rewrite TargetsComponent. They do not
+        // rewrite the copied splice list on SpellOnStackComponent; resolution must preserve the
+        // original flat slot and consume this replacement rather than the stale old target.
+        val retargeted = cast.newState.updateEntity(stackId) { container ->
+            container.with(
+                TargetsComponent.capture(
+                    cast.newState,
+                    listOf(ChosenTarget.Permanent(newTarget)),
+                    listOf(TargetCreature())
+                )
+            )
+        }
+        driver.replaceState(retargeted)
+        driver.bothPass()
+
+        driver.state.getEntity(newTarget)?.has<TappedComponent>() shouldBe true
+        driver.state.getEntity(oldTarget)?.has<TappedComponent>() shouldBe false
+    }
+
+    test("608-11c: a missing relational target does not poison the legal survivor") {
+        val driver = driver()
+        val departed = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val survivor = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+
+        putTriggeredAbility(
+            driver,
+            effect = Effects.GainLife(targetCount),
+            targets = listOf(ChosenTarget.Permanent(departed), ChosenTarget.Permanent(survivor)),
+            targetRequirements = listOf(TargetCreature(count = 2, sameCreatureType = true))
+        )
+        driver.moveToGraveyard(departed)
+        driver.bothPass()
+
+        // CR 608.2b makes the departed target illegal. Its absent current object is not an empty
+        // creature-type set that can make the remaining live target illegal as well.
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore + 1
+    }
+
+    test("608-11d: resolution-time modal continuations preserve outer target slots") {
+        val driver = driver()
+        val departed = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val survivor = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+        val requirement = TargetCreature(count = 2)
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.Composite(
+                        Effects.Tap(EffectTarget.ContextTarget(0)),
+                        Effects.GainLife(1)
+                    ),
+                    description = "Use the first outer target"
+                )
+            ),
+            chooseCount = 1
+        )
+
+        putTriggeredAbility(
+            driver,
+            effect = modal,
+            targets = listOf(ChosenTarget.Permanent(departed), ChosenTarget.Permanent(survivor)),
+            targetRequirements = listOf(requirement)
+        )
+        driver.moveToGraveyard(departed)
+        driver.bothPass()
+
+        val modeDecision = driver.pendingDecision as ChooseOptionDecision
+        driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(modeDecision.id, optionIndex = 0)
+        )
+
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore + 1
+        driver.state.getEntity(survivor)?.has<TappedComponent>() shouldBe false
+    }
+
     test("608-12: a direct target executor no-ops and the modal tail continues") {
         val driver = driver()
         val first = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
@@ -617,6 +728,49 @@ class PartialIllegalTargets608Test : FunSpec({
         decoded.objectIdentityStamps shouldBe driver.state.objectIdentityStamps
         decoded.getEntity(stackId)?.get<TargetsComponent>()?.targetEntryStamps shouldBe
             driver.state.getEntity(stackId)?.get<TargetsComponent>()?.targetEntryStamps
+    }
+
+    test("608-16b: queued slot metadata survives continuation serialization") {
+        val driver = driver()
+        val target = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val entry = PreTargetedEffectEntry(
+            effect = Effects.Tap(EffectTarget.ContextTarget(0)),
+            targets = listOf(ChosenTarget.Permanent(target)),
+            targetRequirements = listOf(TargetCreature()),
+            flatSlotStart = 3,
+            flatSlotCount = 1,
+            alignedTargets = listOf(ChosenTarget.Permanent(target)),
+            targetSlotLegality = listOf(true),
+            slotMetadataLocked = true
+        )
+        val continuation = SpliceTailContinuation(
+            decisionId = "608-16b",
+            controllerId = driver.player1,
+            sourceId = null,
+            sourceName = null,
+            remainingEntries = listOf(entry)
+        )
+        val json = Json {
+            serializersModule = engineSerializersModule
+            encodeDefaults = true
+            allowStructuredMapKeys = true
+        }
+
+        val encoded = json.encodeToString(SpliceTailContinuation.serializer(), continuation)
+        json.decodeFromString(SpliceTailContinuation.serializer(), encoded) shouldBe continuation
+
+        val modalContinuation = ModalTargetContinuation(
+            decisionId = "608-16b-modal",
+            controllerId = driver.player1,
+            sourceId = null,
+            sourceName = null,
+            effect = Effects.Tap(EffectTarget.ContextTarget(0)),
+            targetRequirements = listOf(TargetCreature()),
+            outerTargets = listOf(ChosenTarget.Permanent(target)),
+            outerAlignedTargets = listOf(null, ChosenTarget.Permanent(target))
+        )
+        val modalEncoded = json.encodeToString(ModalTargetContinuation.serializer(), modalContinuation)
+        json.decodeFromString(ModalTargetContinuation.serializer(), modalEncoded) shouldBe modalContinuation
     }
 
     test("608-17: a dynamic up-to maximum is locked before resolution") {
