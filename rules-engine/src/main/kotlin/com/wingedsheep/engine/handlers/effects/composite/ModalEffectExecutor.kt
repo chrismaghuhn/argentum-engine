@@ -179,7 +179,8 @@ class ModalEffectExecutor(
             effect,
             chosenModes = context.chosenModes,
             modeTargetsOrdered = context.modeTargetsOrdered,
-            modeTargetRequirements = context.modeTargetRequirements
+            modeTargetRequirements = context.modeTargetRequirements,
+            modeTargetRequirementsOrdered = context.modeTargetRequirementsOrdered
         ).map { entry -> entry.copy(targetEntryStamps = context.targetEntryStamps) }
         val sourceName = context.sourceId?.let { id -> state.getEntity(id)?.get<CardComponent>()?.name }
         val baseCtx = PreTargetedEffectContext(
@@ -188,7 +189,10 @@ class ModalEffectExecutor(
             sourceName = sourceName,
             xValue = context.xValue,
             triggeringEntityId = context.triggeringEntityId,
-            legalTargets = context.targets
+            triggeringPlayerId = context.triggeringPlayerId,
+            storedCollections = context.pipeline.storedCollections,
+            legalTargets = context.targets,
+            targetingSourceType = context.targetingSourceType
         )
         return processPreTargetedEffectQueue(state, entries, baseCtx, effectExecutor, targetValidator, emptyList())
     }
@@ -205,12 +209,14 @@ class ModalEffectExecutor(
             effect: ModalEffect,
             chosenModes: List<Int>,
             modeTargetsOrdered: List<List<com.wingedsheep.engine.state.components.stack.ChosenTarget>>,
-            modeTargetRequirements: Map<Int, List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>>
+            modeTargetRequirements: Map<Int, List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>>,
+            modeTargetRequirementsOrdered: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
         ): List<PreTargetedEffectEntry> {
             return chosenModes.mapIndexed { ordinal, modeIndex ->
                 val mode = effect.modes.getOrNull(modeIndex)
                 val targets = modeTargetsOrdered.getOrNull(ordinal) ?: emptyList()
-                val reqs = modeTargetRequirements[modeIndex]
+                val reqs = modeTargetRequirementsOrdered.getOrNull(ordinal)
+                    ?: modeTargetRequirements[modeIndex]
                     ?: mode?.targetRequirements
                     ?: emptyList()
                 PreTargetedEffectEntry(
@@ -227,7 +233,8 @@ class ModalEffectExecutor(
                 effect,
                 spellOnStack.chosenModes,
                 spellOnStack.modeTargetsOrdered,
-                spellOnStack.modeTargetRequirements
+                spellOnStack.modeTargetRequirements,
+                spellOnStack.modeTargetRequirementsOrdered
             )
     }
 }
@@ -239,6 +246,10 @@ internal data class PreTargetedEffectContext(
     val sourceName: String?,
     val xValue: Int?,
     val triggeringEntityId: com.wingedsheep.sdk.model.EntityId?,
+    val triggeringPlayerId: com.wingedsheep.sdk.model.EntityId? = null,
+    val storedCollections: Map<String, List<com.wingedsheep.sdk.model.EntityId>> = emptyMap(),
+    val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
+        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
     /** Flat stack-object legality result, when this queue belongs to a top-level resolution. */
     val legalTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>? = null
 )
@@ -286,7 +297,11 @@ internal fun processPreTargetedEffectQueue(
             sourceId = ctx.sourceId,
             xValue = ctx.xValue,
             allowedTargets = ctx.legalTargets,
-            targetEntryStamps = head.targetEntryStamps
+            targetEntryStamps = head.targetEntryStamps,
+            targetingSourceType = ctx.targetingSourceType,
+            triggeringEntityId = ctx.triggeringEntityId,
+            triggeringPlayerId = ctx.triggeringPlayerId,
+            storedCollections = ctx.storedCollections
         )
     } else TargetValidator.ResolutionTargetPayload(emptyList(), emptyList())
 
@@ -296,7 +311,10 @@ internal fun processPreTargetedEffectQueue(
     // target-consuming child and continue to a non-targeted sibling. A direct target-consuming
     // executor may report its missing target as an error; that error is treated as the no-op for
     // this illegal slice below, rather than aborting the remaining mode queue.
-    val allTargetsIllegalForEntry = head.targets.isNotEmpty() && resolutionTargets.targets.isEmpty()
+    val targetedEntry = head.targetRequirements.isNotEmpty() || head.targets.isNotEmpty()
+    val hasIllegalTargetPortion = targetedEntry && (
+        head.targets.isEmpty() || resolutionTargets.alignedTargets.any { it == null }
+    )
 
     val effectContext = EffectContext(
         sourceId = ctx.sourceId,
@@ -305,13 +323,16 @@ internal fun processPreTargetedEffectQueue(
         targets = resolutionTargets.targets,
         alignedTargets = resolutionTargets.alignedTargets,
         targetEntryStamps = head.targetEntryStamps,
+        targetingSourceType = ctx.targetingSourceType,
         pipeline = PipelineState(
             namedTargets = EffectContext.buildNamedTargets(
                 head.targetRequirements,
                 resolutionTargets.alignedTargets
-            )
+            ),
+            storedCollections = ctx.storedCollections
         ),
-        triggeringEntityId = ctx.triggeringEntityId
+        triggeringEntityId = ctx.triggeringEntityId,
+        triggeringPlayerId = ctx.triggeringPlayerId
     )
 
     // Pre-push the tail continuation so that if the effect pauses, our frame sits
@@ -325,6 +346,9 @@ internal fun processPreTargetedEffectQueue(
                 sourceName = ctx.sourceName,
                 xValue = ctx.xValue,
                 triggeringEntityId = ctx.triggeringEntityId,
+                triggeringPlayerId = ctx.triggeringPlayerId,
+                storedCollections = ctx.storedCollections,
+                targetingSourceType = ctx.targetingSourceType,
                 legalTargets = ctx.legalTargets,
                 remainingEntries = tail
             )
@@ -338,7 +362,7 @@ internal fun processPreTargetedEffectQueue(
         return EffectResult.paused(result.state, result.pendingDecision!!, nextEvents)
     }
     if (result.error != null) {
-        if (allTargetsIllegalForEntry) {
+        if (hasIllegalTargetPortion) {
             val nextState = if (tail.isNotEmpty()) {
                 val (_, afterPop) = result.state.popContinuation()
                 afterPop

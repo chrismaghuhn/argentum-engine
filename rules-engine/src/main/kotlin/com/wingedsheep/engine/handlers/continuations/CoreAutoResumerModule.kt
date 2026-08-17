@@ -157,6 +157,9 @@ class CoreAutoResumerModule(
                 sourceName = continuation.sourceName,
                 xValue = continuation.xValue,
                 triggeringEntityId = continuation.triggeringEntityId,
+                triggeringPlayerId = continuation.triggeringPlayerId,
+                storedCollections = continuation.storedCollections,
+                targetingSourceType = continuation.targetingSourceType,
                 legalTargets = continuation.legalTargets
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
@@ -178,8 +181,10 @@ class CoreAutoResumerModule(
                 controllerId = continuation.controllerId,
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
-                xValue = null,
-                triggeringEntityId = null,
+                xValue = continuation.xValue,
+                triggeringEntityId = continuation.triggeringEntityId,
+                storedCollections = continuation.storedCollections,
+                targetingSourceType = continuation.targetingSourceType,
                 legalTargets = continuation.legalTargets
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(

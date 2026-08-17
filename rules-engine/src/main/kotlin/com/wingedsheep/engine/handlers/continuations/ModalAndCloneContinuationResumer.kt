@@ -192,12 +192,20 @@ class ModalAndCloneContinuationResumer(
                 }
             }
 
+        val selectedCounts = continuation.targetRequirements.indices.map { index ->
+            response.selectedTargets[index].orEmpty().size
+        }
+        val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            continuation.targetRequirements,
+            selectedCounts
+        )
+
         val context = EffectContext(
             sourceId = continuation.sourceId,
             controllerId = continuation.controllerId,
             xValue = continuation.xValue,
             targets = chosenTargets,
-            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(continuation.targetRequirements, chosenTargets)),
+            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, chosenTargets)),
             triggeringEntityId = continuation.triggeringEntityId
         )
 
@@ -1659,12 +1667,16 @@ internal fun processChosenModeQueue(
         val isPlayerTarget = req is TargetPlayer || req is TargetOpponent
         if (isPlayerTarget && targets.size == 1 && req.count == 1) {
             val chosenTargets = listOf(entityIdToChosenTarget(state, targets[0]))
+            val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+                listOf(req),
+                listOf(1)
+            )
             val context = EffectContext(
                 sourceId = sourceId,
                 controllerId = controllerId,
                 xValue = xValue,
                 targets = chosenTargets,
-                pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(head.targetRequirements, chosenTargets)),
+                pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, chosenTargets)),
                 triggeringEntityId = triggeringEntityId
             )
             return executeChosenModeWithTail(

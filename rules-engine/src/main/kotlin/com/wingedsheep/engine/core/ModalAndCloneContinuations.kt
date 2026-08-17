@@ -122,6 +122,10 @@ data class ModalPreChosenContinuation(
     val sourceName: String?,
     val xValue: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    val triggeringPlayerId: EntityId? = null,
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
+        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
     /** Flat source-aware legality result captured before the nested decision paused. */
     val legalTargets: List<ChosenTarget>? = null,
     val remainingEntries: List<PreTargetedEffectEntry>
@@ -148,6 +152,11 @@ data class SpliceTailContinuation(
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
+    val xValue: Int? = null,
+    val triggeringEntityId: EntityId? = null,
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
+        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
     /** Flat source-aware legality result captured before the main spell paused. */
     val legalTargets: List<ChosenTarget>? = null,
     val remainingEntries: List<PreTargetedEffectEntry>

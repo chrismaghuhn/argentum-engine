@@ -11,7 +11,6 @@ import com.wingedsheep.engine.handlers.effects.composite.asMayDecide
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.Gate
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
-import com.wingedsheep.sdk.scripting.targets.withCount
 import java.util.UUID
 
 /**
@@ -95,7 +94,14 @@ class EffectAndTriggerContinuationResumer(
             if (targetIds.isEmpty()) continue
             targetIds.forEach { entityId -> selectedTargets.add(entityIdToChosenTarget(state, entityId)) }
             continuation.targetRequirements.getOrNull(slotIndex)
-                ?.let { alignedRequirements.add(it.withCount(targetIds.size)) }
+                ?.let {
+                    alignedRequirements.add(
+                        services.targetValidator.lockRequirementsForSelectedCounts(
+                            listOf(it),
+                            listOf(targetIds.size)
+                        ).single()
+                    )
+                }
         }
 
         // Zero-target resolution path. Two cases:
