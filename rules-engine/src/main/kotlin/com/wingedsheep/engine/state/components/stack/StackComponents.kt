@@ -60,7 +60,10 @@ data class SpellOnStackComponent(
     val chosenModes: List<Int> = emptyList(),  // For modal spells (700.2). Ordered; same index may repeat when allowRepeat.
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),  // Per-mode chosen targets, aligned 1:1 with chosenModes
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),  // Per-mode TargetRequirements for 608.2b re-validation at resolution
-    val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),  // Per-mode DividedDamageEffect allocations (future)
+    // Per-mode DividedDamageEffect allocations (future). The mode-indexed shape cannot encode
+    // occurrence-specific allocations when the same mode is selected more than once; such casts
+    // are rejected at the action boundary.
+    val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     /** Snapshots of permanents sacrificed as additional cost (Rule 112.7a — last known info). */
     val sacrificedPermanents: List<EntitySnapshot> = emptyList(),
     val castFaceDown: Boolean = false,  // For morph - creature enters face-down
@@ -262,6 +265,8 @@ data class TriggeredAbilityOnStackComponent(
     val chosenModes: List<Int> = emptyList(),
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),
+    // Per-mode DividedDamageEffect allocations (future); repeated mode occurrences are rejected
+    // at the action boundary because this mode-indexed shape cannot distinguish them.
     val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     /** Entities a batch trigger captured (the matching permanents in a `PermanentsEnteredEvent`
      *  batch). Seeded into the resolving ability's pipeline under

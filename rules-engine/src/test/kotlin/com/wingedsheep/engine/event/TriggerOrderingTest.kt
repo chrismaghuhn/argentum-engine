@@ -1008,6 +1008,60 @@ class TriggerOrderingTest : FunSpec({
         firstKey shouldBe secondKey
     }
 
+    test("TO-22r: repeated triggered mode distributions fail closed") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "repeated-triggered-mode-distribution")
+        val firstTarget = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondTarget = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val stackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val triggered = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "repeated modal ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "repeated modal ability",
+            chosenModes = listOf(0, 0),
+            modeTargetsOrdered = listOf(
+                listOf(ChosenTarget.Permanent(firstTarget)),
+                listOf(ChosenTarget.Permanent(secondTarget)),
+            ),
+            modeDamageDistribution = mapOf(0 to mapOf(firstTarget to 1)),
+        )
+        driver.replaceState(driver.state.updateEntity(stackObject) { it.with(triggered) })
+
+        val key = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = stackObject))
+        )
+
+        key.contains("ambiguous-repeated-mode") shouldBe true
+    }
+
+    test("TO-22s: repeated spell mode distributions fail closed") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "repeated-spell-mode-distribution")
+        val firstTarget = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondTarget = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val stackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val spell = SpellOnStackComponent(
+            casterId = driver.player1,
+            chosenModes = listOf(0, 0),
+            modeTargetsOrdered = listOf(
+                listOf(ChosenTarget.Permanent(firstTarget)),
+                listOf(ChosenTarget.Permanent(secondTarget)),
+            ),
+            modeDamageDistribution = mapOf(0 to mapOf(firstTarget to 1)),
+        )
+        driver.replaceState(driver.state.updateEntity(stackObject) { it.with(spell) })
+
+        val key = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = stackObject))
+        )
+
+        key.contains("ambiguous-repeated-mode") shouldBe true
+    }
+
     test("TO-14b: reflexive metadata cannot move a trigger into the second placement pass") {
         val driver = newDriver()
         val reflexive = syntheticTrigger(driver, "reflexive-stage").copy(

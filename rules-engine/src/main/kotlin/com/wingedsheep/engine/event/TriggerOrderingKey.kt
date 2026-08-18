@@ -574,10 +574,12 @@ internal object TriggerOrderingKey {
                     .map { (mode, allocation) ->
                         listOf(
                             mode,
-                            damageDistributionKey(
+                            modeDamageDistributionKey(
                                 state,
+                                triggered.chosenModes,
+                                triggered.modeTargetsOrdered,
+                                mode,
                                 allocation,
-                                modeTargetsFor(triggered.chosenModes, triggered.modeTargetsOrdered, mode),
                                 visited,
                             )
                         )
@@ -653,10 +655,12 @@ internal object TriggerOrderingKey {
                     .map { (mode, allocation) ->
                         listOf(
                             mode,
-                            damageDistributionKey(
+                            modeDamageDistributionKey(
                                 state,
+                                spell.chosenModes,
+                                spell.modeTargetsOrdered,
+                                mode,
                                 allocation,
-                                modeTargetsFor(spell.chosenModes, spell.modeTargetsOrdered, mode),
                                 visited,
                             )
                         )
@@ -756,15 +760,52 @@ internal object TriggerOrderingKey {
         return matched + unmatched
     }
 
-    private fun modeTargetsFor(
+    /**
+     * Mode damage distributions are currently keyed by mode index, while target bindings are
+     * keyed by mode occurrence.  A repeated mode therefore has no representable occurrence
+     * binding in this legacy/future-facing map shape.  Valid cast actions reject that combination;
+     * this key path still marks an already-materialized malformed payload explicitly instead of
+     * silently choosing the first occurrence.
+     */
+    private fun modeDamageDistributionKey(
+        state: GameState,
         chosenModes: List<Int>,
         modeTargetsOrdered: List<List<ChosenTarget>>,
         mode: Int,
-    ): List<ChosenTarget> = chosenModes
-        .indexOf(mode)
-        .takeIf { it >= 0 }
-        ?.let { modeTargetsOrdered.getOrNull(it) }
-        .orEmpty()
+        allocation: Map<EntityId, Int>,
+        visited: Set<EntityId>,
+    ): List<Any?> {
+        val occurrences = chosenModes.withIndex().filter { it.value == mode }
+        return when {
+            occurrences.isEmpty() -> listOf(
+                "unknown-mode",
+                sortedEntityIntMap(state, allocation, visited),
+            )
+            occurrences.size > 1 -> {
+                val occurrenceTargetKeys = occurrences.map { occurrence ->
+                    modeTargetsOrdered.getOrNull(occurrence.index).orEmpty()
+                        .map { target -> chosenTargetKey(state, target, visited) }
+                }
+                val allOccurrenceTargets = occurrences.flatMap { occurrence ->
+                    modeTargetsOrdered.getOrNull(occurrence.index).orEmpty()
+                }
+                listOf(
+                    "ambiguous-repeated-mode",
+                    occurrenceTargetKeys,
+                    damageDistributionKey(state, allocation, allOccurrenceTargets, visited),
+                )
+            }
+            else -> listOf(
+                "unique-mode",
+                damageDistributionKey(
+                    state,
+                    allocation,
+                    modeTargetsOrdered.getOrNull(occurrences.single().index).orEmpty(),
+                    visited,
+                )
+            )
+        }
+    }
 
     private fun chosenTargetEntityId(target: ChosenTarget): EntityId = when (target) {
         is ChosenTarget.Player -> target.playerId
