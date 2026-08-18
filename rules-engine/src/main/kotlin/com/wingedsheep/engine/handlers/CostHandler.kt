@@ -9,6 +9,7 @@ import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
@@ -19,6 +20,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Counters
 import com.wingedsheep.sdk.core.ManaCost
@@ -36,7 +38,7 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 /**
  * Validates and pays costs for spells and abilities.
  */
-class CostHandler {
+class CostHandler(private val cardRegistry: CardRegistry? = null) {
 
     private val predicateEvaluator = PredicateEvaluator()
 
@@ -570,7 +572,10 @@ class CostHandler {
             val life = state.lifeTotal(controllerId)
             // CR 119.4 — a player may pay life only if their life total is >= the payment.
             // Paying down to exactly 0 is legal; the state-based action checker handles the loss.
-            life >= atom.amount
+            val amount = cardRegistry?.let {
+                CostAmountResolver.resolve(state, atom.amount, sourceId, controllerId, it)
+            } ?: (atom.amount as? DynamicAmount.Fixed)?.amount
+            amount != null && life >= amount
         }
         is CostAtom.Sacrifice -> {
             val candidates = findMatchingPermanentsUnified(state, controllerId, atom.filter, sourceId)
@@ -660,7 +665,11 @@ class CostHandler {
             CostPaymentResult.success(state, newPool)
         }
         is CostAtom.PayLife -> {
-            val (newState, events) = LifePaymentService.pay(state, controllerId, atom.amount)
+            val amount = cardRegistry?.let {
+                CostAmountResolver.resolve(state, atom.amount, sourceId, controllerId, it)
+            } ?: (atom.amount as? DynamicAmount.Fixed)?.amount
+                ?: return CostPaymentResult.failure("Cannot resolve life cost")
+            val (newState, events) = LifePaymentService.pay(state, controllerId, amount)
                 ?: return CostPaymentResult.failure("Player has no life total")
             CostPaymentResult.success(newState, manaPool, events = events)
         }
@@ -1158,7 +1167,10 @@ class CostHandler {
                     // CR 810.9a — affordability uses the team's shared total in Two-Headed Giant.
                     val life = state.lifeTotal(controllerId)
                     // CR 119.4 — a player may pay life only if their life total is >= the payment.
-                    life >= atom.amount
+                    val amount = cardRegistry?.let {
+                        CostAmountResolver.resolve(state, atom.amount, controllerId, controllerId, it)
+                    } ?: (atom.amount as? DynamicAmount.Fixed)?.amount
+                    amount != null && life >= amount
                 }
                 is CostAtom.ExileFrom ->
                     findMatchingCardsUnified(state, state.getZone(ZoneKey(controllerId, atom.zone)), atom.filter, controllerId).size >= atom.count

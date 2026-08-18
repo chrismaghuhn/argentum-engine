@@ -487,6 +487,20 @@ sealed interface DynamicAmount : TextReplaceable<DynamicAmount> {
     }
 
     /**
+     * The number of colors in the combined color identity of this player's commanders.
+     *
+     * The commander registry is authoritative and the commanders may remain in a hidden zone;
+     * the rules engine resolves their registered definitions at activation time. A player with a
+     * colorless commander resolves to zero colors, while the absence of a commander is handled as
+     * an unavailable commander-dependent cost rather than as a zero-color commander.
+     */
+    @SerialName("CommanderColorIdentityCount")
+    @Serializable
+    data object CommanderColorIdentityCount : DynamicAmount {
+        override val description: String = "the number of colors in your commanders' color identity"
+    }
+
+    /**
      * A value pulled from the current resolution context — trigger payload, additional-cost
      * accumulator, target list, or a linked-exile pile attached to the source permanent.
      *

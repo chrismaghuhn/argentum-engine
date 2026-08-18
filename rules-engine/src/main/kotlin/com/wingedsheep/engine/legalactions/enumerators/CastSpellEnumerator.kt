@@ -2836,7 +2836,9 @@ class CastSpellEnumerator : ActionEnumerator {
                             // surface a Pay-3-Life action when the caster has fewer than 3 life
                             // (Bitter Triumph). Validation in CastSpellHandler still backstops.
                             val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
-                            if (life < atom.amount) canPayAdditionalCosts = false
+                            if (!context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)) {
+                                canPayAdditionalCosts = false
+                            }
                         }
                         else -> {}
                     }

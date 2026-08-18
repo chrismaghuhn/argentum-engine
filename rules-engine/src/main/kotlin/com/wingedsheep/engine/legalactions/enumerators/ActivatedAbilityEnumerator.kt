@@ -315,11 +315,14 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                 .CollectEvidenceResolver.costInfo(state, playerId, atom.amount)
                                 ?: continue
                         }
-                        // Pay-life / reveal carry no enumeration-time selection or affordability gate
-                        // here (life payability is validated at payment time, matching the prior
-                        // fall-through behavior for these costs). Putting counters on the source
-                        // costs nothing the player must have, so it never gates enumeration either.
-                        is CostAtom.PayLife, is CostAtom.RevealFromHand, is CostAtom.PutCountersOnSelf -> {}
+                        // Pay-life has no selection, but its dynamic amount must be resolved here
+                        // so the legal-action domain agrees with authoritative activation checks.
+                        is CostAtom.PayLife -> {
+                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
+                                continue
+                            }
+                        }
+                        is CostAtom.RevealFromHand, is CostAtom.PutCountersOnSelf -> {}
                         // CR 701.17b — a mill cost is unpayable when the library holds fewer cards.
                         // No selection: the milled cards are the top of the library.
                         is CostAtom.Mill -> {
@@ -512,7 +515,13 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                     }
                                     // Pay-life / reveal / put-counters-on-self carry no enumeration-time
                                     // gate here (matching the prior else fall-through for these sub-costs).
-                                    is CostAtom.PayLife, is CostAtom.RevealFromHand,
+                                    is CostAtom.PayLife -> {
+                                        if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
+                                            costCanBePaid = false
+                                            break
+                                        }
+                                    }
+                                    is CostAtom.RevealFromHand,
                                     is CostAtom.PutCountersOnSelf -> {}
                                     // CR 701.17b — a mill cost is unpayable when the library holds
                                     // fewer cards. No selection: the milled cards are the top.

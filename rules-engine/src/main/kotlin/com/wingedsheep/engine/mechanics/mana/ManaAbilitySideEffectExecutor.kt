@@ -143,7 +143,10 @@ class ManaAbilitySideEffectExecutor(
      * life component.
      */
     private fun payLifeCost(cost: AbilityCost): Int = when (cost) {
-        is AbilityCost.Atom -> (cost.atom as? CostAtom.PayLife)?.amount ?: 0
+        is AbilityCost.Atom -> when (val atom = cost.atom as? CostAtom.PayLife) {
+            null -> 0
+            else -> (atom.amount as? com.wingedsheep.sdk.scripting.values.DynamicAmount.Fixed)?.amount ?: 0
+        }
         is AbilityCost.Composite -> cost.costs.sumOf { payLifeCost(it) }
         else -> 0
     }

@@ -371,7 +371,11 @@ excluded.
   shape, not an ability cost; only the cost-component shape is implemented so far. First user: Arena
   of Glory (MH3) — `Costs.Composite(Costs.Mana("{R}"), Costs.Tap, Costs.Exert)`.
 - `Costs.Mana("{2}{U}")` — pay the given mana cost (string or `ManaCost`).
-- `Costs.PayLife(amount)` — pay N life.
+- `Costs.PayLife(amount)` — pay N life; `amount` may be an `Int` or a reusable
+  `DynamicAmount` resolved at activation/payment time. `Costs.PayLife(DynamicAmounts.commanderColorIdentityCount())`
+  pays life equal to the number of colors in the combined color identity of the controller's registered
+  commanders. A player with no registered commander cannot pay that dynamic cost; a colorless commander
+  resolves it to zero. The same dynamic overload is available under `Costs.additional` and `Costs.pay`.
 - `Costs.PayXLife` — pay X life, where X is the value chosen for the ability's `{X}` mana cost
   (e.g. "{X}{B}, {T}, Pay X life: …" on Krumar Initiate). The X-linked counterpart to
   `Costs.PayLife`; `calculateMaxAffordableX` caps X at the controller's life total — X may go as

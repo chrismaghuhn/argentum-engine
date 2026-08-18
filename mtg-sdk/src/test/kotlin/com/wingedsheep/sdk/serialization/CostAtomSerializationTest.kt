@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -29,6 +30,7 @@ class CostAtomSerializationTest : FunSpec({
     val representatives: List<CostAtom> = listOf(
         CostAtom.Mana(ManaCost.parse("{2}{U}")),
         CostAtom.PayLife(3),
+        CostAtom.PayLife(DynamicAmount.CommanderColorIdentityCount),
         CostAtom.Sacrifice(GameObjectFilter.Creature, count = 2),
         CostAtom.Discard(count = 1, filter = GameObjectFilter.Any, random = true),
         CostAtom.ExileFrom(Zone.GRAVEYARD, GameObjectFilter.Creature, count = 3),

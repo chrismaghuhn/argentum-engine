@@ -7,6 +7,8 @@ import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
@@ -35,7 +37,8 @@ import kotlin.reflect.KClass
  */
 class AnyPlayerMayPayExecutor(
     private val decisionHandler: DecisionHandler = DecisionHandler(),
-    private val executeEffect: ((GameState, Effect, EffectContext) -> EffectResult)? = null
+    private val executeEffect: ((GameState, Effect, EffectContext) -> EffectResult)? = null,
+    private val cardRegistry: CardRegistry? = null
 ) : EffectExecutor<AnyPlayerMayPayEffect> {
 
     override val effectType: KClass<AnyPlayerMayPayEffect> = AnyPlayerMayPayEffect::class
@@ -138,7 +141,8 @@ class AnyPlayerMayPayExecutor(
             // CR 119.4: a player may pay life only if their life total is at least the amount.
             is CostAtom.PayLife -> {
                 val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
-                life >= atom.amount
+                CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
+                    ?.let { life >= it } == true
             }
             else -> false
         }
@@ -206,8 +210,10 @@ class AnyPlayerMayPayExecutor(
         playerOrder: List<EntityId>,
         currentIndex: Int
     ): EffectResult {
+        val amount = CostAmountResolver.resolve(state, cost.amount, sourceId, playerId, cardRegistry)
+            ?: return EffectResult.error(state, "Cannot resolve life cost")
         val decisionId = UUID.randomUUID().toString()
-        val prompt = "Pay ${cost.amount} life to prevent $sourceName's effect?"
+        val prompt = "Pay $amount life to prevent $sourceName's effect?"
 
         val decision = YesNoDecision(
             id = decisionId,
@@ -218,7 +224,7 @@ class AnyPlayerMayPayExecutor(
                 sourceName = sourceName,
                 phase = DecisionPhase.RESOLUTION
             ),
-            yesText = "Pay ${cost.amount} life",
+            yesText = "Pay $amount life",
             noText = "Don't pay"
         )
 
@@ -229,7 +235,7 @@ class AnyPlayerMayPayExecutor(
             remainingPlayers = playerOrder.drop(currentIndex + 1),
             sourceId = sourceId,
             sourceName = sourceName,
-            requiredCount = cost.amount,
+            requiredCount = amount,
             filter = com.wingedsheep.sdk.scripting.GameObjectFilter.Any
         )
 

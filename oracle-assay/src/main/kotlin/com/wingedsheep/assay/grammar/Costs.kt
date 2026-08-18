@@ -406,8 +406,9 @@ object Costs {
             build { atomOf(SdkCosts.PayLife(it.int("n"))) }
             match { atom ->
                 val pay = atom as? CostAtom.PayLife ?: return@match null
-                if (atom != atomOf(SdkCosts.PayLife(pay.amount))) return@match null
-                bind("n" to pay.amount)
+                val amount = (pay.amount as? DynamicAmount.Fixed)?.amount ?: return@match null
+                if (atom != atomOf(SdkCosts.PayLife(amount))) return@match null
+                bind("n" to amount)
             }
         }
 

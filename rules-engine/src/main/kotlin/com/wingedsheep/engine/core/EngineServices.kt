@@ -88,7 +88,7 @@ class EngineServices(
     val costCalculator = CostCalculator(cardRegistry)
     val grantedKeywordResolver = GrantedKeywordResolver(cardRegistry)
     val alternativePaymentHandler = AlternativePaymentHandler(grantedKeywordResolver)
-    val costHandler = CostHandler()
+    val costHandler = CostHandler(cardRegistry)
     val mulliganHandler = MulliganHandler(cardRegistry)
     val conditionEvaluator = ConditionEvaluator()
     val targetValidator = TargetValidator()

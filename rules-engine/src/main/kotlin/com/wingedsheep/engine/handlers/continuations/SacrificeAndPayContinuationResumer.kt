@@ -2,6 +2,7 @@ package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.handlers.effects.zones.ForceExileMultiZoneExecutor
 import com.wingedsheep.engine.handlers.effects.zones.ForceSacrificeExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -761,9 +762,12 @@ class SacrificeAndPayContinuationResumer(
 
                 is CostAtom.PayLife -> {
                     val life = state.lifeTotal(nextPlayerId) // CR 810.9a — team's shared total
-                    if (life >= atom.amount) {
+                    val amount = CostAmountResolver.resolve(
+                        state, atom.amount, continuation.sourceId, nextPlayerId, services.cardRegistry
+                    )
+                    if (amount != null && life >= amount) {
                         val decisionId = java.util.UUID.randomUUID().toString()
-                        val prompt = "Pay ${atom.amount} life to prevent ${continuation.sourceName}'s effect?"
+                        val prompt = "Pay $amount life to prevent ${continuation.sourceName}'s effect?"
                         val decision = YesNoDecision(
                             id = decisionId,
                             playerId = nextPlayerId,
@@ -773,7 +777,7 @@ class SacrificeAndPayContinuationResumer(
                                 sourceName = continuation.sourceName,
                                 phase = DecisionPhase.RESOLUTION
                             ),
-                            yesText = "Pay ${atom.amount} life",
+                            yesText = "Pay $amount life",
                             noText = "Don't pay"
                         )
                         val newContinuation = continuation.copy(

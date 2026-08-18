@@ -88,6 +88,10 @@ object Costs {
     fun PayLife(amount: Int): AbilityCost =
         AbilityCost.Atom(CostAtom.PayLife(amount))
 
+    /** Pay life equal to a value resolved when the ability is activated. */
+    fun PayLife(amount: DynamicAmount): AbilityCost =
+        AbilityCost.Atom(CostAtom.PayLife(amount))
+
     /**
      * Pay X life, where X is the value chosen for the ability's `{X}` mana cost
      * (e.g. "{X}{B}, {T}, Pay X life: ..." on Krumar Initiate).
@@ -506,6 +510,9 @@ object Costs {
         /** Pay [amount] life. */
         fun PayLife(amount: Int): AdditionalCost = AdditionalCost.Atom(CostAtom.PayLife(amount))
 
+        /** Pay life equal to a value resolved while casting the spell. */
+        fun PayLife(amount: DynamicAmount): AdditionalCost = AdditionalCost.Atom(CostAtom.PayLife(amount))
+
         /** Pay [amountPerTarget] life for each target chosen by this spell (Phyrexian Purge). */
         fun PayLifePerTarget(amountPerTarget: Int): AdditionalCost =
             AdditionalCost.PayLifePerTarget(amountPerTarget)
@@ -718,6 +725,9 @@ object Costs {
 
         /** Pay [amount] life. */
         fun PayLife(amount: Int): PayCost = PayCost.Atom(CostAtom.PayLife(amount))
+
+        /** Pay life equal to a value resolved when the cost is paid. */
+        fun PayLife(amount: DynamicAmount): PayCost = PayCost.Atom(CostAtom.PayLife(amount))
 
         /** Exile [count] cards matching [filter] from [zone]. */
         fun Exile(

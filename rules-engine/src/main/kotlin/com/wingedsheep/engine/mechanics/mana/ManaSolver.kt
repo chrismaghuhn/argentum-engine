@@ -27,6 +27,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
@@ -1128,9 +1129,12 @@ class ManaSolver(
                     is AbilityCost.Tap -> true
                     is AbilityCost.Atom -> when (val atom = cost.atom) {
                         is CostAtom.PayLife -> {
+                            val resolved = CostAmountResolver.resolve(
+                                state, atom.amount, entityId, playerId, cardRegistry
+                            )
                             abilityHasPainCost = true
-                            abilityPainAmount = atom.amount
-                            true
+                            abilityPainAmount = resolved ?: 0
+                            resolved != null
                         }
                         else -> false // Non-pain atom-only cost: skip like other non-tap mana abilities.
                     }
@@ -1142,8 +1146,15 @@ class ManaSolver(
                                 is AbilityCost.Tap -> hasTap = true
                                 is AbilityCost.Atom -> when (val atom = subCost.atom) {
                                     is CostAtom.PayLife -> {
+                                        val resolved = CostAmountResolver.resolve(
+                                            state, atom.amount, entityId, playerId, cardRegistry
+                                        )
                                         abilityHasPainCost = true
-                                        abilityPainAmount = maxOf(abilityPainAmount, atom.amount)
+                                        if (resolved == null) {
+                                            hasUnsupportedSubCost = true
+                                        } else {
+                                            abilityPainAmount = maxOf(abilityPainAmount, resolved)
+                                        }
                                     }
                                     is CostAtom.Mana -> {
                                         abilityActivationManaCost += atom.cost.cmc

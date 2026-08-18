@@ -5,6 +5,7 @@ import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
 import com.wingedsheep.engine.legalactions.*
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
@@ -24,6 +25,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
  * Extracted cost-checking helpers from LegalActionsCalculator.
@@ -35,6 +37,20 @@ class CostEnumerationUtils(
     private val predicateEvaluator: PredicateEvaluator,
     private val cardRegistry: CardRegistry
 ) {
+    /** Whether a dynamic life amount is available and affordable for this activation. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        amount: DynamicAmount,
+    ): Boolean = CostAmountResolver.resolve(
+        state = state,
+        amount = amount,
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )?.let { state.lifeTotal(playerId) >= it } == true
+
     // --- Sacrifice targets ---
 
     fun findSacrificeTargets(

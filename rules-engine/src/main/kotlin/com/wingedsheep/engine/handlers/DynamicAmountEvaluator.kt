@@ -138,6 +138,12 @@ class DynamicAmountEvaluator(
             is DynamicAmount.LastKnownDamageDealtToSource ->
                 context.triggerLastKnownDamageDealtByPlayers?.values?.sum() ?: 0
 
+            // This value needs the authoritative card registry and commander registry, so cost
+            // payment callers resolve it through CostAmountResolver rather than this generic
+            // evaluator.
+            DynamicAmount.CommanderColorIdentityCount ->
+                error("CommanderColorIdentityCount requires a CardRegistry-backed cost resolver")
+
             // The {X} this object was cast with, read off the current object regardless of zone.
             // Reads, in order: the durable CastChoicesComponent on the battlefield permanent (and
             // for a later activated ability); the SpellOnStackComponent while the object is still

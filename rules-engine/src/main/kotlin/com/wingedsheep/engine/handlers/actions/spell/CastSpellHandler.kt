@@ -48,6 +48,7 @@ import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.actions.ActionHandler
@@ -1852,9 +1853,12 @@ class CastSpellHandler(
                     }
                     is CostAtom.PayLife -> {
                         val currentLife = state.lifeTotal(action.playerId) // CR 810.9a — team's shared total
+                        val amount = CostAmountResolver.resolve(
+                            state, atom.amount, action.cardId, action.playerId, cardRegistry
+                        ) ?: return "Cannot resolve life cost"
                         // CR 119.4 — you can't pay life unless you have at least that much
-                        if (currentLife < atom.amount) {
-                            return "Not enough life to pay ${atom.amount} life"
+                        if (currentLife < amount) {
+                            return "Not enough life to pay $amount life"
                         }
                     }
                     is CostAtom.ReturnToHand -> {
@@ -2635,7 +2639,9 @@ class CastSpellHandler(
         for (additionalCost in flattenedAllCosts) {
             val atom = (additionalCost as? AdditionalCost.Atom)?.atom
             val lifeToPay = when {
-                atom is CostAtom.PayLife -> atom.amount
+                atom is CostAtom.PayLife -> CostAmountResolver.resolve(
+                    currentState, atom.amount, action.cardId, action.playerId, cardRegistry
+                ) ?: return ExecutionResult.error(currentState, "Cannot resolve life cost")
                 additionalCost is AdditionalCost.PayLifePerTarget -> additionalCost.amountPerTarget * action.targets.size
                 additionalCost is AdditionalCost.PayXLife -> action.additionalCostPayment?.payXLifeAmount ?: 0
                 additionalCost is AdditionalCost.PayLifeEqualToManaValueOfSpell ->

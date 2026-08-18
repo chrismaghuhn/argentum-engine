@@ -9,6 +9,7 @@ import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.mechanics.cost.CostPaymentContext
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.cost.PaymentResult
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.state.GameState
@@ -388,14 +389,17 @@ class PayOrSufferExecutor(
         // CR 810.9a — affordability uses the team's shared total in Two-Headed Giant.
         val playerLife = state.lifeTotal(controllerId)
 
+        val amount = CostAmountResolver.resolve(state, cost.amount, sourceId, controllerId, cardRegistry)
+            ?: return executeSufferEffect(state, effect.suffer, context)
+
         // If player doesn't have enough life to pay and survive, execute suffer effect
-        if (playerLife <= cost.amount) {
+        if (playerLife <= amount) {
             return executeSufferEffect(state, effect.suffer, context)
         }
 
         // Create a yes/no decision
         val decisionId = UUID.randomUUID().toString()
-        val prompt = "Pay ${cost.amount} life to avoid ${effect.suffer.description}?"
+        val prompt = "Pay $amount life to avoid ${effect.suffer.description}?"
 
         val decision = YesNoDecision(
             id = decisionId,
@@ -417,7 +421,7 @@ class PayOrSufferExecutor(
             sourceName = sourceName,
             costType = PayOrSufferCostType.PAY_LIFE,
             sufferEffect = effect.suffer,
-            requiredCount = cost.amount,
+            requiredCount = amount,
             filter = GameObjectFilter.Any, // Not used for life payment
             random = false,
             targets = context.targets,
@@ -714,7 +718,8 @@ class PayOrSufferExecutor(
                 ).size >= atom.count
                 is CostAtom.PayLife -> {
                     val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
-                    life > atom.amount
+                    CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
+                        ?.let { life > it } == true
                 }
                 is CostAtom.Mana -> ManaSolver(cardRegistry).canPay(state, playerId, atom.cost)
                 is CostAtom.ExileFrom -> findValidCardsInZone(state, playerId, atom.filter, atom.zone).size >= atom.count
