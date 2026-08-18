@@ -184,6 +184,10 @@ data class TriggeredAbilityOnStackComponent(
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    /** The object that dealt the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageSourceEntityId: EntityId? = null,
+    /** The object or player that received the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageRecipientEntityId: EntityId? = null,
     val xValue: Int? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,

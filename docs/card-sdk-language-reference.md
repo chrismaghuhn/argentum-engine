@@ -2954,6 +2954,12 @@ can't statically prevent (cross-trigger flows, `Self`-vs-`ContextTarget` inside 
   ability whose source already *is* the granter (Territory Forge / Sharkey-style gains), it resolves
   to the same entity as `Self`.
 - `EffectTarget.TriggeringEntity` — the entity that caused the trigger to fire.
+- `EffectTarget.DamageSource` — the object that dealt the damage that caused the trigger. This is
+  independent of `TriggeringEntity`, so source-filtered damage observers can keep their existing
+  source semantics while a paired recipient reference remains available.
+- `EffectTarget.DamageRecipient` — the object or player that received the damage that caused the
+  trigger. The event's entity id is retained for resolution-time last-known-information handling
+  if the recipient has left the battlefield.
 - `EffectTarget.TargetController` — the controller of the spell/ability's first chosen target
   ("its controller creates two Map tokens", "its controller gains 4 life"). Control-change effects
   are honored (projected controller first), and a target that has already left the battlefield —

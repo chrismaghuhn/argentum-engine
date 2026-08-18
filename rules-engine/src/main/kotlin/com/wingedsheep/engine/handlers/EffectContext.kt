@@ -235,6 +235,10 @@ data class EffectContext(
     val triggeringEntityId: EntityId? = null,
     /** The player associated with the trigger event (e.g., the player who cast a spell for SpellCastEvent) */
     val triggeringPlayerId: EntityId? = null,
+    /** The object that dealt the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageSourceEntityId: EntityId? = null,
+    /** The object or player that received the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageRecipientEntityId: EntityId? = null,
     /** The spell or ability that targeted a permanent (for ward triggers) */
     val targetingSourceEntityId: EntityId? = null,
     /**
@@ -547,6 +551,8 @@ data class EffectContext(
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,
             triggeringPlayerId = ability.triggeringPlayerId,
+            damageSourceEntityId = ability.damageSourceEntityId,
+            damageRecipientEntityId = ability.damageRecipientEntityId,
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,
             triggerLastKnownPower = ability.lastKnownPower,

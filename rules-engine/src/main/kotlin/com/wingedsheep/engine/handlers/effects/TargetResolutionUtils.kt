@@ -38,6 +38,8 @@ object TargetResolutionUtils {
             is EffectTarget.BoundVariable -> context.pipeline.namedTargets[effectTarget.name]?.toEntityId()
             is EffectTarget.SpecificEntity -> effectTarget.entityId
             is EffectTarget.TriggeringEntity -> context.triggeringEntityId
+            is EffectTarget.DamageSource -> context.damageSourceEntityId
+            is EffectTarget.DamageRecipient -> context.damageRecipientEntityId
             is EffectTarget.DiscardedAsCost ->
                 context.discardedAsCostCards.getOrNull(effectTarget.index)
             is EffectTarget.PipelineTarget ->
@@ -218,6 +220,8 @@ object TargetResolutionUtils {
             is EffectTarget.Controller -> context.controllerId
             is EffectTarget.ContextTarget -> context.positionalTarget(effectTarget.index)?.toEntityId()
             is EffectTarget.BoundVariable -> context.pipeline.namedTargets[effectTarget.name]?.toEntityId()
+            is EffectTarget.DamageSource -> context.damageSourceEntityId
+            is EffectTarget.DamageRecipient -> context.damageRecipientEntityId
             is EffectTarget.PipelineTarget ->
                 context.pipeline.storedCollections[effectTarget.collectionName]?.getOrNull(effectTarget.index)
             is EffectTarget.PlayerRef -> when (effectTarget.player) {

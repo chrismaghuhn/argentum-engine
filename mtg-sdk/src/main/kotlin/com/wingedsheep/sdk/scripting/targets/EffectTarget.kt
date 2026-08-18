@@ -213,6 +213,26 @@ sealed interface EffectTarget {
     }
 
     /**
+     * DAMAGE SOURCE: the object that dealt the damage that caused the trigger.
+     * This remains distinct from [TriggeringEntity], whose meaning depends on the observer.
+     */
+    @SerialName("DamageSource")
+    @Serializable
+    data object DamageSource : EffectTarget {
+        override val description: String = "the source of that damage"
+    }
+
+    /**
+     * DAMAGE RECIPIENT: the object or player that received the damage that caused the trigger.
+     * The stored entity id is retained for resolution-time LKI when the recipient has left.
+     */
+    @SerialName("DamageRecipient")
+    @Serializable
+    data object DamageRecipient : EffectTarget {
+        override val description: String = "the recipient of that damage"
+    }
+
+    /**
      * CONTROLLER OF TRIGGERING ENTITY: Refers to the controller/owner of the
      * entity that caused the trigger to fire.
      * Used for effects like Tephraderm: "deals that much damage to that spell's controller"

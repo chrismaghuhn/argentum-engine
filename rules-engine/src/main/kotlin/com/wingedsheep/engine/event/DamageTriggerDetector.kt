@@ -176,9 +176,9 @@ class DamageTriggerDetector(
                         sourceId = damagedEntityId,
                         sourceName = cardComponent.name,
                         controllerId = controllerId,
-                        triggerContext = TriggerContext(
-                            triggeringEntityId = sourceId,
-                            damageAmount = event.amount
+                        triggerContext = TriggerContext.fromDamageEvent(
+                            event,
+                            triggeringEntityId = sourceId
                         )
                     )
                 )
@@ -226,9 +226,9 @@ class DamageTriggerDetector(
                             sourceId = entry.entityId,
                             sourceName = entry.cardComponent.name,
                             controllerId = entry.controllerId,
-                            triggerContext = TriggerContext(
-                                triggeringEntityId = damageSourceId,
-                                damageAmount = event.amount
+                            triggerContext = TriggerContext.fromDamageEvent(
+                                event,
+                                triggeringEntityId = damageSourceId
                             )
                         )
                     )
@@ -321,11 +321,10 @@ class DamageTriggerDetector(
             // "…to a player, [that player] …" payoffs (Fear of Burning Alive's
             // "target creature that player controls") resolve Player.TriggeringPlayer
             // to the damaged player rather than the source.
-            TriggerContext(
+            TriggerContext.fromDamageEvent(
+                event,
                 triggeringEntityId = event.sourceId,
-                triggeringPlayerId = event.targetId.takeIf { it in state.turnOrder },
-                damageAmount = event.amount,
-                recipientToughnessAtDamage = event.targetToughnessAtDamage
+                triggeringPlayerId = event.targetId.takeIf { it in state.turnOrder }
             )
         } else {
             TriggerContext.fromEvent(event)
@@ -426,9 +425,9 @@ class DamageTriggerDetector(
                                 sourceId = entry.entityId,
                                 sourceName = entry.cardComponent.name,
                                 controllerId = entry.controllerId,
-                                triggerContext = TriggerContext(
-                                    triggeringEntityId = damagedPlayerId,
-                                    damageAmount = event.amount
+                                triggerContext = TriggerContext.fromDamageEvent(
+                                    event,
+                                    triggeringEntityId = damagedPlayerId
                                 )
                             )
                         )

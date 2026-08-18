@@ -28,6 +28,10 @@ import com.wingedsheep.sdk.model.EntityId
 data class TriggerContext(
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    /** The object that dealt the damage, preserved independently from the trigger's semantic entity. */
+    val damageSourceEntityId: EntityId? = null,
+    /** The object or player that received the damage, preserved independently from the trigger's semantic entity. */
+    val damageRecipientEntityId: EntityId? = null,
     val damageAmount: Int? = null,
     val step: Step? = null,
     val xValue: Int? = null,
@@ -228,6 +232,8 @@ data class TriggerContext(
                 )
                 is DamageDealtEvent -> TriggerContext(
                     triggeringEntityId = event.targetId,
+                    damageSourceEntityId = event.sourceId,
+                    damageRecipientEntityId = event.targetId,
                     damageAmount = event.amount,
                     excessDamageAmount = event.excessAmount.takeIf { it > 0 },
                     recipientToughnessAtDamage = event.targetToughnessAtDamage
@@ -397,5 +403,19 @@ data class TriggerContext(
                 else -> TriggerContext()
             }
         }
+
+        /**
+         * Build a damage context while preserving the event's source/recipient pairing.
+         * [triggeringEntityId] remains caller-controlled for legacy trigger semantics: some
+         * observers mean the recipient, while source-filtered observers mean the source.
+         */
+        fun fromDamageEvent(
+            event: DamageDealtEvent,
+            triggeringEntityId: EntityId = event.targetId,
+            triggeringPlayerId: EntityId? = null
+        ): TriggerContext = fromEvent(event).copy(
+            triggeringEntityId = triggeringEntityId,
+            triggeringPlayerId = triggeringPlayerId
+        )
     }
 }

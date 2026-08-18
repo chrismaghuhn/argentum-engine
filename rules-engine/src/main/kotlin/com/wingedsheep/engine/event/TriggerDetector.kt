@@ -2840,7 +2840,11 @@ class TriggerDetector(
     ) {
         // Collect all combat damage-to-player events, grouped by the controller of the damage
         // source (offensive batch) and, separately, by the damaged player (defensive batch).
-        data class CombatDamageInfo(val sourceId: EntityId, val targetPlayerId: EntityId)
+        data class CombatDamageInfo(
+            val event: DamageDealtEvent,
+            val sourceId: EntityId,
+            val targetPlayerId: EntityId
+        )
         val combatDamageByController = mutableMapOf<EntityId, MutableList<CombatDamageInfo>>()
         val combatDamageByDamagedPlayer = mutableMapOf<EntityId, MutableList<CombatDamageInfo>>()
         for (event in events) {
@@ -2848,7 +2852,7 @@ class TriggerDetector(
                 event.targetId in state.turnOrder) {
                 val sourceContainer = state.getEntity(event.sourceId) ?: continue
                 val controller = sourceContainer.get<ControllerComponent>()?.playerId ?: continue
-                val info = CombatDamageInfo(event.sourceId, event.targetId)
+                val info = CombatDamageInfo(event, event.sourceId, event.targetId)
                 combatDamageByController.getOrPut(controller) { mutableListOf() }.add(info)
                 combatDamageByDamagedPlayer.getOrPut(event.targetId) { mutableListOf() }.add(info)
             }
@@ -2881,7 +2885,10 @@ class TriggerDetector(
                                 sourceId = entry.entityId,
                                 sourceName = entry.cardComponent.name,
                                 controllerId = controllerId,
-                                triggerContext = TriggerContext(triggeringEntityId = firstMatchingInfo.sourceId)
+                                triggerContext = TriggerContext.fromDamageEvent(
+                                    firstMatchingInfo.event,
+                                    triggeringEntityId = firstMatchingInfo.sourceId
+                                )
                             )
                         )
                     }
@@ -2927,7 +2934,8 @@ class TriggerDetector(
                             sourceId = entry.entityId,
                             sourceName = entry.cardComponent.name,
                             controllerId = controllerId,
-                            triggerContext = TriggerContext(
+                            triggerContext = TriggerContext.fromDamageEvent(
+                                infos.first().event,
                                 triggeringEntityId = infos.first().sourceId,
                                 triggeringPlayerId = damagedPlayerId
                             )
