@@ -102,6 +102,7 @@ class ManaAbilitySideEffectExecutor(
         producedColor: Color?,
         controllerId: EntityId,
         selectedAbility: ActivatedAbility? = null,
+        resolvedPayLifeCost: Int? = null,
     ): ManaSideEffectExecution {
         val card = state.getEntity(sourceId)?.get<CardComponent>()
             ?: return ManaSideEffectExecution(state, emptyList(), success = true)
@@ -132,7 +133,7 @@ class ManaAbilitySideEffectExecutor(
         // (Pain modeled as an *effect*, like Adarkar Wastes, is handled by the sub-effect
         // loop below.) The solver already tracks these via ManaSource.hasPainCost for tap
         // priority, but never deducts the life.
-        val lifeCost = payLifeCost(
+        val lifeCost = resolvedPayLifeCost ?: payLifeCost(
             state = currentState,
             cost = matchingAbility.cost,
             sourceId = sourceId,

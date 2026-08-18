@@ -6,6 +6,7 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.effects.WardCost
@@ -429,7 +430,9 @@ data class ManaSourceOption(
     val producesColors: Set<Color>,
     val producesColorless: Boolean,
     val requiresSacrifice: Boolean = false,
-    val requiresTappingAnotherPermanent: Boolean = false
+    val requiresTappingAnotherPermanent: Boolean = false,
+    /** Exact mana ability represented by this source's selected production mode, when scripted. */
+    val manaAbilityId: AbilityId? = null,
 )
 
 /**

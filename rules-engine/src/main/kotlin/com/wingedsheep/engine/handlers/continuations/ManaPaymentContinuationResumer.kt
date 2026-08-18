@@ -8,6 +8,7 @@ import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.resolveManualManaSources
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
@@ -146,7 +147,8 @@ class ManaPaymentContinuationResumer(
                     producesColors = source.producesColors,
                     producesColorless = source.producesColorless,
                     requiresSacrifice = source.requiresSacrifice,
-                    requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null
+                    requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                    manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
                 )
             }
 
@@ -959,7 +961,8 @@ class ManaPaymentContinuationResumer(
                 producesColors = source.producesColors,
                 producesColorless = source.producesColorless,
                 requiresSacrifice = source.requiresSacrifice,
-                requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null
+                requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
             )
         }
 
@@ -1164,7 +1167,8 @@ class ManaPaymentContinuationResumer(
                 producesColors = source.producesColors,
                 producesColorless = source.producesColorless,
                 requiresSacrifice = source.requiresSacrifice,
-                requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null
+                requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
             )
         }
 
@@ -1463,13 +1467,20 @@ class ManaPaymentContinuationResumer(
         selectedSourceIds: List<EntityId>,
         fallbackControllerId: EntityId
     ): ManualSourceTapResult? {
-        val sourceMap = availableSources.associateBy { it.entityId }
+        val resolvedSources = resolveManualManaSources(
+            state = state,
+            playerId = fallbackControllerId,
+            availableSources = availableSources,
+            selectedSourceIds = selectedSourceIds,
+            cardRegistry = services.cardRegistry,
+        ) ?: return null
         var currentState = state
         var currentPool = pool
         val events = mutableListOf<GameEvent>()
 
-        for (sourceId in selectedSourceIds) {
-            val source = sourceMap[sourceId] ?: return null
+        for (resolved in resolvedSources) {
+            val source = resolved.option
+            val sourceId = source.entityId
 
             if (source.requiresSacrifice) {
                 val sourceController = currentState.getEntity(sourceId)
@@ -1500,8 +1511,20 @@ class ManaPaymentContinuationResumer(
                 tapEvent?.let(events::add)
             }
 
-            if (source.producesColors.isNotEmpty()) {
-                currentPool = currentPool.add(source.producesColors.first())
+            val sideEffects = services.manaAbilitySideEffectExecutor.runSideEffects(
+                state = currentState,
+                sourceId = sourceId,
+                producedColor = resolved.producedColor,
+                controllerId = fallbackControllerId,
+                selectedAbility = resolved.selectedAbility,
+                resolvedPayLifeCost = resolved.payLifeCost,
+            )
+            if (!sideEffects.success) return null
+            currentState = sideEffects.state
+            events.addAll(sideEffects.events)
+
+            if (resolved.producedColor != null) {
+                currentPool = currentPool.add(resolved.producedColor)
             } else if (source.producesColorless) {
                 currentPool = currentPool.addColorless(1)
             }
@@ -1642,6 +1665,15 @@ class ManaPaymentContinuationResumer(
         val subCost = lookupSubCost(state, continuation.payingPlayerId, headSourceId)
             ?: return ExecutionResult.error(state, "Selected mana source is no longer available")
 
+        val resolvedSource = resolveManualManaSources(
+            state = state,
+            playerId = continuation.payingPlayerId,
+            availableSources = continuation.availableSources,
+            selectedSourceIds = listOf(headSourceId),
+            cardRegistry = services.cardRegistry,
+        )?.singleOrNull()
+            ?: return ExecutionResult.error(state, "Selected mana source cannot pay its activation cost")
+
         if (response.selectedCards.size != subCost.count) {
             return ExecutionResult.error(state, "Expected ${subCost.count} target(s) for ${sourceOption.name}'s tap cost")
         }
@@ -1676,6 +1708,20 @@ class ManaPaymentContinuationResumer(
             tapEvent?.let(events::add)
         }
 
+        val sideEffects = services.manaAbilitySideEffectExecutor.runSideEffects(
+            state = currentState,
+            sourceId = headSourceId,
+            producedColor = resolvedSource.producedColor,
+            controllerId = continuation.payingPlayerId,
+            selectedAbility = resolvedSource.selectedAbility,
+            resolvedPayLifeCost = resolvedSource.payLifeCost,
+        )
+        if (!sideEffects.success) {
+            return ExecutionResult.error(state, "Cannot pay mana ability side effect")
+        }
+        currentState = sideEffects.state
+        events.addAll(sideEffects.events)
+
         // Read current pool, add the source's mana, persist.
         val playerEntity = currentState.getEntity(continuation.payingPlayerId)
             ?: return ExecutionResult.error(state, "Paying player not found")
@@ -1685,8 +1731,8 @@ class ManaPaymentContinuationResumer(
             poolComponent.white, poolComponent.blue, poolComponent.black,
             poolComponent.red, poolComponent.green, poolComponent.colorless
         )
-        pool = if (sourceOption.producesColors.isNotEmpty()) {
-            pool.add(sourceOption.producesColors.first())
+        pool = if (resolvedSource.producedColor != null) {
+            pool.add(resolvedSource.producedColor)
         } else if (sourceOption.producesColorless) {
             pool.addColorless(1)
         } else {

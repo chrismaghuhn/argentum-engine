@@ -8,9 +8,12 @@ import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.ReopenManaPaymentDecisionContinuation
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
 
 /**
  * CR 605.3a — "A player may activate an activated mana ability whenever they have priority,
@@ -81,7 +84,8 @@ object ManaPaymentWindow {
                     name = source.name,
                     producesColors = source.producesColors,
                     producesColorless = source.producesColorless,
-                    requiresSacrifice = source.requiresSacrifice
+                    requiresSacrifice = source.requiresSacrifice,
+                    manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
                 )
             }
         val remaining = remainingAfterFloating(state, playerId, cost)
@@ -153,15 +157,31 @@ object ManaPaymentWindow {
                 }
             }
         } else {
-            val byId = availableSources.associateBy { it.entityId }
-            for (sourceId in response.selectedSources) {
-                val source = byId[sourceId] ?: return FloatResult(state, emptyList(), paid = false)
-                val tapped = tapOrSacrifice(current, sourceId, source, playerId)
+            val resolvedSources = resolveManualManaSources(
+                state = current,
+                playerId = playerId,
+                availableSources = availableSources,
+                selectedSourceIds = response.selectedSources,
+                cardRegistry = services.cardRegistry,
+            ) ?: return FloatResult(state, emptyList(), paid = false)
+            for (resolved in resolvedSources) {
+                val tapped = tapOrSacrifice(current, resolved.option.entityId, resolved.option, playerId)
                 current = tapped.first
                 events.addAll(tapped.second)
+                val sideEffects = services.manaAbilitySideEffectExecutor.runSideEffects(
+                    state = current,
+                    sourceId = resolved.option.entityId,
+                    producedColor = resolved.producedColor,
+                    controllerId = playerId,
+                    selectedAbility = resolved.selectedAbility,
+                    resolvedPayLifeCost = resolved.payLifeCost,
+                )
+                if (!sideEffects.success) return FloatResult(state, emptyList(), paid = false)
+                current = sideEffects.state
+                events.addAll(sideEffects.events)
                 produced = when {
-                    source.producesColors.isNotEmpty() -> produced.add(source.producesColors.first())
-                    source.producesColorless -> produced.addColorless(1)
+                    resolved.producedColor != null -> produced.add(resolved.producedColor)
+                    resolved.option.producesColorless -> produced.addColorless(1)
                     else -> produced
                 }
             }
@@ -297,7 +317,8 @@ object ManaPaymentWindow {
                     producesColors = source.producesColors,
                     producesColorless = source.producesColorless,
                     requiresSacrifice = source.requiresSacrifice,
-                    requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null
+                    requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                    manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
                 )
             }
             .associateBy { it.entityId }
@@ -353,4 +374,73 @@ object ManaPaymentWindow {
             .payPartial(cost)
             .remainingCost
     }
+}
+
+/** A manual source selection with its authoritative production ability and pre-payment life cost. */
+internal data class ResolvedManualManaSource(
+    val option: ManaSourceOption,
+    val source: ManaSource,
+    val producedColor: Color?,
+    val selectedAbility: ActivatedAbility?,
+    val payLifeCost: Int,
+)
+
+/**
+ * Resolve and aggregate a manual selection before tapping anything. This keeps stale decision
+ * menus, exact ability identity, negative/unresolved life amounts, and aggregate affordability in
+ * one fail-closed validation step shared by every mana-selection resumer.
+ */
+internal fun resolveManualManaSources(
+    state: GameState,
+    playerId: EntityId,
+    availableSources: List<ManaSourceOption>,
+    selectedSourceIds: List<EntityId>,
+    cardRegistry: CardRegistry,
+): List<ResolvedManualManaSource>? {
+    if (selectedSourceIds.size != selectedSourceIds.toSet().size) return null
+    val optionsById = availableSources.associateBy { it.entityId }
+    val liveSources = ManaSolver(cardRegistry)
+        .findAvailableManaSources(state, playerId)
+        .associateBy { it.entityId }
+    var totalPayLife = 0
+    val resolved = mutableListOf<ResolvedManualManaSource>()
+
+    for (sourceId in selectedSourceIds) {
+        val option = optionsById[sourceId] ?: return null
+        val source = liveSources[sourceId] ?: return null
+        if (source.requiresSacrifice != option.requiresSacrifice) return null
+
+        val producedColor = option.producesColors.firstOrNull()
+        if (producedColor != null && producedColor !in source.producesColors) return null
+        if (producedColor == null && option.producesColorless && !source.producesColorless) return null
+        if (producedColor == null && !option.producesColorless) return null
+
+        val sourceAbility = source.manaAbilityFor(producedColor)
+        val selectedAbility = when (val abilityId = option.manaAbilityId) {
+            null -> sourceAbility
+            else -> sourceAbility?.takeIf { it.id == abilityId } ?: return null
+        }
+        val payLifeCost = if (selectedAbility == null) {
+            0
+        } else {
+            CostAmountResolver.resolvePayLifeTotal(
+                state = state,
+                amounts = CostAmountResolver.payLifeAmounts(selectedAbility.cost),
+                sourceId = sourceId,
+                controllerId = playerId,
+                cardRegistry = cardRegistry,
+            ) ?: return null
+        }
+        if (payLifeCost > Int.MAX_VALUE - totalPayLife) return null
+        totalPayLife += payLifeCost
+        resolved += ResolvedManualManaSource(
+            option = option,
+            source = source,
+            producedColor = producedColor,
+            selectedAbility = selectedAbility,
+            payLifeCost = payLifeCost,
+        )
+    }
+    if (totalPayLife > state.lifeTotal(playerId)) return null
+    return resolved
 }

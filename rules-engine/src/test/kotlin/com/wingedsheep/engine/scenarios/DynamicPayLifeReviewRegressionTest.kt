@@ -3,8 +3,21 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.continuations.ManaPaymentContinuationResumer
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.DecisionPhase
+import com.wingedsheep.engine.core.EngineServices
+import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.ManaSourceOption
+import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
+import com.wingedsheep.engine.core.MayPayManaSelectionContinuation
+import com.wingedsheep.engine.core.engineSerializersModule
+import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
+import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.handlers.effects.player.PayOrSufferExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaProduction
@@ -15,6 +28,7 @@ import com.wingedsheep.engine.handlers.effects.composite.payManaCostFromPool
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
+import com.wingedsheep.engine.state.components.identity.CommanderRegistryComponent
 import com.wingedsheep.mtg.sets.definitions.ons.cards.FutureSight
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.ManaCost
@@ -26,13 +40,20 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.SelfAlternativeCost
+import com.wingedsheep.sdk.scripting.conditions.Compare
+import com.wingedsheep.sdk.scripting.conditions.ComparisonOperator
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
 import com.wingedsheep.sdk.scripting.effects.PayOrSufferEffect
+import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.engine.core.EffectResult
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 /** Focused review regressions for atomic dynamic life-cost resolution and payment. */
 class DynamicPayLifeReviewRegressionTest : FunSpec({
@@ -160,6 +181,18 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         }
     }
 
+    val oneLifeManaSource = card("Review One-Life Dynamic Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(
+                Costs.Tap,
+                Costs.PayLife(DynamicAmount.Fixed(1))
+            )
+            effect = Effects.AddColorlessMana(1)
+            manaAbility = true
+        }
+    }
+
     fun createDriver(initialLife: Int = 1): GameTestDriver {
         val driver = GameTestDriver()
         driver.registerCards(
@@ -174,7 +207,8 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
                 payOrSufferSource,
                 autoTapSpell,
                 autoTapAbilityTarget,
-                dualManaSource
+                dualManaSource,
+                oneLifeManaSource
             )
         )
         driver.initMultiplayer(
@@ -414,5 +448,231 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
 
         result.error shouldBe null
         result.state.lifeTotal(player) shouldBe 1
+    }
+
+    test("manual mana window pays the selected mana ability life cost before floating mana") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val decision = ManaPaymentWindow.buildDecision(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{1}"),
+            decisionId = "review-manual-window",
+            prompt = "Pay {1}",
+            context = DecisionContext(sourceId = sourceId, phase = DecisionPhase.RESOLUTION),
+            canDecline = false,
+            cardRegistry = driver.cardRegistry,
+        )
+
+        val option = decision.availableSources.single()
+        option.manaAbilityId shouldBe driver.cardRegistry.getCard(oneLifeManaSource.name)!!
+            .activatedAbilities.single().id
+        val result = ManaPaymentWindow.floatSelectedMana(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{1}"),
+            response = ManaSourcesSelectedResponse(
+                decisionId = decision.id,
+                selectedSources = listOf(sourceId),
+            ),
+            availableSources = listOf(option),
+            services = EngineServices(driver.cardRegistry),
+        )
+
+        result.paid shouldBe true
+        result.state.lifeTotal(player) shouldBe 0
+        result.state.getEntity(sourceId)!!.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe true
+    }
+
+    test("manual mana window fails closed and rolls back when dynamic life is insufficient") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val option = ManaSourceOption(
+            entityId = sourceId,
+            name = oneLifeManaSource.name,
+            producesColors = emptySet(),
+            producesColorless = true,
+            manaAbilityId = driver.cardRegistry.getCard(oneLifeManaSource.name)!!
+                .activatedAbilities.single().id,
+        )
+        driver.setLifeTotal(player, 0)
+        val before = driver.state
+
+        val result = ManaPaymentWindow.floatSelectedMana(
+            state = before,
+            playerId = player,
+            cost = ManaCost.parse("{1}"),
+            response = ManaSourcesSelectedResponse("review-manual-insufficient", listOf(sourceId)),
+            availableSources = listOf(option),
+            services = EngineServices(driver.cardRegistry),
+        )
+
+        result.paid shouldBe false
+        result.state shouldBe before
+        result.state.getEntity(sourceId)!!.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
+    }
+
+    test("manual mana continuation pays the selected mana ability life cost before spending mana") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val continuation = MayPayManaSelectionContinuation(
+            decisionId = "review-manual-resume",
+            playerId = player,
+            sourceName = oneLifeManaSource.name,
+            manaCost = ManaCost.parse("{1}"),
+            effect = Effects.DrawCards(1),
+            effectContext = EffectContext(sourceId = sourceId, controllerId = player),
+            availableSources = listOf(
+                ManaSourceOption(
+                    entityId = sourceId,
+                    name = oneLifeManaSource.name,
+                    producesColors = emptySet(),
+                    producesColorless = true,
+                    manaAbilityId = driver.cardRegistry.getCard(oneLifeManaSource.name)!!
+                        .activatedAbilities.single().id,
+                )
+            ),
+            autoPaySuggestion = emptyList(),
+        )
+
+        val result = ManaPaymentContinuationResumer(EngineServices(driver.cardRegistry))
+            .resumeMayPayManaSelection(
+                state = driver.state,
+                continuation = continuation,
+                response = ManaSourcesSelectedResponse(
+                    decisionId = continuation.decisionId,
+                    selectedSources = listOf(sourceId),
+                ),
+                checkForMore = { state, events -> ExecutionResult.success(state, events) },
+            )
+
+        result.error shouldBe null
+        result.state.lifeTotal(player) shouldBe 0
+        result.state.getEntity(sourceId)!!.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe true
+    }
+
+    test("manual mana continuation preserves exact mana ability identity through serialization") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val abilityId = driver.cardRegistry.getCard(oneLifeManaSource.name)!!
+            .activatedAbilities.single().id
+        val original = MayPayManaSelectionContinuation(
+            decisionId = "review-manual-serialization",
+            playerId = player,
+            sourceName = oneLifeManaSource.name,
+            manaCost = ManaCost.parse("{1}"),
+            effect = Effects.DrawCards(1),
+            effectContext = EffectContext(sourceId = sourceId, controllerId = player),
+            availableSources = listOf(
+                ManaSourceOption(
+                    entityId = sourceId,
+                    name = oneLifeManaSource.name,
+                    producesColors = emptySet(),
+                    producesColorless = true,
+                    manaAbilityId = abilityId,
+                )
+            ),
+            autoPaySuggestion = emptyList(),
+        )
+        val json = Json { serializersModule = engineSerializersModule }
+
+        val encoded = json.encodeToString(ContinuationFrame.serializer(), original)
+        val decoded = json.decodeFromString(ContinuationFrame.serializer(), encoded)
+
+        decoded shouldBe original
+    }
+
+    test("mana solver rejects two one-life sources when their aggregate life cost exceeds life") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+
+        ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{2}"),
+        ) shouldBe null
+    }
+
+    test("nested conditional commander amount resolves through arithmetic") {
+        val driver = createDriver(initialLife = 10)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
+        val amount = DynamicAmount.Add(
+            DynamicAmount.Conditional(
+                condition = Compare(
+                    left = DynamicAmounts.commanderColorIdentityCount(),
+                    operator = ComparisonOperator.EQ,
+                    right = DynamicAmount.Fixed(1),
+                ),
+                ifTrue = DynamicAmount.Fixed(4),
+                ifFalse = DynamicAmount.Fixed(9),
+            ),
+            DynamicAmount.Fixed(2),
+        )
+
+        CostAmountResolver.resolve(
+            state = driver.state,
+            amount = amount,
+            sourceId = sourceId,
+            controllerId = player,
+            cardRegistry = driver.cardRegistry,
+        ) shouldBe 6
+    }
+
+    test("nested CountPlayersWith commander amount resolves through arithmetic") {
+        val driver = createDriver(initialLife = 10)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
+        val amount = DynamicAmount.Add(
+            DynamicAmount.CountPlayersWith(
+                scope = Player.EachOpponent,
+                condition = Compare(
+                    left = DynamicAmounts.commanderColorIdentityCount(),
+                    operator = ComparisonOperator.EQ,
+                    right = DynamicAmount.Fixed(1),
+                ),
+            ),
+            DynamicAmount.Fixed(1),
+        )
+
+        CostAmountResolver.resolve(
+            state = driver.state,
+            amount = amount,
+            sourceId = sourceId,
+            controllerId = player,
+            cardRegistry = driver.cardRegistry,
+        ) shouldBe 2
+    }
+
+    test("nested commander amount fails closed when the controller has no commander") {
+        val driver = createDriver(initialLife = 10)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
+        val stateWithoutCommander = driver.state.updateEntity(player) {
+            it.without<CommanderRegistryComponent>()
+        }
+        val amount = DynamicAmount.Conditional(
+            condition = Compare(
+                left = DynamicAmounts.commanderColorIdentityCount(),
+                operator = ComparisonOperator.EQ,
+                right = DynamicAmount.Fixed(0),
+            ),
+            ifTrue = DynamicAmount.Fixed(7),
+            ifFalse = DynamicAmount.Fixed(3),
+        )
+
+        CostAmountResolver.resolve(
+            state = stateWithoutCommander,
+            amount = amount,
+            sourceId = sourceId,
+            controllerId = player,
+            cardRegistry = driver.cardRegistry,
+        ) shouldBe null
     }
 })

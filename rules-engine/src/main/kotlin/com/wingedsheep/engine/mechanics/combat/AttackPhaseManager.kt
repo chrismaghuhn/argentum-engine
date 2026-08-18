@@ -297,6 +297,7 @@ internal class AttackPhaseManager(
                 producesColorless = source.producesColorless,
                 requiresSacrifice = source.requiresSacrifice,
                 requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id,
             )
         }
         val solution = manaSolver.solve(state, attackingPlayer, manaCost)

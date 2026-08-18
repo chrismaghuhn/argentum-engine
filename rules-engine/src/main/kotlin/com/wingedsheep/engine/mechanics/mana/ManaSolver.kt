@@ -867,6 +867,9 @@ class ManaSolver(
             val color = manaProduced[source.entityId]?.color ?: return@flatMap emptyList()
             source.colorRiders[color]?.toList() ?: emptyList()
         }
+        if (!hasAffordablePayLifeTotal(state, playerId, usedSources, manaProduced)) {
+            return null
+        }
         return ManaSolution(
             usedSources,
             manaProduced,
@@ -875,6 +878,41 @@ class ManaSolver(
             xRestrictedManaSpent = xRestrictedSpent,
             bonusManaSpentByColor = bonusManaSpentByColor
         )
+    }
+
+    /**
+     * A solver candidate is one activation/payment operation, so every selected mana ability's
+     * PayLife atoms must be resolved against the same pre-payment life total before the candidate is
+     * advertised. [findAvailableManaSources] intentionally checks individual abilities only; this
+     * final check covers a solution that combines several individually payable painful sources.
+     */
+    private fun hasAffordablePayLifeTotal(
+        state: GameState,
+        playerId: EntityId,
+        sources: List<ManaSource>,
+        manaProduced: Map<EntityId, ManaProduction>,
+    ): Boolean {
+        var total = 0
+        for (source in sources) {
+            val production = manaProduced[source.entityId]
+            // Sources tapped only to pay another mana ability's activation mana cost have no
+            // production entry, but their selected mana ability still charges its own PayLife atoms.
+            val ability = if (production != null) {
+                production.manaAbility ?: source.manaAbilityFor(production.color)
+            } else {
+                source.manaAbilityFor(source.producesColors.firstOrNull())
+            } ?: continue
+            val amount = CostAmountResolver.resolvePayLifeTotal(
+                state = state,
+                amounts = CostAmountResolver.payLifeAmounts(ability.cost),
+                sourceId = source.entityId,
+                controllerId = playerId,
+                cardRegistry = cardRegistry,
+            ) ?: return false
+            if (amount > Int.MAX_VALUE - total) return false
+            total += amount
+        }
+        return total <= state.lifeTotal(playerId)
     }
 
     /**

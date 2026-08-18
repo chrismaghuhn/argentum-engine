@@ -10,6 +10,12 @@ import com.wingedsheep.engine.state.components.identity.CommanderRegistryCompone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AdditionalCost
+import com.wingedsheep.sdk.scripting.conditions.AllConditions
+import com.wingedsheep.sdk.scripting.conditions.AnyCondition
+import com.wingedsheep.sdk.scripting.conditions.Compare
+import com.wingedsheep.sdk.scripting.conditions.Condition
+import com.wingedsheep.sdk.scripting.conditions.NotCondition
+import com.wingedsheep.sdk.scripting.conditions.NumberMatches
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.ManaColorSet
@@ -136,7 +142,9 @@ object CostAmountResolver {
         is DynamicAmount.Max -> left.containsCommanderColorIdentityCount() || right.containsCommanderColorIdentityCount()
         is DynamicAmount.Min -> left.containsCommanderColorIdentityCount() || right.containsCommanderColorIdentityCount()
         is DynamicAmount.Conditional ->
-            ifTrue.containsCommanderColorIdentityCount() || ifFalse.containsCommanderColorIdentityCount()
+            condition.containsCommanderColorIdentityCount() ||
+                ifTrue.containsCommanderColorIdentityCount() || ifFalse.containsCommanderColorIdentityCount()
+        is DynamicAmount.CountPlayersWith -> condition.containsCommanderColorIdentityCount()
         is DynamicAmount.Divide ->
             numerator.containsCommanderColorIdentityCount() || denominator.containsCommanderColorIdentityCount()
         else -> false
@@ -170,12 +178,50 @@ object CostAmountResolver {
             right = right.replaceCommanderColorIdentityCount(colorCount),
         )
         is DynamicAmount.Conditional -> copy(
+            condition = condition.replaceCommanderColorIdentityCount(colorCount),
             ifTrue = ifTrue.replaceCommanderColorIdentityCount(colorCount),
             ifFalse = ifFalse.replaceCommanderColorIdentityCount(colorCount),
+        )
+        is DynamicAmount.CountPlayersWith -> copy(
+            condition = condition.replaceCommanderColorIdentityCount(colorCount),
         )
         is DynamicAmount.Divide -> copy(
             numerator = numerator.replaceCommanderColorIdentityCount(colorCount),
             denominator = denominator.replaceCommanderColorIdentityCount(colorCount),
+        )
+        else -> this
+    }
+
+    /**
+     * Dynamic amounts can occur inside numeric conditions, not only in the selected branches of a
+     * conditional amount. Resolve the commander leaf before the generic condition evaluator sees it;
+     * otherwise the registry-free fallback would turn an unavailable commander count into zero.
+     */
+    private fun Condition.containsCommanderColorIdentityCount(): Boolean = when (this) {
+        is Compare -> left.containsCommanderColorIdentityCount() || right.containsCommanderColorIdentityCount()
+        is NumberMatches -> amount.containsCommanderColorIdentityCount()
+        is AllConditions -> conditions.any { it.containsCommanderColorIdentityCount() }
+        is AnyCondition -> conditions.any { it.containsCommanderColorIdentityCount() }
+        is NotCondition -> condition.containsCommanderColorIdentityCount()
+        else -> false
+    }
+
+    private fun Condition.replaceCommanderColorIdentityCount(colorCount: Int): Condition = when (this) {
+        is Compare -> copy(
+            left = left.replaceCommanderColorIdentityCount(colorCount),
+            right = right.replaceCommanderColorIdentityCount(colorCount),
+        )
+        is NumberMatches -> copy(
+            amount = amount.replaceCommanderColorIdentityCount(colorCount),
+        )
+        is AllConditions -> copy(
+            conditions = conditions.map { it.replaceCommanderColorIdentityCount(colorCount) },
+        )
+        is AnyCondition -> copy(
+            conditions = conditions.map { it.replaceCommanderColorIdentityCount(colorCount) },
+        )
+        is NotCondition -> copy(
+            condition = condition.replaceCommanderColorIdentityCount(colorCount),
         )
         else -> this
     }
