@@ -1133,8 +1133,8 @@ class ManaSolver(
                                 state, atom.amount, entityId, playerId, cardRegistry
                             )
                             abilityHasPainCost = true
-                            abilityPainAmount = resolved ?: 0
-                            resolved != null
+                            abilityPainAmount = resolved?.takeIf { it >= 0 } ?: 0
+                            resolved != null && resolved >= 0 && state.lifeTotal(playerId) >= resolved
                         }
                         else -> false // Non-pain atom-only cost: skip like other non-tap mana abilities.
                     }
@@ -1150,10 +1150,10 @@ class ManaSolver(
                                             state, atom.amount, entityId, playerId, cardRegistry
                                         )
                                         abilityHasPainCost = true
-                                        if (resolved == null) {
+                                        if (resolved == null || resolved < 0) {
                                             hasUnsupportedSubCost = true
                                         } else {
-                                            abilityPainAmount = maxOf(abilityPainAmount, resolved)
+                                            abilityPainAmount += resolved
                                         }
                                     }
                                     is CostAtom.Mana -> {
@@ -1184,6 +1184,9 @@ class ManaSolver(
                                 // require explicit ActivateAbility entry.
                                 else -> hasUnsupportedSubCost = true
                             }
+                        }
+                        if (abilityHasPainCost && state.lifeTotal(playerId) < abilityPainAmount) {
+                            hasUnsupportedSubCost = true
                         }
                         val tapPermSubCost = abilityTapPermanentsSubCost
                         if (hasTap && !hasUnsupportedSubCost && tapPermSubCost != null) {
@@ -2414,6 +2417,7 @@ class ManaSolver(
             cost = PayCost.Atom(cost.atom),
             sourceId = sourceId,
             manaSolver = this,
+            cardRegistry = cardRegistry,
             // The source pays its own cost unless the atom says otherwise (CR 601.2h) — mirrors
             // ManaAbilityEnumerator, which only excludes self for an excludeSelf sacrifice.
             excludeSource = (cost.atom as? CostAtom.Sacrifice)?.excludeSelf == true

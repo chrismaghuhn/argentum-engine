@@ -337,6 +337,9 @@ class CostPaymentService(private val services: EngineServices) {
                 val amount = CostAmountResolver.resolve(
                     state, atom.amount, sourceId, payerId, services.cardRegistry
                 ) ?: return CostPaymentExecution(state, emptyList(), success = false)
+                if (amount < 0) {
+                    return CostPaymentExecution(state, emptyList(), success = false)
+                }
                 payLife(state, payerId, amount)
             }
             is CostAtom.Discard ->
@@ -673,7 +676,7 @@ class CostPaymentService(private val services: EngineServices) {
                     // life that would reduce them to 0 or less is legal (they then lose as a state-based action).
                     is CostAtom.PayLife -> CostAmountResolver.resolve(
                         state, atom.amount, sourceId, payerId, cardRegistry
-                    )?.let { life(state, payerId) >= it } == true
+                    )?.let { it >= 0 && life(state, payerId) >= it } == true
                     is CostAtom.Discard -> cardsInHand(state, payerId, atom.filter).size >= atom.count
                     is CostAtom.ExileFrom -> cardsInZone(state, payerId, atom.filter, atom.zone).size >= atom.count
                     // CR 701.59b — unpayable unless the graveyard's *total mana value* reaches N.

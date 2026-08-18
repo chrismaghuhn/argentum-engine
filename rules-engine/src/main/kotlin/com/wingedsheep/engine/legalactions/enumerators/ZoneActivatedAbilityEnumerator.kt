@@ -99,6 +99,11 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                             hasDiscardCost = true
                             if (handCards.isEmpty()) costCanBePaid = false
                         }
+                        is CostAtom.PayLife -> {
+                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
+                                costCanBePaid = false
+                            }
+                        }
                         // Other atoms — engine validates at payment.
                         else -> {}
                     }
@@ -120,6 +125,11 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                                     is CostAtom.Discard -> {
                                         hasDiscardCost = true
                                         if (handCards.isEmpty()) {
+                                            costCanBePaid = false; break
+                                        }
+                                    }
+                                    is CostAtom.PayLife -> {
+                                        if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
                                             costCanBePaid = false; break
                                         }
                                     }

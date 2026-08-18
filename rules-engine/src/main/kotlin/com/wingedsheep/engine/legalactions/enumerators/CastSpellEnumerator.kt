@@ -295,6 +295,11 @@ class CastSpellEnumerator : ActionEnumerator {
                             tapTargets = validTapTargets
                             tapCount = atom.count
                         }
+                        is CostAtom.PayLife -> {
+                            if (!context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)) {
+                                canPayAdditionalCosts = false
+                            }
+                        }
                         // Mana / reveal aren't produced as spell additional costs today.
                         else -> {}
                     }
@@ -581,6 +586,8 @@ class CastSpellEnumerator : ActionEnumerator {
                         is CostAtom.TapPermanents -> {
                             context.costUtils.findAbilityTapTargets(state, playerId, atom.filter).size >= atom.count
                         }
+                        is CostAtom.PayLife ->
+                            context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)
                         else -> true
                     }
                 }
@@ -2203,6 +2210,11 @@ class CastSpellEnumerator : ActionEnumerator {
                                         )
                                     }
                                 )
+                            }
+                            is CostAtom.PayLife -> {
+                                if (!context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)) {
+                                    canPayKickerAdditionalCost = false
+                                }
                             }
                             else -> {}
                         }

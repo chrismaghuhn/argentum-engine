@@ -391,6 +391,9 @@ class PayOrSufferExecutor(
 
         val amount = CostAmountResolver.resolve(state, cost.amount, sourceId, controllerId, cardRegistry)
             ?: return executeSufferEffect(state, effect.suffer, context)
+        if (amount < 0) {
+            return EffectResult.error(state, "Life cost cannot be negative")
+        }
 
         // If player doesn't have enough life to pay and survive, execute suffer effect
         if (playerLife <= amount) {
@@ -719,7 +722,7 @@ class PayOrSufferExecutor(
                 is CostAtom.PayLife -> {
                     val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
                     CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
-                        ?.let { life > it } == true
+                        ?.let { it >= 0 && life > it } == true
                 }
                 is CostAtom.Mana -> ManaSolver(cardRegistry).canPay(state, playerId, atom.cost)
                 is CostAtom.ExileFrom -> findValidCardsInZone(state, playerId, atom.filter, atom.zone).size >= atom.count

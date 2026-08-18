@@ -378,6 +378,10 @@ class SacrificeAndPayContinuationResumer(
             return executePayOrSufferConsequence(state, continuation, checkForMore)
         }
 
+        if (continuation.requiredCount < 0) {
+            return ExecutionResult.error(state, "Life cost cannot be negative")
+        }
+
         // Player chose to pay life
         val (newState, events) = LifePaymentService
             .pay(state, continuation.playerId, continuation.requiredCount)
@@ -671,6 +675,10 @@ class SacrificeAndPayContinuationResumer(
                     return askNextPlayerForAnyPlayerMayPay(state, continuation, checkForMore)
                 }
 
+                if (continuation.requiredCount < 0) {
+                    return ExecutionResult.error(state, "Life cost cannot be negative")
+                }
+
                 val (newState, paymentEvents) = LifePaymentService
                     .pay(state, playerId, continuation.requiredCount)
                     ?: return ExecutionResult.error(state, "Player has no life total")
@@ -765,7 +773,7 @@ class SacrificeAndPayContinuationResumer(
                     val amount = CostAmountResolver.resolve(
                         state, atom.amount, continuation.sourceId, nextPlayerId, services.cardRegistry
                     )
-                    if (amount != null && life >= amount) {
+                    if (amount != null && amount >= 0 && life >= amount) {
                         val decisionId = java.util.UUID.randomUUID().toString()
                         val prompt = "Pay $amount life to prevent ${continuation.sourceName}'s effect?"
                         val decision = YesNoDecision(

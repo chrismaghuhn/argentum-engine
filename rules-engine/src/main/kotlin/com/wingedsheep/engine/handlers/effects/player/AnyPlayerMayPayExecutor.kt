@@ -142,7 +142,7 @@ class AnyPlayerMayPayExecutor(
             is CostAtom.PayLife -> {
                 val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
                 CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
-                    ?.let { life >= it } == true
+                    ?.let { it >= 0 && life >= it } == true
             }
             else -> false
         }
@@ -212,6 +212,9 @@ class AnyPlayerMayPayExecutor(
     ): EffectResult {
         val amount = CostAmountResolver.resolve(state, cost.amount, sourceId, playerId, cardRegistry)
             ?: return EffectResult.error(state, "Cannot resolve life cost")
+        if (amount < 0) {
+            return EffectResult.error(state, "Life cost cannot be negative")
+        }
         val decisionId = UUID.randomUUID().toString()
         val prompt = "Pay $amount life to prevent $sourceName's effect?"
 

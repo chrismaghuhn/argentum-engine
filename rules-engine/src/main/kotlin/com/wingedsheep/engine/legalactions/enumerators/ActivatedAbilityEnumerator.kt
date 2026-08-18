@@ -513,8 +513,9 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                             discardTargets = targets
                                         }
                                     }
-                                    // Pay-life / reveal / put-counters-on-self carry no enumeration-time
-                                    // gate here (matching the prior else fall-through for these sub-costs).
+                                    // Pay-life has no selection, but its dynamic amount must be
+                                    // resolved here so the legal-action domain agrees with the
+                                    // authoritative activation check.
                                     is CostAtom.PayLife -> {
                                         if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
                                             costCanBePaid = false

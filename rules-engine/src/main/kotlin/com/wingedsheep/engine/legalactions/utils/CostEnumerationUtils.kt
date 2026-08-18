@@ -49,7 +49,7 @@ class CostEnumerationUtils(
         sourceId = sourceId,
         controllerId = playerId,
         cardRegistry = cardRegistry,
-    )?.let { state.lifeTotal(playerId) >= it } == true
+    )?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
 
     // --- Sacrifice targets ---
 

@@ -575,7 +575,7 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
             val amount = cardRegistry?.let {
                 CostAmountResolver.resolve(state, atom.amount, sourceId, controllerId, it)
             } ?: (atom.amount as? DynamicAmount.Fixed)?.amount
-            amount != null && life >= amount
+            amount != null && amount >= 0 && life >= amount
         }
         is CostAtom.Sacrifice -> {
             val candidates = findMatchingPermanentsUnified(state, controllerId, atom.filter, sourceId)
@@ -669,6 +669,9 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 CostAmountResolver.resolve(state, atom.amount, sourceId, controllerId, it)
             } ?: (atom.amount as? DynamicAmount.Fixed)?.amount
                 ?: return CostPaymentResult.failure("Cannot resolve life cost")
+            if (amount < 0) {
+                return CostPaymentResult.failure("Life cost cannot be negative")
+            }
             val (newState, events) = LifePaymentService.pay(state, controllerId, amount)
                 ?: return CostPaymentResult.failure("Player has no life total")
             CostPaymentResult.success(newState, manaPool, events = events)
@@ -1155,7 +1158,8 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
     fun canPayAdditionalCost(
         state: GameState,
         cost: AdditionalCost,
-        controllerId: EntityId
+        controllerId: EntityId,
+        sourceId: EntityId = controllerId,
     ): Boolean {
         return when (cost) {
             is AdditionalCost.Atom -> when (val atom = cost.atom) {
@@ -1168,9 +1172,9 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                     val life = state.lifeTotal(controllerId)
                     // CR 119.4 — a player may pay life only if their life total is >= the payment.
                     val amount = cardRegistry?.let {
-                        CostAmountResolver.resolve(state, atom.amount, controllerId, controllerId, it)
+                        CostAmountResolver.resolve(state, atom.amount, sourceId, controllerId, it)
                     } ?: (atom.amount as? DynamicAmount.Fixed)?.amount
-                    amount != null && life >= amount
+                    amount != null && amount >= 0 && life >= amount
                 }
                 is CostAtom.ExileFrom ->
                     findMatchingCardsUnified(state, state.getZone(ZoneKey(controllerId, atom.zone)), atom.filter, controllerId).size >= atom.count
@@ -1230,7 +1234,7 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 com.wingedsheep.engine.handlers.costs.ForageCostResolver.canPay(state, controllerId)
             is AdditionalCost.Choice ->
                 // Cost-vs-cost: payable if at least one option can be paid.
-                cost.options.any { canPayAdditionalCost(state, it, controllerId) }
+                cost.options.any { canPayAdditionalCost(state, it, controllerId, sourceId) }
             is AdditionalCost.Behold -> {
                 // Can behold if matching permanent on battlefield or matching card in hand
                 val projected = state.projectedState
@@ -1278,7 +1282,7 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
             }
             is AdditionalCost.Composite -> {
                 // All steps must be payable
-                cost.steps.all { canPayAdditionalCost(state, it, controllerId) }
+                cost.steps.all { canPayAdditionalCost(state, it, controllerId, sourceId) }
             }
             is AdditionalCost.ChooseEntity -> {
                 // Payable iff at least one entity in the searched zones matches the filter.

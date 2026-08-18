@@ -181,6 +181,11 @@ class ManaAbilityEnumerator : ActionEnumerator {
                         is CostAtom.Mill -> {
                             if (state.getZone(ZoneKey(playerId, Zone.LIBRARY)).size < atom.count) affordable = false
                         }
+                        is CostAtom.PayLife -> {
+                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
+                                affordable = false
+                            }
+                        }
                         // Other atoms (mana, life, discard, …) — engine validates at payment.
                         else -> {}
                     }
@@ -242,6 +247,11 @@ class ManaAbilityEnumerator : ActionEnumerator {
                                     // CR 701.17b — see the single-atom branch above.
                                     is CostAtom.Mill -> {
                                         if (state.getZone(ZoneKey(playerId, Zone.LIBRARY)).size < atom.count) {
+                                            affordable = false; break
+                                        }
+                                    }
+                                    is CostAtom.PayLife -> {
+                                        if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
                                             affordable = false; break
                                         }
                                     }

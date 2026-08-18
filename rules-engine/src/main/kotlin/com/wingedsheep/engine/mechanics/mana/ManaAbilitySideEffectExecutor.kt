@@ -8,6 +8,7 @@ import com.wingedsheep.engine.core.tap
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -109,7 +110,13 @@ class ManaAbilitySideEffectExecutor(
         // (Pain modeled as an *effect*, like Adarkar Wastes, is handled by the sub-effect
         // loop below.) The solver already tracks these via ManaSource.hasPainCost for tap
         // priority, but never deducts the life.
-        val lifeCost = payLifeCost(matchingAbility.cost)
+        val lifeCost = payLifeCost(
+            state = currentState,
+            cost = matchingAbility.cost,
+            sourceId = sourceId,
+            controllerId = controllerId,
+        )
+        if (lifeCost == null || lifeCost < 0) return currentState to events
         if (lifeCost > 0) {
             LifePaymentService.pay(currentState, controllerId, lifeCost)?.let { (afterLife, lifeEvents) ->
                 currentState = afterLife
@@ -140,14 +147,31 @@ class ManaAbilitySideEffectExecutor(
     /**
      * Sum of life-payment ([CostAtom.PayLife]) amounts in a mana ability's cost, recursing
      * through composite costs (e.g. `{T}, Pay 1 life`). Returns 0 when the cost has no
-     * life component.
+     * life component and null when a dynamic life amount cannot be resolved.
      */
-    private fun payLifeCost(cost: AbilityCost): Int = when (cost) {
-        is AbilityCost.Atom -> when (val atom = cost.atom as? CostAtom.PayLife) {
-            null -> 0
-            else -> (atom.amount as? com.wingedsheep.sdk.scripting.values.DynamicAmount.Fixed)?.amount ?: 0
+    private fun payLifeCost(
+        state: GameState,
+        cost: AbilityCost,
+        sourceId: EntityId,
+        controllerId: EntityId,
+    ): Int? = when (cost) {
+        is AbilityCost.Atom -> (cost.atom as? CostAtom.PayLife)?.let { atom ->
+            CostAmountResolver.resolve(
+                state = state,
+                amount = atom.amount,
+                sourceId = sourceId,
+                controllerId = controllerId,
+                cardRegistry = cardRegistry,
+            )
+        } ?: 0
+        is AbilityCost.Composite -> {
+            var total = 0
+            for (subCost in cost.costs) {
+                val amount = payLifeCost(state, subCost, sourceId, controllerId) ?: return null
+                total += amount
+            }
+            total
         }
-        is AbilityCost.Composite -> cost.costs.sumOf { payLifeCost(it) }
         else -> 0
     }
 

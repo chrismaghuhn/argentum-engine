@@ -1671,11 +1671,12 @@ class CastSpellHandler(
         state: GameState,
         playerId: EntityId,
         payment: AdditionalCostPayment?,
+        sourceId: EntityId = playerId,
     ): List<AdditionalCost> = flattenComposites(costs).flatMap { cost ->
         when (cost) {
             is AdditionalCost.Choice -> listOf(
                 cost.options.firstOrNull { paymentSatisfied(it, payment) }
-                    ?: cost.options.firstOrNull { costHandler.canPayAdditionalCost(state, it, playerId) }
+                    ?: cost.options.firstOrNull { costHandler.canPayAdditionalCost(state, it, playerId, sourceId) }
                     ?: cost.options.first()
             )
             is AdditionalCost.OrPay ->
@@ -1742,7 +1743,13 @@ class CastSpellHandler(
         action: CastSpell
     ): String? {
         val projected = state.projectedState
-        val flattenedCosts = reduceCostAlternatives(additionalCosts, state, action.playerId, action.additionalCostPayment)
+        val flattenedCosts = reduceCostAlternatives(
+            additionalCosts,
+            state,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
+        )
         for (additionalCost in flattenedCosts) {
             when (additionalCost) {
                 is AdditionalCost.Atom -> when (val atom = additionalCost.atom) {
@@ -1856,6 +1863,9 @@ class CastSpellHandler(
                         val amount = CostAmountResolver.resolve(
                             state, atom.amount, action.cardId, action.playerId, cardRegistry
                         ) ?: return "Cannot resolve life cost"
+                        if (amount < 0) {
+                            return "Life cost cannot be negative"
+                        }
                         // CR 119.4 — you can't pay life unless you have at least that much
                         if (currentLife < amount) {
                             return "Not enough life to pay $amount life"
@@ -2612,7 +2622,13 @@ class CastSpellHandler(
                 ?.additionalCost?.let { add(it) }
         }
 
-        val flattenedAllCosts = reduceCostAlternatives(allAdditionalCosts, currentState, action.playerId, action.additionalCostPayment)
+        val flattenedAllCosts = reduceCostAlternatives(
+            allAdditionalCosts,
+            currentState,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
+        )
 
         // The declared slot's cost, put through the *same* reduction as the full list, so the
         // payment loop can recognise it by equality. Reducing both sides is what makes the match
@@ -2620,7 +2636,11 @@ class CastSpellHandler(
         // flattens composites and picks a Choice's leg, so comparing an unreduced wrapper against
         // the reduced list would never match and would silently drop the tap cause.
         val declaredSlotCosts: List<AdditionalCost> = reduceCostAlternatives(
-            listOfNotNull(declaredSlotAdditionalCost), currentState, action.playerId, action.additionalCostPayment
+            listOfNotNull(declaredSlotAdditionalCost),
+            currentState,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
         )
 
         // Server-initiated free cast: pay the spell's printed additional costs even though the
@@ -2633,7 +2653,7 @@ class CastSpellHandler(
         surfaceUnpaidAdditionalCostSelection(currentState, action, flattenedAllCosts)?.let { return it }
 
         // PayLife additional costs (e.g., Timeline Culler's "Warp—{B}, Pay 2 life")
-        // are auto-paid: the amount is fixed, so no player choice is required and the
+        // are auto-paid: the amount is resolved from the current cast context, so no player choice is required and the
         // payment is applied regardless of whether the client included an
         // AdditionalCostPayment object.
         for (additionalCost in flattenedAllCosts) {
@@ -2647,6 +2667,9 @@ class CastSpellHandler(
                 additionalCost is AdditionalCost.PayLifeEqualToManaValueOfSpell ->
                     currentState.getEntity(action.cardId)?.get<CardComponent>()?.manaCost?.cmc ?: 0
                 else -> continue
+            }
+            if (lifeToPay < 0) {
+                return ExecutionResult.error(currentState, "Life cost cannot be negative")
             }
             if (lifeToPay == 0) continue
             val (afterPayment, paymentEvents) =

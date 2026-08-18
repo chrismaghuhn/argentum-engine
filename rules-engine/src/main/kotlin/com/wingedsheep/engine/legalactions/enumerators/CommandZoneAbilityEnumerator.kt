@@ -52,8 +52,9 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                     }
                 ) continue
 
-                // Cost payability — Mana and Discard, atom or composite (the avatar's "{X}{X}{X},
-                // Discard a card"). Other atoms are validated by the handler at payment time.
+                // Cost payability — Mana, Discard, and PayLife, atom or composite (the avatar's
+                // "{X}{X}{X}, Discard a card"). Other atoms are validated by the handler at
+                // payment time.
                 val effectiveCost = ability.cost
                 val handCards = state.getZone(playerId, Zone.HAND)
                 val abilityContext = com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext(
@@ -79,6 +80,11 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                         is CostAtom.Discard -> {
                             hasDiscardCost = true
                             if (handCards.size < atom.count) costCanBePaid = false
+                        }
+                        is CostAtom.PayLife -> {
+                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
+                                costCanBePaid = false
+                            }
                         }
                         else -> {}
                     }
