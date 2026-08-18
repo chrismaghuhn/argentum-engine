@@ -16,6 +16,21 @@ import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.conditions.Condition
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.AnyTarget
+import com.wingedsheep.sdk.scripting.targets.TargetCreatureOrPlaneswalker
+import com.wingedsheep.sdk.scripting.targets.TargetCreatureOrPlayer
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetOpponent
+import com.wingedsheep.sdk.scripting.targets.TargetOpponentOrPlaneswalker
+import com.wingedsheep.sdk.scripting.targets.TargetOther
+import com.wingedsheep.sdk.scripting.targets.TargetPermanentOrPlayer
+import com.wingedsheep.sdk.scripting.targets.TargetPlayer
+import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
+import com.wingedsheep.sdk.scripting.targets.TargetSpellOrPermanent
 
 /**
  * Private, deterministic identity used only to normalize an unordered trigger-choice domain.
@@ -29,7 +44,7 @@ internal object TriggerOrderingKey {
 
     fun forTrigger(state: GameState, trigger: PendingTrigger): String = fields(
         "source", semanticEntityKey(state, trigger.sourceId), trigger.sourceName,
-        "ability", abilityKey(trigger.ability),
+        "ability", abilityKey(state, trigger.ability),
         "controller-stage", trigger.placementStage.name,
         "trigger-stage", trigger.stage.name,
         "granter", semanticEntityKey(state, trigger.granterId),
@@ -59,7 +74,7 @@ internal object TriggerOrderingKey {
         candidate.sourceName,
         semanticEntityKey(state, candidate.sourceId),
         semanticEntityKey(state, candidate.controllerId),
-        abilityKey(candidate.ability),
+        abilityKey(state, candidate.ability),
         candidate.stage.name,
         candidate.observedPlacementStage?.name ?: "<legacy>",
         contextKey(state, candidate.triggerContext),
@@ -69,12 +84,15 @@ internal object TriggerOrderingKey {
         pipelineKey(state, candidate.carriedPipeline),
     )
 
-    private fun abilityKey(ability: TriggeredAbility): String = fields(
+    private fun abilityKey(
+        state: GameState,
+        ability: TriggeredAbility,
+    ): String = fields(
         ability.trigger.description,
         ability.binding.name,
         ability.effect.description,
-        ability.targetRequirement?.description,
-        ability.additionalTargetRequirements.map { it.description },
+        ability.targetRequirement?.let { targetRequirementKey(state, it) },
+        ability.additionalTargetRequirements.map { targetRequirementKey(state, it) },
         ability.elseEffect?.description,
         ability.activeZones.map { it.name }.sorted(),
         ability.interveningIf?.description,
@@ -173,12 +191,144 @@ internal object TriggerOrderingKey {
     ): String = targets?.let {
         fields(
             it.targets.map { target -> chosenTargetKey(state, target, visited) },
-            it.targetRequirements.map { requirement -> requirement.description },
+            it.targetRequirements.map { requirement -> targetRequirementKey(state, requirement, visited) },
             it.targetEntryStamps.entries
                 .map { (entityId, stamp) ->
                     fields(semanticEntityKey(state, entityId, visited), stamp)
                 }
                 .sorted(),
+        )
+    } ?: "<none>"
+
+    /**
+     * Display text is not the contract for target re-validation.  Keep the stable data fields that
+     * shape the legal domain as well as the human description, including hidden exclusions and
+     * candidate restrictions that are intentionally absent from that description.
+     */
+    private fun targetRequirementKey(
+        state: GameState,
+        requirement: TargetRequirement,
+        visited: Set<EntityId> = emptySet(),
+    ): String = when (requirement) {
+        is TargetPlayer -> fields(
+            "player",
+            requirement.count,
+            requirement.optional,
+            requirement.unlimited,
+            requirement.id,
+            requirement.chooser.name,
+            conditionKey(requirement.restriction),
+            requirement.description,
+        )
+        is TargetOpponent -> fields(
+            "opponent",
+            requirement.count,
+            requirement.optional,
+            requirement.unlimited,
+            requirement.id,
+            requirement.chooser.name,
+            conditionKey(requirement.restriction),
+            requirement.description,
+        )
+        is AnyTarget -> fields(
+            "any-target",
+            requirement.count,
+            requirement.minCount,
+            requirement.optional,
+            requirement.id,
+            requirement.chooser.name,
+            requirement.description,
+        )
+        is TargetCreatureOrPlayer -> fields(
+            "creature-or-player",
+            requirement.count,
+            requirement.optional,
+            requirement.id,
+            requirement.description,
+        )
+        is TargetPermanentOrPlayer -> fields(
+            "permanent-or-player",
+            requirement.count,
+            requirement.optional,
+            requirement.id,
+            targetFilterKey(requirement.permanentFilter),
+            requirement.description,
+        )
+        is TargetOpponentOrPlaneswalker -> fields(
+            "opponent-or-planeswalker",
+            requirement.count,
+            requirement.optional,
+            requirement.id,
+            requirement.description,
+        )
+        is TargetPlayerOrPlaneswalker -> fields(
+            "player-or-planeswalker",
+            requirement.count,
+            requirement.optional,
+            requirement.id,
+            requirement.description,
+        )
+        is TargetCreatureOrPlaneswalker -> fields(
+            "creature-or-planeswalker",
+            requirement.count,
+            requirement.optional,
+            requirement.id,
+            requirement.description,
+        )
+        is TargetSpellOrPermanent -> fields(
+            "spell-or-permanent",
+            requirement.count,
+            requirement.optional,
+            requirement.id,
+            gameObjectFilterKey(requirement.permanentFilter),
+            requirement.description,
+        )
+        is TargetObject -> fields(
+            "object",
+            requirement.count,
+            requirement.minCount,
+            requirement.optional,
+            requirement.unlimited,
+            targetFilterKey(requirement.filter),
+            requirement.id,
+            requirement.dynamicMaxCount?.description,
+            requirement.sameController,
+            requirement.sameOwner,
+            requirement.sameCreatureType,
+            requirement.sameCardType,
+            requirement.totalManaValueAtMost?.description,
+            requirement.differentNames,
+            requirement.description,
+        )
+        is TargetOther -> fields(
+            "other",
+            targetRequirementKey(state, requirement.baseRequirement, visited),
+            semanticEntityKey(state, requirement.excludeSourceId, visited),
+            requirement.excludeAttachedCreature,
+            requirement.id,
+            requirement.description,
+        )
+    }
+
+    private fun conditionKey(condition: Condition?): String = condition?.let {
+        fields(it.description)
+    } ?: "<none>"
+
+    private fun targetFilterKey(filter: TargetFilter): String = fields(
+        filter.baseFilter.description,
+        filter.zone.name,
+        filter.excludeSelf,
+        filter.excludeTriggeringEntity,
+        filter.alternatives.map { targetFilterKey(it) },
+    )
+
+    private fun gameObjectFilterKey(filter: GameObjectFilter?): String = filter?.let {
+        fields(
+            it.description,
+            it.cardPredicates.map { predicate -> predicate.description },
+            it.statePredicates.map { predicate -> predicate.description },
+            it.controllerPredicate?.description,
+            it.anyOf.map { branch -> gameObjectFilterKey(branch) },
         )
     } ?: "<none>"
 
@@ -252,9 +402,32 @@ internal object TriggerOrderingKey {
         val entity = state.getEntity(entityId)
         val nextVisited = visited + entityId
         val card = entity?.get<CardComponent>()
-        if (card == null) {
-            return cardlessEntityKey(state, entity, nextVisited)
+        val hasStackPayload = entity?.let {
+            it.has<TriggeredAbilityOnStackComponent>() ||
+                it.has<ActivatedAbilityOnStackComponent>() ||
+                it.has<AbilityOnStackComponent>() ||
+                it.has<SpellOnStackComponent>()
+        } == true
+        if (hasStackPayload) {
+            return fields(
+                "stack-entity",
+                card?.let { cardEntityKey(state, entityId, entity, it, nextVisited) } ?: "<none>",
+                stackPayloadKey(state, entity, nextVisited),
+            )
         }
+        if (card == null) {
+            return stackPayloadKey(state, entity, nextVisited)
+        }
+        return cardEntityKey(state, entityId, entity, card, nextVisited)
+    }
+
+    private fun cardEntityKey(
+        state: GameState,
+        entityId: EntityId,
+        entity: com.wingedsheep.engine.state.ComponentContainer,
+        card: CardComponent,
+        visited: Set<EntityId>,
+    ): String {
         val zoneRoles = state.zones.entries
             .filter { (_, contents) -> entityId in contents }
             .map { (key, _) ->
@@ -282,17 +455,17 @@ internal object TriggerOrderingKey {
             projected.getToughness(entityId),
             entity.has<TappedComponent>(),
             counters,
-            semanticEntityKey(state, attachedTo, nextVisited),
+            semanticEntityKey(state, attachedTo, visited),
         )
     }
 
     /**
-     * Stack abilities are intentionally cardless entities.  Their allocation handles are not
-     * semantic identity, but the ability object they carry is: effects such as Firebender
-     * Ascension copy the exact triggering ability object.  Keep the stable payload of that object
-     * in the key so two distinct stack targets do not collapse to one opaque placeholder.
+     * Stack payloads may be cardless or may retain their CardComponent (notably spell copies).
+     * Their allocation handles are not semantic identity, but the carried ability/spell object is:
+     * effects such as Firebender Ascension copy the exact triggering ability object. Keep the stable
+     * payload of that object in the key so two distinct stack targets do not collapse to a placeholder.
      */
-    private fun cardlessEntityKey(
+    private fun stackPayloadKey(
         state: GameState,
         entity: com.wingedsheep.engine.state.ComponentContainer?,
         visited: Set<EntityId>,
@@ -357,7 +530,7 @@ internal object TriggerOrderingKey {
                 triggered.modeTargetRequirements.entries
                     .sortedBy { it.key }
                     .map { (mode, requirements) ->
-                        listOf(mode, requirements.map { it.description })
+                        listOf(mode, requirements.map { targetRequirementKey(state, it, visited) })
                     },
                 triggered.modeDamageDistribution.entries
                     .sortedBy { it.key }
@@ -436,7 +609,9 @@ internal object TriggerOrderingKey {
                 },
                 spell.modeTargetRequirements.entries
                     .sortedBy { it.key }
-                    .map { (mode, requirements) -> listOf(mode, requirements.map { it.description }) },
+                    .map { (mode, requirements) ->
+                        listOf(mode, requirements.map { targetRequirementKey(state, it, visited) })
+                    },
                 spell.modeDamageDistribution.entries
                     .sortedBy { it.key }
                     .map { (mode, allocation) ->

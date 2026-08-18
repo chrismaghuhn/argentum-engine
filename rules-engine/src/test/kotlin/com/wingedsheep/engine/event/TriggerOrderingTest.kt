@@ -27,6 +27,8 @@ import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.MayEffect
+import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import com.wingedsheep.sdk.scripting.references.Player
 import io.kotest.core.spec.style.FunSpec
@@ -421,6 +423,92 @@ class TriggerOrderingTest : FunSpec({
         assertDistinct { driver, _ ->
             SpellOnStackComponent(casterId = driver.player1)
         }
+    }
+
+    test("TO-22c: card-backed spell payload participates in semantic ordering identity") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val firstSpell = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondSpell = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val spellComponent = SpellOnStackComponent(casterId = driver.player1)
+        driver.replaceState(
+            driver.state
+                .updateEntity(firstSpell) {
+                    it.with(spellComponent).with(
+                        TargetsComponent(listOf(ChosenTarget.Player(driver.player1)))
+                    )
+                }
+                .updateEntity(secondSpell) {
+                    it.with(spellComponent).with(
+                        TargetsComponent(listOf(ChosenTarget.Player(driver.player2)))
+                    )
+                }
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstSpell))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondSpell))
+        )
+
+        (firstKey == secondKey) shouldBe false
+    }
+
+    test("TO-22d: target requirement semantics participate beyond display descriptions") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val target = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+        val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+        val stackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability"
+        )
+        val baseRequirement = TargetCreature()
+        driver.replaceState(
+            stateWithBothIds
+                .withEntity(
+                    firstStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(
+                            targets = listOf(ChosenTarget.Permanent(target)),
+                            targetRequirements = listOf(
+                                TargetOther(baseRequirement, excludeSourceId = driver.player1)
+                            )
+                        )
+                    )
+                )
+                .withEntity(
+                    secondStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(
+                            targets = listOf(ChosenTarget.Permanent(target)),
+                            targetRequirements = listOf(
+                                TargetOther(baseRequirement, excludeSourceId = driver.player2)
+                            )
+                        )
+                    )
+                )
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        (firstKey == secondKey) shouldBe false
     }
 
     test("TO-23: delayed occurrence options are independent of detector candidate order") {
