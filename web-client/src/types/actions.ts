@@ -79,8 +79,7 @@ export interface AdditionalCostPayment {
   readonly payXLifeAmount?: number
   /**
    * Permanents chosen for a variable-count permanent cost — the payer decides how many
-   * (`CostAtom.VariablePermanents`). Carries the creatures tapped to pay a Teamwork N cost
-   * (CR 702.194a).
+   * (`CostAtom.VariablePermanents`), including Teamwork taps and optional sacrifices.
    */
   readonly variableCostPermanents?: readonly EntityId[]
 }

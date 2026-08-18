@@ -33,6 +33,7 @@ import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.costs.PermanentCostAction
 import com.wingedsheep.sdk.scripting.ChoiceSlot
 import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.scripting.MayCastFromGraveyard
@@ -2553,25 +2554,36 @@ class CastFromZoneEnumerator : ActionEnumerator {
                         // spell cast from another zone (flashback, a graveyard-cast grant) offers
                         // the same candidates and threshold.
                         is CostAtom.VariablePermanents -> {
-                            val projected = state.projectedState
                             val candidates = com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
                                 .candidates(state, playerId, atom)
                             canPayKickerAdditionalCost = com.wingedsheep.engine.mechanics.cost
                                 .VariablePermanentsCost.canPay(state, playerId, atom)
-                            kickerCostInfo = AdditionalCostData(
-                                description = atom.description.replaceFirstChar { it.uppercase() },
-                                costType = "TapForTotalPower",
-                                tapForPowerRequired = atom.minMeasure,
-                                tapForPowerCreatures = candidates.map { creatureId ->
-                                    com.wingedsheep.engine.legalactions.TapForPowerCreatureData(
-                                        entityId = creatureId,
-                                        name = state.getEntity(creatureId)
-                                            ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                                            ?.name ?: "Unknown",
-                                        power = projected.getPower(creatureId) ?: 0
-                                    )
-                                }
-                            )
+                            if (atom.action == PermanentCostAction.SACRIFICE) {
+                                kickerCostInfo = AdditionalCostData(
+                                    description = atom.description.replaceFirstChar { it.uppercase() },
+                                    costType = "VariableSacrifice",
+                                    validSacrificeTargets = candidates,
+                                    sacrificeCount = atom.minCount,
+                                    sacrificeMinCount = atom.minCount,
+                                    sacrificeMaxCount = candidates.size
+                                )
+                            } else {
+                                val projected = state.projectedState
+                                kickerCostInfo = AdditionalCostData(
+                                    description = atom.description.replaceFirstChar { it.uppercase() },
+                                    costType = "TapForTotalPower",
+                                    tapForPowerRequired = atom.minMeasure,
+                                    tapForPowerCreatures = candidates.map { creatureId ->
+                                        com.wingedsheep.engine.legalactions.TapForPowerCreatureData(
+                                            entityId = creatureId,
+                                            name = state.getEntity(creatureId)
+                                                ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                                                ?.name ?: "Unknown",
+                                            power = projected.getPower(creatureId) ?: 0
+                                        )
+                                    }
+                                )
+                            }
                         }
                         else -> {}
                     }

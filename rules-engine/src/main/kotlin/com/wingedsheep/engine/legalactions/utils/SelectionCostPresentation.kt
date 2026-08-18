@@ -3,6 +3,7 @@ package com.wingedsheep.engine.legalactions.utils
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.AdditionalCostData
+import com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.core.Zone
@@ -10,6 +11,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.costs.PermanentCostAction
 
 /**
  * Candidate pools and client cost data for an additional cost that the caster pays by **selecting
@@ -56,6 +58,7 @@ object SelectionCostPresentation {
             }
             is AdditionalCost.Atom -> when (val atom = cost.atom) {
                 is CostAtom.Sacrifice -> costUtils.findSacrificeTargets(state, playerId, atom)
+                is CostAtom.VariablePermanents -> VariablePermanentsCost.candidates(state, playerId, atom)
                 is CostAtom.ExileFrom -> costUtils.findExileTargets(state, playerId, atom.filter, atom.zone)
                     .filter { it != castCardId }
                 is CostAtom.Discard -> handCandidates(state, playerId, castCardId, atom.filter, predicateEvaluator)
@@ -103,6 +106,18 @@ object SelectionCostPresentation {
                     validSacrificeTargets = candidates,
                     sacrificeCount = atom.count,
                 )
+                is CostAtom.VariablePermanents -> if (
+                    atom.action == PermanentCostAction.SACRIFICE
+                ) {
+                    "Sacrifice" to AdditionalCostData(
+                        description = description,
+                        costType = "VariableSacrifice",
+                        validSacrificeTargets = candidates,
+                        sacrificeCount = atom.minCount,
+                        sacrificeMinCount = atom.minCount,
+                        sacrificeMaxCount = candidates.size,
+                    )
+                } else null
                 is CostAtom.Discard -> "Discard" to AdditionalCostData(
                     description = description,
                     costType = "DiscardCard",

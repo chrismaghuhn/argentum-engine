@@ -1070,6 +1070,9 @@ export interface AdditionalCostInfo {
   readonly costType: string
   readonly validSacrificeTargets?: readonly EntityId[]
   readonly sacrificeCount?: number
+  /** Bounds for a variable-count `VariableSacrifice` cost. */
+  readonly sacrificeMinCount?: number
+  readonly sacrificeMaxCount?: number
   /**
    * Emerge (CR 702.119): the mana cost that remains after sacrificing each candidate, keyed by
    * that candidate. Emerge is the only cost whose mana half depends on which permanent pays its

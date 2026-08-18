@@ -88,7 +88,11 @@ export function computePhases(actionInfo: LegalActionInfo, options?: ComputePhas
   ) {
     const modalPhases: PipelinePhase[] = [{ type: 'modalModes' }]
     const modalCostType = actionInfo.additionalCostInfo?.costType
-    if (modalCostType === 'Blight' || modalCostType === 'TapForTotalPower') {
+    if (
+      modalCostType === 'Blight' ||
+      modalCostType === 'TapForTotalPower' ||
+      modalCostType === 'VariableSacrifice'
+    ) {
       modalPhases.push({ type: 'costPayment' })
     }
     return modalPhases
@@ -207,6 +211,7 @@ export function computePhases(actionInfo: LegalActionInfo, options?: ComputePhas
     const costTypesNeedingSelection = [
       'SacrificePermanent',
       'SacrificeSelf',
+      'VariableSacrifice',
       'SacrificeForCostReduction',
       'TapPermanents',
       'BouncePermanent',
@@ -433,6 +438,17 @@ export function mergeResult(
         }
         // Teamwork (CR 702.194a) pays through the shared variable-count permanent channel.
         if (costType === 'TapForTotalPower') {
+          return {
+            ...action,
+            additionalCostPayment: {
+              ...action.additionalCostPayment,
+              variableCostPermanents: selectedTargets,
+            },
+          }
+        }
+        // Variable sacrifice uses the shared variable channel so its exact selected count is
+        // preserved independently from any fixed-count sacrifice cost on the same cast.
+        if (costType === 'VariableSacrifice') {
           return {
             ...action,
             additionalCostPayment: {
@@ -822,6 +838,13 @@ export function enterPhase(
             flags.costAfterSacrifice = costInfo.costAfterSacrifice
             if (actionInfo.manaCostString) flags.costBeforeSacrifice = actionInfo.manaCostString
           }
+          break
+        case 'VariableSacrifice':
+          validTargets = [...(costInfo.validSacrificeTargets ?? [])]
+          minTargets = costInfo.sacrificeMinCount ?? costInfo.sacrificeCount ?? 1
+          maxTargets = costInfo.sacrificeMaxCount ?? validTargets.length
+          flags.isSacrificeSelection = true
+          flags.targetDescription = costInfo.description
           break
         case 'SacrificeForCostReduction':
           validTargets = [...(costInfo.validSacrificeTargets ?? [])]
