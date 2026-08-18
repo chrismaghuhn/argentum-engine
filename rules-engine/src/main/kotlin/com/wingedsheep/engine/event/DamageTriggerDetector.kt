@@ -221,28 +221,24 @@ class DamageTriggerDetector(
         )
         val recipientName = recipientSnapshot?.name ?: cardComponent?.name ?: return
 
-        // Determine source type
+        // Determine source type from the event-time snapshot only. Direct damage-received source
+        // dispatch is a look-back query: a live id is not enough to prove that the current printed
+        // object is the source that dealt this damage, and a missing/unstamped snapshot cannot
+        // answer the question safely. In particular, do not classify a same-id replacement from
+        // its current CardComponent (or treat a missing snapshot as the original source).
         val sourceSnapshot = event.damageSourceLastKnownSnapshot
             ?.takeIf { it.entityId == sourceId }
-        val sourceContainer = state.getEntity(sourceId)
-        val sourceCard = sourceContainer?.get<CardComponent>()
-        val sourceIsOriginal = sourceSnapshot?.let {
-            state.isCapturedBattlefieldObjectLive(sourceId, it)
-        } ?: true
-        val sourceTypeLine = when {
-            sourceSnapshot != null && !sourceIsOriginal -> sourceSnapshot.typeLine
-            sourceCard != null -> sourceCard.typeLine
-            else -> sourceSnapshot?.typeLine
-        }
+            ?: return
+        if (sourceSnapshot.battlefieldEntryTimestamp == null) return
+        val sourceTypeLine = sourceSnapshot.typeLine ?: return
         // Do NOT require the source to still be on the battlefield: combat damage is dealt
         // simultaneously, so the attacker may have died from Tephraderm's damage in the same
         // combat step (Rule 603.10 look-back). We check the card's type line instead of
         // current zone to determine what it was when it dealt the damage.
-        val isCreatureSource = sourceTypeLine?.isCreature == true &&
-            sourceSnapshot?.wasFaceDown != true
-        val isSpellSource = sourceTypeLine != null &&
+        val isCreatureSource = sourceTypeLine.isCreature && !sourceSnapshot.wasFaceDown
+        val isSpellSource =
             (sourceTypeLine.isInstant || sourceTypeLine.isSorcery) &&
-            sourceSnapshot?.wasFaceDown != true
+                !sourceSnapshot.wasFaceDown
 
         for (ability in abilities) {
             val trigger = ability.trigger

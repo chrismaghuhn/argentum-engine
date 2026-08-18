@@ -2896,7 +2896,9 @@ class StackResolver(
                 storedCollections = abilityComponent.carriedPipeline?.storedCollections ?: emptyMap(),
             )
             if (validTargets.isEmpty()) {
-                // Fizzle - remove ability entity
+                // Fizzle - remove ability entity when no target remains. A partially illegal
+                // multi-target choice continues with the surviving targets below, while the
+                // position-preserving aligned list keeps original ContextTarget indices stable.
                 val newState = state.removeEntity(abilityId)
                 return ExecutionResult.success(
                     newState,

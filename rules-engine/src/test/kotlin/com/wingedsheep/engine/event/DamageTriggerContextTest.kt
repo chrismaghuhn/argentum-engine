@@ -18,6 +18,8 @@ import com.wingedsheep.engine.handlers.effects.composite.ReflexiveTriggerEffectE
 import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.zones.MoveToZoneEffectExecutor
+import com.wingedsheep.engine.mechanics.layers.ProjectedState
+import com.wingedsheep.engine.mechanics.layers.ProjectedValues
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -53,6 +55,7 @@ import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.events.DamageType
 import com.wingedsheep.sdk.scripting.events.RecipientFilter
+import com.wingedsheep.sdk.scripting.events.SourceFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
@@ -99,6 +102,56 @@ class DamageTriggerContextTest : FunSpec({
             battlefieldEntryTimestamp = 2L,
         )
     )
+
+    fun directDamageReceivedFixture(
+        sourceTypeLine: TypeLine,
+    ): Pair<GameState, AbilityRegistry> {
+        val controllerId = EntityId("direct-damage-received-controller")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("direct-damage-received-creature-source"),
+            trigger = EventPattern.DamageReceivedEvent(source = SourceFilter.Creature),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().apply {
+            register("direct-damage-received-recipient", listOf(ability))
+        }
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId, recipientId),
+            ),
+            turnOrder = listOf(controllerId),
+        )
+            .withEntity(
+                sourceId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "direct-damage-received-source",
+                        name = "Printed Source",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = sourceTypeLine,
+                        baseStats = if (sourceTypeLine.isCreature) CreatureStats(2, 2) else null,
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(1L),
+                ),
+            )
+            .withEntity(
+                recipientId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "direct-damage-received-recipient",
+                        name = "Damage Recipient",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(2, 2),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(2L),
+                ),
+            )
+        return state to abilityRegistry
+    }
 
     test("damage trigger context preserves source and recipient as separate roles") {
         val context = TriggerContext.fromEvent(damageEvent)
@@ -197,6 +250,64 @@ class DamageTriggerContextTest : FunSpec({
         triggers.single().ability shouldBe ability
         triggers.single().sourceName shouldBe "Deleted Token Source"
         triggers.single().controllerId shouldBe controllerId
+    }
+
+    test("direct damage-received source dispatch reads the captured projected type line") {
+        val (state, abilityRegistry) = directDamageReceivedFixture(
+            TypeLine(cardTypes = setOf(CardType.LAND)),
+        )
+        val event = damageEvent.copy(
+            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                battlefieldEntryTimestamp = 1L,
+            ),
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+        DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        ).detectDamagedBySourceTriggers(
+            state = state,
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = event,
+            triggers = triggers,
+        )
+
+        triggers shouldHaveSize 1
+        triggers.single().triggerContext.damageSourceEntityId shouldBe sourceId
+        triggers.single().triggerContext.damageRecipientEntityId shouldBe recipientId
+    }
+
+    test("direct damage-received source dispatch fails closed without a stamped source snapshot") {
+        val (state, abilityRegistry) = directDamageReceivedFixture(
+            TypeLine(cardTypes = setOf(CardType.CREATURE)),
+        )
+        val detector = DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+
+        val missingSnapshotTriggers = mutableListOf<PendingTrigger>()
+        detector.detectDamagedBySourceTriggers(
+            state = state,
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = damageEvent.copy(damageSourceLastKnownSnapshot = null),
+            triggers = missingSnapshotTriggers,
+        )
+        missingSnapshotTriggers shouldHaveSize 0
+
+        val unstampedSnapshotTriggers = mutableListOf<PendingTrigger>()
+        detector.detectDamagedBySourceTriggers(
+            state = state,
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    battlefieldEntryTimestamp = null,
+                ),
+            ),
+            triggers = unstampedSnapshotTriggers,
+        )
+        unstampedSnapshotTriggers shouldHaveSize 0
     }
 
     test("top-level detector discovers the old source after same-id replacement") {
@@ -558,7 +669,7 @@ class DamageTriggerContextTest : FunSpec({
         resolved.state.getEntity(controllerId)?.get<LifeTotalComponent>()?.life shouldBe 25
     }
 
-    test("triggered target revalidation drops an illegal slot without shifting it") {
+    test("triggered target revalidation keeps nested target iteration aligned after compaction") {
         val controllerId = EntityId("partial-target-controller")
         val removedTargetId = EntityId("partial-target-removed")
         val legalTargetId = EntityId("partial-target-legal")
@@ -592,7 +703,7 @@ class DamageTriggerContextTest : FunSpec({
             sourceId = EntityId("partial-target-source"),
             sourceName = "Partial target source",
             controllerId = controllerId,
-            effect = Effects.Tap(EffectTarget.ContextTarget(0)),
+            effect = Effects.TapEachTarget(),
             description = "Tap the selected target",
         )
         val resolver = StackResolver(CardRegistry())
@@ -609,8 +720,9 @@ class DamageTriggerContextTest : FunSpec({
         val resolved = resolver.resolveTop(putResult.state.removeEntity(removedTargetId))
 
         resolved.error shouldBe null
+        resolved.events.any { it is com.wingedsheep.engine.core.AbilityFizzledEvent } shouldBe false
         resolved.state.getBattlefield() shouldBe setOf(legalTargetId)
-        resolved.state.getEntity(legalTargetId)?.has<TappedComponent>() shouldBe false
+        resolved.state.getEntity(legalTargetId)?.has<TappedComponent>() shouldBe true
     }
 
     test("missing target entry stamps fail closed during identity revalidation") {
@@ -1852,6 +1964,45 @@ class DamageTriggerContextTest : FunSpec({
             ),
             event,
             GameState(),
+        ) shouldBe true
+    }
+
+    test("live basic-land filters read projected supertypes") {
+        val controllerId = EntityId("live-basic-land-controller")
+        val landId = EntityId("live-basic-land")
+        val state = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(landId)),
+        ).withEntity(
+            landId,
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = "live-basic-land-card",
+                    name = "Projected Basic Land",
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+                ),
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(402L),
+            ),
+        )
+        val projected = ProjectedState(
+            state,
+            mapOf(
+                landId to ProjectedValues(
+                    types = setOf("LAND", Supertype.BASIC.name),
+                    controllerId = controllerId,
+                ),
+            ),
+        )
+
+        PredicateEvaluator().matches(
+            state = state,
+            projected = projected,
+            entityId = landId,
+            filter = GameObjectFilter(
+                cardPredicates = listOf(CardPredicate.IsBasicLand),
+            ),
+            context = PredicateContext(controllerId = controllerId),
         ) shouldBe true
     }
 

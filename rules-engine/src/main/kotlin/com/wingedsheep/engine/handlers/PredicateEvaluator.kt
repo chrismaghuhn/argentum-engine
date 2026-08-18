@@ -444,7 +444,8 @@ class PredicateEvaluator {
             // read straight off the CardComponent flag stamped at entity creation.
             CardPredicate.HasAdventure -> card.hasAdventure
             CardPredicate.HasNoAbilities -> card.oracleText.isBlank()
-            CardPredicate.IsBasicLand -> "LAND" in types && card.typeLine.supertypes.any { it.name == "BASIC" }
+            CardPredicate.IsBasicLand ->
+                "LAND" in types && Supertype.BASIC.name in types
             CardPredicate.IsPermanent -> types.any { it in setOf("CREATURE", "LAND", "ARTIFACT", "ENCHANTMENT", "PLANESWALKER") }
             CardPredicate.IsNonland -> "LAND" !in types
             CardPredicate.IsNoncreature -> "CREATURE" !in types

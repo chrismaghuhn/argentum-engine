@@ -174,7 +174,11 @@ class ForEachExecutor(
         item: ForEachItem
     ): EffectContext = when (item) {
         is ForEachItem.OfTarget -> outerContext.copy(
+            // A target loop narrows the context to one already-validated survivor. Reset the
+            // positional view with that same target so a parent triggered-ability's sparse
+            // alignment cannot make ContextTarget(0) resolve to its dropped slot.
             targets = listOf(item.target),
+            alignedTargets = listOf(item.target),
             pipeline = outerContext.pipeline.copy(storedCollections = emptyMap())
         )
 
