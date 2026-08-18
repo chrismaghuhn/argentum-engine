@@ -10,6 +10,8 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -39,20 +41,42 @@ class DamageTriggerDetector(
     ) {
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val entityId = event.targetId
-        val container = state.getEntity(entityId) ?: return
-        val cardComponent = container.get<CardComponent>() ?: return
-        // ControllerComponent is stripped when creature dies via SBAs, fall back to ownerId
-        val controllerId = container.get<ControllerComponent>()?.playerId
-            ?: cardComponent.ownerId
+        if (event.damageRecipientLastKnownSnapshot?.entityId?.let { it != entityId } == true) return
+        val recipientSnapshot = event.damageRecipientLastKnownSnapshot
+            ?.takeIf { it.entityId == entityId }
+        val container = state.getEntity(entityId)
+        if (container == null && recipientSnapshot == null) return
+        val currentIsEventObject = recipientSnapshot?.let {
+            state.isCapturedBattlefieldObjectLive(entityId, it)
+        } ?: true
+        val cardComponent = container?.get<CardComponent>()
+        // Prefer the event-time controller. If the snapshot has no controller, use live state
+        // only when its stamped incarnation is proven to be the same object.
+        val controllerId = recipientSnapshot?.controllerId
+            ?: if (currentIsEventObject) {
+                container?.get<ControllerComponent>()?.playerId
+                    ?: cardComponent?.ownerId
+            } else {
+                null
+            }
             ?: return
 
         // Face-down creatures have no abilities (Rule 708.2)
         // Check both current state AND the event's recorded face-down status, because
         // FaceDownComponent may have been stripped by stripBattlefieldComponents when
         // the creature died via SBAs before trigger detection runs.
-        if (container.has<FaceDownComponent>() || event.targetWasFaceDown) return
+        if (recipientSnapshot?.wasFaceDown == true ||
+            event.targetWasFaceDown ||
+            (currentIsEventObject && container?.has<FaceDownComponent>() == true)
+        ) return
 
-        val abilities = abilityResolver.getTriggeredAbilities(entityId, cardComponent.cardDefinitionId, state, statics)
+        val abilities = abilitiesAtDamageTime(
+            state = state,
+            statics = statics,
+            entityId = entityId,
+            snapshot = recipientSnapshot,
+        )
+        val sourceName = recipientSnapshot?.name ?: cardComponent?.name ?: return
 
         for (ability in abilities) {
             val trigger = ability.trigger
@@ -68,7 +92,7 @@ class DamageTriggerDetector(
                     PendingTrigger(
                         ability = ability,
                         sourceId = entityId,
-                        sourceName = cardComponent.name,
+                        sourceName = sourceName,
                         controllerId = controllerId,
                         triggerContext = TriggerContext.fromEvent(event)
                     )
@@ -85,18 +109,38 @@ class DamageTriggerDetector(
         projected: ProjectedState
     ) {
         val sourceId = event.sourceId ?: return
-        val container = state.getEntity(sourceId) ?: return
-        val cardComponent = container.get<CardComponent>() ?: return
+        if (event.damageSourceLastKnownSnapshot?.entityId?.let { it != sourceId } == true) return
+        val sourceSnapshot = event.damageSourceLastKnownSnapshot
+            ?.takeIf { it.entityId == sourceId }
+        val container = state.getEntity(sourceId)
+        val cardComponent = container?.get<CardComponent>()
+        val currentIsEventObject = sourceSnapshot?.let {
+            state.isCapturedBattlefieldObjectLive(sourceId, it)
+        } ?: true
         // Fall back to ownerId if ControllerComponent was stripped (e.g., creature died to SBA
         // during combat damage, but its damage trigger should still fire per Rule 603.10)
-        val controllerId = projected.getController(sourceId)
-            ?: container.get<ControllerComponent>()?.playerId
-            ?: cardComponent.ownerId ?: return
+        val controllerId = sourceSnapshot?.controllerId
+            ?: if (currentIsEventObject) {
+                projected.getController(sourceId)
+                    ?: container?.get<ControllerComponent>()?.playerId
+                    ?: cardComponent?.ownerId
+            } else {
+                null
+            }
+            ?: return
 
         // Face-down creatures have no abilities (Rule 708.2)
-        if (container.has<FaceDownComponent>()) return
+        if (sourceSnapshot?.wasFaceDown == true ||
+            (currentIsEventObject && container?.has<FaceDownComponent>() == true)
+        ) return
 
-        val abilities = abilityResolver.getTriggeredAbilities(sourceId, cardComponent.cardDefinitionId, state, statics)
+        val abilities = abilitiesAtDamageTime(
+            state = state,
+            statics = statics,
+            entityId = sourceId,
+            snapshot = sourceSnapshot,
+        )
+        val sourceName = sourceSnapshot?.name ?: cardComponent?.name ?: return
 
         for (ability in abilities) {
             val trigger = ability.trigger
@@ -108,7 +152,7 @@ class DamageTriggerDetector(
                         PendingTrigger(
                             ability = ability,
                             sourceId = sourceId,
-                            sourceName = cardComponent.name,
+                            sourceName = sourceName,
                             controllerId = controllerId,
                             triggerContext = if (trigger.sourceFilter != null) {
                                 TriggerContext.fromSourceFilteredDamageEvent(event) ?: continue
@@ -142,27 +186,63 @@ class DamageTriggerDetector(
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val sourceId = event.sourceId ?: return
         val damagedEntityId = event.targetId
+        if (event.damageSourceLastKnownSnapshot?.entityId?.let { it != sourceId } == true) return
+        if (event.damageRecipientLastKnownSnapshot?.entityId?.let { it != damagedEntityId } == true) return
 
         // Get the damaged entity (might be on battlefield or in graveyard)
-        val container = state.getEntity(damagedEntityId) ?: return
-        val cardComponent = container.get<CardComponent>() ?: return
-        val controllerId = container.get<ControllerComponent>()?.playerId
-            ?: cardComponent.ownerId ?: return
+        val recipientSnapshot = event.damageRecipientLastKnownSnapshot
+            ?.takeIf { it.entityId == damagedEntityId }
+        val container = state.getEntity(damagedEntityId)
+        if (container == null && recipientSnapshot == null) return
+        val currentIsEventObject = recipientSnapshot?.let {
+            state.isCapturedBattlefieldObjectLive(damagedEntityId, it)
+        } ?: true
+        val cardComponent = container?.get<CardComponent>()
+        val controllerId = recipientSnapshot?.controllerId
+            ?: if (currentIsEventObject) {
+                container?.get<ControllerComponent>()?.playerId
+                    ?: cardComponent?.ownerId
+            } else {
+                null
+            }
+            ?: return
 
         // Face-down creatures have no abilities (Rule 708.2)
-        if (container.has<FaceDownComponent>() || event.targetWasFaceDown) return
+        if (recipientSnapshot?.wasFaceDown == true ||
+            event.targetWasFaceDown ||
+            (currentIsEventObject && container?.has<FaceDownComponent>() == true)
+        ) return
 
-        val abilities = abilityResolver.getTriggeredAbilities(damagedEntityId, cardComponent.cardDefinitionId, state, statics)
+        val abilities = abilitiesAtDamageTime(
+            state = state,
+            statics = statics,
+            entityId = damagedEntityId,
+            snapshot = recipientSnapshot,
+        )
+        val recipientName = recipientSnapshot?.name ?: cardComponent?.name ?: return
 
         // Determine source type
-        val sourceContainer = state.getEntity(sourceId) ?: return
-        val sourceCard = sourceContainer.get<CardComponent>()
+        val sourceSnapshot = event.damageSourceLastKnownSnapshot
+            ?.takeIf { it.entityId == sourceId }
+        val sourceContainer = state.getEntity(sourceId)
+        val sourceCard = sourceContainer?.get<CardComponent>()
+        val sourceIsOriginal = sourceSnapshot?.let {
+            state.isCapturedBattlefieldObjectLive(sourceId, it)
+        } ?: true
+        val sourceTypeLine = when {
+            sourceSnapshot != null && !sourceIsOriginal -> sourceSnapshot.typeLine
+            sourceCard != null -> sourceCard.typeLine
+            else -> sourceSnapshot?.typeLine
+        }
         // Do NOT require the source to still be on the battlefield: combat damage is dealt
         // simultaneously, so the attacker may have died from Tephraderm's damage in the same
         // combat step (Rule 603.10 look-back). We check the card's type line instead of
         // current zone to determine what it was when it dealt the damage.
-        val isCreatureSource = sourceCard?.typeLine?.isCreature == true
-        val isSpellSource = sourceCard != null && (sourceCard.typeLine.isInstant || sourceCard.typeLine.isSorcery)
+        val isCreatureSource = sourceTypeLine?.isCreature == true &&
+            sourceSnapshot?.wasFaceDown != true
+        val isSpellSource = sourceTypeLine != null &&
+            (sourceTypeLine.isInstant || sourceTypeLine.isSorcery) &&
+            sourceSnapshot?.wasFaceDown != true
 
         for (ability in abilities) {
             val trigger = ability.trigger
@@ -179,7 +259,7 @@ class DamageTriggerDetector(
                     PendingTrigger(
                         ability = ability,
                         sourceId = damagedEntityId,
-                        sourceName = cardComponent.name,
+                        sourceName = recipientName,
                         controllerId = controllerId,
                         triggerContext = TriggerContext.fromDamageEvent(
                             event,
@@ -189,6 +269,34 @@ class DamageTriggerDetector(
                 )
             }
         }
+    }
+
+    /**
+     * Resolve the ability set from the object's event-time identity. A stamped snapshot selects
+     * snapshot-only intrinsic abilities even when the id is now gone or names a replacement; a
+     * snapshot without a definition may use the live entity only when its incarnation is proven
+     * unchanged. This keeps damage trigger discovery from silently switching to a newer object.
+     */
+    private fun abilitiesAtDamageTime(
+        state: GameState,
+        statics: BattlefieldStaticsIndex,
+        entityId: com.wingedsheep.sdk.model.EntityId,
+        snapshot: EntitySnapshot?,
+    ): List<com.wingedsheep.sdk.scripting.TriggeredAbility> {
+        if (snapshot != null) {
+            // A live stamped object still has dynamic abilities granted by the current projected
+            // state (for example The Ring's abilities on its current Ring-bearer). Use the normal
+            // resolver for that proven incarnation. Only a departed/replaced object may use the
+            // snapshot-only intrinsic path, which deliberately cannot invent current-state grants.
+            if (!state.isCapturedBattlefieldObjectLive(entityId, snapshot)) {
+                if (snapshot.cardDefinitionId != null) {
+                    return abilityResolver.getTriggeredAbilitiesFromSnapshot(entityId, snapshot)
+                }
+                return emptyList()
+            }
+        }
+        val card = state.getEntity(entityId)?.get<CardComponent>() ?: return emptyList()
+        return abilityResolver.getTriggeredAbilities(entityId, card.cardDefinitionId, state, statics)
     }
 
     /**

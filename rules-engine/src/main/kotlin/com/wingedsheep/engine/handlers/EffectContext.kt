@@ -553,6 +553,7 @@ data class EffectContext(
         fun forTriggeredAbility(
             ability: TriggeredAbilityOnStackComponent,
             targets: List<ChosenTarget> = emptyList(),
+            alignedTargets: List<ChosenTarget?> = targets,
             targetRequirements: List<TargetRequirement> = emptyList()
         ): EffectContext = EffectContext(
             sourceId = ability.sourceId,
@@ -560,6 +561,7 @@ data class EffectContext(
             granterId = ability.granterId,
             abilityIdentity = ability.abilityIdentity,
             targets = targets,
+            alignedTargets = alignedTargets,
             triggerDamageAmount = ability.triggerDamageAmount,
             triggerCounterCount = ability.triggerCounterCount,
             triggerTotalCounterCount = ability.triggerTotalCounterCount,
@@ -598,7 +600,7 @@ data class EffectContext(
             modeTargetsOrdered = ability.modeTargetsOrdered,
             modeTargetRequirements = ability.modeTargetRequirements,
             pipeline = PipelineState(
-                namedTargets = buildNamedTargets(targetRequirements, targets) +
+                namedTargets = buildNamedTargets(targetRequirements, alignedTargets) +
                     (ability.carriedPipeline?.namedTargets ?: emptyMap()),
                 // Expose a batch trigger's captured permanents (the matching members of a
                 // PermanentsEnteredEvent batch) so a ForEachInCollectionEffect payoff can iterate

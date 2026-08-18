@@ -44,6 +44,7 @@ import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
@@ -198,10 +199,23 @@ class PredicateEvaluator {
             CardPredicate.IsEnchantment -> typeLine?.isEnchantment
             CardPredicate.IsInstant -> typeLine?.isInstant
             CardPredicate.IsSorcery -> typeLine?.isSorcery
+            CardPredicate.IsBasicLand -> typeLine?.isLand == true &&
+                (typeLine.supertypes.contains(Supertype.BASIC) ||
+                    snapshot.supertypes.any { it == Supertype.BASIC.name })
             CardPredicate.IsPlaneswalker -> typeLine?.cardTypes?.contains(CardType.PLANESWALKER)
             CardPredicate.IsPermanent -> typeLine?.isPermanent
-            CardPredicate.IsLegendary -> typeLine?.isLegendary
-            CardPredicate.IsNonlegendary -> typeLine?.isLegendary?.not()
+            CardPredicate.IsLegendary -> when {
+                typeLine?.isLegendary == true -> true
+                Supertype.LEGENDARY in (typeLine?.supertypes ?: emptySet()) -> true
+                Supertype.LEGENDARY.name in snapshot.supertypes -> true
+                typeLine != null || snapshot.supertypes.isNotEmpty() -> false
+                else -> null
+            }
+            CardPredicate.IsNonlegendary -> when (matchesSnapshotPredicate(snapshot, CardPredicate.IsLegendary)) {
+                true -> false
+                false -> true
+                null -> null
+            }
             CardPredicate.IsToken -> snapshot.wasToken
             CardPredicate.IsNontoken -> !snapshot.wasToken
             is CardPredicate.HasSubtype ->

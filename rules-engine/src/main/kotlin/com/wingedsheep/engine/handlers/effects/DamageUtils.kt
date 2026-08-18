@@ -126,7 +126,8 @@ object DamageUtils {
         val id = entityId ?: return null
         if (id !in state.getBattlefield()) return null
         return EntitySnapshot.fromProjection(id, state).copy(
-            typeLine = projectedTypeLine(state, id)
+            typeLine = projectedTypeLine(state, id),
+            cardDefinitionId = state.getEntity(id)?.get<CardComponent>()?.cardDefinitionId,
         )
     }
 

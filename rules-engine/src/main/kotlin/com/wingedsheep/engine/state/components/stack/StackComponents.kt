@@ -439,35 +439,38 @@ data class TargetsComponent(
             targetRequirements = targetRequirements,
             targetEntryStamps = targets.filterIsInstance<ChosenTarget.Permanent>()
                 .filter { it.entityId in state.getBattlefield() }
-                .associate { it.entityId to entryStamp(state, it.entityId) }
+                .mapNotNull { target ->
+                    entryStamp(state, target.entityId)?.let { target.entityId to it }
+                }
+                .toMap()
         )
 
         /**
          * True when [entityId] is no longer the object that was targeted — it left the battlefield
          * and returned between targeting and now (CR 400.7). Ids with no captured stamp (targets
          * chosen off the battlefield, or a stack object built before the stamps existed) are
-         * treated as unchanged.
+         * treated as unproven and therefore different. Target identity is required for
+         * resolution-time authorization; a missing stamp must not silently authorize a target.
          */
         fun isDifferentObject(
             state: GameState,
             entityId: EntityId,
             capturedStamps: Map<EntityId, Long>
         ): Boolean {
-            val captured = capturedStamps[entityId] ?: return false
-            return entryStamp(state, entityId) != captured
+            val captured = capturedStamps[entityId] ?: return true
+            val current = entryStamp(state, entityId) ?: return true
+            return current != captured
         }
 
         /**
-         * The permanent's battlefield-entry stamp, or 0 for a permanent that never got one —
-         * boards assembled directly (test fixtures) rather than through a real ETB. Capture and
-         * comparison read it the same way, so an unstamped permanent still registers as a new
-         * object once it re-enters for real.
+         * The permanent's battlefield-entry stamp, or null when a fixture/entity has no
+         * verifiable battlefield incarnation. Missing stamps are deliberately not identity
+         * evidence during target revalidation.
          */
-        private fun entryStamp(state: GameState, entityId: EntityId): Long =
+        private fun entryStamp(state: GameState, entityId: EntityId): Long? =
             state.getEntity(entityId)
                 ?.get<com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent>()
                 ?.timestamp
-                ?: 0L
     }
 }
 

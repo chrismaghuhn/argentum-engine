@@ -2852,6 +2852,7 @@ class StackResolver(
             targets = chosenTargets,
             targetRequirements = targetReqs
         )
+        var resolutionContext = context
 
         // CR 603.4 / 608.2a: an intervening-if condition is checked before the target legality
         // check in 608.2b. If it is false, the ability leaves the stack without validating targets
@@ -2908,10 +2909,19 @@ class StackResolver(
                     )
                 )
             }
+            // The intervening-if check above intentionally saw the original chosen targets, but
+            // effect execution must not retain a target that CR 608.2b just rejected. Rebuild the
+            // context so both positional targets and named target bindings use only legal choices.
+            resolutionContext = EffectContext.forTriggeredAbility(
+                abilityComponent,
+                targets = validTargets,
+                alignedTargets = buildAlignedValidated(chosenTargets, validTargets),
+                targetRequirements = targetReqs,
+            )
         }
 
         // Execute the effect after CR 608.2a and CR 608.2b have both passed.
-        val effectResult = effectHandler.execute(state, abilityComponent.effect, context)
+        val effectResult = effectHandler.execute(state, abilityComponent.effect, resolutionContext)
 
         // If effect is paused awaiting a decision, return paused state
         // The ability entity stays removed (it's off the stack), but the decision must resolve

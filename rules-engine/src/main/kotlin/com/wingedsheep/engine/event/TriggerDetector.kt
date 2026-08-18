@@ -47,6 +47,7 @@ import com.wingedsheep.engine.state.components.identity.RoomFaceId
 import com.wingedsheep.engine.state.components.identity.RoomFaceStatics
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.sdk.core.CounterType
@@ -1175,6 +1176,16 @@ class TriggerDetector(
 
             for (ability in entry.abilities) {
                 if (Zone.BATTLEFIELD !in ability.activeZones) continue
+                // A damage event can outlive the object that received it while the engine reuses
+                // the same entity id for a replacement permanent. The replacement is not the
+                // SELF-bound DamageReceived observer that saw the event; its event-time LKI is
+                // dispatched by DamageTriggerDetector below instead.
+                if (event is DamageDealtEvent &&
+                    ability.binding == TriggerBinding.SELF &&
+                    ability.trigger is EventPattern.DamageReceivedEvent &&
+                    entityId == event.targetId &&
+                    damageRecipientIsNotEventObject(state, event)
+                ) continue
                 val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
                     trigger = ability.trigger,
                     binding = ability.binding,
@@ -1652,7 +1663,9 @@ class TriggerDetector(
 
         // Handle damage-received triggers for creatures no longer on the battlefield
         // (e.g., Broodhatch Nantuko dies from combat damage but trigger still fires)
-        if (event is DamageDealtEvent && event.targetId !in state.getBattlefield()) {
+        if (event is DamageDealtEvent &&
+            (event.targetId !in state.getBattlefield() || damageRecipientIsNotEventObject(state, event))
+        ) {
             damageDetector.detectDamageReceivedTriggers(state, index.statics, event, triggers)
         }
 
@@ -1720,6 +1733,18 @@ class TriggerDetector(
 
         return triggers
     }
+
+    /**
+     * True when a recipient snapshot explicitly proves that the current id is not the object that
+     * was damaged. A missing snapshot is legacy/unknown input and does not authorize replacing the
+     * ordinary live-index path; a present mismatched stamp must use LKI or fail closed.
+     */
+    private fun damageRecipientIsNotEventObject(
+        state: GameState,
+        event: DamageDealtEvent,
+    ): Boolean = event.damageRecipientLastKnownSnapshot?.let { snapshot ->
+        !state.isCapturedBattlefieldObjectLive(event.targetId, snapshot)
+    } == true
 
     /**
      * Detect a [EventPattern.BecomesUnattachedEvent] trigger on an attachment that is no longer on

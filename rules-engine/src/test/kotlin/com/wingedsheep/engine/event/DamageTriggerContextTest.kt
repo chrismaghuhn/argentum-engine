@@ -29,9 +29,11 @@ import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.identity.RingBearerComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
@@ -147,6 +149,234 @@ class DamageTriggerContextTest : FunSpec({
         context.triggeringPlayerId shouldBe EntityId("recipient-player")
         context.damageSourceEntityId shouldBe sourceId
         context.damageRecipientEntityId shouldBe recipientId
+    }
+
+    test("damage source SELF discovery uses deleted token event LKI") {
+        val controllerId = EntityId("deleted-token-controller")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("deleted-token-source-damage"),
+            trigger = EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+            ),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().apply {
+            register("deleted-token-source", listOf(ability))
+        }
+        val sourceSnapshot = EntitySnapshot(
+            entityId = sourceId,
+            name = "Deleted Token Source",
+            cardDefinitionId = "deleted-token-source",
+            controllerId = controllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            wasToken = true,
+            battlefieldEntryTimestamp = 100L,
+        )
+        val event = damageEvent.copy(
+            sourceId = sourceId,
+            damageSourceLastKnownSnapshot = sourceSnapshot,
+            recipientKind = DamageRecipientKind.CREATURE,
+            recipientKinds = DamageRecipientKindSet.CREATURE,
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+        val detector = DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+
+        detector.detectDamageSourceTriggers(
+            state = GameState(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = event,
+            triggers = triggers,
+            projected = GameState().projectedState,
+        )
+
+        triggers shouldHaveSize 1
+        triggers.single().ability shouldBe ability
+        triggers.single().sourceName shouldBe "Deleted Token Source"
+        triggers.single().controllerId shouldBe controllerId
+    }
+
+    test("top-level detector discovers the old source after same-id replacement") {
+        val oldControllerId = EntityId("detector-old-source-controller")
+        val replacementControllerId = EntityId("detector-replacement-source-controller")
+        val oldAbility = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("detector-old-source-damage"),
+            trigger = EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+            ),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val replacementAbility = oldAbility.copy(id = AbilityId("detector-replacement-source-damage"))
+        val abilityRegistry = AbilityRegistry().apply {
+            register("detector-old-source", listOf(oldAbility))
+            register("detector-replacement-source", listOf(replacementAbility))
+        }
+        val oldSnapshot = EntitySnapshot(
+            entityId = sourceId,
+            name = "Detector Old Source",
+            cardDefinitionId = "detector-old-source",
+            controllerId = oldControllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            battlefieldEntryTimestamp = 220L,
+        )
+        val replacement = CardComponent(
+            cardDefinitionId = "detector-replacement-source",
+            name = "Detector Replacement Source",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            baseStats = CreatureStats(2, 2),
+        )
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(replacementControllerId, Zone.BATTLEFIELD) to listOf(sourceId),
+            ),
+            turnOrder = listOf(oldControllerId, replacementControllerId),
+        ).withEntity(
+            sourceId,
+            ComponentContainer.of(
+                replacement,
+                ControllerComponent(replacementControllerId),
+                BattlefieldEntryTimestampComponent(221L),
+            ),
+        )
+        val event = damageEvent.copy(
+            sourceId = sourceId,
+            recipientKind = DamageRecipientKind.CREATURE,
+            recipientKinds = DamageRecipientKindSet.CREATURE,
+            damageSourceLastKnownSnapshot = oldSnapshot,
+        )
+
+        val triggers = TriggerDetector(CardRegistry(), abilityRegistry)
+            .detectTriggers(state, listOf(event))
+
+        triggers shouldHaveSize 1
+        triggers.single().ability shouldBe oldAbility
+        triggers.single().sourceName shouldBe "Detector Old Source"
+        triggers.single().controllerId shouldBe oldControllerId
+    }
+
+    test("damage received SELF discovery uses the old definition after same-id replacement") {
+        val oldControllerId = EntityId("old-recipient-controller")
+        val replacementControllerId = EntityId("replacement-recipient-controller")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("old-recipient-damage"),
+            trigger = EventPattern.DamageReceivedEvent(),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().apply {
+            register("old-recipient", listOf(ability))
+        }
+        val oldSnapshot = EntitySnapshot(
+            entityId = recipientId,
+            name = "Old Recipient",
+            cardDefinitionId = "old-recipient",
+            controllerId = oldControllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            battlefieldEntryTimestamp = 200L,
+        )
+        val replacement = CardComponent(
+            cardDefinitionId = "replacement-recipient",
+            name = "Replacement Recipient",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            baseStats = CreatureStats(2, 2),
+        )
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(replacementControllerId, Zone.BATTLEFIELD) to listOf(recipientId),
+            ),
+        ).withEntity(
+            recipientId,
+            ComponentContainer.of(
+                replacement,
+                ControllerComponent(replacementControllerId),
+                BattlefieldEntryTimestampComponent(201L),
+            ),
+        )
+        val event = damageEvent.copy(
+            targetId = recipientId,
+            recipientKind = DamageRecipientKind.CREATURE,
+            recipientKinds = DamageRecipientKindSet.CREATURE,
+            damageRecipientLastKnownSnapshot = oldSnapshot,
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+        val detector = DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+
+        detector.detectDamageReceivedTriggers(
+            state = state,
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = event,
+            triggers = triggers,
+        )
+
+        triggers shouldHaveSize 1
+        triggers.single().ability shouldBe ability
+        triggers.single().sourceName shouldBe "Old Recipient"
+        triggers.single().controllerId shouldBe oldControllerId
+    }
+
+    test("top-level detector discovers the old recipient after same-id replacement") {
+        val oldControllerId = EntityId("detector-old-recipient-controller")
+        val replacementControllerId = EntityId("detector-replacement-recipient-controller")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("detector-old-recipient-damage"),
+            trigger = EventPattern.DamageReceivedEvent(),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().apply {
+            register("detector-old-recipient", listOf(ability))
+        }
+        val oldSnapshot = EntitySnapshot(
+            entityId = recipientId,
+            name = "Detector Old Recipient",
+            cardDefinitionId = "detector-old-recipient",
+            controllerId = oldControllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            battlefieldEntryTimestamp = 210L,
+        )
+        val replacement = CardComponent(
+            cardDefinitionId = "detector-replacement-recipient",
+            name = "Detector Replacement Recipient",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            baseStats = CreatureStats(2, 2),
+        )
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(replacementControllerId, Zone.BATTLEFIELD) to listOf(recipientId),
+            ),
+            turnOrder = listOf(oldControllerId, replacementControllerId),
+        ).withEntity(
+            recipientId,
+            ComponentContainer.of(
+                replacement,
+                ControllerComponent(replacementControllerId),
+                BattlefieldEntryTimestampComponent(211L),
+            ),
+        )
+        val event = damageEvent.copy(
+            targetId = recipientId,
+            recipientKind = DamageRecipientKind.CREATURE,
+            recipientKinds = DamageRecipientKindSet.CREATURE,
+            damageRecipientLastKnownSnapshot = oldSnapshot,
+        )
+
+        val triggers = TriggerDetector(CardRegistry(), abilityRegistry)
+            .detectTriggers(state, listOf(event))
+
+        triggers shouldHaveSize 1
+        triggers.single().ability shouldBe ability
+        triggers.single().sourceName shouldBe "Detector Old Recipient"
+        triggers.single().controllerId shouldBe oldControllerId
     }
 
     test("source-filtered damage fails closed when the event source is unknown") {
@@ -326,6 +556,84 @@ class DamageTriggerContextTest : FunSpec({
 
         resolved.error shouldBe null
         resolved.state.getEntity(controllerId)?.get<LifeTotalComponent>()?.life shouldBe 25
+    }
+
+    test("triggered target revalidation drops an illegal slot without shifting it") {
+        val controllerId = EntityId("partial-target-controller")
+        val removedTargetId = EntityId("partial-target-removed")
+        val legalTargetId = EntityId("partial-target-legal")
+        val battlefield = ZoneKey(controllerId, Zone.BATTLEFIELD)
+        val creature = { name: String ->
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = name,
+                    name = name,
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                    baseStats = CreatureStats(2, 2),
+                ),
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(
+                    if (name == "removed-target") 501L else 502L,
+                ),
+            )
+        }
+        val initialState = GameState(
+            zones = mapOf(battlefield to listOf(removedTargetId, legalTargetId)),
+            turnOrder = listOf(controllerId),
+        )
+            .withEntity(
+                controllerId,
+                ComponentContainer.of(PlayerComponent("Partial Target Controller"), LifeTotalComponent(20)),
+            )
+            .withEntity(removedTargetId, creature("removed-target"))
+            .withEntity(legalTargetId, creature("legal-target"))
+        val ability = TriggeredAbilityOnStackComponent(
+            sourceId = EntityId("partial-target-source"),
+            sourceName = "Partial target source",
+            controllerId = controllerId,
+            effect = Effects.Tap(EffectTarget.ContextTarget(0)),
+            description = "Tap the selected target",
+        )
+        val resolver = StackResolver(CardRegistry())
+        val putResult = resolver.putTriggeredAbility(
+            state = initialState,
+            ability = ability,
+            targets = listOf(
+                ChosenTarget.Permanent(removedTargetId),
+                ChosenTarget.Permanent(legalTargetId),
+            ),
+        )
+        putResult.error shouldBe null
+
+        val resolved = resolver.resolveTop(putResult.state.removeEntity(removedTargetId))
+
+        resolved.error shouldBe null
+        resolved.state.getBattlefield() shouldBe setOf(legalTargetId)
+        resolved.state.getEntity(legalTargetId)?.has<TappedComponent>() shouldBe false
+    }
+
+    test("missing target entry stamps fail closed during identity revalidation") {
+        val controllerId = EntityId("unstamped-target-controller")
+        val targetId = EntityId("unstamped-target")
+        val state = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(targetId)),
+        ).withEntity(
+            targetId,
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = "unstamped-target-card",
+                    name = "Unstamped Target",
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                    baseStats = CreatureStats(2, 2),
+                ),
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(300L),
+            ),
+        )
+
+        TargetsComponent.isDifferentObject(state, targetId, emptyMap()) shouldBe true
     }
 
     test("heterogeneous damage batches keep the matching source-recipient pair") {
@@ -1521,6 +1829,30 @@ class DamageTriggerContextTest : FunSpec({
             GameState(),
             controllerId,
         ) shouldBe false
+    }
+
+    test("damage LKI basic-land predicates read projected supertypes") {
+        val snapshot = EntitySnapshot(
+            entityId = sourceId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+            supertypes = setOf(Supertype.BASIC.name),
+            battlefieldEntryTimestamp = 401L,
+        )
+        val event = damageEvent.copy(
+            sourceId = sourceId,
+            damageSourceLastKnownSnapshot = snapshot,
+        )
+
+        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter(
+                    cardPredicates = listOf(CardPredicate.IsBasicLand),
+                ),
+            ),
+            event,
+            GameState(),
+        ) shouldBe true
     }
 
     test("unknown damage recipient role never becomes a player from a reused id") {
