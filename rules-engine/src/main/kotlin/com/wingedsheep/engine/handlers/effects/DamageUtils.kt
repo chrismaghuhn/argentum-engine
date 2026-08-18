@@ -1451,7 +1451,8 @@ object DamageUtils {
             recipientId = targetId,
             amount = damageAmount,
             linkId = mod.linkId,
-            sourceName = sourceName
+            sourceName = sourceName,
+            sourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
         )
         // preventDamage = true (Deflecting Palm): damage is prevented — short-circuit. preventDamage
         // = false (Eye for an Eye): the reaction fires but the damage still proceeds.

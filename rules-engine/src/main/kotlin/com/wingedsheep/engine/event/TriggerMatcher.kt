@@ -1552,6 +1552,43 @@ class TriggerMatcher(
     }
 
     /**
+     * Match the source clause of a [EventPattern.DamageReceivedEvent] from the event-time source
+     * characteristics. Source-blind `Any` deliberately accepts an unknown source; every concrete
+     * source clause requires a stamped snapshot and never consults a mutable same-id entity.
+     * Direct damage-received dispatch currently defines only creature and spell source vocabulary;
+     * unsupported concrete clauses fail closed until their event-time semantics are modeled.
+     */
+    fun matchesDamageReceivedSource(
+        source: SourceFilter,
+        event: DamageDealtEvent,
+    ): Boolean {
+        if (source == SourceFilter.Any) return true
+        val snapshot = stampedDamageSourceSnapshot(event) ?: return false
+        val typeLine = snapshot.typeLine ?: return false
+        return when (source) {
+            SourceFilter.Creature -> typeLine.isCreature && !snapshot.wasFaceDown
+            SourceFilter.Spell ->
+                (typeLine.isInstant || typeLine.isSorcery) && !snapshot.wasFaceDown
+            else -> false
+        }
+    }
+
+    /**
+     * Match a concrete ATTACHED source identity. The attachment index supplies the host id, but
+     * that id is not an object identity: require the event-time source snapshot's battlefield
+     * entry stamp to prove it is still the attached host rather than a same-id replacement.
+     */
+    fun matchesAttachedDamageSourceIdentity(
+        attachedEntityId: EntityId,
+        event: DamageDealtEvent,
+        state: GameState,
+    ): Boolean {
+        if (event.sourceId != attachedEntityId) return false
+        val snapshot = stampedDamageSourceSnapshot(event) ?: return false
+        return state.isCapturedBattlefieldObjectLive(attachedEntityId, snapshot)
+    }
+
+    /**
      * Whether the *source* of [event] matches [sourceFilter], evaluated relative to [controllerId]
      * so controller-relative predicates ("a source you control" / "an opponent controls") read from
      * the observing permanent's controller. A null filter matches every source — "whenever you're

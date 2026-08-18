@@ -268,7 +268,9 @@ data class DamagePreventedEvent(
     val recipientId: EntityId,
     val amount: Int,
     val linkId: String,
-    val sourceName: String? = null
+    val sourceName: String? = null,
+    /** Event-time identity/LKI for the source watched by the linked delayed trigger. */
+    val sourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
 ) : GameEvent
 
 /**

@@ -178,11 +178,12 @@ class AttachmentTriggerDetector(
             is EventPattern.DamageReceivedEvent -> {
                 event is DamageDealtEvent &&
                     event.targetId == attachedEntityId &&
-                    matcher.matchesDamageRecipientIdentity(event)
+                    matcher.matchesDamageRecipientIdentity(event) &&
+                    matcher.matchesDamageReceivedSource(trigger.source, event)
             }
             is EventPattern.DealsDamageEvent -> {
                 event is DamageDealtEvent &&
-                    event.sourceId == attachedEntityId &&
+                    matcher.matchesAttachedDamageSourceIdentity(attachedEntityId, event, state) &&
                     matcher.matchesDealsDamageTrigger(trigger, event, state, auraControllerId)
             }
             is EventPattern.AttackEvent -> {
@@ -251,6 +252,9 @@ class AttachmentTriggerDetector(
         trigger: EventPattern,
     ): TriggerContext? {
         return when {
+            event is DamageDealtEvent && trigger is EventPattern.DamageReceivedEvent &&
+                trigger.source != com.wingedsheep.sdk.scripting.events.SourceFilter.Any ->
+                TriggerContext.fromSourceFilteredDamageEvent(event)
             event is DamageDealtEvent && trigger is EventPattern.DealsDamageEvent &&
                 trigger.sourceFilter != null -> TriggerContext.fromSourceFilteredDamageEvent(event)
             event is DamageDealtEvent -> TriggerContext.fromEvent(event)

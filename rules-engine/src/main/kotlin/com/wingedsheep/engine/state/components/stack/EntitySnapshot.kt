@@ -310,6 +310,30 @@ fun EntitySnapshot?.stampedFor(entityId: EntityId): EntitySnapshot? =
     this?.takeIf { it.isStampedFor(entityId) }
 
 /**
+ * Whether two event-time snapshots describe the same object incarnation. A matching entity id is
+ * not sufficient: this engine reuses ids across zone changes, and a missing stamp is therefore
+ * unknown rather than an implicit match. Battlefield entry stamps take precedence over the
+ * zone-independent object stamp so a stack object can never match a battlefield replacement that
+ * happens to have the same numeric timestamp.
+ */
+fun EntitySnapshot?.matchesIncarnation(
+    other: EntitySnapshot?,
+    entityId: EntityId,
+): Boolean {
+    val expected = this.stampedFor(entityId) ?: return false
+    val actual = other.stampedFor(entityId) ?: return false
+    return if (expected.battlefieldEntryTimestamp != null || actual.battlefieldEntryTimestamp != null) {
+        expected.battlefieldEntryTimestamp != null &&
+            actual.battlefieldEntryTimestamp != null &&
+            expected.battlefieldEntryTimestamp == actual.battlefieldEntryTimestamp
+    } else {
+        expected.objectIncarnationStamp != null &&
+            actual.objectIncarnationStamp != null &&
+            expected.objectIncarnationStamp == actual.objectIncarnationStamp
+    }
+}
+
+/**
  * The permanent's **projected** type line: its printed types overlaid with whatever continuous
  * effects have granted or replaced (an animated artifact reads "Artifact Creature", a Vehicle
  * crewed this turn reads "Artifact Creature — Vehicle"). Falls back to the printed type line when

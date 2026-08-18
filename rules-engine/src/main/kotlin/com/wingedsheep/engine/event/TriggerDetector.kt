@@ -48,6 +48,7 @@ import com.wingedsheep.engine.state.components.identity.RoomFaceStatics
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.matchesIncarnation
 import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.ComponentContainer
@@ -873,6 +874,8 @@ class TriggerDetector(
                         delayed.sourceId,
                         delayed.controllerId,
                         state,
+                        delayed.watchedEntitySnapshot,
+                        delayed.watchedRecipientSnapshot,
                     )
                 ) continue
 
@@ -1072,7 +1075,9 @@ class TriggerDetector(
         delayedId: String,
         sourceId: EntityId,
         controllerId: EntityId,
-        state: GameState
+        state: GameState,
+        watchedEntitySnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+        watchedRecipientSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     ): Boolean {
         val specEvent = spec.event
         return when (specEvent) {
@@ -1103,16 +1108,41 @@ class TriggerDetector(
                 matcher.matchesTrigger(specEvent, spec.binding, event, sourceId, controllerId, state)
             is com.wingedsheep.sdk.scripting.EventPattern.DealsDamageEvent -> {
                 if (event !is com.wingedsheep.engine.core.DamageDealtEvent) return false
-                if (watchedEntityId != null && event.sourceId != watchedEntityId) return false
+                if (watchedEntityId != null &&
+                    (event.sourceId != watchedEntityId ||
+                        !watchedEntitySnapshot.matchesIncarnation(event.damageSourceLastKnownSnapshot, watchedEntityId))
+                ) return false
                 // Recipient-scoped ("…to *that player* this turn"): the damaged entity must be
                 // the baked recipient. The spec's recipient filter still applies on top.
-                if (watchedRecipientId != null && event.targetId != watchedRecipientId) return false
+                if (watchedRecipientId != null) {
+                    if (event.targetId != watchedRecipientId) return false
+                    val recipientKinds = event.effectiveRecipientKinds
+                    val hasPermanentRole = recipientKinds.contains(DamageRecipientKind.CREATURE) ||
+                        recipientKinds.contains(DamageRecipientKind.PLANESWALKER) ||
+                        recipientKinds.contains(DamageRecipientKind.BATTLE) ||
+                        recipientKinds.contains(DamageRecipientKind.OTHER)
+                    if (hasPermanentRole &&
+                        !watchedRecipientSnapshot.matchesIncarnation(
+                            event.damageRecipientLastKnownSnapshot,
+                            watchedRecipientId,
+                        )
+                    ) return false
+                    if (!hasPermanentRole && !recipientKinds.contains(DamageRecipientKind.PLAYER)) return false
+                }
                 matcher.matchesDealsDamageTrigger(specEvent, event, state, controllerId)
             }
             // "When damage is prevented this way": fires only for this delayed trigger's own
             // shield, matched by the linkId echoed back on the DamagePreventedEvent.
             is com.wingedsheep.sdk.scripting.EventPattern.DamagePreventedEvent -> {
-                event is com.wingedsheep.engine.core.DamagePreventedEvent && event.linkId == delayedId
+                event is com.wingedsheep.engine.core.DamagePreventedEvent &&
+                    event.linkId == delayedId &&
+                    (watchedEntityId == null || (
+                        event.sourceId == watchedEntityId &&
+                            watchedEntitySnapshot.matchesIncarnation(
+                                event.sourceLastKnownSnapshot,
+                                watchedEntityId,
+                            )
+                        ))
             }
             // "When you play a card this way": fires only for the may-play permission that this
             // delayed trigger is linked to, matched by the linkId echoed on the event.
@@ -1126,6 +1156,7 @@ class TriggerDetector(
                     // entity already narrows the trigger, so we only check the zone transition —
                     // the spec's GameObjectFilter does not apply.
                     if (event.entityId != watchedEntityId) return false
+                    if (!watchedEntitySnapshot.matchesIncarnation(event.lastKnown, watchedEntityId)) return false
                     if (specEvent.from != null && event.fromZone != specEvent.from) return false
                     if (specEvent.to != null && event.toZone != specEvent.to) return false
                     if (specEvent.excludeTo != null && event.toZone == specEvent.excludeTo) return false

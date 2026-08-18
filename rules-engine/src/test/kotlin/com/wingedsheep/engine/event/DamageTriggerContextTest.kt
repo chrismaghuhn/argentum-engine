@@ -53,6 +53,7 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
+import com.wingedsheep.sdk.scripting.TriggerSpec
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.StatePredicate
@@ -873,10 +874,190 @@ class DamageTriggerContextTest : FunSpec({
         )
         val triggers = mutableListOf<PendingTrigger>()
 
-        detector.detectAttachmentTriggers(GameState(), damageEvent, triggers, index)
+        val sourceState = GameState(
+            zones = mapOf(
+                ZoneKey(EntityId("attached-source-controller"), Zone.BATTLEFIELD) to listOf(sourceId),
+            ),
+        ).withEntity(
+            sourceId,
+            ComponentContainer.of(BattlefieldEntryTimestampComponent(1L)),
+        )
+        detector.detectAttachmentTriggers(sourceState, damageEvent, triggers, index)
 
         triggers.single().triggerContext.triggeringEntityId shouldBe sourceId
         triggers.single().triggerContext.damageRecipientEntityId shouldBe recipientId
+    }
+
+    test("attached damage-received source binding rejects wrong, missing, and unstamped sources") {
+        val attachmentId = EntityId("attached-damage-received-source-binding")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("attached-damage-received-source-binding-ability"),
+            trigger = EventPattern.DamageReceivedEvent(source = SourceFilter.Creature),
+            binding = TriggerBinding.ATTACHED,
+            effect = Effects.DrawCards(1),
+        )
+        val attachment = TriggerIndex.IndexedEntity(
+            entityId = attachmentId,
+            cardComponent = CardComponent(
+                cardDefinitionId = "attached-damage-received-source-binding-card",
+                name = "Attached Damage Received Source Binding",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+            ),
+            controllerId = EntityId("attached-damage-received-source-controller"),
+            abilities = listOf(ability),
+        )
+        val index = TriggerIndex(
+            byCategory = emptyMap(),
+            aurasByTarget = mapOf(recipientId to listOf(attachment)),
+            grantProviders = emptyList(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            damageToYouObservers = emptyList(),
+            subtypeDamageObservers = emptyList(),
+            damageObservers = emptyList(),
+            creatureDamageDeathTrackers = emptyList(),
+        )
+        val detector = AttachmentTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+
+        fun detect(event: DamageDealtEvent): List<PendingTrigger> {
+            val triggers = mutableListOf<PendingTrigger>()
+            detector.detectAttachmentTriggers(GameState(), event, triggers, index)
+            return triggers
+        }
+
+        detect(damageEvent).single().triggerContext.triggeringEntityId shouldBe sourceId
+        detect(
+            damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    typeLine = TypeLine(cardTypes = setOf(CardType.INSTANT)),
+                ),
+            ),
+        ) shouldBe emptyList()
+        detect(damageEvent.copy(damageSourceLastKnownSnapshot = null)) shouldBe emptyList()
+        detect(
+            damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    battlefieldEntryTimestamp = null,
+                    objectIncarnationStamp = null,
+                ),
+            ),
+        ) shouldBe emptyList()
+    }
+
+    test("attached deals-damage source identity requires the attached incarnation stamp") {
+        val attachmentId = EntityId("attached-deals-damage-source-binding")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("attached-deals-damage-source-binding-ability"),
+            trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            binding = TriggerBinding.ATTACHED,
+            effect = Effects.DrawCards(1),
+        )
+        val attachment = TriggerIndex.IndexedEntity(
+            entityId = attachmentId,
+            cardComponent = CardComponent(
+                cardDefinitionId = "attached-deals-damage-source-binding-card",
+                name = "Attached Deals Damage Source Binding",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+            ),
+            controllerId = EntityId("attached-deals-damage-source-controller"),
+            abilities = listOf(ability),
+        )
+        val index = TriggerIndex(
+            byCategory = emptyMap(),
+            aurasByTarget = mapOf(sourceId to listOf(attachment)),
+            grantProviders = emptyList(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            damageToYouObservers = emptyList(),
+            subtypeDamageObservers = emptyList(),
+            damageObservers = emptyList(),
+            creatureDamageDeathTrackers = emptyList(),
+        )
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(EntityId("attached-deals-damage-source-controller"), Zone.BATTLEFIELD) to
+                    listOf(sourceId),
+            ),
+        ).withEntity(
+            sourceId,
+            ComponentContainer.of(BattlefieldEntryTimestampComponent(1L)),
+        )
+        val detector = AttachmentTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+
+        fun detect(event: DamageDealtEvent): List<PendingTrigger> {
+            val triggers = mutableListOf<PendingTrigger>()
+            detector.detectAttachmentTriggers(state, event, triggers, index)
+            return triggers
+        }
+
+        detect(damageEvent).single().triggerContext.triggeringEntityId shouldBe recipientId
+        detect(
+            damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    battlefieldEntryTimestamp = 9L,
+                    objectIncarnationStamp = 9L,
+                ),
+            ),
+        ) shouldBe emptyList()
+        detect(damageEvent.copy(damageSourceLastKnownSnapshot = null)) shouldBe emptyList()
+        detect(
+            damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    battlefieldEntryTimestamp = null,
+                    objectIncarnationStamp = null,
+                ),
+            ),
+        ) shouldBe emptyList()
+    }
+
+    test("delayed damage watcher does not match a same-id replacement") {
+        val controllerId = EntityId("delayed-damage-watcher-controller")
+        val delayedId = "delayed-damage-watcher-same-id"
+        val delayed = DelayedTriggeredAbility(
+            id = delayedId,
+            effect = Effects.DrawCards(1),
+            sourceId = controllerId,
+            sourceName = "Delayed Damage Watcher",
+            controllerId = controllerId,
+            trigger = TriggerSpec(
+                event = EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+                binding = TriggerBinding.ANY,
+            ),
+            watchedEntityId = sourceId,
+            watchedEntitySnapshot = damageEvent.damageSourceLastKnownSnapshot,
+            fireOnce = true,
+        )
+        val state = GameState(
+            delayedTriggers = listOf(delayed),
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(recipientId)),
+        )
+        val detector = TriggerDetector(CardRegistry())
+
+        detector.detectTriggers(state, listOf(damageEvent))
+            .filter { it.consumesDelayedTriggerId == delayedId }
+            .shouldHaveSize(1)
+
+        val replacementEvent = damageEvent.copy(
+            damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                battlefieldEntryTimestamp = 99L,
+                objectIncarnationStamp = 99L,
+            ),
+        )
+        detector.detectTriggers(state, listOf(replacementEvent))
+            .filter { it.consumesDelayedTriggerId == delayedId } shouldBe emptyList()
+        detector.detectTriggers(
+            state,
+            listOf(damageEvent.copy(damageSourceLastKnownSnapshot = null)),
+        ).filter { it.consumesDelayedTriggerId == delayedId } shouldBe emptyList()
+
+        val encoded = json.encodeToString(DelayedTriggeredAbility.serializer(), delayed)
+        json.decodeFromString(DelayedTriggeredAbility.serializer(), encoded) shouldBe delayed
     }
 
     test("stack target revalidation preserves damage LKI for predicates and dynamic properties") {

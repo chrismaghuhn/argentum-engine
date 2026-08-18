@@ -5,9 +5,12 @@ import com.wingedsheep.engine.event.DelayedTriggeredAbility
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.isStampedFor
 import com.wingedsheep.sdk.scripting.effects.AddColorlessManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddCountersEffect
 import com.wingedsheep.sdk.scripting.effects.AddDynamicCountersEffect
@@ -79,6 +82,13 @@ class CreateDelayedTriggerExecutor : EffectExecutor<CreateDelayedTriggerEffect> 
         // For event-based delayed triggers, bake the watched target into a concrete
         // entity id so matching later is cheap and doesn't need the original context.
         val watchedEntityId = effect.watchedTarget?.let { context.resolveTarget(it) }
+        val watchedEntitySnapshot = captureWatchedSnapshot(
+            state = state,
+            entityId = watchedEntityId,
+            damageRoleId = context.damageSourceEntityId,
+            damageRoleSnapshot = context.damageSourceLastKnownSnapshot,
+            otherDamageRoleId = context.damageRecipientEntityId,
+        )
 
         // Recipient-scoped delayed triggers ("…deals combat damage to *that player* this turn"):
         // resolve the chosen recipient (e.g. ContextTarget(0) for the targeted opponent) into a
@@ -86,6 +96,13 @@ class CreateDelayedTriggerExecutor : EffectExecutor<CreateDelayedTriggerEffect> 
         val watchedRecipientId = effect.watchedRecipient?.let {
             context.resolvePlayerTarget(it) ?: context.resolveTarget(it)
         }
+        val watchedRecipientSnapshot = captureWatchedSnapshot(
+            state = state,
+            entityId = watchedRecipientId,
+            damageRoleId = context.damageRecipientEntityId,
+            damageRoleSnapshot = context.damageRecipientLastKnownSnapshot,
+            otherDamageRoleId = context.damageSourceEntityId,
+        )
 
         // For step-based delayed triggers that restrict to a specific player's turn (e.g.
         // Nafs Asp's "at the beginning of their next draw step"): resolve the player target
@@ -150,7 +167,9 @@ class CreateDelayedTriggerExecutor : EffectExecutor<CreateDelayedTriggerEffect> 
             controllerId = context.controllerId,
             trigger = resolvedTrigger,
             watchedEntityId = watchedEntityId,
+            watchedEntitySnapshot = watchedEntitySnapshot,
             watchedRecipientId = watchedRecipientId,
+            watchedRecipientSnapshot = watchedRecipientSnapshot,
             expiry = expiry,
             fireOnce = effect.trigger != null && effect.fireOnce,
             repeatAtEachMatchingStep = effect.trigger == null && effect.repeatAtEachMatchingStep,
@@ -161,6 +180,27 @@ class CreateDelayedTriggerExecutor : EffectExecutor<CreateDelayedTriggerEffect> 
         )
 
         return EffectResult.success(state.addDelayedTrigger(delayedTrigger))
+    }
+
+    /**
+     * Freeze the identity of a concrete delayed watcher. If the id belongs to a damage role in
+     * the originating context, only that role's stamped event snapshot is authoritative; falling
+     * back to the current state would let a malformed event or same-id replacement masquerade as
+     * the damage object. Other concrete targets are captured from the current projected state.
+     */
+    private fun captureWatchedSnapshot(
+        state: GameState,
+        entityId: com.wingedsheep.sdk.model.EntityId?,
+        damageRoleId: com.wingedsheep.sdk.model.EntityId?,
+        damageRoleSnapshot: EntitySnapshot?,
+        otherDamageRoleId: com.wingedsheep.sdk.model.EntityId?,
+    ): EntitySnapshot? {
+        val id = entityId ?: return null
+        if (id == damageRoleId) {
+            return damageRoleSnapshot?.takeIf { it.isStampedFor(id) }
+        }
+        if (id == otherDamageRoleId) return null
+        return DamageUtils.captureDamageEntitySnapshot(state, id)
     }
 
     /**
