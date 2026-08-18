@@ -34,11 +34,14 @@ import com.wingedsheep.sdk.scripting.conditions.SourceChosenModeIs
 import com.wingedsheep.sdk.scripting.conditions.WaterbendWasPaid
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.DealDamagePerEntityInZoneEffect
+import com.wingedsheep.sdk.scripting.effects.CreateTokenEffect
 import com.wingedsheep.sdk.scripting.effects.EmitBendEventEffect
 import com.wingedsheep.sdk.scripting.effects.EmitTrainedEventEffect
+import com.wingedsheep.sdk.scripting.effects.GrantTriggeredAbilityEffect
 import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetOther
@@ -780,6 +783,82 @@ class TriggerOrderingTest : FunSpec({
 
         TriggerOrderingKey.forTrigger(driver.state, first) shouldBe
             TriggerOrderingKey.forTrigger(driver.state, second)
+    }
+
+    test("TO-22l: nested generated ability handles do not change semantic identity") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "nested-ability")
+        val nestedFirst = base.ability.copy(id = AbilityId("nested-ability-1"))
+        val nestedSecond = base.ability.copy(id = AbilityId("nested-ability-2"))
+        val first = base.copy(
+            ability = base.ability.copy(
+                effect = GrantTriggeredAbilityEffect(nestedFirst, EffectTarget.Self)
+            )
+        )
+        val second = base.copy(
+            ability = base.ability.copy(
+                effect = GrantTriggeredAbilityEffect(nestedSecond, EffectTarget.Self)
+            )
+        )
+
+        TriggerOrderingKey.forTrigger(driver.state, first) shouldBe
+            TriggerOrderingKey.forTrigger(driver.state, second)
+
+        val firstToken = base.copy(
+            ability = base.ability.copy(
+                effect = CreateTokenEffect(
+                    count = DynamicAmount.Fixed(1),
+                    power = 1,
+                    toughness = 1,
+                    colors = emptySet(),
+                    creatureTypes = emptySet(),
+                    triggeredAbilities = listOf(nestedFirst)
+                )
+            )
+        )
+        val secondToken = base.copy(
+            ability = base.ability.copy(
+                effect = CreateTokenEffect(
+                    count = DynamicAmount.Fixed(1),
+                    power = 1,
+                    toughness = 1,
+                    colors = emptySet(),
+                    creatureTypes = emptySet(),
+                    triggeredAbilities = listOf(nestedSecond)
+                )
+            )
+        )
+
+        TriggerOrderingKey.forTrigger(driver.state, firstToken) shouldBe
+            TriggerOrderingKey.forTrigger(driver.state, secondToken)
+    }
+
+    test("TO-22m: combat LKI relation order is not semantic identity") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "combat-lki")
+        val first = base.copy(
+            triggerContext = TriggerContext(
+                lastKnownBlockingOrBlockedByIds = listOf(driver.player1, driver.player2)
+            )
+        )
+        val second = base.copy(
+            triggerContext = TriggerContext(
+                lastKnownBlockingOrBlockedByIds = listOf(driver.player2, driver.player1)
+            )
+        )
+
+        TriggerOrderingKey.forTrigger(driver.state, first) shouldBe
+            TriggerOrderingKey.forTrigger(driver.state, second)
+    }
+
+    test("TO-14b: reflexive metadata cannot move a trigger into the second placement pass") {
+        val driver = newDriver()
+        val reflexive = syntheticTrigger(driver, "reflexive-stage").copy(
+            stage = TriggerStage.REFLEXIVE,
+            observedPlacementStage = TriggerPlacementStage.ABILITY_TRIGGERED
+        )
+
+        reflexive.placementStage shouldBe TriggerPlacementStage.NORMAL
     }
 
     test("TO-23: delayed occurrence options are independent of detector candidate order") {

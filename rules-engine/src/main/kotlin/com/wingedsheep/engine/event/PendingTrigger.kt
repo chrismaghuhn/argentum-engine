@@ -133,8 +133,9 @@ data class PendingTrigger(
  * reflexive trigger is always first-pass regardless of its carried action context.
  */
 val PendingTrigger.placementStage: TriggerPlacementStage
-    get() = observedPlacementStage ?: when {
+    get() = when {
         stage == TriggerStage.REFLEXIVE -> TriggerPlacementStage.NORMAL
+        observedPlacementStage != null -> observedPlacementStage
         ability.trigger is EventPattern.AbilityTriggeredEvent -> TriggerPlacementStage.ABILITY_TRIGGERED
         else -> TriggerPlacementStage.NORMAL
     }

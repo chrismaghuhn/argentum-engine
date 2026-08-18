@@ -86,6 +86,15 @@ internal object TriggerOrderingKey {
     /** Map fields whose JSON object keys are EntityIds rather than ordinary semantic strings. */
     private val entityReferenceObjectKeyFields = setOf("convokedCreatures")
 
+    /** Fields that contain nested ability objects whose generated `id` is runtime identity. */
+    private val abilityObjectFields = setOf("ability", "grantedAbility")
+    private val abilityCollectionFields = setOf(
+        "activatedAbilities",
+        "grantedActivatedAbilities",
+        "stateTriggeredAbilities",
+        "triggeredAbilities",
+    )
+
     /** Raw generated ability handles are intentionally absent from semantic serialization. */
     private val runtimeFieldsToOmit = setOf("abilityId")
 
@@ -192,7 +201,9 @@ internal object TriggerOrderingKey {
         context.lastKnownDamageDealtByPlayers?.entries
             ?.sortedBy { semanticEntityKey(state, it.key) }
             ?.map { listOf(semanticEntityKey(state, it.key), it.value) },
-        context.lastKnownBlockingOrBlockedByIds?.map { semanticEntityKey(state, it) },
+        context.lastKnownBlockingOrBlockedByIds
+            ?.map { semanticEntityKey(state, it) }
+            ?.sorted(),
         context.modesChosenCount,
         context.manaSpentOnTriggeringSpell,
         context.colorsSpentOnTriggeringSpell,
@@ -298,6 +309,7 @@ internal object TriggerOrderingKey {
         fieldName: String? = null,
         rootFieldsToOmit: Set<String> = emptySet(),
         atRoot: Boolean = true,
+        abilityObject: Boolean = false,
     ): String = when (element) {
         is JsonObject -> fields(
             element.entries
@@ -306,7 +318,8 @@ internal object TriggerOrderingKey {
                 .filter {
                     it.key != "descriptionOverride" &&
                         it.key !in runtimeFieldsToOmit &&
-                        (!atRoot || it.key !in rootFieldsToOmit)
+                        (!atRoot || it.key !in rootFieldsToOmit) &&
+                        !(abilityObject && it.key == "id")
                 }
                 .map { (key, value) ->
                     val canonicalObjectKey = if (fieldName in entityReferenceObjectKeyFields) {
@@ -321,9 +334,10 @@ internal object TriggerOrderingKey {
                         fieldName = key,
                         rootFieldsToOmit = rootFieldsToOmit,
                         atRoot = false,
+                        abilityObject = key in abilityObjectFields,
                     )
                 }
-                .sortedBy { it.first }
+                .sortedWith(compareBy<Pair<String, String>> { it.first }.thenBy { it.second })
                 .map { (key, value) -> listOf(key, value) }
         )
         is JsonArray -> {
@@ -335,6 +349,7 @@ internal object TriggerOrderingKey {
                     fieldName = fieldName,
                     rootFieldsToOmit = rootFieldsToOmit,
                     atRoot = false,
+                    abilityObject = fieldName in abilityCollectionFields,
                 )
             }
             fields(if (fieldName in unorderedJsonArrayFields) values.sorted() else values)
@@ -389,7 +404,9 @@ internal object TriggerOrderingKey {
         snapshot.wasEquipped,
         snapshot.attachmentIds.map { semanticEntityKey(state, it, visited) },
         snapshot.wasEnchanted,
-        snapshot.blockingOrBlockedByIds.map { semanticEntityKey(state, it, visited) },
+        snapshot.blockingOrBlockedByIds
+            .map { semanticEntityKey(state, it, visited) }
+            .sorted(),
         snapshot.wasAttacking,
         snapshot.wasToken,
         snapshot.wasSuspected,
