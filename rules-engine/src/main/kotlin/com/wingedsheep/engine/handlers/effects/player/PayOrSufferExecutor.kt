@@ -385,7 +385,7 @@ class PayOrSufferExecutor(
         sourceName: String,
         controllerId: EntityId
     ): EffectResult {
-        // Check if player has enough life to pay (must have more than the cost).
+        // Check if player has enough life to pay. Paying down to exactly zero is legal.
         // CR 810.9a — affordability uses the team's shared total in Two-Headed Giant.
         val playerLife = state.lifeTotal(controllerId)
 
@@ -395,8 +395,9 @@ class PayOrSufferExecutor(
             return EffectResult.error(state, "Life cost cannot be negative")
         }
 
-        // If player doesn't have enough life to pay and survive, execute suffer effect
-        if (playerLife <= amount) {
+        // If player doesn't have enough life to pay, execute suffer effect. CR 119.4 permits
+        // paying exactly the player's current life total; state-based actions handle the result.
+        if (playerLife < amount) {
             return executeSufferEffect(state, effect.suffer, context)
         }
 
@@ -722,7 +723,7 @@ class PayOrSufferExecutor(
                 is CostAtom.PayLife -> {
                     val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
                     CostAmountResolver.resolve(state, atom.amount, sourceId, playerId, cardRegistry)
-                        ?.let { it >= 0 && life > it } == true
+                    ?.let { it >= 0 && life >= it } == true
                 }
                 is CostAtom.Mana -> ManaSolver(cardRegistry).canPay(state, playerId, atom.cost)
                 is CostAtom.ExileFrom -> findValidCardsInZone(state, playerId, atom.filter, atom.zone).size >= atom.count

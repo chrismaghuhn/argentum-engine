@@ -8,6 +8,9 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.CommanderRegistryComponent
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AdditionalCost
+import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.ManaColorSet
 
@@ -43,6 +46,53 @@ object CostAmountResolver {
             amount = resolvedAmount,
             context = EffectContext(sourceId = sourceId, controllerId = controllerId),
         )
+    }
+
+    /**
+     * Resolve every mandatory PayLife amount in one cost context and return their total.
+     *
+     * The individual amounts are all evaluated against the same pre-payment state and source
+     * context. A missing commander registry entry, an unresolved dynamic leaf, a negative amount,
+     * or integer overflow fails closed. An empty list resolves to zero, which is important for
+     * colorless commanders and costs with no life component.
+     */
+    internal fun resolvePayLifeTotal(
+        state: GameState,
+        amounts: Iterable<DynamicAmount>,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        cardRegistry: CardRegistry?,
+    ): Int? {
+        var total = 0
+        for (amount in amounts) {
+            val resolved = resolve(
+                state = state,
+                amount = amount,
+                sourceId = sourceId,
+                controllerId = controllerId,
+                cardRegistry = cardRegistry,
+            ) ?: return null
+            if (resolved < 0 || resolved > Int.MAX_VALUE - total) return null
+            total += resolved
+        }
+        return total
+    }
+
+    /** Return the mandatory PayLife leaves of an activated-ability cost. */
+    internal fun payLifeAmounts(cost: AbilityCost): List<DynamicAmount> = when (cost) {
+        is AbilityCost.Atom -> (cost.atom as? CostAtom.PayLife)?.let { listOf(it.amount) } ?: emptyList()
+        is AbilityCost.Composite -> cost.costs.flatMap(::payLifeAmounts)
+        else -> emptyList()
+    }
+
+    /**
+     * Return mandatory PayLife leaves of an additional cost. Choices are alternatives, so their
+     * options are intentionally not summed here; the selected option is checked by its own path.
+     */
+    internal fun payLifeAmounts(cost: AdditionalCost): List<DynamicAmount> = when (cost) {
+        is AdditionalCost.Atom -> (cost.atom as? CostAtom.PayLife)?.let { listOf(it.amount) } ?: emptyList()
+        is AdditionalCost.Composite -> cost.steps.flatMap(::payLifeAmounts)
+        else -> emptyList()
     }
 
     private fun resolveCommanderColorIdentityCount(

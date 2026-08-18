@@ -1,0 +1,418 @@
+package com.wingedsheep.engine.scenarios
+
+import com.wingedsheep.engine.handlers.CostHandler
+import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
+import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.core.YesNoResponse
+import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.handlers.effects.player.PayOrSufferExecutor
+import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
+import com.wingedsheep.engine.mechanics.mana.ManaProduction
+import com.wingedsheep.engine.mechanics.mana.ManaSolution
+import com.wingedsheep.engine.mechanics.mana.ManaSource
+import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.handlers.effects.composite.payManaCostFromPool
+import com.wingedsheep.engine.support.GameTestDriver
+import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
+import com.wingedsheep.mtg.sets.definitions.ons.cards.FutureSight
+import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.DynamicAmounts
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.SelfAlternativeCost
+import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.costs.PayCost
+import com.wingedsheep.sdk.scripting.effects.PayOrSufferEffect
+import com.wingedsheep.engine.core.EffectResult
+import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.nulls.shouldNotBeNull
+import io.kotest.matchers.shouldBe
+
+/** Focused review regressions for atomic dynamic life-cost resolution and payment. */
+class DynamicPayLifeReviewRegressionTest : FunSpec({
+
+    val commander = card("Review Dynamic Life Commander") {
+        manaCost = "{G}"
+        colorIdentity = "G"
+        typeLine = "Legendary Creature — Human"
+        power = 1
+        toughness = 1
+    }
+
+    val compositeAbility = card("Review Composite Dynamic Life Ability") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(
+                Costs.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+                Costs.PayLife(DynamicAmounts.commanderColorIdentityCount())
+            )
+            effect = Effects.DrawCards(1)
+        }
+    }
+
+    val compositeAdditionalSpell = card("Review Composite Dynamic Life Spell") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        spell { effect = Effects.DrawCards(1) }
+        additionalCost(
+            Costs.additional.Composite(
+                listOf(
+                    Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+                    Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount())
+                )
+            )
+        )
+    }
+
+    val combinedAlternativeSpell = card("Review Combined Dynamic Life Spell") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        spell { effect = Effects.DrawCards(1) }
+        additionalCost(Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount()))
+        selfAlternativeCost = SelfAlternativeCost(
+            manaCost = ManaCost.parse("{0}"),
+            additionalCosts = listOf(
+                Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount())
+            )
+        )
+    }
+
+    val topOfLibraryDynamicSpell = card("Review Top Dynamic Life Spell") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        spell { effect = Effects.DrawCards(1) }
+        additionalCost(
+            Costs.additional.Composite(
+                listOf(
+                    Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+                    Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+                )
+            )
+        )
+    }
+
+    val commandZoneDynamicSpell = card("Review Command Zone Dynamic Life Spell") {
+        manaCost = "{0}"
+        typeLine = "Legendary Creature — Human"
+        power = 1
+        toughness = 1
+        spell { effect = Effects.DrawCards(1) }
+        additionalCost(
+            Costs.additional.Composite(
+                listOf(
+                    Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+                    Costs.additional.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+                )
+            )
+        )
+    }
+
+    val payOrSufferSource = card("Review Pay Or Suffer Life Source") {
+        typeLine = "Creature — Human"
+        power = 1
+        toughness = 1
+    }
+
+    val autoTapSpell = card("Review Auto Tap Dynamic Life Spell") {
+        manaCost = "{1}"
+        typeLine = "Sorcery"
+        spell { effect = Effects.DrawCards(1) }
+    }
+
+    val autoTapAbilityTarget = card("Review Auto Tap Dynamic Life Ability") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            effect = Effects.DrawCards(1)
+        }
+    }
+
+    val dualManaSource = card("Review Dual Dynamic Life Mana Source") {
+        typeLine = "Artifact"
+        // The more expensive ability is deliberately declared first. Auto-tap must use the
+        // ability represented by the solver's selected payment, not the first matching ability.
+        activatedAbility {
+            cost = Costs.Composite(
+                Costs.Tap,
+                Costs.PayLife(
+                    com.wingedsheep.sdk.scripting.values.DynamicAmount.Add(
+                        DynamicAmounts.commanderColorIdentityCount(),
+                        com.wingedsheep.sdk.scripting.values.DynamicAmount.Fixed(1)
+                    )
+                )
+            )
+            effect = Effects.AddColorlessMana(1)
+            manaAbility = true
+        }
+        activatedAbility {
+            cost = Costs.Composite(
+                Costs.Tap,
+                Costs.PayLife(DynamicAmounts.commanderColorIdentityCount())
+            )
+            effect = Effects.AddColorlessMana(1)
+            manaAbility = true
+        }
+    }
+
+    fun createDriver(initialLife: Int = 1): GameTestDriver {
+        val driver = GameTestDriver()
+        driver.registerCards(
+            TestCards.all + listOf(
+                commander,
+                compositeAbility,
+                compositeAdditionalSpell,
+                combinedAlternativeSpell,
+                topOfLibraryDynamicSpell,
+                commandZoneDynamicSpell,
+                FutureSight,
+                payOrSufferSource,
+                autoTapSpell,
+                autoTapAbilityTarget,
+                dualManaSource
+            )
+        )
+        driver.initMultiplayer(
+            decks = listOf(Deck.of("Forest" to 40), Deck.of("Forest" to 40)),
+            format = Format.Commander(),
+            commanders = listOf(commander.name, commander.name)
+        )
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        driver.setLifeTotal(driver.activePlayer!!, initialLife)
+        return driver
+    }
+
+    fun activatedAction(driver: GameTestDriver, sourceId: com.wingedsheep.sdk.model.EntityId) =
+        driver.legalActions(driver.activePlayer!!).firstOrNull { legalAction ->
+            (legalAction.action as? com.wingedsheep.engine.core.ActivateAbility)?.sourceId == sourceId
+        }
+
+    fun castAction(driver: GameTestDriver, cardId: com.wingedsheep.sdk.model.EntityId) =
+        driver.legalActions(driver.activePlayer!!).firstOrNull { legalAction ->
+            (legalAction.action as? com.wingedsheep.engine.core.CastSpell)?.cardId == cardId
+        }
+
+    fun alternativeCastAction(driver: GameTestDriver, cardId: com.wingedsheep.sdk.model.EntityId) =
+        driver.legalActions(driver.activePlayer!!).firstOrNull { legalAction ->
+            (legalAction.action as? com.wingedsheep.engine.core.CastSpell)?.let {
+                it.cardId == cardId && it.useAlternativeCost
+            } == true
+        }
+
+    test("a composite activated cost checks all dynamic life atoms as one total") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
+        val handler = CostHandler(driver.cardRegistry)
+        val cost = driver.cardRegistry.getCard(compositeAbility.name)!!.activatedAbilities.single().cost
+
+        handler.canPayAbilityCost(
+            state = driver.state,
+            cost = cost,
+            sourceId = sourceId,
+            controllerId = player,
+            manaPool = ManaPool()
+        ) shouldBe false
+        handler.payAbilityCost(
+            state = driver.state,
+            cost = cost,
+            sourceId = sourceId,
+            controllerId = player,
+            manaPool = ManaPool()
+        ).success shouldBe false
+        driver.getLifeTotal(player) shouldBe 1
+        activatedAction(driver, sourceId) shouldBe null
+        val abilityId = driver.cardRegistry.getCard(compositeAbility.name)!!
+            .activatedAbilities.single().id
+        driver.submit(ActivateAbility(player, sourceId, abilityId)).error.shouldNotBeNull()
+    }
+
+    test("a payable composite activated cost deducts the dynamic life total once") {
+        val driver = createDriver(initialLife = 3)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
+        val cost = driver.cardRegistry.getCard(compositeAbility.name)!!.activatedAbilities.single().cost
+        val result = CostHandler(driver.cardRegistry).payAbilityCost(
+            state = driver.state,
+            cost = cost,
+            sourceId = sourceId,
+            controllerId = player,
+            manaPool = ManaPool(),
+        )
+
+        result.success shouldBe true
+        driver.getLifeTotal(player) shouldBe 3
+        result.newState.shouldNotBeNull().lifeTotal(player) shouldBe 1
+    }
+
+    test("a composite spell additional cost checks all dynamic life atoms as one total") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val spellId = driver.putCardInHand(player, compositeAdditionalSpell.name)
+        val additionalCost = driver.cardRegistry.getCard(compositeAdditionalSpell.name)!!.script.additionalCosts.single()
+        val handler = CostHandler(driver.cardRegistry)
+
+        handler.canPayAdditionalCost(
+            state = driver.state,
+            cost = additionalCost,
+            controllerId = player,
+            sourceId = spellId
+        ) shouldBe false
+        castAction(driver, spellId) shouldBe null
+    }
+
+    test("a payable composite spell additional cost deducts the dynamic life total once") {
+        val driver = createDriver(initialLife = 3)
+        val player = driver.activePlayer!!
+        val spellId = driver.putCardInHand(player, compositeAdditionalSpell.name)
+        val cast = castAction(driver, spellId).shouldNotBeNull()
+
+        driver.submit(cast.action).error shouldBe null
+        driver.getLifeTotal(player) shouldBe 1
+    }
+
+    test("a printed and alternative dynamic life cost is one total before offering or executing") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val spellId = driver.putCardInHand(player, combinedAlternativeSpell.name)
+
+        alternativeCastAction(driver, spellId) shouldBe null
+        driver.submit(
+            com.wingedsheep.engine.core.CastSpell(
+                playerId = player,
+                cardId = spellId,
+                useAlternativeCost = true,
+            )
+        ).error.shouldNotBeNull()
+    }
+
+    test("top-of-library spell enumeration checks the complete dynamic additional-cost total") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, FutureSight.name)
+        val spellId = driver.putCardOnTopOfLibrary(player, topOfLibraryDynamicSpell.name)
+
+        castAction(driver, spellId) shouldBe null
+    }
+
+    test("command-zone spell enumeration checks the complete dynamic additional-cost total") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val spellId = driver.putCardInCommandZone(player, commandZoneDynamicSpell.name)
+        driver.replaceState(
+            driver.state.updateEntity(spellId) { it.with(CommanderComponent(player)) }
+        )
+
+        castAction(driver, spellId) shouldBe null
+    }
+
+    test("PayOrSuffer offers an exact-to-zero life payment") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, payOrSufferSource.name)
+
+        val result = PayOrSufferExecutor(driver.cardRegistry).execute(
+            state = driver.state,
+            effect = PayOrSufferEffect(
+                cost = PayCost.Atom(CostAtom.PayLife(1)),
+                suffer = Effects.GainLife(1)
+            ),
+            context = EffectContext(sourceId = sourceId, controllerId = player)
+        )
+
+        val decision = result.pendingDecision.shouldNotBeNull()
+        driver.getLifeTotal(player) shouldBe 1
+
+        driver.replaceState(result.state)
+        driver.submitDecision(player, YesNoResponse(decision.id, choice = true)).error shouldBe null
+        driver.getLifeTotal(player) shouldBe 0
+    }
+
+    test("the generic dynamic evaluator fails closed instead of throwing for commander count") {
+        val driver = createDriver(initialLife = 10)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, compositeAbility.name)
+        val evaluator = DynamicAmountEvaluator()
+
+        evaluator.evaluate(
+            state = driver.state,
+            amount = DynamicAmounts.commanderColorIdentityCount(),
+            context = EffectContext(sourceId = sourceId, controllerId = player)
+        ) shouldBe 0
+    }
+
+    test("auto-tap pays the dynamic life cost of the solver-selected same-color ability") {
+        val driver = createDriver(initialLife = 2)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, dualManaSource.name)
+        val spellId = driver.putCardInHand(player, autoTapSpell.name)
+        val cast = castAction(driver, spellId).shouldNotBeNull()
+
+        driver.submit(cast.action).error shouldBe null
+        driver.getLifeTotal(player) shouldBe 1
+    }
+
+    test("activated-ability auto-tap pays the selected dynamic life cost") {
+        val driver = createDriver(initialLife = 2)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, dualManaSource.name)
+        val targetId = driver.putPermanentOnBattlefield(player, autoTapAbilityTarget.name)
+        val activation = activatedAction(driver, targetId).shouldNotBeNull()
+
+        driver.submit(activation.action).error shouldBe null
+        driver.getLifeTotal(player) shouldBe 1
+    }
+
+    test("auto-tap rolls back the tap when the selected dynamic life payment fails") {
+        val driver = createDriver(initialLife = 0)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, dualManaSource.name)
+        val selectedAbility = driver.cardRegistry.getCard(dualManaSource.name)!!
+            .activatedAbilities.last()
+        val source = ManaSource(
+            entityId = sourceId,
+            name = dualManaSource.name,
+            producesColors = emptySet(),
+            producesColorless = true,
+            manaAbilityForColorless = selectedAbility,
+        )
+        val result = ManaAbilitySideEffectExecutor(driver.cardRegistry) { state, _, _ ->
+            EffectResult.success(state)
+        }.tapSourcesWithSideEffects(
+            state = driver.state,
+            solution = ManaSolution(
+                sources = listOf(source),
+                manaProduced = mapOf(
+                    sourceId to ManaProduction(colorless = 1, manaAbility = selectedAbility),
+                ),
+            ),
+            controllerId = player,
+        )
+
+        result.success shouldBe false
+        result.state shouldBe driver.state
+        result.events shouldBe emptyList()
+        driver.state.getEntity(sourceId)!!.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
+    }
+
+    test("effect-level auto-tap pays the selected dynamic life cost") {
+        val driver = createDriver(initialLife = 2)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, dualManaSource.name)
+
+        val result = payManaCostFromPool(
+            state = driver.state,
+            player = player,
+            cost = ManaCost.parse("{1}"),
+            cardRegistry = driver.cardRegistry,
+        )
+
+        result.error shouldBe null
+        result.state.lifeTotal(player) shouldBe 1
+    }
+})

@@ -132,7 +132,7 @@ class CommanderColorLifeCostTest : FunSpec({
             driver.cardRegistry.getCard(testPermanent.name)!!.activatedAbilities.single().id
         )
 
-        driver.legalActions(player).any { it.action == action && it.affordable } shouldBe false
+        driver.legalActions(player).any { it.action == action } shouldBe false
         driver.submit(action).error shouldBe "Cannot pay ability cost"
     }
 
@@ -149,7 +149,7 @@ class CommanderColorLifeCostTest : FunSpec({
             driver.cardRegistry.getCard(testPermanent.name)!!.activatedAbilities.single().id
         )
 
-        driver.legalActions(player).any { it.action == action && it.affordable } shouldBe false
+        driver.legalActions(player).any { it.action == action } shouldBe false
         driver.submit(action).error shouldBe "Cannot pay ability cost"
     }
 

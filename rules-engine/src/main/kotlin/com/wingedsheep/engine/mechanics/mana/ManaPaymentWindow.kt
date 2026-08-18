@@ -136,10 +136,11 @@ object ManaPaymentWindow {
         if (response.autoPay) {
             val solution = ManaSolver(services.cardRegistry).solve(current, playerId, remaining)
                 ?: return FloatResult(state, emptyList(), paid = false)
-            val (afterTaps, tapEvents) = services.manaAbilitySideEffectExecutor
+            val tapResult = services.manaAbilitySideEffectExecutor
                 .tapSourcesWithSideEffects(current, solution, playerId)
-            current = afterTaps
-            events.addAll(tapEvents)
+            if (!tapResult.success) return FloatResult(state, emptyList(), paid = false)
+            current = tapResult.state
+            events.addAll(tapResult.events)
             for ((_, p) in solution.manaProduced) {
                 produced = if (p.color != null) produced.add(p.color, p.amount) else produced.addColorless(p.colorless)
             }

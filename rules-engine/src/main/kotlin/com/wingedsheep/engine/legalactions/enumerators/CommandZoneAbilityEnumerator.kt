@@ -62,6 +62,7 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                 )
                 var costCanBePaid = true
                 var hasDiscardCost = false
+                if (!context.costUtils.canPayLifeCost(state, playerId, entityId, effectiveCost)) continue
 
                 fun checkAtom(atom: CostAtom) {
                     when (atom) {
@@ -81,11 +82,8 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                             hasDiscardCost = true
                             if (handCards.size < atom.count) costCanBePaid = false
                         }
-                        is CostAtom.PayLife -> {
-                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                costCanBePaid = false
-                            }
-                        }
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
                         else -> {}
                     }
                 }

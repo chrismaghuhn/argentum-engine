@@ -138,11 +138,11 @@ class DynamicAmountEvaluator(
             is DynamicAmount.LastKnownDamageDealtToSource ->
                 context.triggerLastKnownDamageDealtByPlayers?.values?.sum() ?: 0
 
-            // This value needs the authoritative card registry and commander registry, so cost
-            // payment callers resolve it through CostAmountResolver rather than this generic
-            // evaluator.
+            // The generic evaluator has no authoritative card registry or commander context.
+            // Cost payment callers resolve this leaf through CostAmountResolver first; direct
+            // generic callers fail closed rather than throwing or inventing a commander identity.
             DynamicAmount.CommanderColorIdentityCount ->
-                error("CommanderColorIdentityCount requires a CardRegistry-backed cost resolver")
+                0
 
             // The {X} this object was cast with, read off the current object regardless of zone.
             // Reads, in order: the durable CastChoicesComponent on the battlefield permanent (and

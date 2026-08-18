@@ -140,6 +140,9 @@ class ManaAbilityEnumerator : ActionEnumerator {
                 var sacrificeTargets: List<EntityId>? = null
                 var sacrificeCost: CostAtom.Sacrifice? = null
                 var affordable = true
+                // The complete PayLife total is a hard legal-action gate. It must not become a
+                // greyed-out auto-tap option because activation would be illegal.
+                if (!context.costUtils.canPayLifeCost(state, playerId, entityId, effectiveCost)) continue
 
                 when (effectiveCost) {
                     is AbilityCost.Tap -> {
@@ -181,11 +184,8 @@ class ManaAbilityEnumerator : ActionEnumerator {
                         is CostAtom.Mill -> {
                             if (state.getZone(ZoneKey(playerId, Zone.LIBRARY)).size < atom.count) affordable = false
                         }
-                        is CostAtom.PayLife -> {
-                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                affordable = false
-                            }
-                        }
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
                         // Other atoms (mana, life, discard, …) — engine validates at payment.
                         else -> {}
                     }
@@ -250,11 +250,8 @@ class ManaAbilityEnumerator : ActionEnumerator {
                                             affordable = false; break
                                         }
                                     }
-                                    is CostAtom.PayLife -> {
-                                        if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                            affordable = false; break
-                                        }
-                                    }
+                                    // PayLife was resolved as the complete cost total above.
+                                    is CostAtom.PayLife -> {}
                                     // Other atoms (life, discard, exile, reveal) — engine validates at payment.
                                     else -> {}
                                 }

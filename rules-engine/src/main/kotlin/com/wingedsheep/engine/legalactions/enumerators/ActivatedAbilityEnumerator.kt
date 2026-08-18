@@ -208,6 +208,11 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 var collectEvidenceInfo: AdditionalCostData? = null
                 var costAffordable = true
 
+                // PayLife leaves are one mandatory total, not independent greyed-out choices.
+                // Resolve that total before the general affordability path so an activation that
+                // cannot pay its life cost is absent from the advertised action domain.
+                if (!context.costUtils.canPayLifeCost(state, playerId, entityId, effectiveCost)) continue
+
                 when (effectiveCost) {
                     is AbilityCost.Tap -> {
                         if (container.has<TappedComponent>()) continue
@@ -315,13 +320,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                 .CollectEvidenceResolver.costInfo(state, playerId, atom.amount)
                                 ?: continue
                         }
-                        // Pay-life has no selection, but its dynamic amount must be resolved here
-                        // so the legal-action domain agrees with authoritative activation checks.
-                        is CostAtom.PayLife -> {
-                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                continue
-                            }
-                        }
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
                         is CostAtom.RevealFromHand, is CostAtom.PutCountersOnSelf -> {}
                         // CR 701.17b — a mill cost is unpayable when the library holds fewer cards.
                         // No selection: the milled cards are the top of the library.
@@ -513,15 +513,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                             discardTargets = targets
                                         }
                                     }
-                                    // Pay-life has no selection, but its dynamic amount must be
-                                    // resolved here so the legal-action domain agrees with the
-                                    // authoritative activation check.
-                                    is CostAtom.PayLife -> {
-                                        if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                            costCanBePaid = false
-                                            break
-                                        }
-                                    }
+                                    // PayLife was resolved as the complete cost total above.
+                                    is CostAtom.PayLife -> {}
                                     is CostAtom.RevealFromHand,
                                     is CostAtom.PutCountersOnSelf -> {}
                                     // CR 701.17b — a mill cost is unpayable when the library holds

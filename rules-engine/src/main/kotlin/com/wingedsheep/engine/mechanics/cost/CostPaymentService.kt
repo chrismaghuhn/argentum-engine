@@ -488,10 +488,13 @@ class CostPaymentService(private val services: EngineServices) {
         if (!partial.remainingCost.isEmpty()) {
             val solution = services.manaSolver.solve(current, payerId, partial.remainingCost)
                 ?: return CostPaymentExecution(state, emptyList(), false)
-            val (afterTaps, tapEvents) = services.manaAbilitySideEffectExecutor
+            val tapResult = services.manaAbilitySideEffectExecutor
                 .tapSourcesWithSideEffects(current, solution, payerId)
-            current = afterTaps
-            events.addAll(tapEvents)
+            if (!tapResult.success) {
+                return CostPaymentExecution(state, emptyList(), success = false)
+            }
+            current = tapResult.state
+            events.addAll(tapResult.events)
             for ((_, production) in solution.manaProduced) {
                 combined = if (production.color != null) combined.add(production.color, production.amount)
                 else combined.addColorless(production.colorless)

@@ -671,11 +671,13 @@ class ManaPaymentContinuationResumer(
                 val solution = manaSolver.solve(currentState, playerId, remainingCost)
                     ?: return ExecutionResult.error(state, "Cannot pay mana cost with auto-pay")
 
-                for (source in solution.sources) {
-                    val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                    currentState = tappedState
-                    tapEvent?.let(events::add)
+                val tapResult = services.manaAbilitySideEffectExecutor
+                    .tapSourcesWithSideEffects(currentState, solution, playerId)
+                if (!tapResult.success) {
+                    return ExecutionResult.error(state, "Cannot pay mana ability side effect")
                 }
+                currentState = tapResult.state
+                events.addAll(tapResult.events)
                 for ((_, production) in solution.manaProduced) {
                     currentPool = if (production.color != null) {
                         currentPool.add(production.color, production.amount)
@@ -1079,11 +1081,13 @@ class ManaPaymentContinuationResumer(
                 val solution = manaSolver.solve(currentState, playerId, remainingCost)
                     ?: return ExecutionResult.error(state, "Cannot pay mana cost with auto-pay")
 
-                for (source in solution.sources) {
-                    val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                    currentState = tappedState
-                    tapEvent?.let(events::add)
+                val tapResult = services.manaAbilitySideEffectExecutor
+                    .tapSourcesWithSideEffects(currentState, solution, playerId)
+                if (!tapResult.success) {
+                    return ExecutionResult.error(state, "Cannot pay mana ability side effect")
                 }
+                currentState = tapResult.state
+                events.addAll(tapResult.events)
                 for ((_, production) in solution.manaProduced) {
                     currentPool = if (production.color != null) {
                         currentPool.add(production.color, production.amount)
@@ -1264,11 +1268,13 @@ class ManaPaymentContinuationResumer(
             val solution = manaSolver.solve(currentState, playerId, remainingCost)
                 ?: return ExecutionResult.error(state, "Cannot pay mana cost")
 
-            for (source in solution.sources) {
-                val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                currentState = tappedState
-                tapEvent?.let(events::add)
+            val tapResult = services.manaAbilitySideEffectExecutor
+                .tapSourcesWithSideEffects(currentState, solution, playerId)
+            if (!tapResult.success) {
+                return ExecutionResult.error(state, "Cannot pay mana ability side effect")
             }
+            currentState = tapResult.state
+            events.addAll(tapResult.events)
 
             for ((_, production) in solution.manaProduced) {
                 currentPool = if (production.color != null) {
@@ -1356,11 +1362,13 @@ class ManaPaymentContinuationResumer(
                 val solution = manaSolver.solve(currentState, playerId, remainingCost)
                     ?: return ExecutionResult.error(state, "Cannot pay mana cost with auto-pay")
 
-                for (source in solution.sources) {
-                    val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                    currentState = tappedState
-                    tapEvent?.let(events::add)
+                val tapResult = services.manaAbilitySideEffectExecutor
+                    .tapSourcesWithSideEffects(currentState, solution, playerId)
+                if (!tapResult.success) {
+                    return ExecutionResult.error(state, "Cannot pay mana ability side effect")
                 }
+                currentState = tapResult.state
+                events.addAll(tapResult.events)
 
                 for ((_, production) in solution.manaProduced) {
                     currentPool = if (production.color != null) {

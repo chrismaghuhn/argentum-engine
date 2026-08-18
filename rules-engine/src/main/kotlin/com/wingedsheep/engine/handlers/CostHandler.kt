@@ -82,6 +82,16 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
          */
         granterId: EntityId? = null,
     ): Boolean {
+        if (cost is AbilityCost.Composite) {
+            val lifeTotal = CostAmountResolver.resolvePayLifeTotal(
+                state = state,
+                amounts = CostAmountResolver.payLifeAmounts(cost),
+                sourceId = sourceId,
+                controllerId = controllerId,
+                cardRegistry = cardRegistry,
+            ) ?: return false
+            if (state.lifeTotal(controllerId) < lifeTotal) return false
+        }
         return when (cost) {
             is AbilityCost.Free -> true
             is AbilityCost.Atom -> canPayAtom(state, cost.atom, sourceId, controllerId, manaPool, abilityContext)
@@ -232,6 +242,17 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
         choices: CostPaymentChoices = CostPaymentChoices(),
         abilityContext: SpellPaymentContext? = null,
     ): CostPaymentResult {
+        if (cost is AbilityCost.Composite) {
+            return payCompositeAbilityCost(
+                state = state,
+                cost = cost,
+                sourceId = sourceId,
+                controllerId = controllerId,
+                manaPool = manaPool,
+                choices = choices,
+                abilityContext = abilityContext,
+            )
+        }
         return when (cost) {
             is AbilityCost.Free -> {
                 CostPaymentResult.success(state, manaPool)
@@ -523,19 +544,7 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 CostPaymentResult.success(newState, manaPool, events)
             }
             is AbilityCost.Craft -> payCraftCost(state, cost, sourceId, controllerId, manaPool, choices)
-            is AbilityCost.Composite -> {
-                var currentState = state
-                var currentPool = manaPool
-                val allEvents = mutableListOf<GameEvent>()
-                for (subCost in cost.costs) {
-                    val result = payAbilityCost(currentState, subCost, sourceId, controllerId, currentPool, choices, abilityContext)
-                    if (!result.success) return result
-                    currentState = result.newState!!
-                    currentPool = result.newManaPool!!
-                    allEvents.addAll(result.events)
-                }
-                CostPaymentResult.success(currentState, currentPool, allEvents)
-            }
+            is AbilityCost.Composite -> error("Composite costs are handled before dispatch")
             is AbilityCost.Loyalty -> {
                 // Adjust loyalty counters based on the cost change
                 val newState = state.updateEntity(sourceId) { container ->
@@ -550,6 +559,71 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 CostPaymentResult.success(newState, manaPool)
             }
         }
+    }
+
+    /**
+     * Pay a composite ability cost transactionally, charging all PayLife leaves once against the
+     * pre-payment total. Other leaves retain their existing payment order and handlers.
+     */
+    private fun payCompositeAbilityCost(
+        state: GameState,
+        cost: AbilityCost.Composite,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        manaPool: ManaPool,
+        choices: CostPaymentChoices,
+        abilityContext: SpellPaymentContext?,
+    ): CostPaymentResult {
+        if (!canPayAbilityCost(state, cost, sourceId, controllerId, manaPool, abilityContext)) {
+            return CostPaymentResult.failure("Cannot pay ability cost")
+        }
+
+        val lifeTotal = CostAmountResolver.resolvePayLifeTotal(
+            state = state,
+            amounts = CostAmountResolver.payLifeAmounts(cost),
+            sourceId = sourceId,
+            controllerId = controllerId,
+            cardRegistry = cardRegistry,
+        ) ?: return CostPaymentResult.failure("Cannot resolve life cost")
+
+        var currentState = state
+        var currentPool = manaPool
+        var lifePaid = false
+        val allEvents = mutableListOf<GameEvent>()
+        for (leaf in flattenAbilityCost(cost)) {
+            if (leaf is AbilityCost.Atom && leaf.atom is CostAtom.PayLife) {
+                if (!lifePaid) {
+                    if (lifeTotal > 0) {
+                        val payment = LifePaymentService.pay(currentState, controllerId, lifeTotal)
+                            ?: return CostPaymentResult.failure("Player has no life total")
+                        currentState = payment.first
+                        allEvents.addAll(payment.second)
+                    }
+                    lifePaid = true
+                }
+                continue
+            }
+
+            val result = payAbilityCost(
+                state = currentState,
+                cost = leaf,
+                sourceId = sourceId,
+                controllerId = controllerId,
+                manaPool = currentPool,
+                choices = choices,
+                abilityContext = abilityContext,
+            )
+            if (!result.success) return result
+            currentState = result.newState!!
+            currentPool = result.newManaPool!!
+            allEvents.addAll(result.events)
+        }
+        return CostPaymentResult.success(currentState, currentPool, allEvents)
+    }
+
+    private fun flattenAbilityCost(cost: AbilityCost): List<AbilityCost> = when (cost) {
+        is AbilityCost.Composite -> cost.costs.flatMap(::flattenAbilityCost)
+        else -> listOf(cost)
     }
 
     // =============================================================================================
@@ -1161,6 +1235,16 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
         controllerId: EntityId,
         sourceId: EntityId = controllerId,
     ): Boolean {
+        if (cost is AdditionalCost.Composite) {
+            val lifeTotal = CostAmountResolver.resolvePayLifeTotal(
+                state = state,
+                amounts = CostAmountResolver.payLifeAmounts(cost),
+                sourceId = sourceId,
+                controllerId = controllerId,
+                cardRegistry = cardRegistry,
+            ) ?: return false
+            if (state.lifeTotal(controllerId) < lifeTotal) return false
+        }
         return when (cost) {
             is AdditionalCost.Atom -> when (val atom = cost.atom) {
                 is CostAtom.Sacrifice ->

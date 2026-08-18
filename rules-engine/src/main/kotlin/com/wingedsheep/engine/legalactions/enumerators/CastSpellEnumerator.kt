@@ -233,6 +233,9 @@ class CastSpellEnumerator : ActionEnumerator {
             val flattenedCosts = additionalCosts.flatMap {
                 if (it is AdditionalCost.Composite) it.steps else listOf(it)
             }
+            if (!context.costUtils.canPayLifeCost(state, playerId, cardId, additionalCosts)) {
+                canPayAdditionalCosts = false
+            }
             for (cost in flattenedCosts) {
                 when (cost) {
                     is AdditionalCost.Atom -> when (val atom = cost.atom) {
@@ -296,9 +299,7 @@ class CastSpellEnumerator : ActionEnumerator {
                             tapCount = atom.count
                         }
                         is CostAtom.PayLife -> {
-                            if (!context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)) {
-                                canPayAdditionalCosts = false
-                            }
+                            // All PayLife leaves were preflighted as one total above.
                         }
                         // Mana / reveal aren't produced as spell additional costs today.
                         else -> {}
@@ -581,13 +582,20 @@ class CastSpellEnumerator : ActionEnumerator {
                 val selfAltMana = selfAltCost.manaCost
                 val selfAltEffective = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, selfAltMana, playerId)
                 val canPayMana = context.manaSolver.canPay(state, playerId, selfAltEffective, precomputedSources = cachedSources)
-                val canPayAdditional = selfAltCost.additionalCosts.all { cost ->
+                val selfAltAdditionalCosts = buildList {
+                    addAll(additionalCosts)
+                    addAll(selfAltCost.additionalCosts)
+                }
+                val canPayAdditionalLife = context.costUtils.canPayLifeCost(
+                    state, playerId, cardId, selfAltAdditionalCosts
+                )
+                val canPayAdditional = canPayAdditionalLife && selfAltCost.additionalCosts.all { cost ->
                     when (val atom = (cost as? AdditionalCost.Atom)?.atom) {
                         is CostAtom.TapPermanents -> {
                             context.costUtils.findAbilityTapTargets(state, playerId, atom.filter).size >= atom.count
                         }
                         is CostAtom.PayLife ->
-                            context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)
+                            true // Included in the combined total above.
                         else -> true
                     }
                 }
@@ -2161,8 +2169,19 @@ class CastSpellEnumerator : ActionEnumerator {
                 // Check additional cost payability (e.g., sacrifice a creature)
                 var kickerCostInfo: AdditionalCostData? = null
                 var canPayKickerAdditionalCost = true
-                if (additionalCostKicker?.additionalCost != null) {
-                    when (val cost = additionalCostKicker.additionalCost) {
+                val kickerAdditionalCost = additionalCostKicker?.additionalCost
+                if (kickerAdditionalCost != null) {
+                    val kickerLifeCosts = buildList {
+                        addAll(cardDef.script.additionalCosts)
+                        add(kickerAdditionalCost)
+                    }
+                    if (!context.costUtils.canPayLifeCost(
+                            state, playerId, cardId, kickerLifeCosts
+                        )
+                    ) {
+                        canPayKickerAdditionalCost = false
+                    }
+                    when (val cost = kickerAdditionalCost) {
                         is AdditionalCost.Atom -> when (val atom = cost.atom) {
                             is CostAtom.Sacrifice -> {
                                 val validSacTargets = context.costUtils.findSacrificeTargets(state, playerId, atom)
@@ -2212,9 +2231,7 @@ class CastSpellEnumerator : ActionEnumerator {
                                 )
                             }
                             is CostAtom.PayLife -> {
-                                if (!context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)) {
-                                    canPayKickerAdditionalCost = false
-                                }
+                                // All PayLife leaves were preflighted as one total above.
                             }
                             else -> {}
                         }
@@ -2815,6 +2832,9 @@ class CastSpellEnumerator : ActionEnumerator {
 
         val modeAdditionalCosts = mode.additionalCosts
         if (modeAdditionalCosts != null) {
+            if (!context.costUtils.canPayLifeCost(state, playerId, cardId, modeAdditionalCosts)) {
+                canPayAdditionalCosts = false
+            }
             for (cost in modeAdditionalCosts) {
                 when (cost) {
                     is AdditionalCost.Atom -> when (val atom = cost.atom) {
@@ -2843,14 +2863,7 @@ class CastSpellEnumerator : ActionEnumerator {
                             modeDiscardCount = atom.count
                         }
                         is CostAtom.PayLife -> {
-                            // Per CR 119.4 you can't pay life unless you have that much. Mode-level
-                            // affordability gate so "discard a card or pay 3 life" modes don't
-                            // surface a Pay-3-Life action when the caster has fewer than 3 life
-                            // (Bitter Triumph). Validation in CastSpellHandler still backstops.
-                            val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
-                            if (!context.costUtils.canPayLifeCost(state, playerId, cardId, atom.amount)) {
-                                canPayAdditionalCosts = false
-                            }
+                            // All PayLife leaves were preflighted as one total above.
                         }
                         else -> {}
                     }

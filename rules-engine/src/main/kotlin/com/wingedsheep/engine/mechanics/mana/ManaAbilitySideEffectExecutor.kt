@@ -65,7 +65,7 @@ class ManaAbilitySideEffectExecutor(
         state: GameState,
         solution: ManaSolution,
         controllerId: EntityId
-    ): Pair<GameState, List<GameEvent>> {
+    ): ManaSideEffectExecution {
         var currentState = state
         val events = mutableListOf<GameEvent>()
         for (source in solution.sources) {
@@ -74,16 +74,26 @@ class ManaAbilitySideEffectExecutor(
             event?.let(events::add)
 
             val production = solution.manaProduced[source.entityId]
-            val (after, sideEvents) = runSideEffects(
+            // A source tapped only to pay another mana ability's activation cost has no production
+            // entry and must not run a second mana ability as a side effect.
+            if (production == null) continue
+
+            val sideEffectResult = runSideEffects(
                 state = currentState,
                 sourceId = source.entityId,
-                producedColor = production?.color,
+                producedColor = production.color,
                 controllerId = controllerId,
+                selectedAbility = production.manaAbility ?: source.manaAbilityFor(production.color),
             )
-            currentState = after
-            events.addAll(sideEvents)
+            if (!sideEffectResult.success) {
+                // Auto-tap is one payment operation. Roll back the tap and every earlier side
+                // effect when the selected dynamic life payment or effect execution fails.
+                return ManaSideEffectExecution(state, emptyList(), success = false)
+            }
+            currentState = sideEffectResult.state
+            events.addAll(sideEffectResult.events)
         }
-        return currentState to events
+        return ManaSideEffectExecution(currentState, events, success = true)
     }
 
     fun runSideEffects(
@@ -91,15 +101,27 @@ class ManaAbilitySideEffectExecutor(
         sourceId: EntityId,
         producedColor: Color?,
         controllerId: EntityId,
-    ): Pair<GameState, List<GameEvent>> {
+        selectedAbility: ActivatedAbility? = null,
+    ): ManaSideEffectExecution {
         val card = state.getEntity(sourceId)?.get<CardComponent>()
-            ?: return state to emptyList()
-        val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return state to emptyList()
+            ?: return ManaSideEffectExecution(state, emptyList(), success = true)
+        val cardDef = cardRegistry.getCard(card.cardDefinitionId)
 
-        val matchingAbility = cardDef.script.activatedAbilities
-            .filter { it.isManaAbility }
-            .firstOrNull { abilityProducesColor(it, producedColor) }
-            ?: return state to emptyList()
+        val matchingAbility = selectedAbility ?: run {
+            val candidates = cardDef?.script?.activatedAbilities
+                ?.filter { it.isManaAbility && abilityProducesColor(it, producedColor) }
+                .orEmpty()
+            // No printed mana ability means there is no side effect to run (basic/intrinsic
+            // sources use this path). Multiple candidates are unsafe without solver provenance.
+            when {
+                candidates.isEmpty() -> return ManaSideEffectExecution(state, emptyList(), success = true)
+                candidates.size == 1 -> candidates.single()
+                else -> return ManaSideEffectExecution(state, emptyList(), success = false)
+            }
+        }
+        if (!matchingAbility.isManaAbility || !abilityProducesColor(matchingAbility, producedColor)) {
+            return ManaSideEffectExecution(state, emptyList(), success = false)
+        }
 
         var currentState = state
         val events = mutableListOf<GameEvent>()
@@ -116,16 +138,18 @@ class ManaAbilitySideEffectExecutor(
             sourceId = sourceId,
             controllerId = controllerId,
         )
-        if (lifeCost == null || lifeCost < 0) return currentState to events
+        if (lifeCost == null || lifeCost < 0 || currentState.lifeTotal(controllerId) < lifeCost) {
+            return ManaSideEffectExecution(state, emptyList(), success = false)
+        }
         if (lifeCost > 0) {
-            LifePaymentService.pay(currentState, controllerId, lifeCost)?.let { (afterLife, lifeEvents) ->
-                currentState = afterLife
-                events.addAll(lifeEvents)
-            }
+            val payment = LifePaymentService.pay(currentState, controllerId, lifeCost)
+                ?: return ManaSideEffectExecution(state, emptyList(), success = false)
+            currentState = payment.first
+            events.addAll(payment.second)
         }
 
         val sideEffects = nonManaSubEffects(matchingAbility.effect)
-        if (sideEffects.isEmpty()) return currentState to events
+        if (sideEffects.isEmpty()) return ManaSideEffectExecution(currentState, events, success = true)
 
         val context = EffectContext(
             sourceId = sourceId,
@@ -134,14 +158,16 @@ class ManaAbilitySideEffectExecutor(
 
         for (sub in sideEffects) {
             val result = effectExecutor(currentState, sub, context)
+            if (!result.isSuccess) {
+                return ManaSideEffectExecution(state, emptyList(), success = false)
+            }
             currentState = result.state
             events.addAll(result.events)
             // Side effects from auto-tap should never pause for player decisions
-            // (mana abilities don't use the stack), so we treat any pause as a
-            // no-op and continue. In practice every printed mana-ability side
-            // effect is fully resolved with controller info alone.
+            // (mana abilities don't use the stack); a pause is therefore a failed
+            // auto-payment and was handled transactionally above.
         }
-        return currentState to events
+        return ManaSideEffectExecution(currentState, events, success = true)
     }
 
     /**
@@ -154,26 +180,13 @@ class ManaAbilitySideEffectExecutor(
         cost: AbilityCost,
         sourceId: EntityId,
         controllerId: EntityId,
-    ): Int? = when (cost) {
-        is AbilityCost.Atom -> (cost.atom as? CostAtom.PayLife)?.let { atom ->
-            CostAmountResolver.resolve(
-                state = state,
-                amount = atom.amount,
-                sourceId = sourceId,
-                controllerId = controllerId,
-                cardRegistry = cardRegistry,
-            )
-        } ?: 0
-        is AbilityCost.Composite -> {
-            var total = 0
-            for (subCost in cost.costs) {
-                val amount = payLifeCost(state, subCost, sourceId, controllerId) ?: return null
-                total += amount
-            }
-            total
-        }
-        else -> 0
-    }
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = CostAmountResolver.payLifeAmounts(cost),
+        sourceId = sourceId,
+        controllerId = controllerId,
+        cardRegistry = cardRegistry,
+    )
 
     private fun abilityProducesColor(ability: ActivatedAbility, color: Color?): Boolean =
         manaSubEffects(ability.effect).any { effect -> effectProduces(effect, color) }
@@ -215,3 +228,10 @@ class ManaAbilitySideEffectExecutor(
             }
     }
 }
+
+/** Transactional result of an auto-tap side-effect payment. */
+data class ManaSideEffectExecution(
+    val state: GameState,
+    val events: List<GameEvent>,
+    val success: Boolean,
+)

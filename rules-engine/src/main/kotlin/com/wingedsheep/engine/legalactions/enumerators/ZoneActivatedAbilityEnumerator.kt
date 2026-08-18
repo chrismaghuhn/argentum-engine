@@ -81,6 +81,7 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 // Check cost requirements and build cost info
                 val effectiveCost = ability.cost
                 var costCanBePaid = true
+                if (!context.costUtils.canPayLifeCost(state, playerId, entityId, effectiveCost)) continue
                 val handCards = state.getZone(playerId, Zone.HAND)
                 var hasDiscardCost = false
                 var blightCost: AbilityCost.Blight? = null
@@ -99,11 +100,8 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                             hasDiscardCost = true
                             if (handCards.isEmpty()) costCanBePaid = false
                         }
-                        is CostAtom.PayLife -> {
-                            if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                costCanBePaid = false
-                            }
-                        }
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
                         // Other atoms — engine validates at payment.
                         else -> {}
                     }
@@ -128,11 +126,8 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                                             costCanBePaid = false; break
                                         }
                                     }
-                                    is CostAtom.PayLife -> {
-                                        if (!context.costUtils.canPayLifeCost(state, playerId, entityId, atom.amount)) {
-                                            costCanBePaid = false; break
-                                        }
-                                    }
+                                    // PayLife was resolved as the complete cost total above.
+                                    is CostAtom.PayLife -> {}
                                     is CostAtom.ReturnToHand -> {
                                         val targets = context.costUtils.findAbilityBounceTargets(state, playerId, atom.filter)
                                         if (targets.size < atom.count) {

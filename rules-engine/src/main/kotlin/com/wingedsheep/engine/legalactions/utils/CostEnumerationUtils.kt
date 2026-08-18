@@ -23,6 +23,7 @@ import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
@@ -43,9 +44,45 @@ class CostEnumerationUtils(
         playerId: EntityId,
         sourceId: EntityId,
         amount: DynamicAmount,
-    ): Boolean = CostAmountResolver.resolve(
+    ): Boolean = canPayLifeAmounts(state, playerId, sourceId, listOf(amount))
+
+    /** Whether all mandatory life leaves of an activated-ability cost fit the current life total. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AbilityCost,
+    ): Boolean = canPayLifeAmounts(state, playerId, sourceId, CostAmountResolver.payLifeAmounts(cost))
+
+    /** Whether all mandatory life leaves of one additional cost fit the current life total. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AdditionalCost,
+    ): Boolean = canPayLifeAmounts(state, playerId, sourceId, CostAmountResolver.payLifeAmounts(cost))
+
+    /** Whether all mandatory life leaves across additional costs fit one pre-payment total. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        costs: Iterable<AdditionalCost>,
+    ): Boolean = canPayLifeAmounts(
+        state,
+        playerId,
+        sourceId,
+        costs.flatMap { cost -> CostAmountResolver.payLifeAmounts(cost) }
+    )
+
+    private fun canPayLifeAmounts(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        amounts: Iterable<DynamicAmount>,
+    ): Boolean = CostAmountResolver.resolvePayLifeTotal(
         state = state,
-        amount = amount,
+        amounts = amounts,
         sourceId = sourceId,
         controllerId = playerId,
         cardRegistry = cardRegistry,

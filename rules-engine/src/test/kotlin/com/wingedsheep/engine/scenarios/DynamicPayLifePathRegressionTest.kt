@@ -154,15 +154,19 @@ class DynamicPayLifePathRegressionTest : FunSpec({
         activatedAction(driver, sourceId).shouldNotBeNull()
     }
 
-    test("mana activation enumeration rejects an unaffordable dynamic life cost") {
+    test("mana activation enumeration omits an unaffordable dynamic life cost") {
         val driver = createDriver()
         val player = driver.activePlayer!!
         driver.setLifeTotal(player, 0)
         val sourceId = driver.putPermanentOnBattlefield(player, manaAbilityCard.name)
 
-        val action = activatedAction(driver, sourceId).shouldNotBeNull()
-        action.affordable shouldBe false
-        driver.submit(action.action).error shouldBe "Cannot pay ability cost"
+        activatedAction(driver, sourceId) shouldBe null
+        val action = ActivateAbility(
+            player,
+            sourceId,
+            driver.cardRegistry.getCard(manaAbilityCard.name)!!.activatedAbilities.single().id
+        )
+        driver.submit(action).error shouldBe "Cannot pay ability cost"
     }
 
     test("spell additional-cost enumeration rejects an unaffordable dynamic life cost") {

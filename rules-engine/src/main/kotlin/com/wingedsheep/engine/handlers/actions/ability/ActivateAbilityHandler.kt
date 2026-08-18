@@ -22,12 +22,14 @@ import com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.toEntityId
 import com.wingedsheep.engine.handlers.effects.bend.BendEvents
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.stack.StackResolver
@@ -113,6 +115,7 @@ class ActivateAbilityHandler(
     private val conditionEvaluator: ConditionEvaluator,
     private val triggerDetector: TriggerDetector,
     private val triggerProcessor: TriggerProcessor,
+    private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor,
     private val castPermissionUtils: CastPermissionUtils,
 ) : ActionHandler<ActivateAbility> {
     override val actionType: KClass<ActivateAbility> = ActivateAbility::class
@@ -2157,6 +2160,17 @@ class ActivateAbilityHandler(
             colorless = poolComponent.colorless,
             restrictedMana = poolComponent.restrictedMana,
         )
+        val payLifeAmounts = CostAmountResolver.payLifeAmounts(cost)
+        if (payLifeAmounts.isNotEmpty()) {
+            val lifeTotal = CostAmountResolver.resolvePayLifeTotal(
+                state = state,
+                amounts = payLifeAmounts,
+                sourceId = sourceId,
+                controllerId = playerId,
+                cardRegistry = cardRegistry,
+            ) ?: return false
+            if (state.lifeTotal(playerId) < lifeTotal) return false
+        }
         return when (cost) {
             is AbilityCost.Atom -> {
                 val mana = cost.manaCostOrNull
@@ -2301,15 +2315,16 @@ class ActivateAbilityHandler(
         val solution = manaSolver.solve(state, playerId, remainingCost, xToTap, excludeSources = excludeSources, spellContext = abilityContext, xManaRestriction = xManaRestriction)
             ?: return null
 
-        var currentState = state
-        var currentPool = pool
-        val events = mutableListOf<GameEvent>()
+        val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+            state = state,
+            solution = solution,
+            controllerId = playerId,
+        )
+        if (!sideEffectResult.success) return null
 
-        for (source in solution.sources) {
-            val (tappedState, tapEvent) = tap(currentState, source.entityId)
-            currentState = tappedState
-            tapEvent?.let(events::add)
-        }
+        var currentState = sideEffectResult.state
+        var currentPool = pool
+        val events = sideEffectResult.events.toMutableList()
 
         // Add produced mana to floating pool so costHandler.payAbilityCost can consume it.
         // When the source's ability is restricted (e.g. Steelswarm Operator's
@@ -3093,6 +3108,7 @@ class ActivateAbilityHandler(
                 services.conditionEvaluator,
                 services.triggerDetector,
                 services.triggerProcessor,
+                services.manaAbilitySideEffectExecutor,
                 services.castPermissionUtils
             )
         }

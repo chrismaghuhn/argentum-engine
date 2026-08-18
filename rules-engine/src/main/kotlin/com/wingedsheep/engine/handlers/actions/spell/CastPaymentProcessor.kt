@@ -398,10 +398,11 @@ class CastPaymentProcessor(
             // activated mana ability (e.g. Adarkar Wastes' "this land deals 1
             // damage to you"). The mana itself is consumed via
             // `solution.manaProduced` below.
-            val (stateAfterTaps, tapEvents) = manaAbilitySideEffectExecutor
+            val tapResult = manaAbilitySideEffectExecutor
                 .tapSourcesWithSideEffects(currentState, solution, playerId)
-            currentState = stateAfterTaps
-            events.addAll(tapEvents)
+            if (!tapResult.success) return PaymentResult(currentState, events, "Unable to pay mana ability side effect")
+            currentState = tapResult.state
+            events.addAll(tapResult.events)
 
             for ((_, production) in solution.manaProduced) {
                 when (production.color) {
