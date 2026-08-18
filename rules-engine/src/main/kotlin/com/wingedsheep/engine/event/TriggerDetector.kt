@@ -1667,7 +1667,7 @@ class TriggerDetector(
         }
 
         // Handle "whenever a creature deals damage to you" triggers (e.g., Aurification)
-        if (event is DamageDealtEvent && event.sourceId != null &&
+        if (event is DamageDealtEvent &&
             event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
             damageDetector.detectDamageToControllerTriggers(state, event, triggers, projected, index)
         }
@@ -2863,14 +2863,14 @@ class TriggerDetector(
         for (event in events) {
             if (event is DamageDealtEvent && event.isCombatDamage && event.sourceId != null &&
                 event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
-                val sourceContainer = state.getEntity(event.sourceId) ?: continue
-                val controller = sourceContainer.get<ControllerComponent>()?.playerId ?: continue
                 val info = CombatDamageInfo(event, event.sourceId, event.targetId)
-                combatDamageByController.getOrPut(controller) { mutableListOf() }.add(info)
+                damageSourceControllerAtDamage(event)?.let { controller ->
+                    combatDamageByController.getOrPut(controller) { mutableListOf() }.add(info)
+                }
                 combatDamageByDamagedPlayer.getOrPut(event.targetId) { mutableListOf() }.add(info)
             }
         }
-        if (combatDamageByController.isEmpty()) return
+        if (combatDamageByController.isEmpty() && combatDamageByDamagedPlayer.isEmpty()) return
 
         for (entry in index.getEntitiesForCategory(TriggerCategory.COMBAT_DAMAGE_BATCH)) {
             for (ability in entry.abilities) {
@@ -2882,23 +2882,10 @@ class TriggerDetector(
                     val controllerId = entry.controllerId
                     val damageEvents = combatDamageByDamagedPlayer[controllerId] ?: continue
                     val firstMatchingInfo = damageEvents.firstOrNull { info ->
-                        val sourceContainer = state.getEntity(info.sourceId) ?: return@firstOrNull false
-                        sourceContainer.get<CardComponent>() ?: return@firstOrNull false
-                        if (!projected.isCreature(info.sourceId)) return@firstOrNull false
-                        if (sourceContainer.has<FaceDownComponent>()) return@firstOrNull false
-                        predicateEvaluator.matches(
-                            state, projected, info.sourceId, trigger.sourceFilter,
-                            PredicateContext(
-                                controllerId = controllerId,
-                                sourceId = entry.entityId,
-                                damageSourceId = info.event.sourceId,
-                                damageRecipientId = info.event.targetId,
-                                damageRecipientKind = info.event.effectiveRecipientKind,
-                                damageRecipientKinds = info.event.effectiveRecipientKinds,
-                                damageSourceLastKnownSnapshot = info.event.damageSourceLastKnownSnapshot,
-                                damageRecipientLastKnownSnapshot = info.event.damageRecipientLastKnownSnapshot
+                        matcher.isDamageSourceCreatureAtDamage(state, projected, info.event) &&
+                            matcher.matchesDamageSourceFilter(
+                                trigger.sourceFilter, info.event, state, controllerId
                             )
-                        )
                     }
                     if (firstMatchingInfo != null) {
                         triggers.add(
@@ -2929,27 +2916,10 @@ class TriggerDetector(
                 // predicates (e.g. +1/+1 counters) and any other card/controller predicates are
                 // honored — not just the handful of card predicates handled inline.
                 val matchingInfos = damageEvents.filter { info ->
-                    val sourceContainer = state.getEntity(info.sourceId) ?: return@filter false
-                    sourceContainer.get<CardComponent>() ?: return@filter false
-                    if (!projected.isCreature(info.sourceId)) return@filter false
-                    if (sourceContainer.has<FaceDownComponent>()) return@filter false
-
-                    predicateEvaluator.matches(
-                        state,
-                        projected,
-                        info.sourceId,
-                        trigger.sourceFilter,
-                        PredicateContext(
-                            controllerId = controllerId,
-                            sourceId = entry.entityId,
-                            damageSourceId = info.event.sourceId,
-                            damageRecipientId = info.event.targetId,
-                            damageRecipientKind = info.event.effectiveRecipientKind,
-                            damageRecipientKinds = info.event.effectiveRecipientKinds,
-                            damageSourceLastKnownSnapshot = info.event.damageSourceLastKnownSnapshot,
-                            damageRecipientLastKnownSnapshot = info.event.damageRecipientLastKnownSnapshot
+                    matcher.isDamageSourceCreatureAtDamage(state, projected, info.event) &&
+                        matcher.matchesDamageSourceFilter(
+                            trigger.sourceFilter, info.event, state, controllerId
                         )
-                    )
                 }
 
                 // "deal combat damage to a player" batches per damaged player: the ability
@@ -2976,6 +2946,20 @@ class TriggerDetector(
                 }
             }
         }
+    }
+
+    /**
+     * Resolve the source controller from the damage-time object, not an entity with the same id
+     * after a zone change. A missing source snapshot leaves the source controller unknown; using
+     * the current entity in that case would let a same-id replacement enter the wrong batch.
+     */
+    private fun damageSourceControllerAtDamage(
+        event: DamageDealtEvent,
+    ): EntityId? {
+        val sourceId = event.sourceId ?: return null
+        return event.damageSourceLastKnownSnapshot
+            ?.takeIf { it.entityId == sourceId }
+            ?.controllerId
     }
 
     /**

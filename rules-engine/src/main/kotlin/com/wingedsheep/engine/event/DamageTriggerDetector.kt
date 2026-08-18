@@ -210,7 +210,6 @@ class DamageTriggerDetector(
         index: TriggerIndex
     ) {
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) return
-        if (event.sourceId == null) return
         val damagedPlayerId = event.targetId
 
         for (entry in index.damageToYouObservers) {
@@ -226,15 +225,18 @@ class DamageTriggerDetector(
                     matcher.matchesDamageSourceFilter(
                         trigger.sourceFilter, event, state, entry.controllerId
                     )) {
+                    val triggerContext = if (trigger.sourceFilter == null) {
+                        TriggerContext.fromEvent(event)
+                    } else {
+                        TriggerContext.fromSourceFilteredDamageEvent(event)
+                    } ?: continue
                     triggers.add(
                         PendingTrigger(
                             ability = ability,
                             sourceId = entry.entityId,
                             sourceName = entry.cardComponent.name,
                             controllerId = entry.controllerId,
-                            triggerContext = TriggerContext.fromSourceFilteredDamageEvent(
-                                event,
-                            ) ?: continue
+                            triggerContext = triggerContext
                         )
                     )
                 }
@@ -417,14 +419,7 @@ class DamageTriggerDetector(
         index: TriggerIndex
     ) {
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) return
-        val damageSourceId = event.sourceId ?: return
-        val damagedPlayerId = event.targetId
-
-        // Verify the damage source is a creature (face-down creatures have no subtypes)
-        val sourceContainer = state.getEntity(damageSourceId) ?: return
-        val sourceCard = sourceContainer.get<CardComponent>() ?: return
-        if (!sourceCard.typeLine.isCreature) return
-        if (sourceContainer.has<FaceDownComponent>()) return
+        if (!matcher.isDamageSourceCreatureAtDamage(state, projected, event)) return
 
         for (entry in index.subtypeDamageObservers) {
             for (ability in entry.abilities) {
@@ -436,7 +431,9 @@ class DamageTriggerDetector(
                     // Check if the sourceFilter has a subtype requirement
                     val filter = trigger.sourceFilter
                     val subtypeValue = if (filter is GameObjectFilter) matcher.extractSubtypeFromFilter(filter) else null
-                    if (subtypeValue != null && projected.hasSubtype(damageSourceId, subtypeValue)) {
+                    if (subtypeValue != null &&
+                        matcher.matchesDamageSourceFilter(filter, event, state, entry.controllerId)
+                    ) {
                         triggers.add(
                             PendingTrigger(
                                 ability = ability,

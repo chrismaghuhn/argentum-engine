@@ -1591,6 +1591,30 @@ class TriggerMatcher(
     }
 
     /**
+     * Whether a damage source was a creature at damage time, retaining the same stamped/LKI
+     * choice as [matchesDamageSourceFilter]. Combat batch and subtype-specialized dispatches have
+     * an intrinsic creature gate in addition to their source filter; reading the current entity
+     * unconditionally would classify a same-id replacement instead of the event source.
+     */
+    fun isDamageSourceCreatureAtDamage(
+        state: GameState,
+        projected: ProjectedState,
+        event: DamageDealtEvent,
+    ): Boolean {
+        val sourceId = event.sourceId ?: return false
+        val snapshot = event.damageSourceLastKnownSnapshot
+            ?.takeIf { it.entityId == sourceId }
+            ?: return false
+        if (!state.isCapturedBattlefieldObjectLive(sourceId, snapshot)) {
+            return snapshot.typeLine?.isCreature == true && !snapshot.wasFaceDown
+        }
+
+        val container = state.getEntity(sourceId) ?: return false
+        if (container.get<CardComponent>() == null) return false
+        return projected.isCreature(sourceId) && !projected.isFaceDown(sourceId)
+    }
+
+    /**
      * The damage recipient's controller, preferring live state but falling back to the controller
      * captured at damage time ([DamageDealtEvent.targetControllerId]). A creature destroyed by the
      * same damage event has already moved to the graveyard — losing its [ControllerComponent] — by

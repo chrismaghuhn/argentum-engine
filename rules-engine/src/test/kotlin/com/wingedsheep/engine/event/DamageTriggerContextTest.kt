@@ -26,6 +26,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
+import com.wingedsheep.engine.state.components.identity.RingBearerComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -36,6 +37,7 @@ import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -47,6 +49,7 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.events.DamageType
 import com.wingedsheep.sdk.scripting.events.RecipientFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
@@ -56,6 +59,7 @@ import com.wingedsheep.sdk.scripting.values.EntityReference
 import com.wingedsheep.sdk.scripting.values.contextScopedReferenceIn
 import com.wingedsheep.sdk.scripting.effects.MoveToZoneEffect
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 
@@ -591,6 +595,142 @@ class DamageTriggerContextTest : FunSpec({
             state, creatureEvent, creatureTriggers, state.projectedState, index
         )
         creatureTriggers shouldBe emptyList()
+    }
+
+    test("source-blind damage-to-you observers accept an unknown source") {
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val observer = TriggerIndex.IndexedEntity(
+            entityId = EntityId("source-blind-observer"),
+            cardComponent = CardComponent(
+                cardDefinitionId = "source-blind-observer",
+                name = "Source-Blind Observer",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT))
+            ),
+            controllerId = EntityId("player"),
+            abilities = listOf(
+                com.wingedsheep.sdk.scripting.TriggeredAbility(
+                    id = AbilityId("source-blind-observer-ability"),
+                    trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.You),
+                    binding = TriggerBinding.ANY,
+                    effect = Effects.DrawCards(1)
+                )
+            )
+        )
+        val index = TriggerIndex(
+            byCategory = emptyMap(),
+            aurasByTarget = emptyMap(),
+            grantProviders = emptyList(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            damageToYouObservers = listOf(observer),
+            subtypeDamageObservers = emptyList(),
+            damageObservers = emptyList(),
+            creatureDamageDeathTrackers = emptyList()
+        )
+        val event = damageEvent.copy(
+            sourceId = null,
+            targetId = EntityId("player"),
+            targetIsPlayer = true,
+            recipientKind = DamageRecipientKind.PLAYER,
+            recipientKinds = DamageRecipientKindSet.PLAYER,
+            damageSourceLastKnownSnapshot = null,
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+
+        DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            matcher,
+        ).detectDamageToControllerTriggers(
+            GameState(), event, triggers, GameState().projectedState, index
+        )
+
+        triggers shouldHaveSize 1
+        triggers.single().triggerContext.triggeringEntityId shouldBe event.targetId
+        triggers.single().triggerContext.damageSourceEntityId shouldBe null
+        triggers.single().triggerContext.damageRecipientEntityId shouldBe event.targetId
+    }
+
+    test("subtype damage observers use source LKI after same-id reuse") {
+        val controllerId = EntityId("subtype-observer-controller")
+        val sourceId = EntityId("reused-subtype-source")
+        val observer = TriggerIndex.IndexedEntity(
+            entityId = EntityId("subtype-observer"),
+            cardComponent = CardComponent(
+                cardDefinitionId = "subtype-observer",
+                name = "Subtype Observer",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+            ),
+            controllerId = controllerId,
+            abilities = listOf(
+                com.wingedsheep.sdk.scripting.TriggeredAbility(
+                    id = AbilityId("subtype-observer-ability"),
+                    trigger = EventPattern.DealsDamageEvent(
+                        damageType = DamageType.Combat,
+                        recipient = RecipientFilter.AnyPlayer,
+                        sourceFilter = GameObjectFilter.Creature.withSubtype("Goblin"),
+                    ),
+                    binding = TriggerBinding.ANY,
+                    effect = Effects.DrawCards(1),
+                )
+            ),
+        )
+        val index = TriggerIndex(
+            byCategory = emptyMap(),
+            aurasByTarget = emptyMap(),
+            grantProviders = emptyList(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            damageToYouObservers = emptyList(),
+            subtypeDamageObservers = listOf(observer),
+            damageObservers = emptyList(),
+            creatureDamageDeathTrackers = emptyList(),
+        )
+        val state = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId)),
+        ).withEntity(
+            sourceId,
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = "replacement-elf",
+                    name = "Replacement Elf",
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(
+                        cardTypes = setOf(CardType.CREATURE),
+                        subtypes = setOf(Subtype("Elf")),
+                    ),
+                    baseStats = CreatureStats(2, 2),
+                ),
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(102L),
+            )
+        )
+        val event = damageEvent.copy(
+            sourceId = sourceId,
+            targetId = EntityId("damaged-player"),
+            targetIsPlayer = true,
+            recipientKind = DamageRecipientKind.PLAYER,
+            recipientKinds = DamageRecipientKindSet.PLAYER,
+            damageSourceLastKnownSnapshot = EntitySnapshot(
+                entityId = sourceId,
+                controllerId = controllerId,
+                typeLine = TypeLine(
+                    cardTypes = setOf(CardType.CREATURE),
+                    subtypes = setOf(Subtype("Goblin")),
+                ),
+                battlefieldEntryTimestamp = 101L,
+            ),
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+
+        DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        ).detectSubtypeDamageToPlayerTriggers(
+            state, event, triggers, state.projectedState, index
+        )
+
+        triggers shouldHaveSize 1
+        triggers.single().triggerContext.damageSourceEntityId shouldBe sourceId
     }
 
     test("damage source predicates do not fall back to the recipient") {
@@ -1322,6 +1462,63 @@ class DamageTriggerContextTest : FunSpec({
                 damageSourceLastKnownSnapshot = tokenSnapshot,
             ),
             reusedState,
+            controllerId,
+        ) shouldBe false
+    }
+
+    test("damage LKI source filters preserve projected supertypes") {
+        val controllerId = EntityId("legendary-source-controller")
+        val legendaryId = EntityId("legendary-source")
+        val legendaryCard = CardComponent(
+            cardDefinitionId = "legendary-source-card",
+            name = "Legendary Source",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(
+                cardTypes = setOf(CardType.CREATURE),
+            ),
+            baseStats = CreatureStats(2, 2),
+        )
+        val state = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(legendaryId))
+        ).withEntity(
+            legendaryId,
+            ComponentContainer.of(
+                legendaryCard,
+                ControllerComponent(controllerId),
+                RingBearerComponent(ownerId = controllerId),
+                BattlefieldEntryTimestampComponent(91L),
+            )
+        )
+        state.projectedState.isLegendary(legendaryId) shouldBe true
+        val snapshot = DamageUtils.captureDamageEntitySnapshot(state, legendaryId)
+
+        snapshot?.typeLine?.supertypes shouldBe setOf(Supertype.LEGENDARY)
+        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter(
+                    cardPredicates = listOf(CardPredicate.IsLegendary),
+                ),
+            ),
+            damageEvent.copy(
+                sourceId = legendaryId,
+                damageSourceLastKnownSnapshot = snapshot,
+            ),
+            GameState(),
+            controllerId,
+        ) shouldBe true
+        TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()).matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter(
+                    cardPredicates = listOf(CardPredicate.IsNonlegendary),
+                ),
+            ),
+            damageEvent.copy(
+                sourceId = legendaryId,
+                damageSourceLastKnownSnapshot = snapshot,
+            ),
+            GameState(),
             controllerId,
         ) shouldBe false
     }

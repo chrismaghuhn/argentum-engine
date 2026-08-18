@@ -10,6 +10,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
@@ -161,6 +162,8 @@ data class EntitySnapshot(
     val wasAttacking: Boolean = false,
     /** True if the leaving entity was a token (CR 704.5d — suppress persist-style return triggers). */
     val wasToken: Boolean = false,
+    /** True if the projected permanent was face down at capture time. */
+    val wasFaceDown: Boolean = false,
     /**
      * True if this permanent carried the suspected designation (CR 701.60a) at capture time.
      *
@@ -199,6 +202,7 @@ data class EntitySnapshot(
                 lostAllAbilities = projected.hasLostAllAbilities(entityId),
                 wasSuspected = projected.isSuspected(entityId),
                 wasToken = state.getEntity(entityId)?.has<TokenComponent>() == true,
+                wasFaceDown = projected.isFaceDown(entityId),
                 battlefieldEntryTimestamp = state.getEntity(entityId)
                     ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
                 name = state.getEntity(entityId)?.get<CardComponent>()?.name,
@@ -231,6 +235,7 @@ fun captureEntitySnapshots(
         supertypes = projected.getSupertypes(id),
         controllerId = projected.getController(id),
         colors = projected.getColors(id),
+        wasFaceDown = projected.isFaceDown(id),
         wasSuspected = projected.isSuspected(id),
     )
 }
@@ -251,6 +256,7 @@ fun captureEntitySnapshots(
     val container = state.getEntity(snapshot.entityId)
     snapshot.copy(
         wasToken = container?.has<TokenComponent>() ?: false,
+        wasFaceDown = state.projectedState.isFaceDown(snapshot.entityId),
         battlefieldEntryTimestamp = container
             ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
         name = container?.get<CardComponent>()?.name,
@@ -295,9 +301,13 @@ fun projectedTypeLine(state: GameState, entityId: EntityId, baseTypeLine: TypeLi
         .mapNotNull { runCatching { CardType.valueOf(it) }.getOrNull() }
         .toSet()
         .ifEmpty { baseTypeLine.cardTypes }
+    val supertypes = projected.types
+        .mapNotNull { runCatching { Supertype.valueOf(it) }.getOrNull() }
+        .toSet()
     return baseTypeLine.copy(
         cardTypes = cardTypes,
         subtypes = projected.subtypes.map { Subtype(it) }.toSet(),
+        supertypes = supertypes,
     )
 }
 
