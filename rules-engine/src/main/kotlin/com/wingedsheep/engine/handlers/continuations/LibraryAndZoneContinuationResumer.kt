@@ -478,11 +478,6 @@ class LibraryAndZoneContinuationResumer(
         }
         val hostId = hostIds.first()
 
-        // Host must still be on the battlefield.
-        if (!state.getBattlefield().contains(hostId)) {
-            return ExecutionResult.error(state, "Selected attachment host is no longer legal")
-        }
-
         val effectHosts = continuation.hostFilter?.let { hostFilter ->
             targetFinder.findLegalTargets(
                 state = state,
@@ -498,6 +493,12 @@ class LibraryAndZoneContinuationResumer(
 
         val cardComponent = state.getEntity(continuation.cardId)?.get<CardComponent>()
             ?: return ExecutionResult.error(state, "Attached card is no longer available")
+        // A non-Aura attachment (currently Equipment) must attach to a permanent. Aura entry is
+        // different: CR 303.4f also permits a player, and the Aura host seam below revalidates
+        // that complete object/player domain without applying targeting restrictions.
+        if (!cardComponent.isAura && hostId !in state.getBattlefield()) {
+            return ExecutionResult.error(state, "Selected attachment host is no longer legal")
+        }
         if (cardComponent.isAura && hostId !in auraHostLegality.findLegalHosts(
                 state = state,
                 auraId = continuation.cardId,

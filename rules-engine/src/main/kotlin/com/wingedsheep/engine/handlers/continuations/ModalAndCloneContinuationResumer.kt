@@ -1420,8 +1420,8 @@ class ModalAndCloneContinuationResumer(
      *
      * Creates exactly one token, already attached to the chosen host, then asks again for the
      * next one when the effect owes more than one Aura copy. An empty pick (or a host that left
-     * the battlefield while the decision was outstanding) is rejected so a stale response cannot
-     * consume the continuation or silently drop an owed token.
+     * the legal attachment domain while the decision was outstanding) is rejected so a stale
+     * response cannot consume the continuation or silently drop an owed token.
      */
     fun resumeCreateTokenCopyAuraHost(
         state: GameState,
@@ -1434,7 +1434,7 @@ class ModalAndCloneContinuationResumer(
         }
 
         val hostId = response.selectedTargets[0]?.firstOrNull()
-        if (hostId == null || hostId !in state.getBattlefield()) {
+        if (hostId == null) {
             return ExecutionResult.error(state, "Selected Aura token host is no longer legal")
         }
 

@@ -14,6 +14,7 @@ import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -170,6 +171,24 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
                 target = aura,
                 hostFilter = GameObjectFilter.Creature.youControl(),
             )
+        }
+    }
+
+    private val directAuraEntryProbe = card("Direct Aura Entry Probe") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        oracleText = "Return target Aura card from your graveyard to the battlefield."
+        spell {
+            val aura = target(
+                "target Aura card",
+                TargetObject(
+                    filter = TargetFilter(
+                        baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura"),
+                        zone = Zone.GRAVEYARD,
+                    )
+                )
+            )
+            effect = Effects.PutOntoBattlefield(aura)
         }
     }
 
@@ -346,6 +365,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         cardRegistry.register(cantBeEnchantedCreature)
         cardRegistry.register(ordinaryCreatureTargetingProbe)
         cardRegistry.register(explicitAttachProbe)
+        cardRegistry.register(directAuraEntryProbe)
         cardRegistry.register(auraCopyProbe)
         cardRegistry.register(planeswalkerAura)
         cardRegistry.register(malformedAura)
@@ -491,6 +511,39 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
             hostDecision.legalTargets.getValue(0) shouldContain game.player2Id
             game.selectTargets(listOf(game.player2Id)).error shouldBe null
+        }
+
+        test("allows a direct non-targeting Aura entry to attach to a player") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardInGraveyard(1, "Test Aura for Players")
+                .withCardInHand(1, "Direct Aura Entry Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getZone(game.player1Id, Zone.GRAVEYARD).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Players"
+            }
+            val probeId = game.state.getZone(game.player1Id, Zone.HAND).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Direct Aura Entry Probe"
+            }
+
+            game.execute(
+                CastSpell(
+                    playerId = game.player1Id,
+                    cardId = probeId,
+                    targets = listOf(ChosenTarget.Card(auraId, game.player1Id, Zone.GRAVEYARD)),
+                )
+            ).error shouldBe null
+            game.resolveStack()
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain game.player1Id
+            game.selectTargets(listOf(game.player1Id)).error shouldBe null
+
+            game.state.getBattlefield(game.player1Id) shouldContain auraId
+            game.state.getEntity(auraId)?.get<AttachedToComponent>()?.targetId shouldBe game.player1Id
         }
 
         test("ignores shroud for the specialized creature-or-player union requirement") {
@@ -869,6 +922,33 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             withClue("the black copy is not prevented by protection from green") {
                 hostDecision.legalTargets.getValue(0) shouldContain protectedHostId
             }
+        }
+
+        test("allows an Aura token copy to attach to a player") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Aura for Players")
+                .withCardInHand(1, "Aura Copy Characteristics Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Players"
+            }
+
+            game.castSpell(1, "Aura Copy Characteristics Probe", auraId).error shouldBe null
+            game.resolveStack()
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            hostDecision.legalTargets.getValue(0) shouldContain game.player1Id
+            game.selectTargets(listOf(game.player1Id)).error shouldBe null
+
+            val tokenId = game.state.getBattlefield(game.player1Id).first { entityId ->
+                entityId != auraId &&
+                    game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Players"
+            }
+            game.state.getEntity(tokenId)?.get<AttachedToComponent>()?.targetId shouldBe game.player1Id
         }
 
         test("rejects a stale Aura token host response without consuming the continuation") {
