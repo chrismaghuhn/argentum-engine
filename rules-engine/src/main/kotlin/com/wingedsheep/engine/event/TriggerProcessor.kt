@@ -995,7 +995,11 @@ class TriggerProcessor(
 
         return stackResolver.putTriggeredAbility(
             state, abilityComponent, targets,
-            targetRequirements = outerRequirements,
+            // When a mandatory target was unavailable, [effectOverride] is the printed
+            // "otherwise" branch. It no longer carries the original target choice, so keep the
+            // stack object targetless; otherwise CR 608.2b would incorrectly fizzle the alternate
+            // effect merely because the original target requirement remains in metadata.
+            targetRequirements = if (effectOverride != null) emptyList() else outerRequirements,
             causedByAttack = causedByAttack
         )
     }

@@ -109,7 +109,7 @@ class StackResolver(
     private fun hasTargetPayload(
         targets: List<ChosenTarget>,
         requirements: List<TargetRequirement>
-    ): Boolean = targets.isNotEmpty() || requirements.any { it.count != 0 }
+    ): Boolean = targets.isNotEmpty() || requirements.any { it.effectiveMinCount > 0 }
 
     /**
      * Re-validates a spliced card's own targets as the spell resolves (CR 608.2b via 702.47d): the
