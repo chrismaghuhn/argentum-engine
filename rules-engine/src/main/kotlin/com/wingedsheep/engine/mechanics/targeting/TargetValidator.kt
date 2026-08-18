@@ -106,17 +106,27 @@ class TargetValidator {
             triggeringPlayerId = triggeringPlayerId,
             storedCollections = storedCollections
         )
-        val counts = inferSelectedCounts(
-            state = state,
-            targets = targets,
-            requirements = effectiveRequirements,
-            casterId = casterId,
-            sourceColors = sourceColors,
-            sourceSubtypes = sourceSubtypes,
-            sourceId = sourceId,
-            xValue = xValue,
-            targetingSourceType = targetingSourceType
-        )
+        // An empty payload is ambiguous at this legacy/direct boundary. Preserve a mandatory
+        // requirement's locked slot count so a malformed empty payload remains a target payload
+        // and CR 608.2b can reject it at resolution. Optional/up-to requirements legitimately
+        // selected zero targets and therefore keep zero slots.
+        val counts = if (targets.isEmpty()) {
+            effectiveRequirements.map { requirement ->
+                if (requirement.effectiveMinCount > 0) requirement.count else 0
+            }
+        } else {
+            inferSelectedCounts(
+                state = state,
+                targets = targets,
+                requirements = effectiveRequirements,
+                casterId = casterId,
+                sourceColors = sourceColors,
+                sourceSubtypes = sourceSubtypes,
+                sourceId = sourceId,
+                xValue = xValue,
+                targetingSourceType = targetingSourceType
+            )
+        }
         val locked = lockRequirementsForSelectedCounts(effectiveRequirements, counts)
         return locked.map { requirement ->
             lockDynamicAggregate(

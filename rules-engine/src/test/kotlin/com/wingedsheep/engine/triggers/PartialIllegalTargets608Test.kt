@@ -21,6 +21,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.player.CreaturesDiedThisTurnComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
@@ -1110,6 +1111,73 @@ class PartialIllegalTargets608Test : FunSpec({
 
         driver.getLifeTotal(driver.player1) shouldBe lifeBefore
         driver.stackSize shouldBe 0
+    }
+
+    test("608-27: stack construction preserves an empty required spell payload") {
+        val driver = driver()
+        driver.registerCard(malformedPayloadSpell)
+        val spellId = driver.putCardInHand(driver.player1, malformedPayloadSpell.name)
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+
+        val result = StackResolver(driver.cardRegistry).castSpell(
+            state = driver.state,
+            cardId = spellId,
+            casterId = driver.player1,
+            targets = emptyList(),
+            targetRequirements = listOf(TargetCreature()),
+            targetLockState = driver.state
+        )
+        result.error shouldBe null
+        driver.replaceState(result.newState)
+
+        val stackId = driver.state.stack.single()
+        driver.state.getEntity(stackId)?.get<TargetsComponent>()?.targetRequirements shouldBe
+            listOf(TargetCreature())
+
+        driver.bothPass()
+
+        // A malformed locked target payload must fizzle; it must not take the targetless path.
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
+    }
+
+    test("608-28: triggered and activated stack construction preserve required payloads") {
+        val triggeredDriver = driver()
+        val triggeredLifeBefore = triggeredDriver.getLifeTotal(triggeredDriver.player1)
+
+        putTriggeredAbility(
+            triggeredDriver,
+            effect = Effects.GainLife(1),
+            targets = emptyList(),
+            targetRequirements = listOf(TargetCreature())
+        )
+        val triggeredStackId = triggeredDriver.state.stack.single()
+        triggeredDriver.state.getEntity(triggeredStackId)?.get<TargetsComponent>()
+            ?.targetRequirements shouldBe listOf(TargetCreature())
+        triggeredDriver.bothPass()
+        triggeredDriver.getLifeTotal(triggeredDriver.player1) shouldBe triggeredLifeBefore
+
+        val activatedDriver = driver()
+        val sourceId = activatedDriver.putCreatureOnBattlefield(activatedDriver.player1, "Grizzly Bears")
+        val activatedLifeBefore = activatedDriver.getLifeTotal(activatedDriver.player1)
+        val result = StackResolver(activatedDriver.cardRegistry).putActivatedAbility(
+            state = activatedDriver.state,
+            ability = ActivatedAbilityOnStackComponent(
+                sourceId = sourceId,
+                sourceName = "Synthetic malformed activated ability",
+                controllerId = activatedDriver.player1,
+                effect = Effects.GainLife(1)
+            ),
+            targets = emptyList(),
+            targetRequirements = listOf(TargetCreature())
+        )
+        result.error shouldBe null
+        activatedDriver.replaceState(result.newState)
+        val activatedStackId = activatedDriver.state.stack.single()
+        activatedDriver.state.getEntity(activatedStackId)?.get<TargetsComponent>()
+            ?.targetRequirements shouldBe listOf(TargetCreature())
+        activatedDriver.bothPass()
+        activatedDriver.getLifeTotal(activatedDriver.player1) shouldBe activatedLifeBefore
     }
 
     test("608-17: a dynamic up-to maximum is locked before resolution") {

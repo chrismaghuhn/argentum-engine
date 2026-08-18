@@ -105,6 +105,12 @@ class StackResolver(
     private fun TargetsComponent.hasResolutionTargetPayload(): Boolean =
         targets.isNotEmpty() || targetRequirements.any { it.count != 0 }
 
+    /** Preserve malformed-but-targeted payloads so resolution can reject them fail-closed. */
+    private fun hasTargetPayload(
+        targets: List<ChosenTarget>,
+        requirements: List<TargetRequirement>
+    ): Boolean = targets.isNotEmpty() || requirements.any { it.count != 0 }
+
     /**
      * Re-validates a spliced card's own targets as the spell resolves (CR 608.2b via 702.47d): the
      * spliced text is skipped when its targets have become illegal, exactly as a modal spell's
@@ -479,7 +485,7 @@ class StackResolver(
                 faceIndex = faceIndex,
                 castTimeFlags = castTimeFlags
             ))
-            if (effectiveTargets.isNotEmpty()) {
+            if (hasTargetPayload(effectiveTargets, lockedEffectiveTargetRequirements)) {
                 updated = updated.with(
                     TargetsComponent.capture(targetLockState, effectiveTargets, lockedEffectiveTargetRequirements)
                 )
@@ -814,7 +820,7 @@ class StackResolver(
             }
         )
         var container = ComponentContainer.of(lockedAbility)
-        if (targets.isNotEmpty()) {
+        if (hasTargetPayload(targets, lockedTargetRequirements)) {
             container = container.with(TargetsComponent.capture(state, targets, lockedTargetRequirements))
         }
 
@@ -969,7 +975,7 @@ class StackResolver(
         )
 
         var container = ComponentContainer.of(copiedCardComp, copiedSpellComp)
-        if (effectiveTargets.isNotEmpty()) {
+        if (hasTargetPayload(effectiveTargets, lockedRequirements)) {
             container = container.with(
                 if (inheritedSourceTargets != null) {
                     TargetsComponent(
@@ -1056,7 +1062,7 @@ class StackResolver(
             targetRequirements
         }
         var container = ComponentContainer.of(ability)
-        if (targets.isNotEmpty()) {
+        if (hasTargetPayload(targets, lockedTargetRequirements)) {
             container = container.with(
                 TargetsComponent.capture(targetLockState, targets, lockedTargetRequirements)
             )
