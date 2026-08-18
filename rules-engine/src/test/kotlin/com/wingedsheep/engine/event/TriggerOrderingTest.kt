@@ -30,8 +30,10 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.conditions.BlightWasPaid
+import com.wingedsheep.sdk.scripting.conditions.SourceChosenModeIs
 import com.wingedsheep.sdk.scripting.conditions.WaterbendWasPaid
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.DealDamagePerEntityInZoneEffect
 import com.wingedsheep.sdk.scripting.effects.EmitBendEventEffect
 import com.wingedsheep.sdk.scripting.effects.EmitTrainedEventEffect
 import com.wingedsheep.sdk.scripting.effects.MayEffect
@@ -742,6 +744,42 @@ class TriggerOrderingTest : FunSpec({
         )
 
         firstKey shouldBe secondKey
+    }
+
+    test("TO-22j: semantic mode keys are not treated as entity references") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "mode-key")
+        val first = base.copy(
+            ability = base.ability.copy(interveningIf = SourceChosenModeIs("mode-alpha"))
+        )
+        val second = base.copy(
+            ability = base.ability.copy(interveningIf = SourceChosenModeIs("mode-beta"))
+        )
+
+        TriggerOrderingKey.forTrigger(driver.state, first) shouldNotBe
+            TriggerOrderingKey.forTrigger(driver.state, second)
+    }
+
+    test("TO-22k: entity-id collections are canonicalized without allocation handles") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "entity-collection")
+        val first = base.copy(
+            ability = base.ability.copy(
+                effect = DealDamagePerEntityInZoneEffect(
+                    entityIds = listOf(EntityId("runtime-entity-1"))
+                )
+            )
+        )
+        val second = base.copy(
+            ability = base.ability.copy(
+                effect = DealDamagePerEntityInZoneEffect(
+                    entityIds = listOf(EntityId("runtime-entity-2"))
+                )
+            )
+        )
+
+        TriggerOrderingKey.forTrigger(driver.state, first) shouldBe
+            TriggerOrderingKey.forTrigger(driver.state, second)
     }
 
     test("TO-23: delayed occurrence options are independent of detector candidate order") {

@@ -47,14 +47,44 @@ internal object TriggerOrderingKey {
         "anyOf",
         "cardPredicates",
         "conditions",
+        "delvedCards",
+        "discardedCards",
+        "entityIds",
+        "exiledCards",
         "predicates",
+        "sacrificedPermanents",
         "statePredicates",
         "subtypes",
+        "tapForGenericPermanents",
+        "tappedPermanents",
+        "variableCostPermanents",
         "zones",
     )
 
-    /** AbilityId and card-definition coordinates are strings, not EntityId references. */
-    private val nonEntityIdFields = setOf("abilityId", "cardDefinitionId")
+    /**
+     * EntityId types are erased when SDK values are encoded to JSON. Keep this list explicit rather
+     * than treating every `*Id` field as an entity reference: fields such as `modeId` are semantic
+     * card-defined keys, while these fields are the SDK's actual EntityId-bearing coordinates.
+     */
+    private val entityReferenceFields = setOf(
+        "beheldCards",
+        "blightTargets",
+        "bouncedPermanents",
+        "delvedCards",
+        "discardedCards",
+        "entityId",
+        "entityIds",
+        "exiledCards",
+        "excludeSourceId",
+        "harmonizeCreature",
+        "sacrificedPermanents",
+        "tapForGenericPermanents",
+        "tappedPermanents",
+        "variableCostPermanents",
+    )
+
+    /** Map fields whose JSON object keys are EntityIds rather than ordinary semantic strings. */
+    private val entityReferenceObjectKeyFields = setOf("convokedCreatures")
 
     /** Raw generated ability handles are intentionally absent from semantic serialization. */
     private val runtimeFieldsToOmit = setOf("abilityId")
@@ -278,20 +308,23 @@ internal object TriggerOrderingKey {
                         it.key !in runtimeFieldsToOmit &&
                         (!atRoot || it.key !in rootFieldsToOmit)
                 }
-                .sortedBy { it.key }
                 .map { (key, value) ->
-                    listOf(
-                        key,
-                        canonicalJsonKey(
-                            value,
-                            state,
-                            visited,
-                            fieldName = key,
-                            rootFieldsToOmit = rootFieldsToOmit,
-                            atRoot = false,
-                        )
+                    val canonicalObjectKey = if (fieldName in entityReferenceObjectKeyFields) {
+                        fields("entity-id", semanticEntityKey(state, EntityId(key), visited))
+                    } else {
+                        key
+                    }
+                    canonicalObjectKey to canonicalJsonKey(
+                        value,
+                        state,
+                        visited,
+                        fieldName = key,
+                        rootFieldsToOmit = rootFieldsToOmit,
+                        atRoot = false,
                     )
                 }
+                .sortedBy { it.first }
+                .map { (key, value) -> listOf(key, value) }
         )
         is JsonArray -> {
             val values = element.map {
@@ -308,11 +341,7 @@ internal object TriggerOrderingKey {
         }
         is JsonNull -> "null"
         is JsonPrimitive -> {
-            if (
-                element.isString &&
-                fieldName?.endsWith("Id") == true &&
-                fieldName !in nonEntityIdFields
-            ) {
+            if (element.isString && fieldName in entityReferenceFields) {
                 val referencedId = EntityId(element.content)
                 val projectedReference = when {
                     state.turnOrder.contains(referencedId) || state.getEntity(referencedId) != null ->
