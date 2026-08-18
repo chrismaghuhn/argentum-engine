@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.LossReason
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
@@ -17,6 +18,7 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.MayEffect
@@ -219,6 +221,48 @@ class TriggerOrderingTest : FunSpec({
         ) shouldBe TriggerPlacementStage.NORMAL
     }
 
+    test("TO-19b: the detector stamps the branch that actually matched") {
+        val driver = newDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val compositeAbility = TriggeredAbility.create(
+            trigger = EventPattern.AnyOf(
+                listOf(
+                    EventPattern.AbilityActivatedEvent(),
+                    EventPattern.AbilityTriggeredEvent(),
+                )
+            ),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().also {
+            it.register("Sol Ring", listOf(compositeAbility))
+        }
+        val detector = TriggerDetector(driver.cardRegistry, abilityRegistry)
+
+        detector.detectTriggers(
+            driver.state,
+            listOf(
+                AbilityActivatedEvent(
+                    sourceId = source,
+                    sourceName = "Sol Ring",
+                    controllerId = driver.player1,
+                )
+            )
+        ).single().placementStage shouldBe TriggerPlacementStage.NORMAL
+
+        detector.detectTriggers(
+            driver.state,
+            listOf(
+                AbilityTriggeredEvent(
+                    sourceId = source,
+                    sourceName = "Sol Ring",
+                    controllerId = driver.player1,
+                    description = "triggered"
+                )
+            )
+        ).single().placementStage shouldBe TriggerPlacementStage.ABILITY_TRIGGERED
+    }
+
     test("TO-20: trigger ordering canonicalizes detector-order permutations") {
         fun pendingDescriptions(input: List<String>): List<String> {
             val driver = newDriver()
@@ -232,6 +276,50 @@ class TriggerOrderingTest : FunSpec({
 
         pendingDescriptions(listOf("detector-a", "detector-b")) shouldBe
             pendingDescriptions(listOf("detector-b", "detector-a"))
+    }
+
+    test("TO-21: distinct cardless stack objects retain distinct semantic ordering keys") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+        val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+        val firstStackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "first firebending ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "first firebending ability"
+        )
+        val secondStackAbility = firstStackAbility.copy(
+            sourceName = "second firebending ability",
+            description = "second firebending ability"
+        )
+        driver.replaceState(
+            stateWithBothIds
+                .withEntity(firstStackObject, ComponentContainer.of(firstStackAbility))
+                .withEntity(secondStackObject, ComponentContainer.of(secondStackAbility))
+        )
+
+        val firstTarget = base.copy(
+            triggerContext = TriggerContext(triggeringEntityId = firstStackObject)
+        )
+        val secondTarget = base.copy(
+            triggerContext = TriggerContext(triggeringEntityId = secondStackObject)
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(driver.state, firstTarget)
+        val secondKey = TriggerOrderingKey.forTrigger(driver.state, secondTarget)
+        (firstKey == secondKey) shouldBe false
+
+        fun normalized(input: List<PendingTrigger>): List<EntityId?> =
+            process(driver, input).state
+                .peekContinuation()
+                .shouldBeInstanceOf<TriggerOrderingContinuation>()
+                .triggers
+                .map { it.triggerContext.triggeringEntityId }
+
+        normalized(listOf(firstTarget, secondTarget)) shouldBe
+            normalized(listOf(secondTarget, firstTarget))
     }
 
     test("TO-15: duplicate trigger labels are disambiguated without exposing trigger context") {
@@ -428,6 +516,87 @@ class TriggerOrderingTest : FunSpec({
         )
         val laterOrder = afterOccurrence.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
         laterOrder.objects.size shouldBe 3
+    }
+
+    test("TO-21b: an unconfirmed delayed occurrence joins the complete same-controller order domain") {
+        val driver = newDriver()
+        val candidateA = syntheticTrigger(
+            driver,
+            "delayed-a",
+            triggerContext = TriggerContext(triggeringPlayerId = driver.player1),
+            consumesDelayedTriggerId = "delayed-once"
+        )
+        val candidateB = syntheticTrigger(
+            driver,
+            "delayed-b",
+            triggerContext = TriggerContext(triggeringPlayerId = driver.player2),
+            consumesDelayedTriggerId = "delayed-once"
+        )
+        val marker = candidateA.copy(
+            occurrenceChoice = listOf(candidateA.toOccurrenceCandidate(), candidateB.toOccurrenceCandidate())
+        )
+        val result = process(driver, listOf(
+            syntheticTrigger(driver, "before-marker"),
+            marker,
+            syntheticTrigger(driver, "after-marker")
+        ))
+        val occurrence = result.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+        result.state.stack.size shouldBe 0
+
+        driver.replaceState(result.state)
+        val afterOccurrence = driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(occurrence.id, optionIndex = 0)
+        )
+        val order = afterOccurrence.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        order.objects.size shouldBe 3
+        order.objectLabels!!.values.none { it.contains("delayed-marker") } shouldBe true
+    }
+
+    test("TO-21c: multiple unconfirmed occurrences resolve before one complete order domain") {
+        val driver = newDriver()
+
+        fun marker(prefix: String): PendingTrigger {
+            val candidateA = syntheticTrigger(
+                driver,
+                "$prefix-a",
+                triggerContext = TriggerContext(triggeringPlayerId = driver.player1),
+                consumesDelayedTriggerId = "$prefix-delayed"
+            )
+            val candidateB = syntheticTrigger(
+                driver,
+                "$prefix-b",
+                triggerContext = TriggerContext(triggeringPlayerId = driver.player2),
+                consumesDelayedTriggerId = "$prefix-delayed"
+            )
+            return candidateA.copy(
+                occurrenceChoice = listOf(candidateA.toOccurrenceCandidate(), candidateB.toOccurrenceCandidate())
+            )
+        }
+
+        val result = process(driver, listOf(
+            syntheticTrigger(driver, "before-marker"),
+            marker("first"),
+            syntheticTrigger(driver, "between-markers"),
+            marker("second"),
+            syntheticTrigger(driver, "after-marker")
+        ))
+        val firstOccurrence = result.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+
+        driver.replaceState(result.state)
+        val afterFirst = driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(firstOccurrence.id, optionIndex = 0)
+        )
+        val secondOccurrence = afterFirst.pendingDecision.shouldBeInstanceOf<ChooseOptionDecision>()
+
+        driver.replaceState(afterFirst.state)
+        val afterSecond = driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(secondOccurrence.id, optionIndex = 0)
+        )
+        val order = afterSecond.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        order.objects.size shouldBe 5
     }
 
     test("TO-17: delayed occurrence choice preserves a confirmed prefix before its marker") {

@@ -142,6 +142,29 @@ class TriggerProcessor(
                         it.controllerId == liveTriggers[index].controllerId &&
                             it.placementStage == liveTriggers[index].placementStage
                     }
+                val occurrenceIndex = sameControllerRun.indexOfFirst {
+                    it.occurrenceChoice.size > 1
+                }
+                if (occurrenceIndex >= 0) {
+                    // CR 603.7b chooses which simultaneous occurrence of the fire-once delayed
+                    // ability survives, but that choice does not place the surviving trigger ahead
+                    // of the other same-controller triggers. Resolve every occurrence marker in
+                    // this still-unordered run before processing any member of the run; the next
+                    // pass then sees the selected occurrence and all ordinary members together as
+                    // one complete CR 603.3b ordering domain. A marker in a previously confirmed
+                    // prefix is handled by the compatibility path above and remains a boundary.
+                    val occurrenceMarker = sameControllerRun[occurrenceIndex]
+                    val remainingRun = sameControllerRun.toMutableList().apply {
+                        removeAt(occurrenceIndex)
+                    }
+                    return raiseDelayedTriggerOccurrenceChoice(
+                        currentState,
+                        occurrenceMarker.occurrenceChoice.map { it.toPendingTrigger() },
+                        remainingRun + liveTriggers.drop(index + sameControllerRun.size),
+                        allEvents,
+                        preorderedTriggerCount = 0
+                    )
+                }
                 if (sameControllerRun.size > 1) {
                     return raiseTriggerOrdering(
                         currentState,
@@ -320,9 +343,9 @@ class TriggerProcessor(
     }
 
     /**
-     * A delayed-occurrence marker is a decision boundary, not one more item in the later order
-     * domain. Keep those markers in their detector-established slot and canonicalize each still
-     * unordered segment on either side.
+     * Preserve a marker's transport position while normalizing a wave. Unordered runs now resolve
+     * their markers before entering this loop, so this split is only the compatibility behavior
+     * for a marker carried inside a previously confirmed prefix.
      */
     private fun canonicalizeTriggerGroup(
         state: GameState,

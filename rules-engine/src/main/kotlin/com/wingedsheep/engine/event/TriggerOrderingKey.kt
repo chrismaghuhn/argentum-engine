@@ -7,6 +7,10 @@ import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 
@@ -106,13 +110,17 @@ internal object TriggerOrderingKey {
         semanticEntityKey(state, context.unattachedFromEntityId),
     )
 
-    private fun pipelineKey(state: GameState, pipeline: PipelineState?): String = pipeline?.let {
+    private fun pipelineKey(
+        state: GameState,
+        pipeline: PipelineState?,
+        visited: Set<EntityId> = emptySet(),
+    ): String = pipeline?.let {
         fields(
             it.storedCollections.entries.sortedBy { entry -> entry.key }.map { entry ->
-                listOf(entry.key, entry.value.map { id -> semanticEntityKey(state, id) })
+                listOf(entry.key, entry.value.map { id -> semanticEntityKey(state, id, visited) })
             },
             it.namedTargets.entries.sortedBy { entry -> entry.key }.map { entry ->
-                listOf(entry.key, chosenTargetKey(state, entry.value))
+                listOf(entry.key, chosenTargetKey(state, entry.value, visited))
             },
             it.chosenValues.entries.sortedBy { entry -> entry.key }.map { listOf(it.key, it.value) },
             it.storedNumbers.entries.sortedBy { entry -> entry.key }.map { listOf(it.key, it.value) },
@@ -121,18 +129,22 @@ internal object TriggerOrderingKey {
             it.storedSubtypeGroups.entries.sortedBy { entry -> entry.key }.map { entry ->
                 listOf(entry.key, entry.value.map { group -> group.sorted() })
             },
-            semanticEntityKey(state, it.iterationTarget),
+            semanticEntityKey(state, it.iterationTarget, visited),
         )
     } ?: "<none>"
 
-    private fun chosenTargetKey(state: GameState, target: ChosenTarget): String = when (target) {
-        is ChosenTarget.Player -> fields("player", semanticEntityKey(state, target.playerId))
-        is ChosenTarget.Permanent -> fields("permanent", semanticEntityKey(state, target.entityId))
+    private fun chosenTargetKey(
+        state: GameState,
+        target: ChosenTarget,
+        visited: Set<EntityId> = emptySet(),
+    ): String = when (target) {
+        is ChosenTarget.Player -> fields("player", semanticEntityKey(state, target.playerId, visited))
+        is ChosenTarget.Permanent -> fields("permanent", semanticEntityKey(state, target.entityId, visited))
         is ChosenTarget.Card -> fields(
-            "card", semanticEntityKey(state, target.cardId),
-            semanticEntityKey(state, target.ownerId), target.zone.name,
+            "card", semanticEntityKey(state, target.cardId, visited),
+            semanticEntityKey(state, target.ownerId, visited), target.zone.name,
         )
-        is ChosenTarget.Spell -> fields("spell", semanticEntityKey(state, target.spellEntityId))
+        is ChosenTarget.Spell -> fields("spell", semanticEntityKey(state, target.spellEntityId, visited))
     }
 
     /**
@@ -151,9 +163,11 @@ internal object TriggerOrderingKey {
         if (entityId in visited) return "entity-cycle"
 
         val entity = state.getEntity(entityId)
-        val card = entity?.get<CardComponent>()
-            ?: return "entity-without-card"
         val nextVisited = visited + entityId
+        val card = entity?.get<CardComponent>()
+        if (card == null) {
+            return cardlessEntityKey(state, entity, nextVisited)
+        }
         val zoneRoles = state.zones.entries
             .filter { (_, contents) -> entityId in contents }
             .map { (key, _) ->
@@ -183,6 +197,136 @@ internal object TriggerOrderingKey {
             counters,
             semanticEntityKey(state, attachedTo, nextVisited),
         )
+    }
+
+    /**
+     * Stack abilities are intentionally cardless entities.  Their allocation handles are not
+     * semantic identity, but the ability object they carry is: effects such as Firebender
+     * Ascension copy the exact triggering ability object.  Keep the stable payload of that object
+     * in the key so two distinct stack targets do not collapse to one opaque placeholder.
+     */
+    private fun cardlessEntityKey(
+        state: GameState,
+        entity: com.wingedsheep.engine.state.ComponentContainer?,
+        visited: Set<EntityId>,
+    ): String {
+        if (entity == null) return "entity-without-card"
+        entity.get<TriggeredAbilityOnStackComponent>()?.let { triggered ->
+            return fields(
+                "triggered-stack",
+                semanticEntityKey(state, triggered.sourceId, visited),
+                triggered.sourceName,
+                semanticEntityKey(state, triggered.controllerId, visited),
+                triggered.effect.description,
+                triggered.description,
+                triggered.descriptionOverride,
+                triggered.abilityIdentity?.let {
+                    fields(it.cardDefinitionId, it.abilityId.value)
+                },
+                triggered.triggerDamageAmount,
+                semanticEntityKey(state, triggered.triggeringEntityId, visited),
+                semanticEntityKey(state, triggered.triggeringPlayerId, visited),
+                triggered.xValue,
+                triggered.triggerCounterCount,
+                triggered.triggerTotalCounterCount,
+                triggered.triggerLastKnownCounters?.entries
+                    ?.sortedBy { it.key }
+                    ?.map { listOf(it.key, it.value) },
+                triggered.triggerLastKnownDamageDealtByPlayers?.entries
+                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
+                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                triggered.triggerLastKnownBlockingOrBlockedByIds
+                    ?.map { semanticEntityKey(state, it, visited) },
+                triggered.triggerLastKnownSubtypes?.sorted(),
+                triggered.triggerLastKnownCardTypes?.sorted(),
+                triggered.lastKnownPower,
+                triggered.lastKnownToughness,
+                triggered.diedBatchTotalPower,
+                triggered.triggerModesChosenCount,
+                triggered.enchantedCreatureLastKnownPower,
+                semanticEntityKey(state, triggered.targetingSourceEntityId, visited),
+                semanticEntityKey(state, triggered.triggerUnattachedFromEntityId, visited),
+                semanticEntityKey(state, triggered.granterId, visited),
+                triggered.damageDistribution?.entries
+                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
+                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                triggered.copyIndex,
+                triggered.copyTotal,
+                triggered.triggerScryCount,
+                triggered.triggerDiscardCount,
+                triggered.triggerDiscoverValue,
+                triggered.triggerExcessDamageAmount,
+                triggered.triggerRecipientToughness,
+                triggered.triggerManaSpentOnTriggeringSpell,
+                triggered.triggerColorsSpentOnTriggeringSpell,
+                triggered.triggerManaValueOfTriggeringSpell,
+                triggered.triggerXValueOfTriggeringSpell,
+                triggered.chosenModes,
+                triggered.modeTargetsOrdered.map { targets ->
+                    targets.map { target -> chosenTargetKey(state, target) }
+                },
+                triggered.modeTargetRequirements.entries
+                    .sortedBy { it.key }
+                    .map { (mode, requirements) ->
+                        listOf(mode, requirements.map { it.description })
+                    },
+                triggered.modeDamageDistribution.entries
+                    .sortedBy { it.key }
+                    .map { (mode, allocation) ->
+                        listOf(
+                            mode,
+                            allocation.entries
+                                .sortedBy { semanticEntityKey(state, it.key, visited) }
+                                .map {
+                                    listOf(semanticEntityKey(state, it.key, visited), it.value)
+                                }
+                        )
+                    },
+                triggered.capturedEntityIds.map { semanticEntityKey(state, it, visited) },
+                triggered.sagaChapterInfo?.let {
+                    fields(it.chapterNumber, it.finalChapterNumber)
+                },
+                pipelineKey(state, triggered.carriedPipeline, visited),
+                triggered.interveningIf?.description,
+            )
+        }
+        entity.get<ActivatedAbilityOnStackComponent>()?.let { activated ->
+            return fields(
+                "activated-stack",
+                semanticEntityKey(state, activated.sourceId, visited),
+                activated.sourceName,
+                semanticEntityKey(state, activated.controllerId, visited),
+                activated.effect.description,
+                activated.abilityIdentity?.let {
+                    fields(it.cardDefinitionId, it.abilityId.value)
+                },
+                semanticEntityKey(state, activated.granterId, visited),
+                activated.xValue,
+                activated.damageDistribution?.entries
+                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
+                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+            )
+        }
+        entity.get<AbilityOnStackComponent>()?.let { legacy ->
+            return fields(
+                "legacy-ability-stack",
+                semanticEntityKey(state, legacy.sourceId, visited),
+                semanticEntityKey(state, legacy.controllerId, visited),
+                legacy.abilityId.value,
+                legacy.effect.description,
+            )
+        }
+        entity.get<SpellOnStackComponent>()?.let { spell ->
+            return fields(
+                "spell-stack",
+                semanticEntityKey(state, spell.casterId, visited),
+                spell.xValue,
+                spell.chosenModes,
+                spell.castFromZone?.name,
+                spell.alternativeCost?.name,
+            )
+        }
+        return "entity-without-card"
     }
 
     private fun fields(vararg values: Any?): String = values.joinToString("\u0001") { value ->
