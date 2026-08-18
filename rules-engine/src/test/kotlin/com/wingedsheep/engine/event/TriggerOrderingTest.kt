@@ -851,6 +851,80 @@ class TriggerOrderingTest : FunSpec({
             TriggerOrderingKey.forTrigger(driver.state, second)
     }
 
+    test("TO-22n: card-backed stack LKI relation order is not semantic identity") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "stack-combat-lki")
+        val firstStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val firstStackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability",
+            triggerLastKnownBlockingOrBlockedByIds = listOf(driver.player1, driver.player2),
+        )
+        val secondStackAbility = firstStackAbility.copy(
+            triggerLastKnownBlockingOrBlockedByIds = listOf(driver.player2, driver.player1)
+        )
+        driver.replaceState(
+            driver.state
+                .updateEntity(firstStackObject) { it.with(firstStackAbility) }
+                .updateEntity(secondStackObject) { it.with(secondStackAbility) }
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        firstKey shouldBe secondKey
+    }
+
+    test("TO-22o: entity-int map values break equal semantic-key ties") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "stack-damage-allocation")
+        val firstStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val firstStackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability",
+            damageDistribution = linkedMapOf(
+                EntityId("unresolved-damage-a") to 1,
+                EntityId("unresolved-damage-b") to 2,
+            ),
+        )
+        val secondStackAbility = firstStackAbility.copy(
+            damageDistribution = linkedMapOf(
+                EntityId("unresolved-damage-b") to 2,
+                EntityId("unresolved-damage-a") to 1,
+            ),
+        )
+        driver.replaceState(
+            driver.state
+                .updateEntity(firstStackObject) { it.with(firstStackAbility) }
+                .updateEntity(secondStackObject) { it.with(secondStackAbility) }
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        firstKey shouldBe secondKey
+    }
+
     test("TO-14b: reflexive metadata cannot move a trigger into the second placement pass") {
         val driver = newDriver()
         val reflexive = syntheticTrigger(driver, "reflexive-stage").copy(

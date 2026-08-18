@@ -198,9 +198,7 @@ internal object TriggerOrderingKey {
         context.lastKnownCounters?.entries
             ?.sortedBy { it.key }
             ?.map { listOf(it.key, it.value) },
-        context.lastKnownDamageDealtByPlayers?.entries
-            ?.sortedBy { semanticEntityKey(state, it.key) }
-            ?.map { listOf(semanticEntityKey(state, it.key), it.value) },
+        context.lastKnownDamageDealtByPlayers?.let { sortedEntityIntMap(state, it) },
         context.lastKnownBlockingOrBlockedByIds
             ?.map { semanticEntityKey(state, it) }
             ?.sorted(),
@@ -410,9 +408,7 @@ internal object TriggerOrderingKey {
         snapshot.wasAttacking,
         snapshot.wasToken,
         snapshot.wasSuspected,
-        snapshot.damageDealtByPlayers.entries
-            .sortedBy { semanticEntityKey(state, it.key, visited) }
-            .map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+        sortedEntityIntMap(state, snapshot.damageDealtByPlayers, visited),
         snapshot.damageSources.map { damageSourceKey(state, it, visited) }.sorted(),
         snapshot.castX,
     )
@@ -534,11 +530,12 @@ internal object TriggerOrderingKey {
                 triggered.triggerLastKnownCounters?.entries
                     ?.sortedBy { it.key }
                     ?.map { listOf(it.key, it.value) },
-                triggered.triggerLastKnownDamageDealtByPlayers?.entries
-                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
-                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                triggered.triggerLastKnownDamageDealtByPlayers?.let {
+                    sortedEntityIntMap(state, it, visited)
+                },
                 triggered.triggerLastKnownBlockingOrBlockedByIds
-                    ?.map { semanticEntityKey(state, it, visited) },
+                    ?.map { semanticEntityKey(state, it, visited) }
+                    ?.sorted(),
                 triggered.triggerLastKnownSubtypes?.sorted(),
                 triggered.triggerLastKnownCardTypes?.sorted(),
                 triggered.lastKnownPower,
@@ -549,9 +546,7 @@ internal object TriggerOrderingKey {
                 semanticEntityKey(state, triggered.targetingSourceEntityId, visited),
                 semanticEntityKey(state, triggered.triggerUnattachedFromEntityId, visited),
                 semanticEntityKey(state, triggered.granterId, visited),
-                triggered.damageDistribution?.entries
-                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
-                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                triggered.damageDistribution?.let { sortedEntityIntMap(state, it, visited) },
                 triggered.copyIndex,
                 triggered.copyTotal,
                 triggered.triggerScryCount,
@@ -577,11 +572,7 @@ internal object TriggerOrderingKey {
                     .map { (mode, allocation) ->
                         listOf(
                             mode,
-                            allocation.entries
-                                .sortedBy { semanticEntityKey(state, it.key, visited) }
-                                .map {
-                                    listOf(semanticEntityKey(state, it.key, visited), it.value)
-                                }
+                            sortedEntityIntMap(state, allocation, visited)
                         )
                     },
                 triggered.capturedEntityIds.map { semanticEntityKey(state, it, visited) },
@@ -611,9 +602,7 @@ internal object TriggerOrderingKey {
                     .map { listOf(it.key, it.value) },
                 activated.lastKnownSourceSnapshot?.let { snapshotKey(state, it, visited) },
                 activated.lastKnownSourceAttachments.map { semanticEntityKey(state, it, visited) },
-                activated.damageDistribution?.entries
-                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
-                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                activated.damageDistribution?.let { sortedEntityIntMap(state, it, visited) },
             )
         }
         entity.get<AbilityOnStackComponent>()?.let { legacy ->
@@ -653,18 +642,12 @@ internal object TriggerOrderingKey {
                     .map { (mode, allocation) ->
                         listOf(
                             mode,
-                            allocation.entries
-                                .sortedBy { semanticEntityKey(state, it.key, visited) }
-                                .map {
-                                    listOf(semanticEntityKey(state, it.key, visited), it.value)
-                                }
+                            sortedEntityIntMap(state, allocation, visited)
                         )
                     },
                 spell.sacrificedPermanents.map { snapshotKey(state, it, visited) },
                 spell.castFaceDown,
-                spell.damageDistribution?.entries
-                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
-                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                spell.damageDistribution?.let { sortedEntityIntMap(state, it, visited) },
                 spell.chosenCreatureType,
                 spell.exiledCardCount,
                 spell.additionalCostBlightAmount,
@@ -702,6 +685,17 @@ internal object TriggerOrderingKey {
         }
         return "entity-without-card"
     }
+
+    private fun sortedEntityIntMap(
+        state: GameState,
+        values: Map<EntityId, Int>,
+        visited: Set<EntityId> = emptySet(),
+    ): List<List<Any?>> = values.entries
+        .sortedWith(
+            compareBy<Map.Entry<EntityId, Int>> { semanticEntityKey(state, it.key, visited) }
+                .thenBy { it.value }
+        )
+        .map { listOf(semanticEntityKey(state, it.key, visited), it.value) }
 
     private fun fields(vararg values: Any?): String = values.joinToString("\u0001") { value ->
         when (value) {
