@@ -20,10 +20,11 @@ enum class TriggerStage {
 /**
  * The CR 603.3b placement pass for a pending triggered ability.
  *
- * This is derived from the trigger condition rather than stored as a second semantic marker, so a
- * queued trigger remains correct after serialization, replay, or a fork. The enum order is the
- * order in which the two APNAP placement passes occur.
+ * Detectors store the observed pass on each concrete pending occurrence, while the enum remains
+ * the type-safe value used by APNAP normalization. The enum order is the order in which the two
+ * placement passes occur.
  */
+@kotlinx.serialization.Serializable
 enum class TriggerPlacementStage {
     NORMAL,
     ABILITY_TRIGGERED
@@ -51,6 +52,14 @@ data class DelayedTriggerOccurrenceCandidate(
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
     /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
+    /**
+     * The placement pass observed for this concrete trigger occurrence. Detectors stamp this from
+     * the event that actually matched, which matters for composite conditions such as `AnyOf`.
+     * Nullable keeps older serialized pending triggers readable; those fall back to the condition
+     * shape below.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val observedPlacementStage: TriggerPlacementStage? = null,
 ) {
     fun toPendingTrigger(): PendingTrigger = PendingTrigger(
         ability = ability,
@@ -63,6 +72,7 @@ data class DelayedTriggerOccurrenceCandidate(
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
         stage = stage,
+        observedPlacementStage = observedPlacementStage,
     )
 }
 
@@ -105,6 +115,8 @@ data class PendingTrigger(
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
     /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val observedPlacementStage: TriggerPlacementStage? = null,
     /**
      * CR 603.7b marker emitted by the delayed-trigger detector when several matching occurrences
      * happen simultaneously. The marker is converted into a normal pending decision by
@@ -115,15 +127,26 @@ data class PendingTrigger(
 )
 
 /**
- * Derive the CR 603.3b placement pass from the actual trigger condition. A trigger whose condition
- * is an [EventPattern.AbilityTriggeredEvent] belongs to the second pass; CR 603.12 reflexive
- * triggers remain ordinary first-pass triggers even though their [stage] is [TriggerStage.REFLEXIVE].
+ * Resolve the CR 603.3b placement pass for one concrete trigger occurrence. Detectors normally
+ * provide [PendingTrigger.observedPlacementStage], derived from the event that matched. The
+ * condition-shape fallback keeps synthetic and pre-marker serialized callers compatible; a
+ * reflexive trigger is always first-pass regardless of its carried action context.
  */
 val PendingTrigger.placementStage: TriggerPlacementStage
-    get() = when (ability.trigger) {
-        is EventPattern.AbilityTriggeredEvent -> TriggerPlacementStage.ABILITY_TRIGGERED
+    get() = observedPlacementStage ?: when {
+        stage == TriggerStage.REFLEXIVE -> TriggerPlacementStage.NORMAL
+        ability.trigger is EventPattern.AbilityTriggeredEvent -> TriggerPlacementStage.ABILITY_TRIGGERED
         else -> TriggerPlacementStage.NORMAL
     }
+
+/**
+ * Stamp the placement pass from the condition branch that actually caused this occurrence. This
+ * is separate from [TriggerStage]: CR 603.12's "when you do" marker describes the ability's kind,
+ * while CR 603.3b asks whether this particular trigger condition was another ability triggering.
+ */
+fun PendingTrigger.withObservedPlacementStage(stage: TriggerPlacementStage): PendingTrigger = copy(
+    observedPlacementStage = stage
+)
 
 fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
     DelayedTriggerOccurrenceCandidate(
@@ -137,6 +160,7 @@ fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
         stage = stage,
+        observedPlacementStage = observedPlacementStage,
     )
 
 /**

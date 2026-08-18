@@ -298,9 +298,9 @@ class TriggerProcessor(
 
     /**
      * Put a complete trigger wave into the deterministic APNAP transport order required by
-     * CR 603.3b, retaining detector order only inside one controller's still-unordered group.
-     * The controller's relative order is exposed separately by [OrderObjectsDecision]; this
-     * helper never chooses that order.
+     * CR 603.3b. Each still-unordered same-controller/stage group is canonically normalized before
+     * ordinal decision handles are assigned; this removes detector/map iteration order from the
+     * serialized continuation without choosing the controller's eventual relative order.
      */
     private fun normalizeTriggerWave(
         state: GameState,
@@ -308,11 +308,43 @@ class TriggerProcessor(
     ): List<PendingTrigger> {
         val apnapPlayers = state.apnapOrder
         return TriggerPlacementStage.values().flatMap { placementStage ->
-            val stageTriggers = triggers.filter { it.placementStage == placementStage }
+            val stageTriggers = triggers
+                .filter { it.placementStage == placementStage }
             apnapPlayers.flatMap { controllerId ->
-                stageTriggers.filter { it.controllerId == controllerId }
+                canonicalizeTriggerGroup(
+                    state,
+                    stageTriggers.filter { it.controllerId == controllerId }
+                )
             }
         }
+    }
+
+    /**
+     * A delayed-occurrence marker is a decision boundary, not one more item in the later order
+     * domain. Keep those markers in their detector-established slot and canonicalize each still
+     * unordered segment on either side.
+     */
+    private fun canonicalizeTriggerGroup(
+        state: GameState,
+        triggers: List<PendingTrigger>
+    ): List<PendingTrigger> {
+        if (triggers.size < 2) return triggers
+        val result = mutableListOf<PendingTrigger>()
+        var segment = mutableListOf<PendingTrigger>()
+        fun flushSegment() {
+            result += segment.sortedBy { TriggerOrderingKey.forTrigger(state, it) }
+            segment = mutableListOf()
+        }
+        for (trigger in triggers) {
+            if (trigger.occurrenceChoice.size > 1) {
+                flushSegment()
+                result += trigger
+            } else {
+                segment += trigger
+            }
+        }
+        flushSegment()
+        return result
     }
 
     /**

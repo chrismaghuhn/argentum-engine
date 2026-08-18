@@ -1,7 +1,9 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.*
+import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PipelineState
+import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.LossReason
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
@@ -95,9 +97,11 @@ class TriggerOrderingTest : FunSpec({
             OrderedResponse(napOrder.id, napOrder.objects.reversed())
         )
         final.isSuccess shouldBe true
-        stackedTriggers(final.state).map { it.description } shouldBe listOf(
-            "active-second", "active-first", "nap-second", "nap-first"
-        )
+        val expectedNapOrder = napOrder.objects.reversed().map {
+            napOrder.objectLabels!!.getValue(it).substringBefore(": ")
+        }
+        stackedTriggers(final.state).map { it.description } shouldBe
+            listOf("active-second", "active-first") + expectedNapOrder
     }
 
     test("TO-13: APNAP normalization reunites a controller split by detector batches") {
@@ -160,6 +164,74 @@ class TriggerOrderingTest : FunSpec({
         val normalOrder = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
         normalOrder.objects.size shouldBe 2
         normalOrder.objectLabels!!.values.all { it.startsWith("normal-") } shouldBe true
+    }
+
+    test("TO-19: a composite condition containing an ability-triggering branch uses the second stage") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "composite")
+        val composite = base.copy(
+            ability = base.ability.copy(
+                trigger = EventPattern.AnyOf(
+                    listOf(
+                        EventPattern.StepEvent(Step.UPKEEP, Player.You),
+                        EventPattern.AbilityTriggeredEvent(),
+                    )
+                )
+            )
+        )
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val abilityTriggeredEvent = AbilityTriggeredEvent(
+            sourceId = driver.player1,
+            sourceName = "triggered source",
+            controllerId = driver.player1,
+            description = "triggered"
+        )
+
+        composite.withObservedPlacementStage(
+            matcher.placementStageFor(
+                composite.ability.trigger,
+                composite.ability.binding,
+                StepChangedEvent(Step.UPKEEP),
+                composite.sourceId,
+                composite.controllerId,
+                driver.state,
+            )
+        ).placementStage shouldBe
+            TriggerPlacementStage.NORMAL
+        composite.withObservedPlacementStage(
+            matcher.placementStageFor(
+                composite.ability.trigger,
+                composite.ability.binding,
+                abilityTriggeredEvent,
+                composite.sourceId,
+                composite.controllerId,
+                driver.state,
+            )
+        ).placementStage shouldBe TriggerPlacementStage.ABILITY_TRIGGERED
+
+        matcher.placementStageFor(
+            EventPattern.SpellOrAbilityOnStackEvent,
+            composite.ability.binding,
+            abilityTriggeredEvent,
+            composite.sourceId,
+            composite.controllerId,
+            driver.state,
+        ) shouldBe TriggerPlacementStage.NORMAL
+    }
+
+    test("TO-20: trigger ordering canonicalizes detector-order permutations") {
+        fun pendingDescriptions(input: List<String>): List<String> {
+            val driver = newDriver()
+            val result = process(driver, input.map { syntheticTrigger(driver, it) })
+            result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+            return result.state.peekContinuation()
+                .shouldBeInstanceOf<TriggerOrderingContinuation>()
+                .triggers
+                .map { it.sourceName }
+        }
+
+        pendingDescriptions(listOf("detector-a", "detector-b")) shouldBe
+            pendingDescriptions(listOf("detector-b", "detector-a"))
     }
 
     test("TO-15: duplicate trigger labels are disambiguated without exposing trigger context") {
@@ -263,7 +335,10 @@ class TriggerOrderingTest : FunSpec({
             OrderedResponse(order.id, order.objects.reversed())
         )
         ordered.isSuccess shouldBe true
-        stackedTriggers(ordered.state).map { it.description } shouldBe listOf("may-second", "may-first")
+        val expectedOrder = order.objects.reversed().map {
+            order.objectLabels!!.getValue(it).substringBefore(": ")
+        }
+        stackedTriggers(ordered.state).map { it.description } shouldBe expectedOrder
 
         driver.bothPass()
         driver.pendingDecision.shouldBeInstanceOf<YesNoDecision>()

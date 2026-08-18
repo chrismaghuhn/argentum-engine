@@ -48,6 +48,47 @@ class TriggerMatcher(
     private val conditionEvaluator: ConditionEvaluator
 ) {
 
+    /**
+     * Resolve the CR 603.3b placement pass for one concrete event occurrence. The second pass is
+     * reserved for the branch whose condition is itself an [EventPattern.AbilityTriggeredEvent].
+     * In particular, [EventPattern.SpellOrAbilityOnStackEvent] can match the same engine event but
+     * describes an object being put on the stack, not another ability triggering.
+     */
+    fun placementStageFor(
+        trigger: EventPattern,
+        binding: TriggerBinding,
+        event: EngineGameEvent,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        state: GameState
+    ): TriggerPlacementStage = if (
+        matchesAbilityTriggeredPlacementCondition(
+            trigger, binding, event, sourceId, controllerId, state
+        )
+    ) {
+        TriggerPlacementStage.ABILITY_TRIGGERED
+    } else {
+        TriggerPlacementStage.NORMAL
+    }
+
+    private fun matchesAbilityTriggeredPlacementCondition(
+        trigger: EventPattern,
+        binding: TriggerBinding,
+        event: EngineGameEvent,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        state: GameState
+    ): Boolean = when (trigger) {
+        is EventPattern.AnyOf -> trigger.events.any {
+            matchesAbilityTriggeredPlacementCondition(
+                it, binding, event, sourceId, controllerId, state
+            )
+        }
+        is EventPattern.AbilityTriggeredEvent ->
+            matchesTrigger(trigger, binding, event, sourceId, controllerId, state)
+        else -> false
+    }
+
     fun matchesTrigger(
         trigger: EventPattern,
         binding: TriggerBinding,
