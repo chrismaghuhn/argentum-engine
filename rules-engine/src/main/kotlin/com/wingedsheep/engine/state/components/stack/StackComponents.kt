@@ -183,6 +183,8 @@ data class TriggeredAbilityOnStackComponent(
     val descriptionOverride: String? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured when this trigger occurrence was detected. */
+    val triggeringEntityEntryTimestamp: Long? = null,
     val triggeringPlayerId: EntityId? = null,
     val xValue: Int? = null,
     val triggerCounterCount: Int? = null,

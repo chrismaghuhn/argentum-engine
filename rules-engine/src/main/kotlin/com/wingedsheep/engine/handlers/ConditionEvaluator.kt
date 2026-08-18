@@ -8,6 +8,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.CastFromHandComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
@@ -779,10 +780,15 @@ class ConditionEvaluator(
         val triggeringId = resolution.effectContext.triggeringEntityId ?: return false
         val controllerId = resolution.effectContext.controllerId
         val projected = ctx.projectedStateFor(state)
-        val triggeringName = triggeringEntityName(state, projected, triggeringId) ?: return false
+        val triggeringName = triggeringEntityName(state, projected, triggeringId)
+            ?: return triggeringEntityIsNameless(state, projected, triggeringId)
+        val triggeringEntryTimestamp = resolution.effectContext.triggeringEntityEntryTimestamp
 
         val sharedOnBattlefield = state.getBattlefield().any { entityId ->
-            entityId != triggeringId &&
+            val isTriggeringObject = entityId == triggeringId &&
+                (triggeringEntryTimestamp == null ||
+                    battlefieldEntryTimestamp(state, entityId) == triggeringEntryTimestamp)
+            !isTriggeringObject &&
                 projected.getController(entityId) == controllerId &&
                 projected.isCreature(entityId) &&
                 projectedEntityName(state, projected, entityId) == triggeringName
@@ -812,8 +818,33 @@ class ConditionEvaluator(
         return if (state.getBattlefield().contains(entityId)) {
             projectedEntityName(state, projected, entityId)
         } else {
-            state.getEntity(entityId)?.get<LastKnownPermanentComponent>()?.snapshot?.name
+            val entity = state.getEntity(entityId) ?: return null
+            // A real battlefield exit owns the snapshot, including a deliberate null name for a
+            // face-down permanent. Only use the card component when no LKI snapshot exists (for
+            // lightweight setup states that move an entity between zones without the transition
+            // service); never let that fallback override a nameless LKI snapshot.
+            entity.get<LastKnownPermanentComponent>()?.snapshot?.name
+                ?: if (entity.has<LastKnownPermanentComponent>() || entity.has<FaceDownComponent>()) {
+                    null
+                } else {
+                    entity.get<CardComponent>()?.name
+                }
         }
+    }
+
+    private fun triggeringEntityIsNameless(
+        state: GameState,
+        projected: ProjectedState,
+        entityId: EntityId,
+    ): Boolean {
+        val entity = state.getEntity(entityId) ?: return false
+        if (state.getBattlefield().contains(entityId)) {
+            return projected.isFaceDown(entityId) || entity.has<FaceDownComponent>()
+        }
+
+        val lastKnown = entity.get<LastKnownPermanentComponent>()
+        return entity.has<FaceDownComponent>() ||
+            (lastKnown != null && lastKnown.snapshot.name == null)
     }
 
     private fun projectedEntityName(
@@ -821,7 +852,14 @@ class ConditionEvaluator(
         projected: ProjectedState,
         entityId: EntityId,
     ): String? = projected.getName(entityId)
-        ?: state.getEntity(entityId)?.get<CardComponent>()?.name
+        ?: if (projected.isFaceDown(entityId)) {
+            null
+        } else {
+            state.getEntity(entityId)?.get<CardComponent>()?.name
+        }
+
+    private fun battlefieldEntryTimestamp(state: GameState, entityId: EntityId): Long =
+        state.getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp ?: 0L
 
     /**
      * Match the card discarded to pay this spell's additional discard cost

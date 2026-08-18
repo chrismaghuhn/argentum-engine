@@ -233,6 +233,8 @@ data class EffectContext(
     val triggerLastKnownCardTypes: Set<String>? = null,
     /** The entity that caused the trigger to fire (e.g., creature that dealt damage for Aurification) */
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering permanent's occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
     /** The player associated with the trigger event (e.g., the player who cast a spell for SpellCastEvent) */
     val triggeringPlayerId: EntityId? = null,
     /** The spell or ability that targeted a permanent (for ward triggers) */
@@ -546,6 +548,7 @@ data class EffectContext(
             triggerLastKnownDamageDealtByPlayers = ability.triggerLastKnownDamageDealtByPlayers,
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,
+            triggeringEntityEntryTimestamp = ability.triggeringEntityEntryTimestamp,
             triggeringPlayerId = ability.triggeringPlayerId,
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,

@@ -27,6 +27,8 @@ import com.wingedsheep.sdk.model.EntityId
 @kotlinx.serialization.Serializable
 data class TriggerContext(
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for a live triggering permanent. */
+    val triggeringEntityEntryTimestamp: Long? = null,
     val triggeringPlayerId: EntityId? = null,
     val damageAmount: Int? = null,
     val step: Step? = null,

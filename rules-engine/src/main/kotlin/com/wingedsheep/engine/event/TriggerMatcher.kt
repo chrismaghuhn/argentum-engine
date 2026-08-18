@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.chosenCreatureType
 import com.wingedsheep.engine.state.components.battlefield.chosenOpponent
@@ -1879,12 +1880,18 @@ class TriggerMatcher(
         state: GameState,
         triggers: List<PendingTrigger>
     ): List<PendingTrigger> {
-        return triggers.filter { trigger ->
-            val condition = trigger.ability.triggerCondition ?: return@filter true
+        return triggers.mapNotNull { originalTrigger ->
+            val condition = originalTrigger.ability.triggerCondition
+                ?: return@mapNotNull originalTrigger
+            // Bind the live battlefield object to the occurrence before evaluating its condition.
+            // Entity ids survive zone round-trips in this engine; the entry stamp is the generic
+            // CR 400.7 identity that lets the resolution-time check distinguish a returned object.
+            val trigger = bindTriggeringEntityEntryTimestamp(state, originalTrigger)
             val context = EffectContext(
                 sourceId = trigger.sourceId,
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
+                triggeringEntityEntryTimestamp = trigger.triggerContext.triggeringEntityEntryTimestamp,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
                 triggerCounterCount = trigger.triggerContext.counterCount,
@@ -1924,8 +1931,28 @@ class TriggerMatcher(
                     }
                     ?: PipelineState.EMPTY
             )
-            conditionEvaluator.evaluate(state, condition, context)
+            if (conditionEvaluator.evaluate(state, condition, context)) trigger else null
         }
+    }
+
+    private fun bindTriggeringEntityEntryTimestamp(
+        state: GameState,
+        trigger: PendingTrigger,
+    ): PendingTrigger {
+        val triggerContext = trigger.triggerContext
+        if (triggerContext.triggeringEntityEntryTimestamp != null) return trigger
+        val entityId = triggerContext.triggeringEntityId ?: return trigger
+        if (entityId !in state.getBattlefield()) return trigger
+
+        val entryTimestamp = state.getEntity(entityId)
+            ?.get<BattlefieldEntryTimestampComponent>()
+            ?.timestamp
+            ?: 0L
+        return trigger.copy(
+            triggerContext = triggerContext.copy(
+                triggeringEntityEntryTimestamp = entryTimestamp,
+            )
+        )
     }
 
     /**

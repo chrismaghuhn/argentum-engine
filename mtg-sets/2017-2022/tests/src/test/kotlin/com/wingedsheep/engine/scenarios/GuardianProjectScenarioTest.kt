@@ -1,11 +1,20 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.LastKnownPermanentComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.captureEntitySnapshots
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.mtg.sets.definitions.snc.cards.WitnessProtection
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
@@ -19,6 +28,7 @@ import com.wingedsheep.sdk.scripting.TriggerBinding
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 
 /** Focused characterization for Guardian Project's generic intervening-if condition. */
 class GuardianProjectScenarioTest : FunSpec({
@@ -42,7 +52,7 @@ class GuardianProjectScenarioTest : FunSpec({
 
     fun newDriver(): GameTestDriver {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + characterizedGuardianProject)
+        driver.registerCards(TestCards.all + characterizedGuardianProject + WitnessProtection)
         driver.initMirrorMatch(deck = Deck.of("Forest" to 40))
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return driver
@@ -56,6 +66,24 @@ class GuardianProjectScenarioTest : FunSpec({
         val creature = driver.putCardInHand(player, name)
         driver.giveMana(player, Color.GREEN, amount = 2)
         driver.castSpell(player, creature).isSuccess shouldBe true
+        driver.bothPass()
+    }
+
+    fun castFaceDownCreatureAndResolveSpell(
+        driver: GameTestDriver,
+        player: com.wingedsheep.sdk.model.EntityId,
+    ) {
+        val creature = driver.putCardInHand(player, "Morph Test Creature")
+        driver.giveColorlessMana(player, amount = 3)
+        driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = creature,
+                castFaceDown = true,
+                paymentStrategy = PaymentStrategy.FromPool,
+            )
+        ).isSuccess shouldBe true
+        driver.bothPass()
         driver.bothPass()
     }
 
@@ -191,6 +219,82 @@ class GuardianProjectScenarioTest : FunSpec({
         driver.bothPass()
 
         driver.getHandSize(player) shouldBe handBeforeCast + 1
+    }
+
+    test("the name comparison preserves projected names") {
+        val driver = newDriver()
+        val player = driver.player1
+        driver.putPermanentOnBattlefield(player, "Guardian Project")
+        val existing = driver.putCreatureOnBattlefield(player, "Grizzly Bears")
+        val aura = driver.putCardInHand(player, "Witness Protection")
+        driver.giveMana(player, Color.BLUE)
+        driver.castSpell(player, aura, targets = listOf(existing)).isSuccess shouldBe true
+        driver.bothPass()
+
+        driver.state.projectedState.getName(existing) shouldBe "Legitimate Businessperson"
+        val handBeforeCast = driver.getHandSize(player)
+        castCreatureAndResolveSpell(driver, player, "Grizzly Bears")
+        driver.bothPass()
+
+        driver.getHandSize(player) shouldBe handBeforeCast + 1
+    }
+
+    test("two face-down creatures do not share a name") {
+        val driver = newDriver()
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, "Guardian Project")
+        val handBeforeCast = driver.getHandSize(player)
+
+        castFaceDownCreatureAndResolveSpell(driver, player)
+        castFaceDownCreatureAndResolveSpell(driver, player)
+
+        driver.getHandSize(player) shouldBe handBeforeCast + 2
+    }
+
+    test("a face-down creature leaving the battlefield has nameless LKI") {
+        val driver = newDriver()
+        val player = driver.player1
+        driver.putPermanentOnBattlefield(player, "Guardian Project")
+        val handBeforeCast = driver.getHandSize(player)
+
+        castCreatureAndResolveSpell(driver, player, "Grizzly Bears")
+        val creature = driver.findPermanent(player, "Grizzly Bears")!!
+        driver.replaceState(driver.state.updateEntity(creature) { it.with(FaceDownComponent) })
+        EntitySnapshot.fromProjection(creature, driver.state).name shouldBe null
+        captureEntitySnapshots(listOf(creature), driver.state).single().name shouldBe null
+        val transition = ZoneTransitionService.moveToZone(driver.state, creature, Zone.GRAVEYARD)
+        driver.replaceState(transition.state)
+
+        driver.state.getEntity(creature)
+            ?.get<LastKnownPermanentComponent>()?.snapshot?.name shouldBe null
+        driver.bothPass()
+
+        driver.getHandSize(player) shouldBe handBeforeCast + 1
+    }
+
+    test("a same-name creature that leaves and returns is another object for the trigger") {
+        val driver = newDriver()
+        val player = driver.player1
+        driver.putPermanentOnBattlefield(player, "Guardian Project")
+        val handBeforeCast = driver.getHandSize(player)
+
+        castCreatureAndResolveSpell(driver, player, "Grizzly Bears")
+        val creature = driver.findPermanent(player, "Grizzly Bears")!!
+        val trigger = driver.state.stack.mapNotNull { stackEntityId ->
+            driver.state.getEntity(stackEntityId)?.get<TriggeredAbilityOnStackComponent>()
+        }.single()
+        val originalEntryTimestamp = trigger.triggeringEntityEntryTimestamp.shouldNotBeNull()
+        val exiled = ZoneTransitionService.moveToZone(driver.state, creature, Zone.EXILE).state
+        val returned = ZoneTransitionService.moveToZone(exiled, creature, Zone.BATTLEFIELD).state
+        returned.getEntity(creature)
+            ?.get<com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent>()
+            ?.timestamp shouldNotBe originalEntryTimestamp
+        driver.replaceState(returned)
+        driver.bothPass()
+
+        driver.getHandSize(player) shouldBe handBeforeCast
+        driver.events.filterIsInstance<AbilityFizzledEvent>().last().reason shouldBe
+            "Intervening-if condition is no longer true"
     }
 
     test("a token creature entering does not trigger") {

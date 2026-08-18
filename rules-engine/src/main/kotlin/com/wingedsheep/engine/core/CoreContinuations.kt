@@ -55,6 +55,8 @@ data class TriggeredAbilityContinuation(
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
     val triggeringPlayerId: EntityId? = null,
     val elseEffect: Effect? = null,
     val targetRequirements: List<TargetRequirement> = emptyList(),
@@ -145,6 +147,8 @@ data class TriggerDamageDistributionContinuation(
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
     val triggeringPlayerId: EntityId? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,
