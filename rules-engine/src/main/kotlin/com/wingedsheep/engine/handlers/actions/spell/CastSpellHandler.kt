@@ -675,7 +675,24 @@ class CastSpellHandler(
         val playForFree = playForFreeFromComponent || action.useWithoutPayingManaCost
         val computedCost = computeTotalCastCost(state, action, cardDef, cardComponent, playForFree, hasCommanderCast)
             ?: return "No alternative casting cost available"
-        val paymentError = validatePayment(state, action, computedCost.cost, computedCost.paymentXValue)
+        val additionalLifeCostTotal = resolveAdditionalLifeCostTotal(
+            state = state,
+            costs = reduceCostAlternatives(
+                collectAdditionalCostsForCast(state, action, cardDef),
+                state,
+                action.playerId,
+                action.additionalCostPayment,
+                action.cardId,
+            ),
+            action = action,
+        ) ?: return "Cannot resolve life cost"
+        val paymentError = validatePayment(
+            state,
+            action,
+            computedCost.cost,
+            computedCost.paymentXValue,
+            additionalPayLife = additionalLifeCostTotal,
+        )
         if (paymentError != null) {
             return paymentError
         }
@@ -1224,8 +1241,18 @@ class CastSpellHandler(
         return ComputedCastCost(costAfterImprovise, paymentXValue)
     }
 
-    private fun validatePayment(state: GameState, action: CastSpell, cost: ManaCost, paymentXValue: Int = action.xValue ?: 0): String? {
+    private fun validatePayment(
+        state: GameState,
+        action: CastSpell,
+        cost: ManaCost,
+        paymentXValue: Int = action.xValue ?: 0,
+        additionalPayLife: Int = 0,
+    ): String? {
         val xValue = paymentXValue
+        if (additionalPayLife < 0) return "Cannot resolve life cost"
+        if (additionalPayLife > state.lifeTotal(action.playerId)) {
+            return "Not enough life to pay $additionalPayLife life"
+        }
 
         // Build spell context for conditional mana validation
         val cardComponent = state.getEntity(action.cardId)?.get<CardComponent>()
@@ -1259,7 +1286,16 @@ class CastSpellHandler(
 
         return when (action.paymentStrategy) {
             is PaymentStrategy.AutoPay -> {
-                if (!manaSolver.canPay(state, action.playerId, effectiveCost, xValue, spellContext = spellCtx, xManaRestriction = xManaRestriction)) {
+                if (!manaSolver.canPay(
+                        state,
+                        action.playerId,
+                        effectiveCost,
+                        xValue,
+                        spellContext = spellCtx,
+                        xManaRestriction = xManaRestriction,
+                        additionalPayLife = additionalPayLife,
+                    )
+                ) {
                     "Not enough mana to cast this spell"
                 } else null
             }
@@ -1321,7 +1357,17 @@ class CastSpellHandler(
                         .map { it.entityId }
                         .filter { it !in chosen }
                         .toSet()
-                    if (manaSolver.solve(state, action.playerId, remainingCost, xRemaining, excludeSources = excluded, spellContext = spellCtx, xManaRestriction = xManaRestriction) == null) {
+                    if (manaSolver.solve(
+                            state,
+                            action.playerId,
+                            remainingCost,
+                            xRemaining,
+                            excludeSources = excluded,
+                            spellContext = spellCtx,
+                            xManaRestriction = xManaRestriction,
+                            additionalPayLife = additionalPayLife,
+                        ) == null
+                    ) {
                         "Selected mana sources cannot pay this spell's cost"
                     } else null
                 }
@@ -2341,6 +2387,10 @@ class CastSpellHandler(
     }
 
     override fun execute(state: GameState, action: CastSpell): ExecutionResult {
+        // All cost payment below is one immutable transaction. If a direct engine caller skips
+        // ActionProcessor validation, a later dynamic-life/source failure must still roll back the
+        // additional-cost mutations rather than returning a partially paid cast.
+        val transactionStartState = state
         var currentState = state
         val events = mutableListOf<GameEvent>()
 
@@ -2753,13 +2803,13 @@ class CastSpellHandler(
         // being cast, the same pre-payment state, and one controller context; a failure is an
         // execution error rather than a silently ignored partial payment.
         val lifeToPay = resolveAdditionalLifeCostTotal(currentState, flattenedAllCosts, action)
-            ?: return ExecutionResult.error(currentState, "Cannot resolve life cost")
+            ?: return ExecutionResult.error(transactionStartState, "Cannot resolve life cost")
         if (currentState.lifeTotal(action.playerId) < lifeToPay) {
-            return ExecutionResult.error(currentState, "Not enough life to pay $lifeToPay life")
+            return ExecutionResult.error(transactionStartState, "Not enough life to pay $lifeToPay life")
         }
         if (lifeToPay > 0) {
             val payment = LifePaymentService.pay(currentState, action.playerId, lifeToPay)
-                ?: return ExecutionResult.error(currentState, "Unable to pay life cost")
+                ?: return ExecutionResult.error(transactionStartState, "Unable to pay life cost")
             currentState = payment.first
             events.addAll(payment.second)
         }
@@ -3159,7 +3209,7 @@ class CastSpellHandler(
                                 events.addAll(forageResult.events)
                             }
                             is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Failure ->
-                                return ExecutionResult.error(currentState, forageResult.reason)
+                                return ExecutionResult.error(transactionStartState, forageResult.reason)
                         }
                     }
                     else -> {}
@@ -3290,10 +3340,25 @@ class CastSpellHandler(
         val xManaRestriction = (action.faceIndex?.let { cardDef?.cardFaces?.getOrNull(it)?.script }
             ?: cardDef?.script)?.xManaRestriction ?: emptySet()
 
+        // Re-run the authoritative payment preflight against the untouched transaction state.
+        // This mirrors validatePayment for direct/internal execute callers and combines the
+        // additional life already resolved above with the exact solver source selection before
+        // the payment processor can tap or pay anything.
+        val paymentPreflightError = validatePayment(
+            transactionStartState,
+            action,
+            effectiveCost,
+            paymentXValue,
+            additionalPayLife = lifeToPay,
+        )
+        if (paymentPreflightError != null) {
+            return ExecutionResult.error(transactionStartState, paymentPreflightError)
+        }
+
         // Handle mana payment via dedicated processor
         val paymentResult = paymentProcessor.processPayment(currentState, action, effectiveCost, cardComponent.name, paymentXValue, spellContext, xManaRestriction)
         if (paymentResult.error != null) {
-            return ExecutionResult.error(currentState, paymentResult.error)
+            return ExecutionResult.error(transactionStartState, paymentResult.error)
         }
         currentState = paymentResult.state
         events.addAll(paymentResult.events)
@@ -3353,7 +3418,7 @@ class CastSpellHandler(
                     events.addAll(forageResult.events)
                 }
                 is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Failure ->
-                    return ExecutionResult.error(currentState, forageResult.reason)
+                    return ExecutionResult.error(transactionStartState, forageResult.reason)
             }
         }
 

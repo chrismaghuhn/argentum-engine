@@ -403,7 +403,12 @@ class ManaSolver(
          * paid by a dedicated pass that only taps sources able to produce one of these colors,
          * and the per-color amount is reported in [ManaSolution.xRestrictedManaSpent].
          */
-        xManaRestriction: Set<Color> = emptySet()
+        xManaRestriction: Set<Color> = emptySet(),
+        /**
+         * Life already committed by the caller in this same atomic payment. The solver adds it
+         * to the selected mana abilities' own PayLife atoms before accepting the solution.
+         */
+        additionalPayLife: Int = 0
     ): ManaSolution? {
         // Get all untapped mana sources controlled by the player.
         //
@@ -922,7 +927,15 @@ class ManaSolver(
             val color = manaProduced[source.entityId]?.color ?: return@flatMap emptyList()
             source.colorRiders[color]?.toList() ?: emptyList()
         }
-        if (!hasAffordablePayLifeTotal(state, playerId, usedSources, manaProduced, manaAbilityUses)) {
+        if (!hasAffordablePayLifeTotal(
+                state,
+                playerId,
+                usedSources,
+                manaProduced,
+                manaAbilityUses,
+                additionalPayLife,
+            )
+        ) {
             return null
         }
         return ManaSolution(
@@ -948,8 +961,11 @@ class ManaSolver(
         sources: List<ManaSource>,
         manaProduced: Map<EntityId, ManaProduction>,
         manaAbilityUses: Map<EntityId, ManaAbilityUse>,
+        additionalPayLife: Int,
     ): Boolean {
-        var total = 0
+        if (additionalPayLife < 0) return false
+        if (additionalPayLife > state.lifeTotal(playerId)) return false
+        var total = additionalPayLife
         for (source in sources) {
             val production = manaProduced[source.entityId]
             // Sources tapped only to pay another mana ability's activation mana cost have no
@@ -2224,8 +2240,12 @@ class ManaSolver(
         spellContext: SpellPaymentContext? = null,
         precomputedSources: List<ManaSource>? = null,
         /** Colors that may pay the `{X}` portion ("spend only [colors] on X"); empty = any. */
-        xManaRestriction: Set<Color> = emptySet()
+        xManaRestriction: Set<Color> = emptySet(),
+        /** Life already owed by another atom in this same atomic payment. */
+        additionalPayLife: Int = 0
     ): Boolean {
+        if (additionalPayLife < 0) return false
+        if (additionalPayLife > state.lifeTotal(playerId)) return false
         // Get the player's floating mana pool
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
         val pool = if (poolComponent != null) {
@@ -2262,7 +2282,18 @@ class ManaSolver(
         }
 
         // Check if we can tap sources for the remaining cost (including remaining X)
-        if (solve(state, playerId, remainingCost, xRemainingToPay, excludeSources, spellContext, precomputedSources, xManaRestriction) != null) return true
+        if (solve(
+                state = state,
+                playerId = playerId,
+                cost = remainingCost,
+                xValue = xRemainingToPay,
+                excludeSources = excludeSources,
+                spellContext = spellContext,
+                precomputedSources = precomputedSources,
+                xManaRestriction = xManaRestriction,
+                additionalPayLife = additionalPayLife,
+            ) != null
+        ) return true
 
         // Fallback: check if "extras" — mana abilities the auto-tap solver doesn't pick — can
         // cover the remaining cost. Two flavors:
@@ -2305,13 +2336,14 @@ class ManaSolver(
         // both abilities would claim {U} and {W}{B} from one land.
         val sacrificeConsumedIds = sacrificeManaBySource.keys
         return solve(
-            state,
-            playerId,
-            augmentedRemaining,
-            augmentedXRemaining,
-            excludeSources + sacrificeConsumedIds,
-            spellContext,
-            precomputedSources
+            state = state,
+            playerId = playerId,
+            cost = augmentedRemaining,
+            xValue = augmentedXRemaining,
+            excludeSources = excludeSources + sacrificeConsumedIds,
+            spellContext = spellContext,
+            precomputedSources = precomputedSources,
+            additionalPayLife = additionalPayLife,
         ) != null
     }
 

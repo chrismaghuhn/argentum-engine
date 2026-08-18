@@ -3,6 +3,7 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.continuations.ManaPaymentContinuationResumer
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.core.YesNoResponse
@@ -30,6 +31,7 @@ import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.CommanderRegistryComponent
+import com.wingedsheep.engine.state.components.identity.PlayWithAdditionalCostComponent
 import com.wingedsheep.mtg.sets.definitions.ons.cards.FutureSight
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.ManaCost
@@ -385,6 +387,31 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         castAction(driver, spellId) shouldBe null
     }
 
+    test("command-zone spell enumeration combines additional and mana-source life costs") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val spellId = driver.putCardInCommandZone(player, autoTapSpell.name)
+        driver.replaceState(
+            driver.state.updateEntity(spellId) { it.with(CommanderComponent(player)) }
+        )
+        driver.addComponent(
+            spellId,
+            PlayWithAdditionalCostComponent(
+                controllerId = player,
+                additionalCosts = listOf(
+                    com.wingedsheep.sdk.dsl.Costs.additional.PayLife(
+                        DynamicAmounts.commanderColorIdentityCount()
+                    )
+                )
+            )
+        )
+
+        // The additional life and the selected painful mana source are one payment, so this
+        // command-zone cast is not a legal action at life one.
+        castAction(driver, spellId) shouldBe null
+    }
+
     test("PayOrSuffer offers an exact-to-zero life payment") {
         val driver = createDriver(initialLife = 1)
         val player = driver.activePlayer!!
@@ -487,6 +514,59 @@ class DynamicPayLifeReviewRegressionTest : FunSpec({
         driver.state.getEntity(sourceId)!!
             .has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
         driver.stackSize shouldBe 0
+    }
+
+    test("activated-ability legal actions combine solver-source and ability life costs") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val targetId = driver.putPermanentOnBattlefield(player, explicitPainfulAbilityTarget.name)
+
+        // Each component is individually payable at one life, but the activation's one atomic
+        // payment includes both the selected mana source's life cost and the ability's own cost.
+        activatedAction(driver, targetId) shouldBe null
+    }
+
+    test("failed cast with additional life and solver-source life preserves the state digest") {
+        val driver = createDriver(initialLife = 1)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, oneLifeManaSource.name)
+        val spellId = driver.putCardInHand(player, autoTapSpell.name)
+        driver.addComponent(
+            spellId,
+            PlayWithAdditionalCostComponent(
+                controllerId = player,
+                additionalCosts = listOf(
+                    com.wingedsheep.sdk.dsl.Costs.additional.PayLife(
+                        DynamicAmounts.commanderColorIdentityCount()
+                    )
+                )
+            )
+        )
+        castAction(driver, spellId) shouldBe null
+        val before = driver.state
+        val json = Json {
+            serializersModule = engineSerializersModule
+            allowStructuredMapKeys = true
+        }
+        val beforeDigest = json.encodeToString(com.wingedsheep.engine.state.GameState.serializer(), before)
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry)).execute(
+            before,
+            com.wingedsheep.engine.core.CastSpell(
+                playerId = player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.AutoPay,
+            )
+        )
+
+        result.error.shouldNotBeNull()
+        json.encodeToString(com.wingedsheep.engine.state.GameState.serializer(), result.state) shouldBe beforeDigest
+        result.state shouldBe before
+        driver.state shouldBe before
+        driver.getLifeTotal(player) shouldBe 1
+        result.state.getEntity(sourceId)!!
+            .has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
     }
 
     test("auto-tap rolls back the tap when the selected dynamic life payment fails") {

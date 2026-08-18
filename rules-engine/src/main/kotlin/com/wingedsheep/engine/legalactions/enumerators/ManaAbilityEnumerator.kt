@@ -19,6 +19,7 @@ import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.TextReplacementComponent
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.costs.CostAtom
@@ -142,7 +143,10 @@ class ManaAbilityEnumerator : ActionEnumerator {
                 var affordable = true
                 // The complete PayLife total is a hard legal-action gate. It must not become a
                 // greyed-out auto-tap option because activation would be illegal.
-                if (!context.costUtils.canPayLifeCost(state, playerId, entityId, effectiveCost)) continue
+                val resolvedPayLifeTotal = context.costUtils.resolvePayLifeCostTotal(
+                    state, playerId, entityId, effectiveCost
+                ) ?: continue
+                if (state.lifeTotal(playerId) < resolvedPayLifeTotal) continue
 
                 when (effectiveCost) {
                     is AbilityCost.Tap -> {
@@ -159,6 +163,7 @@ class ManaAbilityEnumerator : ActionEnumerator {
                                     atom.cost,
                                     precomputedSources = context.availableManaSources,
                                     spellContext = manaAbilityContext,
+                                    additionalPayLife = resolvedPayLifeTotal,
                                 )
                             ) {
                                 affordable = false
@@ -205,6 +210,19 @@ class ManaAbilityEnumerator : ActionEnumerator {
                         // If composite cost includes Tap, exclude the source from mana solving
                         val hasTapCost = compositeCost.costs.any { it is AbilityCost.Tap }
                         val excludeFromMana = if (hasTapCost) setOf(entityId) else emptySet()
+                        val compositeManaCost = compositeCost.costs
+                            .mapNotNull { it.manaCostOrNull }
+                            .fold(ManaCost.ZERO) { total, manaCost -> total + manaCost }
+                        if (compositeManaCost.cmc > 0 && !context.manaSolver.canPay(
+                                state,
+                                playerId,
+                                compositeManaCost,
+                                excludeSources = excludeFromMana,
+                                precomputedSources = context.availableManaSources,
+                                spellContext = manaAbilityContext,
+                                additionalPayLife = resolvedPayLifeTotal,
+                            )
+                        ) affordable = false
                         for (subCost in compositeCost.costs) {
                             when (subCost) {
                                 is AbilityCost.Tap -> {
@@ -218,11 +236,9 @@ class ManaAbilityEnumerator : ActionEnumerator {
                                     }
                                 }
                                 is AbilityCost.Atom -> when (val atom = subCost.atom) {
-                                    is CostAtom.Mana -> {
-                                        if (!context.manaSolver.canPay(state, playerId, atom.cost, excludeSources = excludeFromMana, precomputedSources = context.availableManaSources, spellContext = manaAbilityContext)) {
-                                            affordable = false; break
-                                        }
-                                    }
+                                    // The aggregate mana check above owns all mana atoms and the
+                                    // complete PayLife total; never check each atom separately.
+                                    is CostAtom.Mana -> {}
                                     is CostAtom.Sacrifice -> {
                                         sacrificeCost = atom
                                         sacrificeTargets = context.costUtils.findAbilitySacrificeTargets(

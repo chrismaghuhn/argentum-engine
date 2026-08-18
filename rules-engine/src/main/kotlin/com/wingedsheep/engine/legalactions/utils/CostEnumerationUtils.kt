@@ -52,7 +52,22 @@ class CostEnumerationUtils(
         playerId: EntityId,
         sourceId: EntityId,
         cost: AbilityCost,
-    ): Boolean = canPayLifeAmounts(state, playerId, sourceId, CostAmountResolver.payLifeAmounts(cost))
+    ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, cost)
+        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
+    /** Resolve all PayLife atoms in an activated-ability cost once. */
+    fun resolvePayLifeCostTotal(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AbilityCost,
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = CostAmountResolver.payLifeAmounts(cost),
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )
 
     /** Whether all mandatory life leaves of one additional cost fit the current life total. */
     fun canPayLifeCost(
@@ -60,7 +75,22 @@ class CostEnumerationUtils(
         playerId: EntityId,
         sourceId: EntityId,
         cost: AdditionalCost,
-    ): Boolean = canPayLifeAmounts(state, playerId, sourceId, CostAmountResolver.payLifeAmounts(cost))
+    ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, cost)
+        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
+    /** Resolve all PayLife atoms in one additional cost once. */
+    fun resolvePayLifeCostTotal(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AdditionalCost,
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = CostAmountResolver.payLifeAmounts(cost),
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )
 
     /** Whether all mandatory life leaves across additional costs fit one pre-payment total. */
     fun canPayLifeCost(
@@ -68,11 +98,21 @@ class CostEnumerationUtils(
         playerId: EntityId,
         sourceId: EntityId,
         costs: Iterable<AdditionalCost>,
-    ): Boolean = canPayLifeAmounts(
-        state,
-        playerId,
-        sourceId,
-        costs.flatMap { cost -> CostAmountResolver.payLifeAmounts(cost) }
+    ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, costs)
+        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
+    /** Resolve all PayLife atoms across additional costs against one pre-payment state. */
+    fun resolvePayLifeCostTotal(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        costs: Iterable<AdditionalCost>,
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = costs.flatMap { cost -> CostAmountResolver.payLifeAmounts(cost) },
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
     )
 
     private fun canPayLifeAmounts(
