@@ -126,6 +126,43 @@ class PartialIllegalTargets608Test : FunSpec({
         }
     }
 
+    val repeatedActivationSource = card("Synthetic 608 Repeated Activation Source") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.PayLife(1)
+            target = com.wingedsheep.sdk.scripting.targets.TargetObject(
+                filter = TargetFilter.CardInGraveyard,
+                totalManaValueAtMost = DynamicAmount.YourLifeTotal
+            )
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    val repeatedActivationTarget = card("Synthetic 608 Repeated Activation Target") {
+        manaCost = "{19}"
+        typeLine = "Artifact"
+    }
+
+    val malformedPayloadAbility = card("Synthetic 608 Malformed Payload Ability") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            target = TargetCreature()
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    val malformedPayloadSpell = card("Synthetic 608 Malformed Payload Spell") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        spell {
+            target("creature", TargetCreature())
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun dynamicDriver(): GameTestDriver = driver().also {
         it.registerCards(listOf(dynamicSlotModal, dynamicSlotSplice, dynamicSlotHost))
     }
@@ -957,6 +994,122 @@ class PartialIllegalTargets608Test : FunSpec({
         // The dynamic cap cannot be evaluated at announcement or resolution. It is not an
         // unlimited cap: the target is illegal, so CR 608.2b removes the all-illegal ability.
         driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+    }
+
+    test("608-23: every repeated activation locks its target cap before its own cost") {
+        val driver = driver()
+        driver.registerCards(listOf(repeatedActivationSource, repeatedActivationTarget))
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        driver.setLifeTotal(driver.player1, 20)
+
+        val source = driver.putPermanentOnBattlefield(driver.player1, repeatedActivationSource.name)
+        val target = driver.putCardInGraveyard(driver.player2, repeatedActivationTarget.name)
+        val abilityId = repeatedActivationSource.activatedAbilities.single().id
+
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId,
+                targets = listOf(ChosenTarget.Card(target, driver.player2, Zone.GRAVEYARD)),
+                repeatCount = 2
+            )
+        )
+
+        driver.state.stack.size shouldBe 2
+        val lockedCaps = driver.state.stack.map { stackId ->
+            val requirement = driver.state.getEntity(stackId)?.get<TargetsComponent>()
+                ?.targetRequirements?.single() as com.wingedsheep.sdk.scripting.targets.TargetObject
+            (requirement.totalManaValueAtMost as DynamicAmount.Fixed).amount
+        }.sorted()
+        lockedCaps shouldBe listOf(19, 20)
+        driver.getLifeTotal(driver.player1) shouldBe 18
+
+        driver.bothPass()
+        driver.bothPass()
+        driver.getLifeTotal(driver.player1) shouldBe 20
+    }
+
+    test("608-24: nonempty target payloads with empty requirements fail closed") {
+        val driver = driver()
+        driver.registerCard(malformedPayloadSpell)
+        val target = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val spellId = driver.putCardInHand(driver.player1, malformedPayloadSpell.name)
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+
+        val result = StackResolver(driver.cardRegistry).castSpell(
+            state = driver.state,
+            cardId = spellId,
+            casterId = driver.player1,
+            targets = listOf(ChosenTarget.Permanent(target)),
+            targetRequirements = emptyList(),
+            targetLockState = driver.state
+        )
+        result.error shouldBe null
+        driver.replaceState(result.newState)
+        driver.bothPass()
+
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
+    }
+
+    test("608-25: a target payload shorter than its locked requirement fails closed") {
+        val driver = driver()
+        val target = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+
+        putTriggeredAbility(
+            driver,
+            effect = Effects.GainLife(1),
+            targets = listOf(ChosenTarget.Permanent(target)),
+            targetRequirements = listOf(TargetCreature(count = 2))
+        )
+        val stackId = driver.state.stack.single()
+        val targetsComponent = driver.state.getEntity(stackId)?.get<TargetsComponent>()!!
+        driver.replaceState(
+            driver.state.updateEntity(stackId) {
+                it.with(targetsComponent.copy(targetRequirements = listOf(TargetCreature(count = 2))))
+            }
+        )
+        driver.bothPass()
+
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
+    }
+
+    test("608-26: an empty required target payload cannot execute an activated ability") {
+        val driver = driver()
+        driver.registerCard(malformedPayloadAbility)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val source = driver.putPermanentOnBattlefield(driver.player1, malformedPayloadAbility.name)
+        val target = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+        val abilityId = malformedPayloadAbility.activatedAbilities.single().id
+
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId,
+                targets = listOf(ChosenTarget.Permanent(target))
+            )
+        )
+        val stackId = driver.state.stack.single()
+        val targetsComponent = driver.state.getEntity(stackId)?.get<TargetsComponent>()!!
+        driver.replaceState(
+            driver.state.updateEntity(stackId) {
+                it.with(
+                    targetsComponent.copy(
+                        targets = emptyList(),
+                        targetRequirements = listOf(TargetCreature())
+                    )
+                )
+            }
+        )
+        driver.bothPass()
+
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
     }
 
     test("608-17: a dynamic up-to maximum is locked before resolution") {

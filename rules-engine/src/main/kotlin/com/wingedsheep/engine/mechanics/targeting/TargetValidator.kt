@@ -290,7 +290,34 @@ class TargetValidator {
         triggeringPlayerId: EntityId? = null,
         storedCollections: Map<String, List<EntityId>> = emptyMap()
     ): ResolutionTargetPayload {
-        if (targets.isEmpty()) return ResolutionTargetPayload(emptyList(), emptyList())
+        fun malformedPayload() = ResolutionTargetPayload(
+            targets = emptyList(),
+            alignedTargets = List(targets.size) { null }
+        )
+
+        // A targetless requirement set is valid only when the payload is also targetless. A
+        // nonempty payload with no requirements has no predicate that can prove any target legal.
+        // Conversely, an empty payload with a nonzero/negative locked slot is malformed rather
+        // than a targetless choice. Keep zero-count optional requirements valid.
+        if (targets.isEmpty()) {
+            return if (requirements.all { it.count == 0 }) {
+                ResolutionTargetPayload(emptyList(), emptyList())
+            } else {
+                malformedPayload()
+            }
+        }
+        if (requirements.isEmpty()) return malformedPayload()
+
+        // The locked requirement counts define the original flat payload shape. Never truncate a
+        // requirement to the number of supplied targets: a short or overlong serialized payload
+        // is malformed and must not leak a prefix to an executor under CR 608.2b.
+        var expectedSlots = 0
+        for (requirement in requirements) {
+            val slotCount = requirement.count
+            if (slotCount < 0 || slotCount > targets.size - expectedSlots) return malformedPayload()
+            expectedSlots += slotCount
+        }
+        if (expectedSlots != targets.size) return malformedPayload()
 
         val legal = BooleanArray(targets.size)
         var offset = 0
@@ -299,8 +326,7 @@ class TargetValidator {
             // Requirements stored on a stack object are already normalized by the cast/trigger
             // decision path. Do not re-evaluate dynamicMaxCount, X, or the current remaining list
             // here: doing so recomputes a locked choice after the board has changed.
-            val slotCount = requirement.count.coerceAtLeast(0)
-                .coerceAtMost(targets.size - offset)
+            val slotCount = requirement.count
             val end = offset + slotCount
             val requirementTargets = targets.subList(offset, end)
             val relationshipError = validateRequirementRelationships(
@@ -337,22 +363,6 @@ class TargetValidator {
                     ) == null
             }
             offset = end
-        }
-
-        // A malformed or legacy payload must never leak an unvalidated target to an executor.
-        for (index in offset until targets.size) legal[index] = false
-
-        // With no requirements, there is no target predicate to apply. This is useful for a
-        // malformed-but-serializable payload and preserves the caller's explicit legal-target
-        // gate without passing an illegal id to an executor.
-        if (requirements.isEmpty()) {
-            targets.forEachIndexed { index, target ->
-                legal[index] = (allowedTargetSlots == null ||
-                    (index < allowedTargetSlots.size && allowedTargetSlots[index] == target)) &&
-                    (target.entityIdOrNull()?.let {
-                        !TargetsComponent.isDifferentObject(state, it, targetEntryStamps)
-                    } ?: true)
-            }
         }
 
         val compact = mutableListOf<ChosenTarget>()

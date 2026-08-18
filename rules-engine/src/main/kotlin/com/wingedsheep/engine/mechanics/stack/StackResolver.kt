@@ -101,6 +101,10 @@ class StackResolver(
     private val predicateEvaluator: PredicateEvaluator = PredicateEvaluator()
 ) {
 
+    /** A serialized target component needs resolution-time validation unless it is targetless. */
+    private fun TargetsComponent.hasResolutionTargetPayload(): Boolean =
+        targets.isNotEmpty() || targetRequirements.any { it.count != 0 }
+
     /**
      * Re-validates a spliced card's own targets as the spell resolves (CR 608.2b via 702.47d): the
      * spliced text is skipped when its targets have become illegal, exactly as a modal spell's
@@ -1186,7 +1190,7 @@ class StackResolver(
         // in the compacted list.
         val resolvedTargets: List<ChosenTarget>
         val alignedResolvedTargets: List<ChosenTarget?>
-        if (targetsComponent != null && targetsComponent.targets.isNotEmpty()) {
+        if (targetsComponent?.hasResolutionTargetPayload() == true) {
             val resolutionPayload = targetValidator.filterTargetsAtResolution(
                 state = state,
                 targets = targetsComponent.targets,
@@ -3131,7 +3135,7 @@ class StackResolver(
         val sourceCard = state.getEntity(abilityComponent.sourceId)?.get<CardComponent>()
         val sourceColors = sourceCard?.colors ?: emptySet()
         val sourceSubtypes = sourceCard?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet()
-        val resolutionContext = if (targetsComponent != null && targetsComponent.targets.isNotEmpty()) {
+        val resolutionContext = if (targetsComponent?.hasResolutionTargetPayload() == true) {
             val resolutionPayload = targetValidator.filterTargetsAtResolution(
                 state = state,
                 targets = targetsComponent.targets,
@@ -3239,7 +3243,7 @@ class StackResolver(
         // Stiltzkin's "If they do, you draw" when the donated permanent left in response.
         val activatedTargets: List<ChosenTarget>
         val alignedActivatedTargets: List<ChosenTarget?>
-        if (targetsComponent != null && targetsComponent.targets.isNotEmpty()) {
+        if (targetsComponent?.hasResolutionTargetPayload() == true) {
             val resolutionPayload = targetValidator.filterTargetsAtResolution(
                 state = state,
                 targets = targetsComponent.targets,

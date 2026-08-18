@@ -1862,6 +1862,12 @@ class ActivateAbilityHandler(
         // Handle repeated activations (repeatCount > 1)
         if (action.repeatCount > 1) {
             for (i in 2..action.repeatCount) {
+                // CR 602.2b -> 601.2b-i: this repeat's targets and dynamic target metadata are
+                // announced before its mana abilities and costs mutate the state. Keep the
+                // pre-payment state for the stack payload; currentState below is the payment
+                // result and must not be used to recompute the locked choice.
+                val repeatTargetLockState = currentState
+
                 // Re-read mana pool from current state
                 val repeatPoolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
@@ -1945,6 +1951,7 @@ class ActivateAbilityHandler(
                     currentState, repeatAbilityOnStack, action.targets,
                     targetRequirements = effectiveTargetReqs,
                     isExhaust = ability.isExhaust,
+                    targetLockState = repeatTargetLockState
                 )
                 currentState = repeatStackResult.newState
                 events.addAll(repeatStackResult.events)
