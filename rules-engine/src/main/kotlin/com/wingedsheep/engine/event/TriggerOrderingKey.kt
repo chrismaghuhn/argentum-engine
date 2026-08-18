@@ -17,6 +17,8 @@ import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComp
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.serialization.CardSerialization
 import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.conditions.Condition
+import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -34,6 +36,28 @@ import kotlinx.serialization.json.encodeToJsonElement
  * the ordinal handles exposed to the actor remain the small, opaque decision-domain tokens.
  */
 internal object TriggerOrderingKey {
+
+    /**
+     * These SDK arrays represent sets or commutative unions/conjunctions.  Ordered arrays such as
+     * effect sequences, target slots, and mode selections deliberately remain in source order.
+     */
+    private val unorderedJsonArrayFields = setOf(
+        "activeZones",
+        "alternatives",
+        "anyOf",
+        "cardPredicates",
+        "conditions",
+        "predicates",
+        "statePredicates",
+        "subtypes",
+        "zones",
+    )
+
+    /** AbilityId and card-definition coordinates are strings, not EntityId references. */
+    private val nonEntityIdFields = setOf("abilityId", "cardDefinitionId")
+
+    /** Raw generated ability handles are intentionally absent from semantic serialization. */
+    private val runtimeFieldsToOmit = setOf("abilityId")
 
     fun forTrigger(state: GameState, trigger: PendingTrigger): String = fields(
         "source", semanticEntityKey(state, trigger.sourceId), trigger.sourceName,
@@ -80,22 +104,42 @@ internal object TriggerOrderingKey {
     private fun abilityKey(
         state: GameState,
         ability: TriggeredAbility,
-    ): String = fields(
-        ability.trigger.description,
-        ability.binding.name,
-        ability.effect.description,
-        ability.targetRequirement?.let { targetRequirementKey(state, it) },
-        ability.additionalTargetRequirements.map { targetRequirementKey(state, it) },
-        ability.elseEffect?.description,
-        ability.activeZones.map { it.name }.sorted(),
-        ability.interveningIf?.description,
-        ability.triggerRestriction?.description,
-        ability.controlledByTriggeringEntityController,
-        ability.oncePerTurn,
-        ability.effectOncePerTurn,
-        ability.triggersOnce,
-        ability.description,
+    ): String = canonicalJsonKey(
+        CardSerialization.compactJson.encodeToJsonElement(
+            TriggeredAbility.serializer(),
+            ability,
+        ),
+        state,
+        emptySet(),
+        rootFieldsToOmit = setOf("id"),
     )
+
+    private fun conditionKey(
+        state: GameState,
+        condition: Condition?,
+        visited: Set<EntityId> = emptySet(),
+    ): String = condition?.let {
+        canonicalJsonKey(
+            CardSerialization.compactJson.encodeToJsonElement(Condition.serializer(), it),
+            state,
+            visited,
+        )
+    } ?: "<none>"
+
+    private fun effectKey(
+        state: GameState,
+        effect: Effect,
+        visited: Set<EntityId> = emptySet(),
+    ): String = canonicalJsonKey(
+        CardSerialization.compactJson.encodeToJsonElement(Effect.serializer(), effect),
+        state,
+        visited,
+    )
+
+    private fun abilityIdentityKey(identity: com.wingedsheep.sdk.scripting.AbilityIdentity): String =
+        // The ability handle is a process-local/runtime value. The definition coordinate is the
+        // stable semantic part; the stack payload and effect shape carry the behavior itself.
+        fields(identity.cardDefinitionId)
 
     private fun contextKey(state: GameState, context: TriggerContext): String = fields(
         semanticEntityKey(state, context.triggeringEntityId),
@@ -222,20 +266,53 @@ internal object TriggerOrderingKey {
         state: GameState,
         visited: Set<EntityId>,
         fieldName: String? = null,
+        rootFieldsToOmit: Set<String> = emptySet(),
+        atRoot: Boolean = true,
     ): String = when (element) {
         is JsonObject -> fields(
             element.entries
-                // A descriptionOverride is presentation-only; it cannot change target legality.
-                .filter { it.key != "descriptionOverride" }
+                // Description overrides and ability handles are presentation/runtime data, not
+                // part of the semantic behavior represented by this ordering key.
+                .filter {
+                    it.key != "descriptionOverride" &&
+                        it.key !in runtimeFieldsToOmit &&
+                        (!atRoot || it.key !in rootFieldsToOmit)
+                }
                 .sortedBy { it.key }
                 .map { (key, value) ->
-                    listOf(key, canonicalJsonKey(value, state, visited, key))
+                    listOf(
+                        key,
+                        canonicalJsonKey(
+                            value,
+                            state,
+                            visited,
+                            fieldName = key,
+                            rootFieldsToOmit = rootFieldsToOmit,
+                            atRoot = false,
+                        )
+                    )
                 }
         )
-        is JsonArray -> fields(element.map { canonicalJsonKey(it, state, visited, fieldName) })
+        is JsonArray -> {
+            val values = element.map {
+                canonicalJsonKey(
+                    it,
+                    state,
+                    visited,
+                    fieldName = fieldName,
+                    rootFieldsToOmit = rootFieldsToOmit,
+                    atRoot = false,
+                )
+            }
+            fields(if (fieldName in unorderedJsonArrayFields) values.sorted() else values)
+        }
         is JsonNull -> "null"
         is JsonPrimitive -> {
-            if (element.isString && fieldName?.endsWith("Id") == true) {
+            if (
+                element.isString &&
+                fieldName?.endsWith("Id") == true &&
+                fieldName !in nonEntityIdFields
+            ) {
                 val referencedId = EntityId(element.content)
                 val projectedReference = when {
                     state.turnOrder.contains(referencedId) || state.getEntity(referencedId) != null ->
@@ -400,12 +477,8 @@ internal object TriggerOrderingKey {
                 semanticEntityKey(state, triggered.sourceId, visited),
                 triggered.sourceName,
                 semanticEntityKey(state, triggered.controllerId, visited),
-                triggered.effect.description,
-                triggered.description,
-                triggered.descriptionOverride,
-                triggered.abilityIdentity?.let {
-                    fields(it.cardDefinitionId, it.abilityId.value)
-                },
+                effectKey(state, triggered.effect, visited),
+                triggered.abilityIdentity?.let(::abilityIdentityKey),
                 triggered.triggerDamageAmount,
                 semanticEntityKey(state, triggered.triggeringEntityId, visited),
                 semanticEntityKey(state, triggered.triggeringPlayerId, visited),
@@ -470,7 +543,7 @@ internal object TriggerOrderingKey {
                     fields(it.chapterNumber, it.finalChapterNumber)
                 },
                 pipelineKey(state, triggered.carriedPipeline, visited),
-                triggered.interveningIf?.description,
+                conditionKey(state, triggered.interveningIf, visited),
             )
         }
         entity.get<ActivatedAbilityOnStackComponent>()?.let { activated ->
@@ -480,12 +553,9 @@ internal object TriggerOrderingKey {
                 semanticEntityKey(state, activated.sourceId, visited),
                 activated.sourceName,
                 semanticEntityKey(state, activated.controllerId, visited),
-                activated.effect.description,
-                activated.descriptionOverride,
+                effectKey(state, activated.effect, visited),
                 activated.sacrificedPermanents.map { snapshotKey(state, it, visited) },
-                activated.abilityIdentity?.let {
-                    fields(it.cardDefinitionId, it.abilityId.value)
-                },
+                activated.abilityIdentity?.let(::abilityIdentityKey),
                 semanticEntityKey(state, activated.granterId, visited),
                 activated.xValue,
                 activated.tappedPermanents.map { semanticEntityKey(state, it, visited) },
@@ -506,8 +576,7 @@ internal object TriggerOrderingKey {
                 stackTargetsKey,
                 semanticEntityKey(state, legacy.sourceId, visited),
                 semanticEntityKey(state, legacy.controllerId, visited),
-                legacy.abilityId.value,
-                legacy.effect.description,
+                effectKey(state, legacy.effect, visited),
             )
         }
         entity.get<SpellOnStackComponent>()?.let { spell ->

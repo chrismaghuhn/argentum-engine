@@ -18,18 +18,25 @@ import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComp
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.BendType
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AbilityIdentity
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.conditions.BlightWasPaid
+import com.wingedsheep.sdk.scripting.conditions.WaterbendWasPaid
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.EmitBendEventEffect
+import com.wingedsheep.sdk.scripting.effects.EmitTrainedEventEffect
 import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetOther
@@ -40,6 +47,7 @@ import com.wingedsheep.sdk.scripting.references.Player
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -611,6 +619,129 @@ class TriggerOrderingTest : FunSpec({
         )
 
         (firstKey == secondKey) shouldBe false
+    }
+
+    test("TO-22g: semantically unordered target predicate collections have one key") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val target = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val firstRequirement = TargetObject(
+            filter = TargetFilter(
+                GameObjectFilter(
+                    cardPredicates = listOf(CardPredicate.IsCreature, CardPredicate.IsArtifact)
+                )
+            )
+        )
+        val secondRequirement = firstRequirement.copy(
+            filter = firstRequirement.filter.copy(
+                baseFilter = firstRequirement.filter.baseFilter.copy(
+                    cardPredicates = firstRequirement.filter.baseFilter.cardPredicates.reversed()
+                )
+            )
+        )
+        firstRequirement.filter.baseFilter.cardPredicates shouldBe
+            secondRequirement.filter.baseFilter.cardPredicates.reversed()
+        val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+        val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+        val stackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability"
+        )
+        driver.replaceState(
+            stateWithBothIds
+                .withEntity(
+                    firstStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(
+                            targets = listOf(ChosenTarget.Permanent(target)),
+                            targetRequirements = listOf(firstRequirement)
+                        )
+                    )
+                )
+                .withEntity(
+                    secondStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(
+                            targets = listOf(ChosenTarget.Permanent(target)),
+                            targetRequirements = listOf(secondRequirement)
+                        )
+                    )
+                )
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        firstKey shouldBe secondKey
+    }
+
+    test("TO-22h: equal condition and effect descriptions do not share a semantic key") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "same-description")
+        val firstCondition = base.copy(
+            ability = base.ability.copy(interveningIf = BlightWasPaid)
+        )
+        val secondCondition = base.copy(
+            ability = base.ability.copy(interveningIf = WaterbendWasPaid)
+        )
+        BlightWasPaid.description shouldBe WaterbendWasPaid.description
+        TriggerOrderingKey.forTrigger(driver.state, firstCondition) shouldNotBe
+            TriggerOrderingKey.forTrigger(driver.state, secondCondition)
+
+        val firstEffect = base.copy(
+            ability = base.ability.copy(effect = EmitBendEventEffect(BendType.AIR))
+        )
+        val secondEffect = base.copy(
+            ability = base.ability.copy(effect = EmitTrainedEventEffect)
+        )
+        EmitBendEventEffect(BendType.AIR).description shouldBe EmitTrainedEventEffect.description
+        TriggerOrderingKey.forTrigger(driver.state, firstEffect) shouldNotBe
+            TriggerOrderingKey.forTrigger(driver.state, secondEffect)
+    }
+
+    test("TO-22i: generated ability handles do not change semantic stack identity") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+        val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+        val firstStackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability",
+            abilityIdentity = AbilityIdentity("SyntheticCard", AbilityId("ability_101"))
+        )
+        val secondStackAbility = firstStackAbility.copy(
+            abilityIdentity = AbilityIdentity("SyntheticCard", AbilityId("ability_202"))
+        )
+        driver.replaceState(
+            stateWithBothIds
+                .withEntity(firstStackObject, ComponentContainer.of(firstStackAbility))
+                .withEntity(secondStackObject, ComponentContainer.of(secondStackAbility))
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        firstKey shouldBe secondKey
     }
 
     test("TO-23: delayed occurrence options are independent of detector candidate order") {
