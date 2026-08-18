@@ -302,6 +302,14 @@ fun EntitySnapshot.isStampedFor(entityId: EntityId): Boolean =
         (objectIncarnationStamp != null || battlefieldEntryTimestamp != null)
 
 /**
+ * Return this snapshot only when it is an event-time identity witness for [entityId]. Damage-role
+ * consumers use this nullable form so an id-only legacy snapshot cannot accidentally authorize a
+ * read from the current entity or a same-id replacement.
+ */
+fun EntitySnapshot?.stampedFor(entityId: EntityId): EntitySnapshot? =
+    this?.takeIf { it.isStampedFor(entityId) }
+
+/**
  * The permanent's **projected** type line: its printed types overlaid with whatever continuous
  * effects have granted or replaced (an animated artifact reads "Artifact Creature", a Vehicle
  * crewed this turn reads "Artifact Creature — Vehicle"). Falls back to the printed type line when

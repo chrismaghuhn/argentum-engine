@@ -26,6 +26,7 @@ import com.wingedsheep.engine.state.components.identity.RoomComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
@@ -388,9 +389,9 @@ class DynamicAmountEvaluator(
                 // this property-only path explicit rather than weakening that object-safety gate.
                 val entityId = when (amount.entity) {
                     EntityReference.DamageSource -> context.damageSourceEntityId
-                        ?.takeIf { it == context.damageSourceLastKnownSnapshot?.entityId }
+                        ?.takeIf { context.damageSourceLastKnownSnapshot.stampedFor(it) != null }
                     EntityReference.DamageRecipient -> context.damageRecipientEntityId
-                        ?.takeIf { it == context.damageRecipientLastKnownSnapshot?.entityId }
+                        ?.takeIf { context.damageRecipientLastKnownSnapshot.stampedFor(it) != null }
                     else -> TargetResolutionUtils.resolveEntityReference(amount.entity, context, state)
                 }
                 // Enchanted-creature power reads use last-known information when the source aura
@@ -426,7 +427,9 @@ class DynamicAmountEvaluator(
                     ) {
                         val captured = when (amount.entity) {
                             EntityReference.DamageSource -> context.damageSourceLastKnownSnapshot
+                                .stampedFor(entityId)
                             EntityReference.DamageRecipient -> context.damageRecipientLastKnownSnapshot
+                                .stampedFor(entityId)
                             else -> null
                         }
                         if (captured == null ||

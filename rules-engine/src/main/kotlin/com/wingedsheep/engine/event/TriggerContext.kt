@@ -25,7 +25,7 @@ import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
-import com.wingedsheep.engine.state.components.stack.isStampedFor
+import com.wingedsheep.engine.state.components.stack.stampedFor
 
 /**
  * Context information about what caused a trigger.
@@ -458,8 +458,7 @@ data class TriggerContext(
             }
         ): TriggerContext? {
             val sourceId = event.sourceId ?: return null
-            val sourceSnapshot = event.damageSourceLastKnownSnapshot ?: return null
-            if (!sourceSnapshot.isStampedFor(sourceId)) return null
+            event.damageSourceLastKnownSnapshot.stampedFor(sourceId) ?: return null
             return fromDamageEvent(
                 event = event,
                 triggeringEntityId = sourceId,

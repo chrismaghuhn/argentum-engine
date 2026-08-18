@@ -11,6 +11,7 @@ import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.LastKnownPermanentComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
@@ -441,8 +442,15 @@ object TargetResolutionUtils {
     /** A player role is usable by player-only effects only when no permanent role is also present. */
     private fun EffectContext.isPureDamagePlayerRecipient(): Boolean {
         val kinds = effectiveDamageRecipientKinds
-        return kinds.contains(com.wingedsheep.engine.core.DamageRecipientKind.PLAYER) &&
-            kinds.asList().all { it == com.wingedsheep.engine.core.DamageRecipientKind.PLAYER }
+        if (!kinds.contains(com.wingedsheep.engine.core.DamageRecipientKind.PLAYER) ||
+            !kinds.asList().all { it == com.wingedsheep.engine.core.DamageRecipientKind.PLAYER }
+        ) return false
+        // Players do not carry battlefield snapshots. If a malformed legacy context does carry
+        // one, however, an id-only snapshot is not evidence that this is still the event-time
+        // recipient and must not be allowed to bypass the damage-role stamp contract.
+        val recipientId = damageRecipientEntityId
+        return damageRecipientLastKnownSnapshot == null ||
+            (recipientId != null && damageRecipientLastKnownSnapshot.stampedFor(recipientId) != null)
     }
 
     /**
@@ -456,7 +464,7 @@ object TargetResolutionUtils {
         state: GameState,
     ): EntityId? {
         val id = entityId ?: return null
-        val captured = snapshot?.takeIf { it.entityId == id } ?: return null
+        val captured = snapshot.stampedFor(id) ?: return null
         return id.takeIf { state.isCapturedBattlefieldObjectLive(it, captured) }
     }
 
@@ -472,7 +480,7 @@ object TargetResolutionUtils {
         state: GameState,
     ): EntityId? {
         val id = entityId ?: return null
-        val captured = snapshot?.takeIf { it.entityId == id } ?: return null
+        val captured = snapshot.stampedFor(id) ?: return null
         return id.takeIf { it !in state.getBattlefield() || state.isCapturedBattlefieldObjectLive(it, captured) }
     }
 }

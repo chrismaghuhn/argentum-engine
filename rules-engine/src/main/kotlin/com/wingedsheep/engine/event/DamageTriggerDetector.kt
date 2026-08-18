@@ -12,7 +12,7 @@ import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
-import com.wingedsheep.engine.state.components.stack.isStampedFor
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -42,8 +42,7 @@ class DamageTriggerDetector(
     ) {
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val entityId = event.targetId
-        val recipientSnapshot = event.damageRecipientLastKnownSnapshot
-            ?.takeIf { it.isStampedFor(entityId) }
+        val recipientSnapshot = event.damageRecipientLastKnownSnapshot.stampedFor(entityId)
             ?: return
         val container = state.getEntity(entityId)
         val currentIsEventObject = state.isCapturedBattlefieldObjectLive(entityId, recipientSnapshot)
@@ -109,8 +108,7 @@ class DamageTriggerDetector(
         projected: ProjectedState
     ) {
         val sourceId = event.sourceId ?: return
-        val sourceSnapshot = event.damageSourceLastKnownSnapshot
-            ?.takeIf { it.isStampedFor(sourceId) }
+        val sourceSnapshot = event.damageSourceLastKnownSnapshot.stampedFor(sourceId)
             ?: return
         val container = state.getEntity(sourceId)
         val cardComponent = container?.get<CardComponent>()
@@ -186,11 +184,9 @@ class DamageTriggerDetector(
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val sourceId = event.sourceId ?: return
         val damagedEntityId = event.targetId
-        val sourceSnapshot = event.damageSourceLastKnownSnapshot
-            ?.takeIf { it.isStampedFor(sourceId) }
+        val sourceSnapshot = event.damageSourceLastKnownSnapshot.stampedFor(sourceId)
             ?: return
-        val recipientSnapshot = event.damageRecipientLastKnownSnapshot
-            ?.takeIf { it.isStampedFor(damagedEntityId) }
+        val recipientSnapshot = event.damageRecipientLastKnownSnapshot.stampedFor(damagedEntityId)
             ?: return
 
         // Get the damaged entity (might be on battlefield or in graveyard)
@@ -276,7 +272,7 @@ class DamageTriggerDetector(
         entityId: com.wingedsheep.sdk.model.EntityId,
         snapshot: EntitySnapshot,
     ): List<com.wingedsheep.sdk.scripting.TriggeredAbility> {
-        if (!snapshot.isStampedFor(entityId)) return emptyList()
+        if (snapshot.stampedFor(entityId) == null) return emptyList()
         // A live stamped object still has dynamic abilities granted by the current projected state
         // (for example The Ring's abilities on its current Ring-bearer). Use the normal resolver
         // only for that proven incarnation. A departed/replaced object uses snapshot-only

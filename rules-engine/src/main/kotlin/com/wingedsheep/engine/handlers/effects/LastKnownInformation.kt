@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers.effects
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.snapshotFor
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.sdk.model.EntityId
@@ -68,8 +69,10 @@ fun EffectContext.lkiSnapshotFor(
         EntityReference.Source -> lastKnownSourceSnapshot
             ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
         EntityReference.DamageSource -> damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+            .stampedFor(entityId)
+            ?.takeIf { !state.isCapturedBattlefieldObjectLive(entityId, it) }
         EntityReference.DamageRecipient -> damageRecipientLastKnownSnapshot
-            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+            .stampedFor(entityId)
+            ?.takeIf { !state.isCapturedBattlefieldObjectLive(entityId, it) }
         else -> null
     }

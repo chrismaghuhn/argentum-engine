@@ -16,6 +16,7 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.composite.ReflexiveTriggerEffectExecutor
 import com.wingedsheep.engine.handlers.effects.DamageUtils
+import com.wingedsheep.engine.handlers.effects.lkiSnapshotFor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.zones.MoveToZoneEffectExecutor
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
@@ -1237,7 +1238,9 @@ class DamageTriggerContextTest : FunSpec({
         val planeswalkerEvent = damageEvent.copy(
             targetId = EntityId("planeswalker"),
             targetIsPlayer = false,
-            recipientKind = DamageRecipientKind.PLANESWALKER
+            recipientKind = DamageRecipientKind.PLANESWALKER,
+            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
+                ?.copy(entityId = EntityId("planeswalker")),
         )
 
         matcher.matchesDealsDamageTrigger(
@@ -1265,7 +1268,9 @@ class DamageTriggerContextTest : FunSpec({
             recipientKind = DamageRecipientKind.PLANESWALKER,
             damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
                 keywords = setOf("DEATHTOUCH")
-            )
+            ),
+            damageRecipientLastKnownSnapshot = damageEvent.damageRecipientLastKnownSnapshot
+                ?.copy(entityId = EntityId("planeswalker")),
         )
 
         event.effectiveRecipientKind shouldBe DamageRecipientKind.PLANESWALKER
@@ -1561,7 +1566,8 @@ class DamageTriggerContextTest : FunSpec({
             power = 7,
             toughness = 4,
             subtypes = setOf("Elf"),
-            colors = setOf(Color.GREEN.name)
+            colors = setOf(Color.GREEN.name),
+            battlefieldEntryTimestamp = 2L,
         )
         val context = EffectContext(
             sourceId = null,
@@ -1646,6 +1652,177 @@ class DamageTriggerContextTest : FunSpec({
         contextScopedReferenceIn(
             DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power)
         ) shouldBe "DamageRecipient"
+    }
+
+    test("damage recipient matching and symbolic consumers reject an unstamped snapshot") {
+        val controllerId = EntityId("unstamped-recipient-controller")
+        val unstampedSourceSnapshot = EntitySnapshot(
+            entityId = sourceId,
+            power = 9,
+            toughness = 9,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+        )
+        val unstampedRecipientSnapshot = EntitySnapshot(
+            entityId = recipientId,
+            power = 8,
+            toughness = 8,
+            typeLine = TypeLine(cardTypes = setOf(CardType.PLANESWALKER)),
+            battlefieldEntryTimestamp = null,
+            objectIncarnationStamp = null,
+        )
+        val event = damageEvent.copy(
+            targetId = recipientId,
+            recipientKind = DamageRecipientKind.PLANESWALKER,
+            recipientKinds = DamageRecipientKindSet.PLANESWALKER,
+            damageRecipientLastKnownSnapshot = unstampedRecipientSnapshot,
+        )
+        val replacementState = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(recipientId)),
+        ).withEntity(
+            recipientId,
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = "unstamped-recipient-replacement",
+                    name = "Replacement Creature",
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                    baseStats = CreatureStats(1, 1),
+                ),
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(99L),
+            ),
+        )
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+
+        matcher.matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.Matching(GameObjectFilter.Planeswalker),
+            ),
+            event,
+            replacementState,
+            controllerId,
+        ) shouldBe false
+
+        val context = EffectContext(
+            sourceId = null,
+            controllerId = controllerId,
+            damageSourceEntityId = sourceId,
+            damageRecipientEntityId = recipientId,
+            damageRecipientKind = DamageRecipientKind.PLANESWALKER,
+            damageRecipientKinds = DamageRecipientKindSet.PLANESWALKER,
+            damageSourceLastKnownSnapshot = unstampedSourceSnapshot,
+            damageRecipientLastKnownSnapshot = unstampedRecipientSnapshot,
+        )
+        context.lkiSnapshotFor(EntityReference.DamageSource, sourceId, GameState()) shouldBe null
+        context.lkiSnapshotFor(EntityReference.DamageRecipient, recipientId, GameState()) shouldBe null
+        TargetResolutionUtils.resolveEntityReference(
+            EntityReference.DamageSource,
+            context,
+            GameState(),
+        ) shouldBe null
+        TargetResolutionUtils.resolveEntityReference(
+            EntityReference.DamageRecipient,
+            context,
+            GameState(),
+        ) shouldBe null
+        DynamicAmountEvaluator().evaluate(
+            GameState(),
+            DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power),
+            context,
+        ) shouldBe 0
+        DynamicAmountEvaluator().evaluate(
+            GameState(),
+            DynamicAmount.EntityProperty(EntityReference.DamageSource, EntityNumericProperty.Power),
+            context,
+        ) shouldBe 0
+    }
+
+    test("unstamped damage-role predicates fail closed instead of reading a reused id") {
+        val controllerId = EntityId("unstamped-role-predicate-controller")
+        val candidateId = EntityId("unstamped-role-predicate-candidate")
+        val state = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(recipientId, candidateId)),
+        ).withEntity(
+            recipientId,
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = "unstamped-role-replacement",
+                    name = "Replacement",
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                    baseStats = CreatureStats(1, 1),
+                    colors = setOf(Color.RED),
+                ),
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(101L),
+            ),
+        ).withEntity(
+            candidateId,
+            ComponentContainer.of(
+                CardComponent(
+                    cardDefinitionId = "unstamped-role-candidate",
+                    name = "Candidate",
+                    manaCost = ManaCost.ZERO,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                    baseStats = CreatureStats(6, 6),
+                    colors = setOf(Color.GREEN),
+                ),
+            ),
+        )
+        val context = PredicateContext(
+            controllerId = controllerId,
+            damageSourceId = sourceId,
+            damageRecipientId = recipientId,
+            damageSourceLastKnownSnapshot = EntitySnapshot(
+                entityId = sourceId,
+                power = 9,
+                toughness = 9,
+                typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            ),
+            damageRecipientKind = DamageRecipientKind.CREATURE,
+            damageRecipientKinds = DamageRecipientKindSet.CREATURE,
+            damageRecipientLastKnownSnapshot = EntitySnapshot(
+                entityId = recipientId,
+                power = 8,
+                toughness = 8,
+                subtypes = setOf("Elf"),
+                colors = setOf(Color.GREEN.name),
+                typeLine = TypeLine(
+                    cardTypes = setOf(CardType.CREATURE),
+                    subtypes = setOf(Subtype("Elf")),
+                ),
+            ),
+        )
+        val evaluator = PredicateEvaluator()
+
+        evaluator.matchesCardPredicate(
+            state,
+            state.projectedState,
+            candidateId,
+            CardPredicate.PowerAtMostEntity(EntityReference.DamageRecipient),
+            context,
+        ) shouldBe false
+        evaluator.matchesCardPredicate(
+            state,
+            state.projectedState,
+            candidateId,
+            CardPredicate.PowerAtMostEntity(EntityReference.DamageSource),
+            context,
+        ) shouldBe false
+        evaluator.matchesCardPredicate(
+            state,
+            state.projectedState,
+            candidateId,
+            CardPredicate.SharesCreatureTypeWith(EntityReference.DamageRecipient),
+            context,
+        ) shouldBe false
+        evaluator.matchesCardPredicate(
+            state,
+            state.projectedState,
+            candidateId,
+            CardPredicate.SharesColorWith(EntityReference.DamageRecipient),
+            context,
+        ) shouldBe false
     }
 
     test("live damage-role predicates prefer current projection over stale LKI") {

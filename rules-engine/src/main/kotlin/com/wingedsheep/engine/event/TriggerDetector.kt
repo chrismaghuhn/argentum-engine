@@ -48,7 +48,7 @@ import com.wingedsheep.engine.state.components.identity.RoomFaceStatics
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
-import com.wingedsheep.engine.state.components.stack.isStampedFor
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.sdk.core.CounterType
@@ -1745,7 +1745,7 @@ class TriggerDetector(
         event: DamageDealtEvent,
     ): Boolean {
         val snapshot = event.damageRecipientLastKnownSnapshot ?: return true
-        return !snapshot.isStampedFor(event.targetId) ||
+        return snapshot.stampedFor(event.targetId) == null ||
             !state.isCapturedBattlefieldObjectLive(event.targetId, snapshot)
     }
 
@@ -2986,7 +2986,7 @@ class TriggerDetector(
     ): EntityId? {
         val sourceId = event.sourceId ?: return null
         return event.damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == sourceId }
+            .stampedFor(sourceId)
             ?.controllerId
     }
 

@@ -40,6 +40,7 @@ import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Keyword
@@ -1274,16 +1275,17 @@ class PredicateEvaluator {
         if (ref != EntityReference.DamageSource && ref != EntityReference.DamageRecipient) {
             return entityId
         }
+        val damageEntityId = entityId ?: return null
         val snapshot = when (ref) {
             EntityReference.DamageSource -> context?.damageSourceLastKnownSnapshot
             EntityReference.DamageRecipient -> context?.damageRecipientLastKnownSnapshot
             else -> null
-        }?.takeIf { it.entityId == entityId }
+        }.stampedFor(damageEntityId)
         // Return the id as a symbolic LKI handle whenever the event carried a matching snapshot.
         // Snapshot-aware predicate branches decide whether to read the captured object or the
         // current projection. Object-targeting and unsupported live-component branches keep their
         // separate incarnation checks and therefore cannot authorize a same-id replacement.
-        return entityId?.takeIf { snapshot != null }
+        return damageEntityId.takeIf { snapshot != null }
     }
 
     /** True only when a damage-role reference is the currently live stamped battlefield object. */
@@ -1298,8 +1300,8 @@ class PredicateEvaluator {
             EntityReference.DamageSource -> context?.damageSourceLastKnownSnapshot
             EntityReference.DamageRecipient -> context?.damageRecipientLastKnownSnapshot
             else -> null
-        } ?: return false
-        return snapshot.entityId == entityId && state.isCapturedBattlefieldObjectLive(entityId, snapshot)
+        }.stampedFor(entityId) ?: return false
+        return state.isCapturedBattlefieldObjectLive(entityId, snapshot)
     }
 
     /** Resolve a reference's power without falling through from captured LKI to a newer id reuse. */
@@ -1327,9 +1329,11 @@ class PredicateEvaluator {
         // must use its current projected characteristics, while a departed permanent uses the
         // event snapshot. Never let a stale event snapshot shadow a live continuous effect.
         EntityReference.DamageSource -> context?.damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+            .stampedFor(entityId)
+            ?.takeIf { !state.isCapturedBattlefieldObjectLive(entityId, it) }
         EntityReference.DamageRecipient -> context?.damageRecipientLastKnownSnapshot
-            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+            .stampedFor(entityId)
+            ?.takeIf { !state.isCapturedBattlefieldObjectLive(entityId, it) }
         else -> null
     }
 
