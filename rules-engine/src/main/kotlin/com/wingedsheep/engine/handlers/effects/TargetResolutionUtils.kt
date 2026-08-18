@@ -9,6 +9,8 @@ import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.LastKnownPermanentComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
@@ -38,8 +40,12 @@ object TargetResolutionUtils {
             is EffectTarget.BoundVariable -> context.pipeline.namedTargets[effectTarget.name]?.toEntityId()
             is EffectTarget.SpecificEntity -> effectTarget.entityId
             is EffectTarget.TriggeringEntity -> context.triggeringEntityId
-            is EffectTarget.DamageSource -> context.damageSourceEntityId
-            is EffectTarget.DamageRecipient -> context.damageRecipientEntityId
+            // A battlefield damage role is an object reference, not a bare entity id. It can
+            // only be safely resolved without state for an explicitly captured player recipient;
+            // state-aware callers must compare the LKI incarnation stamp below.
+            is EffectTarget.DamageSource -> null
+            is EffectTarget.DamageRecipient ->
+                context.damageRecipientEntityId.takeIf { context.isPureDamagePlayerRecipient() }
             is EffectTarget.DiscardedAsCost ->
                 context.discardedAsCostCards.getOrNull(effectTarget.index)
             is EffectTarget.PipelineTarget ->
@@ -53,6 +59,21 @@ object TargetResolutionUtils {
      * that need to look up attachment relationships).
      */
     fun resolveTarget(effectTarget: EffectTarget, context: EffectContext, state: GameState): EntityId? {
+        if (effectTarget is EffectTarget.DamageSource) {
+            return resolveCapturedDamageObject(
+                context.damageSourceEntityId,
+                context.damageSourceLastKnownSnapshot,
+                state,
+            )
+        }
+        if (effectTarget is EffectTarget.DamageRecipient) {
+            if (context.isPureDamagePlayerRecipient()) return context.damageRecipientEntityId
+            return resolveCapturedDamageObject(
+                context.damageRecipientEntityId,
+                context.damageRecipientLastKnownSnapshot,
+                state,
+            )
+        }
         if (effectTarget is EffectTarget.EnchantedCreature ||
             effectTarget is EffectTarget.EquippedCreature ||
             effectTarget is EffectTarget.EnchantedPermanent
@@ -225,7 +246,7 @@ object TargetResolutionUtils {
             // alone is never enough to infer that role after LKI/zone changes.
             is EffectTarget.DamageRecipient ->
                 context.damageRecipientEntityId.takeIf {
-                    context.damageRecipientKind == com.wingedsheep.engine.core.DamageRecipientKind.PLAYER
+                    context.isPureDamagePlayerRecipient()
                 }
             is EffectTarget.PipelineTarget ->
                 context.pipeline.storedCollections[effectTarget.collectionName]?.getOrNull(effectTarget.index)
@@ -351,6 +372,10 @@ object TargetResolutionUtils {
      * affected / iteration / cost-storage / amassed army / enchanted creature). A `Target`
      * resolves to whatever the chosen target points at — permanent, card-in-zone, spell, or
      * player — via [toEntityId]; `EnchantedCreature` reads the source's attachment from [state].
+     * Damage-role references are stricter: a player recipient needs explicit player-role evidence,
+     * and a permanent source/recipient needs its event-time snapshot. The returned id is a symbolic
+     * handle for a matching LKI snapshot when the object has left; it is never authorization to
+     * target a newer same-id object.
      */
     fun resolveEntityReference(ref: EntityReference, context: EffectContext, state: GameState): EntityId? =
         when (ref) {
@@ -361,8 +386,22 @@ object TargetResolutionUtils {
             is EntityReference.Sacrificed -> context.sacrificedPermanents.getOrNull(ref.index)?.entityId
             is EntityReference.TappedAsCost -> context.tappedPermanents.getOrNull(ref.index)
             is EntityReference.Triggering -> context.triggeringEntityId
-            EntityReference.DamageSource -> context.damageSourceEntityId
-            EntityReference.DamageRecipient -> context.damageRecipientEntityId
+            EntityReference.DamageSource -> resolveCapturedDamageReference(
+                context.damageSourceEntityId,
+                context.damageSourceLastKnownSnapshot,
+                state,
+            )
+            EntityReference.DamageRecipient -> {
+                if (context.isPureDamagePlayerRecipient()) {
+                    context.damageRecipientEntityId
+                } else {
+                    resolveCapturedDamageReference(
+                        context.damageRecipientEntityId,
+                        context.damageRecipientLastKnownSnapshot,
+                        state,
+                    )
+                }
+            }
             is EntityReference.RingBearer -> {
                 // The creature carrying [player]'s Ring-bearer designation, on the battlefield
                 // under their control (CR 701.54e). Null when the player has no Ring-bearer.
@@ -397,5 +436,43 @@ object TargetResolutionUtils {
         is ChosenTarget.Permanent -> entityId
         is ChosenTarget.Card -> cardId
         is ChosenTarget.Spell -> spellEntityId
+    }
+
+    /** A player role is usable by player-only effects only when no permanent role is also present. */
+    private fun EffectContext.isPureDamagePlayerRecipient(): Boolean {
+        val kinds = effectiveDamageRecipientKinds
+        return kinds.contains(com.wingedsheep.engine.core.DamageRecipientKind.PLAYER) &&
+            kinds.asList().all { it == com.wingedsheep.engine.core.DamageRecipientKind.PLAYER }
+    }
+
+    /**
+     * Resolve a captured battlefield object. The snapshot is also the identity witness: an absent
+     * stamp is not enough to target a stamped live object, and a mismatched stamp is a same-id new
+     * object after blink/re-entry. Both cases fail closed.
+     */
+    private fun resolveCapturedDamageObject(
+        entityId: EntityId?,
+        snapshot: EntitySnapshot?,
+        state: GameState,
+    ): EntityId? {
+        val id = entityId ?: return null
+        val captured = snapshot?.takeIf { it.entityId == id } ?: return null
+        return id.takeIf { state.isCapturedBattlefieldObjectLive(it, captured) }
+    }
+
+    /**
+     * Resolve a damage-role [EntityReference] without allowing a stamped same-id replacement to
+     * masquerade as the event-time object. When the original has left the battlefield, retain the
+     * id as a symbolic LKI handle for readers that explicitly consume the captured snapshot; the
+     * state-aware object-target resolver above remains strict and returns null in that case.
+     */
+    private fun resolveCapturedDamageReference(
+        entityId: EntityId?,
+        snapshot: EntitySnapshot?,
+        state: GameState,
+    ): EntityId? {
+        val id = entityId ?: return null
+        val captured = snapshot?.takeIf { it.entityId == id } ?: return null
+        return id.takeIf { it !in state.getBattlefield() || state.isCapturedBattlefieldObjectLive(it, captured) }
     }
 }

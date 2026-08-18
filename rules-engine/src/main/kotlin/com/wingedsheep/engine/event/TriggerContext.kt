@@ -12,7 +12,9 @@ import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ControlChangedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.effectiveRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKinds
 import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.TappedEvent
@@ -37,6 +39,8 @@ data class TriggerContext(
     val damageRecipientEntityId: EntityId? = null,
     /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
     val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All recipient roles at damage time; zero is explicit UNKNOWN. */
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
     /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
     val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
     /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
@@ -211,6 +215,15 @@ data class TriggerContext(
      */
     val unattachedFromEntityId: EntityId? = null
 ) {
+    /** New plural vocabulary with compatibility for older manually-created contexts. */
+    val effectiveDamageRecipientKinds: DamageRecipientKindSet
+        get() = when {
+            !damageRecipientKinds.isUnknown -> damageRecipientKinds
+            damageRecipientKind != DamageRecipientKind.UNKNOWN ->
+                DamageRecipientKindSet.of(damageRecipientKind)
+            else -> DamageRecipientKindSet.UNKNOWN
+        }
+
     companion object {
         fun fromEvent(event: com.wingedsheep.engine.core.GameEvent): TriggerContext {
             return when (event) {
@@ -244,6 +257,7 @@ data class TriggerContext(
                     damageSourceEntityId = event.sourceId,
                     damageRecipientEntityId = event.targetId,
                     damageRecipientKind = event.effectiveRecipientKind,
+                    damageRecipientKinds = event.effectiveRecipientKinds,
                     damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
                     damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot,
                     damageAmount = event.amount,

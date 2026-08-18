@@ -269,6 +269,12 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -494,6 +500,12 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -609,6 +621,12 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -706,6 +724,12 @@ class TriggerProcessor(
                     controllerId = trigger.controllerId,
                     triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                     triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                    damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                    damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                    damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                    damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                    damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                    damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                     // See the note on the other findLegalTargets call sites: an X-relative target
                     // filter needs the triggering event's X bound to match anything.
                     xValue = trigger.triggerContext.xValue,
@@ -810,6 +834,7 @@ class TriggerProcessor(
                 damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
                 damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
                 damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
                 damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
                 damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
@@ -871,6 +896,7 @@ class TriggerProcessor(
             damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
             damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
             damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+            damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
             elseEffect = ability.elseEffect,
@@ -943,6 +969,7 @@ class TriggerProcessor(
             damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
             damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
             damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+            damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
             xValue = trigger.triggerContext.xValue ?: computeXForDisplay(state, trigger),
@@ -1339,6 +1366,12 @@ class TriggerProcessor(
             controllerId = ability.controllerId,
             triggeringEntityId = ability.triggeringEntityId,
             triggeringPlayerId = ability.triggeringPlayerId,
+            damageSourceId = ability.damageSourceEntityId,
+            damageRecipientId = ability.damageRecipientEntityId,
+            damageRecipientKind = ability.damageRecipientKind,
+            damageRecipientKinds = ability.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
             // Same reason as the pending-trigger call sites: an X-relative target filter must see
             // the X the ability went on the stack with, or it re-checks as having no legal targets.
             xValue = ability.xValue,
@@ -1511,6 +1544,7 @@ class TriggerProcessor(
                         damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
                         damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
                         damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                        damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
                         damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
                         damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                         xValue = trigger.triggerContext.xValue,
@@ -1582,6 +1616,7 @@ class TriggerProcessor(
                 damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
                 damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
                 damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
                 damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
                 damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 xValue = trigger.triggerContext.xValue,

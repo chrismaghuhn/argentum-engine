@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers.effects
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.applyShieldCounterToDamage
 import com.wingedsheep.engine.core.DamagePreventedEvent
 import com.wingedsheep.engine.core.EffectResult
@@ -127,6 +128,28 @@ object DamageUtils {
         return EntitySnapshot.fromProjection(id, state).copy(
             typeLine = projectedTypeLine(state, id)
         )
+    }
+
+    /**
+     * Capture every recipient role proven by the damage-time projection. In particular, do not
+     * collapse an animated permanent that is both a creature and a planeswalker to whichever
+     * branch happened to run first. An unrecognized role remains UNKNOWN rather than being guessed
+     * from the entity id or a later zone.
+     */
+    fun damageRecipientKinds(
+        state: GameState,
+        targetId: EntityId,
+        targetIsPlayer: Boolean,
+    ): DamageRecipientKindSet {
+        if (targetIsPlayer) return DamageRecipientKindSet.PLAYER
+        val projected = state.projectedState
+        val kinds = buildList {
+            if (projected.isCreature(targetId)) add(DamageRecipientKind.CREATURE)
+            if (projected.isPlaneswalker(targetId)) add(DamageRecipientKind.PLANESWALKER)
+            if (projected.isBattle(targetId)) add(DamageRecipientKind.BATTLE)
+        }
+        return if (kinds.isEmpty()) DamageRecipientKindSet.UNKNOWN
+        else DamageRecipientKindSet.of(*kinds.toTypedArray())
     }
 
     /**
@@ -466,13 +489,8 @@ object DamageUtils {
         // ORIGINAL state's projection, before this damage marked the creature / SBAs could move it.
         // Read by "damage equal to that creature's toughness" triggers (Taii Wakeen).
         val targetToughnessAtDamage = if (targetWasCreature) projected.getToughness(targetId) else null
-        val recipientKind = when {
-            targetIsPlayer -> DamageRecipientKind.PLAYER
-            projected.isPlaneswalker(targetId) -> DamageRecipientKind.PLANESWALKER
-            projected.isBattle(targetId) -> DamageRecipientKind.BATTLE
-            targetWasCreature -> DamageRecipientKind.CREATURE
-            else -> DamageRecipientKind.UNKNOWN
-        }
+        val recipientKinds = damageRecipientKinds(state, targetId, targetIsPlayer)
+        val recipientKind = recipientKinds.asList().singleOrNull() ?: DamageRecipientKind.UNKNOWN
         val sourceTargetIds = sourceId
             ?.let(newState::getEntity)
             ?.get<TargetsComponent>()
@@ -501,6 +519,7 @@ object DamageUtils {
                 targetToughnessAtDamage = targetToughnessAtDamage,
                 sourceTargetIdsAtDamage = sourceTargetIds,
                 recipientKind = recipientKind,
+                recipientKinds = recipientKinds,
                 damageSourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
                 damageRecipientLastKnownSnapshot = captureDamageEntitySnapshot(state, targetId),
             )

@@ -5,6 +5,7 @@ import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.DamageSourceLki
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.sdk.core.CardType
@@ -103,6 +104,13 @@ data class EntitySnapshot(
     /** Card definition id, so dies/leaves triggers resolve for tokens after 704.5d cleanup. */
     val cardDefinitionId: String? = null,
     /**
+     * Battlefield-object incarnation captured with this snapshot (CR 400.7). Entity ids are
+     * reused by this engine across zone changes, so a damage reference must compare this stamp
+     * before reading a live object; a mismatched stamp is a different object, never the captured
+     * one.
+     */
+    val battlefieldEntryTimestamp: Long? = null,
+    /**
      * The permanent's name at capture time. Frozen because a *cost* has to be describable after the
      * permanent it consumed is gone: the emerge sacrifice (CR 702.119a) is named on the stack card
      * and in the game log, and a sacrificed token leaves no entity to look the name up on once
@@ -190,6 +198,9 @@ data class EntitySnapshot(
                 keywords = projected.getKeywords(entityId),
                 lostAllAbilities = projected.hasLostAllAbilities(entityId),
                 wasSuspected = projected.isSuspected(entityId),
+                wasToken = state.getEntity(entityId)?.has<TokenComponent>() == true,
+                battlefieldEntryTimestamp = state.getEntity(entityId)
+                    ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
                 name = state.getEntity(entityId)?.get<CardComponent>()?.name,
             )
         }
@@ -240,8 +251,24 @@ fun captureEntitySnapshots(
     val container = state.getEntity(snapshot.entityId)
     snapshot.copy(
         wasToken = container?.has<TokenComponent>() ?: false,
+        battlefieldEntryTimestamp = container
+            ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
         name = container?.get<CardComponent>()?.name,
     )
+}
+
+/**
+ * Whether [entityId] is still the battlefield object represented by [snapshot]. A snapshot with
+ * no stamp is never considered a live-object identity witness. A damage reference without an
+ * event-time incarnation cannot distinguish an original object from a same-id replacement, so it
+ * must use LKI or fail closed. This keeps the no-bare-id rule explicit even for legacy payloads.
+ */
+fun GameState.isCapturedBattlefieldObjectLive(entityId: EntityId, snapshot: EntitySnapshot): Boolean {
+    if (entityId !in getBattlefield() || snapshot.entityId != entityId) return false
+    val currentStamp = getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp
+    return snapshot.battlefieldEntryTimestamp != null &&
+        currentStamp != null &&
+        currentStamp == snapshot.battlefieldEntryTimestamp
 }
 
 /**

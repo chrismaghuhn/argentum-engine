@@ -48,7 +48,10 @@ sealed interface EntityReference {
      *
      * Unlike [Source], this remains the damage source when a source-filtered damage observer uses
      * [com.wingedsheep.sdk.scripting.targets.EffectTarget.TriggeringEntity] for the source while
-     * the recipient is retained separately in the trigger context.
+     * the recipient is retained separately in the trigger context. The engine carries the
+     * event-time permanent snapshot, including its battlefield-entry incarnation, alongside this
+     * reference. A dynamic property reads that snapshot after the original object leaves; a stale
+     * or missing incarnation never falls through to a newer object with the same entity id.
      */
     @SerialName("DamageSource")
     @Serializable
@@ -59,7 +62,11 @@ sealed interface EntityReference {
     /**
      * The object or player that received the damage that caused the current trigger. Its role is
      * retained by the engine, so player-only effect resolution can reject a creature, planeswalker,
-     * or unknown recipient without guessing from the entity id.
+     * or unknown recipient without guessing from the entity id. For a permanent, the event-time
+     * snapshot and battlefield-entry incarnation are retained with the reference: dynamic
+     * properties and predicates use that LKI when the original object has left, while object
+     * targets fail closed if a same-id replacement is now present. A player recipient has explicit
+     * player-role evidence rather than a type inferred from its id.
      */
     @SerialName("DamageRecipient")
     @Serializable

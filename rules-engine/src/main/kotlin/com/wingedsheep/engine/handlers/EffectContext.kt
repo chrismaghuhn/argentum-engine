@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -242,6 +243,8 @@ data class EffectContext(
     val damageRecipientEntityId: EntityId? = null,
     /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
     val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All recipient roles at damage time; zero is explicit UNKNOWN. */
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
     /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
     val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
     /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
@@ -409,6 +412,15 @@ data class EffectContext(
      */
     val resolutionDepth: Int = 0
 ) {
+    /** New plural vocabulary with compatibility for older manually-created contexts. */
+    val effectiveDamageRecipientKinds: DamageRecipientKindSet
+        get() = when {
+            !damageRecipientKinds.isUnknown -> damageRecipientKinds
+            damageRecipientKind != DamageRecipientKind.UNKNOWN ->
+                DamageRecipientKindSet.of(damageRecipientKind)
+            else -> DamageRecipientKindSet.UNKNOWN
+        }
+
     /**
      * Resolve a symbolic effect target to a concrete entity id using just the context.
      *
@@ -561,6 +573,7 @@ data class EffectContext(
             damageSourceEntityId = ability.damageSourceEntityId,
             damageRecipientEntityId = ability.damageRecipientEntityId,
             damageRecipientKind = ability.damageRecipientKind,
+            damageRecipientKinds = ability.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
             targetingSourceEntityId = ability.targetingSourceEntityId,

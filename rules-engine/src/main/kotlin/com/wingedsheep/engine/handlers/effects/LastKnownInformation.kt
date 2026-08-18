@@ -3,6 +3,8 @@ package com.wingedsheep.engine.handlers.effects
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.snapshotFor
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.values.EntityReference
 
@@ -54,13 +56,20 @@ fun lkiPolicyFor(reference: EntityReference): LkiPolicy = when (reference) {
  * through to base characteristics). Enchanted-creature last-known P/T is still carried as a
  * scalar on [EffectContext] and resolved at its own read site, so it returns null here.
  */
-fun EffectContext.lkiSnapshotFor(reference: EntityReference, entityId: EntityId): EntitySnapshot? =
+fun EffectContext.lkiSnapshotFor(
+    reference: EntityReference,
+    entityId: EntityId,
+    state: GameState,
+): EntitySnapshot? =
     when (reference) {
         is EntityReference.Sacrificed -> sacrificedPermanents.snapshotFor(entityId)
         is EntityReference.TappedAsCost -> tappedEntitySnapshots.snapshotFor(entityId)
         is EntityReference.FromCostStorage -> chosenEntitySnapshots.snapshotFor(entityId)
-        EntityReference.Source -> lastKnownSourceSnapshot?.takeIf { it.entityId == entityId }
-        EntityReference.DamageSource -> damageSourceLastKnownSnapshot?.takeIf { it.entityId == entityId }
-        EntityReference.DamageRecipient -> damageRecipientLastKnownSnapshot?.takeIf { it.entityId == entityId }
+        EntityReference.Source -> lastKnownSourceSnapshot
+            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+        EntityReference.DamageSource -> damageSourceLastKnownSnapshot
+            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+        EntityReference.DamageRecipient -> damageRecipientLastKnownSnapshot
+            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
         else -> null
     }

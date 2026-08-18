@@ -39,12 +39,14 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.predicates.evaluateWith
@@ -141,9 +143,9 @@ class PredicateEvaluator {
      * questions about it).
      *
      * **Partial by construction**, and deliberately so: what is answered here is card types,
-     * sub/supertypes, keywords, token-ness and controller — the characteristics an "…from an X
-     * source" clause is ever written against. A predicate outside that set (mana value, colors,
-     * P/T comparisons, "has a non-mana activated ability", …) reports
+     * sub/supertypes, colors, keywords, token-ness and controller — the characteristics an "…from
+     * an X source" clause is ever written against. A predicate outside that set (mana value, P/T
+     * comparisons, "has a non-mana activated ability", …) reports
      * *unanswerable* rather than guessing — see [matchesSnapshotPredicate] — and an unanswerable
      * predicate makes the whole filter fail to match, which is the same answer the caller got before
      * any snapshot existed. State predicates (tapped, attacking, …) describe a battlefield presence
@@ -206,6 +208,12 @@ class PredicateEvaluator {
                 typeLine?.hasSubtype(predicate.subtype)
                     ?: snapshot.subtypes.any { it.equals(predicate.subtype.value, ignoreCase = true) }
             is CardPredicate.HasKeyword -> predicate.keyword.name in snapshot.keywords
+            is CardPredicate.HasColor -> predicate.color.name in snapshot.colors
+            is CardPredicate.NotColor -> predicate.color.name !in snapshot.colors
+            CardPredicate.IsColorless -> snapshot.colors.isEmpty()
+            CardPredicate.IsColored -> snapshot.colors.isNotEmpty()
+            CardPredicate.IsMulticolored -> snapshot.colors.size > 1
+            CardPredicate.IsMonocolored -> snapshot.colors.size == 1
             is CardPredicate.Not -> matchesSnapshotPredicate(snapshot, predicate.predicate)?.not()
             is CardPredicate.And -> {
                 val results = predicate.predicates.map { matchesSnapshotPredicate(snapshot, it) }
@@ -586,19 +594,22 @@ class PredicateEvaluator {
                 cmc >= predicate.min
             }
             is CardPredicate.ManaValueAtMostEntity -> {
-                val refEntityId = resolveEntityReference(predicate.reference, context) ?: return false
+                val refEntityId = resolveEntityReference(predicate.reference, context, state) ?: return false
+                if (!isCurrentDamageReference(predicate.reference, context, state, refEntityId)) return false
                 val refManaValue = state.getEntity(refEntityId)?.get<CardComponent>()?.manaValue ?: return false
                 val cmc = if (projectedValues?.isFaceDown == true) 0 else card.manaValue
                 cmc <= refManaValue
             }
             is CardPredicate.ManaValueAtMostEntityManaSpent -> {
-                val refEntityId = resolveEntityReference(predicate.reference, context) ?: return false
+                val refEntityId = resolveEntityReference(predicate.reference, context, state) ?: return false
+                if (!isCurrentDamageReference(predicate.reference, context, state, refEntityId)) return false
                 val manaSpent = ManaSpentReader.totalSpent(state, refEntityId)
                 val cmc = if (projectedValues?.isFaceDown == true) 0 else card.manaValue
                 cmc <= manaSpent
             }
             is CardPredicate.ManaValueAtMostColorsSpent -> {
-                val refEntityId = resolveEntityReference(predicate.reference, context) ?: return false
+                val refEntityId = resolveEntityReference(predicate.reference, context, state) ?: return false
+                if (!isCurrentDamageReference(predicate.reference, context, state, refEntityId)) return false
                 val colorsSpent = ManaSpentReader.distinctColorsSpent(state, refEntityId)
                 val cmc = if (projectedValues?.isFaceDown == true) 0 else card.manaValue
                 cmc <= colorsSpent
@@ -724,33 +735,24 @@ class PredicateEvaluator {
             }
 
             is CardPredicate.PowerGreaterThanEntity -> {
-                val refEntityId = resolveEntityReference(predicate.reference, context) ?: return false
-                // Prefer projected power for the reference (layer effects, +1/+1 counters, etc.);
-                // then the damage-role LKI snapshot when the reference has left, and finally its
-                // base printed power when a live/non-battlefield entity still carries a card.
-                val refPower = snapshotForReference(predicate.reference, context, state, refEntityId)?.power
-                    ?: projected.getPower(refEntityId)
-                    ?: state.getEntity(refEntityId)?.get<CardComponent>()?.baseStats?.basePower
+                val refEntityId = resolveEntityReference(predicate.reference, context, state) ?: return false
+                val refPower = resolveReferencedPower(predicate.reference, context, state, projected, refEntityId)
                     ?: return false
                 val candidatePower = projectedValues?.power ?: card.baseStats?.basePower ?: 0
                 candidatePower > refPower
             }
 
             is CardPredicate.PowerAtMostEntity -> {
-                val refEntityId = resolveEntityReference(predicate.reference, context) ?: return false
-                val refPower = snapshotForReference(predicate.reference, context, state, refEntityId)?.power
-                    ?: projected.getPower(refEntityId)
-                    ?: state.getEntity(refEntityId)?.get<CardComponent>()?.baseStats?.basePower
+                val refEntityId = resolveEntityReference(predicate.reference, context, state) ?: return false
+                val refPower = resolveReferencedPower(predicate.reference, context, state, projected, refEntityId)
                     ?: return false
                 val candidatePower = projectedValues?.power ?: card.baseStats?.basePower ?: 0
                 candidatePower <= refPower
             }
 
             is CardPredicate.PowerLessThanEntity -> {
-                val refEntityId = resolveEntityReference(predicate.reference, context) ?: return false
-                val refPower = snapshotForReference(predicate.reference, context, state, refEntityId)?.power
-                    ?: projected.getPower(refEntityId)
-                    ?: state.getEntity(refEntityId)?.get<CardComponent>()?.baseStats?.basePower
+                val refEntityId = resolveEntityReference(predicate.reference, context, state) ?: return false
+                val refPower = resolveReferencedPower(predicate.reference, context, state, projected, refEntityId)
                     ?: return false
                 val candidatePower = projectedValues?.power ?: card.baseStats?.basePower ?: 0
                 candidatePower < refPower
@@ -820,7 +822,7 @@ class PredicateEvaluator {
             }
 
             is CardPredicate.SharesCreatureTypeWith -> {
-                val referenceId = resolveEntityReference(predicate.entity, context) ?: return false
+                val referenceId = resolveEntityReference(predicate.entity, context, state) ?: return false
                 val referenceSnapshot = snapshotForReference(predicate.entity, context, state, referenceId)
                 val referenceSubtypes = referenceSnapshot?.subtypes
                     ?: projected.getSubtypes(referenceId).ifEmpty {
@@ -846,7 +848,7 @@ class PredicateEvaluator {
             }
 
             is CardPredicate.SharesColorWith -> {
-                val referenceId = resolveEntityReference(predicate.entity, context) ?: return false
+                val referenceId = resolveEntityReference(predicate.entity, context, state) ?: return false
                 val referenceSnapshot = snapshotForReference(predicate.entity, context, state, referenceId)
                 val referenceColors = referenceSnapshot?.colors
                     ?: projected.getColors(referenceId).ifEmpty {
@@ -1156,14 +1158,19 @@ class PredicateEvaluator {
             damageSourceEntityId = context.damageSourceId,
             damageRecipientEntityId = context.damageRecipientId,
             damageRecipientKind = context.damageRecipientKind,
+            damageRecipientKinds = context.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = context.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = context.damageRecipientLastKnownSnapshot,
         )
         return DynamicAmountEvaluator().evaluate(state, amount, effectContext)
     }
 
-    private fun resolveEntityReference(ref: EntityReference, context: PredicateContext?): EntityId? {
-        return when (ref) {
+    private fun resolveEntityReference(
+        ref: EntityReference,
+        context: PredicateContext?,
+        state: GameState,
+    ): EntityId? {
+        val entityId = when (ref) {
             is EntityReference.Source -> context?.sourceId
             is EntityReference.Triggering -> context?.triggeringEntityId
             EntityReference.DamageSource -> context?.damageSourceId
@@ -1183,6 +1190,49 @@ class PredicateEvaluator {
             is EntityReference.EnchantedCreature -> null // Attachment lookup needs state, not threaded here
             is EntityReference.RingBearer -> null // Ring-bearer lookup needs state, not threaded here
         }
+        if (ref != EntityReference.DamageSource && ref != EntityReference.DamageRecipient) {
+            return entityId
+        }
+        val snapshot = when (ref) {
+            EntityReference.DamageSource -> context?.damageSourceLastKnownSnapshot
+            EntityReference.DamageRecipient -> context?.damageRecipientLastKnownSnapshot
+            else -> null
+        }?.takeIf { it.entityId == entityId }
+        // Return the id as a symbolic LKI handle whenever the event carried a matching snapshot.
+        // Snapshot-aware predicate branches decide whether to read the captured object or the
+        // current projection. Object-targeting and unsupported live-component branches keep their
+        // separate incarnation checks and therefore cannot authorize a same-id replacement.
+        return entityId?.takeIf { snapshot != null }
+    }
+
+    /** True only when a damage-role reference is the currently live stamped battlefield object. */
+    private fun isCurrentDamageReference(
+        ref: EntityReference,
+        context: PredicateContext?,
+        state: GameState,
+        entityId: EntityId,
+    ): Boolean {
+        if (ref != EntityReference.DamageSource && ref != EntityReference.DamageRecipient) return true
+        val snapshot = when (ref) {
+            EntityReference.DamageSource -> context?.damageSourceLastKnownSnapshot
+            EntityReference.DamageRecipient -> context?.damageRecipientLastKnownSnapshot
+            else -> null
+        } ?: return false
+        return snapshot.entityId == entityId && state.isCapturedBattlefieldObjectLive(entityId, snapshot)
+    }
+
+    /** Resolve a reference's power without falling through from captured LKI to a newer id reuse. */
+    private fun resolveReferencedPower(
+        ref: EntityReference,
+        context: PredicateContext?,
+        state: GameState,
+        projected: ProjectedState,
+        entityId: EntityId,
+    ): Int? {
+        val snapshot = snapshotForReference(ref, context, state, entityId)
+        if (snapshot != null) return snapshot.power
+        return projected.getPower(entityId)
+            ?: state.getEntity(entityId)?.get<CardComponent>()?.baseStats?.basePower
     }
 
     /** Snapshot carried for a damage-role reference, if that role's permanent left the battlefield. */
@@ -1196,9 +1246,9 @@ class PredicateEvaluator {
         // must use its current projected characteristics, while a departed permanent uses the
         // event snapshot. Never let a stale event snapshot shadow a live continuous effect.
         EntityReference.DamageSource -> context?.damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == entityId && entityId !in state.getBattlefield() }
+            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
         EntityReference.DamageRecipient -> context?.damageRecipientLastKnownSnapshot
-            ?.takeIf { it.entityId == entityId && entityId !in state.getBattlefield() }
+            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
         else -> null
     }
 
@@ -1940,6 +1990,8 @@ data class PredicateContext(
     val damageRecipientId: EntityId? = null,
     /** Explicit role of [damageRecipientId], retained through LKI. */
     val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All roles of [damageRecipientId], retained through LKI. */
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
     /**
      * Last-known information for [sourceId] when the source has left the battlefield, threaded into
      * the [EffectContext] that [PredicateEvaluator.evaluateDynamicCap] reconstructs so a
@@ -1956,6 +2008,15 @@ data class PredicateContext(
     /** Last-known characteristics for [damageRecipientId] after it left the battlefield. */
     val damageRecipientLastKnownSnapshot: EntitySnapshot? = null
 ) {
+    /** New plural vocabulary with compatibility for older manually-created predicate contexts. */
+    val effectiveDamageRecipientKinds: DamageRecipientKindSet
+        get() = when {
+            !damageRecipientKinds.isUnknown -> damageRecipientKinds
+            damageRecipientKind != DamageRecipientKind.UNKNOWN ->
+                DamageRecipientKindSet.of(damageRecipientKind)
+            else -> DamageRecipientKindSet.UNKNOWN
+        }
+
     /**
      * Resolve an [EffectTarget] reference to a concrete player [EntityId].
      *
@@ -1998,6 +2059,7 @@ data class PredicateContext(
                 damageSourceId = context.damageSourceEntityId,
                 damageRecipientId = context.damageRecipientEntityId,
                 damageRecipientKind = context.damageRecipientKind,
+                damageRecipientKinds = context.effectiveDamageRecipientKinds,
                 granterId = context.granterId,
                 triggeringEntityId = context.triggeringEntityId,
                 triggeringPlayerId = context.triggeringPlayerId,

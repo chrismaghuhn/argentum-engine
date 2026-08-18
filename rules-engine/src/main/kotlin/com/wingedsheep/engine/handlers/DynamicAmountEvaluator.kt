@@ -25,6 +25,7 @@ import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.identity.RoomComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
@@ -381,7 +382,17 @@ class DynamicAmountEvaluator(
 
             // Composable entity property — replaces SourcePower, TargetPower, CountersOnSelf, etc.
             is DynamicAmount.EntityProperty -> {
-                val entityId = TargetResolutionUtils.resolveEntityReference(amount.entity, context, state)
+                // Damage-role properties need a symbolic id even after the original permanent has
+                // left, so the LKI branch below can read its captured snapshot. The shared target
+                // resolver intentionally returns null for a stamped same-id replacement; keep
+                // this property-only path explicit rather than weakening that object-safety gate.
+                val entityId = when (amount.entity) {
+                    EntityReference.DamageSource -> context.damageSourceEntityId
+                        ?.takeIf { it == context.damageSourceLastKnownSnapshot?.entityId }
+                    EntityReference.DamageRecipient -> context.damageRecipientEntityId
+                        ?.takeIf { it == context.damageRecipientLastKnownSnapshot?.entityId }
+                    else -> TargetResolutionUtils.resolveEntityReference(amount.entity, context, state)
+                }
                 // Enchanted-creature power reads use last-known information when the source aura
                 // has detached: the enchanted creature (and the aura) can leave the battlefield
                 // before the ability resolves — e.g. removed in response to the aura's ETB
@@ -403,12 +414,25 @@ class DynamicAmountEvaluator(
                 // projected P/T is null, so the final resolveNumericProperty yields base
                 // characteristics anyway — this replaces the former per-reference
                 // `useProjected = false` branches (Ghitu Fire-Eater, Heart-Piercer Manticore, …).
-                if (lkiPolicyFor(amount.entity) == LkiPolicy.LIVE_THEN_LKI &&
-                    entityId !in state.getBattlefield()
-                ) {
-                    val snapshot = context.lkiSnapshotFor(amount.entity, entityId)
+                if (lkiPolicyFor(amount.entity) == LkiPolicy.LIVE_THEN_LKI) {
+                    val snapshot = context.lkiSnapshotFor(amount.entity, entityId, state)
                     snapshot?.let { resolveSnapshotNumericProperty(it, amount.numericProperty) }
                         ?.let { return it }
+                    // DamageSource/DamageRecipient are event-time references. If their captured
+                    // snapshot is absent, or cannot prove that the current id is the same
+                    // battlefield object, never read a newer same-id object.
+                    if (amount.entity == EntityReference.DamageSource ||
+                        amount.entity == EntityReference.DamageRecipient
+                    ) {
+                        val captured = when (amount.entity) {
+                            EntityReference.DamageSource -> context.damageSourceLastKnownSnapshot
+                            EntityReference.DamageRecipient -> context.damageRecipientLastKnownSnapshot
+                            else -> null
+                        }
+                        if (captured == null ||
+                            !state.isCapturedBattlefieldObjectLive(entityId, captured)
+                        ) return 0
+                    }
                 }
                 resolveNumericProperty(state, entityId, amount.numericProperty, context, useProjected = true, explicitProjected = projectedState)
             }

@@ -59,6 +59,7 @@ data class TriggeredAbilityContinuation(
     val damageSourceEntityId: EntityId? = null,
     val damageRecipientEntityId: EntityId? = null,
     val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
     val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     val elseEffect: Effect? = null,
@@ -119,6 +120,13 @@ data class TriggeredAbilityContinuation(
     val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
 ) : ContinuationFrame
 
+val TriggeredAbilityContinuation.effectiveDamageRecipientKinds: DamageRecipientKindSet
+    get() = when {
+        !damageRecipientKinds.isUnknown -> damageRecipientKinds
+        damageRecipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(damageRecipientKind)
+        else -> DamageRecipientKindSet.UNKNOWN
+    }
+
 /**
  * Resume placing a triggered ability on the stack after the player distributes damage.
  *
@@ -154,6 +162,7 @@ data class TriggerDamageDistributionContinuation(
     val damageSourceEntityId: EntityId? = null,
     val damageRecipientEntityId: EntityId? = null,
     val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
     val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     val triggerCounterCount: Int? = null,
@@ -175,6 +184,13 @@ data class TriggerDamageDistributionContinuation(
      *  stack object built on resume can re-check it as it resolves. */
     val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
 ) : ContinuationFrame
+
+val TriggerDamageDistributionContinuation.effectiveDamageRecipientKinds: DamageRecipientKindSet
+    get() = when {
+        !damageRecipientKinds.isUnknown -> damageRecipientKinds
+        damageRecipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(damageRecipientKind)
+        else -> DamageRecipientKindSet.UNKNOWN
+    }
 
 /**
  * Stores remaining pending triggers that still need to be processed.

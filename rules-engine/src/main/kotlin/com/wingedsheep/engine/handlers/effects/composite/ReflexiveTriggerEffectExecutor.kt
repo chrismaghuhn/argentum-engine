@@ -463,6 +463,7 @@ class ReflexiveTriggerEffectExecutor(
                     damageSourceEntityId = effectContext.damageSourceEntityId,
                     damageRecipientEntityId = effectContext.damageRecipientEntityId,
                     damageRecipientKind = effectContext.damageRecipientKind,
+                    damageRecipientKinds = effectContext.effectiveDamageRecipientKinds,
                     damageSourceLastKnownSnapshot = effectContext.damageSourceLastKnownSnapshot,
                     damageRecipientLastKnownSnapshot = effectContext.damageRecipientLastKnownSnapshot,
                     damageAmount = effectContext.triggerDamageAmount,

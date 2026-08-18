@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.core.effectiveRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKinds
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -36,7 +37,7 @@ class DamageTriggerDetector(
         event: DamageDealtEvent,
         triggers: MutableList<PendingTrigger>
     ) {
-        if (event.effectiveRecipientKind != DamageRecipientKind.CREATURE) return
+        if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val entityId = event.targetId
         val container = state.getEntity(entityId) ?: return
         val cardComponent = container.get<CardComponent>() ?: return
@@ -138,7 +139,7 @@ class DamageTriggerDetector(
         event: DamageDealtEvent,
         triggers: MutableList<PendingTrigger>
     ) {
-        if (event.effectiveRecipientKind != DamageRecipientKind.CREATURE) return
+        if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)) return
         val sourceId = event.sourceId ?: return
         val damagedEntityId = event.targetId
 
@@ -208,7 +209,7 @@ class DamageTriggerDetector(
         projected: ProjectedState,
         index: TriggerIndex
     ) {
-        if (event.effectiveRecipientKind != DamageRecipientKind.PLAYER) return
+        if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) return
         val damageSourceId = event.sourceId ?: return
         val damagedPlayerId = event.targetId
 
@@ -330,7 +331,7 @@ class DamageTriggerDetector(
                 event,
                 triggeringEntityId = event.sourceId,
                 triggeringPlayerId = event.targetId.takeIf {
-                    event.effectiveRecipientKind == DamageRecipientKind.PLAYER
+                    event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)
                 }
             )
         } else {
@@ -387,7 +388,7 @@ class DamageTriggerDetector(
                             firstMatching,
                             triggeringEntityId = firstMatching.sourceId,
                             triggeringPlayerId = firstMatching.targetId.takeIf {
-                                firstMatching.effectiveRecipientKind == DamageRecipientKind.PLAYER
+                                firstMatching.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)
                             }
                         )
                     } else {
@@ -418,7 +419,7 @@ class DamageTriggerDetector(
         projected: ProjectedState,
         index: TriggerIndex
     ) {
-        if (event.effectiveRecipientKind != DamageRecipientKind.PLAYER) return
+        if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) return
         val damageSourceId = event.sourceId ?: return
         val damagedPlayerId = event.targetId
 

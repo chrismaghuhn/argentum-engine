@@ -16,6 +16,7 @@ import com.wingedsheep.engine.core.DoorUnlockedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.effectiveRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKinds
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ReflexiveAbilityTriggeredEvent
 import com.wingedsheep.engine.core.SpellCastEvent
@@ -1659,7 +1660,7 @@ class TriggerDetector(
 
         // Handle "whenever a creature deals damage to you" triggers (e.g., Aurification)
         if (event is DamageDealtEvent && event.sourceId != null &&
-            event.effectiveRecipientKind == DamageRecipientKind.PLAYER) {
+            event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
             damageDetector.detectDamageToControllerTriggers(state, event, triggers, projected, index)
         }
 
@@ -1670,7 +1671,7 @@ class TriggerDetector(
 
         // Handle "whenever a [subtype] deals combat damage to a player" triggers (e.g., Cabal Slaver)
         if (event is DamageDealtEvent && event.sourceId != null && event.isCombatDamage &&
-            event.effectiveRecipientKind == DamageRecipientKind.PLAYER) {
+            event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
             damageDetector.detectSubtypeDamageToPlayerTriggers(state, event, triggers, projected, index)
         }
 
@@ -2853,7 +2854,7 @@ class TriggerDetector(
         val combatDamageByDamagedPlayer = mutableMapOf<EntityId, MutableList<CombatDamageInfo>>()
         for (event in events) {
             if (event is DamageDealtEvent && event.isCombatDamage && event.sourceId != null &&
-                event.effectiveRecipientKind == DamageRecipientKind.PLAYER) {
+                event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
                 val sourceContainer = state.getEntity(event.sourceId) ?: continue
                 val controller = sourceContainer.get<ControllerComponent>()?.playerId ?: continue
                 val info = CombatDamageInfo(event, event.sourceId, event.targetId)
@@ -2885,6 +2886,7 @@ class TriggerDetector(
                                 damageSourceId = info.event.sourceId,
                                 damageRecipientId = info.event.targetId,
                                 damageRecipientKind = info.event.effectiveRecipientKind,
+                                damageRecipientKinds = info.event.effectiveRecipientKinds,
                                 damageSourceLastKnownSnapshot = info.event.damageSourceLastKnownSnapshot,
                                 damageRecipientLastKnownSnapshot = info.event.damageRecipientLastKnownSnapshot
                             )
@@ -2935,6 +2937,7 @@ class TriggerDetector(
                             damageSourceId = info.event.sourceId,
                             damageRecipientId = info.event.targetId,
                             damageRecipientKind = info.event.effectiveRecipientKind,
+                            damageRecipientKinds = info.event.effectiveRecipientKinds,
                             damageSourceLastKnownSnapshot = info.event.damageSourceLastKnownSnapshot,
                             damageRecipientLastKnownSnapshot = info.event.damageRecipientLastKnownSnapshot
                         )

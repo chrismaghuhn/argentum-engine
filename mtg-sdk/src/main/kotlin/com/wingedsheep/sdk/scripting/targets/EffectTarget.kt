@@ -214,7 +214,10 @@ sealed interface EffectTarget {
 
     /**
      * DAMAGE SOURCE: the object that dealt the damage that caused the trigger.
-     * This remains distinct from [TriggeringEntity], whose meaning depends on the observer.
+     * This remains distinct from [TriggeringEntity], whose meaning depends on the observer. For a
+     * permanent, resolution uses the captured event-time snapshot and battlefield-entry
+     * incarnation; if that incarnation is gone or a newer same-id object is present, this object
+     * target fails closed rather than targeting the replacement.
      */
     @SerialName("DamageSource")
     @Serializable
@@ -224,7 +227,11 @@ sealed interface EffectTarget {
 
     /**
      * DAMAGE RECIPIENT: the object or player that received the damage that caused the trigger.
-     * The stored entity id is retained for resolution-time LKI when the recipient has left.
+     * The recipient role (player, creature, planeswalker, battle, or another captured type set) and
+     * event-time permanent snapshot are retained separately from the entity id. A permanent target
+     * resolves only when its battlefield-entry incarnation is still present; otherwise the target
+     * fails closed, while property/predicate reads may use the captured LKI. A player resolves
+     * only from explicit player-role evidence.
      */
     @SerialName("DamageRecipient")
     @Serializable

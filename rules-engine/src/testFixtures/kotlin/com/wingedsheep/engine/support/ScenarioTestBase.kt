@@ -12,6 +12,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
@@ -188,10 +189,14 @@ abstract class ScenarioTestBase : FunSpec() {
 
             // Add to battlefield
             state = state.addToZone(ZoneKey(playerId, Zone.BATTLEFIELD), cardId)
+            // Direct scenario placement still creates a battlefield object. Stamp it like the
+            // production entry pipeline so strict damage references can distinguish same-id reuse.
+            state = state.tick()
 
             // Update card entity with battlefield-specific components
             var container = state.getEntity(cardId)!!
             container = container.with(ControllerComponent(playerId))
+                .with(BattlefieldEntryTimestampComponent(state.timestamp))
 
             if (tapped) {
                 container = container.with(TappedComponent)

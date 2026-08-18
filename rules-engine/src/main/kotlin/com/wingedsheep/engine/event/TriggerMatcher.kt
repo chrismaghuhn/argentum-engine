@@ -24,6 +24,7 @@ import com.wingedsheep.engine.state.components.player.ManaSpentOnSpellsThisTurnC
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
@@ -1488,18 +1489,22 @@ class TriggerMatcher(
         val combatMatches = trigger.damageType == DamageType.Any ||
             (trigger.damageType == DamageType.Combat && event.isCombatDamage) ||
             (trigger.damageType == DamageType.NonCombat && !event.isCombatDamage)
-        val recipientKind = recipientKindAtDamage(event)
+        val recipientKinds = event.effectiveRecipientKinds
+        val permanentRecipient = recipientKinds.contains(DamageRecipientKind.CREATURE) ||
+            recipientKinds.contains(DamageRecipientKind.PLANESWALKER) ||
+            recipientKinds.contains(DamageRecipientKind.BATTLE) ||
+            recipientKinds.contains(DamageRecipientKind.OTHER)
         val recipientMatches = when (trigger.recipient) {
             RecipientFilter.Any -> true
-            RecipientFilter.AnyPlayer -> recipientKind == DamageRecipientKind.PLAYER
+            RecipientFilter.AnyPlayer -> recipientKinds.contains(DamageRecipientKind.PLAYER)
             RecipientFilter.AnyPlayerOrPlaneswalker -> {
-                recipientKind == DamageRecipientKind.PLAYER ||
-                    recipientKind == DamageRecipientKind.PLANESWALKER
+                recipientKinds.contains(DamageRecipientKind.PLAYER) ||
+                    recipientKinds.contains(DamageRecipientKind.PLANESWALKER)
             }
-            RecipientFilter.AnyCreature -> recipientKind == DamageRecipientKind.CREATURE
+            RecipientFilter.AnyCreature -> recipientKinds.contains(DamageRecipientKind.CREATURE)
             RecipientFilter.You -> false // handled separately in detectDamageToControllerTriggers
             RecipientFilter.Opponent -> {
-                recipientKind == DamageRecipientKind.PLAYER && event.targetId != controllerId
+                recipientKinds.contains(DamageRecipientKind.PLAYER) && event.targetId != controllerId
             }
             RecipientFilter.CreatureOpponentControls -> {
                 val targetController = recipientControllerLki(event, state)
@@ -1509,30 +1514,15 @@ class TriggerMatcher(
                 recipientIsCreatureLki(event) && recipientControllerLki(event, state) == controllerId
             }
             RecipientFilter.PermanentYouControl -> {
-                recipientKind != DamageRecipientKind.PLAYER &&
-                    recipientKind != DamageRecipientKind.UNKNOWN &&
+                permanentRecipient &&
                     recipientControllerLki(event, state) == controllerId
             }
-            RecipientFilter.AnyPermanent ->
-                recipientKind != DamageRecipientKind.PLAYER &&
-                    recipientKind != DamageRecipientKind.UNKNOWN
+            RecipientFilter.AnyPermanent -> permanentRecipient
             is RecipientFilter.Matching -> {
-                // "deals damage to a [filtered] creature/permanent" (East-Mark Cavalier,
-                // Mauhur, Spider-Slayer). Evaluate the filter against the recipient in projected
-                // state — mirrors DamageCalculator's Matching handling. A recipient that left the
-                // battlefield to the same damage is no longer projectable, but there is nothing
-                // left to act on ("destroy that creature"), so a live match is sufficient. A null
-                // controller can't evaluate controller-relative filters (e.g. "a creature an
-                // opponent controls"), so require it rather than passing an empty sentinel id.
                 val filter = (trigger.recipient as RecipientFilter.Matching).filter
                 controllerId != null &&
-                    recipientKind != DamageRecipientKind.PLAYER &&
-                    recipientKind != DamageRecipientKind.UNKNOWN &&
-                    state.getEntity(event.targetId) != null &&
-                    predicateEvaluator.matches(
-                        state, state.projectedState, event.targetId, filter,
-                        damagePredicateContext(event, controllerId)
-                    )
+                    permanentRecipient &&
+                    matchesDamageRecipientFilter(filter, event, state, controllerId)
             }
             RecipientFilter.Self -> false // handled elsewhere
             else -> false
@@ -1577,19 +1567,22 @@ class TriggerMatcher(
             damageSourceId = event.sourceId,
             damageRecipientId = event.targetId,
             damageRecipientKind = event.effectiveRecipientKind,
+            damageRecipientKinds = event.effectiveRecipientKinds,
             damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot
         )
         val sourceSnapshot = event.damageSourceLastKnownSnapshot
             ?.takeIf { it.entityId == event.sourceId }
-        return if (sourceSnapshot != null && event.sourceId !in state.getBattlefield()) {
-            // Damage-source filters observe the source as it existed when damage was dealt. Once
-            // that permanent has left, never re-read a later zone's characteristics.
-            predicateEvaluator.matchesSnapshot(state, sourceSnapshot, sourceFilter, predicateContext)
-        } else {
-            predicateEvaluator.matches(
-                state, state.projectedState, event.sourceId, sourceFilter, predicateContext
-            )
+        return when {
+            sourceSnapshot != null && !state.isCapturedBattlefieldObjectLive(event.sourceId, sourceSnapshot) ->
+                predicateEvaluator.matchesSnapshot(state, sourceSnapshot, sourceFilter, predicateContext)
+            sourceSnapshot != null ->
+                predicateEvaluator.matches(state, state.projectedState, event.sourceId, sourceFilter, predicateContext)
+            event.sourceId !in state.getBattlefield() ->
+                predicateEvaluator.matches(state, state.projectedState, event.sourceId, sourceFilter, predicateContext)
+            // A stamped current object without a matching captured snapshot is not proven to be
+            // the source object from the event. Do not classify a same-id reuse as the source.
+            else -> false
         }
     }
 
@@ -1601,22 +1594,51 @@ class TriggerMatcher(
      * trigger ("a creature you control / an opponent controls is dealt damage") would silently miss
      * the killing blow (CR 603.10).
      */
-    private fun recipientControllerLki(event: DamageDealtEvent, state: GameState): EntityId? =
-        state.getEntity(event.targetId)?.get<ControllerComponent>()?.playerId
-            ?: event.damageRecipientLastKnownSnapshot?.controllerId
-            ?: event.targetControllerId
+    private fun recipientControllerLki(event: DamageDealtEvent, state: GameState): EntityId? {
+        val snapshot = event.damageRecipientLastKnownSnapshot
+            ?.takeIf { it.entityId == event.targetId }
+        val liveIsOriginal = snapshot?.let {
+            state.isCapturedBattlefieldObjectLive(event.targetId, it)
+        } ?: false
+        return if (liveIsOriginal) {
+            state.projectedState.getController(event.targetId)
+                ?: state.getEntity(event.targetId)?.get<ControllerComponent>()?.playerId
+                ?: snapshot.controllerId
+                ?: event.targetControllerId
+        } else {
+            snapshot?.controllerId ?: event.targetControllerId
+        }
+    }
 
     /** Whether the damage recipient was a creature, with the same LKI fallback as [recipientControllerLki]. */
     private fun recipientIsCreatureLki(event: DamageDealtEvent): Boolean =
-        recipientKindAtDamage(event) == DamageRecipientKind.CREATURE
+        event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)
 
     /**
      * Read the role captured on the damage event. An unknown role is deliberately not reconstructed
      * from the current state: the recipient may have changed zones or characteristics before
      * trigger detection, and an entity id is not a type witness.
      */
-    private fun recipientKindAtDamage(event: DamageDealtEvent): DamageRecipientKind =
-        event.effectiveRecipientKind
+    private fun matchesDamageRecipientFilter(
+        filter: GameObjectFilter,
+        event: DamageDealtEvent,
+        state: GameState,
+        controllerId: EntityId,
+    ): Boolean {
+        val snapshot = event.damageRecipientLastKnownSnapshot
+            ?.takeIf { it.entityId == event.targetId }
+        val liveIsOriginal = snapshot?.let {
+            state.isCapturedBattlefieldObjectLive(event.targetId, it)
+        } ?: false
+        val context = damagePredicateContext(event, controllerId)
+        return when {
+            liveIsOriginal -> predicateEvaluator.matches(
+                state, state.projectedState, event.targetId, filter, context
+            )
+            snapshot != null -> predicateEvaluator.matchesSnapshot(state, snapshot, filter, context)
+            else -> false
+        }
+    }
 
     private fun damagePredicateContext(
         event: DamageDealtEvent,
@@ -1626,6 +1648,7 @@ class TriggerMatcher(
         damageSourceId = event.sourceId,
         damageRecipientId = event.targetId,
         damageRecipientKind = event.effectiveRecipientKind,
+        damageRecipientKinds = event.effectiveRecipientKinds,
         damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
         damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot,
     )
@@ -1925,6 +1948,12 @@ class TriggerMatcher(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
                 triggerCounterCount = trigger.triggerContext.counterCount,
                 triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,
