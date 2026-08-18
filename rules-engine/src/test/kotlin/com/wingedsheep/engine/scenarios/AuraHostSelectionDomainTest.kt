@@ -19,6 +19,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.AbilityFlag
+import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
@@ -213,6 +214,26 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         }
     }
 
+    private val creatureAuraCopyProbe = card("Creature Aura Copy Probe") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        oracleText = "Create a token copy of target Aura, except it's a creature in addition to its other types."
+        spell {
+            val aura = target(
+                "target Aura permanent",
+                TargetObject(
+                    filter = TargetFilter(
+                        baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura")
+                    )
+                )
+            )
+            effect = Effects.CreateTokenCopyOfTarget(
+                target = aura,
+                addCardTypes = setOf(CardType.CREATURE.name),
+            )
+        }
+    }
+
     private val planeswalkerAura = card("Test Aura for Planeswalkers") {
         manaCost = "{1}{W}"
         typeLine = "Enchantment — Aura"
@@ -367,6 +388,7 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         cardRegistry.register(explicitAttachProbe)
         cardRegistry.register(directAuraEntryProbe)
         cardRegistry.register(auraCopyProbe)
+        cardRegistry.register(creatureAuraCopyProbe)
         cardRegistry.register(planeswalkerAura)
         cardRegistry.register(malformedAura)
         cardRegistry.register(equipment)
@@ -949,6 +971,30 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
                     game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Players"
             }
             game.state.getEntity(tokenId)?.get<AttachedToComponent>()?.targetId shouldBe game.player1Id
+        }
+
+        test("does not offer a host when an Aura copy is also a creature") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Aura for Creatures")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInHand(1, "Creature Aura Copy Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+
+            game.castSpell(1, "Creature Aura Copy Probe", auraId).error shouldBe null
+            game.resolveStack()
+
+            game.state.pendingDecision shouldBe null
+            game.state.getBattlefield(game.player1Id).filter { entityId ->
+                entityId != auraId &&
+                    game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            } shouldBe emptyList()
         }
 
         test("rejects a stale Aura token host response without consuming the continuation") {

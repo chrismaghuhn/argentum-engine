@@ -104,6 +104,11 @@ class AuraHostLegality(
         hostControllerId: EntityId,
         source: PlayerProtectionRules.SourceCharacteristics,
     ): List<EntityId> {
+        // CR 303.4d: an Aura that is also a creature can't enchant anything. Check the effective
+        // characteristics here so copy exceptions and projected Aura types both fail closed
+        // before the printed enchant requirement can offer a host.
+        if (CardType.CREATURE.name in source.cardTypes) return emptyList()
+
         val auraTarget = definition.script.auraTarget ?: return emptyList()
         return targetFinder.findLegalTargets(
             state = state,
