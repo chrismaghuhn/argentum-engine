@@ -383,9 +383,16 @@ class TriggerProcessor(
         priorEvents: List<GameEvent>,
         preorderedTriggerCount: Int
     ): ExecutionResult {
-        val first = candidates.firstOrNull()
+        // CR 603.7b exposes a choice among semantic simultaneous occurrences.  Candidate
+        // encounter order is detector transport, not policy: canonicalize the complete candidate
+        // payload before assigning option indices, so a reordered detector batch cannot retarget
+        // an otherwise identical external response.
+        val orderedCandidates = candidates.sortedBy {
+            TriggerOrderingKey.occurrenceCandidateKey(state, it.toOccurrenceCandidate())
+        }
+        val first = orderedCandidates.firstOrNull()
             ?: return ExecutionResult.error(state, "Delayed-trigger occurrence choice has no candidates")
-        val delayedId = candidates.firstNotNullOfOrNull { it.consumesDelayedTriggerId }
+        val delayedId = orderedCandidates.firstNotNullOfOrNull { it.consumesDelayedTriggerId }
         val decisionId = buildString {
             append("delayed-occurrence-")
             append(delayedId ?: first.sourceId.value)
@@ -403,12 +410,12 @@ class TriggerProcessor(
                 sourceName = first.sourceName,
                 phase = DecisionPhase.TRIGGER
             ),
-            options = candidates.mapIndexed { index, candidate ->
+            options = orderedCandidates.mapIndexed { index, candidate ->
                 candidate.triggerContext.triggeringPlayerId?.let { playerId ->
                     "Trigger for player ${playerId.value}"
                 } ?: "Occurrence ${index + 1}"
             },
-            optionMetadata = candidates.map { candidate ->
+            optionMetadata = orderedCandidates.map { candidate ->
                 val triggeringPlayerId = candidate.triggerContext.triggeringPlayerId
                 OptionMetadata(
                     id = triggeringPlayerId?.value,
@@ -419,7 +426,7 @@ class TriggerProcessor(
         )
         val continuation = DelayedTriggerOccurrenceChoiceContinuation(
             decisionId = decisionId,
-            candidates = candidates,
+            candidates = orderedCandidates,
             remainingTriggers = remainingTriggers,
             preorderedTriggerCount = preorderedTriggerCount
         )

@@ -4,12 +4,15 @@ import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
+import com.wingedsheep.engine.state.components.battlefield.DamageSourceLki
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.TriggeredAbility
@@ -34,10 +37,20 @@ internal object TriggerOrderingKey {
         "delayed", trigger.consumesDelayedTriggerId != null,
         "saga", trigger.sagaChapterInfo?.let { fields(it.chapterNumber, it.finalChapterNumber) },
         "pipeline", pipelineKey(state, trigger.carriedPipeline),
-        "occurrences", trigger.occurrenceChoice.joinToString("\u0002") {
+        "occurrences", canonicalOccurrenceCandidates(state, trigger.occurrenceChoice).joinToString("\u0002") {
             occurrenceKey(state, it)
         },
     )
+
+    internal fun canonicalOccurrenceCandidates(
+        state: GameState,
+        candidates: List<DelayedTriggerOccurrenceCandidate>,
+    ): List<DelayedTriggerOccurrenceCandidate> = candidates.sortedBy { occurrenceKey(state, it) }
+
+    internal fun occurrenceCandidateKey(
+        state: GameState,
+        candidate: DelayedTriggerOccurrenceCandidate,
+    ): String = occurrenceKey(state, candidate)
 
     private fun occurrenceKey(
         state: GameState,
@@ -45,6 +58,7 @@ internal object TriggerOrderingKey {
     ): String = fields(
         candidate.sourceName,
         semanticEntityKey(state, candidate.sourceId),
+        semanticEntityKey(state, candidate.controllerId),
         abilityKey(candidate.ability),
         candidate.stage.name,
         candidate.observedPlacementStage?.name ?: "<legacy>",
@@ -148,6 +162,79 @@ internal object TriggerOrderingKey {
     }
 
     /**
+     * Chosen targets are a separate stack component rather than part of the spell/ability
+     * component.  They therefore have to be included explicitly: two otherwise identical
+     * cardless stack objects can have different target slots and resolve differently.
+     */
+    private fun targetsKey(
+        state: GameState,
+        targets: TargetsComponent?,
+        visited: Set<EntityId>,
+    ): String = targets?.let {
+        fields(
+            it.targets.map { target -> chosenTargetKey(state, target, visited) },
+            it.targetRequirements.map { requirement -> requirement.description },
+            it.targetEntryStamps.entries
+                .map { (entityId, stamp) ->
+                    fields(semanticEntityKey(state, entityId, visited), stamp)
+                }
+                .sorted(),
+        )
+    } ?: "<none>"
+
+    /**
+     * Last-known snapshots may outlive their entity ids.  Encode the captured semantic values,
+     * never the allocation handle, so a copied/snapshotted stack object remains replay-stable.
+     */
+    private fun snapshotKey(
+        state: GameState,
+        snapshot: EntitySnapshot,
+        visited: Set<EntityId>,
+    ): String = fields(
+        snapshot.power,
+        snapshot.toughness,
+        snapshot.subtypes.map { it }.sorted(),
+        snapshot.supertypes.map { it }.sorted(),
+        semanticEntityKey(state, snapshot.controllerId, visited),
+        snapshot.counters.entries.sortedBy { it.key }.map { listOf(it.key, it.value) },
+        snapshot.keywords.toList().sorted(),
+        snapshot.lostAllAbilities,
+        snapshot.typeLine?.let { typeLine ->
+            fields(
+                typeLine.supertypes.map { it.name }.sorted(),
+                typeLine.cardTypes.map { it.name }.sorted(),
+                typeLine.subtypes.map { it.value }.sorted(),
+            )
+        },
+        snapshot.cardDefinitionId,
+        snapshot.name,
+        snapshot.copyOfOriginalName,
+        semanticEntityKey(state, snapshot.attachedTo, visited),
+        snapshot.wasEquipped,
+        snapshot.attachmentIds.map { semanticEntityKey(state, it, visited) },
+        snapshot.wasEnchanted,
+        snapshot.blockingOrBlockedByIds.map { semanticEntityKey(state, it, visited) },
+        snapshot.wasAttacking,
+        snapshot.wasToken,
+        snapshot.wasSuspected,
+        snapshot.damageDealtByPlayers.entries
+            .sortedBy { semanticEntityKey(state, it.key, visited) }
+            .map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+        snapshot.damageSources.map { damageSourceKey(state, it, visited) }.sorted(),
+        snapshot.castX,
+    )
+
+    private fun damageSourceKey(
+        state: GameState,
+        source: DamageSourceLki,
+        visited: Set<EntityId>,
+    ): String = fields(
+        semanticEntityKey(state, source.sourceControllerId, visited),
+        source.sourceSubtypes.map { it.value }.sorted(),
+        source.sourceWasCreature,
+    )
+
+    /**
      * The state-relative description is enough to distinguish semantic roles without making the
      * routing identity depend on an allocation-order handle. Players use their turn-order role;
      * cards use definition/visible characteristics, zone role, and projected combat state.
@@ -211,9 +298,11 @@ internal object TriggerOrderingKey {
         visited: Set<EntityId>,
     ): String {
         if (entity == null) return "entity-without-card"
+        val stackTargetsKey = targetsKey(state, entity.get<TargetsComponent>(), visited)
         entity.get<TriggeredAbilityOnStackComponent>()?.let { triggered ->
             return fields(
                 "triggered-stack",
+                stackTargetsKey,
                 semanticEntityKey(state, triggered.sourceId, visited),
                 triggered.sourceName,
                 semanticEntityKey(state, triggered.controllerId, visited),
@@ -263,7 +352,7 @@ internal object TriggerOrderingKey {
                 triggered.triggerXValueOfTriggeringSpell,
                 triggered.chosenModes,
                 triggered.modeTargetsOrdered.map { targets ->
-                    targets.map { target -> chosenTargetKey(state, target) }
+                    targets.map { target -> chosenTargetKey(state, target, visited) }
                 },
                 triggered.modeTargetRequirements.entries
                     .sortedBy { it.key }
@@ -293,15 +382,25 @@ internal object TriggerOrderingKey {
         entity.get<ActivatedAbilityOnStackComponent>()?.let { activated ->
             return fields(
                 "activated-stack",
+                stackTargetsKey,
                 semanticEntityKey(state, activated.sourceId, visited),
                 activated.sourceName,
                 semanticEntityKey(state, activated.controllerId, visited),
                 activated.effect.description,
+                activated.descriptionOverride,
+                activated.sacrificedPermanents.map { snapshotKey(state, it, visited) },
                 activated.abilityIdentity?.let {
                     fields(it.cardDefinitionId, it.abilityId.value)
                 },
                 semanticEntityKey(state, activated.granterId, visited),
                 activated.xValue,
+                activated.tappedPermanents.map { semanticEntityKey(state, it, visited) },
+                activated.tappedEntitySnapshots.map { snapshotKey(state, it, visited) },
+                activated.lastKnownSourceCounters.entries
+                    .sortedBy { it.key }
+                    .map { listOf(it.key, it.value) },
+                activated.lastKnownSourceSnapshot?.let { snapshotKey(state, it, visited) },
+                activated.lastKnownSourceAttachments.map { semanticEntityKey(state, it, visited) },
                 activated.damageDistribution?.entries
                     ?.sortedBy { semanticEntityKey(state, it.key, visited) }
                     ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
@@ -310,6 +409,7 @@ internal object TriggerOrderingKey {
         entity.get<AbilityOnStackComponent>()?.let { legacy ->
             return fields(
                 "legacy-ability-stack",
+                stackTargetsKey,
                 semanticEntityKey(state, legacy.sourceId, visited),
                 semanticEntityKey(state, legacy.controllerId, visited),
                 legacy.abilityId.value,
@@ -319,11 +419,74 @@ internal object TriggerOrderingKey {
         entity.get<SpellOnStackComponent>()?.let { spell ->
             return fields(
                 "spell-stack",
+                stackTargetsKey,
                 semanticEntityKey(state, spell.casterId, visited),
                 spell.xValue,
+                spell.declaredCostSlot?.name,
+                spell.wasBlightPaid,
+                spell.wasWaterbendPaid,
+                semanticEntityKey(state, spell.giftRecipient, visited),
+                spell.splicedCardNames,
+                spell.splicedTargetsOrdered.map { targets ->
+                    targets.map { target -> chosenTargetKey(state, target, visited) }
+                },
                 spell.chosenModes,
+                spell.modeTargetsOrdered.map { targets ->
+                    targets.map { target -> chosenTargetKey(state, target, visited) }
+                },
+                spell.modeTargetRequirements.entries
+                    .sortedBy { it.key }
+                    .map { (mode, requirements) -> listOf(mode, requirements.map { it.description }) },
+                spell.modeDamageDistribution.entries
+                    .sortedBy { it.key }
+                    .map { (mode, allocation) ->
+                        listOf(
+                            mode,
+                            allocation.entries
+                                .sortedBy { semanticEntityKey(state, it.key, visited) }
+                                .map {
+                                    listOf(semanticEntityKey(state, it.key, visited), it.value)
+                                }
+                        )
+                    },
+                spell.sacrificedPermanents.map { snapshotKey(state, it, visited) },
+                spell.castFaceDown,
+                spell.damageDistribution?.entries
+                    ?.sortedBy { semanticEntityKey(state, it.key, visited) }
+                    ?.map { listOf(semanticEntityKey(state, it.key, visited), it.value) },
+                spell.chosenCreatureType,
+                spell.exiledCardCount,
+                spell.additionalCostBlightAmount,
+                spell.additionalCostPayXLifeAmount,
                 spell.castFromZone?.name,
                 spell.alternativeCost?.name,
+                spell.wasWarped,
+                spell.wasDashed,
+                spell.wasEvoked,
+                spell.wasImpending,
+                spell.wasCleaved,
+                spell.wasSneaked,
+                semanticEntityKey(state, spell.sneakAttackDefenderId, visited),
+                spell.wasWebSlung,
+                spell.webSlungReturnedManaValue,
+                spell.wasMayhem,
+                spell.beheldCards.map { semanticEntityKey(state, it, visited) },
+                spell.discardedAsCostCards.map { semanticEntityKey(state, it, visited) },
+                spell.chosenEntitySnapshots.map { snapshotKey(state, it, visited) },
+                spell.manaSpentWhite,
+                spell.manaSpentBlue,
+                spell.manaSpentBlack,
+                spell.manaSpentRed,
+                spell.manaSpentGreen,
+                spell.manaSpentColorless,
+                spell.manaSpentBySubtype.entries
+                    .sortedBy { it.key.value }
+                    .map { listOf(it.key.value, it.value) },
+                spell.manaSpentOnXByColor.entries
+                    .sortedBy { it.key.name }
+                    .map { listOf(it.key.name, it.value) },
+                spell.faceIndex,
+                spell.castTimeFlags.sorted(),
             )
         }
         return "entity-without-card"

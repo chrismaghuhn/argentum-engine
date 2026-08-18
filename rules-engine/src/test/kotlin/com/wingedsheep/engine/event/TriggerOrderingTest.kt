@@ -4,10 +4,15 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.LossReason
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -227,8 +232,13 @@ class TriggerOrderingTest : FunSpec({
         val compositeAbility = TriggeredAbility.create(
             trigger = EventPattern.AnyOf(
                 listOf(
-                    EventPattern.AbilityActivatedEvent(),
-                    EventPattern.AbilityTriggeredEvent(),
+                    EventPattern.AnyOf(
+                        listOf(
+                            EventPattern.AbilityActivatedEvent(),
+                            EventPattern.AbilityTriggeredEvent(),
+                        )
+                    ),
+                    EventPattern.StepEvent(Step.UPKEEP, Player.You),
                 )
             ),
             binding = TriggerBinding.SELF,
@@ -320,6 +330,125 @@ class TriggerOrderingTest : FunSpec({
 
         normalized(listOf(firstTarget, secondTarget)) shouldBe
             normalized(listOf(secondTarget, firstTarget))
+    }
+
+    test("TO-22: cardless stack target payload participates in semantic ordering identity") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+        val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+        val stackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability"
+        )
+        driver.replaceState(
+            stateWithBothIds
+                .withEntity(
+                    firstStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(listOf(ChosenTarget.Player(driver.player1)))
+                    )
+                )
+                .withEntity(
+                    secondStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(listOf(ChosenTarget.Player(driver.player2)))
+                    )
+                )
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        (firstKey == secondKey) shouldBe false
+    }
+
+    test("TO-22b: target payload participates for activated abilities and spells too") {
+        fun assertDistinct(factory: (GameTestDriver, EntityId) -> Component) {
+            val driver = newDriver()
+            val base = syntheticTrigger(driver, "copy-target")
+            val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+            val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+            val stackComponent = factory(driver, base.sourceId)
+            driver.replaceState(
+                stateWithBothIds
+                    .withEntity(
+                        firstStackObject,
+                        ComponentContainer.of(
+                            stackComponent,
+                            TargetsComponent(listOf(ChosenTarget.Player(driver.player1)))
+                        )
+                    )
+                    .withEntity(
+                        secondStackObject,
+                        ComponentContainer.of(
+                            stackComponent,
+                            TargetsComponent(listOf(ChosenTarget.Player(driver.player2)))
+                        )
+                    )
+            )
+
+            val firstKey = TriggerOrderingKey.forTrigger(
+                driver.state,
+                base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+            )
+            val secondKey = TriggerOrderingKey.forTrigger(
+                driver.state,
+                base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+            )
+            (firstKey == secondKey) shouldBe false
+        }
+
+        assertDistinct { driver, sourceId ->
+            ActivatedAbilityOnStackComponent(
+                sourceId = sourceId,
+                sourceName = "activated copy",
+                controllerId = driver.player1,
+                effect = Effects.DrawCards(1)
+            )
+        }
+        assertDistinct { driver, _ ->
+            SpellOnStackComponent(casterId = driver.player1)
+        }
+    }
+
+    test("TO-23: delayed occurrence options are independent of detector candidate order") {
+        fun occurrenceOptions(candidateOrder: List<String>): List<String> {
+            val driver = newDriver()
+            val candidateA = syntheticTrigger(
+                driver,
+                "delayed-a",
+                triggerContext = TriggerContext(triggeringPlayerId = driver.player1),
+                consumesDelayedTriggerId = "delayed-once"
+            )
+            val candidateB = syntheticTrigger(
+                driver,
+                "delayed-b",
+                triggerContext = TriggerContext(triggeringPlayerId = driver.player2),
+                consumesDelayedTriggerId = "delayed-once"
+            )
+            val byName = mapOf("a" to candidateA, "b" to candidateB)
+            val marker = candidateA.copy(
+                occurrenceChoice = candidateOrder.map { byName.getValue(it).toOccurrenceCandidate() }
+            )
+            return process(driver, listOf(marker))
+                .pendingDecision
+                .shouldBeInstanceOf<ChooseOptionDecision>()
+                .options
+        }
+
+        occurrenceOptions(listOf("a", "b")) shouldBe occurrenceOptions(listOf("b", "a"))
     }
 
     test("TO-15: duplicate trigger labels are disambiguated without exposing trigger context") {

@@ -1002,7 +1002,10 @@ class TriggerDetector(
                 triggers.add(
                     first.copy(
                         consumesDelayedTriggerId = null,
-                        occurrenceChoice = encounter.candidates.map { it.toOccurrenceCandidate() }
+                        occurrenceChoice = TriggerOrderingKey.canonicalOccurrenceCandidates(
+                            state,
+                            encounter.candidates.map { it.toOccurrenceCandidate() }
+                        )
                     )
                 )
             } else {
