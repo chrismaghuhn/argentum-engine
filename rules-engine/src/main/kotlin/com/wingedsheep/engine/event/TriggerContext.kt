@@ -28,6 +28,8 @@ import com.wingedsheep.sdk.model.EntityId
 data class TriggerContext(
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    /** The player defended by the attack that caused this trigger, captured at declaration time. */
+    val defendingPlayerId: EntityId? = null,
     val damageAmount: Int? = null,
     val step: Step? = null,
     val xValue: Int? = null,
@@ -199,6 +201,23 @@ data class TriggerContext(
     val unattachedFromEntityId: EntityId? = null
 ) {
     companion object {
+        /**
+         * Create attack-trigger context from the replay-safe declaration snapshot. Historical
+         * events without [com.wingedsheep.engine.core.DeclaredAttack.defendingPlayerId] remain
+         * unresolved instead of guessing from current combat state.
+         */
+        fun forDeclaredAttack(event: AttackersDeclaredEvent, attackerId: EntityId): TriggerContext =
+            TriggerContext(
+                triggeringEntityId = attackerId,
+                defendingPlayerId = event.declaredAttacks
+                    .firstOrNull { it.attackerId == attackerId }
+                    ?.defendingPlayerId,
+            )
+
+        fun forDeclaredAttack(event: com.wingedsheep.engine.core.GameEvent?, attackerId: EntityId): TriggerContext =
+            (event as? AttackersDeclaredEvent)?.let { forDeclaredAttack(it, attackerId) }
+                ?: TriggerContext(triggeringEntityId = attackerId)
+
         fun fromEvent(event: com.wingedsheep.engine.core.GameEvent): TriggerContext {
             return when (event) {
                 is ZoneChangeEvent -> TriggerContext(

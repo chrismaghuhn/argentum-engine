@@ -2885,6 +2885,7 @@ class StackResolver(
                 xValue = abilityComponent.xValue,
                 triggeringEntityId = abilityComponent.triggeringEntityId,
                 triggeringPlayerId = abilityComponent.triggeringPlayerId,
+                defendingPlayerId = abilityComponent.defendingPlayerId,
                 targetEntryStamps = targetsComponent.targetEntryStamps,
                 storedCollections = abilityComponent.carriedPipeline?.storedCollections ?: emptyMap(),
             )
@@ -3484,6 +3485,7 @@ class StackResolver(
         xValue: Int? = null,
         triggeringEntityId: EntityId? = null,
         triggeringPlayerId: EntityId? = null,
+        defendingPlayerId: EntityId? = null,
         /**
          * The object-identity stamps captured when these targets were chosen
          * ([TargetsComponent.targetEntryStamps]) — a permanent that left the battlefield and came
@@ -3507,6 +3509,7 @@ class StackResolver(
             xValue = xValue,
             triggeringEntityId = triggeringEntityId,
             triggeringPlayerId = triggeringPlayerId,
+            defendingPlayerId = defendingPlayerId,
             storedCollections = storedCollections,
         )
 

@@ -260,7 +260,11 @@ internal class AttackPhaseManager(
         val declaredAttacks = attackers.entries
             .sortedWith(compareBy({ it.key.value }, { it.value.value }))
             .map { (attackerId, defenderId) ->
-                com.wingedsheep.engine.core.DeclaredAttack(attackerId, defenderId)
+                com.wingedsheep.engine.core.DeclaredAttack(
+                    attackerId = attackerId,
+                    defenderId = defenderId,
+                    defendingPlayerId = CombatDefenders.defendingPlayerOf(state, defenderId),
+                )
             }
         return ExecutionResult.success(
             newState,

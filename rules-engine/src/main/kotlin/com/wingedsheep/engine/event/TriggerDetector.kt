@@ -700,6 +700,8 @@ class TriggerDetector(
             .flatMap { it.attackers }
             .distinct()
         for (attackerId in declaredAttackers) {
+            val attackEvent = events.filterIsInstance<AttackersDeclaredEvent>()
+                .firstOrNull { attackerId in it.attackers }
             val entity = state.getEntity(attackerId) ?: continue
             val counters = entity.get<CountersComponent>() ?: continue
             if (counters.getCount(com.wingedsheep.sdk.core.CounterType.DECAYED) <= 0) continue
@@ -725,7 +727,7 @@ class TriggerDetector(
                     sourceId = attackerId,
                     sourceName = cardComponent.name,
                     controllerId = controllerId,
-                    triggerContext = TriggerContext(triggeringEntityId = attackerId)
+                    triggerContext = TriggerContext.forDeclaredAttack(attackEvent, attackerId)
                 )
             )
         }
@@ -903,7 +905,7 @@ class TriggerDetector(
                                 sourceId = delayed.sourceId,
                                 sourceName = delayed.sourceName,
                                 controllerId = delayed.controllerId,
-                                triggerContext = TriggerContext.fromEvent(event).copy(triggeringEntityId = attackerId),
+                                triggerContext = TriggerContext.forDeclaredAttack(event, attackerId),
                                 consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
                             )
                         )
@@ -929,7 +931,10 @@ class TriggerDetector(
                                 sourceId = delayed.sourceId,
                                 sourceName = delayed.sourceName,
                                 controllerId = delayed.controllerId,
-                                triggerContext = TriggerContext(triggeringPlayerId = attackedPlayer),
+                                triggerContext = TriggerContext(
+                                    triggeringPlayerId = attackedPlayer,
+                                    defendingPlayerId = attackedPlayer,
+                                ),
                                 consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
                             )
                         )
@@ -1031,7 +1036,10 @@ class TriggerDetector(
                     sourceId = sourceId,
                     sourceName = sourceName,
                     controllerId = controllerId,
-                    triggerContext = TriggerContext(triggeringPlayerId = attackedPlayer),
+                    triggerContext = TriggerContext(
+                        triggeringPlayerId = attackedPlayer,
+                        defendingPlayerId = attackedPlayer,
+                    ),
                     consumesDelayedTriggerId = consumesDelayedTriggerId,
                 )
             )
@@ -1202,7 +1210,7 @@ class TriggerDetector(
                                             sourceId = entityId,
                                             sourceName = cardComponent.name,
                                             controllerId = controllerId,
-                                            triggerContext = TriggerContext(triggeringEntityId = attackerId)
+                                            triggerContext = TriggerContext.forDeclaredAttack(event, attackerId)
                                         )
                                     )
                                 }
@@ -1214,7 +1222,7 @@ class TriggerDetector(
                                         sourceId = entityId,
                                         sourceName = cardComponent.name,
                                         controllerId = controllerId,
-                                        triggerContext = TriggerContext(triggeringEntityId = attackerId)
+                                            triggerContext = TriggerContext.forDeclaredAttack(event, attackerId)
                                     )
                                 )
                             }
@@ -1239,7 +1247,7 @@ class TriggerDetector(
                                             sourceId = entityId,
                                             sourceName = cardComponent.name,
                                             controllerId = controllerId,
-                                            triggerContext = TriggerContext(triggeringEntityId = attackerId)
+                                            triggerContext = TriggerContext.forDeclaredAttack(event, attackerId)
                                         )
                                     )
                                 }
@@ -1253,7 +1261,7 @@ class TriggerDetector(
                                             sourceId = entityId,
                                             sourceName = cardComponent.name,
                                             controllerId = controllerId,
-                                            triggerContext = TriggerContext(triggeringEntityId = attackerId)
+                                            triggerContext = TriggerContext.forDeclaredAttack(event, attackerId)
                                         )
                                     )
                                 }
@@ -1313,7 +1321,7 @@ class TriggerDetector(
                                         sourceId = entityId,
                                         sourceName = cardComponent.name,
                                         controllerId = controllerId,
-                                        triggerContext = TriggerContext(triggeringEntityId = attackerId)
+                                        triggerContext = TriggerContext.forDeclaredAttack(event, attackerId)
                                     )
                                 )
                             }

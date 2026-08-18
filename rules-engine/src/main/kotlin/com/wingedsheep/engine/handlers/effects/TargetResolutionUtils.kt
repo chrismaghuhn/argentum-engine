@@ -3,6 +3,7 @@ import com.wingedsheep.engine.state.components.battlefield.chosenCreatureRef
 import com.wingedsheep.engine.state.components.battlefield.chosenOpponent
 
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
@@ -132,8 +133,7 @@ object TargetResolutionUtils {
         val defenderId = context.sourceId
             ?.let { state.getEntity(it)?.get<AttackingComponent>()?.defenderId }
         if (defenderId != null) {
-            return if (defenderId in state.turnOrder) defenderId
-            else state.getEntity(defenderId)?.get<ControllerComponent>()?.playerId
+            return CombatDefenders.defendingPlayerOf(state, defenderId)
         }
         return (context.triggeringPlayerId ?: context.triggeringEntityId)
             ?.takeIf { it in state.turnOrder }

@@ -269,6 +269,7 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                defendingPlayerId = trigger.triggerContext.defendingPlayerId,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -494,6 +495,7 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                defendingPlayerId = trigger.triggerContext.defendingPlayerId,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -706,6 +708,7 @@ class TriggerProcessor(
                     controllerId = trigger.controllerId,
                     triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                     triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                    defendingPlayerId = trigger.triggerContext.defendingPlayerId,
                     // See the note on the other findLegalTargets call sites: an X-relative target
                     // filter needs the triggering event's X bound to match anything.
                     xValue = trigger.triggerContext.xValue,
@@ -863,6 +866,7 @@ class TriggerProcessor(
             triggerDamageAmount = trigger.triggerContext.damageAmount,
             triggeringEntityId = trigger.triggerContext.triggeringEntityId,
             triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+            defendingPlayerId = trigger.triggerContext.defendingPlayerId,
             elseEffect = ability.elseEffect,
             targetRequirements = allRequirements,
             triggerCounterCount = trigger.triggerContext.counterCount,
@@ -930,6 +934,7 @@ class TriggerProcessor(
             triggerDamageAmount = trigger.triggerContext.damageAmount,
             triggeringEntityId = trigger.triggerContext.triggeringEntityId,
             triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+            defendingPlayerId = trigger.triggerContext.defendingPlayerId,
             xValue = trigger.triggerContext.xValue ?: computeXForDisplay(state, trigger),
             triggerCounterCount = trigger.triggerContext.counterCount,
             triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,

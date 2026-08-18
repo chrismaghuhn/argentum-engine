@@ -184,6 +184,7 @@ data class TriggeredAbilityOnStackComponent(
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    val defendingPlayerId: EntityId? = null,
     val xValue: Int? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,
