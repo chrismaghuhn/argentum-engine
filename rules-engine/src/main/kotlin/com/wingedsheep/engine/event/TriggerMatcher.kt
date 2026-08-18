@@ -25,6 +25,7 @@ import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.isStampedFor
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
@@ -1565,6 +1566,9 @@ class TriggerMatcher(
         // particular, do not let the generic damage context bind TriggeringEntity to the
         // recipient when this branch later constructs a source-filtered trigger context.
         val sourceId = event.sourceId ?: return false
+        val sourceSnapshot = event.damageSourceLastKnownSnapshot
+            ?.takeIf { it.isStampedFor(sourceId) }
+            ?: return false
         val predicateContext = com.wingedsheep.engine.handlers.PredicateContext(
             controllerId = controllerId ?: EntityId(""),
             sourceId = null,
@@ -1575,19 +1579,10 @@ class TriggerMatcher(
             damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot
         )
-        val sourceSnapshot = event.damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == sourceId }
-        return when {
-            sourceSnapshot != null && !state.isCapturedBattlefieldObjectLive(sourceId, sourceSnapshot) ->
-                predicateEvaluator.matchesSnapshot(state, sourceSnapshot, sourceFilter, predicateContext)
-            sourceSnapshot != null ->
-                predicateEvaluator.matches(state, state.projectedState, sourceId, sourceFilter, predicateContext)
-            sourceId !in state.getBattlefield() ->
-                predicateEvaluator.matches(state, state.projectedState, sourceId, sourceFilter, predicateContext)
-            // A stamped current object without a matching captured snapshot is not proven to be
-            // the source object from the event. Do not classify a same-id reuse as the source.
-            else -> false
-        }
+        // Always read the captured event-time characteristics. The stamp proves which live
+        // incarnation the snapshot describes; it does not authorize mutable current/base
+        // characteristics to replace that snapshot.
+        return predicateEvaluator.matchesSnapshot(state, sourceSnapshot, sourceFilter, predicateContext)
     }
 
     /**
@@ -1603,15 +1598,9 @@ class TriggerMatcher(
     ): Boolean {
         val sourceId = event.sourceId ?: return false
         val snapshot = event.damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == sourceId }
+            ?.takeIf { it.isStampedFor(sourceId) }
             ?: return false
-        if (!state.isCapturedBattlefieldObjectLive(sourceId, snapshot)) {
-            return snapshot.typeLine?.isCreature == true && !snapshot.wasFaceDown
-        }
-
-        val container = state.getEntity(sourceId) ?: return false
-        if (container.get<CardComponent>() == null) return false
-        return projected.isCreature(sourceId) && !projected.isFaceDown(sourceId)
+        return snapshot.typeLine?.isCreature == true && !snapshot.wasFaceDown
     }
 
     /**

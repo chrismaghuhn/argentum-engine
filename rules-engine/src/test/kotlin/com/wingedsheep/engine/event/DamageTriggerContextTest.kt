@@ -33,6 +33,7 @@ import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
@@ -53,6 +54,7 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.predicates.StatePredicate
 import com.wingedsheep.sdk.scripting.events.DamageType
 import com.wingedsheep.sdk.scripting.events.RecipientFilter
 import com.wingedsheep.sdk.scripting.events.SourceFilter
@@ -370,6 +372,88 @@ class DamageTriggerContextTest : FunSpec({
         triggers.single().controllerId shouldBe oldControllerId
     }
 
+    test("damage source dispatch rejects missing and unstamped snapshots instead of current abilities") {
+        val controllerId = EntityId("unstamped-source-dispatch-controller")
+        val sourceAbility = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("unstamped-source-dispatch-ability"),
+            trigger = EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().apply {
+            register("unstamped-source-dispatch-source", listOf(sourceAbility))
+        }
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId, recipientId),
+            ),
+        )
+            .withEntity(
+                sourceId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "unstamped-source-dispatch-source",
+                        name = "Current Source Replacement",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(2, 2),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(22L),
+                ),
+            )
+            .withEntity(
+                recipientId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "unstamped-source-dispatch-recipient",
+                        name = "Damage Recipient",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(2, 2),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(23L),
+                ),
+            )
+        val detector = DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), abilityRegistry),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+
+        val missingSnapshotTriggers = mutableListOf<PendingTrigger>()
+        detector.detectDamageSourceTriggers(
+            state = state,
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = damageEvent.copy(
+                sourceId = sourceId,
+                damageSourceLastKnownSnapshot = null,
+            ),
+            triggers = missingSnapshotTriggers,
+            projected = state.projectedState,
+        )
+        missingSnapshotTriggers shouldHaveSize 0
+
+        val unstampedSnapshotTriggers = mutableListOf<PendingTrigger>()
+        detector.detectDamageSourceTriggers(
+            state = state,
+            statics = BattlefieldStaticsIndex.EMPTY,
+            event = damageEvent.copy(
+                sourceId = sourceId,
+                damageSourceLastKnownSnapshot = EntitySnapshot(
+                    entityId = sourceId,
+                    cardDefinitionId = "unstamped-source-dispatch-source",
+                    controllerId = controllerId,
+                    typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                    battlefieldEntryTimestamp = null,
+                ),
+            ),
+            triggers = unstampedSnapshotTriggers,
+            projected = state.projectedState,
+        )
+        unstampedSnapshotTriggers shouldHaveSize 0
+    }
+
     test("damage received SELF discovery uses the old definition after same-id replacement") {
         val oldControllerId = EntityId("old-recipient-controller")
         val replacementControllerId = EntityId("replacement-recipient-controller")
@@ -432,6 +516,79 @@ class DamageTriggerContextTest : FunSpec({
         triggers.single().ability shouldBe ability
         triggers.single().sourceName shouldBe "Old Recipient"
         triggers.single().controllerId shouldBe oldControllerId
+    }
+
+    test("damage recipient dispatch rejects missing and unstamped snapshots instead of current abilities") {
+        val controllerId = EntityId("unstamped-recipient-dispatch-controller")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("unstamped-recipient-dispatch-ability"),
+            trigger = EventPattern.DamageReceivedEvent(),
+            binding = TriggerBinding.SELF,
+            effect = Effects.DrawCards(1),
+        )
+        val abilityRegistry = AbilityRegistry().apply {
+            register("unstamped-recipient-dispatch-recipient", listOf(ability))
+        }
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId, recipientId),
+            ),
+        )
+            .withEntity(
+                sourceId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "unstamped-recipient-dispatch-source",
+                        name = "Damage Source",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(2, 2),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(31L),
+                ),
+            )
+            .withEntity(
+                recipientId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "unstamped-recipient-dispatch-recipient",
+                        name = "Current Recipient Replacement",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(2, 2),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(32L),
+                ),
+            )
+        val detector = TriggerDetector(CardRegistry(), abilityRegistry)
+
+        detector.detectTriggers(
+            state,
+            listOf(
+                damageEvent.copy(
+                    targetId = recipientId,
+                    damageRecipientLastKnownSnapshot = null,
+                ),
+            ),
+        ) shouldHaveSize 0
+
+        detector.detectTriggers(
+            state,
+            listOf(
+                damageEvent.copy(
+                    targetId = recipientId,
+                    damageRecipientLastKnownSnapshot = EntitySnapshot(
+                        entityId = recipientId,
+                        cardDefinitionId = "unstamped-recipient-dispatch-recipient",
+                        controllerId = controllerId,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        battlefieldEntryTimestamp = null,
+                    ),
+                ),
+            ),
+        ) shouldHaveSize 0
     }
 
     test("top-level detector discovers the old recipient after same-id replacement") {
@@ -498,6 +655,13 @@ class DamageTriggerContextTest : FunSpec({
         )
 
         TriggerContext.fromSourceFilteredDamageEvent(sourceUnknownEvent) shouldBe null
+        TriggerContext.fromSourceFilteredDamageEvent(
+            damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    battlefieldEntryTimestamp = null,
+                ),
+            ),
+        ) shouldBe null
 
         matcher.matchesDealsDamageTrigger(
             EventPattern.DealsDamageEvent(
@@ -513,6 +677,160 @@ class DamageTriggerContextTest : FunSpec({
             sourceUnknownEvent,
             GameState(),
             EntityId("observer-controller"),
+        ) shouldBe true
+    }
+
+    test("source-filtered damage requires a stamped event snapshot and never reads current or base source characteristics") {
+        val controllerId = EntityId("source-filter-controller")
+        val currentSource = CardComponent(
+            cardDefinitionId = "current-source",
+            name = "Current Source",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+        )
+        val liveState = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(sourceId)),
+        ).withEntity(
+            sourceId,
+            ComponentContainer.of(
+                currentSource,
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(1L),
+            ),
+        )
+        val creatureSourceTrigger = EventPattern.DealsDamageEvent(
+            recipient = RecipientFilter.AnyCreature,
+            sourceFilter = GameObjectFilter.Creature,
+        )
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+
+        matcher.matchesDealsDamageTrigger(
+            creatureSourceTrigger,
+            damageEvent,
+            liveState,
+            controllerId,
+        ) shouldBe true
+
+        matcher.matchesDealsDamageTrigger(
+            creatureSourceTrigger,
+            damageEvent.copy(
+                damageSourceLastKnownSnapshot = damageEvent.damageSourceLastKnownSnapshot?.copy(
+                    battlefieldEntryTimestamp = null,
+                ),
+            ),
+            liveState,
+            controllerId,
+        ) shouldBe false
+
+        val departedState = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.GRAVEYARD) to listOf(sourceId)),
+        ).withEntity(sourceId, ComponentContainer.of(currentSource))
+        matcher.matchesDealsDamageTrigger(
+            creatureSourceTrigger,
+            damageEvent.copy(damageSourceLastKnownSnapshot = null),
+            departedState,
+            controllerId,
+        ) shouldBe false
+    }
+
+    test("source-filtered damage captures stamped stack sources instead of using a mutable current lookup") {
+        val controllerId = EntityId("stack-source-controller")
+        val stackSourceId = EntityId("stack-source")
+        val targetId = EntityId("stack-source-target")
+        val state = GameState(
+            zones = mapOf(ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(targetId)),
+            stack = listOf(stackSourceId),
+            timestamp = 41L,
+        )
+            .withEntity(
+                stackSourceId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "stack-source-card",
+                        name = "Stack Source",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.INSTANT)),
+                        ownerId = controllerId,
+                    ),
+                    SpellOnStackComponent(casterId = controllerId),
+                ),
+            )
+            .withEntity(
+                targetId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "stack-source-target-card",
+                        name = "Target",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(2, 2),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(42L),
+                ),
+            )
+
+        val sourceSnapshot = DamageUtils.captureDamageEntitySnapshot(state, stackSourceId)
+        sourceSnapshot shouldBe sourceSnapshot?.copy(
+            entityId = stackSourceId,
+            controllerId = controllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.INSTANT)),
+            objectIncarnationStamp = 41L,
+        )
+        sourceSnapshot?.battlefieldEntryTimestamp shouldBe null
+
+        val event = DamageDealtEvent(
+            sourceId = stackSourceId,
+            targetId = targetId,
+            amount = 3,
+            isCombatDamage = false,
+            recipientKind = DamageRecipientKind.CREATURE,
+            damageSourceLastKnownSnapshot = sourceSnapshot,
+            damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, targetId),
+        )
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        matcher.matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                damageType = DamageType.NonCombat,
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter.Instant.youControl(),
+            ),
+            event,
+            state,
+            controllerId,
+        ) shouldBe true
+    }
+
+    test("source-filtered damage evaluates captured projected power and modified state") {
+        val sourceSnapshot = damageEvent.damageSourceLastKnownSnapshot!!.copy(
+            power = 5,
+            basePower = 3,
+            counters = mapOf("+1/+1" to 1),
+            battlefieldEntryTimestamp = 1L,
+        )
+        val modifiedFilter = GameObjectFilter.Creature.copy(
+            statePredicates = listOf(StatePredicate.IsModified),
+        )
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+
+        matcher.matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = modifiedFilter,
+            ),
+            damageEvent.copy(damageSourceLastKnownSnapshot = sourceSnapshot),
+            GameState(),
+            null,
+        ) shouldBe true
+
+        matcher.matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter.Creature.powerGreaterThanBase(),
+            ),
+            damageEvent.copy(damageSourceLastKnownSnapshot = sourceSnapshot),
+            GameState(),
+            null,
         ) shouldBe true
     }
 
@@ -820,9 +1138,15 @@ class DamageTriggerContextTest : FunSpec({
             damageSourceLastKnownSnapshot = EntitySnapshot(
                 secondSourceId,
                 power = 2,
+                typeLine = sourceCard.typeLine,
                 battlefieldEntryTimestamp = 22L,
             ),
-            damageRecipientLastKnownSnapshot = EntitySnapshot(secondRecipientId, power = 3),
+            damageRecipientLastKnownSnapshot = EntitySnapshot(
+                secondRecipientId,
+                power = 3,
+                typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                battlefieldEntryTimestamp = 23L,
+            ),
         )
         val triggers = mutableListOf<PendingTrigger>()
 

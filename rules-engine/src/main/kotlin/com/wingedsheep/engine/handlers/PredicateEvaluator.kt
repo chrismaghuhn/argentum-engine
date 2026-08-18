@@ -144,9 +144,10 @@ class PredicateEvaluator {
      * questions about it).
      *
      * **Partial by construction**, and deliberately so: what is answered here is card types,
-     * sub/supertypes, colors, keywords, token-ness and controller — the characteristics an "…from
-     * an X source" clause is ever written against. A predicate outside that set (mana value, P/T
-     * comparisons, "has a non-mana activated ability", …) reports
+     * sub/supertypes, colors, keywords, token-ness, controller, and the captured relative/state
+     * facts carried by [EntitySnapshot] — the characteristics an "…from an X source" clause is
+     * ever written against. A predicate outside that set (mana value, cross-entity P/T comparisons,
+     * "has a non-mana activated ability", …) reports
      * *unanswerable* rather than guessing — see [matchesSnapshotPredicate] — and an unanswerable
      * predicate makes the whole filter fail to match, which is the same answer the caller got before
      * any snapshot existed. State predicates (tapped, attacking, …) describe a battlefield presence
@@ -173,7 +174,9 @@ class PredicateEvaluator {
         filter.controllerPredicate?.let { controllerPred ->
             if (!matchesSnapshotController(state, snapshot, controllerPred, context)) return false
         }
-        if (filter.statePredicates.isNotEmpty()) return false
+        if (!filter.statePredicates.all { matchesSnapshotStatePredicate(snapshot, it) == true }) {
+            return false
+        }
         if (!filter.cardPredicates.all { matchesSnapshotPredicate(snapshot, it) == true }) return false
         if (filter.anyOf.isNotEmpty()) {
             return filter.anyOf.any { matchesSnapshot(state, snapshot, it, context) }
@@ -221,6 +224,11 @@ class PredicateEvaluator {
             is CardPredicate.HasSubtype ->
                 typeLine?.hasSubtype(predicate.subtype)
                     ?: snapshot.subtypes.any { it.equals(predicate.subtype.value, ignoreCase = true) }
+            is CardPredicate.NameEquals -> snapshot.name?.let { it == predicate.name }
+            CardPredicate.PowerGreaterThanBase -> {
+                val basePower = snapshot.basePower ?: return null
+                snapshot.power?.let { it > basePower }
+            }
             is CardPredicate.HasKeyword -> predicate.keyword.name in snapshot.keywords
             is CardPredicate.HasColor -> predicate.color.name in snapshot.colors
             is CardPredicate.NotColor -> predicate.color.name !in snapshot.colors
@@ -247,6 +255,64 @@ class PredicateEvaluator {
             }
             else -> null
         }
+    }
+
+    /**
+     * Evaluate the state predicates whose facts are explicitly frozen in a damage-time snapshot.
+     * Unsupported predicates remain unknown and therefore fail the enclosing filter; no current
+     * entity or same-id replacement is consulted to fill the gap.
+     */
+    private fun matchesSnapshotStatePredicate(
+        snapshot: EntitySnapshot,
+        predicate: StatePredicate,
+    ): Boolean? = when (predicate) {
+        StatePredicate.IsTapped -> snapshot.wasTapped
+        StatePredicate.IsUntapped -> !snapshot.wasTapped
+        StatePredicate.IsOnBattlefield -> snapshot.battlefieldEntryTimestamp != null
+        StatePredicate.IsAttacking -> snapshot.wasAttacking
+        StatePredicate.IsFaceDown -> snapshot.wasFaceDown
+        StatePredicate.IsFaceUp -> !snapshot.wasFaceDown
+        is StatePredicate.HasCounter -> snapshot.counters.entries.any { (type, count) ->
+            count > 0 && counterTypeMatches(type, predicate.counterType)
+        }
+        StatePredicate.HasAnyCounter -> snapshot.counters.values.any { it > 0 }
+        StatePredicate.IsEquipped -> snapshot.wasEquipped
+        StatePredicate.IsEnchanted -> snapshot.wasEnchanted
+        StatePredicate.IsModified -> snapshot.counters.values.any { it > 0 } ||
+            snapshot.wasEquipped || snapshot.wasEnchanted
+        is StatePredicate.Or -> {
+            val results = predicate.predicates.map { matchesSnapshotStatePredicate(snapshot, it) }
+            when {
+                results.any { it == true } -> true
+                results.any { it == null } -> null
+                else -> false
+            }
+        }
+        is StatePredicate.And -> {
+            val results = predicate.predicates.map { matchesSnapshotStatePredicate(snapshot, it) }
+            when {
+                results.any { it == false } -> false
+                results.any { it == null } -> null
+                else -> true
+            }
+        }
+        is StatePredicate.Not -> matchesSnapshotStatePredicate(snapshot, predicate.predicate)?.not()
+        else -> null
+    }
+
+    /** Match both the wire form (e.g. "+1/+1") and named SDK form (e.g. "PLUS_ONE_PLUS_ONE"). */
+    private fun counterTypeMatches(captured: String, requested: String): Boolean {
+        if (captured.equals(requested, ignoreCase = true)) return true
+        val aliases = mapOf(
+            "PLUS_ONE_PLUS_ONE" to "+1/+1",
+            "MINUS_ONE_MINUS_ONE" to "-1/-1",
+            "PLUS_ONE_PLUS_ZERO" to "+1/+0",
+            "PLUS_ZERO_PLUS_ONE" to "+0/+1",
+            "MINUS_ONE_MINUS_ZERO" to "-1/-0",
+            "MINUS_ZERO_MINUS_ONE" to "-0/-1",
+        )
+        return aliases[requested.uppercase()]?.equals(captured, ignoreCase = true) == true ||
+            aliases[captured.uppercase()]?.equals(requested, ignoreCase = true) == true
     }
 
     /**

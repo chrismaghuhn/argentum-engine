@@ -5,6 +5,8 @@ import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.DamageSourceLki
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
@@ -84,6 +86,8 @@ class LiveEntityView(
 data class EntitySnapshot(
     override val entityId: EntityId,
     override val power: Int? = null,
+    /** Printed base power captured with the projected power for relative-power predicates. */
+    val basePower: Int? = null,
     override val toughness: Int? = null,
     override val subtypes: Set<String> = emptySet(),
     /** Projected supertypes at capture time (e.g. "LEGENDARY", "BASIC", "SNOW", "WORLD"). */
@@ -111,6 +115,12 @@ data class EntitySnapshot(
      * one.
      */
     val battlefieldEntryTimestamp: Long? = null,
+    /**
+     * A zone-independent incarnation stamp for event-time references. Battlefield objects use the
+     * entry stamp above; stack/spell objects use the engine timestamp at capture. A non-null value
+     * is required before a damage source or recipient id can authorize identity-sensitive matching.
+     */
+    val objectIncarnationStamp: Long? = null,
     /**
      * The permanent's name at capture time. Frozen because a *cost* has to be describable after the
      * permanent it consumed is gone: the emerge sacrifice (CR 702.119a) is named on the stack card
@@ -164,6 +174,8 @@ data class EntitySnapshot(
     val wasToken: Boolean = false,
     /** True if the projected permanent was face down at capture time. */
     val wasFaceDown: Boolean = false,
+    /** Whether the object was tapped at capture time. */
+    val wasTapped: Boolean = false,
     /**
      * True if this permanent carried the suspected designation (CR 701.60a) at capture time.
      *
@@ -192,6 +204,7 @@ data class EntitySnapshot(
             return EntitySnapshot(
                 entityId = entityId,
                 power = projected.getPower(entityId),
+                basePower = state.getEntity(entityId)?.get<CardComponent>()?.baseStats?.basePower,
                 toughness = projected.getToughness(entityId),
                 subtypes = projected.getSubtypes(entityId),
                 supertypes = projected.getSupertypes(entityId),
@@ -203,6 +216,8 @@ data class EntitySnapshot(
                 wasSuspected = projected.isSuspected(entityId),
                 wasToken = state.getEntity(entityId)?.has<TokenComponent>() == true,
                 wasFaceDown = projected.isFaceDown(entityId),
+                wasTapped = state.getEntity(entityId)?.has<TappedComponent>() == true,
+                wasAttacking = state.getEntity(entityId)?.has<AttackingComponent>() == true,
                 battlefieldEntryTimestamp = state.getEntity(entityId)
                     ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
                 name = state.getEntity(entityId)?.get<CardComponent>()?.name,
@@ -276,6 +291,15 @@ fun GameState.isCapturedBattlefieldObjectLive(entityId: EntityId, snapshot: Enti
         currentStamp != null &&
         currentStamp == snapshot.battlefieldEntryTimestamp
 }
+
+/**
+ * Whether [snapshot] carries a usable event-time incarnation witness for [entityId]. A matching
+ * entity id without the battlefield-entry stamp is not enough to distinguish a departed object,
+ * a same-id replacement, or malformed legacy damage data.
+ */
+fun EntitySnapshot.isStampedFor(entityId: EntityId): Boolean =
+    this.entityId == entityId &&
+        (objectIncarnationStamp != null || battlefieldEntryTimestamp != null)
 
 /**
  * The permanent's **projected** type line: its printed types overlaid with whatever continuous

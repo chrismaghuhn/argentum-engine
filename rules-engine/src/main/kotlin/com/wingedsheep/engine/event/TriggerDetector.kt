@@ -48,6 +48,7 @@ import com.wingedsheep.engine.state.components.identity.RoomFaceStatics
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.isStampedFor
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.sdk.core.CounterType
@@ -1735,16 +1736,18 @@ class TriggerDetector(
     }
 
     /**
-     * True when a recipient snapshot explicitly proves that the current id is not the object that
-     * was damaged. A missing snapshot is legacy/unknown input and does not authorize replacing the
-     * ordinary live-index path; a present mismatched stamp must use LKI or fail closed.
+     * True when the event does not carry a stamped snapshot proving that the current id is the
+     * damaged object. Missing/unstamped data is unknown and must not authorize current-index
+     * ability dispatch; the damage detector fails closed instead.
      */
     private fun damageRecipientIsNotEventObject(
         state: GameState,
         event: DamageDealtEvent,
-    ): Boolean = event.damageRecipientLastKnownSnapshot?.let { snapshot ->
-        !state.isCapturedBattlefieldObjectLive(event.targetId, snapshot)
-    } == true
+    ): Boolean {
+        val snapshot = event.damageRecipientLastKnownSnapshot ?: return true
+        return !snapshot.isStampedFor(event.targetId) ||
+            !state.isCapturedBattlefieldObjectLive(event.targetId, snapshot)
+    }
 
     /**
      * Detect a [EventPattern.BecomesUnattachedEvent] trigger on an attachment that is no longer on
