@@ -141,7 +141,8 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
         val continuation = PutOntoBattlefieldAttachedToChosenContinuation(
             decisionId = decisionId,
             cardId = cardId,
-            controllerId = controllerId
+            controllerId = controllerId,
+            hostFilter = effect.hostFilter,
         )
 
         val stateWithDecision = state.withPendingDecision(decision)

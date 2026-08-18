@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.PlayerProtectionRules
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -17,7 +18,7 @@ import com.wingedsheep.sdk.scripting.effects.CreateTokenCopyOfTargetEffect
 import java.util.UUID
 
 /**
- * Raises the "what does this Aura token enchant?" choice (CR 303.4h).
+ * Raises the "what does this Aura token enchant?" choice (CR 303.4f).
  *
  * A token copy of an Aura is put onto the battlefield without being cast, so it never targets.
  * Instead its controller chooses what it enchants as it enters, restricted to objects the copied
@@ -46,10 +47,11 @@ internal object AuraTokenHostChooser {
         controllerId: EntityId,
         remaining: Int,
         cardRegistry: CardRegistry?,
+        effectiveSource: PlayerProtectionRules.SourceCharacteristics? = null,
     ): EffectResult {
         if (remaining <= 0) return EffectResult.success(state)
 
-        val hosts = legalHosts(state, auraDefinitionId, controllerId, cardRegistry)
+        val hosts = legalHosts(state, auraDefinitionId, controllerId, cardRegistry, effectiveSource)
         if (hosts.isEmpty()) {
             // Nothing legal to enchant — the Aura token can't enter (CR 303.4g), and neither can
             // any of the ones still owed, since they would all copy the same Aura.
@@ -85,6 +87,7 @@ internal object AuraTokenHostChooser {
             auraDefinitionId = auraDefinitionId,
             auraName = auraName,
             remaining = remaining,
+            effectiveSource = effectiveSource,
         )
 
         return EffectResult(
@@ -104,12 +107,14 @@ internal object AuraTokenHostChooser {
         auraDefinitionId: String,
         controllerId: EntityId,
         cardRegistry: CardRegistry?,
+        effectiveSource: PlayerProtectionRules.SourceCharacteristics?,
     ): List<EntityId> {
         val registry = cardRegistry ?: return emptyList()
         return AuraHostLegality(registry, TargetFinder()).findLegalHostsForDefinition(
             state = state,
             auraDefinitionId = auraDefinitionId,
             hostControllerId = controllerId,
+            effectiveSource = effectiveSource,
         )
     }
 }

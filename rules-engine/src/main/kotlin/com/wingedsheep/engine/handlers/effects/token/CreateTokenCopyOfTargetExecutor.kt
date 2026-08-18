@@ -4,8 +4,10 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.event.DelayedTriggeredAbility
@@ -45,7 +47,7 @@ import kotlin.reflect.KClass
  * Creates N token copies of a targeted permanent (resolved via EffectTarget).
  * Used for "Create X tokens that are copies of target token you control."
  *
- * **Aura copies (CR 303.4h).** A token copy of an Aura is put onto the battlefield without being
+ * **Aura copies (CR 303.4f).** A token copy of an Aura is put onto the battlefield without being
  * cast, so it doesn't target — its controller instead *chooses* what it enchants as it enters,
  * bound by the copied Aura's own enchant restriction (CR 303.4f; targeting restrictions such as
  * hexproof and shroud are ignored). The choice is raised *before* the token exists, so the token
@@ -93,19 +95,24 @@ class CreateTokenCopyOfTargetExecutor(
         )
         if (replacementResult != null) return replacementResult
 
-        // An Aura token needs its host chosen before it can be created (CR 303.4h) — the copy's
-        // type line decides, so read it off the copied CardComponent (copiable values only).
-        if (auraTypeLineOf(effect, targetCard).isAura) {
+        // An Aura token needs its host chosen before it can be created (CR 303.4f) — the copy's
+        // effective copiable characteristics decide both whether this is an Aura and which
+        // protection restrictions apply to its attachment.
+        val effectiveAura = CopyExceptionApplier.apply(targetCard, effect.copyExceptions)
+        if (effectiveAura.typeLine.isAura) {
             return AuraTokenHostChooser.pause(
                 state = state,
                 effect = effect,
                 context = context,
                 auraDefinitionId = targetCard.cardDefinitionId,
-                auraName = targetCard.name,
+                auraName = effectiveAura.name,
                 controllerId = controllerId,
                 remaining = com.wingedsheep.engine.core.GameLimits
                     .cappedTokenCount(count, "target-copy tokens"),
                 cardRegistry = cardRegistry,
+                effectiveSource = cardRegistry?.let {
+                    AuraHostLegality(it, TargetFinder()).sourceCharacteristics(effectiveAura)
+                },
             )
         }
 
@@ -186,7 +193,7 @@ class CreateTokenCopyOfTargetExecutor(
                 )
             }
 
-            // CR 303.4h: an Aura token enters already attached to the host its controller chose
+            // CR 303.4f: an Aura token enters already attached to the host its controller chose
             // before it was created, so the attachment is in place for any enters-the-battlefield
             // trigger and for the very first state-based check.
             if (auraHostId != null) {

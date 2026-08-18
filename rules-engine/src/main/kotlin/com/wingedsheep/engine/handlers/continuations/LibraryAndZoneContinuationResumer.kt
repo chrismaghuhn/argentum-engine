@@ -28,6 +28,8 @@ import com.wingedsheep.sdk.scripting.effects.CastFromCollectionWithoutPayingCost
 import com.wingedsheep.sdk.scripting.effects.SearchDestination
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 class LibraryAndZoneContinuationResumer(
     private val services: com.wingedsheep.engine.core.EngineServices
@@ -472,14 +474,26 @@ class LibraryAndZoneContinuationResumer(
 
         val hostIds = response.selectedTargets[0] ?: emptyList()
         if (hostIds.isEmpty()) {
-            // No host chosen — leave the card where it is (mode does nothing).
-            return checkForMore(state, emptyList())
+            return ExecutionResult.error(state, "No attachment host selected")
         }
         val hostId = hostIds.first()
 
         // Host must still be on the battlefield.
         if (!state.getBattlefield().contains(hostId)) {
-            return checkForMore(state, emptyList())
+            return ExecutionResult.error(state, "Selected attachment host is no longer legal")
+        }
+
+        val effectHosts = continuation.hostFilter?.let { hostFilter ->
+            targetFinder.findLegalTargets(
+                state = state,
+                requirement = TargetObject(filter = TargetFilter(baseFilter = hostFilter)),
+                controllerId = continuation.controllerId,
+                sourceId = continuation.cardId,
+                ignoreTargetingRestrictions = true,
+            ).toSet()
+        }
+        if (effectHosts != null && hostId !in effectHosts) {
+            return ExecutionResult.error(state, "Selected attachment host is no longer legal")
         }
 
         val cardComponent = state.getEntity(continuation.cardId)?.get<CardComponent>()

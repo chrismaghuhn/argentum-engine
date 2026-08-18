@@ -8,6 +8,7 @@ import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.player.PlayerProtectionComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ProtectionScope
+import kotlinx.serialization.Serializable
 
 /**
  * Player-level protection (CR 702.16) — consulted by the targeting and damage systems
@@ -22,6 +23,7 @@ import com.wingedsheep.sdk.scripting.ProtectionScope
 object PlayerProtectionRules {
 
     /** Characteristics used when a source has no entity yet, such as an Aura token copy. */
+    @Serializable
     data class SourceCharacteristics(
         val colors: Set<String> = emptySet(),
         val subtypes: Set<String> = emptySet(),

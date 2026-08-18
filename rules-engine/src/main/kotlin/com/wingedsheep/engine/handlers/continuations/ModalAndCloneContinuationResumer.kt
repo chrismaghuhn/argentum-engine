@@ -1416,12 +1416,12 @@ class ModalAndCloneContinuationResumer(
     }
 
     /**
-     * Resume after the controller chose what an Aura token copy enchants (CR 303.4h).
+     * Resume after the controller chose what an Aura token copy enchants (CR 303.4f).
      *
      * Creates exactly one token, already attached to the chosen host, then asks again for the
      * next one when the effect owes more than one Aura copy. An empty pick (or a host that left
-     * the battlefield while the decision was outstanding) means no legal attachment, so that
-     * token isn't created — CR 303.4g.
+     * the battlefield while the decision was outstanding) is rejected so a stale response cannot
+     * consume the continuation or silently drop an owed token.
      */
     fun resumeCreateTokenCopyAuraHost(
         state: GameState,
@@ -1435,16 +1435,17 @@ class ModalAndCloneContinuationResumer(
 
         val hostId = response.selectedTargets[0]?.firstOrNull()
         if (hostId == null || hostId !in state.getBattlefield()) {
-            return checkForMore(state, emptyList())
+            return ExecutionResult.error(state, "Selected Aura token host is no longer legal")
         }
 
         val legalHosts = auraHostLegality.findLegalHostsForDefinition(
             state = state,
             auraDefinitionId = continuation.auraDefinitionId,
             hostControllerId = continuation.controllerId,
+            effectiveSource = continuation.effectiveSource,
         )
         if (hostId !in legalHosts) {
-            return checkForMore(state, emptyList())
+            return ExecutionResult.error(state, "Selected Aura token host is no longer legal")
         }
 
         val executor = com.wingedsheep.engine.handlers.effects.token.CreateTokenCopyOfTargetExecutor(
@@ -1475,6 +1476,7 @@ class ModalAndCloneContinuationResumer(
             controllerId = continuation.controllerId,
             remaining = remaining,
             cardRegistry = services.cardRegistry,
+            effectiveSource = continuation.effectiveSource,
         )
         val nextDecision = next.pendingDecision
             ?: return checkForMore(next.state, created.events.toList() + next.events.toList())

@@ -1,9 +1,12 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ContinuationFrame
+import com.wingedsheep.engine.core.CreateTokenCopyAuraHostContinuation
 import com.wingedsheep.engine.core.MoveCollectionAuraTargetContinuation
+import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuation
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectFromCollectionContinuation
 import com.wingedsheep.engine.core.SubmitDecision
@@ -12,6 +15,8 @@ import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
@@ -37,6 +42,8 @@ import com.wingedsheep.sdk.scripting.effects.SelectionMode
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
@@ -142,6 +149,48 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         spell {
             val target = target("target creature", Targets.Creature)
             effect = Effects.Destroy(target)
+        }
+    }
+
+    private val explicitAttachProbe = card("Explicit Aura Attach Probe") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        oracleText = "Return target Aura card from your graveyard to the battlefield attached to a creature you control."
+        spell {
+            val aura = target(
+                "target Aura card",
+                TargetObject(
+                    filter = TargetFilter(
+                        baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura"),
+                        zone = Zone.GRAVEYARD,
+                    )
+                )
+            )
+            effect = Effects.PutOntoBattlefieldAttachedToChosen(
+                target = aura,
+                hostFilter = GameObjectFilter.Creature.youControl(),
+            )
+        }
+    }
+
+    private val auraCopyProbe = card("Aura Copy Characteristics Probe") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        oracleText = "Create two token copies of target Aura, except they are black."
+        spell {
+            val aura = target(
+                "target Aura permanent",
+                TargetObject(
+                    filter = TargetFilter(
+                        baseFilter = GameObjectFilter.Enchantment.withSubtype("Aura")
+                    )
+                )
+            )
+            effect = Effects.CreateTokenCopyOfTarget(
+                target = aura,
+                count = 2,
+                overrideColors = setOf(Color.BLACK),
+            )
         }
     }
 
@@ -296,6 +345,8 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
         cardRegistry.register(protectedCreature)
         cardRegistry.register(cantBeEnchantedCreature)
         cardRegistry.register(ordinaryCreatureTargetingProbe)
+        cardRegistry.register(explicitAttachProbe)
+        cardRegistry.register(auraCopyProbe)
         cardRegistry.register(planeswalkerAura)
         cardRegistry.register(malformedAura)
         cardRegistry.register(equipment)
@@ -726,6 +777,156 @@ class AuraHostSelectionDomainTest : ScenarioTestBase() {
             result.error shouldNotBe null
             game.state.pendingDecision shouldBe hostDecision
             game.state.getBattlefield(game.player1Id) shouldNotContain auraId
+        }
+
+        test("revalidates an explicit attachment effect's host filter on resume") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInGraveyard(1, "Test Aura for Creatures")
+                .withCardInHand(1, "Explicit Aura Attach Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getGraveyard(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+            val probeId = game.state.getHand(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Explicit Aura Attach Probe"
+            }
+            val hostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Grizzly Bears"
+            }
+
+            game.execute(
+                CastSpell(
+                    playerId = game.player1Id,
+                    cardId = probeId,
+                    targets = listOf(ChosenTarget.Card(auraId, game.player1Id, Zone.GRAVEYARD)),
+                )
+            ).error shouldBe null
+            game.resolveStack()
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            val originalContinuation = game.state.continuationStack
+                .filterIsInstance<PutOntoBattlefieldAttachedToChosenContinuation>()
+                .single()
+            val json = Json {
+                serializersModule = engineSerializersModule
+                encodeDefaults = true
+            }
+            val encodedContinuation = json.encodeToString(
+                ContinuationFrame.serializer(),
+                originalContinuation,
+            )
+            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<PutOntoBattlefieldAttachedToChosenContinuation>()
+            decodedContinuation shouldBe originalContinuation
+            game.state = game.state.copy(
+                continuationStack = game.state.continuationStack.map { frame ->
+                    if (frame is PutOntoBattlefieldAttachedToChosenContinuation) decodedContinuation else frame
+                }
+            )
+
+            // The stale response still names a battlefield permanent, but it no longer satisfies
+            // the effect's original "creature you control" host domain.
+            game.state = game.state.updateEntity(hostId) {
+                it.with(ControllerComponent(game.player2Id))
+            }
+            val result = game.execute(
+                SubmitDecision(
+                    playerId = hostDecision.playerId,
+                    response = TargetsResponse(hostDecision.id, mapOf(0 to listOf(hostId))),
+                )
+            )
+
+            result.error shouldNotBe null
+            game.state.pendingDecision shouldBe hostDecision
+            game.state.getBattlefield(game.player1Id) shouldNotContain auraId
+        }
+
+        test("uses effective copy colors when deriving an Aura token host domain") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Aura for Creatures")
+                .withCardOnBattlefield(1, "Test Green-Protected Creature")
+                .withCardInHand(1, "Aura Copy Characteristics Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+            val protectedHostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Green-Protected Creature"
+            }
+
+            game.castSpell(1, "Aura Copy Characteristics Probe", auraId).error shouldBe null
+            game.resolveStack()
+
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            withClue("the black copy is not prevented by protection from green") {
+                hostDecision.legalTargets.getValue(0) shouldContain protectedHostId
+            }
+        }
+
+        test("rejects a stale Aura token host response without consuming the continuation") {
+            val game = scenario()
+                .withPlayers("Player", "Opponent")
+                .withCardOnBattlefield(1, "Test Aura for Creatures")
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInHand(1, "Aura Copy Characteristics Probe")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val auraId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Test Aura for Creatures"
+            }
+            val hostId = game.state.getBattlefield(game.player1Id).single { entityId ->
+                game.state.getEntity(entityId)?.get<CardComponent>()?.name == "Grizzly Bears"
+            }
+
+            game.castSpell(1, "Aura Copy Characteristics Probe", auraId).error shouldBe null
+            game.resolveStack()
+            val hostDecision = game.getPendingDecision().shouldBeInstanceOf<ChooseTargetsDecision>()
+            val continuation = game.state.continuationStack
+                .filterIsInstance<CreateTokenCopyAuraHostContinuation>()
+                .single()
+            continuation.remaining shouldBe 2
+            val json = Json {
+                serializersModule = engineSerializersModule
+                encodeDefaults = true
+            }
+            val encodedContinuation = json.encodeToString(
+                ContinuationFrame.serializer(),
+                continuation,
+            )
+            val decodedContinuation = json.decodeFromString<ContinuationFrame>(encodedContinuation)
+                .shouldBeInstanceOf<CreateTokenCopyAuraHostContinuation>()
+            decodedContinuation shouldBe continuation
+            game.state = game.state.copy(
+                continuationStack = game.state.continuationStack.map { frame ->
+                    if (frame is CreateTokenCopyAuraHostContinuation) decodedContinuation else frame
+                }
+            )
+
+            game.state = game.state.removeFromZone(
+                ZoneKey(game.player1Id, Zone.BATTLEFIELD),
+                hostId,
+            )
+            val result = game.execute(
+                SubmitDecision(
+                    playerId = hostDecision.playerId,
+                    response = TargetsResponse(hostDecision.id, mapOf(0 to listOf(hostId))),
+                )
+            )
+
+            result.error shouldNotBe null
+            game.state.pendingDecision shouldBe hostDecision
+            game.state.continuationStack shouldContain continuation
+            game.state.getBattlefield(game.player1Id) shouldNotContain hostId
         }
 
         test("does not reuse a prior host response for a malformed remaining Aura") {

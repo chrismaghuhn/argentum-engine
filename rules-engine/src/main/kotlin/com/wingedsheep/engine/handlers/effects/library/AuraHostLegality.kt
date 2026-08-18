@@ -74,6 +74,7 @@ class AuraHostLegality(
         state: GameState,
         auraDefinitionId: String,
         hostControllerId: EntityId,
+        effectiveSource: PlayerProtectionRules.SourceCharacteristics? = null,
     ): List<EntityId> {
         val definition = cardRegistry.getCard(auraDefinitionId) ?: return emptyList()
         if (!definition.typeLine.isAura) return emptyList()
@@ -82,9 +83,19 @@ class AuraHostLegality(
             definition = definition,
             sourceId = null,
             hostControllerId = hostControllerId,
-            source = sourceCharacteristics(definition),
+            source = effectiveSource ?: sourceCharacteristics(definition),
         )
     }
+
+    /** Convert the copiable characteristics of a not-yet-created Aura into protection input. */
+    fun sourceCharacteristics(
+        aura: CardComponent,
+    ): PlayerProtectionRules.SourceCharacteristics = PlayerProtectionRules.SourceCharacteristics(
+        colors = aura.colors.map { it.name }.toSet(),
+        subtypes = aura.typeLine.subtypes.map { it.value }.toSet(),
+        supertypes = aura.typeLine.supertypes.map { it.name }.toSet(),
+        cardTypes = aura.typeLine.cardTypes.map { it.name }.toSet(),
+    )
 
     private fun findLegalHosts(
         state: GameState,
@@ -181,12 +192,7 @@ class AuraHostLegality(
                     .toSet(),
             )
         } else {
-            PlayerProtectionRules.SourceCharacteristics(
-                colors = aura.colors.map { it.name }.toSet(),
-                subtypes = aura.typeLine.subtypes.map { it.value }.toSet(),
-                supertypes = aura.typeLine.supertypes.map { it.name }.toSet(),
-                cardTypes = aura.typeLine.cardTypes.map { it.name }.toSet(),
-            )
+            sourceCharacteristics(aura)
         }
     }
 

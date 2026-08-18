@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.core
 
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.mechanics.targeting.PlayerProtectionRules
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -542,7 +543,7 @@ data class CreateTokenCopyOfChosenContinuation(
 ) : ContinuationFrame
 
 /**
- * Resume after the controller chooses what an Aura token copy will enchant (CR 303.4h).
+ * Resume after the controller chooses what an Aura token copy will enchant (CR 303.4f).
  *
  * A token copy of an Aura is created on the battlefield rather than cast, so its controller
  * picks a host instead of targeting one. The pick is raised *before* the token exists so it can
@@ -564,7 +565,9 @@ data class CreateTokenCopyAuraHostContinuation(
     val controllerId: EntityId,
     val auraDefinitionId: String,
     val auraName: String,
-    val remaining: Int
+    val remaining: Int,
+    /** Effective copiable characteristics used to derive protection-based host legality. */
+    val effectiveSource: PlayerProtectionRules.SourceCharacteristics? = null,
 ) : ContinuationFrame
 
 /**
