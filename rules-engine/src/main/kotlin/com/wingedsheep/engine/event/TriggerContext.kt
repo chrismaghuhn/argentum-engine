@@ -443,5 +443,24 @@ data class TriggerContext(
             triggeringEntityId = triggeringEntityId,
             triggeringPlayerId = triggeringPlayerId
         )
+
+        /**
+         * Build the context for an observer whose trigger explicitly filters the damage source.
+         * A source-filtered observer has no valid triggering entity when the event did not carry a
+         * source; returning null keeps that unknown source distinct from the damage recipient that
+         * [fromEvent] uses for source-blind damage observers.
+         */
+        fun fromSourceFilteredDamageEvent(
+            event: DamageDealtEvent,
+            triggeringPlayerId: EntityId? = event.targetId.takeIf {
+                event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)
+            }
+        ): TriggerContext? = event.sourceId?.let { sourceId ->
+            fromDamageEvent(
+                event = event,
+                triggeringEntityId = sourceId,
+                triggeringPlayerId = triggeringPlayerId
+            )
+        }
     }
 }

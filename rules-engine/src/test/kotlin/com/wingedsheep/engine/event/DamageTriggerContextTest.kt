@@ -24,10 +24,14 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
+import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
@@ -41,9 +45,11 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.events.RecipientFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.EntityNumericProperty
 import com.wingedsheep.sdk.scripting.values.EntityReference
@@ -72,6 +78,7 @@ class DamageTriggerContextTest : FunSpec({
             entityId = sourceId,
             power = 4,
             toughness = 4,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
             subtypes = setOf("Spider"),
             colors = setOf(Color.GREEN.name),
             battlefieldEntryTimestamp = 1L,
@@ -80,6 +87,7 @@ class DamageTriggerContextTest : FunSpec({
             entityId = recipientId,
             power = 2,
             toughness = 3,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
             subtypes = setOf("Elf"),
             colors = setOf(Color.GREEN.name),
             battlefieldEntryTimestamp = 2L,
@@ -135,6 +143,277 @@ class DamageTriggerContextTest : FunSpec({
         context.triggeringPlayerId shouldBe EntityId("recipient-player")
         context.damageSourceEntityId shouldBe sourceId
         context.damageRecipientEntityId shouldBe recipientId
+    }
+
+    test("source-filtered damage fails closed when the event source is unknown") {
+        val matcher = TriggerMatcher(PredicateEvaluator(), ConditionEvaluator())
+        val sourceUnknownEvent = damageEvent.copy(
+            sourceId = null,
+            damageSourceLastKnownSnapshot = null,
+        )
+
+        TriggerContext.fromSourceFilteredDamageEvent(sourceUnknownEvent) shouldBe null
+
+        matcher.matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter.Creature,
+            ),
+            sourceUnknownEvent,
+            GameState(),
+            EntityId("observer-controller"),
+        ) shouldBe false
+        matcher.matchesDealsDamageTrigger(
+            EventPattern.DealsDamageEvent(recipient = RecipientFilter.AnyCreature),
+            sourceUnknownEvent,
+            GameState(),
+            EntityId("observer-controller"),
+        ) shouldBe true
+    }
+
+    test("attached source-filtered damage keeps the source as TriggeringEntity") {
+        val attachmentId = EntityId("damage-attached-observer")
+        val ability = com.wingedsheep.sdk.scripting.TriggeredAbility(
+            id = AbilityId("attached-source-filtered-damage"),
+            trigger = EventPattern.DealsDamageEvent(
+                recipient = RecipientFilter.AnyCreature,
+                sourceFilter = GameObjectFilter.Creature,
+            ),
+            binding = TriggerBinding.ATTACHED,
+            effect = Effects.DrawCards(1),
+        )
+        val attachment = TriggerIndex.IndexedEntity(
+            entityId = attachmentId,
+            cardComponent = CardComponent(
+                cardDefinitionId = "damage-attached-observer-card",
+                name = "Damage Attached Observer",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+            ),
+            controllerId = EntityId("attachment-controller"),
+            abilities = listOf(ability),
+        )
+        val index = TriggerIndex(
+            byCategory = emptyMap(),
+            aurasByTarget = mapOf(sourceId to listOf(attachment)),
+            grantProviders = emptyList(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            damageToYouObservers = emptyList(),
+            subtypeDamageObservers = emptyList(),
+            damageObservers = emptyList(),
+            creatureDamageDeathTrackers = emptyList(),
+        )
+        val detector = AttachmentTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+
+        detector.detectAttachmentTriggers(GameState(), damageEvent, triggers, index)
+
+        triggers.single().triggerContext.triggeringEntityId shouldBe sourceId
+        triggers.single().triggerContext.damageRecipientEntityId shouldBe recipientId
+    }
+
+    test("stack target revalidation preserves damage LKI for predicates and dynamic properties") {
+        val controllerId = EntityId("damage-context-controller")
+        val candidateId = EntityId("damage-context-candidate")
+        val battlefield = ZoneKey(controllerId, Zone.BATTLEFIELD)
+        val candidate = CardComponent(
+            cardDefinitionId = "damage-context-candidate-card",
+            name = "Candidate",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            baseStats = CreatureStats(3, 3),
+        )
+        val sourceSnapshot = EntitySnapshot(
+            entityId = sourceId,
+            power = 4,
+            toughness = 4,
+            controllerId = controllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            battlefieldEntryTimestamp = 11L,
+        )
+        val recipientSnapshot = EntitySnapshot(
+            entityId = recipientId,
+            power = 5,
+            toughness = 5,
+            controllerId = controllerId,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            battlefieldEntryTimestamp = 12L,
+        )
+        val initialState = GameState(
+            zones = mapOf(battlefield to listOf(sourceId, recipientId, candidateId)),
+            turnOrder = listOf(controllerId),
+        )
+            .withEntity(
+                controllerId,
+                ComponentContainer.of(PlayerComponent("Controller"), LifeTotalComponent(20)),
+            )
+            .withEntity(
+                sourceId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "damage-context-source-card",
+                        name = "Source",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(4, 4),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(11L),
+                ),
+            )
+            .withEntity(
+                recipientId,
+                ComponentContainer.of(
+                    CardComponent(
+                        cardDefinitionId = "damage-context-recipient-card",
+                        name = "Recipient",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+                        baseStats = CreatureStats(5, 5),
+                    ),
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(12L),
+                ),
+            )
+            .withEntity(
+                candidateId,
+                ComponentContainer.of(
+                    candidate,
+                    ControllerComponent(controllerId),
+                    BattlefieldEntryTimestampComponent(13L),
+                ),
+            )
+
+        val damageRelativeFilter = GameObjectFilter.Creature
+            .withCardPredicate(CardPredicate.PowerAtMostEntity(EntityReference.DamageSource))
+            .withCardPredicate(CardPredicate.PowerAtMostEntity(EntityReference.DamageRecipient))
+        val targetRequirement = TargetObject(filter = TargetFilter(damageRelativeFilter))
+        val ability = TriggeredAbilityOnStackComponent(
+            sourceId = EntityId("damage-context-observer"),
+            sourceName = "Damage context observer",
+            controllerId = controllerId,
+            effect = Effects.GainLife(
+                DynamicAmount.EntityProperty(EntityReference.DamageRecipient, EntityNumericProperty.Power)
+            ),
+            description = "Candidate gains context life",
+            damageSourceEntityId = sourceId,
+            damageRecipientEntityId = recipientId,
+            damageRecipientKind = DamageRecipientKind.CREATURE,
+            damageRecipientKinds = DamageRecipientKindSet.CREATURE,
+            damageSourceLastKnownSnapshot = sourceSnapshot,
+            damageRecipientLastKnownSnapshot = recipientSnapshot,
+        )
+        val resolver = StackResolver(CardRegistry())
+        val putResult = resolver.putTriggeredAbility(
+            state = initialState,
+            ability = ability,
+            targets = listOf(ChosenTarget.Permanent(candidateId)),
+            targetRequirements = listOf(targetRequirement),
+        )
+        putResult.error shouldBe null
+
+        val resolutionState = putResult.state
+            .removeEntity(sourceId)
+            .removeEntity(recipientId)
+        val resolved = resolver.resolveTop(resolutionState)
+
+        resolved.error shouldBe null
+        resolved.state.getEntity(controllerId)?.get<LifeTotalComponent>()?.life shouldBe 25
+    }
+
+    test("heterogeneous damage batches keep the matching source-recipient pair") {
+        val controllerId = EntityId("batch-observer-controller")
+        val secondSourceId = EntityId("batch-second-source")
+        val firstRecipientId = EntityId("batch-first-recipient")
+        val secondRecipientId = EntityId("batch-second-recipient")
+        val sourceCard = CardComponent(
+            cardDefinitionId = "batch-source-card",
+            name = "Batch Source",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine(cardTypes = setOf(CardType.CREATURE)),
+            baseStats = CreatureStats(2, 2),
+        )
+        val state = GameState(
+            zones = mapOf(
+                ZoneKey(controllerId, Zone.BATTLEFIELD) to listOf(secondSourceId),
+            ),
+        ).withEntity(
+            secondSourceId,
+            ComponentContainer.of(
+                sourceCard,
+                ControllerComponent(controllerId),
+                BattlefieldEntryTimestampComponent(22L),
+            ),
+        )
+        val observer = TriggerIndex.IndexedEntity(
+            entityId = EntityId("batch-observer"),
+            cardComponent = CardComponent(
+                cardDefinitionId = "batch-observer-card",
+                name = "Batch Observer",
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+            ),
+            controllerId = controllerId,
+            abilities = listOf(
+                com.wingedsheep.sdk.scripting.TriggeredAbility(
+                    id = AbilityId("batch-observer-ability"),
+                    trigger = EventPattern.DealsDamageEvent(
+                        recipient = RecipientFilter.AnyCreature,
+                        sourceFilter = GameObjectFilter.Creature,
+                        batch = true,
+                    ),
+                    binding = TriggerBinding.ANY,
+                    effect = Effects.DrawCards(1),
+                ),
+            ),
+        )
+        val index = TriggerIndex(
+            byCategory = emptyMap(),
+            aurasByTarget = emptyMap(),
+            grantProviders = emptyList(),
+            statics = BattlefieldStaticsIndex.EMPTY,
+            damageToYouObservers = emptyList(),
+            subtypeDamageObservers = emptyList(),
+            damageObservers = listOf(observer),
+            creatureDamageDeathTrackers = emptyList(),
+        )
+        val detector = DamageTriggerDetector(
+            TriggerAbilityResolver(CardRegistry(), AbilityRegistry()),
+            TriggerMatcher(PredicateEvaluator(), ConditionEvaluator()),
+        )
+        val unknownSourceEvent = damageEvent.copy(
+            sourceId = null,
+            targetId = firstRecipientId,
+            damageSourceLastKnownSnapshot = null,
+            damageRecipientLastKnownSnapshot = EntitySnapshot(firstRecipientId, power = 2),
+        )
+        val secondEvent = damageEvent.copy(
+            sourceId = secondSourceId,
+            targetId = secondRecipientId,
+            damageSourceLastKnownSnapshot = EntitySnapshot(
+                secondSourceId,
+                power = 2,
+                battlefieldEntryTimestamp = 22L,
+            ),
+            damageRecipientLastKnownSnapshot = EntitySnapshot(secondRecipientId, power = 3),
+        )
+        val triggers = mutableListOf<PendingTrigger>()
+
+        detector.detectDamageObserverBatchTriggers(
+            state = state,
+            events = listOf(unknownSourceEvent, secondEvent),
+            triggers = triggers,
+            index = index,
+        )
+
+        triggers.size shouldBe 1
+        val context = triggers.single().triggerContext
+        context.triggeringEntityId shouldBe secondSourceId
+        context.damageSourceEntityId shouldBe secondSourceId
+        context.damageRecipientEntityId shouldBe secondRecipientId
     }
 
     test("simultaneous damage events retain each source-recipient pairing") {

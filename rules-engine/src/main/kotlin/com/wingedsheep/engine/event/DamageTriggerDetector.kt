@@ -110,13 +110,13 @@ class DamageTriggerDetector(
                             sourceId = sourceId,
                             sourceName = cardComponent.name,
                             controllerId = controllerId,
-                            // fromEvent already sets triggeringEntityId = event.targetId (the damaged
-                            // player for a deals-damage-to-a-player trigger), and both
-                            // Player.TriggeringPlayer and ControllerPredicate.ControlledByTriggeringPlayer
-                            // resolve as `triggeringPlayerId ?: triggeringEntityId`, so "…to a player,
-                            // destroy target artifact that player controls" (Dreadmaw's Ire) resolves to
-                            // the damaged player without any extra triggeringPlayerId copy here.
-                            triggerContext = TriggerContext.fromEvent(event)
+                            triggerContext = if (trigger.sourceFilter != null) {
+                                TriggerContext.fromSourceFilteredDamageEvent(event) ?: continue
+                            } else {
+                                // Source-blind SELF damage triggers retain their legacy recipient
+                                // TriggeringEntity semantics; explicit source filters bind the source.
+                                TriggerContext.fromEvent(event)
+                            }
                         )
                     )
                 }
@@ -210,7 +210,7 @@ class DamageTriggerDetector(
         index: TriggerIndex
     ) {
         if (!event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) return
-        val damageSourceId = event.sourceId ?: return
+        if (event.sourceId == null) return
         val damagedPlayerId = event.targetId
 
         for (entry in index.damageToYouObservers) {
@@ -232,10 +232,9 @@ class DamageTriggerDetector(
                             sourceId = entry.entityId,
                             sourceName = entry.cardComponent.name,
                             controllerId = entry.controllerId,
-                            triggerContext = TriggerContext.fromDamageEvent(
+                            triggerContext = TriggerContext.fromSourceFilteredDamageEvent(
                                 event,
-                                triggeringEntityId = damageSourceId
-                            )
+                            ) ?: continue
                         )
                     )
                 }
@@ -318,7 +317,7 @@ class DamageTriggerDetector(
         // combat damage"), the triggering entity is the damage SOURCE (the creature),
         // not the damage recipient. This allows effects like "exile it" to reference
         // the creature that dealt damage.
-        val context = if (trigger.sourceFilter != null && event.sourceId != null) {
+        val context = if (trigger.sourceFilter != null) {
             // The triggering entity is the damage SOURCE (e.g. "a source you
             // control deals damage… exile it"). Still carry the recipient creature's
             // toughness so "equal to that creature's toughness" payoffs (Taii Wakeen)
@@ -327,13 +326,12 @@ class DamageTriggerDetector(
             // "…to a player, [that player] …" payoffs (Fear of Burning Alive's
             // "target creature that player controls") resolve Player.TriggeringPlayer
             // to the damaged player rather than the source.
-            TriggerContext.fromDamageEvent(
+            TriggerContext.fromSourceFilteredDamageEvent(
                 event,
-                triggeringEntityId = event.sourceId,
                 triggeringPlayerId = event.targetId.takeIf {
                     event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)
                 }
-            )
+            ) ?: return
         } else {
             TriggerContext.fromEvent(event)
         }
@@ -383,14 +381,13 @@ class DamageTriggerDetector(
                     matcher.matchesDealsDamageTrigger(trigger, event, state, entry.controllerId)
                 }
                 if (firstMatching != null) {
-                    val triggerContext = if (trigger.sourceFilter != null && firstMatching.sourceId != null) {
-                        TriggerContext.fromDamageEvent(
+                    val triggerContext = if (trigger.sourceFilter != null) {
+                        TriggerContext.fromSourceFilteredDamageEvent(
                             firstMatching,
-                            triggeringEntityId = firstMatching.sourceId,
                             triggeringPlayerId = firstMatching.targetId.takeIf {
                                 firstMatching.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)
                             }
-                        )
+                        ) ?: continue
                     } else {
                         TriggerContext.fromEvent(firstMatching)
                     }
@@ -446,10 +443,8 @@ class DamageTriggerDetector(
                                 sourceId = entry.entityId,
                                 sourceName = entry.cardComponent.name,
                                 controllerId = entry.controllerId,
-                                triggerContext = TriggerContext.fromDamageEvent(
-                                    event,
-                                    triggeringEntityId = damagedPlayerId
-                                )
+                                triggerContext = TriggerContext.fromSourceFilteredDamageEvent(event)
+                                    ?: continue
                             )
                         )
                     }

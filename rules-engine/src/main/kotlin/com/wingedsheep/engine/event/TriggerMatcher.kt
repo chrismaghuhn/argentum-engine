@@ -1560,11 +1560,15 @@ class TriggerMatcher(
         state: GameState,
         controllerId: EntityId?
     ): Boolean {
-        if (sourceFilter == null || event.sourceId == null) return true
+        if (sourceFilter == null) return true
+        // A source-filtered observer must never match an event whose source is unknown. In
+        // particular, do not let the generic damage context bind TriggeringEntity to the
+        // recipient when this branch later constructs a source-filtered trigger context.
+        val sourceId = event.sourceId ?: return false
         val predicateContext = com.wingedsheep.engine.handlers.PredicateContext(
             controllerId = controllerId ?: EntityId(""),
             sourceId = null,
-            damageSourceId = event.sourceId,
+            damageSourceId = sourceId,
             damageRecipientId = event.targetId,
             damageRecipientKind = event.effectiveRecipientKind,
             damageRecipientKinds = event.effectiveRecipientKinds,
@@ -1572,14 +1576,14 @@ class TriggerMatcher(
             damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot
         )
         val sourceSnapshot = event.damageSourceLastKnownSnapshot
-            ?.takeIf { it.entityId == event.sourceId }
+            ?.takeIf { it.entityId == sourceId }
         return when {
-            sourceSnapshot != null && !state.isCapturedBattlefieldObjectLive(event.sourceId, sourceSnapshot) ->
+            sourceSnapshot != null && !state.isCapturedBattlefieldObjectLive(sourceId, sourceSnapshot) ->
                 predicateEvaluator.matchesSnapshot(state, sourceSnapshot, sourceFilter, predicateContext)
             sourceSnapshot != null ->
-                predicateEvaluator.matches(state, state.projectedState, event.sourceId, sourceFilter, predicateContext)
-            event.sourceId !in state.getBattlefield() ->
-                predicateEvaluator.matches(state, state.projectedState, event.sourceId, sourceFilter, predicateContext)
+                predicateEvaluator.matches(state, state.projectedState, sourceId, sourceFilter, predicateContext)
+            sourceId !in state.getBattlefield() ->
+                predicateEvaluator.matches(state, state.projectedState, sourceId, sourceFilter, predicateContext)
             // A stamped current object without a matching captured snapshot is not proven to be
             // the source object from the event. Do not classify a same-id reuse as the source.
             else -> false

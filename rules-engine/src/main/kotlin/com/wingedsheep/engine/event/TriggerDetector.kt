@@ -938,6 +938,14 @@ class TriggerDetector(
                         )
                     }
                 } else {
+                    val damageTriggerContext = if (
+                        specEvent is com.wingedsheep.sdk.scripting.EventPattern.DealsDamageEvent &&
+                        event is DamageDealtEvent && specEvent.sourceFilter != null
+                    ) {
+                        TriggerContext.fromSourceFilteredDamageEvent(event)
+                    } else {
+                        TriggerContext.fromEvent(event)
+                    } ?: continue
                     eventCandidates.add(
                         PendingTrigger(
                             ability = TriggeredAbility.create(
@@ -950,9 +958,9 @@ class TriggerDetector(
                             sourceId = delayed.sourceId,
                             sourceName = delayed.sourceName,
                             controllerId = delayed.controllerId,
-                            triggerContext = TriggerContext.fromEvent(event).copy(
+                            triggerContext = damageTriggerContext.copy(
                                 triggeringEntityId = delayed.watchedEntityId
-                                    ?: TriggerContext.fromEvent(event).triggeringEntityId
+                                    ?: damageTriggerContext.triggeringEntityId
                             ),
                             consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
                         )

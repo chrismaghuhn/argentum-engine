@@ -2885,6 +2885,12 @@ class StackResolver(
                 xValue = abilityComponent.xValue,
                 triggeringEntityId = abilityComponent.triggeringEntityId,
                 triggeringPlayerId = abilityComponent.triggeringPlayerId,
+                damageSourceId = abilityComponent.damageSourceEntityId,
+                damageRecipientId = abilityComponent.damageRecipientEntityId,
+                damageRecipientKind = abilityComponent.damageRecipientKind,
+                damageRecipientKinds = abilityComponent.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = abilityComponent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = abilityComponent.damageRecipientLastKnownSnapshot,
                 targetEntryStamps = targetsComponent.targetEntryStamps,
                 storedCollections = abilityComponent.carriedPipeline?.storedCollections ?: emptyMap(),
             )
@@ -3484,6 +3490,12 @@ class StackResolver(
         xValue: Int? = null,
         triggeringEntityId: EntityId? = null,
         triggeringPlayerId: EntityId? = null,
+        damageSourceId: EntityId? = null,
+        damageRecipientId: EntityId? = null,
+        damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+        damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+        damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+        damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
         /**
          * The object-identity stamps captured when these targets were chosen
          * ([TargetsComponent.targetEntryStamps]) — a permanent that left the battlefield and came
@@ -3507,6 +3519,12 @@ class StackResolver(
             xValue = xValue,
             triggeringEntityId = triggeringEntityId,
             triggeringPlayerId = triggeringPlayerId,
+            damageSourceId = damageSourceId,
+            damageRecipientId = damageRecipientId,
+            damageRecipientKind = damageRecipientKind,
+            damageRecipientKinds = damageRecipientKinds,
+            damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot,
             storedCollections = storedCollections,
         )
 
