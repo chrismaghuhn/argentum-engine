@@ -15,22 +15,15 @@ import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.serialization.CardSerialization
 import com.wingedsheep.sdk.scripting.TriggeredAbility
-import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.conditions.Condition
-import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
-import com.wingedsheep.sdk.scripting.targets.AnyTarget
-import com.wingedsheep.sdk.scripting.targets.TargetCreatureOrPlaneswalker
-import com.wingedsheep.sdk.scripting.targets.TargetCreatureOrPlayer
-import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetOpponent
-import com.wingedsheep.sdk.scripting.targets.TargetOpponentOrPlaneswalker
-import com.wingedsheep.sdk.scripting.targets.TargetOther
-import com.wingedsheep.sdk.scripting.targets.TargetPermanentOrPlayer
-import com.wingedsheep.sdk.scripting.targets.TargetPlayer
-import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
-import com.wingedsheep.sdk.scripting.targets.TargetSpellOrPermanent
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.encodeToJsonElement
 
 /**
  * Private, deterministic identity used only to normalize an unordered trigger-choice domain.
@@ -201,136 +194,63 @@ internal object TriggerOrderingKey {
     } ?: "<none>"
 
     /**
-     * Display text is not the contract for target re-validation.  Keep the stable data fields that
-     * shape the legal domain as well as the human description, including hidden exclusions and
-     * candidate restrictions that are intentionally absent from that description.
+     * Target legality is defined by the serialized SDK data, not by presentation text.  The
+     * description intentionally collapses distinct predicate variants (for example a target
+     * player reference and a referenced-player expression), so it cannot be part of a semantic
+     * ordering key.  Canonicalize the complete polymorphic requirement tree instead, sorting JSON
+     * object keys while preserving semantically ordered arrays.
+     *
+     * EntityId values embedded in a requirement (for example SpecificEntity) are projected
+     * through the same state-relative identity used elsewhere in this key.  Unknown references
+     * fail closed to one non-ID marker rather than leaking an allocation handle into replay data.
      */
     private fun targetRequirementKey(
         state: GameState,
         requirement: TargetRequirement,
         visited: Set<EntityId> = emptySet(),
-    ): String = when (requirement) {
-        is TargetPlayer -> fields(
-            "player",
-            requirement.count,
-            requirement.optional,
-            requirement.unlimited,
-            requirement.id,
-            requirement.chooser.name,
-            conditionKey(requirement.restriction),
-            requirement.description,
-        )
-        is TargetOpponent -> fields(
-            "opponent",
-            requirement.count,
-            requirement.optional,
-            requirement.unlimited,
-            requirement.id,
-            requirement.chooser.name,
-            conditionKey(requirement.restriction),
-            requirement.description,
-        )
-        is AnyTarget -> fields(
-            "any-target",
-            requirement.count,
-            requirement.minCount,
-            requirement.optional,
-            requirement.id,
-            requirement.chooser.name,
-            requirement.description,
-        )
-        is TargetCreatureOrPlayer -> fields(
-            "creature-or-player",
-            requirement.count,
-            requirement.optional,
-            requirement.id,
-            requirement.description,
-        )
-        is TargetPermanentOrPlayer -> fields(
-            "permanent-or-player",
-            requirement.count,
-            requirement.optional,
-            requirement.id,
-            targetFilterKey(requirement.permanentFilter),
-            requirement.description,
-        )
-        is TargetOpponentOrPlaneswalker -> fields(
-            "opponent-or-planeswalker",
-            requirement.count,
-            requirement.optional,
-            requirement.id,
-            requirement.description,
-        )
-        is TargetPlayerOrPlaneswalker -> fields(
-            "player-or-planeswalker",
-            requirement.count,
-            requirement.optional,
-            requirement.id,
-            requirement.description,
-        )
-        is TargetCreatureOrPlaneswalker -> fields(
-            "creature-or-planeswalker",
-            requirement.count,
-            requirement.optional,
-            requirement.id,
-            requirement.description,
-        )
-        is TargetSpellOrPermanent -> fields(
-            "spell-or-permanent",
-            requirement.count,
-            requirement.optional,
-            requirement.id,
-            gameObjectFilterKey(requirement.permanentFilter),
-            requirement.description,
-        )
-        is TargetObject -> fields(
-            "object",
-            requirement.count,
-            requirement.minCount,
-            requirement.optional,
-            requirement.unlimited,
-            targetFilterKey(requirement.filter),
-            requirement.id,
-            requirement.dynamicMaxCount?.description,
-            requirement.sameController,
-            requirement.sameOwner,
-            requirement.sameCreatureType,
-            requirement.sameCardType,
-            requirement.totalManaValueAtMost?.description,
-            requirement.differentNames,
-            requirement.description,
-        )
-        is TargetOther -> fields(
-            "other",
-            targetRequirementKey(state, requirement.baseRequirement, visited),
-            semanticEntityKey(state, requirement.excludeSourceId, visited),
-            requirement.excludeAttachedCreature,
-            requirement.id,
-            requirement.description,
-        )
-    }
-
-    private fun conditionKey(condition: Condition?): String = condition?.let {
-        fields(it.description)
-    } ?: "<none>"
-
-    private fun targetFilterKey(filter: TargetFilter): String = fields(
-        filter.baseFilter.description,
-        filter.zone.name,
-        filter.excludeSelf,
-        filter.excludeTriggeringEntity,
-        filter.alternatives.map { targetFilterKey(it) },
+    ): String = canonicalJsonKey(
+        CardSerialization.compactJson.encodeToJsonElement(
+            TargetRequirement.serializer(),
+            requirement,
+        ),
+        state,
+        visited,
     )
 
-    private fun gameObjectFilterKey(filter: GameObjectFilter?): String = filter?.let {
-        fields(
-            it.description,
-            it.cardPredicates.map { predicate -> predicate.description },
-            it.statePredicates.map { predicate -> predicate.description },
-            it.controllerPredicate?.description,
-            it.anyOf.map { branch -> gameObjectFilterKey(branch) },
+    private fun canonicalJsonKey(
+        element: JsonElement,
+        state: GameState,
+        visited: Set<EntityId>,
+        fieldName: String? = null,
+    ): String = when (element) {
+        is JsonObject -> fields(
+            element.entries
+                // A descriptionOverride is presentation-only; it cannot change target legality.
+                .filter { it.key != "descriptionOverride" }
+                .sortedBy { it.key }
+                .map { (key, value) ->
+                    listOf(key, canonicalJsonKey(value, state, visited, key))
+                }
         )
-    } ?: "<none>"
+        is JsonArray -> fields(element.map { canonicalJsonKey(it, state, visited, fieldName) })
+        is JsonNull -> "null"
+        is JsonPrimitive -> {
+            if (element.isString && fieldName?.endsWith("Id") == true) {
+                val referencedId = EntityId(element.content)
+                val projectedReference = when {
+                    state.turnOrder.contains(referencedId) || state.getEntity(referencedId) != null ->
+                        semanticEntityKey(state, referencedId, visited)
+                    else -> "<missing-entity>"
+                }
+                fields("entity-id", projectedReference)
+            } else {
+                fields(
+                    if (element.isString) "string" else "primitive",
+                    element.content,
+                )
+            }
+        }
+    }
 
     /**
      * Last-known snapshots may outlive their entity ids.  Encode the captured semantic values,
@@ -446,6 +366,7 @@ internal object TriggerOrderingKey {
         return fields(
             card.cardDefinitionId,
             card.name,
+            semanticEntityKey(state, card.ownerId, visited),
             card.typeLine.cardTypes.map { it.name }.sorted(),
             card.typeLine.supertypes.map { it.name }.sorted(),
             card.typeLine.subtypes.map { it.value }.sorted(),

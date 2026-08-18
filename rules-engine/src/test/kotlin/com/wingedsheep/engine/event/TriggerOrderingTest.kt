@@ -9,6 +9,7 @@ import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.LossReason
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
@@ -23,13 +24,18 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.MayEffect
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetOther
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.references.Player
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -506,6 +512,102 @@ class TriggerOrderingTest : FunSpec({
         val secondKey = TriggerOrderingKey.forTrigger(
             driver.state,
             base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        (firstKey == secondKey) shouldBe false
+    }
+
+    test("TO-22e: structurally distinct filter predicates do not share a display-only key") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val target = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val (firstStackObject, stateWithFirstId) = driver.state.newEntity()
+        val (secondStackObject, stateWithBothIds) = stateWithFirstId.newEntity()
+        val stackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability"
+        )
+        val targetPlayerFilter = TargetObject(
+            filter = TargetFilter(
+                GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByTargetPlayer
+                )
+            )
+        )
+        val referencedPlayerFilter = TargetObject(
+            filter = TargetFilter(
+                GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.ContextTarget(0)
+                    )
+                )
+            )
+        )
+        targetPlayerFilter.description shouldBe referencedPlayerFilter.description
+        driver.replaceState(
+            stateWithBothIds
+                .withEntity(
+                    firstStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(
+                            targets = listOf(ChosenTarget.Permanent(target)),
+                            targetRequirements = listOf(targetPlayerFilter)
+                        )
+                    )
+                )
+                .withEntity(
+                    secondStackObject,
+                    ComponentContainer.of(
+                        stackAbility,
+                        TargetsComponent(
+                            targets = listOf(ChosenTarget.Permanent(target)),
+                            targetRequirements = listOf(referencedPlayerFilter)
+                        )
+                    )
+                )
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        (firstKey == secondKey) shouldBe false
+    }
+
+    test("TO-22f: card-backed stack identity includes owner when no zone role distinguishes it") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "copy-target")
+        val firstSpell = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondSpell = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondCard = driver.state.getEntity(secondSpell)!!.get<CardComponent>()!!
+        driver.replaceState(
+            driver.state.updateEntity(secondSpell) {
+                it.with(secondCard.copy(ownerId = driver.player2))
+            }
+        )
+        val spellComponent = SpellOnStackComponent(casterId = driver.player1)
+        driver.replaceState(
+            driver.state
+                .updateEntity(firstSpell) { it.with(spellComponent) }
+                .updateEntity(secondSpell) { it.with(spellComponent) }
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstSpell))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondSpell))
         )
 
         (firstKey == secondKey) shouldBe false
