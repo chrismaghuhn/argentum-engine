@@ -185,7 +185,8 @@ data class EntitySnapshot(
                 keywords = projected.getKeywords(entityId),
                 lostAllAbilities = projected.hasLostAllAbilities(entityId),
                 wasSuspected = projected.isSuspected(entityId),
-                name = state.getEntity(entityId)?.get<CardComponent>()?.name,
+                name = projected.getName(entityId)
+                    ?: state.getEntity(entityId)?.get<CardComponent>()?.name,
             )
         }
     }
@@ -221,11 +222,11 @@ fun captureEntitySnapshots(
 /**
  * [captureEntitySnapshots] overload that also records the facts only [GameState] carries, not
  * [ProjectedState]: each permanent's **token-ness** ([EntitySnapshot.wasToken], via [TokenComponent])
- * and its **name** ([EntitySnapshot.name], via [CardComponent]). Use at a sacrifice site when a
- * following sibling needs either — Exploit's `ExploitedEvent.sacrificedWasToken` (read by Skull
- * Skaab's "exploits a nontoken creature" clause) for the first, naming what an alternative cost ate
- * for the second. Caller must invoke this BEFORE the zone change so projected values, the token
- * component and the card component all still resolve.
+ * and its **name** ([EntitySnapshot.name], projected with a [CardComponent] fallback). Use at a
+ * sacrifice site when a following sibling needs either — Exploit's
+ * `ExploitedEvent.sacrificedWasToken` (read by Skull Skaab's "exploits a nontoken creature" clause)
+ * for the first, naming what an alternative cost ate for the second. Caller must invoke this BEFORE
+ * the zone change so projected values, the token component and the card component all still resolve.
  */
 fun captureEntitySnapshots(
     ids: List<EntityId>,
@@ -234,7 +235,7 @@ fun captureEntitySnapshots(
     val container = state.getEntity(snapshot.entityId)
     snapshot.copy(
         wasToken = container?.has<TokenComponent>() ?: false,
-        name = container?.get<CardComponent>()?.name,
+        name = state.projectedState.getName(snapshot.entityId) ?: container?.get<CardComponent>()?.name,
     )
 }
 

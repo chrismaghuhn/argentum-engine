@@ -34,6 +34,7 @@ import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.RingBearerComponent
+import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.player.InAdditionalCombatPhaseComponent
 import com.wingedsheep.engine.state.components.player.InAdditionalEndStepComponent
 import com.wingedsheep.engine.state.components.player.LandDropsComponent
@@ -575,6 +576,8 @@ class ConditionEvaluator(
                 ifResolution { (it.triggerMinusOneMinusOneCounterCount ?: 0) > 0 }
             is TriggeringEntityHadCounters ->
                 ifResolution { (it.triggerTotalCounterCount ?: 0) > 0 }
+            is com.wingedsheep.sdk.scripting.conditions.TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard ->
+                evaluateTriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard(state, ctx)
             is com.wingedsheep.sdk.scripting.conditions.TriggeringEntityHadSubtype ->
                 // Subtype names are captured in projected form (e.g. "Demon"); compare
                 // case-insensitively so card authors can pass either Subtype.X.value or a literal.
@@ -761,6 +764,64 @@ class ConditionEvaluator(
             } ?: false
         else -> false
     }
+
+    /**
+     * Guardian Project's name uniqueness clause. The triggering entity is read from the trigger
+     * context, while "you" is the ability controller. A live triggering permanent uses projected
+     * characteristics; after it leaves the battlefield, its last-known projected snapshot is the
+     * only authoritative name still available (CR 603.4 / 608.2a).
+     */
+    private fun evaluateTriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard(
+        state: GameState,
+        ctx: ConditionEvaluationContext,
+    ): Boolean {
+        val resolution = ctx as? Resolution ?: return false
+        val triggeringId = resolution.effectContext.triggeringEntityId ?: return false
+        val controllerId = resolution.effectContext.controllerId
+        val projected = ctx.projectedStateFor(state)
+        val triggeringName = triggeringEntityName(state, projected, triggeringId) ?: return false
+
+        val sharedOnBattlefield = state.getBattlefield().any { entityId ->
+            entityId != triggeringId &&
+                projected.getController(entityId) == controllerId &&
+                projected.isCreature(entityId) &&
+                projectedEntityName(state, projected, entityId) == triggeringName
+        }
+        if (sharedOnBattlefield) return false
+
+        val predicateEvaluator = PredicateEvaluator()
+        val sharedInGraveyard = state.getZone(controllerId, Zone.GRAVEYARD).any { entityId ->
+            state.getEntity(entityId)?.has<TokenComponent>() != true &&
+                predicateEvaluator.matches(
+                    state,
+                    projected,
+                    entityId,
+                    GameObjectFilter.Creature,
+                    PredicateContext(controllerId = controllerId),
+                ) &&
+                projectedEntityName(state, projected, entityId) == triggeringName
+        }
+        return !sharedInGraveyard
+    }
+
+    private fun triggeringEntityName(
+        state: GameState,
+        projected: ProjectedState,
+        entityId: EntityId,
+    ): String? {
+        return if (state.getBattlefield().contains(entityId)) {
+            projectedEntityName(state, projected, entityId)
+        } else {
+            state.getEntity(entityId)?.get<LastKnownPermanentComponent>()?.snapshot?.name
+        }
+    }
+
+    private fun projectedEntityName(
+        state: GameState,
+        projected: ProjectedState,
+        entityId: EntityId,
+    ): String? = projected.getName(entityId)
+        ?: state.getEntity(entityId)?.get<CardComponent>()?.name
 
     /**
      * Match the card discarded to pay this spell's additional discard cost
