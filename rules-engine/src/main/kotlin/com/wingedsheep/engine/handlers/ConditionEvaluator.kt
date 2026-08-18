@@ -767,10 +767,11 @@ class ConditionEvaluator(
     }
 
     /**
-     * Guardian Project's name uniqueness clause. The triggering entity is read from the trigger
-     * context, while "you" is the ability controller. A live triggering permanent uses projected
-     * characteristics; after it leaves the battlefield, its last-known projected snapshot is the
-     * only authoritative name still available (CR 603.4 / 608.2a).
+     * Guardian Project's name uniqueness clause. The triggering entity's projected name and
+     * battlefield incarnation are frozen in the trigger context; "you" and every other candidate
+     * are read live from the resolution-time state. The intervening-if is checked at trigger and
+     * resolution (CR 603.4), while object-specific information after a zone change follows LKI
+     * (CR 608.2h).
      */
     private fun evaluateTriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard(
         state: GameState,
@@ -780,14 +781,23 @@ class ConditionEvaluator(
         val triggeringId = resolution.effectContext.triggeringEntityId ?: return false
         val controllerId = resolution.effectContext.controllerId
         val projected = ctx.projectedStateFor(state)
-        val triggeringName = triggeringEntityName(state, projected, triggeringId)
-            ?: return triggeringEntityIsNameless(state, projected, triggeringId)
-        val triggeringEntryTimestamp = resolution.effectContext.triggeringEntityEntryTimestamp
+        val triggeringEntryTimestamp =
+            resolution.effectContext.triggeringEntityEntryTimestamp ?: return false
+        if (!resolution.effectContext.triggeringEntityNameKnown) return false
+        val triggeringName = resolution.effectContext.triggeringEntityName
+        // CR 201.2a: objects with no name do not share a name, including with another nameless
+        // object. The occurrence identity is still required above so unknown trigger data cannot
+        // turn a missing BattlefieldEntryTimestamp into a concrete identity.
+        if (triggeringName == null) return true
 
         val sharedOnBattlefield = state.getBattlefield().any { entityId ->
+            val candidateEntryTimestamp = if (entityId == triggeringId) {
+                battlefieldEntryTimestamp(state, entityId) ?: return false
+            } else {
+                null
+            }
             val isTriggeringObject = entityId == triggeringId &&
-                (triggeringEntryTimestamp == null ||
-                    battlefieldEntryTimestamp(state, entityId) == triggeringEntryTimestamp)
+                candidateEntryTimestamp == triggeringEntryTimestamp
             !isTriggeringObject &&
                 projected.getController(entityId) == controllerId &&
                 projected.isCreature(entityId) &&
@@ -810,43 +820,6 @@ class ConditionEvaluator(
         return !sharedInGraveyard
     }
 
-    private fun triggeringEntityName(
-        state: GameState,
-        projected: ProjectedState,
-        entityId: EntityId,
-    ): String? {
-        return if (state.getBattlefield().contains(entityId)) {
-            projectedEntityName(state, projected, entityId)
-        } else {
-            val entity = state.getEntity(entityId) ?: return null
-            // A real battlefield exit owns the snapshot, including a deliberate null name for a
-            // face-down permanent. Only use the card component when no LKI snapshot exists (for
-            // lightweight setup states that move an entity between zones without the transition
-            // service); never let that fallback override a nameless LKI snapshot.
-            entity.get<LastKnownPermanentComponent>()?.snapshot?.name
-                ?: if (entity.has<LastKnownPermanentComponent>() || entity.has<FaceDownComponent>()) {
-                    null
-                } else {
-                    entity.get<CardComponent>()?.name
-                }
-        }
-    }
-
-    private fun triggeringEntityIsNameless(
-        state: GameState,
-        projected: ProjectedState,
-        entityId: EntityId,
-    ): Boolean {
-        val entity = state.getEntity(entityId) ?: return false
-        if (state.getBattlefield().contains(entityId)) {
-            return projected.isFaceDown(entityId) || entity.has<FaceDownComponent>()
-        }
-
-        val lastKnown = entity.get<LastKnownPermanentComponent>()
-        return entity.has<FaceDownComponent>() ||
-            (lastKnown != null && lastKnown.snapshot.name == null)
-    }
-
     private fun projectedEntityName(
         state: GameState,
         projected: ProjectedState,
@@ -858,8 +831,8 @@ class ConditionEvaluator(
             state.getEntity(entityId)?.get<CardComponent>()?.name
         }
 
-    private fun battlefieldEntryTimestamp(state: GameState, entityId: EntityId): Long =
-        state.getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp ?: 0L
+    private fun battlefieldEntryTimestamp(state: GameState, entityId: EntityId): Long? =
+        state.getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp
 
     /**
      * Match the card discarded to pay this spell's additional discard cost

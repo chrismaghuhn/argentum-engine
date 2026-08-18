@@ -1886,12 +1886,16 @@ class TriggerMatcher(
             // Bind the live battlefield object to the occurrence before evaluating its condition.
             // Entity ids survive zone round-trips in this engine; the entry stamp is the generic
             // CR 400.7 identity that lets the resolution-time check distinguish a returned object.
-            val trigger = bindTriggeringEntityEntryTimestamp(state, originalTrigger)
+            // The projected name is frozen alongside it so later incarnations cannot rewrite the
+            // triggering occurrence's meaning.
+            val trigger = bindTriggeringEntityOccurrence(state, originalTrigger)
             val context = EffectContext(
                 sourceId = trigger.sourceId,
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringEntityEntryTimestamp = trigger.triggerContext.triggeringEntityEntryTimestamp,
+                triggeringEntityName = trigger.triggerContext.triggeringEntityName,
+                triggeringEntityNameKnown = trigger.triggerContext.triggeringEntityNameKnown,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
                 triggerCounterCount = trigger.triggerContext.counterCount,
@@ -1935,22 +1939,30 @@ class TriggerMatcher(
         }
     }
 
-    private fun bindTriggeringEntityEntryTimestamp(
+    private fun bindTriggeringEntityOccurrence(
         state: GameState,
         trigger: PendingTrigger,
     ): PendingTrigger {
         val triggerContext = trigger.triggerContext
-        if (triggerContext.triggeringEntityEntryTimestamp != null) return trigger
+        // A serialized or copied occurrence is already authoritative. In particular, do not
+        // reconstruct a missing name from the entity after a zone change.
+        if (triggerContext.triggeringEntityEntryTimestamp != null ||
+            triggerContext.triggeringEntityNameKnown
+        ) return trigger
         val entityId = triggerContext.triggeringEntityId ?: return trigger
         if (entityId !in state.getBattlefield()) return trigger
 
-        val entryTimestamp = state.getEntity(entityId)
-            ?.get<BattlefieldEntryTimestampComponent>()
-            ?.timestamp
-            ?: 0L
+        val entity = state.getEntity(entityId) ?: return trigger
+        val entryTimestamp = entity.get<BattlefieldEntryTimestampComponent>()?.timestamp ?: return trigger
+        val card = entity.get<CardComponent>() ?: return trigger
+        val projected = state.projectedState
+        val name = projected.getName(entityId)
+            ?: if (projected.isFaceDown(entityId)) null else card.name
         return trigger.copy(
             triggerContext = triggerContext.copy(
                 triggeringEntityEntryTimestamp = entryTimestamp,
+                triggeringEntityName = name,
+                triggeringEntityNameKnown = true,
             )
         )
     }

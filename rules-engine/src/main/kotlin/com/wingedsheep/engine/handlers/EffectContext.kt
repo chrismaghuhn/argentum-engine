@@ -235,6 +235,10 @@ data class EffectContext(
     val triggeringEntityId: EntityId? = null,
     /** Battlefield-entry object identity captured for the triggering permanent's occurrence. */
     val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known at trigger time; false means the occurrence name is unknown. */
+    val triggeringEntityNameKnown: Boolean = false,
     /** The player associated with the trigger event (e.g., the player who cast a spell for SpellCastEvent) */
     val triggeringPlayerId: EntityId? = null,
     /** The spell or ability that targeted a permanent (for ward triggers) */
@@ -549,6 +553,8 @@ data class EffectContext(
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,
             triggeringEntityEntryTimestamp = ability.triggeringEntityEntryTimestamp,
+            triggeringEntityName = ability.triggeringEntityName,
+            triggeringEntityNameKnown = ability.triggeringEntityNameKnown,
             triggeringPlayerId = ability.triggeringPlayerId,
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,

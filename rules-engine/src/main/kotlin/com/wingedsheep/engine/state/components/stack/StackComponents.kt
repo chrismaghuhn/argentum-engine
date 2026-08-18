@@ -185,6 +185,10 @@ data class TriggeredAbilityOnStackComponent(
     val triggeringEntityId: EntityId? = null,
     /** Battlefield-entry object identity captured when this trigger occurrence was detected. */
     val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was detected. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val xValue: Int? = null,
     val triggerCounterCount: Int? = null,

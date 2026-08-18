@@ -29,6 +29,10 @@ data class TriggerContext(
     val triggeringEntityId: EntityId? = null,
     /** Battlefield-entry object identity captured for a live triggering permanent. */
     val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is a known nameless object when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known at trigger time; false means the occurrence name is unknown. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val damageAmount: Int? = null,
     val step: Step? = null,

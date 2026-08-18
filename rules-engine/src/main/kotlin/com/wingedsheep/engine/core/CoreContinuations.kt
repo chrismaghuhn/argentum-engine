@@ -57,6 +57,10 @@ data class TriggeredAbilityContinuation(
     val triggeringEntityId: EntityId? = null,
     /** Battlefield-entry object identity captured for the triggering occurrence. */
     val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val elseEffect: Effect? = null,
     val targetRequirements: List<TargetRequirement> = emptyList(),
@@ -149,6 +153,10 @@ data class TriggerDamageDistributionContinuation(
     val triggeringEntityId: EntityId? = null,
     /** Battlefield-entry object identity captured for the triggering occurrence. */
     val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,

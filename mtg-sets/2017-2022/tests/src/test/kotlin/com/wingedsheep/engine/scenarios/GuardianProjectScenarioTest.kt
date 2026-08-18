@@ -3,6 +3,8 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.handlers.ConditionEvaluator
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.LastKnownPermanentComponent
@@ -25,6 +27,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.TriggerBinding
+import com.wingedsheep.sdk.scripting.conditions.TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -239,6 +242,75 @@ class GuardianProjectScenarioTest : FunSpec({
         driver.getHandSize(player) shouldBe handBeforeCast + 1
     }
 
+    test("the trigger keeps its original name after a later incarnation becomes face-down") {
+        val driver = newDriver()
+        val player = driver.player1
+        driver.putPermanentOnBattlefield(player, "Guardian Project")
+        val existing = driver.putCreatureOnBattlefield(player, "Grizzly Bears")
+        val existingAura = driver.putCardInHand(player, "Witness Protection")
+        driver.giveMana(player, Color.BLUE)
+        driver.castSpell(player, existingAura, targets = listOf(existing)).isSuccess shouldBe true
+        driver.bothPass()
+
+        val handBeforeTrigger = driver.getHandSize(player)
+        castCreatureAndResolveSpell(driver, player, "Grizzly Bears")
+        val triggeringCreature = driver.getPermanents(player).single { entityId ->
+            entityId != existing &&
+                driver.state.getEntity(entityId)?.get<CardComponent>()?.name == "Grizzly Bears"
+        }
+
+        val exiled = ZoneTransitionService.moveToZone(driver.state, triggeringCreature, Zone.EXILE).state
+        val returned = ZoneTransitionService.moveToZone(exiled, triggeringCreature, Zone.BATTLEFIELD).state
+        val returnedFaceDown = returned.updateEntity(triggeringCreature) { it.with(FaceDownComponent) }
+        returnedFaceDown.projectedState.isFaceDown(triggeringCreature) shouldBe true
+        val secondLeave = ZoneTransitionService.moveToZone(
+            returnedFaceDown,
+            triggeringCreature,
+            Zone.EXILE,
+        ).state
+        val existingAuraRemoved = ZoneTransitionService.moveToZone(
+            secondLeave,
+            existingAura,
+            Zone.GRAVEYARD,
+        ).state
+        driver.replaceState(existingAuraRemoved)
+
+        driver.bothPass()
+
+        driver.getHandSize(player) shouldBe handBeforeTrigger
+        driver.events.filterIsInstance<AbilityFizzledEvent>().last().reason shouldBe
+            "Intervening-if condition is no longer true"
+    }
+
+    test("a missing battlefield entry identity fails the name check closed") {
+        val driver = newDriver()
+        val player = driver.player1
+        val triggeringCreature = driver.putCreatureOnBattlefield(player, "Grizzly Bears")
+
+        ConditionEvaluator().evaluate(
+            driver.state,
+            TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard,
+            EffectContext(
+                sourceId = null,
+                controllerId = player,
+                triggeringEntityId = triggeringCreature,
+            )
+        ) shouldBe false
+
+        ConditionEvaluator().evaluate(
+            driver.state,
+            TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard,
+            EffectContext(
+                sourceId = null,
+                controllerId = player,
+                triggeringEntityId = triggeringCreature,
+                triggeringEntityEntryTimestamp = 42L,
+                triggeringEntityName = "Different Name",
+                triggeringEntityNameKnown = true,
+            )
+        ) shouldBe false
+    }
+
     test("two face-down creatures do not share a name") {
         val driver = newDriver()
         val player = driver.activePlayer!!
@@ -251,21 +323,32 @@ class GuardianProjectScenarioTest : FunSpec({
         driver.getHandSize(player) shouldBe handBeforeCast + 2
     }
 
-    test("a face-down creature leaving the battlefield has nameless LKI") {
+    test("a face-down creature entering and leaving the battlefield has nameless LKI") {
         val driver = newDriver()
         val player = driver.player1
         driver.putPermanentOnBattlefield(player, "Guardian Project")
         val handBeforeCast = driver.getHandSize(player)
 
-        castCreatureAndResolveSpell(driver, player, "Grizzly Bears")
-        val creature = driver.findPermanent(player, "Grizzly Bears")!!
-        driver.replaceState(driver.state.updateEntity(creature) { it.with(FaceDownComponent) })
-        EntitySnapshot.fromProjection(creature, driver.state).name shouldBe null
-        captureEntitySnapshots(listOf(creature), driver.state).single().name shouldBe null
-        val transition = ZoneTransitionService.moveToZone(driver.state, creature, Zone.GRAVEYARD)
+        val creature = driver.putCardInHand(player, "Morph Test Creature")
+        driver.giveColorlessMana(player, amount = 3)
+        driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = creature,
+                castFaceDown = true,
+                paymentStrategy = PaymentStrategy.FromPool,
+            )
+        ).isSuccess shouldBe true
+        driver.bothPass()
+        val faceDownCreature = driver.getPermanents(player).single { entityId ->
+            driver.state.getEntity(entityId)?.has<FaceDownComponent>() == true
+        }
+        EntitySnapshot.fromProjection(faceDownCreature, driver.state).name shouldBe null
+        captureEntitySnapshots(listOf(faceDownCreature), driver.state).single().name shouldBe null
+        val transition = ZoneTransitionService.moveToZone(driver.state, faceDownCreature, Zone.GRAVEYARD)
         driver.replaceState(transition.state)
 
-        driver.state.getEntity(creature)
+        driver.state.getEntity(faceDownCreature)
             ?.get<LastKnownPermanentComponent>()?.snapshot?.name shouldBe null
         driver.bothPass()
 
