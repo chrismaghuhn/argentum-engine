@@ -107,6 +107,24 @@ enum class LifeChangeReason {
 // =============================================================================
 
 /**
+ * The role occupied by a damage recipient at the moment damage was dealt.
+ *
+ * The role is part of the event rather than inferred from the recipient id later: a recipient can
+ * leave the battlefield before triggers are detected or resolve, and player ids are not a safe
+ * substitute for object type. [UNKNOWN] is deliberately not player-like so old/incomplete event
+ * payloads fail closed in player-only resolution paths.
+ */
+@Serializable
+enum class DamageRecipientKind {
+    PLAYER,
+    CREATURE,
+    PLANESWALKER,
+    BATTLE,
+    OTHER,
+    UNKNOWN,
+}
+
+/**
  * Damage was dealt.
  */
 @Serializable
@@ -154,8 +172,27 @@ data class DamageDealtEvent(
      * their TargetsComponent before event-trigger detection, so target/recipient relationship
      * predicates consume this event-side snapshot instead of consulting later state.
      */
-    val sourceTargetIdsAtDamage: List<EntityId>? = null
+    val sourceTargetIdsAtDamage: List<EntityId>? = null,
+    /** Explicit recipient role captured at damage time, including when the recipient later leaves. */
+    val recipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null
 ) : GameEvent
+
+/**
+ * Resolve the event's explicit role while retaining compatibility with older serialized/manual
+ * events that only carried the pre-existing boolean LKI flags. Those flags are explicit event data;
+ * no entity-id or component heuristic is used here.
+ */
+val DamageDealtEvent.effectiveRecipientKind: DamageRecipientKind
+    get() = when {
+        recipientKind != DamageRecipientKind.UNKNOWN -> recipientKind
+        targetIsPlayer -> DamageRecipientKind.PLAYER
+        targetWasCreature -> DamageRecipientKind.CREATURE
+        else -> DamageRecipientKind.UNKNOWN
+    }
 
 /**
  * A "next damage from a chosen source" shield fired on an instance of damage (Deflecting Palm,

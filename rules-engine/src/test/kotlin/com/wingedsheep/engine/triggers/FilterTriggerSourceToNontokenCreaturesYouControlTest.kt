@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.support.GameTestDriver
@@ -23,9 +24,8 @@ import io.kotest.matchers.shouldBe
  * Batch combat-damage trigger scoped to "nontoken creatures you control" must exclude
  * token creatures from its source predicate even when they simultaneously deal combat damage.
  *
- * The bug: detectCombatDamageBatchTriggers has `else -> true` in its CardPredicate when-block,
- * so IsNontoken falls through and tokens are incorrectly treated as matching the filter.
- * Additionally TriggerContext() is always empty, so no source is recorded.
+ * The regression guard also verifies that the batch context retains the matching source and its
+ * paired player recipient rather than conflating either role with the observer.
  */
 class FilterTriggerSourceToNontokenCreaturesYouControlTest : FunSpec({
 
@@ -93,14 +93,16 @@ class FilterTriggerSourceToNontokenCreaturesYouControlTest : FunSpec({
                     targetId       = driver.player2,
                     amount         = 2,
                     isCombatDamage = true,
-                    targetIsPlayer = true
+                    targetIsPlayer = true,
+                    recipientKind  = DamageRecipientKind.PLAYER
                 ),
                 DamageDealtEvent(
                     sourceId       = tokenId,
                     targetId       = driver.player2,
                     amount         = 2,
                     isCombatDamage = true,
-                    targetIsPlayer = true
+                    targetIsPlayer = true,
+                    recipientKind  = DamageRecipientKind.PLAYER
                 )
             )
 
@@ -113,10 +115,13 @@ class FilterTriggerSourceToNontokenCreaturesYouControlTest : FunSpec({
             // Batch collapses all sources into one trigger instance
             batchTriggers shouldHaveSize 1
 
-            // The nontoken creature — not the token — must be recorded as the damage source.
-            // With the current implementation IsNontoken falls to `else -> true` and
-            // TriggerContext() is empty, so this assertion fails → test is RED.
-            batchTriggers.first().triggerContext.triggeringEntityId shouldBe nontokenId
+            // The nontoken creature — not the token — must be recorded as the damage source,
+            // while the recipient remains the player from that same damage event.
+            val batchTrigger = batchTriggers.first()
+            batchTrigger.triggerContext.triggeringEntityId shouldBe nontokenId
+            batchTrigger.triggerContext.damageSourceEntityId shouldBe nontokenId
+            batchTrigger.triggerContext.damageRecipientEntityId shouldBe driver.player2
+            batchTrigger.triggerContext.damageRecipientKind shouldBe DamageRecipientKind.PLAYER
         }
     }
 })

@@ -2959,7 +2959,20 @@ can't statically prevent (cross-trigger flows, `Self`-vs-`ContextTarget` inside 
   source semantics while a paired recipient reference remains available.
 - `EffectTarget.DamageRecipient` — the object or player that received the damage that caused the
   trigger. The event's entity id is retained for resolution-time last-known-information handling
-  if the recipient has left the battlefield.
+  if the recipient has left the battlefield. The captured recipient role (player, creature,
+  planeswalker, battle, or unknown) is retained separately; player-only resolution accepts this
+  reference only when the event explicitly recorded a player, and otherwise fails closed.
+- `EntityReference.DamageSource` / `EntityReference.DamageRecipient` — the generic value references
+  for reading a damage pair from a trigger context. They resolve to the source and recipient ids
+  independently of `EffectTarget.TriggeringEntity`, so a source-filtered observer can keep its
+  source `TriggeringEntity` while a dynamic amount or predicate reads the paired recipient. Both
+  use the live permanent while it remains on the battlefield and the event-carried
+  last-known-information snapshot after it leaves; no entity-id or current-zone type inference is
+  performed. For example, `DynamicAmount.EntityProperty(EntityReference.DamageRecipient,
+  EntityNumericProperty.Power)` reads the recipient's power, and
+  `GameObjectFilter.Creature.powerAtMostEntity(EntityReference.DamageRecipient)` reads the same
+  frozen power when the recipient is gone. Their serialized ids are the stable `DamageSource` and
+  `DamageRecipient` names.
 - `EffectTarget.TargetController` — the controller of the spell/ability's first chosen target
   ("its controller creates two Map tokens", "its controller gains 4 life"). Control-change effects
   are honored (projected controller first), and a target that has already left the battlefield —
@@ -8978,6 +8991,14 @@ both spellings, and the ability its bare-noun line grants says "Regenerate this 
   Bomb's Blow Up) read the pre-sacrifice power including counters/buffs rather than zero. No DSL change: existing
   `sourcePower()` reads simply become correct after a self-sacrifice. Live on-battlefield `Source` reads are
   unaffected (the snapshot is only consulted when the source has left).
+
+- **Damage source/recipient properties** — `EntityProperty(EntityReference.DamageSource, property)`
+  and `EntityProperty(EntityReference.DamageRecipient, property)` use the damage event's explicit
+  source/recipient pair. Power, toughness, subtype count, and color count read the captured
+  permanent snapshot after a source or recipient leaves; unsupported properties remain unsupported
+  rather than being guessed from a replacement id or a later zone. The matching relative predicates
+  (`PowerGreaterThanEntity`, `PowerAtMostEntity`, `PowerLessThanEntity`, `SharesCreatureTypeWith`,
+  and `SharesColorWith`) use the same damage-role snapshot when their referenced object is gone.
 
 ### Station
 

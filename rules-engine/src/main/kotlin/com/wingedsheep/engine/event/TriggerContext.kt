@@ -11,6 +11,8 @@ import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ControlChangedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKind
 import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.TappedEvent
@@ -20,6 +22,7 @@ import com.wingedsheep.engine.core.PhasedInEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 
 /**
  * Context information about what caused a trigger.
@@ -32,6 +35,12 @@ data class TriggerContext(
     val damageSourceEntityId: EntityId? = null,
     /** The object or player that received the damage, preserved independently from the trigger's semantic entity. */
     val damageRecipientEntityId: EntityId? = null,
+    /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
     val damageAmount: Int? = null,
     val step: Step? = null,
     val xValue: Int? = null,
@@ -234,6 +243,9 @@ data class TriggerContext(
                     triggeringEntityId = event.targetId,
                     damageSourceEntityId = event.sourceId,
                     damageRecipientEntityId = event.targetId,
+                    damageRecipientKind = event.effectiveRecipientKind,
+                    damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
+                    damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot,
                     damageAmount = event.amount,
                     excessDamageAmount = event.excessAmount.takeIf { it > 0 },
                     recipientToughnessAtDamage = event.targetToughnessAtDamage

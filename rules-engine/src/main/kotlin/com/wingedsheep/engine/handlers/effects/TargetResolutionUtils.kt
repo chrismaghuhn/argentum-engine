@@ -220,8 +220,13 @@ object TargetResolutionUtils {
             is EffectTarget.Controller -> context.controllerId
             is EffectTarget.ContextTarget -> context.positionalTarget(effectTarget.index)?.toEntityId()
             is EffectTarget.BoundVariable -> context.pipeline.namedTargets[effectTarget.name]?.toEntityId()
-            is EffectTarget.DamageSource -> context.damageSourceEntityId
-            is EffectTarget.DamageRecipient -> context.damageRecipientEntityId
+            // DamageSource has no player role in the generic damage context. DamageRecipient is
+            // player-like only when the damage event explicitly captured PLAYER; an entity id
+            // alone is never enough to infer that role after LKI/zone changes.
+            is EffectTarget.DamageRecipient ->
+                context.damageRecipientEntityId.takeIf {
+                    context.damageRecipientKind == com.wingedsheep.engine.core.DamageRecipientKind.PLAYER
+                }
             is EffectTarget.PipelineTarget ->
                 context.pipeline.storedCollections[effectTarget.collectionName]?.getOrNull(effectTarget.index)
             is EffectTarget.PlayerRef -> when (effectTarget.player) {
@@ -356,6 +361,8 @@ object TargetResolutionUtils {
             is EntityReference.Sacrificed -> context.sacrificedPermanents.getOrNull(ref.index)?.entityId
             is EntityReference.TappedAsCost -> context.tappedPermanents.getOrNull(ref.index)
             is EntityReference.Triggering -> context.triggeringEntityId
+            EntityReference.DamageSource -> context.damageSourceEntityId
+            EntityReference.DamageRecipient -> context.damageRecipientEntityId
             is EntityReference.RingBearer -> {
                 // The creature carrying [player]'s Ring-bearer designation, on the battlefield
                 // under their control (CR 701.54e). Null when the player has no Ring-bearer.

@@ -2,6 +2,7 @@ package com.wingedsheep.engine.handlers.effects
 
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.applyShieldCounterToDamage
 import com.wingedsheep.engine.core.DamagePreventedEvent
 import com.wingedsheep.engine.core.EffectResult
@@ -32,6 +33,8 @@ import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSour
 import com.wingedsheep.engine.state.components.stack.SpellGrantedKeywordsComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.projectedTypeLine
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.player.RedNoncombatDamageDealtThisTurnComponent
 import com.wingedsheep.sdk.core.Color
@@ -112,6 +115,19 @@ object DamageUtils {
     private val conditionEvaluator = ConditionEvaluator()
     private val dynamicAmountEvaluator = DynamicAmountEvaluator()
     lateinit var cardRegistry: CardRegistry
+
+    /**
+     * Capture the projected characteristics of a battlefield damage source or recipient before
+     * damage/state-based actions can move it. Player ids and non-battlefield spell sources have no
+     * permanent snapshot; callers retain their explicit role/id separately on the damage event.
+     */
+    fun captureDamageEntitySnapshot(state: GameState, entityId: EntityId?): EntitySnapshot? {
+        val id = entityId ?: return null
+        if (id !in state.getBattlefield()) return null
+        return EntitySnapshot.fromProjection(id, state).copy(
+            typeLine = projectedTypeLine(state, id)
+        )
+    }
 
     /**
      * Controller of a battlefield permanent that hosts a replacement effect, honoring
@@ -440,7 +456,7 @@ object DamageUtils {
         val sourceName = sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
         val targetContainer = newState.getEntity(targetId)
         val targetName = targetContainer?.get<CardComponent>()?.name
-        val targetIsPlayer = targetContainer?.get<LifeTotalComponent>() != null
+        val targetIsPlayer = lifeComponent != null
         val targetIsFaceDown = targetContainer?.has<FaceDownComponent>() == true
         // Capture the recipient's controller + creature-ness now, while it's still on the
         // battlefield, so recipient-based triggers match even if it dies to this damage (LKI).
@@ -450,6 +466,13 @@ object DamageUtils {
         // ORIGINAL state's projection, before this damage marked the creature / SBAs could move it.
         // Read by "damage equal to that creature's toughness" triggers (Taii Wakeen).
         val targetToughnessAtDamage = if (targetWasCreature) projected.getToughness(targetId) else null
+        val recipientKind = when {
+            targetIsPlayer -> DamageRecipientKind.PLAYER
+            projected.isPlaneswalker(targetId) -> DamageRecipientKind.PLANESWALKER
+            projected.isBattle(targetId) -> DamageRecipientKind.BATTLE
+            targetWasCreature -> DamageRecipientKind.CREATURE
+            else -> DamageRecipientKind.UNKNOWN
+        }
         val sourceTargetIds = sourceId
             ?.let(newState::getEntity)
             ?.get<TargetsComponent>()
@@ -477,6 +500,9 @@ object DamageUtils {
                 excessAmount = creatureExcessDamage,
                 targetToughnessAtDamage = targetToughnessAtDamage,
                 sourceTargetIdsAtDamage = sourceTargetIds,
+                recipientKind = recipientKind,
+                damageSourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
+                damageRecipientLastKnownSnapshot = captureDamageEntitySnapshot(state, targetId),
             )
         )
 

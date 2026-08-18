@@ -30,6 +30,8 @@ fun lkiPolicyFor(reference: EntityReference): LkiPolicy = when (reference) {
     // chosen) are all routinely read after they have left the battlefield (CR 112.7a / 608.2h).
     EntityReference.Source,
     EntityReference.Triggering,
+    EntityReference.DamageSource,
+    EntityReference.DamageRecipient,
     EntityReference.EnchantedCreature,
     is EntityReference.Sacrificed,
     is EntityReference.TappedAsCost,
@@ -49,9 +51,8 @@ fun lkiPolicyFor(reference: EntityReference): LkiPolicy = when (reference) {
 /**
  * The captured [EntitySnapshot] backing a [LkiPolicy.LIVE_THEN_LKI] [reference] that resolved to
  * [entityId] after it left the battlefield, or null if none was captured (the read then falls
- * through to base characteristics). Triggering- and enchanted-creature last-known P/T are still
- * carried as scalars on [EffectContext] and resolved at their own read sites, so they return null
- * here.
+ * through to base characteristics). Enchanted-creature last-known P/T is still carried as a
+ * scalar on [EffectContext] and resolved at its own read site, so it returns null here.
  */
 fun EffectContext.lkiSnapshotFor(reference: EntityReference, entityId: EntityId): EntitySnapshot? =
     when (reference) {
@@ -59,5 +60,7 @@ fun EffectContext.lkiSnapshotFor(reference: EntityReference, entityId: EntityId)
         is EntityReference.TappedAsCost -> tappedEntitySnapshots.snapshotFor(entityId)
         is EntityReference.FromCostStorage -> chosenEntitySnapshots.snapshotFor(entityId)
         EntityReference.Source -> lastKnownSourceSnapshot?.takeIf { it.entityId == entityId }
+        EntityReference.DamageSource -> damageSourceLastKnownSnapshot?.takeIf { it.entityId == entityId }
+        EntityReference.DamageRecipient -> damageRecipientLastKnownSnapshot?.takeIf { it.entityId == entityId }
         else -> null
     }

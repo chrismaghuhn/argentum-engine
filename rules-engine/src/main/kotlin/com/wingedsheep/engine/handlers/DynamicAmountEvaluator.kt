@@ -24,6 +24,7 @@ import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.identity.RoomComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
@@ -406,11 +407,8 @@ class DynamicAmountEvaluator(
                     entityId !in state.getBattlefield()
                 ) {
                     val snapshot = context.lkiSnapshotFor(amount.entity, entityId)
-                    when (amount.numericProperty) {
-                        is EntityNumericProperty.Power -> snapshot?.power?.let { return it }
-                        is EntityNumericProperty.Toughness -> snapshot?.toughness?.let { return it }
-                        else -> { /* fall through to base characteristics */ }
-                    }
+                    snapshot?.let { resolveSnapshotNumericProperty(it, amount.numericProperty) }
+                        ?.let { return it }
                 }
                 resolveNumericProperty(state, entityId, amount.numericProperty, context, useProjected = true, explicitProjected = projectedState)
             }
@@ -1139,6 +1137,20 @@ class DynamicAmountEvaluator(
     // =========================================================================
     // Entity Numeric Property Resolution
     // =========================================================================
+
+    /** Numeric properties that the generic [EntitySnapshot] can retain after a damage recipient or
+     * source leaves the battlefield. Unsupported properties deliberately fall through to the
+     * ordinary entity resolver rather than guessing from an unrelated component. */
+    private fun resolveSnapshotNumericProperty(
+        snapshot: EntitySnapshot,
+        property: EntityNumericProperty,
+    ): Int? = when (property) {
+        EntityNumericProperty.Power -> snapshot.power
+        EntityNumericProperty.Toughness -> snapshot.toughness
+        EntityNumericProperty.SubtypeCount -> snapshot.subtypes.size
+        EntityNumericProperty.ColorCount -> snapshot.colors.size
+        else -> null
+    }
 
     /**
      * Resolve a numeric property from an entity. Unified handler for [DynamicAmount.EntityProperty].

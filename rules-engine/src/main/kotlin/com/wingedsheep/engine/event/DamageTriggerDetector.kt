@@ -1,7 +1,9 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
+import com.wingedsheep.engine.core.effectiveRecipientKind
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -34,6 +36,7 @@ class DamageTriggerDetector(
         event: DamageDealtEvent,
         triggers: MutableList<PendingTrigger>
     ) {
+        if (event.effectiveRecipientKind != DamageRecipientKind.CREATURE) return
         val entityId = event.targetId
         val container = state.getEntity(entityId) ?: return
         val cardComponent = container.get<CardComponent>() ?: return
@@ -135,6 +138,7 @@ class DamageTriggerDetector(
         event: DamageDealtEvent,
         triggers: MutableList<PendingTrigger>
     ) {
+        if (event.effectiveRecipientKind != DamageRecipientKind.CREATURE) return
         val sourceId = event.sourceId ?: return
         val damagedEntityId = event.targetId
 
@@ -204,6 +208,7 @@ class DamageTriggerDetector(
         projected: ProjectedState,
         index: TriggerIndex
     ) {
+        if (event.effectiveRecipientKind != DamageRecipientKind.PLAYER) return
         val damageSourceId = event.sourceId ?: return
         val damagedPlayerId = event.targetId
 
@@ -324,7 +329,9 @@ class DamageTriggerDetector(
             TriggerContext.fromDamageEvent(
                 event,
                 triggeringEntityId = event.sourceId,
-                triggeringPlayerId = event.targetId.takeIf { it in state.turnOrder }
+                triggeringPlayerId = event.targetId.takeIf {
+                    event.effectiveRecipientKind == DamageRecipientKind.PLAYER
+                }
             )
         } else {
             TriggerContext.fromEvent(event)
@@ -352,8 +359,9 @@ class DamageTriggerDetector(
      * (damageType / recipient / sourceFilter / requireExcess) are evaluated per damage event via
      * the canonical [TriggerMatcher.matchesDealsDamageTrigger]; one matching event suffices.
      *
-     * `triggeringEntityId` is the first matching recipient — batch triggers don't dispatch per
-     * recipient, so cards needing per-recipient context use the singular (non-batch) trigger.
+     * Source-filtered batches retain the first matching source as `triggeringEntityId`; source-blind
+     * batches retain the first matching recipient. Batch triggers don't dispatch per pair, so cards
+     * needing per-recipient context use the singular (non-batch) trigger.
      */
     fun detectDamageObserverBatchTriggers(
         state: GameState,
@@ -374,13 +382,24 @@ class DamageTriggerDetector(
                     matcher.matchesDealsDamageTrigger(trigger, event, state, entry.controllerId)
                 }
                 if (firstMatching != null) {
+                    val triggerContext = if (trigger.sourceFilter != null && firstMatching.sourceId != null) {
+                        TriggerContext.fromDamageEvent(
+                            firstMatching,
+                            triggeringEntityId = firstMatching.sourceId,
+                            triggeringPlayerId = firstMatching.targetId.takeIf {
+                                firstMatching.effectiveRecipientKind == DamageRecipientKind.PLAYER
+                            }
+                        )
+                    } else {
+                        TriggerContext.fromEvent(firstMatching)
+                    }
                     triggers.add(
                         PendingTrigger(
                             ability = ability,
                             sourceId = entry.entityId,
                             sourceName = entry.cardComponent.name,
                             controllerId = entry.controllerId,
-                            triggerContext = TriggerContext.fromEvent(firstMatching)
+                            triggerContext = triggerContext
                         )
                     )
                 }
@@ -399,6 +418,7 @@ class DamageTriggerDetector(
         projected: ProjectedState,
         index: TriggerIndex
     ) {
+        if (event.effectiveRecipientKind != DamageRecipientKind.PLAYER) return
         val damageSourceId = event.sourceId ?: return
         val damagedPlayerId = event.targetId
 

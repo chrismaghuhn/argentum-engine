@@ -30,6 +30,8 @@ interface EntityView {
 
     /** Counter-type-string → count (e.g. "+1/+1", "-1/-1", "loyalty"). Matches the counter wire format. */
     val counters: Map<String, Int>
+    /** Projected colors at capture time, represented by their stable enum names. */
+    val colors: Set<String>
     val keywords: Set<String>
     val subtypes: Set<String>
     val supertypes: Set<String>
@@ -54,6 +56,7 @@ class LiveEntityView(
     override val toughness: Int? get() = projected.getToughness(entityId)
     override val controllerId: EntityId? get() = projected.getController(entityId)
     override val counters: Map<String, Int> get() = countersOf(state, entityId)
+    override val colors: Set<String> get() = projected.getColors(entityId)
     override val keywords: Set<String> get() = projected.getKeywords(entityId)
     override val subtypes: Set<String> get() = projected.getSubtypes(entityId)
     override val supertypes: Set<String> get() = projected.getSupertypes(entityId)
@@ -91,6 +94,7 @@ data class EntitySnapshot(
      */
     override val controllerId: EntityId? = null,
     override val counters: Map<String, Int> = emptyMap(),
+    override val colors: Set<String> = emptySet(),
     override val keywords: Set<String> = emptySet(),
     override val lostAllAbilities: Boolean = false,
     // --- battlefield-exit-only fields (no meaning for a live permanent) ---
@@ -182,6 +186,7 @@ data class EntitySnapshot(
                 supertypes = projected.getSupertypes(entityId),
                 controllerId = projected.getController(entityId),
                 counters = countersOf(state, entityId),
+                colors = projected.getColors(entityId),
                 keywords = projected.getKeywords(entityId),
                 lostAllAbilities = projected.hasLostAllAbilities(entityId),
                 wasSuspected = projected.isSuspected(entityId),
@@ -214,6 +219,7 @@ fun captureEntitySnapshots(
         subtypes = projected.getSubtypes(id),
         supertypes = projected.getSupertypes(id),
         controllerId = projected.getController(id),
+        colors = projected.getColors(id),
         wasSuspected = projected.isSuspected(id),
     )
 }

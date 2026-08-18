@@ -1100,7 +1100,9 @@ internal class CombatDamageManager(
 
         val sourceName = state.getEntity(sourceId)?.get<CardComponent>()?.name ?: "Creature"
         events.add(DamageDealtEvent(sourceId, targetId, effectiveAmount, true,
-            sourceName = sourceName, targetName = "Player", targetIsPlayer = true))
+            sourceName = sourceName, targetName = "Player", targetIsPlayer = true,
+            recipientKind = DamageRecipientKind.PLAYER,
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId)))
         events.add(LifeChangedEvent(targetId, currentLife, newLife, LifeChangeReason.DAMAGE))
 
         // Commander damage (CR 903.10a)
@@ -1196,8 +1198,17 @@ internal class CombatDamageManager(
         val sourceName = newState.getEntity(sourceId)?.get<CardComponent>()?.name ?: "Creature"
         val defaultName = if (counterType == com.wingedsheep.sdk.core.CounterType.LOYALTY) "Planeswalker" else "Battle"
         val targetName = newState.getEntity(targetId)?.get<CardComponent>()?.name ?: defaultName
+        val recipientKind = if (counterType == com.wingedsheep.sdk.core.CounterType.LOYALTY) {
+            DamageRecipientKind.PLANESWALKER
+        } else {
+            DamageRecipientKind.BATTLE
+        }
         events.add(DamageDealtEvent(sourceId, targetId, amount, true,
-            sourceName = sourceName, targetName = targetName, targetIsPlayer = false))
+            sourceName = sourceName, targetName = targetName, targetIsPlayer = false,
+            targetControllerId = newState.projectedState.getController(targetId),
+            recipientKind = recipientKind,
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId),
+            damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, targetId)))
         val removed = amount.coerceAtMost(currentCount)
         if (counterType == com.wingedsheep.sdk.core.CounterType.LOYALTY) {
             events.add(LoyaltyChangedEvent(targetId, targetName, -removed))
@@ -1310,7 +1321,9 @@ internal class CombatDamageManager(
             }
             val sourceName = newState.getEntity(sourceId)?.get<CardComponent>()?.name ?: "Creature"
             events.add(DamageDealtEvent(sourceId, targetId, amount, true,
-                sourceName = sourceName, targetName = "Player", targetIsPlayer = true))
+                sourceName = sourceName, targetName = "Player", targetIsPlayer = true,
+                recipientKind = DamageRecipientKind.PLAYER,
+                damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId)))
             events.add(LifeChangedEvent(targetId, currentLife, newLife, LifeChangeReason.DAMAGE))
 
             // Commander damage (CR 903.10a)
@@ -1418,7 +1431,10 @@ internal class CombatDamageManager(
             val targetWasCreature = projected.isCreature(targetId)
             events.add(DamageDealtEvent(sourceId, targetId, amount, true,
                 sourceName = sourceName, targetName = targetName, targetIsPlayer = false, targetWasFaceDown = targetIsFaceDown,
-                targetControllerId = targetControllerId, targetWasCreature = targetWasCreature, excessAmount = excess))
+                targetControllerId = targetControllerId, targetWasCreature = targetWasCreature, excessAmount = excess,
+                recipientKind = DamageRecipientKind.CREATURE,
+                damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId),
+                damageRecipientLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, targetId)))
         }
 
         return newState
@@ -1483,7 +1499,9 @@ internal class CombatDamageManager(
         }
         val sourceName = state.getEntity(sourceId)?.get<CardComponent>()?.name ?: "Creature"
         events.add(DamageDealtEvent(sourceId, attackerController, originalAmount, true,
-            sourceName = sourceName, targetName = "Player", targetIsPlayer = true))
+            sourceName = sourceName, targetName = "Player", targetIsPlayer = true,
+            recipientKind = DamageRecipientKind.PLAYER,
+            damageSourceLastKnownSnapshot = DamageUtils.captureDamageEntitySnapshot(state, sourceId)))
         events.add(LifeChangedEvent(attackerController, attackerControllerLife, newLife, LifeChangeReason.DAMAGE))
 
         // Commander damage (CR 903.10a) — reflection still counts as combat damage from the commander

@@ -2,6 +2,7 @@ package com.wingedsheep.engine.state.components.stack
 
 import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
@@ -188,6 +189,12 @@ data class TriggeredAbilityOnStackComponent(
     val damageSourceEntityId: EntityId? = null,
     /** The object or player that received the damage that caused this trigger, independent of triggeringEntityId. */
     val damageRecipientEntityId: EntityId? = null,
+    /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
     val xValue: Int? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,

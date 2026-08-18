@@ -460,6 +460,11 @@ class ReflexiveTriggerEffectExecutor(
                 carriedTriggerContext = com.wingedsheep.engine.event.TriggerContext(
                     triggeringEntityId = effectContext.triggeringEntityId,
                     triggeringPlayerId = effectContext.triggeringPlayerId,
+                    damageSourceEntityId = effectContext.damageSourceEntityId,
+                    damageRecipientEntityId = effectContext.damageRecipientEntityId,
+                    damageRecipientKind = effectContext.damageRecipientKind,
+                    damageSourceLastKnownSnapshot = effectContext.damageSourceLastKnownSnapshot,
+                    damageRecipientLastKnownSnapshot = effectContext.damageRecipientLastKnownSnapshot,
                     damageAmount = effectContext.triggerDamageAmount,
                     xValue = effectContext.xValue,
                     counterCount = effectContext.triggerCounterCount,

@@ -2,6 +2,7 @@ package com.wingedsheep.engine.handlers
 
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -239,6 +240,12 @@ data class EffectContext(
     val damageSourceEntityId: EntityId? = null,
     /** The object or player that received the damage that caused this trigger, independent of triggeringEntityId. */
     val damageRecipientEntityId: EntityId? = null,
+    /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
     /** The spell or ability that targeted a permanent (for ward triggers) */
     val targetingSourceEntityId: EntityId? = null,
     /**
@@ -553,6 +560,9 @@ data class EffectContext(
             triggeringPlayerId = ability.triggeringPlayerId,
             damageSourceEntityId = ability.damageSourceEntityId,
             damageRecipientEntityId = ability.damageRecipientEntityId,
+            damageRecipientKind = ability.damageRecipientKind,
+            damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,
             triggerLastKnownPower = ability.lastKnownPower,
