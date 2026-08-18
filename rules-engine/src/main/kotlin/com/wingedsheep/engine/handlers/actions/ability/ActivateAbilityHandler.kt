@@ -1209,11 +1209,16 @@ class ActivateAbilityHandler(
                         val solution = manaSolver.solve(
                             currentState, action.playerId, remainingCost, manaXValue, excludeSources = excluded, xManaRestriction = ability.xManaRestriction
                         ) ?: return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
-                        for (source in solution.sources) {
-                            val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                            currentState = tappedState
-                            tapEvent?.let(events::add)
+                        val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                            state = currentState,
+                            solution = solution,
+                            controllerId = action.playerId,
+                        )
+                        if (!sideEffectResult.success) {
+                            return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
                         }
+                        currentState = sideEffectResult.state
+                        events.addAll(sideEffectResult.events)
                     }
                 }
                 else -> {

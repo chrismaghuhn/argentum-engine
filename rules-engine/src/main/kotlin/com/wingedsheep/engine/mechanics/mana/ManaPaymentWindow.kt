@@ -13,7 +13,9 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 
 /**
  * CR 605.3a — "A player may activate an activated mana ability whenever they have priority,
@@ -420,6 +422,11 @@ internal fun resolveManualManaSources(
             null -> sourceAbility
             else -> sourceAbility?.takeIf { it.id == abilityId } ?: return null
         }
+        // This window only selects sources; it has no nested mana-payment choice for a mana
+        // ability's own mana sub-cost. Do not tap and grant mana while silently skipping that
+        // sub-cost. A later priority/solver path can pay it with full provenance, while this
+        // manual/continuation path fails closed before any state change.
+        if (selectedAbility?.cost?.hasPositiveManaActivationCost() == true) return null
         val payLifeCost = if (selectedAbility == null) {
             0
         } else {
@@ -443,4 +450,10 @@ internal fun resolveManualManaSources(
     }
     if (totalPayLife > state.lifeTotal(playerId)) return null
     return resolved
+}
+
+private fun AbilityCost.hasPositiveManaActivationCost(): Boolean = when (this) {
+    is AbilityCost.Atom -> manaCostOrNull?.cmc?.let { it > 0 } == true
+    is AbilityCost.Composite -> costs.any { it.hasPositiveManaActivationCost() }
+    else -> false
 }

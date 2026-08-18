@@ -1,5 +1,7 @@
 package com.wingedsheep.engine.mechanics.cost
 
+import com.wingedsheep.engine.core.GameLimits
+import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.mechanics.mana.ManaColorSetResolver
@@ -13,9 +15,11 @@ import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.conditions.AllConditions
 import com.wingedsheep.sdk.scripting.conditions.AnyCondition
 import com.wingedsheep.sdk.scripting.conditions.Compare
+import com.wingedsheep.sdk.scripting.conditions.ComparisonOperator
 import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.conditions.NotCondition
 import com.wingedsheep.sdk.scripting.conditions.NumberMatches
+import com.wingedsheep.sdk.scripting.conditions.NumberProperty
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.ManaColorSet
@@ -35,23 +39,21 @@ object CostAmountResolver {
         controllerId: EntityId,
         cardRegistry: CardRegistry?,
     ): Int? {
-        val resolvedAmount = if (amount.containsCommanderColorIdentityCount()) {
-            val commanderColorCount = resolveCommanderColorIdentityCount(
+        return if (amount.containsCommanderColorIdentityCount()) {
+            resolveWithCommanderContext(
                 state = state,
+                amount = amount,
                 sourceId = sourceId,
                 controllerId = controllerId,
                 cardRegistry = cardRegistry,
-            ) ?: return null
-            amount.replaceCommanderColorIdentityCount(commanderColorCount)
+            )
         } else {
-            amount
+            DynamicAmountEvaluator().evaluate(
+                state = state,
+                amount = amount,
+                context = EffectContext(sourceId = sourceId, controllerId = controllerId),
+            )
         }
-
-        return DynamicAmountEvaluator().evaluate(
-            state = state,
-            amount = resolvedAmount,
-            context = EffectContext(sourceId = sourceId, controllerId = controllerId),
-        )
     }
 
     /**
@@ -127,10 +129,214 @@ object CostAmountResolver {
     }
 
     /**
-     * Cost amounts are evaluated by [DynamicAmountEvaluator] after all special cost-only leaves
-     * have been resolved. Keeping the traversal here makes arithmetic composition use the normal
-     * evaluator (including its saturating math) instead of sending a nested commander leaf into
-     * the registry-free evaluator branch.
+     * Evaluate an amount containing the cost-only commander leaf without flattening it to the
+     * outer controller's value. In particular, [DynamicAmount.CountPlayersWith] rebinds its
+     * condition to each candidate, so every commander leaf in that condition must use that
+     * candidate's commander registry.
+     */
+    private fun resolveWithCommanderContext(
+        state: GameState,
+        amount: DynamicAmount,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        cardRegistry: CardRegistry?,
+    ): Int? {
+        fun resolveNested(nested: DynamicAmount, nestedControllerId: EntityId): Int? =
+            resolveWithCommanderContext(
+                state = state,
+                amount = nested,
+                sourceId = sourceId,
+                controllerId = nestedControllerId,
+                cardRegistry = cardRegistry,
+            )
+
+        return when (amount) {
+            DynamicAmount.CommanderColorIdentityCount -> resolveCommanderColorIdentityCount(
+                state = state,
+                sourceId = sourceId,
+                controllerId = controllerId,
+                cardRegistry = cardRegistry,
+            )
+
+            is DynamicAmount.Add -> {
+                val left = resolveNested(amount.left, controllerId) ?: return null
+                val right = resolveNested(amount.right, controllerId) ?: return null
+                GameLimits.addClamped(left, right)
+            }
+
+            is DynamicAmount.Subtract -> {
+                val left = resolveNested(amount.left, controllerId) ?: return null
+                val right = resolveNested(amount.right, controllerId) ?: return null
+                GameLimits.subClamped(left, right)
+            }
+
+            is DynamicAmount.Multiply -> {
+                val value = resolveNested(amount.amount, controllerId) ?: return null
+                GameLimits.mulClamped(value, amount.multiplier)
+            }
+
+            is DynamicAmount.Power -> {
+                val exponent = resolveNested(amount.exponent, controllerId) ?: return null
+                GameLimits.powClamped(amount.base, exponent)
+            }
+
+            is DynamicAmount.IfPositive -> {
+                val value = resolveNested(amount.amount, controllerId) ?: return null
+                maxOf(0, value)
+            }
+
+            is DynamicAmount.Max -> {
+                val left = resolveNested(amount.left, controllerId) ?: return null
+                val right = resolveNested(amount.right, controllerId) ?: return null
+                maxOf(left, right)
+            }
+
+            is DynamicAmount.Min -> {
+                val left = resolveNested(amount.left, controllerId) ?: return null
+                val right = resolveNested(amount.right, controllerId) ?: return null
+                minOf(left, right)
+            }
+
+            is DynamicAmount.Divide -> {
+                val numerator = resolveNested(amount.numerator, controllerId) ?: return null
+                val denominator = resolveNested(amount.denominator, controllerId) ?: return null
+                if (denominator == 0) {
+                    0
+                } else if (amount.roundUp) {
+                    ((numerator.toLong() + denominator.toLong() - 1L) / denominator.toLong())
+                        .coerceIn(Int.MIN_VALUE.toLong(), Int.MAX_VALUE.toLong()).toInt()
+                } else {
+                    numerator / denominator
+                }
+            }
+
+            is DynamicAmount.Conditional -> {
+                val conditionMet = resolveConditionWithCommanderContext(
+                    state = state,
+                    condition = amount.condition,
+                    sourceId = sourceId,
+                    controllerId = controllerId,
+                    cardRegistry = cardRegistry,
+                ) ?: return null
+                resolveNested(if (conditionMet) amount.ifTrue else amount.ifFalse, controllerId)
+            }
+
+            is DynamicAmount.CountPlayersWith -> {
+                val context = EffectContext(sourceId = sourceId, controllerId = controllerId)
+                val playerIds = DynamicAmountEvaluator().resolveUnifiedPlayerIds(state, amount.scope, context)
+                var count = 0
+                for (candidateId in playerIds) {
+                    val matches = resolveConditionWithCommanderContext(
+                        state = state,
+                        condition = amount.condition,
+                        sourceId = sourceId,
+                        controllerId = candidateId,
+                        cardRegistry = cardRegistry,
+                    ) ?: return null
+                    if (matches) count++
+                }
+                count
+            }
+
+            else -> DynamicAmountEvaluator().evaluate(
+                state = state,
+                amount = amount,
+                context = EffectContext(sourceId = sourceId, controllerId = controllerId),
+            )
+        }
+    }
+
+    /** Evaluate a numeric condition while preserving candidate-specific commander context. */
+    private fun resolveConditionWithCommanderContext(
+        state: GameState,
+        condition: Condition,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        cardRegistry: CardRegistry?,
+    ): Boolean? {
+        fun resolveNested(amount: DynamicAmount): Int? = resolveWithCommanderContext(
+            state = state,
+            amount = amount,
+            sourceId = sourceId,
+            controllerId = controllerId,
+            cardRegistry = cardRegistry,
+        )
+
+        return when (condition) {
+            is Compare -> {
+                val left = resolveNested(condition.left) ?: return null
+                val right = resolveNested(condition.right) ?: return null
+                when (condition.operator) {
+                    ComparisonOperator.EQ -> left == right
+                    ComparisonOperator.NEQ -> left != right
+                    ComparisonOperator.GT -> left > right
+                    ComparisonOperator.GTE -> left >= right
+                    ComparisonOperator.LT -> left < right
+                    ComparisonOperator.LTE -> left <= right
+                }
+            }
+
+            is NumberMatches -> {
+                val value = resolveNested(condition.amount) ?: return null
+                when (val property = condition.property) {
+                    NumberProperty.Prime -> isPrime(value)
+                    NumberProperty.Even -> value % 2 == 0
+                    NumberProperty.Odd -> value % 2 != 0
+                    is NumberProperty.MultipleOf -> property.divisor != 0 && value % property.divisor == 0
+                }
+            }
+
+            is AllConditions -> {
+                var unresolved = false
+                for (nested in condition.conditions) {
+                    when (resolveConditionWithCommanderContext(state, nested, sourceId, controllerId, cardRegistry)) {
+                        false -> return false
+                        true -> Unit
+                        null -> unresolved = true
+                    }
+                }
+                if (unresolved) null else true
+            }
+
+            is AnyCondition -> {
+                var unresolved = false
+                for (nested in condition.conditions) {
+                    when (resolveConditionWithCommanderContext(state, nested, sourceId, controllerId, cardRegistry)) {
+                        true -> return true
+                        false -> Unit
+                        null -> unresolved = true
+                    }
+                }
+                if (unresolved) null else false
+            }
+
+            is NotCondition ->
+                resolveConditionWithCommanderContext(state, condition.condition, sourceId, controllerId, cardRegistry)?.not()
+
+            else -> ConditionEvaluator().evaluate(
+                state = state,
+                condition = condition,
+                context = EffectContext(sourceId = sourceId, controllerId = controllerId),
+            )
+        }
+    }
+
+    private fun isPrime(value: Int): Boolean {
+        if (value < 2) return false
+        if (value < 4) return true
+        if (value % 2 == 0) return false
+        var divisor = 3
+        while (divisor.toLong() * divisor <= value) {
+            if (value % divisor == 0) return false
+            divisor += 2
+        }
+        return true
+    }
+
+    /**
+     * Identify amounts that require the registry-aware traversal above. Ordinary amounts remain
+     * on [DynamicAmountEvaluator]; commander-dependent amounts must retain their controller
+     * context through every arithmetic and condition branch.
      */
     private fun DynamicAmount.containsCommanderColorIdentityCount(): Boolean = when (this) {
         DynamicAmount.CommanderColorIdentityCount -> true
@@ -150,48 +356,6 @@ object CostAmountResolver {
         else -> false
     }
 
-    private fun DynamicAmount.replaceCommanderColorIdentityCount(colorCount: Int): DynamicAmount = when (this) {
-        DynamicAmount.CommanderColorIdentityCount -> DynamicAmount.Fixed(colorCount)
-        is DynamicAmount.Add -> copy(
-            left = left.replaceCommanderColorIdentityCount(colorCount),
-            right = right.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Subtract -> copy(
-            left = left.replaceCommanderColorIdentityCount(colorCount),
-            right = right.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Multiply -> copy(
-            amount = amount.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Power -> copy(
-            exponent = exponent.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.IfPositive -> copy(
-            amount = amount.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Max -> copy(
-            left = left.replaceCommanderColorIdentityCount(colorCount),
-            right = right.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Min -> copy(
-            left = left.replaceCommanderColorIdentityCount(colorCount),
-            right = right.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Conditional -> copy(
-            condition = condition.replaceCommanderColorIdentityCount(colorCount),
-            ifTrue = ifTrue.replaceCommanderColorIdentityCount(colorCount),
-            ifFalse = ifFalse.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.CountPlayersWith -> copy(
-            condition = condition.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is DynamicAmount.Divide -> copy(
-            numerator = numerator.replaceCommanderColorIdentityCount(colorCount),
-            denominator = denominator.replaceCommanderColorIdentityCount(colorCount),
-        )
-        else -> this
-    }
-
     /**
      * Dynamic amounts can occur inside numeric conditions, not only in the selected branches of a
      * conditional amount. Resolve the commander leaf before the generic condition evaluator sees it;
@@ -206,23 +370,4 @@ object CostAmountResolver {
         else -> false
     }
 
-    private fun Condition.replaceCommanderColorIdentityCount(colorCount: Int): Condition = when (this) {
-        is Compare -> copy(
-            left = left.replaceCommanderColorIdentityCount(colorCount),
-            right = right.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is NumberMatches -> copy(
-            amount = amount.replaceCommanderColorIdentityCount(colorCount),
-        )
-        is AllConditions -> copy(
-            conditions = conditions.map { it.replaceCommanderColorIdentityCount(colorCount) },
-        )
-        is AnyCondition -> copy(
-            conditions = conditions.map { it.replaceCommanderColorIdentityCount(colorCount) },
-        )
-        is NotCondition -> copy(
-            condition = condition.replaceCommanderColorIdentityCount(colorCount),
-        )
-        else -> this
-    }
 }

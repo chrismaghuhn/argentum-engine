@@ -746,6 +746,9 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
             if (amount < 0) {
                 return CostPaymentResult.failure("Life cost cannot be negative")
             }
+            if (state.lifeTotal(controllerId) < amount) {
+                return CostPaymentResult.failure("Not enough life to pay life cost")
+            }
             val (newState, events) = LifePaymentService.pay(state, controllerId, amount)
                 ?: return CostPaymentResult.failure("Player has no life total")
             CostPaymentResult.success(newState, manaPool, events = events)

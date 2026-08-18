@@ -74,16 +74,24 @@ class ManaAbilitySideEffectExecutor(
             event?.let(events::add)
 
             val production = solution.manaProduced[source.entityId]
+            val selectedUse = solution.manaAbilityUses[source.entityId]
             // A source tapped only to pay another mana ability's activation cost has no production
-            // entry and must not run a second mana ability as a side effect.
-            if (production == null) continue
+            // entry, but the solver still records its exact selected ability so its costs and
+            // non-mana effects are not silently skipped. A production-less source without that
+            // provenance is unsafe to execute: fail closed and roll back the entire payment.
+            if (production == null && selectedUse == null) {
+                return ManaSideEffectExecution(state, emptyList(), success = false)
+            }
 
             val sideEffectResult = runSideEffects(
                 state = currentState,
                 sourceId = source.entityId,
-                producedColor = production.color,
+                producedColor = selectedUse?.producedColor ?: production?.color,
                 controllerId = controllerId,
-                selectedAbility = production.manaAbility ?: source.manaAbilityFor(production.color),
+                selectedAbility = selectedUse?.ability
+                    ?: production?.manaAbility
+                    ?: production?.color?.let(source::manaAbilityFor)
+                    ?: if (production != null) source.manaAbilityFor(null) else null,
             )
             if (!sideEffectResult.success) {
                 // Auto-tap is one payment operation. Roll back the tap and every earlier side

@@ -1039,7 +1039,8 @@ class DynamicAmountEvaluator(
         }
     }
 
-    private fun resolveUnifiedPlayerIds(
+    /** Shared player-scope resolution for amount consumers that need the same rebinding rules. */
+    internal fun resolveUnifiedPlayerIds(
         state: GameState,
         player: Player,
         context: EffectContext
