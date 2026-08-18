@@ -546,7 +546,9 @@ internal object TriggerOrderingKey {
                 semanticEntityKey(state, triggered.targetingSourceEntityId, visited),
                 semanticEntityKey(state, triggered.triggerUnattachedFromEntityId, visited),
                 semanticEntityKey(state, triggered.granterId, visited),
-                triggered.damageDistribution?.let { sortedEntityIntMap(state, it, visited) },
+                triggered.damageDistribution?.let {
+                    damageDistributionKey(state, it, entity.get<TargetsComponent>()?.targets.orEmpty(), visited)
+                },
                 triggered.copyIndex,
                 triggered.copyTotal,
                 triggered.triggerScryCount,
@@ -572,7 +574,12 @@ internal object TriggerOrderingKey {
                     .map { (mode, allocation) ->
                         listOf(
                             mode,
-                            sortedEntityIntMap(state, allocation, visited)
+                            damageDistributionKey(
+                                state,
+                                allocation,
+                                modeTargetsFor(triggered.chosenModes, triggered.modeTargetsOrdered, mode),
+                                visited,
+                            )
                         )
                     },
                 triggered.capturedEntityIds.map { semanticEntityKey(state, it, visited) },
@@ -601,8 +608,12 @@ internal object TriggerOrderingKey {
                     .sortedBy { it.key }
                     .map { listOf(it.key, it.value) },
                 activated.lastKnownSourceSnapshot?.let { snapshotKey(state, it, visited) },
-                activated.lastKnownSourceAttachments.map { semanticEntityKey(state, it, visited) },
-                activated.damageDistribution?.let { sortedEntityIntMap(state, it, visited) },
+                activated.lastKnownSourceAttachments
+                    .map { semanticEntityKey(state, it, visited) }
+                    .sorted(),
+                activated.damageDistribution?.let {
+                    damageDistributionKey(state, it, entity.get<TargetsComponent>()?.targets.orEmpty(), visited)
+                },
             )
         }
         entity.get<AbilityOnStackComponent>()?.let { legacy ->
@@ -642,12 +653,19 @@ internal object TriggerOrderingKey {
                     .map { (mode, allocation) ->
                         listOf(
                             mode,
-                            sortedEntityIntMap(state, allocation, visited)
+                            damageDistributionKey(
+                                state,
+                                allocation,
+                                modeTargetsFor(spell.chosenModes, spell.modeTargetsOrdered, mode),
+                                visited,
+                            )
                         )
                     },
                 spell.sacrificedPermanents.map { snapshotKey(state, it, visited) },
                 spell.castFaceDown,
-                spell.damageDistribution?.let { sortedEntityIntMap(state, it, visited) },
+                spell.damageDistribution?.let {
+                    damageDistributionKey(state, it, entity.get<TargetsComponent>()?.targets.orEmpty(), visited)
+                },
                 spell.chosenCreatureType,
                 spell.exiledCardCount,
                 spell.additionalCostBlightAmount,
@@ -696,6 +714,64 @@ internal object TriggerOrderingKey {
                 .thenBy { it.value }
         )
         .map { listOf(semanticEntityKey(state, it.key, visited), it.value) }
+
+    /**
+     * A damage distribution is a relation from a chosen target slot to its assigned amount.
+     * Sorting only by the target's semantic key loses that relation when two distinct targets
+     * happen to have the same projected identity.  The ordered target slot is already part of
+     * the stack payload, so it is the stable, ID-free discriminator for a valid distribution.
+     *
+     * Entries that do not resolve to a target slot are malformed or from a legacy payload.  They
+     * retain the old ID-free semantic-key fallback so allocation handles never enter the key.
+     */
+    private fun damageDistributionKey(
+        state: GameState,
+        values: Map<EntityId, Int>,
+        targets: List<ChosenTarget>,
+        visited: Set<EntityId>,
+    ): List<List<Any?>> {
+        val targetSlotByEntity = targets
+            .withIndex()
+            .associateBy { chosenTargetEntityId(it.value) }
+        val matched = values.entries
+            .mapNotNull { entry ->
+                targetSlotByEntity[entry.key]?.let { slot ->
+                    listOf<Any?>("target-slot", slot.index, entry.value)
+                }
+            }
+            .sortedBy { it[1] as Int }
+        val unmatched = values.entries
+            .filter { it.key !in targetSlotByEntity }
+            .map { entry ->
+                listOf<Any?>(
+                    "unmatched-target",
+                    semanticEntityKey(state, entry.key, visited),
+                    entry.value,
+                )
+            }
+            .sortedWith(
+                compareBy<List<Any?>> { it[1] as String }
+                    .thenBy { it[2] as Int }
+            )
+        return matched + unmatched
+    }
+
+    private fun modeTargetsFor(
+        chosenModes: List<Int>,
+        modeTargetsOrdered: List<List<ChosenTarget>>,
+        mode: Int,
+    ): List<ChosenTarget> = chosenModes
+        .indexOf(mode)
+        .takeIf { it >= 0 }
+        ?.let { modeTargetsOrdered.getOrNull(it) }
+        .orEmpty()
+
+    private fun chosenTargetEntityId(target: ChosenTarget): EntityId = when (target) {
+        is ChosenTarget.Player -> target.playerId
+        is ChosenTarget.Permanent -> target.entityId
+        is ChosenTarget.Card -> target.cardId
+        is ChosenTarget.Spell -> target.spellEntityId
+    }
 
     private fun fields(vararg values: Any?): String = values.joinToString("\u0001") { value ->
         when (value) {

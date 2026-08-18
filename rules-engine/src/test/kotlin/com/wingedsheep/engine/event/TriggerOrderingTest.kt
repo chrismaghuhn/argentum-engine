@@ -925,6 +925,89 @@ class TriggerOrderingTest : FunSpec({
         firstKey shouldBe secondKey
     }
 
+    test("TO-22p: damage allocation preserves target-slot association when target keys collide") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "stack-target-slot-allocation")
+        val firstTarget = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondTarget = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val firstStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val targets = TargetsComponent(
+            targets = listOf(
+                ChosenTarget.Permanent(firstTarget),
+                ChosenTarget.Permanent(secondTarget),
+            )
+        )
+        val firstStackAbility = TriggeredAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "copied ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            description = "copied ability",
+            damageDistribution = linkedMapOf(
+                firstTarget to 1,
+                secondTarget to 2,
+            ),
+        )
+        val secondStackAbility = firstStackAbility.copy(
+            damageDistribution = linkedMapOf(
+                firstTarget to 2,
+                secondTarget to 1,
+            )
+        )
+        driver.replaceState(
+            driver.state
+                .updateEntity(firstStackObject) { it.with(targets).with(firstStackAbility) }
+                .updateEntity(secondStackObject) { it.with(targets).with(secondStackAbility) }
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        firstKey shouldNotBe secondKey
+    }
+
+    test("TO-22q: last-known attachment candidates are canonicalized as a set") {
+        val driver = newDriver()
+        val base = syntheticTrigger(driver, "stack-attachment-candidates")
+        val firstAttachment = driver.putPermanentOnBattlefield(driver.player1, "Bonesplitter")
+        val secondAttachment = driver.putPermanentOnBattlefield(driver.player1, "Lightning Greaves")
+        val firstStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val secondStackObject = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val firstStackAbility = ActivatedAbilityOnStackComponent(
+            sourceId = base.sourceId,
+            sourceName = "activated ability",
+            controllerId = driver.player1,
+            effect = Effects.DrawCards(1),
+            lastKnownSourceAttachments = listOf(firstAttachment, secondAttachment),
+        )
+        val secondStackAbility = firstStackAbility.copy(
+            lastKnownSourceAttachments = listOf(secondAttachment, firstAttachment)
+        )
+        driver.replaceState(
+            driver.state
+                .updateEntity(firstStackObject) { it.with(firstStackAbility) }
+                .updateEntity(secondStackObject) { it.with(secondStackAbility) }
+        )
+
+        val firstKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = firstStackObject))
+        )
+        val secondKey = TriggerOrderingKey.forTrigger(
+            driver.state,
+            base.copy(triggerContext = TriggerContext(triggeringEntityId = secondStackObject))
+        )
+
+        firstKey shouldBe secondKey
+    }
+
     test("TO-14b: reflexive metadata cannot move a trigger into the second placement pass") {
         val driver = newDriver()
         val reflexive = syntheticTrigger(driver, "reflexive-stage").copy(
