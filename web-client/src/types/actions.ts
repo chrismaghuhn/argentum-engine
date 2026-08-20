@@ -264,6 +264,8 @@ export interface CrewVehicleAction {
   readonly playerId: EntityId
   readonly vehicleId: EntityId
   readonly crewCreatures: readonly EntityId[]
+  /** Stable identity of the effective printed or granted Crew instance. */
+  readonly crewAbilityKey?: string | null
 }
 
 // =============================================================================

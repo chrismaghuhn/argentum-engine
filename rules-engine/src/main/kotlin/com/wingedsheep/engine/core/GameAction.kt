@@ -8,6 +8,7 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.ChoiceSlot
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -55,7 +56,9 @@ data class PassPriority(
  *           may repeat when the [ModalEffect.allowRepeat] flag is set (Escalate/Spree).
  * @property modeTargetsOrdered Per-mode target bindings, aligned 1:1 with [chosenModes]. Required for
  *           choose-N modal spells so the resolution pipeline can resolve `ContextTarget(k)` inside each mode's scope.
- * @property modeDamageDistribution Per-mode DividedDamageEffect allocations (future — no current card uses this).
+ * @property modeDamageDistribution Per-mode DividedDamageEffect allocations (future — no current
+ * card uses this). Because this map is keyed by mode index rather than mode occurrence, the
+ * handler rejects a non-empty entry for a mode selected more than once.
  */
 @Serializable
 @SerialName("CastSpell")
@@ -119,6 +122,8 @@ data class CastSpell(
     val useAlternativeCost: Boolean = false,
     val chosenModes: List<Int> = emptyList(),
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),
+    /** Per-mode target requirements with cast-time effective slot counts locked by ordinal. */
+    val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
     val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     val graveyardLifeCost: Int = 0,
     /**
@@ -663,13 +668,17 @@ data class Concede(
  * @property playerId The player crewing the vehicle
  * @property vehicleId The Vehicle permanent being crewed
  * @property crewCreatures Creatures to tap as the crew cost
+ * @property crewAbilityKey Stable identity of the effective Crew instance being activated. It is
+ *           populated by legal-action enumeration; null is retained for legacy/direct callers
+ *           and is accepted only when the selected creatures identify one unambiguous Crew value.
  */
 @Serializable
 @SerialName("CrewVehicle")
 data class CrewVehicle(
     override val playerId: EntityId,
     val vehicleId: EntityId,
-    val crewCreatures: List<EntityId>
+    val crewCreatures: List<EntityId>,
+    val crewAbilityKey: String? = null
 ) : GameAction
 
 // =============================================================================

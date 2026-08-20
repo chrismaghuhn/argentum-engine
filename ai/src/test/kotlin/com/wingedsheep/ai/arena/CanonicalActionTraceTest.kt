@@ -2,6 +2,7 @@ package com.wingedsheep.ai.arena
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.DamageAssignmentResponse
 import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.SubmitDecision
@@ -70,6 +71,18 @@ class CanonicalActionTraceTest : FunSpec({
         )
 
         canonicalActionTrace(normal) shouldNotBe canonicalActionTrace(free)
+    }
+
+    test("effective Crew identity changes the semantic trace") {
+        val first = CrewVehicle(
+            playerId = player,
+            vehicleId = card,
+            crewCreatures = listOf(target),
+            crewAbilityKey = "crew-1"
+        )
+        val second = first.copy(crewAbilityKey = "crew-3")
+
+        canonicalActionTrace(first) shouldNotBe canonicalActionTrace(second)
     }
 
     test("internal opponent target resume metadata does not change an ability trace") {
