@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -89,6 +90,11 @@ class FerventChampionScenarioTest : FunSpec({
         driver.removeSummoningSickness(champion)
 
         driver.attackNow(mapOf(champion to driver.player2, knight to driver.player2, nonKnight to driver.player2))
+
+        val triggerOrdering = driver.pendingDecision as OrderObjectsDecision
+        triggerOrdering.playerId shouldBe driver.player1
+        triggerOrdering.objects.size shouldBe 2
+        driver.submitObjectOrdering(driver.player1, triggerOrdering.objects).error shouldBe null
         driver.resolveStack()
 
         val targetDecision = driver.pendingDecision as ChooseTargetsDecision
