@@ -14,14 +14,18 @@
 
 This document is the implementation plan only. The production implementation remains on hold until this plan receives the requested review approval.
 
+Current review gate: SPEC_REVIEW_PASS = YES; PLAN_REVIEW_PASS = NO pending the
+verification, event/trigger, identity, overflow, and scope-gate corrections
+listed in this revision.
+
 Implementation must run in the dedicated #47 worktree, never in the dirty user main worktree. At implementation start:
 
-1. Run git fetch origin main and record the new git rev-parse origin/main value. Do not rebase, force-push, or synchronize from upstream.
-2. Record the actual implementation base separately from the FrozenBaseline hash 6ff9ded1403d59ac.
+1. Run git fetch origin main, set IMPLEMENTATION_BASE to the resulting git rev-parse origin/main value, and use that variable in every diff, scope, merge-base, and exact-head review command. Do not rebase, force-push, or synchronize from upstream.
+2. Record IMPLEMENTATION_BASE separately from the FrozenBaseline hash 6ff9ded1403d59ac.
 3. Resolve the TXT link from the live Wizards Rules page, record the resolved URL and effective date, and calculate its SHA-256. Do not assume a cached 20260807 or 20260819 filename.
 4. Save those values in docs/superpowers/audits/2026-08-20-ardenn-attachment-transfer-authority.md; do not commit a downloaded Comprehensive Rules copy.
 
-The starting base is expected to be 470e6d49c541b9af43253a07671d50ae6af268be only if #57 and #58 have not landed before execution.
+The earlier 470e6d49c541b9af43253a07671d50ae6af268be value is historical context only; it must not be hardcoded into implementation-time verification.
 
 ## Rules and engine invariants
 
@@ -35,8 +39,10 @@ The implementation must preserve all of these invariants:
 - All legality is evaluated before mutation against one projected state. A later attachment cannot make an earlier legality check or timestamp choice observable through sequential execution.
 - A same-host attachment is a no-op: it does not detach, emit attachment events, or receive a new timestamp.
 - A moved battlefield attachment receives a fresh timestamp. For two or more moved objects, the chosen OrderedResponse determines strict relative timestamp order; collection order, entity ID order, map order, and executor order never do.
+- Timestamp allocation is checked before mutation. If allocating the complete batch would overflow Long, the executor returns a fail-closed error with the original state and no events; it never wraps or partially stamps the batch.
 - Ownership and controller components are preserved. Destination controller is not restricted to the ability controller; opponent-controlled permanents and legal player destinations are supported according to the applicable attachment type.
-- Every actual host change emits the normal detach/attach events. Event-list order is not used as a semantic timestamp tie-break.
+- Every actual host change emits the normal detach/attach events. The complete event list is handed to the existing trigger detector as one effect-result batch, so attachment-trigger collection and #38 same-controller ordering see one trigger wave. Event-list order is not a semantic trigger or timestamp policy.
+- The continuation reuses the normal locked target binding: ChosenTarget/alignedTargets, target requirements, EffectContext.targetEntryStamps, GameState.objectIdentityStamps, and TargetsComponent.isDifferentObject where applicable. A reused EntityId with a different CR 400.7 object identity is not the original destination.
 - No Ardenn-specific executor, no global ForEachExecutor change, and no broad timestamp rewrite are in scope.
 
 ## Exact change map
@@ -50,7 +56,7 @@ The implementation must preserve all of these invariants:
 | Batch attachment | rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/effects/permanent/attachments/AttachmentBatchMutation.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/effects/permanent/attachments/AttachCollectionToTargetExecutor.kt |
 | Decision continuation | rules-engine/src/main/kotlin/com/wingedsheep/engine/core/AttachmentContinuations.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/continuations/AttachmentContinuationResumer.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/core/Serialization.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/ContinuationHandler.kt |
 | Timestamp documentation | rules-engine/src/main/kotlin/com/wingedsheep/engine/state/components/battlefield/BattlefieldComponents.kt |
-| Generic engine tests | rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/permanent/attachments/AttachCollectionToTargetExecutorTest.kt; existing affected attachment/AuraHostSelectionDomainTest and TriggerOrderingTest files where regression coverage belongs |
+| Generic engine tests | rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/permanent/attachments/AttachCollectionToTargetExecutorTest.kt; rules-engine/src/test/kotlin/com/wingedsheep/engine/event/AttachmentBatchTriggerSemanticsTest.kt; existing affected attachment/AuraHostSelectionDomainTest and TriggerOrderingTest files where regression coverage belongs |
 | Card characterization | mtg-sets/2017-2022/tests/src/test/kotlin/com/wingedsheep/engine/scenarios/ArdennScenarioTest.kt |
 | SDK catalog | docs/card-sdk-language-reference.md |
 
@@ -73,6 +79,9 @@ The required red-to-green cases are:
 11. Each moved object has the expected reverse attachment link, detach/attach event pair, preserved owner, and preserved controller.
 12. The pending ordering continuation survives serialization, fork, replay, and resume with the same selected/order domains.
 13. The historical Ardenn scenario exercises the real card pipeline and never uses ForEachInCollection.
+14. Two test-local attachments with relevant BecomesAttachedEvent/BecomesUnattachedEvent abilities produce the same semantic trigger set and trigger wave when the input collection order is reversed. Any same-controller ordering is delegated to the existing #38 TriggerOrdering path, never inferred from the event-list order.
+15. A destination that leaves and returns under the same EntityId while the ordering decision is pending is rejected as a different CR 400.7 object through the existing target-entry identity contract.
+16. A batch whose next timestamp would overflow Long fails closed before any component or event mutation is applied.
 
 Expected initial failures are limited to missing behavior, missing registrations, or the not-yet-implemented continuation. No test should be made green by weakening an assertion or by adding a card-specific handler.
 
@@ -140,11 +149,13 @@ Expected initial failures are limited to missing behavior, missing registrations
   - Allocate fresh timestamps only for those host-changing entries.
   - Apply all detach/reverse-link clears, new AttachedToComponent links, reverse AttachmentsComponent links, TimestampComponent values, and normal events from one pre-mutation plan.
 
-- [ ] Allocate timestamps as strictly increasing Long values in the explicit order. The first value must be greater than the current global/effective attachment timestamp range; later values increment monotonically. Update the global GameState timestamp consistently with existing timestamp allocation. Do not assign equal TimestampComponent values to two moved attachments.
+- [ ] Allocate timestamps as strictly increasing Long values in the explicit order. Before changing any component, compute the complete batch range with checked arithmetic (Math.addExact or equivalent): the first value must be greater than the current global/effective attachment timestamp range and the final value must fit in Long. On overflow return a fail-closed error with the original state and an empty event list; do not wrap, partially mutate, or partially stamp. Update the global GameState timestamp consistently with existing timestamp allocation. Do not assign equal TimestampComponent values to two moved attachments.
 
-- [ ] Ensure event generation emits one normal PermanentUnattachedEvent for each old host that is actually left and one PermanentAttachedEvent for each new host. A same-host no-op emits neither. The event list may use a deterministic canonical emission order, but no event-list order may decide timestamp semantics.
+- [ ] Ensure event generation emits one normal PermanentUnattachedEvent for each old host that is actually left and one PermanentAttachedEvent for each new host. A same-host no-op emits neither. Return the complete event list in one EffectResult so the existing trigger detector processes it as one batch; add no per-attachment trigger/checkForMore loop. The event list may use a deterministic canonical emission order, but no event-list order may decide trigger or timestamp semantics.
 
 - [ ] Add AttachCollectionToTargetExecutor.kt. It must read the selected collection from EffectContext.pipeline.storedCollections, resolve the destination, and invoke the batch planner without entering ForEachExecutor or AttachEquipmentExecutor.
+
+- [ ] Before planning or mutating, validate the destination through the existing locked-target binding. Reuse the resolved ChosenTarget/alignedTargets slot, target requirements, EffectContext.targetEntryStamps, GameState.objectIdentityStamps, and TargetsComponent.isDifferentObject contract. A destination that has the same EntityId but a new CR 400.7 object identity must fail closed; do not create a parallel target-identity system.
 
   The executor flow is:
 
@@ -166,21 +177,21 @@ Expected initial failures are limited to missing behavior, missing registrations
 
 ### 5. Add the serializable ordering continuation
 
-- [ ] Add AttachCollectionOrderContinuation to AttachmentContinuations.kt. Store the decision ID, ability controller, source identity/name, original target reference/context, the accepted selected-ID snapshot as the downstream selection domain, and the exact host-changing ordering domain. The upstream SelectFromCollectionContinuation remains the authority for the full published allCards domain; do not store closures or an incidental collection iterator.
+- [ ] Add AttachCollectionOrderContinuation to AttachmentContinuations.kt. Store the decision ID, ability controller, source identity/name, the original target binding/context including ChosenTarget/alignedTargets and target-entry identity metadata, the accepted selected-ID snapshot as the downstream selection domain, and the exact host-changing ordering domain. The upstream SelectFromCollectionContinuation remains the authority for the full published allCards domain; do not store closures or an incidental collection iterator.
 
 - [ ] Add AttachmentContinuationResumer.kt as a normal ContinuationResumerModule. Register it from ContinuationHandler.kt and register the new polymorphic ContinuationFrame subtype in Serialization.kt.
 
 - [ ] On resume, require OrderedResponse and perform defense-in-depth exact-permutation validation against the frozen ordering domain. IDs outside the domain fail closed.
 
-- [ ] Re-resolve the original target and revalidate every selected ID against battlefield presence, current controller, projected Aura/Equipment type, original selected domain, and current destination legality. Omit stale/same-host survivors from the actual move plan while preserving the submitted relative order of remaining host-changing IDs. If fewer than two valid host changes remain, do not create a second ordering decision.
+- [ ] Resume through the existing target-binding/identity validation path before re-resolving the target. Reject a destination whose current objectIdentityStamps value differs from the captured target-entry stamp, even when its EntityId is unchanged. Then revalidate every selected ID against battlefield presence, current controller, projected Aura/Equipment type, original selected domain, and current destination legality. Omit stale/same-host survivors from the actual move plan while preserving the submitted relative order of remaining host-changing IDs. If fewer than two valid host changes remain, do not create a second ordering decision.
 
 - [ ] Apply the survivors through AttachmentBatchMutation, then call the existing CheckForMore/EffectContinuationRunner path so the rest of the card pipeline continues. The continuation must not restart the any-number selection or re-run an attachment as a sequence.
 
 - [ ] Add serialization and fork/replay tests that pause at OrderObjectsDecision, round-trip the complete state, submit the same OrderedResponse, and compare final links, timestamps, events, pending decisions, and continuation behavior.
 
-### 6. Characterize and implement Ardenn through composition
+### 6. Add a test-local Ardenn characterization through composition
 
-- [ ] Add mtg-sets/2017-2022/tests/src/test/kotlin/com/wingedsheep/engine/scenarios/ArdennScenarioTest.kt from the historical characterization, updating only the card implementation to:
+- [ ] Add mtg-sets/2017-2022/tests/src/test/kotlin/com/wingedsheep/engine/scenarios/ArdennScenarioTest.kt as test-local characterization/composition only. The test may define the historical local card script needed to exercise the pipeline, but no production Ardenn CardDefinition is added under mtg-sets/*/src/main; production Ardenn remains #55 work. Use the composition:
 
   ~~~kotlin
   val candidates = gather(CardSource.ControlledPermanents)
@@ -203,7 +214,7 @@ Expected initial failures are limited to missing behavior, missing registrations
 
 - [ ] Add AttachCollectionToTargetExecutorTest.kt under rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/permanent/attachments/. Keep the generic test independent of Ardenn and use test fixtures that exercise both permanent and player destinations.
 
-- [ ] Cover the thirteen RED cases above, with particular assertions for:
+- [ ] Cover all sixteen RED cases above, with particular assertions for:
 
   - no mutation while the order decision is pending;
   - strict, fresh timestamp values and response-controlled relative order;
@@ -212,7 +223,11 @@ Expected initial failures are limited to missing behavior, missing registrations
   - owner/controller preservation and reverse attachment links;
   - exact normal event multiplicity;
   - fail-closed malformed OrderedResponse;
+  - checked timestamp-overflow rejection with the original state and no events;
+  - same-EntityId/new-object-identity rejection through the existing target-binding contract;
   - serialization, continuation, fork, and replay.
+
+- [ ] Add AttachmentBatchTriggerSemanticsTest.kt. Build test-local attachment abilities matching EventPattern.BecomesAttachedEvent and/or BecomesUnattachedEvent, run the real trigger detector on the complete event list returned by the batch EffectResult for both input collection orders, and compare normalized PendingTrigger source/ability/target-context sets and trigger-wave membership. Pass same-controller triggers through the existing #38 TriggerOrdering path. The test must fail if reversing the collection changes the semantic trigger set, trigger wave, or an ordering policy; event-list order is not a policy seam. If the current handoff splits one batch into multiple trigger waves, repair only that generic EffectResult handoff rather than adding per-attachment sequencing.
 
 - [ ] Extend existing AuraHostSelectionDomainTest and TriggerOrderingTest only where the generic seam or generic ordering serializer needs regression coverage. Do not combine the Ardenn card tests with unrelated card scenario files.
 
@@ -231,53 +246,93 @@ Run these in order after implementation. Prefer the repository just recipes; if 
 1. Formatting and scope:
 
    ~~~powershell
+   git fetch origin main
+   $IMPLEMENTATION_BASE = (git rev-parse origin/main).Trim()
    git diff --check
    git status --short
-   git diff --name-only 470e6d49c541b9af43253a07671d50ae6af268be
+   git diff --name-only $IMPLEMENTATION_BASE
+   git diff --stat $IMPLEMENTATION_BASE
    ~~~
 
-   Expected: no whitespace errors, only the planned SDK/engine/docs/test paths, and no changes in the user main worktree.
+   The bash equivalent is `IMPLEMENTATION_BASE=$(git rev-parse origin/main)`. Use the runtime value in every scope, merge-base, exact-head, and final-diff command; never substitute the historical #54 SHA. Expected: no whitespace errors, only the planned SDK/engine/docs/test paths, and no changes in the user main worktree.
 
 2. Focused engine and card tests:
 
    ~~~powershell
    just test-class AttachCollectionToTargetExecutorTest
+   just test-class AttachmentBatchTriggerSemanticsTest
    just test-class AuraHostSelectionDomainTest
+   just test-class TriggerOrderingTest
    just test-class ArdennScenarioTest
    ~~~
 
    Expected: all focused tests pass, including the order decision, timestamp, stale-resume, serialization, and event assertions.
 
-3. Affected regressions:
+3. Required targeted safety, regression, replay, fork, fingerprint, continuation, and privacy paths:
 
    ~~~powershell
-   just test-class TriggerOrderingTest
-   just test-class PartialIllegalTargets608Test
-   just test-class EquipmentAsCreatureUnattachTest
-   just test-class EntityMatchesAttachmentScenarioTest
+   .\gradlew.bat :ai:test --tests "*FrozenBaselineTest"
+   .\gradlew.bat :mtg-sets:2017-2022:tests:test --tests "*AkiriFearlessVoyagerScenarioTest" --tests "*ChevillBaneOfMonstersScenarioTest" --tests "*ArdennScenarioTest"
+   .\gradlew.bat :gym:test --tests "*ObservationPrivacyTest" --tests "*GameEnvironmentTest" --tests "*MultiEnvServiceTest" --tests "*CommanderGymContractTest"
+   .\gradlew.bat :gym-server:test --tests "*EnvControllerTest"
+   .\gradlew.bat :game-server:test --tests "*Replay*" --tests "*Fork*" --tests "*Fingerprint*" --tests "*Continuation*" --tests "*TriggerOrderingReplayFingerprintTest"
    ~~~
 
-   Expected: existing ordering, partial-illegal-target, Equipment, and attachment-link behavior remains green.
+   This explicitly covers FrozenBaseline, Akiri, Chevill, A4 observation privacy, gym lifecycle/fork behavior, and the game-server replay/fork/fingerprint/continuation paths. The focused existing rules regressions (`PartialIllegalTargets608Test`, `EquipmentAsCreatureUnattachTest`, and `EntityMatchesAttachmentScenarioTest`) remain mandatory in the focused/affected suite even when invoked through the corresponding just recipe.
 
-4. Direct Gradle fallback, if needed:
+4. Full relevant module regression:
 
    ~~~powershell
-   .\gradlew.bat :rules-engine:test --tests "*AttachCollectionToTargetExecutorTest" --tests "*AuraHostSelectionDomainTest" --tests "*TriggerOrderingTest"
-   .\gradlew.bat :mtg-sets:2017-2022:tests:test --tests "*ArdennScenarioTest"
+   .\gradlew.bat :rules-engine:test :mtg-sdk:test :gym:test :gym-server:test :game-server:test
+   ~~~
+
+   This full regression gate is required before push; focused tests do not substitute for it. Expected: BUILD SUCCESSFUL and all relevant module tests pass. If the repository just recipes are available, run their equivalent full `test-rules`, `test-gym`, `test-gym-server`, and `test-server` gates and retain the command/output mapping.
+
+5. Direct Gradle fallback for focused diagnostics, if needed:
+
+   ~~~powershell
+   .\gradlew.bat :rules-engine:test --tests "*AttachCollectionToTargetExecutorTest" --tests "*AttachmentBatchTriggerSemanticsTest" --tests "*AuraHostSelectionDomainTest" --tests "*TriggerOrderingTest" --tests "*PartialIllegalTargets608Test" --tests "*EquipmentAsCreatureUnattachTest" --tests "*EntityMatchesAttachmentScenarioTest"
+   .\gradlew.bat :mtg-sets:2017-2022:tests:test --tests "*AkiriFearlessVoyagerScenarioTest" --tests "*ChevillBaneOfMonstersScenarioTest" --tests "*ArdennScenarioTest"
    ~~~
 
    Expected: BUILD SUCCESSFUL and all selected tests pass.
 
-5. SDK/build/documentation gates:
+6. SDK/build/documentation gates:
 
    ~~~powershell
    .\gradlew.bat :mtg-sdk:compileKotlin :rules-engine:compileKotlin
    rg -n "TODO|TBD|FIXME|NotImplementedException|placeholder" mtg-sdk/src/main rules-engine/src/main mtg-sets/2017-2022/tests/src/test
    ~~~
 
-   Expected: compilation succeeds and the placeholder scan returns no new implementation placeholder in the changed files.
+   Expected: compilation succeeds and the placeholder scan returns no new implementation placeholder in the changed files. The SDK language-reference update is required in the same diff.
 
-6. Hosted verification: push the synced #47 branch only after the local gates are green, request the fresh exact-head Hosted CI run, and treat any failure as a blocker. Report coverage as SKIPPED if the campaign workflow skips it; never imply that a skipped coverage job passed.
+7. Hosted verification: push the synced #47 branch only after every local gate above is green, request the fresh exact-head Hosted Scenario/CI run, and record the runtime IMPLEMENTATION_BASE and tested head. Hosted failure is a blocker. A skipped or unavailable hosted scenario, coverage, replay, or privacy job is recorded as `SKIPPED`/`UNAVAILABLE`, never as passed; the implementation cannot claim the corresponding gate as green.
+
+### Required implementation exit contract
+
+The implementation may leave this worktree only when the following status block is evidenced in the handoff:
+
+~~~text
+P0 = 0
+P1 = 0
+P2 = 0 or explicitly accepted as non-blocking
+PLAN_REVIEW_PASS = YES only after explicit plan approval
+SPEC_REVIEW_PASS = YES
+IMPLEMENTATION_BASE = runtime origin/main
+FROZEN_BASELINE = 6ff9ded1403d59ac
+RED_FIRST = REQUIRED
+FULL_RULES_REGRESSION = REQUIRED
+SDK = REQUIRED
+GYM = REQUIRED
+GYM_SERVER = REQUIRED
+REPLAY_FORK_FINGERPRINT = REQUIRED
+A4_PRIVACY = REQUIRED
+AKIRI_CHEVILL = REQUIRED
+FROZEN_BASELINE = REQUIRED
+HOSTED_CI = REQUIRED
+~~~
+
+Skipped or unavailable gates remain explicitly marked and do not become implicit passes.
 
 ## Self-review checklist before plan handoff
 
@@ -287,8 +342,13 @@ Run these in order after implementation. Prefer the repository just recipes; if 
 - [ ] Revalidation covers original selected-domain membership, battlefield presence, controller, projected type, destination legality, and malformed responses.
 - [ ] Dual Aura/Equipment legality is conjunctive and no exclusive branch is introduced.
 - [ ] Timestamp assignment is strict and explicit; no incidental fallback remains.
+- [ ] Timestamp range allocation is checked before mutation and Long overflow fails closed with the original state and no events.
+- [ ] The complete batch EffectResult is handed to trigger detection as one wave; reversing collection order cannot change the semantic trigger set, trigger-wave membership, or trigger policy.
+- [ ] The continuation reuses the normal locked target/object identity metadata; the same EntityId with a new CR 400.7 incarnation is rejected.
+- [ ] Every scope/diff/exact-head command uses the runtime IMPLEMENTATION_BASE, never the historical #54 SHA.
 - [ ] The plan contains no Ardenn-specific executor, ForEachExecutor global change, or broad timestamp rewrite.
 - [ ] The SDK language reference is updated in the same implementation change.
+- [ ] Full rules-engine, SDK, gym, gym-server, game-server, FrozenBaseline, Akiri/Chevill, replay/fork/fingerprint/continuation, A4 privacy, and Hosted Scenario/CI gates are green or explicitly recorded as SKIPPED/UNAVAILABLE.
 - [ ] The final diff is checked for placeholders, raw constructors in card definitions, unrelated worktree changes, and missing test files.
 
 After this plan is approved, execute one task at a time with the RED result recorded before each behavior implementation. Do not push, merge, or begin the production code before that review approval.
