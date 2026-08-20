@@ -165,7 +165,13 @@ data class SpellOnStackComponent(
      * the board has changed (e.g. Steer Clear's "if you controlled a Mount as you cast this spell").
      * Declared on the card via the `captureAtCast` DSL.
      */
-    val castTimeFlags: Set<String> = emptySet()
+    val castTimeFlags: Set<String> = emptySet(),
+    /**
+     * Effective effect captured at resolution start when a spell may be copied after leaving the
+     * stack. Null for ordinary spells; copies carry it forward so kicker/cleave/text-replaced
+     * effects do not get re-derived from a card definition after the zone change.
+     */
+    val resolvingSpellEffectOverride: Effect? = null
 ) : Component
 
 /**
