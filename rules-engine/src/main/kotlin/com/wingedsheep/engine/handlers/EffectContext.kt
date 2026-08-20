@@ -2,10 +2,12 @@ package com.wingedsheep.engine.handlers
 
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
@@ -79,7 +81,7 @@ data class EffectContext(
     /**
      * Positionally-aligned view of [targets]: the same length as the originally-chosen target
      * list, with `null` in any slot whose target was dropped by resolution-time legality
-     * validation (CR 608.2b). Populated on the spell-resolution path (and copied through
+     * validation (CR 608.2b). Populated on stack-object resolution (and copied through
      * composite/iteration sub-effects); empty elsewhere, where it coincides with [targets].
      *
      * Positional target references — [EffectTarget.ContextTarget], [EntityReference.Target],
@@ -91,6 +93,14 @@ data class EffectContext(
      * amount's `Target(0)` power read would land on the surviving opponent's creature.
      */
     val alignedTargets: List<ChosenTarget?> = emptyList(),
+    /**
+     * Object-identity stamps captured when the locked targets were chosen (CR 400.7). Kept on the
+     * resolution context so a pre-chosen modal/splice queue can re-check a target after an inner
+     * continuation without losing the original object identity.
+     */
+    val targetEntryStamps: Map<EntityId, Long> = emptyMap(),
+    /** Source kind used by canonical resolution legality (spell versus ability). */
+    val targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
     /**
      * The X chosen for an X-cost spell/ability. Also reused by `ChooseNumberThenEffect` to
      * carry a "choose a number" value into the inner effect (read via `CardPredicate.ManaValueEqualsX`,
@@ -161,6 +171,10 @@ data class EffectContext(
     val chosenModes: List<Int> = emptyList(),
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),
+    /** Per-mode requirements in chosen-mode ordinal order, with cast-time slot counts locked. */
+    val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
+    /** Original flat target-payload start for each chosen mode, including outer trigger targets. */
+    val modeTargetSlotStarts: List<Int> = emptyList(),
     /** Number of cards exiled as an additional cost (for ExileVariableCards) */
     val exiledCardCount: Int = 0,
     /** X chosen for [com.wingedsheep.sdk.scripting.AdditionalCost.BlightVariable] */
@@ -396,7 +410,12 @@ data class EffectContext(
      * fails closed instead of `StackOverflowError`. Lives on the (immutable) context rather than
      * on the shared registry so it stays correct under the AI's parallel state evaluation.
      */
-    val resolutionDepth: Int = 0
+    val resolutionDepth: Int = 0,
+    /**
+     * Snapshot used by a generic copy effect that resumes after the resolving spell has left the
+     * stack. It remains on the serialized effect context through may/retarget continuations.
+     */
+    val resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
 ) {
     /**
      * Resolve a symbolic effect target to a concrete entity id using just the context.
@@ -428,6 +447,42 @@ data class EffectContext(
         } else {
             targets.getOrNull(index)
         }
+
+    /**
+     * Narrow this context to a child target scope while preserving any 608.2b alignment that
+     * still belongs to the scoped targets. Composite executors commonly use `copy(targets = ...)`;
+     * copying the parent alone leaves a parent-sized aligned list behind, so ContextTarget(0)
+     * could read a dropped slot instead of the surviving child target.
+     */
+    fun withTargetScope(scopedTargets: List<ChosenTarget>): EffectContext {
+        if (scopedTargets.isEmpty()) {
+            return copy(targets = emptyList(), alignedTargets = emptyList())
+        }
+
+        val parentAlignment = alignedTargets.takeIf {
+            it.isNotEmpty() && it.filterNotNull() == targets
+        }
+        if (parentAlignment == null) {
+            return copy(targets = scopedTargets, alignedTargets = emptyList())
+        }
+
+        val used = BooleanArray(parentAlignment.size)
+        val scopedAlignment = scopedTargets.map { scopedTarget ->
+            val originalIndex = parentAlignment.indices.firstOrNull { index ->
+                !used[index] && sameTargetOccurrence(parentAlignment[index], scopedTarget)
+            }
+            if (originalIndex == null) {
+                null
+            } else {
+                used[originalIndex] = true
+                parentAlignment[originalIndex]
+            }
+        }
+        return copy(targets = scopedTargets, alignedTargets = scopedAlignment)
+    }
+
+    private fun sameTargetOccurrence(left: ChosenTarget?, right: ChosenTarget): Boolean =
+        left === right || left == right
 
     fun resolveTarget(target: EffectTarget): EntityId? =
         TargetResolutionUtils.resolveTarget(target, this)
@@ -530,13 +585,18 @@ data class EffectContext(
         fun forTriggeredAbility(
             ability: TriggeredAbilityOnStackComponent,
             targets: List<ChosenTarget> = emptyList(),
-            targetRequirements: List<TargetRequirement> = emptyList()
+            targetRequirements: List<TargetRequirement> = emptyList(),
+            alignedTargets: List<ChosenTarget?> = emptyList(),
+            targetEntryStamps: Map<EntityId, Long> = emptyMap()
         ): EffectContext = EffectContext(
             sourceId = ability.sourceId,
             controllerId = ability.controllerId,
             granterId = ability.granterId,
             abilityIdentity = ability.abilityIdentity,
             targets = targets,
+            alignedTargets = alignedTargets,
+            targetEntryStamps = targetEntryStamps,
+            targetingSourceType = TargetingSourceType.ABILITY,
             triggerDamageAmount = ability.triggerDamageAmount,
             triggerCounterCount = ability.triggerCounterCount,
             triggerTotalCounterCount = ability.triggerTotalCounterCount,
@@ -568,8 +628,13 @@ data class EffectContext(
             chosenModes = ability.chosenModes,
             modeTargetsOrdered = ability.modeTargetsOrdered,
             modeTargetRequirements = ability.modeTargetRequirements,
+            modeTargetRequirementsOrdered = ability.modeTargetRequirementsOrdered,
+            modeTargetSlotStarts = ability.modeTargetSlotStarts,
             pipeline = PipelineState(
-                namedTargets = buildNamedTargets(targetRequirements, targets) +
+                namedTargets = buildNamedTargets(
+                    targetRequirements,
+                    if (alignedTargets.isEmpty()) targets else alignedTargets
+                ) +
                     (ability.carriedPipeline?.namedTargets ?: emptyMap()),
                 // Expose a batch trigger's captured permanents (the matching members of a
                 // PermanentsEnteredEvent batch) so a ForEachInCollectionEffect payoff can iterate

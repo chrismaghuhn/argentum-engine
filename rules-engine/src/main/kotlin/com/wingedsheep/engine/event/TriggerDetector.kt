@@ -254,7 +254,22 @@ class TriggerDetector(
                     .filter { it.playerId == event.playerId }
                     .sumOf { it.count }
             } else 0
-            triggers.addAll(detectTriggersForEvent(state, event, index, samePlayerDrawsLaterInBatch))
+            triggers.addAll(
+                detectTriggersForEvent(state, event, index, samePlayerDrawsLaterInBatch)
+                    .map { pending ->
+                        pending.withObservedPlacementStage(
+                            matcher.placementStageFor(
+                                trigger = pending.ability.trigger,
+                                binding = pending.ability.binding,
+                                event = event,
+                                sourceId = pending.sourceId,
+                                controllerId = state.projectedState.getController(pending.sourceId)
+                                    ?: pending.controllerId,
+                                state = state,
+                            )
+                        )
+                    }
+            )
         }
 
         // Rule 603.10: "Look back in time" for simultaneous deaths.
@@ -957,11 +972,23 @@ class TriggerDetector(
                 }
 
                 if (eventCandidates.isEmpty()) continue
+                val observedCandidates = eventCandidates.map { candidate ->
+                    candidate.withObservedPlacementStage(
+                        matcher.placementStageFor(
+                            trigger = spec.event,
+                            binding = spec.binding,
+                            event = event,
+                            sourceId = delayed.sourceId,
+                            controllerId = delayed.controllerId,
+                            state = state,
+                        )
+                    )
+                }
                 if (delayed.fireOnce) {
-                    encounters.add(Encounter(delayed, eventCandidates.toList()))
+                    encounters.add(Encounter(delayed, observedCandidates))
                     matchedFireOnceIds.add(delayed.id)
                 } else {
-                    eventCandidates.forEach { encounters.add(Encounter(delayed, listOf(it))) }
+                    observedCandidates.forEach { encounters.add(Encounter(delayed, listOf(it))) }
                 }
             }
         }
@@ -975,7 +1002,10 @@ class TriggerDetector(
                 triggers.add(
                     first.copy(
                         consumesDelayedTriggerId = null,
-                        occurrenceChoice = encounter.candidates.map { it.toOccurrenceCandidate() }
+                        occurrenceChoice = TriggerOrderingKey.canonicalOccurrenceCandidates(
+                            state,
+                            encounter.candidates.map { it.toOccurrenceCandidate() }
+                        )
                     )
                 )
             } else {
@@ -2386,7 +2416,8 @@ class TriggerDetector(
                     controllerId = event.controllerId,
                     granterId = event.granterId,
                     triggerContext = event.carriedTriggerContext,
-                    carriedPipeline = event.carriedPipeline
+                    carriedPipeline = event.carriedPipeline,
+                    stage = TriggerStage.REFLEXIVE
                 )
             )
         }

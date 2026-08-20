@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.effects.library.CascadeExecutor
 import com.wingedsheep.engine.handlers.effects.library.ChooseOnePerCategoryExecutor
 import com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithoutPayingCostExecutor
 import com.wingedsheep.engine.handlers.effects.library.ExileFromTopRepeatingExecutor
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -27,6 +28,8 @@ import com.wingedsheep.sdk.scripting.effects.CastFromCollectionWithoutPayingCost
 import com.wingedsheep.sdk.scripting.effects.SearchDestination
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 
 class LibraryAndZoneContinuationResumer(
     private val services: com.wingedsheep.engine.core.EngineServices
@@ -34,6 +37,7 @@ class LibraryAndZoneContinuationResumer(
 
     private val castSpellHandler: CastSpellHandler by lazy { CastSpellHandler.create(services) }
     private val targetFinder = TargetFinder()
+    private val auraHostLegality = AuraHostLegality(services.cardRegistry, targetFinder)
     private val moveCollectionExecutor by lazy {
         MoveCollectionExecutor(cardRegistry = services.cardRegistry, targetFinder = targetFinder)
     }
@@ -349,6 +353,15 @@ class LibraryAndZoneContinuationResumer(
         val auraId = continuation.auraId
         val destPlayerId = continuation.destPlayerId
 
+        val legalHosts = auraHostLegality.findLegalHosts(
+            state = state,
+            auraId = auraId,
+            hostControllerId = continuation.controllerId,
+        )
+        if (targetId !in legalHosts) {
+            return ExecutionResult.error(state, "Selected Aura host is no longer legal")
+        }
+
         // Use MoveCollectionExecutor's helper to move aura to battlefield with attachment
         val executor = com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor(
             cardRegistry = services.cardRegistry,
@@ -356,76 +369,52 @@ class LibraryAndZoneContinuationResumer(
         )
         val (newState, moveEvents) = executor.moveAuraToBattlefield(state, auraId, targetId, destPlayerId)
 
-        // Continue with remaining auras
-        val remainingAuras = continuation.remainingAuras
-        if (remainingAuras.isNotEmpty()) {
-            val nextAuraId = remainingAuras.first()
-            val nextRemaining = remainingAuras.drop(1)
+        return continueMoveCollectionAuraTargets(
+            state = newState,
+            events = moveEvents,
+            continuation = continuation,
+            checkForMore = checkForMore,
+        )
+    }
 
-            // When underOwnersControl, use the next aura's owner as its controller
+    /**
+     * Advance through remaining Aura entries without reusing the prior host response. Each
+     * remaining Aura either gets its own freshly validated host domain and decision, or is left in
+     * its current zone when it is malformed/hostless (CR 303.4g).
+     */
+    private fun continueMoveCollectionAuraTargets(
+        state: GameState,
+        events: List<GameEvent>,
+        continuation: MoveCollectionAuraTargetContinuation,
+        checkForMore: CheckForMore,
+    ): ExecutionResult {
+        var nextState = state
+        var remainingAuras = continuation.remainingAuras
+
+        while (remainingAuras.isNotEmpty()) {
+            val nextAuraId = remainingAuras.first()
+            remainingAuras = remainingAuras.drop(1)
+            val nextCardComponent = nextState.getEntity(nextAuraId)?.get<CardComponent>()
+            val nextCardDef = nextCardComponent?.let { services.cardRegistry.getCard(it.cardDefinitionId) }
+            val nextAuraTarget = nextCardDef?.script?.auraTarget
             val nextControllerId = if (continuation.underOwnersControl) {
-                val e = newState.getEntity(nextAuraId)
-                e?.get<OwnerComponent>()?.playerId
-                    ?: e?.get<CardComponent>()?.ownerId
+                val entity = nextState.getEntity(nextAuraId)
+                entity?.get<OwnerComponent>()?.playerId
+                    ?: entity?.get<CardComponent>()?.ownerId
                     ?: continuation.controllerId
             } else continuation.controllerId
 
-            val nextCardComponent = newState.getEntity(nextAuraId)?.get<CardComponent>()
-            val nextCardDef = nextCardComponent?.let { services.cardRegistry.getCard(it.cardDefinitionId) }
-            val nextAuraTarget = nextCardDef?.script?.auraTarget
+            if (nextCardComponent?.isAura != true || nextAuraTarget == null) continue
 
-            if (nextAuraTarget == null) {
-                // Skip this aura, continue to next
-                return resumeMoveCollectionAuraTarget(
-                    newState,
-                    continuation.copy(
-                        auraId = nextAuraId,
-                        controllerId = nextControllerId,
-                        destPlayerId = nextControllerId,
-                        remainingAuras = nextRemaining,
-                        decisionId = "skip"
-                    ),
-                    response,
-                    checkForMore
-                )
-            }
-
-            val legalTargets = services.targetFinder.findLegalTargets(
-                state = newState,
-                requirement = nextAuraTarget,
-                controllerId = nextControllerId,
-                sourceId = nextAuraId,
-                ignoreTargetingRestrictions = true
+            val legalTargets = auraHostLegality.findLegalHosts(
+                state = nextState,
+                auraId = nextAuraId,
+                hostControllerId = nextControllerId,
             )
+            if (legalTargets.isEmpty()) continue
 
-            if (legalTargets.isEmpty()) {
-                // No targets — Aura stays in current zone (Rule 303.4g), continue to next
-                if (nextRemaining.isNotEmpty()) {
-                    return resumeMoveCollectionAuraTarget(
-                        newState,
-                        continuation.copy(
-                            auraId = nextRemaining.first(),
-                            controllerId = nextControllerId,
-                            destPlayerId = nextControllerId,
-                            remainingAuras = nextRemaining.drop(1),
-                            decisionId = "skip"
-                        ),
-                        response,
-                        checkForMore
-                    )
-                }
-                return checkForMore(newState, moveEvents)
-            }
-
-            // Pause for next aura target
             val decisionId = java.util.UUID.randomUUID().toString()
             val auraName = nextCardComponent.name
-            val requirementInfo = TargetRequirementInfo(
-                index = 0,
-                description = nextAuraTarget.description,
-                minTargets = 1,
-                maxTargets = 1
-            )
             val decision = ChooseTargetsDecision(
                 id = decisionId,
                 playerId = nextControllerId,
@@ -435,32 +424,36 @@ class LibraryAndZoneContinuationResumer(
                     sourceName = auraName,
                     phase = DecisionPhase.RESOLUTION
                 ),
-                targetRequirements = listOf(requirementInfo),
+                targetRequirements = listOf(
+                    TargetRequirementInfo(
+                        index = 0,
+                        description = nextAuraTarget.description,
+                        minTargets = 1,
+                        maxTargets = 1
+                    )
+                ),
                 legalTargets = mapOf(0 to legalTargets)
             )
-
             val nextContinuation = MoveCollectionAuraTargetContinuation(
                 decisionId = decisionId,
                 auraId = nextAuraId,
                 controllerId = nextControllerId,
                 destPlayerId = nextControllerId,
-                remainingAuras = nextRemaining,
+                remainingAuras = remainingAuras,
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
                 underOwnersControl = continuation.underOwnersControl
             )
-
-            val stateWithDecision = newState.withPendingDecision(decision)
-            val stateWithContinuation = stateWithDecision.pushContinuation(nextContinuation)
-
+            val stateWithDecision = nextState.withPendingDecision(decision)
+                .pushContinuation(nextContinuation)
             return ExecutionResult(
-                state = stateWithContinuation,
-                events = moveEvents,
-                pendingDecision = decision
+                state = stateWithDecision,
+                events = events,
+                pendingDecision = decision,
             )
         }
 
-        return checkForMore(newState, moveEvents)
+        return checkForMore(nextState, events)
     }
 
     /**
@@ -481,14 +474,38 @@ class LibraryAndZoneContinuationResumer(
 
         val hostIds = response.selectedTargets[0] ?: emptyList()
         if (hostIds.isEmpty()) {
-            // No host chosen — leave the card where it is (mode does nothing).
-            return checkForMore(state, emptyList())
+            return ExecutionResult.error(state, "No attachment host selected")
         }
         val hostId = hostIds.first()
 
-        // Host must still be on the battlefield.
-        if (!state.getBattlefield().contains(hostId)) {
-            return checkForMore(state, emptyList())
+        val effectHosts = continuation.hostFilter?.let { hostFilter ->
+            targetFinder.findLegalTargets(
+                state = state,
+                requirement = TargetObject(filter = TargetFilter(baseFilter = hostFilter)),
+                controllerId = continuation.controllerId,
+                sourceId = continuation.cardId,
+                ignoreTargetingRestrictions = true,
+            ).toSet()
+        }
+        if (effectHosts != null && hostId !in effectHosts) {
+            return ExecutionResult.error(state, "Selected attachment host is no longer legal")
+        }
+
+        val cardComponent = state.getEntity(continuation.cardId)?.get<CardComponent>()
+            ?: return ExecutionResult.error(state, "Attached card is no longer available")
+        // A non-Aura attachment (currently Equipment) must attach to a permanent. Aura entry is
+        // different: CR 303.4f also permits a player, and the Aura host seam below revalidates
+        // that complete object/player domain without applying targeting restrictions.
+        if (!cardComponent.isAura && hostId !in state.getBattlefield()) {
+            return ExecutionResult.error(state, "Selected attachment host is no longer legal")
+        }
+        if (cardComponent.isAura && hostId !in auraHostLegality.findLegalHosts(
+                state = state,
+                auraId = continuation.cardId,
+                hostControllerId = continuation.controllerId,
+            )
+        ) {
+            return ExecutionResult.error(state, "Selected Aura host is no longer legal")
         }
 
         val executor = com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor(
@@ -511,6 +528,15 @@ class LibraryAndZoneContinuationResumer(
         if (response !is CardsSelectedResponse) {
             return ExecutionResult.error(state, "Expected card selection response for SelectFromCollection")
         }
+
+        // Rebuild the selection context from the serialized continuation. A legal option can
+        // become stale in a replay/fork, so do not normalize an Aura whose host disappeared;
+        // reject the response instead of silently substituting a different card.
+        val selectionContext = EffectContext(
+            sourceId = continuation.sourceId,
+            controllerId = continuation.playerId,
+            pipeline = PipelineState(storedCollections = continuation.storedCollections)
+        )
 
         // DecisionValidators rejects restriction-violating responses before this continuation
         // runs. Keep this defense-in-depth check fail-closed: a malformed response must never be
@@ -590,6 +616,8 @@ class LibraryAndZoneContinuationResumer(
                             // state can't change while the decision is pending, so there is
                             // nothing to re-check per card here.
                             true
+                        is SelectionRestriction.AuraMustHaveLegalHost ->
+                            auraHostLegality.isSelectionEligible(state, cardId, selectionContext)
                     }
                 }
                 if (acceptsAllRestrictions) {
@@ -632,6 +660,9 @@ class LibraryAndZoneContinuationResumer(
                             }
                             is SelectionRestriction.MaxAffordablePayment -> {
                                 // Count cap — no per-card bookkeeping (see the accept check above).
+                            }
+                            is SelectionRestriction.AuraMustHaveLegalHost -> {
+                                // Per-card legality is re-evaluated above; it has no aggregate state.
                             }
                         }
                     }

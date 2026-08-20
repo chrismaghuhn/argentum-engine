@@ -13,7 +13,6 @@ import com.wingedsheep.engine.state.components.combat.MustAttackPlayerComponent
 import com.wingedsheep.engine.state.components.combat.MustAttackThisTurnComponent
 import com.wingedsheep.engine.state.components.combat.PlayerAttackedThisTurnComponent
 import com.wingedsheep.engine.state.components.combat.PlayerAttackersThisTurnComponent
-import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.PlayerComponent
@@ -68,7 +67,7 @@ internal class AttackPhaseManager(
         // CR 805.10a/b — a creature attacks the opposing team; never a teammate. Exclude the whole
         // attacking team from legal player targets (in a non-team game this is just the attacker).
         val attackingTeam = state.teamOf(attackingPlayer)
-        val opponents = state.turnOrder.filter { it !in attackingTeam }
+        val opponents = state.activePlayers.filter { it !in attackingTeam }
 
         // Validate band declarations (CR 702.22c).
         val bandValidation = validateBands(state, attackers, bands, projected)
@@ -191,7 +190,14 @@ internal class AttackPhaseManager(
         for ((attackerId, defenderId) in attackers) {
             val hasVigilance = projected.hasKeyword(attackerId, Keyword.VIGILANCE)
             newState = newState.updateEntity(attackerId) { container ->
-                container.with(AttackingComponent(defenderId, bandIdByAttacker[attackerId]))
+                container.with(
+                    CombatDefenders.attackingComponentFor(
+                        state = state,
+                        projected = projected,
+                        defenderId = defenderId,
+                        bandId = bandIdByAttacker[attackerId],
+                    )
+                )
                     .with(AttackedThisCombatComponent)
             }
             // Non-vigilance attackers tap as a turn-based action; route through the tap atom so the
@@ -222,8 +228,9 @@ internal class AttackPhaseManager(
         // battle. Backs AttackPredicate.DefenderIsPlayer ("attacks an opponent"); the defender
         // kind is fixed at declaration and this aggregate fact is stamped here. The complete
         // attacker-to-target snapshot is emitted below for per-player trigger grouping.
-        // `defenderId in turnOrder` is the player-identity idiom.
-        val attackersAgainstPlayer = attackers.filterValues { it in state.turnOrder }.keys
+        // `defenderId in activePlayers` is the current player-identity domain; turnOrder retains
+        // departed seats for historical replay/state inspection.
+        val attackersAgainstPlayer = attackers.filterValues { it in state.activePlayers }.keys
 
         newState = newState.updateEntity(attackingPlayer) { container ->
             var updated = container.with(AttackersDeclaredThisCombatComponent)
@@ -634,7 +641,7 @@ internal class AttackPhaseManager(
     /**
      * The player an attack aimed at [defenderId] is really aimed at: the player themselves, a
      * planeswalker's controller, or — for a battle — its protector rather than its controller
-     * (CR 310.8d).
+     * (CR 310.9d).
      */
     private fun defenderControllerOf(
         state: GameState,

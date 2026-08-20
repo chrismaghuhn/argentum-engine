@@ -141,6 +141,13 @@ object SpliceCasts {
         cardRegistry.getCard(name)?.script?.targetRequirements?.sumOf { it.count } ?: 0
     }
 
+    /** Slot counts from the cast-time-normalized requirements stored on the stack object. */
+    fun splicedTargetSlotCounts(
+        splicedTargetRequirementsOrdered: List<List<TargetRequirement>>
+    ): List<Int> = splicedTargetRequirementsOrdered.map { requirements ->
+        requirements.sumOf { it.count }
+    }
+
     /**
      * Split [flatTargets] — the cast's whole target list, laid out as the main spell's targets
      * followed by each spliced card's — into one slice per entry of [splicedCardNames].
@@ -159,12 +166,33 @@ object SpliceCasts {
         }
     }
 
+    /** Split targets using locked per-splice slot metadata; no card definition is re-read. */
+    fun <T> sliceSplicedTargets(
+        flatTargets: List<T>,
+        splicedTargetRequirementsOrdered: List<List<TargetRequirement>>
+    ): List<List<T>> {
+        val counts = splicedTargetSlotCounts(splicedTargetRequirementsOrdered)
+        var index = mainTargetCount(flatTargets.size, splicedTargetRequirementsOrdered)
+        return counts.map { count ->
+            val slice = flatTargets.drop(index).take(count)
+            index += count
+            slice
+        }
+    }
+
     /** How many of a cast's flat targets belong to the main spell rather than to a spliced card. */
     fun mainTargetCount(
         totalTargets: Int,
         splicedCardNames: List<String>,
         cardRegistry: CardRegistry,
     ): Int = (totalTargets - splicedTargetSlotCounts(splicedCardNames, cardRegistry).sum())
+        .coerceAtLeast(0)
+
+    /** Main-spell target count from cast-time-normalized splice requirements. */
+    fun mainTargetCount(
+        totalTargets: Int,
+        splicedTargetRequirementsOrdered: List<List<TargetRequirement>>
+    ): Int = (totalTargets - splicedTargetSlotCounts(splicedTargetRequirementsOrdered).sum())
         .coerceAtLeast(0)
 }
 

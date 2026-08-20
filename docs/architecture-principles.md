@@ -551,6 +551,13 @@ context, and continues executing the remaining effects.
 - **Deterministic replay.** The continuation stack is part of `GameState`. A replay log of actions
   deterministically reproduces the exact sequence of decisions and resumptions.
 
+Resolution-time spell-copy effects follow the same boundary. Before a resolving spell leaves the
+stack, the engine captures a serializable payload containing its effective effect, target
+requirements and bindings, chosen modes, and `SpellOnStackComponent` cast metadata. That payload
+travels with the effect context and any may/retarget continuation, so resumption never reads removed
+stack components or invents a target. The copy controller still answers the may decision and supplies
+any replacement targets through the ordinary actor-checked decision protocol.
+
 ### 2.5 Explicit Event Emission
 
 **Principle:** Every state mutation emits an explicit, typed event.

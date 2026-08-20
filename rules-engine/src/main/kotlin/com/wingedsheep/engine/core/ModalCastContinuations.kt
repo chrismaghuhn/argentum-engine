@@ -3,6 +3,7 @@ package com.wingedsheep.engine.core
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.Mode
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.Serializable
 
 /**
@@ -72,5 +73,7 @@ data class CastModalTargetSelectionContinuation(
     val modes: List<@Serializable Mode>,
     val chosenModeIndices: List<Int>,
     val resolvedModeTargets: List<List<ChosenTarget>>,
-    val currentOrdinal: Int
+    val currentOrdinal: Int,
+    /** Exact per-requirement counts returned by each target decision, by mode ordinal. */
+    val resolvedModeTargetRequirements: List<List<TargetRequirement>> = emptyList()
 ) : ContinuationFrame

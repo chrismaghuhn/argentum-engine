@@ -173,8 +173,7 @@ class ForEachExecutor(
         outerContext: EffectContext,
         item: ForEachItem
     ): EffectContext = when (item) {
-        is ForEachItem.OfTarget -> outerContext.copy(
-            targets = listOf(item.target),
+        is ForEachItem.OfTarget -> outerContext.withTargetScope(listOf(item.target)).copy(
             pipeline = outerContext.pipeline.copy(storedCollections = emptyMap())
         )
 
