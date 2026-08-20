@@ -356,7 +356,17 @@ class GameEnvironment private constructor(
         xValue = null,
         repeatCount = 1,
         paymentStrategy = PaymentStrategy.AutoPay,
-        alternativePayment = null,
+        // Equip payment is a candidate identity: NORMAL and FREE_FIRST_EQUIP are distinct
+        // server-offered actions. Other alternative-payment assignments are caller-filled
+        // resource choices and remain normalized away as before.
+        alternativePayment = action.alternativePayment
+            ?.takeIf { it.equipPayment != null }
+            ?.copy(
+                delvedCards = emptyList(),
+                convokedCreatures = emptyMap(),
+                harmonizeCreature = null,
+                tapForGenericPermanents = emptySet(),
+            ),
     )
 
     /**

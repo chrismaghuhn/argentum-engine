@@ -6287,13 +6287,17 @@ riders, matching how the engine already treats e.g. City of Brass's damage durin
   a bare grant (Leonin Shikari) applies unconditionally. Consulted by `CastPermissionUtils
   .canEquipAtInstantSpeed` (enumerator) and `ActivateAbilityHandler.validate` (submit path), both
   keyed on `ActivatedAbility.isEquipAbility`.
-- `FreeFirstEquipEachTurn` — the controller may pay {0} rather than the equip cost of the **first**
-  equip ability they activate each turn (Kíli the Resourceful; Forge Anew's separate timing gate
-  confines its equip activations to its controller's turns). This is
-  an alternative activation cost: it replaces the whole equip cost, including colored mana and
-  nonmana parts such as paying life, while the per-player
-  `EquipActivationsThisTurnComponent.count == 0`, and increments that counter on every equip
-  activation (reset at turn start by `TurnManager`).
+- `FreeFirstEquipEachTurn` — while the per-player
+  `EquipActivationsThisTurnComponent.count == 0`, the legal-action domain exposes two explicit
+  payment modes for an equip ability when the normal cost is also payable: `NORMAL` (the effective
+  equip cost) and `FREE_FIRST_EQUIP` ({0}). The controller selects the mode in
+  `AlternativePaymentChoice.equipPayment`; the action is serialized with that choice for server
+  submission, Gym candidates, and replay. `FREE_FIRST_EQUIP` is an alternative activation cost: it
+  replaces the whole equip cost, including colored mana and nonmana parts such as paying life.
+  There is no automatic choice based on available mana, and `ActivateAbilityHandler` rejects a
+  missing or stale mode. The counter increments on every equip activation and resets at turn start
+  by `TurnManager` (Kíli the Resourceful; Forge Anew's separate timing gate confines its equip
+  activations to its controller's turns).
 - `ReduceEquipCost(amount, onlyIfTargetIsSource = false, onlyOwnEquip = false)` — the controller's equip abilities cost
   `{amount}` generic mana less to activate (Éowyn, Lady of Rohan: "Equip abilities you activate cost
   {1} less to activate"). The engine reduces only the generic portion of the equip cost (floored at
@@ -7882,8 +7886,9 @@ composite abilities).
   the attach effect's generated `"{1}: Attach this equipment to Human creature you control"`. A
   non-mana equip cost takes the printed em dash instead: `"Equip—Pay 3 life"`. Because the line is
   derived rather than a per-card `descriptionOverride`, the cost stays live: the legal-action
-  enumerator re-renders against the *effective* cost, so Éowyn's discount and Forge Anew's free first
-  equip show as the `{0}`/`{2}` the player actually pays. **Never give a mana-cost equip ability a
+  enumerator re-renders against the *effective* cost, so Éowyn's discount and the selected Forge
+  Anew free-first-equip mode show as the `{0}`/`{2}` the player actually pays. When both modes are
+  legal, the server sends both action rows; the client renders those rows independently. **Never give a mana-cost equip ability a
   `descriptionOverride`** — it freezes exactly the number those effects rewrite. Only a non-mana equip
   cost with card-specific naming needs one (Dark Knight's Greatsword: "Chaosbringer — Equip—Pay 3
   life. Activate only once each turn."). `EquipQualityVariantTest` (mtg-sets) pins all three

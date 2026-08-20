@@ -10,6 +10,8 @@ import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -55,6 +57,20 @@ class CanonicalActionTraceTest : FunSpec({
             cast.copy(targets = listOf(ChosenTarget.Permanent(EntityId("other-target"))))
         ) shouldNotBe canonicalActionTrace(cast)
         canonicalActionTrace(cast.copy(chosenModes = listOf(2))) shouldNotBe canonicalActionTrace(cast)
+    }
+
+    test("explicit equip payment modes change the deterministic trace") {
+        val normal = ActivateAbility(
+            playerId = player,
+            sourceId = card,
+            abilityId = AbilityId("equip"),
+            alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.NORMAL),
+        )
+        val free = normal.copy(
+            alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP),
+        )
+
+        canonicalActionTrace(normal) shouldNotBe canonicalActionTrace(free)
     }
 
     test("effective Crew identity changes the semantic trace") {

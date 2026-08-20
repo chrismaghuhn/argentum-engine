@@ -28,6 +28,10 @@ object ActionPayloadRequirements {
         if (action.hasConvoke || action.hasDelve || action.hasTapForGeneric || action.hasHarmonize) {
             add("alternativePayment")
         }
+        val activateAbility = action.action as? ActivateAbility
+        if (activateAbility?.alternativePayment?.equipPayment != null) {
+            add("alternativePayment")
+        }
         if (action.requiresManaColorChoice) add("manaColorChoice")
         if (action.requiresDamageDistribution) add("damageDistribution")
         when (action.action) {

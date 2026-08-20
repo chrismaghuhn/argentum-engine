@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -10,9 +11,12 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.EquipAbilitiesAtInstantSpeed
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import com.wingedsheep.sdk.scripting.FreeFirstEquipEachTurn
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
 
@@ -75,8 +79,14 @@ class EquipPermissionsScenarioTest : FunSpec({
         driver.giveColorlessMana(you, 1)
         driver.passPriorityUntil(Step.BEGIN_COMBAT)
 
-        driver.submit(
-            ActivateAbility(you, sword, equipId, targets = listOf(ChosenTarget.Permanent(courser)))
+        driver.submitSuccess(
+            ActivateAbility(
+                you,
+                sword,
+                equipId,
+                targets = listOf(ChosenTarget.Permanent(courser)),
+                alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP)
+            )
         ).isSuccess shouldBe true
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe courser
@@ -92,7 +102,13 @@ class EquipPermissionsScenarioTest : FunSpec({
 
         // No mana available — the first equip this turn is still payable (it's free).
         driver.submit(
-            ActivateAbility(you, sword, equipId, targets = listOf(ChosenTarget.Permanent(a)))
+            ActivateAbility(
+                you,
+                sword,
+                equipId,
+                targets = listOf(ChosenTarget.Permanent(a)),
+                alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP)
+            )
         ).isSuccess shouldBe true
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe a
@@ -110,5 +126,63 @@ class EquipPermissionsScenarioTest : FunSpec({
         ).isSuccess shouldBe true
         driver.bothPass()
         driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe b
+    }
+
+    test("FreeFirstEquipEachTurn exposes both legal first-equip payment choices") {
+        val driver = createDriver()
+        val you = driver.activePlayer!!
+        driver.putCreatureOnBattlefield(you, "Centaur Courser")
+        val sword = driver.putPermanentOnBattlefield(you, "Bonesplitter")
+        driver.putPermanentOnBattlefield(you, "Test Forge")
+        driver.giveColorlessMana(you, 1)
+
+        val equipActions = driver.legalActions(you).filter { legal ->
+            val action = legal.action as? ActivateAbility ?: return@filter false
+            action.sourceId == sword && action.abilityId == equipId
+        }
+        val offeredCosts = equipActions.mapNotNull { it.manaCostString }.toSet()
+        val offeredModes = equipActions.mapNotNull {
+            (it.action as ActivateAbility).alternativePayment?.equipPayment
+        }.toSet()
+
+        offeredCosts shouldContain "{0}"
+        offeredCosts shouldContain "{1}"
+        offeredModes shouldBe setOf(EquipPaymentChoice.NORMAL, EquipPaymentChoice.FREE_FIRST_EQUIP)
+    }
+
+    test("FreeFirstEquipEachTurn normal mode pays the printed equip cost") {
+        val driver = createDriver()
+        val you = driver.activePlayer!!
+        val creature = driver.putCreatureOnBattlefield(you, "Centaur Courser")
+        val sword = driver.putPermanentOnBattlefield(you, "Bonesplitter")
+        driver.putPermanentOnBattlefield(you, "Test Forge")
+        driver.giveColorlessMana(you, 1)
+
+        driver.submitSuccess(
+            ActivateAbility(
+                you,
+                sword,
+                equipId,
+                targets = listOf(ChosenTarget.Permanent(creature)),
+                alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.NORMAL)
+            )
+        )
+        driver.bothPass()
+
+        driver.state.getEntity(you)?.get<ManaPoolComponent>()?.colorless shouldBe 0
+        driver.state.getEntity(sword)?.get<AttachedToComponent>()?.targetId shouldBe creature
+    }
+
+    test("FreeFirstEquipEachTurn does not choose the payment mode implicitly") {
+        val driver = createDriver()
+        val you = driver.activePlayer!!
+        val creature = driver.putCreatureOnBattlefield(you, "Centaur Courser")
+        val sword = driver.putPermanentOnBattlefield(you, "Bonesplitter")
+        driver.putPermanentOnBattlefield(you, "Test Forge")
+        driver.giveColorlessMana(you, 1)
+
+        driver.submitExpectFailure(
+            ActivateAbility(you, sword, equipId, targets = listOf(ChosenTarget.Permanent(creature)))
+        )
     }
 })
