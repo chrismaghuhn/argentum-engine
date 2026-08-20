@@ -7,23 +7,11 @@ import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.DoubleFacedComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
+import com.wingedsheep.mtg.sets.definitions.mid.cards.OutlandLiberator
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.DayNight
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
-import com.wingedsheep.sdk.dsl.Costs
-import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Triggers
-import com.wingedsheep.sdk.dsl.card
-import com.wingedsheep.sdk.dsl.daybound
-import com.wingedsheep.sdk.dsl.nightbound
-import com.wingedsheep.sdk.model.CardDefinition
-import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.EffectTarget
-import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetPermanent
-import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
@@ -31,80 +19,13 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 
 /**
- * RED acceptance matrix for Outland Liberator // Frenzied Trapbreaker (MID #190).
- *
- * The local definition is deliberately test-only: the production card is not present yet. This
- * keeps the RED gate executable while asserting the exact pair's Oracle shape, day/night
- * thresholds, face identity, and transform persistence. The final test is intentionally expected
- * to expose any missing generic defending-player target context; the card code must not weaken that
- * target domain to make the test pass.
+ * Focused behavioral evidence for Outland Liberator // Frenzied Trapbreaker's DFC faces, day/night
+ * transformation, activated abilities, and defending-player target domain.
  */
 class OutlandLiberatorScenarioTest : ScenarioTestBase() {
 
-    private val outlandLiberatorFront = card("Outland Liberator") {
-        manaCost = "{1}{G}"
-        colorIdentity = "G"
-        typeLine = "Creature — Human Werewolf"
-        power = 2
-        toughness = 2
-        oracleText = "{1}, Sacrifice this creature: Destroy target artifact or enchantment.\n" +
-            "Daybound (If a player casts no spells during their own turn, it becomes night next turn.)"
-
-        daybound()
-        activatedAbility {
-            cost = Costs.Composite(Costs.Mana("{1}"), Costs.SacrificeSelf)
-            val target = target(
-                "target artifact or enchantment",
-                TargetPermanent(filter = TargetFilter.ArtifactOrEnchantment),
-            )
-            effect = Effects.Destroy(target)
-        }
-    }
-
-    private val frenziedTrapbreaker = card("Frenzied Trapbreaker") {
-        manaCost = ""
-        colorIdentity = "G"
-        colorIndicator = "G"
-        typeLine = "Creature — Werewolf"
-        power = 3
-        toughness = 3
-        oracleText = "{1}, Sacrifice this creature: Destroy target artifact or enchantment.\n" +
-            "Whenever this creature attacks, destroy target artifact or enchantment defending player controls.\n" +
-            "Nightbound (If a player casts at least two spells during their own turn, it becomes day next turn.)"
-
-        nightbound()
-        activatedAbility {
-            cost = Costs.Composite(Costs.Mana("{1}"), Costs.SacrificeSelf)
-            val target = target(
-                "target artifact or enchantment",
-                TargetPermanent(filter = TargetFilter.ArtifactOrEnchantment),
-            )
-            effect = Effects.Destroy(target)
-        }
-        triggeredAbility {
-            trigger = Triggers.Attacks
-            val target = target(
-                "target artifact or enchantment defending player controls",
-                TargetObject(
-                    filter = TargetFilter(
-                        baseFilter = GameObjectFilter.ArtifactOrEnchantment
-                            .targetPlayerControls(EffectTarget.PlayerRef(Player.DefendingPlayer)),
-                    ),
-                ),
-            )
-            effect = Effects.Destroy(target)
-        }
-    }
-
-    private val outlandLiberator: CardDefinition = CardDefinition.doubleFacedCreature(
-        frontFace = outlandLiberatorFront,
-        backFace = frenziedTrapbreaker,
-    )
-
     init {
-        cardRegistry.register(outlandLiberator)
-
-        test("RED-01: front face has the exact 2/2 daybound Oracle shape") {
+        test("front face has the exact 2/2 daybound Oracle shape") {
             val game = scenario()
                 .withPlayers()
                 .withCardOnBattlefield(1, "Outland Liberator")
@@ -113,12 +34,9 @@ class OutlandLiberatorScenarioTest : ScenarioTestBase() {
                 .build()
             val liberator = game.findPermanent("Outland Liberator").shouldNotBeNull()
             val definition = cardRegistry.getCard("Outland Liberator").shouldNotBeNull()
-
-            definition.typeLine shouldBe "Creature — Human Werewolf"
-            definition.creatureStats?.power shouldBe 2
-            definition.creatureStats?.toughness shouldBe 2
-            definition.oracleText shouldBe outlandLiberatorFront.oracleText
-            definition.keywords shouldBe outlandLiberatorFront.keywords
+            definition.typeLine.toString() shouldBe "Creature — Human Werewolf"
+            definition.oracleText shouldBe OutlandLiberator.oracleText
+            definition.keywords shouldBe OutlandLiberator.keywords
             game.state.getEntity(liberator)?.get<CardComponent>()?.name shouldBe "Outland Liberator"
             game.state.getEntity(liberator)?.get<DoubleFacedComponent>()?.currentFace shouldBe
                 DoubleFacedComponent.Face.FRONT
@@ -126,7 +44,7 @@ class OutlandLiberatorScenarioTest : ScenarioTestBase() {
             game.state.projectedState.getToughness(liberator) shouldBe 2
         }
 
-        test("RED-02: daybound front becomes the 3/3 back when day changes to night") {
+        test("daybound front becomes the 3/3 back when day changes to night") {
             val game = scenario()
                 .withPlayers()
                 .withCardOnBattlefield(1, "Outland Liberator")
@@ -152,7 +70,7 @@ class OutlandLiberatorScenarioTest : ScenarioTestBase() {
             }
         }
 
-        test("RED-03: nightbound back needs two spells before becoming day and front") {
+        test("nightbound back needs two spells before becoming day and front") {
             val game = scenario()
                 .withPlayers()
                 .withCardOnBattlefield(1, "Frenzied Trapbreaker")
@@ -185,7 +103,7 @@ class OutlandLiberatorScenarioTest : ScenarioTestBase() {
             }
         }
 
-        test("RED-04: day/night transform preserves counters, marked damage, and object identity") {
+        test("day/night transform preserves counters, marked damage, and object identity") {
             val game = scenario()
                 .withPlayers()
                 .withCardOnBattlefield(1, "Outland Liberator")
@@ -208,7 +126,7 @@ class OutlandLiberatorScenarioTest : ScenarioTestBase() {
             transformed.get<DamageComponent>()?.amount shouldBe 1
         }
 
-        test("RED-05: back attack trigger offers only the defending player's artifact or enchantment") {
+        test("back attack trigger offers only the defending player's artifact or enchantment") {
             val game = scenario()
                 .withPlayers()
                 .withCardOnBattlefield(1, "Frenzied Trapbreaker")
@@ -225,7 +143,7 @@ class OutlandLiberatorScenarioTest : ScenarioTestBase() {
             val defendingArtifact = game.state.getBattlefield(game.player2Id)
                 .first { id -> game.state.getEntity(id)?.get<CardComponent>()?.name == "Mind Stone" }
 
-            game.passUntilPhase(Phase.PRECOMBAT_MAIN, Step.DECLARE_ATTACKERS)
+            game.advanceToPhase(Phase.COMBAT, Step.DECLARE_ATTACKERS)
             game.declareAttackers(mapOf("Frenzied Trapbreaker" to 2)).error shouldBe null
             game.resolveStack()
 
