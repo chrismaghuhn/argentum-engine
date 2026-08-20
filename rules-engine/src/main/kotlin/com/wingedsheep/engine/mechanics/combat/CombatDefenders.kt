@@ -25,11 +25,18 @@ object CombatDefenders {
      * That asymmetry is the whole point of a Siege: its controller attacks it while an opponent
      * defends it.
      */
-    fun defendingPlayerOf(state: GameState, defenderId: EntityId): EntityId {
+    fun defendingPlayerOf(state: GameState, defenderId: EntityId): EntityId? {
         if (defenderId in state.turnOrder) return defenderId
         com.wingedsheep.engine.mechanics.battle.Battles.protectorOf(state, defenderId)
+            ?.takeIf { it in state.turnOrder }
             ?.let { return it }
-        return state.getEntity(defenderId)?.get<ControllerComponent>()?.playerId ?: defenderId
+        state.projectedState.getController(defenderId)
+            ?.takeIf { it in state.turnOrder }
+            ?.let { return it }
+        return state.getEntity(defenderId)
+            ?.get<ControllerComponent>()
+            ?.playerId
+            ?.takeIf { it in state.turnOrder }
     }
 
     /** Every distinct defending player in the current combat: anyone who has a creature attacking
@@ -41,7 +48,7 @@ object CombatDefenders {
     fun defendingPlayers(state: GameState): Set<EntityId> =
         state.getBattlefield()
             .mapNotNull { state.getEntity(it)?.get<AttackingComponent>()?.defenderId }
-            .map { defendingPlayerOf(state, it) }
+            .mapNotNull { defendingPlayerOf(state, it) }
             .flatMap { state.sharedTurnTeam(it) }
             .toSet()
 

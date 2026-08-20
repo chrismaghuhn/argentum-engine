@@ -208,7 +208,7 @@ internal class AttackPhaseManager(
         // player. Record the set so "did player X attack player Y this turn?" can be answered
         // after combat (Faramir, Prince of Ithilien).
         val defendingPlayers: Set<EntityId> =
-            attackers.values.mapTo(mutableSetOf()) { CombatDefenders.defendingPlayerOf(state, it) }
+            attackers.values.mapNotNullTo(mutableSetOf()) { CombatDefenders.defendingPlayerOf(state, it) }
 
         // Attackers seen earlier this turn (across prior combat phases) — read before the per-turn
         // set is unioned below so we can flag which of these attackers are attacking for the *first

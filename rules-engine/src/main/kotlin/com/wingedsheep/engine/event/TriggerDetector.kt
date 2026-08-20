@@ -1487,10 +1487,16 @@ class TriggerDetector(
                             )
                         }
                     } else {
+                        val eventTriggerContext = if (event is AttackersDeclaredEvent && entityId in event.attackers) {
+                            TriggerContext.fromEvent(event, declaredAttackerId = entityId)
+                        } else {
+                            TriggerContext.fromEvent(event)
+                        }
+
                         // For abilities like Death Match where the triggered ability should be
                         // controlled by the triggering entity's controller, not the source's controller
                         val effectiveControllerId = if (ability.controlledByTriggeringEntityController) {
-                            val triggeringEntityId = TriggerContext.fromEvent(event).triggeringEntityId
+                            val triggeringEntityId = eventTriggerContext.triggeringEntityId
                             if (triggeringEntityId != null) {
                                 projected.getController(triggeringEntityId) ?: controllerId
                             } else {
@@ -1516,7 +1522,7 @@ class TriggerDetector(
                                 sourceId = entityId,
                                 sourceName = cardComponent.name,
                                 controllerId = effectiveControllerId,
-                                triggerContext = TriggerContext.fromEvent(event)
+                                triggerContext = eventTriggerContext
                                     .copy(enchantedCreatureLastKnownPower = enchantedPower)
                             )
                         )

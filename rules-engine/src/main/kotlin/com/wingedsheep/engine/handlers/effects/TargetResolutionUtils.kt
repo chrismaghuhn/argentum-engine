@@ -129,7 +129,9 @@ object TargetResolutionUtils {
      * damage to a player" triggers.
      */
     fun resolveDefendingPlayer(context: EffectContext, state: GameState): EntityId? {
-        context.defendingPlayerId?.let { return it }
+        // A captured defender is authoritative. If the player has since left the game, fail
+        // closed instead of silently re-deriving a different defender from live combat state.
+        context.defendingPlayerId?.let { return it.takeIf { playerId -> playerId in state.turnOrder } }
         val defenderId = context.sourceId
             ?.let { state.getEntity(it)?.get<AttackingComponent>()?.defenderId }
         if (defenderId != null) {
@@ -224,6 +226,7 @@ object TargetResolutionUtils {
                 Player.You -> context.controllerId
                 Player.TargetPlayer, Player.TargetOpponent, Player.Any -> firstPlayerTarget(context)
                 Player.TriggeringPlayer -> context.triggeringPlayerId ?: context.triggeringEntityId
+                Player.DefendingPlayer -> context.defendingPlayerId
                 else -> null
             }
             else -> null

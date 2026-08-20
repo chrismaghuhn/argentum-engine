@@ -209,6 +209,7 @@ data class TriggerContext(
         fun forDeclaredAttack(event: AttackersDeclaredEvent, attackerId: EntityId): TriggerContext =
             TriggerContext(
                 triggeringEntityId = attackerId,
+                triggeringPlayerId = event.attackingPlayerId,
                 defendingPlayerId = event.declaredAttacks
                     .firstOrNull { it.attackerId == attackerId }
                     ?.defendingPlayerId,
@@ -218,7 +219,10 @@ data class TriggerContext(
             (event as? AttackersDeclaredEvent)?.let { forDeclaredAttack(it, attackerId) }
                 ?: TriggerContext(triggeringEntityId = attackerId)
 
-        fun fromEvent(event: com.wingedsheep.engine.core.GameEvent): TriggerContext {
+        fun fromEvent(
+            event: com.wingedsheep.engine.core.GameEvent,
+            declaredAttackerId: EntityId? = null,
+        ): TriggerContext {
             return when (event) {
                 is ZoneChangeEvent -> TriggerContext(
                     triggeringEntityId = event.entityId,
@@ -344,7 +348,9 @@ data class TriggerContext(
                     triggeringEntityId = event.permanentId,
                     triggeringPlayerId = event.controllerId
                 )
-                is AttackersDeclaredEvent -> TriggerContext()
+                is AttackersDeclaredEvent -> declaredAttackerId?.let {
+                    forDeclaredAttack(event, it)
+                } ?: TriggerContext(triggeringPlayerId = event.attackingPlayerId)
                 is BlockersDeclaredEvent -> TriggerContext()
                 is TappedEvent -> TriggerContext(triggeringEntityId = event.entityId)
                 is UntappedEvent -> TriggerContext(triggeringEntityId = event.entityId)
