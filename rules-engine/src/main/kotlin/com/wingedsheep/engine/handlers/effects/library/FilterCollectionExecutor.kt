@@ -82,15 +82,18 @@ class FilterCollectionExecutor(
                 val legality = attachmentLegality
                     ?: return EffectResult.error(state, "Attachment legality seam is not configured")
                 val targetId = TargetResolutionUtils.resolveTarget(filter.target, context, state)
-                    ?: return EffectResult.error(state, "No valid attachment destination")
-                cards.partition { attachmentId ->
-                    legality.isLegal(
-                        state = state,
-                        attachmentId = attachmentId,
-                        targetId = targetId,
-                        controllerId = context.controllerId,
-                        context = context,
-                    )
+                if (targetId == null) {
+                    emptyList<EntityId>() to cards
+                } else {
+                    cards.partition { attachmentId ->
+                        legality.isLegal(
+                            state = state,
+                            attachmentId = attachmentId,
+                            targetId = targetId,
+                            controllerId = context.controllerId,
+                            context = context,
+                        )
+                    }
                 }
             }
 

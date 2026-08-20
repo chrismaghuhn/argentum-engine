@@ -13,6 +13,8 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.KeywordAbility
+import com.wingedsheep.sdk.scripting.ProtectionScope
 import com.wingedsheep.sdk.scripting.effects.CardSource
 import com.wingedsheep.sdk.scripting.effects.CollectionFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -88,6 +90,38 @@ class AttachCollectionToTargetExecutorTest : ScenarioTestBase() {
         equipAbility("{0}")
     }
 
+    private val creatureEquipment = card("Test Transfer Creature Equipment") {
+        manaCost = "{0}"
+        typeLine = "Artifact Creature — Equipment"
+        oracleText = "Equip {0}"
+        power = 3
+        toughness = 3
+        equipAbility("{0}")
+    }
+
+    private val permanentAura = card("Test Transfer Permanent Aura") {
+        manaCost = "{0}"
+        typeLine = "Enchantment — Aura"
+        oracleText = "Enchant permanent"
+        auraTarget = Targets.Permanent
+    }
+
+    private val artifactProtectedCreature = card("Test Transfer Artifact-Protected Creature") {
+        manaCost = "{0}"
+        typeLine = "Creature — Human"
+        oracleText = "Protection from artifacts"
+        power = 2
+        toughness = 2
+        keywordAbility(KeywordAbility.Protection(ProtectionScope.CardType("Artifact")))
+    }
+
+    private val battleEquipment = card("Test Transfer Battle Equipment") {
+        manaCost = "{0}"
+        typeLine = "Artifact Battle — Equipment"
+        oracleText = "Equip {0}"
+        equipAbility("{0}")
+    }
+
     init {
         cardRegistry.register(
             listOf(
@@ -97,6 +131,10 @@ class AttachCollectionToTargetExecutorTest : ScenarioTestBase() {
                 playerAura,
                 creatureAura,
                 dualPlayerAttachment,
+                creatureEquipment,
+                permanentAura,
+                artifactProtectedCreature,
+                battleEquipment,
             )
         )
 
@@ -234,6 +272,84 @@ class AttachCollectionToTargetExecutorTest : ScenarioTestBase() {
             game.getPendingDecision() shouldBe null
             game.state.getEntity(dualId)?.get<AttachedToComponent>()?.targetId shouldBe
                 game.findPermanent("Grizzly Bears")!!
+        }
+
+        test("excludes a creature Equipment when reconfigure support is unavailable") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, creatureEquipment.name)
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInHand(1, transferSpell.name)
+                .withActivePlayer(1)
+                .build()
+
+            val destination = game.findPermanent("Grizzly Bears")!!
+            game.castSpell(1, transferSpell.name, destination).error shouldBe null
+            game.resolveStack()
+
+            game.getPendingDecision() shouldBe null
+        }
+
+        test("rejects an Equipment as its own host") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, creatureEquipment.name)
+                .withCardInHand(1, transferSpell.name)
+                .withActivePlayer(1)
+                .build()
+
+            val equipment = game.findPermanent(creatureEquipment.name)!!
+            game.castSpell(1, transferSpell.name, equipment).error shouldBe null
+            game.resolveStack()
+
+            game.getPendingDecision() shouldBe null
+        }
+
+        test("rejects an Aura as its own host") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, permanentAura.name)
+                .withCardInHand(1, transferSpell.name)
+                .withActivePlayer(1)
+                .build()
+
+            val aura = game.findPermanent(permanentAura.name)!!
+            game.castSpell(1, transferSpell.name, aura).error shouldBe null
+            game.resolveStack()
+
+            game.getPendingDecision() shouldBe null
+        }
+
+        test("rejects an Equipment from a creature with protection from artifacts") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, equipmentA.name)
+                .withCardOnBattlefield(1, artifactProtectedCreature.name)
+                .withCardInHand(1, transferSpell.name)
+                .withActivePlayer(1)
+                .build()
+
+            val destination = game.findPermanent(artifactProtectedCreature.name)!!
+            game.castSpell(1, transferSpell.name, destination).error shouldBe null
+            game.resolveStack()
+
+            game.getPendingDecision() shouldBe null
+        }
+
+        test("rejects a Battle even when it is also an Equipment") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, battleEquipment.name)
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardInHand(1, transferSpell.name)
+                .withActivePlayer(1)
+                .build()
+
+            val destination = game.findPermanent("Grizzly Bears")!!
+            game.castSpell(1, transferSpell.name, destination).error shouldBe null
+            game.resolveStack()
+
+            game.getPendingDecision() shouldBe null
         }
 
         test("revalidates selected object identity and resolves the valid survivor") {

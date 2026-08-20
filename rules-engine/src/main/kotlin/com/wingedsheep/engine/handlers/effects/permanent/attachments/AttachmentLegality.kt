@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers.effects.permanent.attachments
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -38,9 +39,14 @@ class AttachmentLegality(
     ): Boolean {
         if (attachmentId !in state.getBattlefield()) return false
         if (targetId !in state.getBattlefield() && targetId !in state.turnOrder) return false
+        // CR 301.5c / 303.4d: neither an Equipment nor an Aura can attach to itself.
+        if (attachmentId == targetId) return false
 
-        val card = state.getEntity(attachmentId)?.get<CardComponent>() ?: return false
+        state.getEntity(attachmentId)?.get<CardComponent>() ?: return false
         val projected = state.projectedState
+        // CR 310.10: a Battle cannot be attached, even when it also has Aura/Equipment types.
+        if (projected.isBattle(attachmentId)) return false
+
         val isAura = projected.hasSubtype(attachmentId, Subtype.AURA.value)
         val isEquipment = projected.hasSubtype(attachmentId, Subtype.EQUIPMENT.value)
         if (!isAura && !isEquipment) return false
@@ -55,10 +61,69 @@ class AttachmentLegality(
             hostId = targetId,
             auraControllerId = controllerId,
         )
-        val equipmentLegal = !isEquipment ||
-            (!targetId.isPlayer(state) && projected.isCreature(targetId))
+        val equipmentLegal = !isEquipment || isLegalEquipmentHost(
+            state = state,
+            projected = projected,
+            equipmentId = attachmentId,
+            hostId = targetId,
+            equipmentControllerId = controllerId,
+        )
 
         return auraLegal && equipmentLegal
+    }
+
+    private fun isLegalEquipmentHost(
+        state: GameState,
+        projected: ProjectedState,
+        equipmentId: EntityId,
+        hostId: EntityId,
+        equipmentControllerId: EntityId,
+    ): Boolean {
+        // Reconfigure is not modeled by this generic primitive. CR 301.5c therefore requires
+        // an Equipment that is currently a creature to fail closed rather than silently treating
+        // it as an ordinary Equipment.
+        if (projected.isCreature(equipmentId)) return false
+        if (hostId.isPlayer(state) || !projected.isCreature(hostId)) return false
+
+        return !isProtectedFromEquipment(
+            state = state,
+            projected = projected,
+            hostId = hostId,
+            equipmentId = equipmentId,
+            equipmentControllerId = equipmentControllerId,
+        )
+    }
+
+    private fun isProtectedFromEquipment(
+        state: GameState,
+        projected: ProjectedState,
+        hostId: EntityId,
+        equipmentId: EntityId,
+        equipmentControllerId: EntityId,
+    ): Boolean {
+        if (projected.hasKeyword(hostId, "PROTECTION_FROM_EVERYTHING")) return true
+
+        val hostControllerId = projected.getController(hostId)
+            ?: state.getEntity(hostId)?.get<ControllerComponent>()?.playerId
+        if (projected.hasKeyword(hostId, "PROTECTION_FROM_EACH_OPPONENT") &&
+            hostControllerId != null && hostControllerId != equipmentControllerId
+        ) {
+            return true
+        }
+
+        val sourceColors = projected.getColors(equipmentId)
+        val sourceSubtypes = projected.getSubtypes(equipmentId)
+        val sourceSupertypes = projected.getSupertypes(equipmentId)
+        val sourceCardTypes = projected.getTypes(equipmentId)
+        return sourceColors.any { color ->
+            projected.hasKeyword(hostId, "PROTECTION_FROM_$color")
+        } || sourceSubtypes.any { subtype ->
+            projected.hasKeyword(hostId, "PROTECTION_FROM_SUBTYPE_${subtype.uppercase()}")
+        } || sourceSupertypes.any { supertype ->
+            projected.hasKeyword(hostId, "PROTECTION_FROM_SUPERTYPE_${supertype.uppercase()}")
+        } || sourceCardTypes.any { cardType ->
+            projected.hasKeyword(hostId, "PROTECTION_FROM_CARDTYPE_${cardType.uppercase()}")
+        }
     }
 
     private fun EntityId.isPlayer(state: GameState): Boolean = this in state.turnOrder
