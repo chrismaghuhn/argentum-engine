@@ -279,6 +279,7 @@ class CombatContinuationResumer(
                     // Scopes the fired trigger's context to the prevented source (so
                     // ControllerOfTriggeringEntity = "that source's controller").
                     watchedEntityId = chosenSourceId,
+                    watchedEntitySnapshot = DamageUtils.captureDamageEntitySnapshot(effectiveState, chosenSourceId),
                     expiry = com.wingedsheep.sdk.scripting.effects.DelayedTriggerExpiry.EndOfTurn
                 )
             )

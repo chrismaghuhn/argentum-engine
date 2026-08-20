@@ -674,6 +674,21 @@ sealed interface SelectionRestriction {
     ) : SelectionRestriction {
         override val description: String = "at most as many as can be paid {$manaPerSelected} for"
     }
+
+    /**
+     * When this restriction is requested by a collection effect, an Aura card is selectable only
+     * when its serialized Aura target requirement has at least one currently legal host for the
+     * player making the selection. Non-Aura cards, including Equipment, are unaffected.
+     *
+     * The host itself is deliberately not part of the selection domain: the player sees only the
+     * legal card IDs, and a later Aura-attachment decision chooses the host through its own
+     * targeting contract.
+     */
+    @SerialName("AuraMustHaveLegalHost")
+    @Serializable
+    data object AuraMustHaveLegalHost : SelectionRestriction {
+        override val description: String = "Aura must have a legal host"
+    }
 }
 
 /**
@@ -1703,6 +1718,15 @@ sealed interface CollectionFilter {
     @SerialName("MatchesFilter")
     @Serializable
     data class MatchesFilter(val filter: GameObjectFilter) : CollectionFilter
+
+    /**
+     * Keep only currently legal battlefield Auras and/or Equipment for [target]. The target is
+     * already selected by the enclosing effect; this filter publishes the complete current
+     * candidate domain and never chooses or orders attachments itself.
+     */
+    @SerialName("AttachableTo")
+    @Serializable
+    data class AttachableTo(val target: EffectTarget) : CollectionFilter
 
     /**
      * Keep only creatures with the greatest power in the collection.

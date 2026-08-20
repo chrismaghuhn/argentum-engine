@@ -28,8 +28,8 @@ class AttackersDeclaredEventSerializationTest : FunSpec({
             attackers = listOf(attackerA, attackerB),
             attackingPlayerId = EntityId.of("player-a"),
             declaredAttacks = listOf(
-                DeclaredAttack(attackerA, playerB),
-                DeclaredAttack(attackerB, playerC),
+                DeclaredAttack(attackerA, playerB, playerB),
+                DeclaredAttack(attackerB, playerC, playerC),
             ),
         )
 
@@ -45,8 +45,8 @@ class AttackersDeclaredEventSerializationTest : FunSpec({
             attackingPlayerId = EntityId.of("player-a"),
             attackersAgainstPlayer = setOf(attackerA, attackerB),
             declaredAttacks = listOf(
-                DeclaredAttack(attackerA, playerB),
-                DeclaredAttack(attackerB, playerC),
+                DeclaredAttack(attackerA, playerB, playerB),
+                DeclaredAttack(attackerB, playerC, playerC),
             ),
         )
         val encoded = json.encodeToString(GameEvent.serializer(), event)

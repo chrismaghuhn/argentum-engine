@@ -91,6 +91,7 @@ class ModalTriggerContinuationResumer(
             chosenModeIndices = newSelected,
             resolvedModeTargets = emptyList(),
             currentOrdinal = 0,
+            resolvedModeTargetRequirements = emptyList(),
             causedByAttack = continuation.causedByAttack,
             recordChosenModesOnSource = continuation.recordChosenModesOnSource,
             recordChosenModesThisTurn = continuation.recordChosenModesThisTurn
@@ -111,6 +112,15 @@ class ModalTriggerContinuationResumer(
         val chosenTargets = response.selectedTargets.entries
             .sortedBy { it.key }
             .flatMap { (_, ids) -> ids.map { entityIdToChosenTarget(state, it) } }
+        val modeRequirements = continuation.modes[continuation.chosenModeIndices[continuation.currentOrdinal]]
+            .targetRequirements
+        val selectedCounts = modeRequirements.indices.map { index ->
+            response.selectedTargets[index].orEmpty().size
+        }
+        val lockedModeRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            modeRequirements,
+            selectedCounts
+        )
 
         return services.triggerProcessor.presentTriggerModalTargetDecision(
             state = state,
@@ -121,6 +131,8 @@ class ModalTriggerContinuationResumer(
             chosenModeIndices = continuation.chosenModeIndices,
             resolvedModeTargets = continuation.resolvedModeTargets + listOf(chosenTargets),
             currentOrdinal = continuation.currentOrdinal + 1,
+            resolvedModeTargetRequirements = continuation.resolvedModeTargetRequirements +
+                listOf(lockedModeRequirements),
             causedByAttack = continuation.causedByAttack,
             recordChosenModesOnSource = continuation.recordChosenModesOnSource,
             recordChosenModesThisTurn = continuation.recordChosenModesThisTurn

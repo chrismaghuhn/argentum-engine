@@ -12,6 +12,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
@@ -188,10 +189,14 @@ abstract class ScenarioTestBase : FunSpec() {
 
             // Add to battlefield
             state = state.addToZone(ZoneKey(playerId, Zone.BATTLEFIELD), cardId)
+            // Direct scenario placement still creates a battlefield object. Stamp it like the
+            // production entry pipeline so strict damage references can distinguish same-id reuse.
+            state = state.tick()
 
             // Update card entity with battlefield-specific components
             var container = state.getEntity(cardId)!!
             container = container.with(ControllerComponent(playerId))
+                .with(BattlefieldEntryTimestampComponent(state.timestamp))
 
             if (tapped) {
                 container = container.with(TappedComponent)
@@ -1004,7 +1009,22 @@ abstract class ScenarioTestBase : FunSpec() {
         fun resolveStack(): List<ExecutionResult> {
             val results = mutableListOf<ExecutionResult>()
             var iterations = 0
-            while (state.stack.isNotEmpty() && state.pendingDecision == null && iterations++ < 20) {
+            while (
+                (state.stack.isNotEmpty() || state.pendingDecision is OrderObjectsDecision) &&
+                    iterations++ < 20
+            ) {
+                // CR 603.3b ordering is a real player decision in production, but this helper is
+                // explicitly a deterministic stack-drain fixture. Keep the original detector
+                // order when a scenario did not opt into checking the domain itself, then stop on
+                // all semantic decisions (may, targets, etc.) as before.
+                if (state.pendingDecision is OrderObjectsDecision) {
+                    val decision = state.pendingDecision as OrderObjectsDecision
+                    val result = submitDecision(OrderedResponse(decision.id, decision.objects))
+                    results.add(result)
+                    if (result.error != null) break
+                    continue
+                }
+                if (state.pendingDecision != null) break
                 val result = passPriority()
                 results.add(result)
                 if (result.error != null) {
@@ -1160,6 +1180,13 @@ abstract class ScenarioTestBase : FunSpec() {
             val playerId = state.pendingDecision?.playerId
                 ?: error("No pending decision to respond to")
             return execute(SubmitDecision(playerId, response))
+        }
+
+        /** Submit the complete semantic handle order for a CR 603.3b trigger-ordering decision. */
+        fun submitObjectOrdering(orderedObjects: List<EntityId>): ExecutionResult {
+            val decision = state.pendingDecision as? OrderObjectsDecision
+                ?: error("No pending OrderObjectsDecision")
+            return submitDecision(OrderedResponse(decision.id, orderedObjects))
         }
 
         /**

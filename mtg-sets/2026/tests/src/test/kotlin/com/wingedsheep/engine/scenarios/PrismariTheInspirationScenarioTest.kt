@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -23,6 +24,12 @@ class PrismariTheInspirationScenarioTest : FunSpec({
             driver.state.getEntity(it)?.get<TriggeredAbilityOnStackComponent>()
         }.mapNotNull { it.effect as? StormCopyEffect }
 
+    fun GameTestDriver.submitTriggerOrderIfAsked() {
+        (state.pendingDecision as? OrderObjectsDecision)?.let { decision ->
+            submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+        }
+    }
+
     test("instant cast with Prismari in play gets a storm trigger with copyCount = spells cast before it") {
         val driver = GameTestDriver()
         driver.registerCards(TestCards.all + listOf(PrismariTheInspiration))
@@ -37,7 +44,8 @@ class PrismariTheInspirationScenarioTest : FunSpec({
         driver.putLandOnBattlefield(caster, "Mountain")
         val bolt = driver.putCardInHand(caster, "Lightning Bolt")
 
-        driver.castSpell(caster, bolt, listOf(opponent)).isSuccess shouldBe true
+        driver.castSpell(caster, bolt, listOf(opponent)).error shouldBe null
+        driver.submitTriggerOrderIfAsked()
 
         val triggers = stormTriggers(driver)
         triggers.size shouldBe 1
@@ -59,7 +67,8 @@ class PrismariTheInspirationScenarioTest : FunSpec({
         driver.putLandOnBattlefield(caster, "Mountain")
         val bolt = driver.putCardInHand(caster, "Lightning Bolt")
 
-        driver.castSpell(caster, bolt, listOf(opponent)).isSuccess shouldBe true
+        driver.castSpell(caster, bolt, listOf(opponent)).error shouldBe null
+        driver.submitTriggerOrderIfAsked()
 
         stormTriggers(driver).size shouldBe 2
     }
@@ -77,7 +86,8 @@ class PrismariTheInspirationScenarioTest : FunSpec({
         driver.putLandOnBattlefield(caster, "Mountain")
         val bolt = driver.putCardInHand(caster, "Lightning Bolt")
 
-        driver.castSpell(caster, bolt, listOf(opponent)).isSuccess shouldBe true
+        driver.castSpell(caster, bolt, listOf(opponent)).error shouldBe null
+        driver.submitTriggerOrderIfAsked()
 
         stormTriggers(driver).size shouldBe 0
     }

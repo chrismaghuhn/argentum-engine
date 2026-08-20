@@ -5,6 +5,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.TriggerSpec
 import com.wingedsheep.sdk.scripting.effects.DelayedTriggerExpiry
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import kotlinx.serialization.Serializable
 
 /**
@@ -41,6 +42,13 @@ data class DelayedTriggeredAbility(
      */
     val watchedEntityId: EntityId? = null,
     /**
+     * Event-time identity/LKI for [watchedEntityId]. Concrete damage-source watchers compare the
+     * event's stamped source snapshot to this value; a missing snapshot is unknown and cannot
+     * match a concrete object watcher. The field is nullable for legacy/filter-scoped delayed
+     * triggers and player ids, which do not have battlefield object incarnations.
+     */
+    val watchedEntitySnapshot: EntitySnapshot? = null,
+    /**
      * For event-based delayed triggers: scopes the trigger to events whose *recipient*
      * (the damaged/targeted entity) matches this id. Whereas [watchedEntityId] narrows by the
      * event's source, this narrows by the event's recipient — e.g. "whenever a creature you
@@ -48,6 +56,8 @@ data class DelayedTriggeredAbility(
      * [com.wingedsheep.sdk.scripting.effects.CreateDelayedTriggerEffect.watchedRecipient].
      */
     val watchedRecipientId: EntityId? = null,
+    /** Event-time identity/LKI for a concrete permanent in [watchedRecipientId], when applicable. */
+    val watchedRecipientSnapshot: EntitySnapshot? = null,
     /** For event-based delayed triggers: the expiry rule. */
     val expiry: DelayedTriggerExpiry? = null,
     /**

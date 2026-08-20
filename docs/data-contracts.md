@@ -637,6 +637,12 @@ Decision ids are minted afresh each run (they are not part of the deterministic 
 recorded `SubmitDecision` is re-bound to the freshly created decision's id during reconstruction;
 the choice payload (entity-id targets/cards) is unchanged, so the outcome is identical.
 
+Payment modes are part of the recorded action payload. In particular, an equip action's
+`alternativePayment.equipPayment` is serialized unchanged (`NORMAL` or `FREE_FIRST_EQUIP`); replay
+and fork paths must preserve that field rather than re-deriving the mode from the current mana pool.
+This keeps the legal-action domain, authoritative validation, actual payment, and deterministic
+replay on the same external choice.
+
 #### One store
 
 Every replay — finished or still being recorded — is a row in `game_replays`, written by

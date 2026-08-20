@@ -6,6 +6,7 @@ import { useResponsive } from '@/hooks/useResponsive.ts'
 import { LibrarySearchUI } from './LibrarySearchUI'
 import { ReorderCardsUI } from './ReorderCardsUI'
 import { OrderBlockersUI } from './OrderBlockersUI'
+import { OrderObjectsUI } from './OrderObjectsUI'
 import { CombatDamageAssignmentModal } from './CombatDamageAssignmentModal'
 import { CombatResolutionBoard } from './CombatResolutionBoard'
 import { YesNoDecisionUI } from './YesNoDecisionUI'
@@ -86,8 +87,7 @@ export function DecisionUI() {
     if (pendingDecision.context.phase === 'COMBAT') {
       return <OrderBlockersUI key={pendingDecision.id} decision={pendingDecision} responsive={responsive} />
     }
-    // Other ordering decisions could use a generic ordering UI (not yet implemented)
-    return null
+    return <OrderObjectsUI key={pendingDecision.id} decision={pendingDecision} responsive={responsive} />
   }
 
   // Handle YesNoDecision (e.g., "You may shuffle your library")

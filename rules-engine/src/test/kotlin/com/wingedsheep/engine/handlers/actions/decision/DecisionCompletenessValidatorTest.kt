@@ -30,6 +30,7 @@ class DecisionCompletenessValidatorTest : FunSpec({
     val chooser = EntityId.of("chooser")
     val first = EntityId.of("first")
     val second = EntityId.of("second")
+    val third = EntityId.of("third")
     val unknown = EntityId.of("unknown")
     val context = DecisionContext()
 
@@ -162,6 +163,25 @@ class DecisionCompletenessValidatorTest : FunSpec({
         DecisionValidators.validate(
             decision,
             DistributionResponse("distribution", mapOf(first to -1))
+        ).shouldNotBeNull()
+    }
+
+    test("distribution rejects an overflowing integer sum") {
+        val decision = DistributeDecision(
+            id = "overflowing-distribution",
+            playerId = chooser,
+            prompt = "Distribute",
+            context = context,
+            totalAmount = 5,
+            targets = listOf(first, second, third),
+        )
+
+        DecisionValidators.validate(
+            decision,
+            DistributionResponse(
+                "overflowing-distribution",
+                mapOf(first to Int.MAX_VALUE, second to Int.MAX_VALUE, third to 7),
+            ),
         ).shouldNotBeNull()
     }
 

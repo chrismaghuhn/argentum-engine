@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -107,7 +108,10 @@ class WizardsStaffScenarioTest : FunSpec({
         driver.bothPass()
 
         driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
-        driver.declareAttackers(player, listOf(skirge), opponent).isSuccess shouldBe true
+        driver.declareAttackers(player, listOf(skirge), opponent).error shouldBe null
+        (driver.state.pendingDecision as? OrderObjectsDecision)?.let { decision ->
+            driver.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+        }
 
         // Resolve both copies of "whenever this creature attacks, it gets +2/+0".
         repeat(4) { if (driver.stackSize > 0) driver.bothPass() }

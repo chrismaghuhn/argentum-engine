@@ -1,7 +1,34 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
+
+/**
+ * The semantic kind of a pending triggered ability.
+ *
+ * [REFLEXIVE] identifies a CR 603.12 "when you do" ability. It is deliberately separate from
+ * [TriggerPlacementStage], because a CR 603.12 reflexive ability's trigger condition is the action
+ * it watches for, not another ability triggering.
+ */
+@kotlinx.serialization.Serializable
+enum class TriggerStage {
+    NORMAL,
+    REFLEXIVE
+}
+
+/**
+ * The CR 603.3b placement pass for a pending triggered ability.
+ *
+ * Detectors store the observed pass on each concrete pending occurrence, while the enum remains
+ * the type-safe value used by APNAP normalization. The enum order is the order in which the two
+ * placement passes occur.
+ */
+@kotlinx.serialization.Serializable
+enum class TriggerPlacementStage {
+    NORMAL,
+    ABILITY_TRIGGERED
+}
 
 /**
  * The serializable payload for one possible occurrence of a delayed trigger.
@@ -23,6 +50,16 @@ data class DelayedTriggerOccurrenceCandidate(
     val consumesDelayedTriggerId: String? = null,
     val sagaChapterInfo: SagaChapterInfo? = null,
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
+    val stage: TriggerStage = TriggerStage.NORMAL,
+    /**
+     * The placement pass observed for this concrete trigger occurrence. Detectors stamp this from
+     * the event that actually matched, which matters for composite conditions such as `AnyOf`.
+     * Nullable keeps older serialized pending triggers readable; those fall back to the condition
+     * shape below.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val observedPlacementStage: TriggerPlacementStage? = null,
 ) {
     fun toPendingTrigger(): PendingTrigger = PendingTrigger(
         ability = ability,
@@ -34,6 +71,8 @@ data class DelayedTriggerOccurrenceCandidate(
         consumesDelayedTriggerId = consumesDelayedTriggerId,
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
+        stage = stage,
+        observedPlacementStage = observedPlacementStage,
     )
 }
 
@@ -74,6 +113,10 @@ data class PendingTrigger(
      * when this pending trigger is placed on the stack. Null for ordinary triggered abilities.
      */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
+    /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
+    val stage: TriggerStage = TriggerStage.NORMAL,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val observedPlacementStage: TriggerPlacementStage? = null,
     /**
      * CR 603.7b marker emitted by the delayed-trigger detector when several matching occurrences
      * happen simultaneously. The marker is converted into a normal pending decision by
@@ -81,6 +124,29 @@ data class PendingTrigger(
      * callers may queue detected triggers below another continuation before processing them.
      */
     val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList()
+)
+
+/**
+ * Resolve the CR 603.3b placement pass for one concrete trigger occurrence. Detectors normally
+ * provide [PendingTrigger.observedPlacementStage], derived from the event that matched. The
+ * condition-shape fallback keeps synthetic and pre-marker serialized callers compatible; a
+ * reflexive trigger is always first-pass regardless of its carried action context.
+ */
+val PendingTrigger.placementStage: TriggerPlacementStage
+    get() = when {
+        stage == TriggerStage.REFLEXIVE -> TriggerPlacementStage.NORMAL
+        observedPlacementStage != null -> observedPlacementStage
+        ability.trigger is EventPattern.AbilityTriggeredEvent -> TriggerPlacementStage.ABILITY_TRIGGERED
+        else -> TriggerPlacementStage.NORMAL
+    }
+
+/**
+ * Stamp the placement pass from the condition branch that actually caused this occurrence. This
+ * is separate from [TriggerStage]: CR 603.12's "when you do" marker describes the ability's kind,
+ * while CR 603.3b asks whether this particular trigger condition was another ability triggering.
+ */
+fun PendingTrigger.withObservedPlacementStage(stage: TriggerPlacementStage): PendingTrigger = copy(
+    observedPlacementStage = stage
 )
 
 fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
@@ -94,6 +160,8 @@ fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
         consumesDelayedTriggerId = consumesDelayedTriggerId,
         sagaChapterInfo = sagaChapterInfo,
         carriedPipeline = carriedPipeline,
+        stage = stage,
+        observedPlacementStage = observedPlacementStage,
     )
 
 /**

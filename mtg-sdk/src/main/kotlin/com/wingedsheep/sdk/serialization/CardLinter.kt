@@ -333,6 +333,7 @@ object CardLinter {
             "CopyCollectionIntoCollection", "RecordChosenLinkedExile",
             "PairWithSource",
         )) put(type to "from", read(Space.COLLECTION))
+        put("AttachCollectionToTarget" to "from", read(Space.COLLECTION))
         put("ChoosePile" to "pileA", read(Space.COLLECTION))
         put("ChoosePile" to "pileB", read(Space.COLLECTION))
         put("ForEachCapturedController" to "collection", read(Space.COLLECTION))

@@ -139,7 +139,8 @@ class CastModalContinuationResumer(
             modes = continuation.modes,
             chosenModeIndices = newSelected,
             resolvedModeTargets = emptyList(),
-            currentOrdinal = 0
+            currentOrdinal = 0,
+            resolvedModeTargetRequirements = emptyList()
         )
     }
 
@@ -163,6 +164,17 @@ class CastModalContinuationResumer(
             .flatMap { (_, ids) -> ids.map { entityIdToChosenTarget(state, it) } }
 
         val newResolvedTargets = continuation.resolvedModeTargets + listOf(chosenTargets)
+        val modeRequirements = continuation.modes[continuation.chosenModeIndices[continuation.currentOrdinal]]
+            .targetRequirements
+        val selectedCounts = modeRequirements.indices.map { index ->
+            response.selectedTargets[index].orEmpty().size
+        }
+        val lockedModeRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            modeRequirements,
+            selectedCounts
+        )
+        val newResolvedRequirements = continuation.resolvedModeTargetRequirements +
+            listOf(lockedModeRequirements)
         val nextOrdinal = continuation.currentOrdinal + 1
 
         val cardName = state.getEntity(continuation.cardId)?.get<CardComponent>()?.name ?: "modal spell"
@@ -176,7 +188,8 @@ class CastModalContinuationResumer(
             modes = continuation.modes,
             chosenModeIndices = continuation.chosenModeIndices,
             resolvedModeTargets = newResolvedTargets,
-            currentOrdinal = nextOrdinal
+            currentOrdinal = nextOrdinal,
+            resolvedModeTargetRequirements = newResolvedRequirements
         )
     }
 }
