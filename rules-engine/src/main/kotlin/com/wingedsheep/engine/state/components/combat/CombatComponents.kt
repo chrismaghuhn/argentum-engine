@@ -11,9 +11,29 @@ import kotlinx.serialization.Serializable
  *   in the same band shares this id, attacks the same defender, and is blocked as a group.
  */
 @Serializable
+enum class AttackedDefenderKind {
+    PLAYER,
+    PLANESWALKER,
+    BATTLE,
+}
+
+/**
+ * A creature's declared attack target kind. The target id alone is not enough after declaration:
+ * CR 506.4 removes an attacked planeswalker/battle from combat when its controller/protector
+ * changes, while CR 506.4c leaves the creature in combat with no damage recipient.
+ */
+@Serializable
 data class AttackingComponent(
     val defenderId: EntityId,  // Player or planeswalker being attacked
-    val bandId: String? = null
+    val bandId: String? = null,
+    /** The target kind and defending relationship captured at attack declaration. */
+    val defenderKindAtDeclaration: AttackedDefenderKind? = null,
+    val defenderControllerAtDeclaration: EntityId? = null,
+    val defenderProtectorAtDeclaration: EntityId? = null,
+    /** CR 400.7 identity of the battlefield object, when the entry tracker supplied one. */
+    val defenderBattlefieldObjectTimestampAtDeclaration: Long? = null,
+    /** CR 506.4: once an attacked object leaves combat, restoring its relationship does not return it. */
+    val defenderRelationshipInvalidated: Boolean = false,
 ) : Component
 
 /**

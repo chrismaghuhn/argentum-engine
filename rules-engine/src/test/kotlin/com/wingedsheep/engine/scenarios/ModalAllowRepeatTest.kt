@@ -152,6 +152,27 @@ class ModalAllowRepeatTest : FunSpec({
         handSizeAfter shouldBe (handSizeBefore + 2)
     }
 
+    test("F3 — repeated mode damage distribution is rejected because it is not occurrence-indexed") {
+        val d = driver()
+        d.initMirrorMatch(deck = Deck.of("Forest" to 40))
+        val p1 = d.activePlayer!!
+        d.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        d.giveMana(p1, Color.GREEN, 1)
+
+        val spell = d.putCardInHand(p1, "Test Repeat Modal")
+        val result = d.submit(
+            CastSpell(
+                playerId = p1,
+                cardId = spell,
+                chosenModes = listOf(0, 0),
+                modeDamageDistribution = mapOf(0 to mapOf(d.player2 to 1)),
+            )
+        )
+
+        result.isSuccess shouldBe false
+        result.error shouldBe "modeDamageDistribution cannot be supplied for repeated mode index(es): 0"
+    }
+
     test("F1 regression — picking the last-remaining mode twice fails when !allowRepeat") {
         // Narrows the hole: if someone ever weakens the resumer's narrowing logic, this
         // test will catch it by observing that the second decision does NOT list the first

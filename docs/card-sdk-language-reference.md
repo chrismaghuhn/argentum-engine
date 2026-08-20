@@ -185,7 +185,7 @@ The engine supplies the rest; **do not** write any of it onto the card:
   protector must be an opponent of its controller (CR 310.11a); a battle with no battle types is protected
   by its own controller (CR 310.8a). If no player qualifies, the battle is put into its owner's graveyard.
 - **Its protector, not its controller, is the defending player** for every rule and effect while it is
-  being attacked (CR 310.8d). That asymmetry is the point of a Siege: you cast it, an opponent protects it,
+  being attacked (CR 310.9d). That asymmetry is the point of a Siege: you cast it, an opponent protects it,
   and *you* attack it. Its protector can never attack it (CR 310.8b) and is the only player who may block
   creatures attacking it (CR 310.8c).
 

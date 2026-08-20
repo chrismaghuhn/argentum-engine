@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PlayLand
 import com.wingedsheep.engine.state.components.player.CardsDiscardedThisTurnComponent
 import com.wingedsheep.engine.support.GameTestDriver
@@ -35,7 +36,17 @@ class ShadowOfTheGoblinScenarioTest : FunSpec({
 
     fun resolveStack(driver: GameTestDriver) {
         var guard = 0
-        while (guard++ < 30 && driver.state.stack.isNotEmpty() && !driver.isPaused) driver.bothPass()
+        while (guard++ < 30 &&
+            (driver.state.stack.isNotEmpty() || driver.state.pendingDecision is OrderObjectsDecision)
+        ) {
+            when (val decision = driver.state.pendingDecision) {
+                is OrderObjectsDecision -> {
+                    driver.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+                }
+                null -> driver.bothPass()
+                else -> break
+            }
+        }
     }
 
     test("playing a land from the graveyard (non-hand) deals 1 to each opponent") {

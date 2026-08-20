@@ -160,6 +160,7 @@ class ModalAndCloneContinuationResumer(
             triggeringEntityId = continuation.triggeringEntityId,
             allowCancelBackToModesList = if (allowCancelBackToModes) continuation.modes else null,
             outerTargets = continuation.outerTargets,
+            outerAlignedTargets = continuation.outerAlignedTargets,
             outerNamedTargets = continuation.outerNamedTargets,
             accumulatedEvents = emptyList(),
             checkForMore = checkForMore
@@ -195,12 +196,20 @@ class ModalAndCloneContinuationResumer(
                 }
             }
 
+        val selectedCounts = continuation.targetRequirements.indices.map { index ->
+            response.selectedTargets[index].orEmpty().size
+        }
+        val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            continuation.targetRequirements,
+            selectedCounts
+        )
+
         val context = EffectContext(
             sourceId = continuation.sourceId,
             controllerId = continuation.controllerId,
             xValue = continuation.xValue,
             targets = chosenTargets,
-            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(continuation.targetRequirements, chosenTargets)),
+            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, chosenTargets)),
             triggeringEntityId = continuation.triggeringEntityId
         )
 
@@ -220,6 +229,7 @@ class ModalAndCloneContinuationResumer(
             xValue = continuation.xValue,
             triggeringEntityId = continuation.triggeringEntityId,
             outerTargets = continuation.outerTargets,
+            outerAlignedTargets = continuation.outerAlignedTargets,
             outerNamedTargets = continuation.outerNamedTargets,
             accumulatedEvents = emptyList(),
             checkForMore = checkForMore
@@ -1517,6 +1527,7 @@ class ModalAndCloneContinuationResumer(
             xValue = continuation.xValue,
             triggeringEntityId = continuation.triggeringEntityId,
             outerTargets = continuation.outerTargets,
+            outerAlignedTargets = continuation.outerAlignedTargets,
             outerNamedTargets = continuation.outerNamedTargets
         )
 
@@ -1607,6 +1618,7 @@ internal fun processChosenModeQueue(
     triggeringEntityId: EntityId?,
     allowCancelBackToModesList: List<Mode>?,
     outerTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
+    outerAlignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?>,
     outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget>,
     accumulatedEvents: List<GameEvent>,
     checkForMore: CheckForMore
@@ -1626,13 +1638,14 @@ internal fun processChosenModeQueue(
             controllerId = controllerId,
             xValue = xValue,
             targets = outerTargets,
+            alignedTargets = outerAlignedTargets,
             pipeline = PipelineState(namedTargets = outerNamedTargets),
             triggeringEntityId = triggeringEntityId
         )
         return executeChosenModeWithTail(
             services, state, head.effect, context, tail,
             controllerId, sourceId, sourceName, xValue, triggeringEntityId,
-            outerTargets, outerNamedTargets, accumulatedEvents, checkForMore
+            outerTargets, outerAlignedTargets, outerNamedTargets, accumulatedEvents, checkForMore
         )
     }
 
@@ -1661,7 +1674,7 @@ internal fun processChosenModeQueue(
         // Fizzle just this mode; continue with the rest.
         return processChosenModeQueue(
             services, state, tail, controllerId, sourceId, sourceName, xValue,
-            triggeringEntityId, allowCancelBackToModesList, outerTargets, outerNamedTargets,
+            triggeringEntityId, allowCancelBackToModesList, outerTargets, outerAlignedTargets, outerNamedTargets,
             accumulatedEvents, checkForMore
         )
     }
@@ -1673,18 +1686,22 @@ internal fun processChosenModeQueue(
         val isPlayerTarget = req is TargetPlayer || req is TargetOpponent
         if (isPlayerTarget && targets.size == 1 && req.count == 1) {
             val chosenTargets = listOf(entityIdToChosenTarget(state, targets[0]))
+            val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+                listOf(req),
+                listOf(1)
+            )
             val context = EffectContext(
                 sourceId = sourceId,
                 controllerId = controllerId,
                 xValue = xValue,
                 targets = chosenTargets,
-                pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(head.targetRequirements, chosenTargets)),
+                pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, chosenTargets)),
                 triggeringEntityId = triggeringEntityId
             )
             return executeChosenModeWithTail(
                 services, state, head.effect, context, tail,
                 controllerId, sourceId, sourceName, xValue, triggeringEntityId,
-                outerTargets, outerNamedTargets, accumulatedEvents, checkForMore
+                outerTargets, outerAlignedTargets, outerNamedTargets, accumulatedEvents, checkForMore
             )
         }
     }
@@ -1721,6 +1738,7 @@ internal fun processChosenModeQueue(
         triggeringEntityId = triggeringEntityId,
         remainingChosenModes = tail,
         outerTargets = outerTargets,
+        outerAlignedTargets = outerAlignedTargets,
         outerNamedTargets = outerNamedTargets
     )
 
@@ -1762,6 +1780,7 @@ private fun executeChosenModeWithTail(
     xValue: Int?,
     triggeringEntityId: EntityId?,
     outerTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
+    outerAlignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?>,
     outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget>,
     accumulatedEvents: List<GameEvent>,
     checkForMore: CheckForMore
@@ -1777,6 +1796,7 @@ private fun executeChosenModeWithTail(
                 triggeringEntityId = triggeringEntityId,
                 remainingChosenModes = tail,
                 outerTargets = outerTargets,
+                outerAlignedTargets = outerAlignedTargets,
                 outerNamedTargets = outerNamedTargets
             )
         )
@@ -1797,6 +1817,6 @@ private fun executeChosenModeWithTail(
     return processChosenModeQueue(
         services, nextState, tail, controllerId, sourceId, sourceName, xValue,
         triggeringEntityId, allowCancelBackToModesList = null,
-        outerTargets, outerNamedTargets, events, checkForMore
+        outerTargets, outerAlignedTargets, outerNamedTargets, events, checkForMore
     )
 }

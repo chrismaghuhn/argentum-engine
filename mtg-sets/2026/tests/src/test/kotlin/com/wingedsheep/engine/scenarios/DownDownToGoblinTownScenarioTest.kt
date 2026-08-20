@@ -2,7 +2,6 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
-import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.mtg.sets.definitions.hob.cards.DownDownToGoblinTown
@@ -54,7 +53,6 @@ class DownDownToGoblinTownScenarioTest : FunSpec({
             CastSpell(
                 playerId = me,
                 cardId = card,
-                targets = listOf(ChosenTarget.Player(opponent)),
             )
         ).error shouldBe null
         drain()
