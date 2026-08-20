@@ -75,7 +75,7 @@ class QuilledGreatwurmScenarioTest : FunSpec({
             when {
                 decision is CombatResolutionDecision -> confirmCombatDamage()
                 decision is OrderObjectsDecision ->
-                    submitOrderedResponse(decision.playerId, decision.objects)
+                    submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
                 decision != null -> autoResolveDecision()
                 state.stack.isNotEmpty() -> bothPass()
                 else -> return

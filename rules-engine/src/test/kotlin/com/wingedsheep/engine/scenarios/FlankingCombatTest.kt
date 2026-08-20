@@ -168,10 +168,11 @@ class FlankingCombatTest : FunSpec({
         driver.declareAttackers(attacker, listOf(sentinel), defender).isSuccess shouldBe true
 
         driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
-        driver.declareBlockers(
+        val blockerResult = driver.declareBlockers(
             defender,
             mapOf(footsoldier to listOf(sentinel), militia to listOf(sentinel)),
-        ).isSuccess shouldBe true
+        )
+        (blockerResult.isSuccess || blockerResult.isPaused) shouldBe true
 
         resolveThroughCombat(driver)
 

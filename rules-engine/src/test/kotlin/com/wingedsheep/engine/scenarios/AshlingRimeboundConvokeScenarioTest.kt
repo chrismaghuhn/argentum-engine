@@ -3,6 +3,8 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseColorDecision
 import com.wingedsheep.engine.core.ColorChosenResponse
+import com.wingedsheep.engine.core.OrderObjectsDecision
+import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.legalactions.EnumerationMode
@@ -133,6 +135,8 @@ private fun GameTestDriver.drainDecisionsChoosingRed(player: EntityId) {
         when {
             decision is ChooseColorDecision ->
                 submitDecision(player, ColorChosenResponse(decision.id, Color.RED))
+            decision is OrderObjectsDecision ->
+                submitDecision(player, OrderedResponse(decision.id, decision.objects))
             decision != null -> declinePendingDecision(player)
             else -> passPriority(priorityPlayer ?: player)
         }
