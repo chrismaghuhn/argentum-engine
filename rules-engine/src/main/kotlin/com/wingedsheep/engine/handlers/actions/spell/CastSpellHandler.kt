@@ -2948,7 +2948,7 @@ class CastSpellHandler(
                                 }
                                 PermanentCostAction.SACRIFICE -> {
                                     sacrificedSnapshots.addAll(
-                                        captureEntitySnapshots(chosen, currentState.projectedState)
+                                        captureEntitySnapshots(chosen, currentState)
                                     )
                                     for (permId in chosen) {
                                         if (currentState.getEntity(permId) == null) continue

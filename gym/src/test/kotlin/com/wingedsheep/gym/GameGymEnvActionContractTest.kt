@@ -7,11 +7,13 @@ import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.OrderBlockers
+import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
@@ -127,6 +129,39 @@ class GameGymEnvActionContractTest : FunSpec({
             gym.step(staleActionId)
         }
         environment.stepCount shouldBe stepCountBefore + 1
+    }
+
+    test("variable sacrifice publishes candidates and complete cardinality in the observation") {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(config())
+
+        val playerId = environment.playerIds[0]
+        val candidates = listOf(EntityId("creature-b"), EntityId("creature-a"))
+        val template = LegalAction(
+            action = PassPriority(playerId),
+            actionType = "CastSpell",
+            description = "Cast Plumb the Forbidden",
+            additionalCostInfo = AdditionalCostData(
+                description = "Sacrifice one or more creatures",
+                costType = "VariableSacrifice",
+                validSacrificeTargets = candidates,
+                sacrificeCount = 0,
+                sacrificeMinCount = 0,
+                sacrificeMaxCount = candidates.size,
+            ),
+        )
+
+        val observed = ObservationBuilder(cardRegistry = cardRegistry)
+            .build(environment.state, playerId, listOf(template))
+            .observation as com.wingedsheep.gym.contract.TrainingObservation
+        val view = observed.legalActions.single()
+
+        view.validSacrificeTargets shouldBe candidates.sortedBy { it.value }
+        view.sacrificeCount shouldBe 0
+        view.sacrificeMinCount shouldBe 0
+        view.sacrificeMaxCount shouldBe 2
+        view.requiresStructuredAction shouldBe true
     }
 
     test("combat declaration templates require explicit empty-or-populated choices") {

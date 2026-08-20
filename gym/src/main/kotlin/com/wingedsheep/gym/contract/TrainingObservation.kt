@@ -258,6 +258,14 @@ data class LegalActionView(
     val maxAffordableX: Int? = null,
     val minTargets: Int = 0,
     val maxTargets: Int = 0,
+    /** Eligible permanents for an additional sacrifice cost, from the current legal-action domain. */
+    val validSacrificeTargets: List<EntityId> = emptyList(),
+    /** Fixed sacrifice cardinality, or the variable cost's lower-bound/cardinality hint. */
+    val sacrificeCount: Int = 0,
+    /** Minimum number of permanents the caller may submit for the sacrifice cost. */
+    val sacrificeMinCount: Int = 0,
+    /** Maximum number of permanents the caller may submit for the sacrifice cost. */
+    val sacrificeMaxCount: Int = 0,
     val requiresDamageDistribution: Boolean = false,
     val isManaAbility: Boolean = false,
     /** True when an action ID alone is not an executable player choice. */

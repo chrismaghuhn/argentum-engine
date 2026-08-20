@@ -32,6 +32,7 @@ import com.wingedsheep.sdk.model.CardFace
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.costs.PermanentCostAction
 import com.wingedsheep.sdk.scripting.ChoiceSlot
 import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.dsl.giftKeyword
@@ -2416,24 +2417,35 @@ class CastSpellEnumerator : ActionEnumerator {
                             // the crew/saddle payload; the caster's chosen ids come back as
                             // `additionalCostPayment.variableCostPermanents`.
                             is CostAtom.VariablePermanents -> {
-                                val projected = state.projectedState
                                 val candidates = VariablePermanentsCost.candidates(state, playerId, atom)
-                                // The cost info is published even when the threshold is out of
-                                // reach, so the greyed-out variant still tells the player what
-                                // teamwork would ask for; affordability is the separate flag.
                                 canPayKickerAdditionalCost = VariablePermanentsCost.canPay(state, playerId, atom)
-                                kickerCostInfo = AdditionalCostData(
-                                    description = atom.description.replaceFirstChar { it.uppercase() },
-                                    costType = "TapForTotalPower",
-                                    tapForPowerRequired = atom.minMeasure,
-                                    tapForPowerCreatures = candidates.map { creatureId ->
-                                        TapForPowerCreatureData(
-                                            entityId = creatureId,
-                                            name = state.getEntity(creatureId)?.get<CardComponent>()?.name ?: "Unknown",
-                                            power = projected.getPower(creatureId) ?: 0
-                                        )
-                                    }
-                                )
+                                if (atom.action == PermanentCostAction.SACRIFICE) {
+                                    kickerCostInfo = AdditionalCostData(
+                                        description = atom.description.replaceFirstChar { it.uppercase() },
+                                        costType = "VariableSacrifice",
+                                        validSacrificeTargets = candidates,
+                                        sacrificeCount = atom.minCount,
+                                        sacrificeMinCount = atom.minCount,
+                                        sacrificeMaxCount = candidates.size
+                                    )
+                                } else {
+                                    val projected = state.projectedState
+                                    // The cost info is published even when the threshold is out of
+                                    // reach, so the greyed-out variant still tells the player what
+                                    // teamwork would ask for; affordability is the separate flag.
+                                    kickerCostInfo = AdditionalCostData(
+                                        description = atom.description.replaceFirstChar { it.uppercase() },
+                                        costType = "TapForTotalPower",
+                                        tapForPowerRequired = atom.minMeasure,
+                                        tapForPowerCreatures = candidates.map { creatureId ->
+                                            TapForPowerCreatureData(
+                                                entityId = creatureId,
+                                                name = state.getEntity(creatureId)?.get<CardComponent>()?.name ?: "Unknown",
+                                                power = projected.getPower(creatureId) ?: 0
+                                            )
+                                        }
+                                    )
+                                }
                             }
                             is CostAtom.PayLife -> {
                                 // All PayLife leaves were preflighted as one total above.
