@@ -198,6 +198,12 @@ data class TriggeredAbilityOnStackComponent(
     val descriptionOverride: String? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured when this trigger occurrence was detected. */
+    val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was detected. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val defendingPlayerId: EntityId? = null,
     /** The object that dealt the damage that caused this trigger, independent of triggeringEntityId. */

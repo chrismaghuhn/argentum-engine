@@ -169,6 +169,19 @@ data object TriggeringEntityHadCounters : Condition {
 }
 
 /**
+ * Intervening-if for an entering creature: its name is not shared by another creature controlled
+ * by the ability's controller on the battlefield or by a creature card in that controller's
+ * graveyard. The trigger's event filter supplies the entering-creature and nontoken qualification;
+ * this condition owns only the name comparison and is evaluated at both trigger and resolution.
+ */
+@SerialName("TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard")
+@Serializable
+data object TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard : Condition {
+    override val description: String =
+        "if its name isn't shared with another creature you control or a creature card in your graveyard"
+}
+
+/**
  * Condition: "if it was a <subtype>" (intervening-if for dies/leaves triggers).
  * Reads the last-known **projected** subtypes captured on the triggering entity at the moment it
  * left the battlefield (Rule 603.10 last-known information), so subtypes granted by continuous

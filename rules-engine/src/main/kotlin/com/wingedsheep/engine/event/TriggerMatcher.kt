@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.chosenCreatureType
 import com.wingedsheep.engine.state.components.battlefield.chosenOpponent
@@ -2068,12 +2069,22 @@ class TriggerMatcher(
         state: GameState,
         triggers: List<PendingTrigger>
     ): List<PendingTrigger> {
-        return triggers.filter { trigger ->
-            val condition = trigger.ability.triggerCondition ?: return@filter true
+        return triggers.mapNotNull { originalTrigger ->
+            val condition = originalTrigger.ability.triggerCondition
+                ?: return@mapNotNull originalTrigger
+            // Bind the live battlefield object to the occurrence before evaluating its condition.
+            // Entity ids survive zone round-trips in this engine; the entry stamp is the generic
+            // CR 400.7 identity that lets the resolution-time check distinguish a returned object.
+            // The projected name is frozen alongside it so later incarnations cannot rewrite the
+            // triggering occurrence's meaning.
+            val trigger = bindTriggeringEntityOccurrence(state, originalTrigger)
             val context = EffectContext(
                 sourceId = trigger.sourceId,
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
+                triggeringEntityEntryTimestamp = trigger.triggerContext.triggeringEntityEntryTimestamp,
+                triggeringEntityName = trigger.triggerContext.triggeringEntityName,
+                triggeringEntityNameKnown = trigger.triggerContext.triggeringEntityNameKnown,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
                 damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
                 damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
@@ -2119,8 +2130,36 @@ class TriggerMatcher(
                     }
                     ?: PipelineState.EMPTY
             )
-            conditionEvaluator.evaluate(state, condition, context)
+            if (conditionEvaluator.evaluate(state, condition, context)) trigger else null
         }
+    }
+
+    private fun bindTriggeringEntityOccurrence(
+        state: GameState,
+        trigger: PendingTrigger,
+    ): PendingTrigger {
+        val triggerContext = trigger.triggerContext
+        // A serialized or copied occurrence is already authoritative. In particular, do not
+        // reconstruct a missing name from the entity after a zone change.
+        if (triggerContext.triggeringEntityEntryTimestamp != null ||
+            triggerContext.triggeringEntityNameKnown
+        ) return trigger
+        val entityId = triggerContext.triggeringEntityId ?: return trigger
+        if (entityId !in state.getBattlefield()) return trigger
+
+        val entity = state.getEntity(entityId) ?: return trigger
+        val entryTimestamp = entity.get<BattlefieldEntryTimestampComponent>()?.timestamp ?: return trigger
+        val card = entity.get<CardComponent>() ?: return trigger
+        val projected = state.projectedState
+        val name = projected.getName(entityId)
+            ?: if (projected.isFaceDown(entityId)) null else card.name
+        return trigger.copy(
+            triggerContext = triggerContext.copy(
+                triggeringEntityEntryTimestamp = entryTimestamp,
+                triggeringEntityName = name,
+                triggeringEntityNameKnown = true,
+            )
+        )
     }
 
     /**

@@ -55,6 +55,12 @@ data class TriggeredAbilityContinuation(
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val defendingPlayerId: EntityId? = null,
     val damageSourceEntityId: EntityId? = null,
@@ -159,6 +165,12 @@ data class TriggerDamageDistributionContinuation(
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
     val defendingPlayerId: EntityId? = null,
     val damageSourceEntityId: EntityId? = null,

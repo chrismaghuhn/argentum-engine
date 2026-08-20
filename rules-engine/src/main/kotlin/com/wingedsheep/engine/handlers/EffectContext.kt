@@ -249,6 +249,12 @@ data class EffectContext(
     val triggerLastKnownCardTypes: Set<String>? = null,
     /** The entity that caused the trigger to fire (e.g., creature that dealt damage for Aurification) */
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering permanent's occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known at trigger time; false means the occurrence name is unknown. */
+    val triggeringEntityNameKnown: Boolean = false,
     /** The player associated with the trigger event (e.g., the player who cast a spell for SpellCastEvent) */
     val triggeringPlayerId: EntityId? = null,
     /** The object that dealt the damage that caused this trigger, independent of triggeringEntityId. */
@@ -629,6 +635,9 @@ data class EffectContext(
             triggerLastKnownDamageDealtByPlayers = ability.triggerLastKnownDamageDealtByPlayers,
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,
+            triggeringEntityEntryTimestamp = ability.triggeringEntityEntryTimestamp,
+            triggeringEntityName = ability.triggeringEntityName,
+            triggeringEntityNameKnown = ability.triggeringEntityNameKnown,
             triggeringPlayerId = ability.triggeringPlayerId,
             defendingPlayerId = ability.defendingPlayerId,
             damageSourceEntityId = ability.damageSourceEntityId,

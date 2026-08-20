@@ -8074,6 +8074,10 @@ answer it and would silently return `false`.
   they came back as, so the guard fails and the loop stops. Reads
   `TriggerContext.lastKnownCardTypes`, populated from the `ZoneChangeEvent`'s
   `EntitySnapshot.typeLine`.
+- `TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard` — intervening-if for an
+  entering creature whose name must not be shared by another creature its controller controls or
+  by a creature card in that controller's graveyard. It reads projected names while the triggering
+  object is live and the projected last-known name after it leaves the battlefield.
 - `TargetControlsCreature(target)` — target player has a creature.
 - `TargetControlsLand(target)` — target player has a land.
 - `TargetMatchesFilter(filter, targetIndex = 0)` — the context target matches a `GameObjectFilter`.

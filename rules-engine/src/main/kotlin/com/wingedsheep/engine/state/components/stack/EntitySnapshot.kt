@@ -220,7 +220,12 @@ data class EntitySnapshot(
                 wasAttacking = state.getEntity(entityId)?.has<AttackingComponent>() == true,
                 battlefieldEntryTimestamp = state.getEntity(entityId)
                     ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
-                name = state.getEntity(entityId)?.get<CardComponent>()?.name,
+                name = projected.getName(entityId)
+                    ?: if (projected.isFaceDown(entityId)) {
+                        null
+                    } else {
+                        state.getEntity(entityId)?.get<CardComponent>()?.name
+                    },
             )
         }
     }
@@ -258,11 +263,11 @@ fun captureEntitySnapshots(
 /**
  * [captureEntitySnapshots] overload that also records the facts only [GameState] carries, not
  * [ProjectedState]: each permanent's **token-ness** ([EntitySnapshot.wasToken], via [TokenComponent])
- * and its **name** ([EntitySnapshot.name], via [CardComponent]). Use at a sacrifice site when a
- * following sibling needs either — Exploit's `ExploitedEvent.sacrificedWasToken` (read by Skull
- * Skaab's "exploits a nontoken creature" clause) for the first, naming what an alternative cost ate
- * for the second. Caller must invoke this BEFORE the zone change so projected values, the token
- * component and the card component all still resolve.
+ * and its **name** ([EntitySnapshot.name], projected with a [CardComponent] fallback for face-up
+ * permanents). Use at a sacrifice site when a following sibling needs either — Exploit's
+ * `ExploitedEvent.sacrificedWasToken` (read by Skull Skaab's "exploits a nontoken creature" clause)
+ * for the first, naming what an alternative cost ate for the second. Caller must invoke this BEFORE
+ * the zone change so projected values, the token component and the card component all still resolve.
  */
 fun captureEntitySnapshots(
     ids: List<EntityId>,
@@ -274,7 +279,12 @@ fun captureEntitySnapshots(
         wasFaceDown = state.projectedState.isFaceDown(snapshot.entityId),
         battlefieldEntryTimestamp = container
             ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
-        name = container?.get<CardComponent>()?.name,
+        name = state.projectedState.getName(snapshot.entityId)
+            ?: if (state.projectedState.isFaceDown(snapshot.entityId)) {
+                null
+            } else {
+                container?.get<CardComponent>()?.name
+            },
     )
 }
 

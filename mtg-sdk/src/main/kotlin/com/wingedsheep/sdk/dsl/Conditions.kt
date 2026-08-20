@@ -1995,6 +1995,14 @@ object Conditions {
         com.wingedsheep.sdk.scripting.conditions.TriggeringEntityHadCounters
 
     /**
+     * Intervening-if for an entering creature whose name must be unique among the controller's
+     * other creatures on the battlefield and creature cards in that controller's graveyard.
+     * The trigger's filter supplies the creature/nontoken qualification.
+     */
+    val TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard: ConditionInterface =
+        com.wingedsheep.sdk.scripting.conditions.TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard
+
+    /**
      * If the triggering entity had [subtype] among its **projected** subtypes when it left the
      * battlefield (CR 603.10 last-known information). Wrap in [Not] for the "if it wasn't a X"
      * wording — e.g. Infernal Vessel's `Not(TriggeringEntityHadSubtype(Subtype.DEMON.value))`,

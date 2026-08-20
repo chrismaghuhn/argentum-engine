@@ -487,6 +487,12 @@ object ZoneTransitionService {
                 lostAllAbilities = lastKnownLostAllAbilities,
                 typeLine = lastKnownTypeLine,
                 cardDefinitionId = cardComponent.cardDefinitionId,
+                name = state.projectedState.getName(entityId)
+                    ?: if (state.projectedState.isFaceDown(entityId)) {
+                        null
+                    } else {
+                        cardComponent.name
+                    },
                 attachedTo = lastKnownAttachedTo,
                 wasEquipped = lastKnownWasEquipped,
                 attachmentIds = lastKnownAttachmentIds,
