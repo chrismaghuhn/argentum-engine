@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.combat.AttackersDeclaredThisCombatComponent
@@ -884,11 +885,18 @@ class GameTestDriver {
         container = staticAbilityHandler.addContinuousEffectComponent(container, cardDef)
         container = staticAbilityHandler.addReplacementEffectComponent(container, cardDef)
 
+        // Directly seeded permanents still represent battlefield objects. Give them the same
+        // incarnation stamp that the real entry pipeline carries so strict damage LKI tests do not
+        // have to fall back to an unsafe bare-id match.
+        val entryStamp = _state.timestamp + 1
+        container = container.with(BattlefieldEntryTimestampComponent(entryStamp))
+
         _state = _state.withEntity(cardId, container)
 
         // Add to battlefield
         val battlefieldZone = ZoneKey(playerId, Zone.BATTLEFIELD)
         _state = _state.addToZone(battlefieldZone, cardId)
+        _state = _state.tick()
 
         return cardId
     }
@@ -954,10 +962,15 @@ class GameTestDriver {
         container = staticAbilityHandler.addContinuousEffectComponent(container, cardDef)
         container = staticAbilityHandler.addReplacementEffectComponent(container, cardDef)
 
+        // Keep direct fixture placement aligned with real battlefield entry identity.
+        val entryStamp = _state.timestamp + 1
+        container = container.with(BattlefieldEntryTimestampComponent(entryStamp))
+
         _state = _state.withEntity(cardId, container)
 
         val battlefieldZone = ZoneKey(playerId, Zone.BATTLEFIELD)
         _state = _state.addToZone(battlefieldZone, cardId)
+        _state = _state.tick()
 
         return cardId
     }
@@ -1054,11 +1067,16 @@ class GameTestDriver {
         container = staticAbilityHandler.addContinuousEffectComponent(container, cardDef)
         container = staticAbilityHandler.addReplacementEffectComponent(container, cardDef)
 
+        // Keep direct fixture placement aligned with real battlefield entry identity.
+        val entryStamp = _state.timestamp + 1
+        container = container.with(BattlefieldEntryTimestampComponent(entryStamp))
+
         _state = _state.withEntity(cardId, container)
 
         // Add to battlefield
         val battlefieldZone = ZoneKey(playerId, Zone.BATTLEFIELD)
         _state = _state.addToZone(battlefieldZone, cardId)
+        _state = _state.tick()
 
         return cardId
     }

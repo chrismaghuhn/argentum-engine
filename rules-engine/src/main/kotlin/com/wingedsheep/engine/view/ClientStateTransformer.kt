@@ -1864,6 +1864,7 @@ class ClientStateTransformer(
         triggerLastKnownDamageDealtByPlayers = triggered.triggerLastKnownDamageDealtByPlayers,
         triggeringEntityId = triggered.triggeringEntityId,
         triggeringPlayerId = triggered.triggeringPlayerId,
+        defendingPlayerId = triggered.defendingPlayerId,
         targetingSourceEntityId = triggered.targetingSourceEntityId,
         triggerLastKnownPower = triggered.lastKnownPower,
         triggerLastKnownToughness = triggered.lastKnownToughness,

@@ -121,11 +121,11 @@ class CombatTaxContinuationResumer(
             if (response.autoPay) {
                 val solver = ManaSolver(services.cardRegistry)
                 val solution = solver.solve(currentState, playerId, remainingCost) ?: return null
-                for (source in solution.sources) {
-                    val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                    currentState = tappedState
-                    tapEvent?.let(events::add)
-                }
+                val tapResult = services.manaAbilitySideEffectExecutor
+                    .tapSourcesWithSideEffects(currentState, solution, playerId)
+                if (!tapResult.success) return null
+                currentState = tapResult.state
+                events.addAll(tapResult.events)
                 for ((_, production) in solution.manaProduced) {
                     pool = if (production.color != null) {
                         pool.add(production.color, production.amount)

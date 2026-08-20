@@ -64,7 +64,11 @@ class AttachmentBatchMutation(
         // changed while a decision was pending simply makes no move, matching an illegal attach
         // attempt; malformed/out-of-domain submitted IDs fail closed above.
         val stillLegal = domainAttachments.filter { attachmentId ->
-            !TargetsComponent.isDifferentObject(state, attachmentId, lockedAttachmentIdentityStamps) &&
+            // An empty map means this call did not capture an identity lock (the initial,
+            // non-continuation execution). Once a continuation supplies a non-empty lock,
+            // it is authoritative: omitted IDs fail closed via isDifferentObject.
+            (lockedAttachmentIdentityStamps.isEmpty() ||
+                !TargetsComponent.isDifferentObject(state, attachmentId, lockedAttachmentIdentityStamps)) &&
                 legality.isLegal(state, attachmentId, targetId, controllerId, context)
         }
         // The order domain is frozen at the decision boundary. A selected object that was not

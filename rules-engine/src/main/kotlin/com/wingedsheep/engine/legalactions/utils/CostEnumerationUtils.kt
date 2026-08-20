@@ -5,6 +5,7 @@ import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.permanent.counters.counterTypeToString
 import com.wingedsheep.engine.legalactions.*
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
@@ -22,8 +23,10 @@ import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
  * Extracted cost-checking helpers from LegalActionsCalculator.
@@ -35,6 +38,96 @@ class CostEnumerationUtils(
     private val predicateEvaluator: PredicateEvaluator,
     private val cardRegistry: CardRegistry
 ) {
+    /** Whether a dynamic life amount is available and affordable for this activation. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        amount: DynamicAmount,
+    ): Boolean = canPayLifeAmounts(state, playerId, sourceId, listOf(amount))
+
+    /** Whether all mandatory life leaves of an activated-ability cost fit the current life total. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AbilityCost,
+    ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, cost)
+        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
+    /** Resolve all PayLife atoms in an activated-ability cost once. */
+    fun resolvePayLifeCostTotal(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AbilityCost,
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = CostAmountResolver.payLifeAmounts(cost),
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )
+
+    /** Whether all mandatory life leaves of one additional cost fit the current life total. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AdditionalCost,
+    ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, cost)
+        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
+    /** Resolve all PayLife atoms in one additional cost once. */
+    fun resolvePayLifeCostTotal(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        cost: AdditionalCost,
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = CostAmountResolver.payLifeAmounts(cost),
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )
+
+    /** Whether all mandatory life leaves across additional costs fit one pre-payment total. */
+    fun canPayLifeCost(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        costs: Iterable<AdditionalCost>,
+    ): Boolean = resolvePayLifeCostTotal(state, playerId, sourceId, costs)
+        ?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
+    /** Resolve all PayLife atoms across additional costs against one pre-payment state. */
+    fun resolvePayLifeCostTotal(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        costs: Iterable<AdditionalCost>,
+    ): Int? = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = costs.flatMap { cost -> CostAmountResolver.payLifeAmounts(cost) },
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )
+
+    private fun canPayLifeAmounts(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        amounts: Iterable<DynamicAmount>,
+    ): Boolean = CostAmountResolver.resolvePayLifeTotal(
+        state = state,
+        amounts = amounts,
+        sourceId = sourceId,
+        controllerId = playerId,
+        cardRegistry = cardRegistry,
+    )?.let { it >= 0 && state.lifeTotal(playerId) >= it } == true
+
     // --- Sacrifice targets ---
 
     fun findSacrificeTargets(

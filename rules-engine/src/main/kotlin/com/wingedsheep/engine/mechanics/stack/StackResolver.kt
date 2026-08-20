@@ -7,7 +7,6 @@ import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.EffectHandler
 import com.wingedsheep.engine.handlers.effects.composite.PreTargetedEffectContext
 import com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue
-import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.mechanics.FlashbackGrants
 import com.wingedsheep.engine.mechanics.HarmonizeGrants
@@ -3143,7 +3142,6 @@ class StackResolver(
             targets = chosenTargets,
             targetRequirements = targetReqs
         )
-
         // CR 603.4 / 608.2a: an intervening-if condition is checked before the target legality
         // check in 608.2b. If it is false, the ability leaves the stack without validating targets
         // or executing any part of its effect. A triggerRestriction is a trigger-time CR 603.2
@@ -3179,6 +3177,13 @@ class StackResolver(
                 xValue = abilityComponent.xValue,
                 triggeringEntityId = abilityComponent.triggeringEntityId,
                 triggeringPlayerId = abilityComponent.triggeringPlayerId,
+                defendingPlayerId = abilityComponent.defendingPlayerId,
+                damageSourceId = abilityComponent.damageSourceEntityId,
+                damageRecipientId = abilityComponent.damageRecipientEntityId,
+                damageRecipientKind = abilityComponent.damageRecipientKind,
+                damageRecipientKinds = abilityComponent.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = abilityComponent.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = abilityComponent.damageRecipientLastKnownSnapshot,
                 targetEntryStamps = targetsComponent.targetEntryStamps,
                 targetingSourceType = TargetingSourceType.ABILITY,
                 storedCollections = abilityComponent.carriedPipeline?.storedCollections ?: emptyMap()

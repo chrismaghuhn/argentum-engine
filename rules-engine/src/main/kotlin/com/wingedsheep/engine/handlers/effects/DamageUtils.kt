@@ -2,6 +2,8 @@ package com.wingedsheep.engine.handlers.effects
 
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.applyShieldCounterToDamage
 import com.wingedsheep.engine.core.DamagePreventedEvent
 import com.wingedsheep.engine.core.EffectResult
@@ -27,11 +29,17 @@ import com.wingedsheep.engine.state.components.battlefield.DamageDealtToCreature
 import com.wingedsheep.engine.state.components.battlefield.DamageSourceLki
 import com.wingedsheep.engine.state.components.battlefield.DamagedBySourcesThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.HasDealtDamageComponent
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.battlefield.WasDealtDamageThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
 import com.wingedsheep.engine.state.components.stack.SpellGrantedKeywordsComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.projectedTypeLine
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.player.RedNoncombatDamageDealtThisTurnComponent
 import com.wingedsheep.sdk.core.Color
@@ -42,6 +50,7 @@ import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.player.DamageBonusComponent
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.registry.CardRegistry
@@ -112,6 +121,65 @@ object DamageUtils {
     private val conditionEvaluator = ConditionEvaluator()
     private val dynamicAmountEvaluator = DynamicAmountEvaluator()
     lateinit var cardRegistry: CardRegistry
+
+    /**
+     * Capture the projected characteristics and event-time identity of a card-bearing damage source
+     * or recipient before damage/state-based actions can move it. Battlefield permanents use their
+     * entry stamp; stack spells use the current engine timestamp as their object incarnation. Player
+     * ids and ability-only stack entities have no card snapshot and remain represented by their
+     * explicit role/id on the damage event.
+     */
+    fun captureDamageEntitySnapshot(state: GameState, entityId: EntityId?): EntitySnapshot? {
+        val id = entityId ?: return null
+        val container = state.getEntity(id) ?: return null
+        val card = container.get<CardComponent>() ?: return null
+        val battlefieldStamp = container.get<BattlefieldEntryTimestampComponent>()?.timestamp
+        val controllerId = EntitySnapshot.fromProjection(id, state).controllerId
+            ?: container.get<ControllerComponent>()?.playerId
+            ?: container.get<SpellOnStackComponent>()?.casterId
+            ?: container.get<TriggeredAbilityOnStackComponent>()?.controllerId
+            ?: container.get<ActivatedAbilityOnStackComponent>()?.controllerId
+        val attachedIds = container.get<AttachmentsComponent>()?.attachedIds.orEmpty()
+        val hasEquipment = attachedIds.any { attachmentId ->
+            projectedTypeLine(state, attachmentId)?.isEquipment == true
+        }
+        val hasAura = attachedIds.any { attachmentId ->
+            projectedTypeLine(state, attachmentId)?.isAura == true
+        }
+        return EntitySnapshot.fromProjection(id, state).copy(
+            controllerId = controllerId,
+            typeLine = projectedTypeLine(state, id),
+            basePower = card.baseStats?.basePower,
+            cardDefinitionId = card.cardDefinitionId,
+            objectIncarnationStamp = battlefieldStamp ?: state.timestamp,
+            wasEquipped = hasEquipment,
+            wasEnchanted = hasAura,
+            wasTapped = container.has<TappedComponent>(),
+            wasAttacking = container.has<AttackingComponent>(),
+        )
+    }
+
+    /**
+     * Capture every recipient role proven by the damage-time projection. In particular, do not
+     * collapse an animated permanent that is both a creature and a planeswalker to whichever
+     * branch happened to run first. An unrecognized role remains UNKNOWN rather than being guessed
+     * from the entity id or a later zone.
+     */
+    fun damageRecipientKinds(
+        state: GameState,
+        targetId: EntityId,
+        targetIsPlayer: Boolean,
+    ): DamageRecipientKindSet {
+        if (targetIsPlayer) return DamageRecipientKindSet.PLAYER
+        val projected = state.projectedState
+        val kinds = buildList {
+            if (projected.isCreature(targetId)) add(DamageRecipientKind.CREATURE)
+            if (projected.isPlaneswalker(targetId)) add(DamageRecipientKind.PLANESWALKER)
+            if (projected.isBattle(targetId)) add(DamageRecipientKind.BATTLE)
+        }
+        return if (kinds.isEmpty()) DamageRecipientKindSet.UNKNOWN
+        else DamageRecipientKindSet.of(*kinds.toTypedArray())
+    }
 
     /**
      * Controller of a battlefield permanent that hosts a replacement effect, honoring
@@ -440,7 +508,7 @@ object DamageUtils {
         val sourceName = sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
         val targetContainer = newState.getEntity(targetId)
         val targetName = targetContainer?.get<CardComponent>()?.name
-        val targetIsPlayer = targetContainer?.get<LifeTotalComponent>() != null
+        val targetIsPlayer = lifeComponent != null
         val targetIsFaceDown = targetContainer?.has<FaceDownComponent>() == true
         // Capture the recipient's controller + creature-ness now, while it's still on the
         // battlefield, so recipient-based triggers match even if it dies to this damage (LKI).
@@ -450,6 +518,8 @@ object DamageUtils {
         // ORIGINAL state's projection, before this damage marked the creature / SBAs could move it.
         // Read by "damage equal to that creature's toughness" triggers (Taii Wakeen).
         val targetToughnessAtDamage = if (targetWasCreature) projected.getToughness(targetId) else null
+        val recipientKinds = damageRecipientKinds(state, targetId, targetIsPlayer)
+        val recipientKind = recipientKinds.asList().singleOrNull() ?: DamageRecipientKind.UNKNOWN
         val sourceTargetIds = sourceId
             ?.let(newState::getEntity)
             ?.get<TargetsComponent>()
@@ -477,6 +547,10 @@ object DamageUtils {
                 excessAmount = creatureExcessDamage,
                 targetToughnessAtDamage = targetToughnessAtDamage,
                 sourceTargetIdsAtDamage = sourceTargetIds,
+                recipientKind = recipientKind,
+                recipientKinds = recipientKinds,
+                damageSourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
+                damageRecipientLastKnownSnapshot = captureDamageEntitySnapshot(state, targetId),
             )
         )
 
@@ -1377,7 +1451,8 @@ object DamageUtils {
             recipientId = targetId,
             amount = damageAmount,
             linkId = mod.linkId,
-            sourceName = sourceName
+            sourceName = sourceName,
+            sourceLastKnownSnapshot = captureDamageEntitySnapshot(state, sourceId),
         )
         // preventDamage = true (Deflecting Palm): damage is prevented — short-circuit. preventDamage
         // = false (Eye for an Eye): the reaction fires but the damage still proceeds.

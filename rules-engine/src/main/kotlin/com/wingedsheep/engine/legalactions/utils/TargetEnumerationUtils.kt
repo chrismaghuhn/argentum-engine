@@ -31,11 +31,21 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 class TargetEnumerationUtils(
     private val predicateEvaluator: PredicateEvaluator
 ) {
+    private fun predicateContextFor(
+        playerId: EntityId,
+        sourceId: EntityId?,
+        supplied: PredicateContext?
+    ): PredicateContext = (supplied ?: PredicateContext(controllerId = playerId)).copy(
+        controllerId = playerId,
+        sourceId = sourceId ?: supplied?.sourceId,
+    )
+
     fun findValidTargets(
         state: GameState,
         playerId: EntityId,
         requirement: TargetRequirement,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
     ): List<EntityId> {
         return when (requirement) {
             is TargetPlayer -> state.turnOrder.filter { state.hasEntity(it) && !playerHasShroud(state, it) &&
@@ -45,20 +55,20 @@ class TargetEnumerationUtils(
                 !playerHasHexproof(state, it) && !playerHasProtectionFrom(state, it, sourceId, playerId) &&
                 PlayerTargetRestriction.isSatisfied(state, requirement.restriction, it, playerId, sourceId) }
             is AnyTarget -> {
-                val creatures = findValidPermanentTargets(state, playerId, TargetFilter.Creature, sourceId)
-                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId)
+                val creatures = findValidPermanentTargets(state, playerId, TargetFilter.Creature, sourceId, predicateContext)
+                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId, predicateContext)
                 val players = state.turnOrder.filter { state.hasEntity(it) && !playerHasShroud(state, it) &&
                     !playerHasHexproofAgainst(state, it, playerId) && !playerHasProtectionFrom(state, it, sourceId, playerId) }
                 (creatures + planeswalkers).distinct() + players
             }
             is TargetCreatureOrPlayer -> {
-                val creatures = findValidPermanentTargets(state, playerId, TargetFilter.Creature, sourceId)
+                val creatures = findValidPermanentTargets(state, playerId, TargetFilter.Creature, sourceId, predicateContext)
                 val players = state.turnOrder.filter { state.hasEntity(it) && !playerHasShroud(state, it) &&
                     !playerHasHexproofAgainst(state, it, playerId) && !playerHasProtectionFrom(state, it, sourceId, playerId) }
                 creatures + players
             }
             is TargetPermanentOrPlayer -> {
-                val permanents = findValidPermanentTargets(state, playerId, requirement.permanentFilter, sourceId)
+                val permanents = findValidPermanentTargets(state, playerId, requirement.permanentFilter, sourceId, predicateContext)
                 val players = state.turnOrder.filter { state.hasEntity(it) && !playerHasShroud(state, it) &&
                     !playerHasHexproofAgainst(state, it, playerId) && !playerHasProtectionFrom(state, it, sourceId, playerId) }
                 permanents + players
@@ -66,33 +76,33 @@ class TargetEnumerationUtils(
             is TargetPlayerOrPlaneswalker -> {
                 val players = state.turnOrder.filter { state.hasEntity(it) && !playerHasShroud(state, it) &&
                     !playerHasHexproofAgainst(state, it, playerId) && !playerHasProtectionFrom(state, it, sourceId, playerId) }
-                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId)
+                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId, predicateContext)
                 players + planeswalkers
             }
             is TargetOpponentOrPlaneswalker -> {
                 val opponents = state.turnOrder.filter { it != playerId && state.hasEntity(it) && !playerHasShroud(state, it) &&
                     !playerHasHexproof(state, it) && !playerHasProtectionFrom(state, it, sourceId, playerId) }
-                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId)
+                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId, predicateContext)
                 opponents + planeswalkers
             }
             is TargetCreatureOrPlaneswalker -> {
-                val creatures = findValidPermanentTargets(state, playerId, TargetFilter.Creature, sourceId)
-                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId)
+                val creatures = findValidPermanentTargets(state, playerId, TargetFilter.Creature, sourceId, predicateContext)
+                val planeswalkers = findValidPermanentTargets(state, playerId, TargetFilter.Planeswalker, sourceId, predicateContext)
                 creatures + planeswalkers
             }
-            is TargetObject -> findValidObjectTargets(state, playerId, requirement.filter, sourceId)
+            is TargetObject -> findValidObjectTargets(state, playerId, requirement.filter, sourceId, predicateContext)
             is TargetOther -> {
-                val baseTargets = findValidTargets(state, playerId, requirement.baseRequirement, sourceId)
+                val baseTargets = findValidTargets(state, playerId, requirement.baseRequirement, sourceId, predicateContext)
                 val excludeId = resolveOtherExclusion(state, requirement, sourceId)
                 if (excludeId != null) baseTargets.filter { it != excludeId } else baseTargets
             }
             is TargetSpellOrPermanent -> {
                 val permanentFilter = requirement.permanentFilter
                 val permanents = if (permanentFilter == null) {
-                    findValidPermanentTargets(state, playerId, TargetFilter.Permanent, sourceId)
+                    findValidPermanentTargets(state, playerId, TargetFilter.Permanent, sourceId, predicateContext)
                 } else {
                     val projected = state.projectedState
-                    val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
+                    val context = predicateContextFor(playerId, sourceId, predicateContext)
                     state.getBattlefield().filter { entityId ->
                         val container = state.getEntity(entityId) ?: return@filter false
                         val entityController = container.get<ControllerComponent>()?.playerId
@@ -104,7 +114,7 @@ class TargetEnumerationUtils(
                         predicateEvaluator.matches(state, projected, entityId, permanentFilter, context)
                     }
                 }
-                val spells = findValidSpellTargets(state, playerId, TargetFilter.SpellOnStack)
+                val spells = findValidSpellTargets(state, playerId, TargetFilter.SpellOnStack, predicateContext)
                 permanents + spells
             }
         }
@@ -140,11 +150,12 @@ class TargetEnumerationUtils(
         state: GameState,
         playerId: EntityId,
         filter: TargetFilter,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
     ): List<EntityId> {
         val projected = state.projectedState
         val battlefield = state.getBattlefield()
-        val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
+        val context = predicateContextFor(playerId, sourceId, predicateContext)
         return battlefield.filter { entityId ->
             if (filter.excludeSelf && entityId == sourceId) return@filter false
             val entityController = state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
@@ -174,14 +185,15 @@ class TargetEnumerationUtils(
         state: GameState,
         playerId: EntityId,
         filter: TargetFilter,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
     ): List<EntityId> {
         val playerIds = if (filter.baseFilter.controllerPredicate == ControllerPredicate.ControlledByYou) {
             listOf(playerId)
         } else {
             state.turnOrder.toList()
         }
-        val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
+        val context = predicateContextFor(playerId, sourceId, predicateContext)
         return playerIds.flatMap { pid ->
             state.getGraveyard(pid).filter { entityId ->
                 if (filter.excludeSelf && entityId == sourceId) return@filter false
@@ -194,20 +206,21 @@ class TargetEnumerationUtils(
         state: GameState,
         playerId: EntityId,
         filter: TargetFilter,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
     ): List<EntityId> {
         // Cross-zone union: surface the union of legal targets across each single-zone clause
         // (Sorceress's Schemes offers both graveyard instants/sorceries and exiled flashback cards).
         if (filter.isUnion) {
             return filter.clauses().flatMap { clause ->
-                findValidObjectTargets(state, playerId, clause, sourceId)
+                findValidObjectTargets(state, playerId, clause, sourceId, predicateContext)
             }.distinct()
         }
         return when (filter.zone) {
-            Zone.BATTLEFIELD -> findValidPermanentTargets(state, playerId, filter, sourceId)
-            Zone.GRAVEYARD -> findValidGraveyardTargets(state, playerId, filter, sourceId)
-            Zone.EXILE -> findValidExileTargets(state, playerId, filter, sourceId)
-            Zone.STACK -> findValidSpellTargets(state, playerId, filter)
+            Zone.BATTLEFIELD -> findValidPermanentTargets(state, playerId, filter, sourceId, predicateContext)
+            Zone.GRAVEYARD -> findValidGraveyardTargets(state, playerId, filter, sourceId, predicateContext)
+            Zone.EXILE -> findValidExileTargets(state, playerId, filter, sourceId, predicateContext)
+            Zone.STACK -> findValidSpellTargets(state, playerId, filter, predicateContext)
             else -> emptyList()
         }
     }
@@ -222,13 +235,14 @@ class TargetEnumerationUtils(
         state: GameState,
         playerId: EntityId,
         filter: TargetFilter,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
     ): List<EntityId> {
         val playerIds = when (filter.baseFilter.controllerPredicate) {
             ControllerPredicate.ControlledByYou, ControllerPredicate.OwnedByYou -> listOf(playerId)
             else -> state.turnOrder.toList()
         }
-        val context = PredicateContext(controllerId = playerId, sourceId = sourceId)
+        val context = predicateContextFor(playerId, sourceId, predicateContext)
         return playerIds.flatMap { pid ->
             state.getExile(pid).filter { entityId ->
                 if (filter.excludeSelf && entityId == sourceId) return@filter false
@@ -240,9 +254,10 @@ class TargetEnumerationUtils(
     fun findValidSpellTargets(
         state: GameState,
         playerId: EntityId,
-        filter: TargetFilter
+        filter: TargetFilter,
+        predicateContext: PredicateContext? = null,
     ): List<EntityId> {
-        val context = PredicateContext(controllerId = playerId)
+        val context = predicateContextFor(playerId, null, predicateContext)
         // "Target spell" only matches actual spells — never triggered/activated abilities on the
         // stack. A spell is a card on the stack (CR 112.1); an ability on the stack is an ability,
         // not a spell (CR 113.3b/c, 113.7a). The base filter is `Any` (zone = STACK) and would
@@ -287,10 +302,11 @@ class TargetEnumerationUtils(
         state: GameState,
         playerId: EntityId,
         targetReqs: List<TargetRequirement>,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
     ): List<TargetInfo> {
         return targetReqs.mapIndexed { index, req ->
-            val validTargets = findValidTargets(state, playerId, req, sourceId)
+            val validTargets = findValidTargets(state, playerId, req, sourceId, predicateContext)
             TargetInfo(
                 index = index,
                 description = req.description,

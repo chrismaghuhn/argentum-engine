@@ -8,6 +8,7 @@ import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.costs.CostAtom
@@ -81,6 +82,10 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 // Check cost requirements and build cost info
                 val effectiveCost = ability.cost
                 var costCanBePaid = true
+                val resolvedPayLifeTotal = context.costUtils.resolvePayLifeCostTotal(
+                    state, playerId, entityId, effectiveCost
+                ) ?: continue
+                if (state.lifeTotal(playerId) < resolvedPayLifeTotal) continue
                 val handCards = state.getZone(playerId, Zone.HAND)
                 var hasDiscardCost = false
                 var blightCost: AbilityCost.Blight? = null
@@ -93,12 +98,22 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 when (effectiveCost) {
                     is AbilityCost.Atom -> when (val atom = effectiveCost.atom) {
                         is CostAtom.Mana -> {
-                            if (!context.manaSolver.canPay(state, playerId, atom.cost, precomputedSources = context.availableManaSources, spellContext = abilityContext)) costCanBePaid = false
+                            if (!context.manaSolver.canPay(
+                                    state,
+                                    playerId,
+                                    atom.cost,
+                                    precomputedSources = context.availableManaSources,
+                                    spellContext = abilityContext,
+                                    additionalPayLife = resolvedPayLifeTotal,
+                                )
+                            ) costCanBePaid = false
                         }
                         is CostAtom.Discard -> {
                             hasDiscardCost = true
                             if (handCards.isEmpty()) costCanBePaid = false
                         }
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
                         // Other atoms — engine validates at payment.
                         else -> {}
                     }
@@ -109,20 +124,32 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                         if (blightCreatures.isEmpty()) costCanBePaid = false
                     }
                     is AbilityCost.Composite -> {
+                        val compositeManaCost = effectiveCost.costs
+                            .mapNotNull { it.manaCostOrNull }
+                            .fold(ManaCost.ZERO) { total, manaCost -> total + manaCost }
+                        if (compositeManaCost.cmc > 0 && !context.manaSolver.canPay(
+                                state,
+                                playerId,
+                                compositeManaCost,
+                                precomputedSources = context.availableManaSources,
+                                spellContext = abilityContext,
+                                additionalPayLife = resolvedPayLifeTotal,
+                            )
+                        ) costCanBePaid = false
                         for (subCost in effectiveCost.costs) {
                             when (subCost) {
                                 is AbilityCost.Atom -> when (val atom = subCost.atom) {
-                                    is CostAtom.Mana -> {
-                                        if (!context.manaSolver.canPay(state, playerId, atom.cost, precomputedSources = context.availableManaSources, spellContext = abilityContext)) {
-                                            costCanBePaid = false; break
-                                        }
-                                    }
+                                    // The aggregate mana check above owns all mana atoms and the
+                                    // complete PayLife total; never check each mana atom separately.
+                                    is CostAtom.Mana -> {}
                                     is CostAtom.Discard -> {
                                         hasDiscardCost = true
                                         if (handCards.isEmpty()) {
                                             costCanBePaid = false; break
                                         }
                                     }
+                                    // PayLife was resolved as the complete cost total above.
+                                    is CostAtom.PayLife -> {}
                                     is CostAtom.ReturnToHand -> {
                                         val targets = context.costUtils.findAbilityBounceTargets(state, playerId, atom.filter)
                                         if (targets.size < atom.count) {
@@ -199,7 +226,13 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
 
                 // Compute auto-tap preview for UI highlighting (skipped in ACTIONS_ONLY mode)
                 val abilityAutoTapPreview = if (context.skipAutoTapPreview || abilityManaCost == null || abilityHasXCost) null
-                else context.manaSolver.solve(state, playerId, abilityManaCost, precomputedSources = context.availableManaSources)?.sources?.map { it.entityId }
+                else context.manaSolver.solve(
+                    state,
+                    playerId,
+                    abilityManaCost,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = resolvedPayLifeTotal,
+                )?.sources?.map { it.entityId }
 
                 // Check for target requirements
                 val targetReqs = ability.targetRequirements

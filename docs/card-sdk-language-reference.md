@@ -371,7 +371,11 @@ excluded.
   shape, not an ability cost; only the cost-component shape is implemented so far. First user: Arena
   of Glory (MH3) — `Costs.Composite(Costs.Mana("{R}"), Costs.Tap, Costs.Exert)`.
 - `Costs.Mana("{2}{U}")` — pay the given mana cost (string or `ManaCost`).
-- `Costs.PayLife(amount)` — pay N life.
+- `Costs.PayLife(amount)` — pay N life; `amount` may be an `Int` or a reusable
+  `DynamicAmount` resolved at activation/payment time. `Costs.PayLife(DynamicAmounts.commanderColorIdentityCount())`
+  pays life equal to the number of colors in the combined color identity of the controller's registered
+  commanders. A player with no registered commander cannot pay that dynamic cost; a colorless commander
+  resolves it to zero. The same dynamic overload is available under `Costs.additional` and `Costs.pay`.
 - `Costs.PayXLife` — pay X life, where X is the value chosen for the ability's `{X}` mana cost
   (e.g. "{X}{B}, {T}, Pay X life: …" on Krumar Initiate). The X-linked counterpart to
   `Costs.PayLife`; `calculateMaxAffordableX` caps X at the controller's life total — X may go as
@@ -2968,6 +2972,25 @@ can't statically prevent (cross-trigger flows, `Self`-vs-`ContextTarget` inside 
   ability whose source already *is* the granter (Territory Forge / Sharkey-style gains), it resolves
   to the same entity as `Self`.
 - `EffectTarget.TriggeringEntity` — the entity that caused the trigger to fire.
+- `EffectTarget.DamageSource` — the object that dealt the damage that caused the trigger. This is
+  independent of `TriggeringEntity`, so source-filtered damage observers can keep their existing
+  source semantics while a paired recipient reference remains available.
+- `EffectTarget.DamageRecipient` — the object or player that received the damage that caused the
+  trigger. The event's entity id is retained for resolution-time last-known-information handling
+  if the recipient has left the battlefield. The captured recipient role (player, creature,
+  planeswalker, battle, or unknown) is retained separately; player-only resolution accepts this
+  reference only when the event explicitly recorded a player, and otherwise fails closed.
+- `EntityReference.DamageSource` / `EntityReference.DamageRecipient` — the generic value references
+  for reading a damage pair from a trigger context. They resolve to the source and recipient ids
+  independently of `EffectTarget.TriggeringEntity`, so a source-filtered observer can keep its
+  source `TriggeringEntity` while a dynamic amount or predicate reads the paired recipient. Both
+  use the live permanent while it remains on the battlefield and the event-carried
+  last-known-information snapshot after it leaves; no entity-id or current-zone type inference is
+  performed. For example, `DynamicAmount.EntityProperty(EntityReference.DamageRecipient,
+  EntityNumericProperty.Power)` reads the recipient's power, and
+  `GameObjectFilter.Creature.powerAtMostEntity(EntityReference.DamageRecipient)` reads the same
+  frozen power when the recipient is gone. Their serialized ids are the stable `DamageSource` and
+  `DamageRecipient` names.
 - `EffectTarget.TargetController` — the controller of the spell/ability's first chosen target
   ("its controller creates two Map tokens", "its controller gains 4 life"). Control-change effects
   are honored (projected controller first), and a target that has already left the battlefield —
@@ -4469,7 +4492,7 @@ Named sugar for the common cases; reach for the factories for any other combinat
 
 **Factories** (axes: `damageType` × `recipient` × `sourceFilter` × `binding` for outgoing; `source` × `binding` for incoming):
 
-- `dealsDamage(damageType?, recipient?, sourceFilter?, binding?, requireExcess?, batch?, requires?)` — outgoing-damage trigger. Pick `DamageType.{Any,Combat,NonCombat}`, `RecipientFilter.{Any,AnyPlayer,AnyPlayerOrPlaneswalker,AnyCreature,…}`, an optional source `GameObjectFilter`, and `TriggerBinding.{SELF,ANY,ATTACHED}`. Covers "deals combat damage to a player or planeswalker", "creature you control deals combat damage to a player" (`binding = ANY` + `sourceFilter = Creature.youControl()`), "nontoken creature you control deals…" (`.nontoken()`), and "enchanted creature deals damage" (`binding = ATTACHED`). The conjunctive `requires` set adds damage-event facts: `DamagePredicate.SourceSoleTargetIsRecipient` requires the source to have exactly one chosen target and that target to be this damage recipient, so "a spell that targets only a single creature deals damage to that creature" does not fire for the same spell's collateral damage (Imodane, the Pyrohammer). Pass `requireExcess = true` to fire only when the recipient was dealt damage past lethal (CR 120.4a) — Fall of Cair Andros' "is dealt excess noncombat damage". Pass `batch = true` for recipient-side **"one or more" batch wording** (CR 603.2c) — "whenever one or more creatures your opponents control are dealt excess noncombat damage" (Magmatic Galleon): simultaneous damage to several matching recipients (a sweeper, combat damage to multiple blockers) fires the trigger once per event batch instead of once per damaged recipient. Batch is only honored on the `binding = ANY` observer path; SELF/ATTACHED damage triggers are inherently per-source-event. Read the excess via `DynamicAmount.ContextProperty(ContextPropertyKey.TRIGGER_EXCESS_DAMAGE_AMOUNT)`. For a creature recipient, read its toughness *as it last existed at damage time* (CR 603.10 LKI — survives a lethal hit) via `DynamicAmount.ContextProperty(ContextPropertyKey.TRIGGER_RECIPIENT_TOUGHNESS)`; pair it with a `triggerRestriction` such as `Conditions.CompareAmounts(ContextProperty(TRIGGER_DAMAGE_AMOUNT), ComparisonOperator.EQ, ContextProperty(TRIGGER_RECIPIENT_TOUGHNESS))` for "deals noncombat damage to a creature equal to that creature's toughness" (Taii Wakeen, Perfect Shot). On the observer path (`binding = ANY` + `sourceFilter`), `EntityReference.Triggering` is the damage SOURCE, but the recipient toughness is still carried in this context key. **Combat caveat:** combat-damage state-based actions run *before* trigger detection, so a non-indestructible recipient that dies to the same combat-damage event has already left the battlefield when a `RecipientFilter.CreatureOpponentControls`-style filter reads its `ControllerComponent` — the filter silently fails (no last-known-info path yet). A `requireExcess = true` + `DamageType.Combat` trigger therefore only fires reliably on recipients that survive (indestructible / high toughness). Fall of Cair Andros is unaffected because it gates on `DamageType.NonCombat`, where the trigger is detected from the damage event before the kill SBA.
+- `dealsDamage(damageType?, recipient?, sourceFilter?, binding?, requireExcess?, batch?, requires?)` — outgoing-damage trigger. Pick `DamageType.{Any,Combat,NonCombat}`, `RecipientFilter.{Any,AnyPlayer,AnyPlayerOrPlaneswalker,AnyCreature,…}`, an optional source `GameObjectFilter`, and `TriggerBinding.{SELF,ANY,ATTACHED}`. Covers "deals combat damage to a player or planeswalker", "creature you control deals combat damage to a player" (`binding = ANY` + `sourceFilter = Creature.youControl()`), "nontoken creature you control deals…" (`.nontoken()`), and "enchanted creature deals damage" (`binding = ATTACHED`). The conjunctive `requires` set adds damage-event facts: `DamagePredicate.SourceSoleTargetIsRecipient` requires the source to have exactly one chosen target and that target to be this damage recipient, so "a spell that targets only a single creature deals damage to that creature" does not fire for the same spell's collateral damage (Imodane, the Pyrohammer). Pass `requireExcess = true` to fire only when the recipient was dealt damage past lethal (CR 120.4a) — Fall of Cair Andros' "is dealt excess noncombat damage". Pass `batch = true` for recipient-side **"one or more" batch wording** (CR 603.2c) — "whenever one or more creatures your opponents control are dealt excess noncombat damage" (Magmatic Galleon): simultaneous damage to several matching recipients (a sweeper, combat damage to multiple blockers) fires the trigger once per event batch instead of once per damaged recipient. Batch is only honored on the `binding = ANY` observer path; SELF/ATTACHED damage triggers are inherently per-source-event. Read the excess via `DynamicAmount.ContextProperty(ContextPropertyKey.TRIGGER_EXCESS_DAMAGE_AMOUNT)`. For a creature recipient, read its toughness *as it last existed at damage time* (CR 603.10 LKI — survives a lethal hit) via `DynamicAmount.ContextProperty(ContextPropertyKey.TRIGGER_RECIPIENT_TOUGHNESS)`; pair it with a `triggerRestriction` such as `Conditions.CompareAmounts(ContextProperty(TRIGGER_DAMAGE_AMOUNT), ComparisonOperator.EQ, ContextProperty(TRIGGER_RECIPIENT_TOUGHNESS))` for "deals noncombat damage to a creature equal to that creature's toughness" (Taii Wakeen, Perfect Shot). On the observer path (`binding = ANY` + `sourceFilter`), `EntityReference.Triggering` is the damage SOURCE, but the recipient toughness is still carried in this context key. **Combat caveat:** combat-damage state-based actions run *before* trigger detection, so a non-indestructible recipient that dies to the same combat-damage event has already left the battlefield when a `RecipientFilter.CreatureOpponentControls`-style filter reads its `ControllerComponent` — the recipient may already be absent from the live battlefield. The damage event retains its recipient role, controller, type line, token status, and battlefield incarnation: controller-relative creature filters and card-predicate `RecipientFilter.Matching(...)` use that LKI snapshot, while a filter that specifically requires current live state can still fail. A `requireExcess = true` + `DamageType.Combat` trigger therefore still needs an event-supported recipient filter; it does not infer a role from a reused entity id. Fall of Cair Andros is unaffected because it gates on `DamageType.NonCombat`, where the trigger is detected from the damage event before the kill SBA.
 - `takesDamage(source?, binding?)` — incoming-damage trigger. Pick `SourceFilter.{Any,Creature,Spell,Combat,NonCombat,HasColor(c),…}` and `TriggerBinding.{SELF,ATTACHED}`. Covers "damaged by a creature/spell" and "enchanted creature is dealt damage" (`binding = ATTACHED`, Frozen Solid shape). For "*you* are dealt damage" use `YouAreDealtDamage` / `damageDealtToYou` above — the recipient is a player, not this permanent.
 - `becomesTapped(binding?, filter?, reason?, firstTimeEachTurn?)` — "becomes tapped" trigger. `BecomesTapped` is the SELF constant; pass `binding = TriggerBinding.ANY` with an optional `filter: GameObjectFilter` for "whenever a [filter] becomes tapped" (e.g. `GameObjectFilter.CreatureOrLand` — Temporal Distortion). The filter is matched against the tapped permanent via projected state. Fires once **per** tapped permanent. `reason: TapReason?` restricts *why* it became tapped — see `BecomesTappedForTeamwork` below; the default `null` is cause-agnostic and matches every tap. Use `null` for "any cause", **never `TapReason.UNSPECIFIED`** — that would match only the taps the engine has not classified, a predicate whose meaning shrinks the day a new cause is named, and it renders as no clause at all.
 - `firstTimeEachTurn = true` on `becomesTapped` / `OneOrMoreBecomeTapped` — the **per-permanent** "if it's the first time that creature has become tapped this turn" rider (Captain America, Living Legend: `becomesTapped(binding = ANY, filter = Creature.youControl(), firstTimeEachTurn = true)` + `triggerRestriction = Conditions.IsYourTurn` + `Effects.Untap(EffectTarget.TriggeringEntity)`; "during your turn" narrows the trigger event, so it is a `triggerRestriction` rather than an `interveningIf`, while the "first time" clause — the actual CR 603.4 intervening-`if` — rides on the event pattern and is therefore checked only when the tap happens). **Not the same as `oncePerTurn`**, which caps the *ability* at one firing per turn: with several creatures tapping in one turn, `firstTimeEachTurn` fires once for *each* of them while `oncePerTurn` answers only the first. Reach for this one whenever the printed "first time" clause names the object rather than the ability; the two are composable and can be used together. The window is a *becomes tapped* window, not a *was tapped* one — a permanent that **entered the battlefield tapped** never became tapped (CR 701.26a), so it is never stamped and tapping it later that turn is still its first time. Backed by `TappedEvent.firstThisTurn`, computed in the `tap()` atom — the chokepoint every tap transition goes through, regeneration's tap included (CR 701.19a: "its controller taps it"), with `TapEventEnforcementTest` banning new bypasses — against the permanent's `HasBecomeTappedComponent(lastBecameTappedTurn)` turn stamp, read *before* the stamp is updated. The stamp is a turn number rather than a cleanup-cleared marker — the window closes on its own when `turnNumber` moves — and is stripped on a zone change (CR 400.7: what comes back is a new object). **It is only half of the clause.** "if it's the first time…" is a printed intervening-`if` (CR 603.4), which is checked when the trigger event occurs *and again as the ability resolves*; this rider carries the first check only. Pair it with `interveningIf = Conditions.TriggeringPermanentBecameTappedOnlyOnceThisTurn` (backed by `StatePredicate.BecameTappedOnlyOnceThisTurn`, which reads the same tap counter *live*) for the second — untap the creature and tap it again in response and it has become tapped twice by resolution, so the ability is removed from the stack, which a frozen copy of the event flag could never produce. **Cannot be combined with the batch wording:** `TapEvent` rejects `batch = true` alongside it, because no printed card pairs them and the two readings of that pairing are not distinguishable without one — the first real card decides, rather than inheriting a guess.
@@ -8055,6 +8078,10 @@ answer it and would silently return `false`.
   they came back as, so the guard fails and the loop stops. Reads
   `TriggerContext.lastKnownCardTypes`, populated from the `ZoneChangeEvent`'s
   `EntitySnapshot.typeLine`.
+- `TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard` — intervening-if for an
+  entering creature whose name must not be shared by another creature its controller controls or
+  by a creature card in that controller's graveyard. It reads projected names while the triggering
+  object is live and the projected last-known name after it leaves the battlefield.
 - `TargetControlsCreature(target)` — target player has a creature.
 - `TargetControlsLand(target)` — target player has a land.
 - `TargetMatchesFilter(filter, targetIndex = 0)` — the context target matches a `GameObjectFilter`.
@@ -8998,6 +9025,27 @@ both spellings, and the ability its bare-noun line grants says "Regenerate this 
   Bomb's Blow Up) read the pre-sacrifice power including counters/buffs rather than zero. No DSL change: existing
   `sourcePower()` reads simply become correct after a self-sacrifice. Live on-battlefield `Source` reads are
   unaffected (the snapshot is only consulted when the source has left).
+
+- **Damage source/recipient properties** — `EntityProperty(EntityReference.DamageSource, property)`
+  and `EntityProperty(EntityReference.DamageRecipient, property)` use the damage event's explicit
+  source/recipient pair, including the event-time permanent snapshot and battlefield-entry
+  incarnation (CR 400.7). Power, toughness, subtype count, color count, token status, and card
+  predicates read the captured permanent snapshot after a source or recipient leaves. If the same
+  entity id now names a different battlefield object, the snapshot is still used for a property or
+  predicate read; an object target such as `EffectTarget.DamageRecipient` instead fails closed and
+  never acts on the replacement. A live object is read from the projected state only when its
+  captured incarnation still matches. Unsupported properties remain unsupported rather than being
+  guessed from a replacement id or a later zone. The matching relative predicates
+  (`PowerGreaterThanEntity`, `PowerAtMostEntity`, `PowerLessThanEntity`, `SharesCreatureTypeWith`,
+  and `SharesColorWith`) use the same damage-role snapshot when their referenced object is gone or
+  has been replaced.
+
+- **Damage recipient roles** — a damage event carries a serialized `DamageRecipientKindSet`, not
+  just one card type, so an animated permanent that is both a creature and a planeswalker (or a
+  battle) retains every role proven at damage time. `PLAYER` is explicit and is the only role that
+  allows `EffectTarget.DamageRecipient` through the player-target path. `UNKNOWN` remains unknown:
+  legacy `targetIsPlayer` / `targetWasCreature` fields are used only as explicit compatibility
+  evidence, never as an inference from an entity id or the current board.
 
 ### Station
 

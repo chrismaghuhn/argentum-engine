@@ -2,8 +2,8 @@ package com.wingedsheep.engine.handlers.effects.composite
 
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent
-import com.wingedsheep.engine.core.tap
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
 import com.wingedsheep.engine.registry.CardRegistry
@@ -52,11 +52,11 @@ fun payManaCostFromPool(
         val solution = manaSolver.solve(currentState, player, remainingCost)
             ?: return EffectResult.error(state, "Cannot pay mana cost")
 
-        for (source in solution.sources) {
-            val (tappedState, tapEvent) = tap(currentState, source.entityId)
-            currentState = tappedState
-            tapEvent?.let(events::add)
-        }
+        val tapResult = ManaAbilitySideEffectExecutor.noOp(cardRegistry)
+            .tapSourcesWithSideEffects(currentState, solution, player)
+        if (!tapResult.success) return EffectResult.error(state, "Cannot pay mana ability side effect")
+        currentState = tapResult.state
+        events.addAll(tapResult.events)
 
         for ((_, production) in solution.manaProduced) {
             currentPool = if (production.color != null) {

@@ -22,12 +22,14 @@ import com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.toEntityId
 import com.wingedsheep.engine.handlers.effects.bend.BendEvents
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.stack.StackResolver
@@ -113,6 +115,7 @@ class ActivateAbilityHandler(
     private val conditionEvaluator: ConditionEvaluator,
     private val triggerDetector: TriggerDetector,
     private val triggerProcessor: TriggerProcessor,
+    private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor,
     private val castPermissionUtils: CastPermissionUtils,
 ) : ActionHandler<ActivateAbility> {
     override val actionType: KClass<ActivateAbility> = ActivateAbility::class
@@ -1132,6 +1135,16 @@ class ActivateAbilityHandler(
         }
 
         val executeAbilityContext = buildAbilityPaymentContext(cardComponent, state.projectedState, action.sourceId, ability)
+        val abilityPayLifeTotal = CostAmountResolver.resolvePayLifeTotal(
+            state = state,
+            amounts = CostAmountResolver.payLifeAmounts(effectiveCost),
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            cardRegistry = cardRegistry,
+        ) ?: return ExecutionResult.error(state, "Cannot resolve life cost")
+        if (state.lifeTotal(action.playerId) < abilityPayLifeTotal) {
+            return ExecutionResult.error(state, "Not enough life to activate this ability")
+        }
 
         var currentState = state
         val events = mutableListOf<GameEvent>()
@@ -1225,17 +1238,39 @@ class ActivateAbilityHandler(
                             .filter { it !in chosen }
                             .toSet() + selfExcludedSources
                         val solution = manaSolver.solve(
-                            currentState, action.playerId, remainingCost, manaXValue, excludeSources = excluded, xManaRestriction = ability.xManaRestriction
+                            currentState,
+                            action.playerId,
+                            remainingCost,
+                            manaXValue,
+                            excludeSources = excluded,
+                            xManaRestriction = ability.xManaRestriction,
+                            additionalPayLife = abilityPayLifeTotal,
                         ) ?: return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
-                        for (source in solution.sources) {
-                            val (tappedState, tapEvent) = tap(currentState, source.entityId)
-                            currentState = tappedState
-                            tapEvent?.let(events::add)
+                        val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                            state = currentState,
+                            solution = solution,
+                            controllerId = action.playerId,
+                        )
+                        if (!sideEffectResult.success) {
+                            return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
                         }
+                        currentState = sideEffectResult.state
+                        events.addAll(sideEffectResult.events)
                     }
                 }
                 else -> {
-                    val autoTapResult = autoTapForManaCost(currentState, action.playerId, manaPool, manaCost, cardComponent.name, manaXValue, selfExcludedSources, executeAbilityContext, ability.xManaRestriction)
+                    val autoTapResult = autoTapForManaCost(
+                        currentState,
+                        action.playerId,
+                        manaPool,
+                        manaCost,
+                        cardComponent.name,
+                        manaXValue,
+                        selfExcludedSources,
+                        executeAbilityContext,
+                        ability.xManaRestriction,
+                        additionalPayLife = abilityPayLifeTotal,
+                    )
                         ?: return ExecutionResult.error(state, "Not enough mana to activate this ability")
                     currentState = autoTapResult.newState
                     manaPool = autoTapResult.newPool
@@ -1905,7 +1940,16 @@ class ActivateAbilityHandler(
 
                 // Auto-tap for mana cost
                 if (manaCost != null) {
-                    val autoTapResult = autoTapForManaCost(currentState, action.playerId, repeatPool, manaCost, cardComponent.name, 0, abilityContext = executeAbilityContext)
+                    val autoTapResult = autoTapForManaCost(
+                        currentState,
+                        action.playerId,
+                        repeatPool,
+                        manaCost,
+                        cardComponent.name,
+                        0,
+                        abilityContext = executeAbilityContext,
+                        additionalPayLife = abilityPayLifeTotal,
+                    )
                         ?: break // Can't afford — stop early
                     currentState = autoTapResult.newState
                     repeatPool = autoTapResult.newPool
@@ -2188,20 +2232,47 @@ class ActivateAbilityHandler(
             colorless = poolComponent.colorless,
             restrictedMana = poolComponent.restrictedMana,
         )
+        val lifeTotal = CostAmountResolver.resolvePayLifeTotal(
+            state = state,
+            amounts = CostAmountResolver.payLifeAmounts(cost),
+            sourceId = sourceId,
+            controllerId = playerId,
+            cardRegistry = cardRegistry,
+        ) ?: return false
+        if (state.lifeTotal(playerId) < lifeTotal) return false
         return when (cost) {
             is AbilityCost.Atom -> {
                 val mana = cost.manaCostOrNull
-                if (mana != null) manaSolver.canPay(state, playerId, mana, spellContext = abilityContext)
+                if (mana != null) {
+                    manaSolver.canPay(
+                        state,
+                        playerId,
+                        mana,
+                        spellContext = abilityContext,
+                        additionalPayLife = lifeTotal,
+                    )
+                }
                 else costHandler.canPayAbilityCost(state, cost, sourceId, playerId, manaPool, abilityContext, granterId)
             }
             is AbilityCost.Composite -> {
                 // If composite cost includes Tap, the source itself can't also be used as a mana source
                 val excludeSources = if (hasTapCost(cost)) setOf(sourceId) else emptySet()
-                cost.costs.all { subCost ->
-                    val subMana = subCost.manaCostOrNull
-                    if (subMana != null) manaSolver.canPay(state, playerId, subMana, excludeSources = excludeSources, spellContext = abilityContext)
-                    else costHandler.canPayAbilityCost(state, subCost, sourceId, playerId, manaPool, abilityContext, granterId)
-                }
+                val manaCost = cost.costs
+                    .mapNotNull { it.manaCostOrNull }
+                    .fold(ManaCost.ZERO) { total, subMana -> total + subMana }
+                val manaAffordable = manaCost.cmc == 0 || manaSolver.canPay(
+                    state,
+                    playerId,
+                    manaCost,
+                    excludeSources = excludeSources,
+                    spellContext = abilityContext,
+                    additionalPayLife = lifeTotal,
+                )
+                manaAffordable && cost.costs
+                    .filter { it.manaCostOrNull == null }
+                    .all { subCost ->
+                        costHandler.canPayAbilityCost(state, subCost, sourceId, playerId, manaPool, abilityContext, granterId)
+                    }
             }
             else -> costHandler.canPayAbilityCost(state, cost, sourceId, playerId, manaPool, abilityContext, granterId)
         }
@@ -2302,6 +2373,7 @@ class ActivateAbilityHandler(
         excludeSources: Set<com.wingedsheep.sdk.model.EntityId> = emptySet(),
         abilityContext: SpellPaymentContext? = null,
         xManaRestriction: Set<Color> = emptySet(),
+        additionalPayLife: Int = 0,
     ): AutoTapResult? {
         // Determine what the floating pool can cover (with the ability context so restricted
         // mana eligible for this activation counts toward coverage)
@@ -2329,18 +2401,28 @@ class ActivateAbilityHandler(
         // Tap sources for the remaining cost (xToTap is the X mana the floating pool couldn't
         // cover, treated as additional generic mana — or restricted to xManaRestriction colors
         // for "spend only [colors] on X" abilities)
-        val solution = manaSolver.solve(state, playerId, remainingCost, xToTap, excludeSources = excludeSources, spellContext = abilityContext, xManaRestriction = xManaRestriction)
+        val solution = manaSolver.solve(
+            state,
+            playerId,
+            remainingCost,
+            xToTap,
+            excludeSources = excludeSources,
+            spellContext = abilityContext,
+            xManaRestriction = xManaRestriction,
+            additionalPayLife = additionalPayLife,
+        )
             ?: return null
 
-        var currentState = state
-        var currentPool = pool
-        val events = mutableListOf<GameEvent>()
+        val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+            state = state,
+            solution = solution,
+            controllerId = playerId,
+        )
+        if (!sideEffectResult.success) return null
 
-        for (source in solution.sources) {
-            val (tappedState, tapEvent) = tap(currentState, source.entityId)
-            currentState = tappedState
-            tapEvent?.let(events::add)
-        }
+        var currentState = sideEffectResult.state
+        var currentPool = pool
+        val events = sideEffectResult.events.toMutableList()
 
         // Add produced mana to floating pool so costHandler.payAbilityCost can consume it.
         // When the source's ability is restricted (e.g. Steelswarm Operator's
@@ -3124,6 +3206,7 @@ class ActivateAbilityHandler(
                 services.conditionEvaluator,
                 services.triggerDetector,
                 services.triggerProcessor,
+                services.manaAbilitySideEffectExecutor,
                 services.castPermissionUtils
             )
         }

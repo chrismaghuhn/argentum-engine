@@ -7,6 +7,7 @@ import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.TimingRule
@@ -52,8 +53,9 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                     }
                 ) continue
 
-                // Cost payability — Mana and Discard, atom or composite (the avatar's "{X}{X}{X},
-                // Discard a card"). Other atoms are validated by the handler at payment time.
+                // Cost payability — Mana, Discard, and PayLife, atom or composite (the avatar's
+                // "{X}{X}{X}, Discard a card"). Other atoms are validated by the handler at
+                // payment time.
                 val effectiveCost = ability.cost
                 val handCards = state.getZone(playerId, Zone.HAND)
                 val abilityContext = com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext(
@@ -61,25 +63,39 @@ class CommandZoneAbilityEnumerator : ActionEnumerator {
                 )
                 var costCanBePaid = true
                 var hasDiscardCost = false
+                val resolvedPayLifeTotal = context.costUtils.resolvePayLifeCostTotal(
+                    state, playerId, entityId, effectiveCost
+                ) ?: continue
+                if (state.lifeTotal(playerId) < resolvedPayLifeTotal) continue
+
+                val aggregateManaCost = when (effectiveCost) {
+                    is AbilityCost.Atom -> effectiveCost.manaCostOrNull ?: ManaCost.ZERO
+                    is AbilityCost.Composite -> effectiveCost.costs
+                        .mapNotNull { it.manaCostOrNull }
+                        .fold(ManaCost.ZERO) { total, manaCost -> total + manaCost }
+                    else -> ManaCost.ZERO
+                }
+                if (aggregateManaCost.cmc > 0 && !context.manaSolver.canPay(
+                        state,
+                        playerId,
+                        aggregateManaCost,
+                        precomputedSources = context.availableManaSources,
+                        spellContext = abilityContext,
+                        additionalPayLife = resolvedPayLifeTotal,
+                    )
+                ) costCanBePaid = false
 
                 fun checkAtom(atom: CostAtom) {
                     when (atom) {
-                        is CostAtom.Mana -> {
-                            // X costs: payability is gated by maxAffordableX below; a {X} cost with
-                            // no fixed mana is payable at X=0, so only reject a non-X mana cost the
-                            // player can't afford.
-                            if (!atom.cost.hasX &&
-                                !context.manaSolver.canPay(
-                                    state, playerId, atom.cost,
-                                    precomputedSources = context.availableManaSources,
-                                    spellContext = abilityContext
-                                )
-                            ) costCanBePaid = false
-                        }
+                        // The aggregate mana check above owns every mana atom and the complete
+                        // PayLife total. X is still gated by maxAffordableX below.
+                        is CostAtom.Mana -> {}
                         is CostAtom.Discard -> {
                             hasDiscardCost = true
                             if (handCards.size < atom.count) costCanBePaid = false
                         }
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
                         else -> {}
                     }
                 }

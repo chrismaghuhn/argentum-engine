@@ -347,6 +347,10 @@ data class AdditionalCostData(
     val costType: String,
     val validSacrificeTargets: List<EntityId> = emptyList(),
     val sacrificeCount: Int = 1,
+    /** Minimum number selected for a variable sacrifice cost; equals [sacrificeCount] for that shape. */
+    val sacrificeMinCount: Int = 1,
+    /** Maximum number selected for a variable sacrifice cost, published from the current candidate pool. */
+    val sacrificeMaxCount: Int = 0,
     /**
      * The spell's remaining mana cost after sacrificing each candidate in [validSacrificeTargets],
      * keyed by that candidate — emerge (CR 702.119), where the emerge cost is reduced by generic

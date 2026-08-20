@@ -32,6 +32,9 @@ import com.wingedsheep.sdk.scripting.values.TurnTracker
  */
 object DynamicAmounts {
 
+    /** Number of colors in the combined color identity of your registered commanders. */
+    fun commanderColorIdentityCount(): DynamicAmount = DynamicAmount.CommanderColorIdentityCount
+
     // =========================================================================
     // Fluent battlefield query builder
     // =========================================================================
