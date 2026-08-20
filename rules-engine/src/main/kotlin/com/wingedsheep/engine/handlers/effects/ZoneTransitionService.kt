@@ -472,6 +472,8 @@ object ZoneTransitionService {
         val lastKnownSnapshot = if (leavingBattlefield) {
             com.wingedsheep.engine.state.components.stack.EntitySnapshot(
                 entityId = entityId,
+                battlefieldEntryTimestamp = state.getEntity(entityId)
+                    ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
                 power = lastKnownPower,
                 toughness = lastKnownToughness,
                 // Mirror the projected type line's subtypes into the snapshot's own `subtypes`

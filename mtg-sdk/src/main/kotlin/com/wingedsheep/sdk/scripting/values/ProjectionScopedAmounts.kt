@@ -42,7 +42,8 @@ private val CONTEXT_SCOPED_SERIAL_NAMES: Set<String> = setOf(
     "TotalManaSpent", "ManaSpentOnX", "PermanentsSacrificedThisWay", "StationCharge",
     "LastKnownSourceCounters", "LastKnownDamageDealtToSource",
     // EntityReference
-    "Target", "Triggering", "Sacrificed", "TappedAsCost", "FromCostStorage", "AmassedArmy",
+    "Target", "Triggering", "DamageSource", "DamageRecipient", "Sacrificed", "TappedAsCost",
+    "FromCostStorage", "AmassedArmy",
     "IterationEntity",
     // Player
     "TargetPlayer", "TargetOpponent", "ContextPlayer", "TriggeringPlayer", "ControllerOf", "OwnerOf",

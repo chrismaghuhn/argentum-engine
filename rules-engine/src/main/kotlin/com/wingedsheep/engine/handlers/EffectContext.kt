@@ -2,6 +2,8 @@ package com.wingedsheep.engine.handlers
 
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -249,6 +251,18 @@ data class EffectContext(
     val triggeringEntityId: EntityId? = null,
     /** The player associated with the trigger event (e.g., the player who cast a spell for SpellCastEvent) */
     val triggeringPlayerId: EntityId? = null,
+    /** The object that dealt the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageSourceEntityId: EntityId? = null,
+    /** The object or player that received the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageRecipientEntityId: EntityId? = null,
+    /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All recipient roles at damage time; zero is explicit UNKNOWN. */
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
     /** The spell or ability that targeted a permanent (for ward triggers) */
     val targetingSourceEntityId: EntityId? = null,
     /**
@@ -417,6 +431,15 @@ data class EffectContext(
      */
     val resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
 ) {
+    /** New plural vocabulary with compatibility for older manually-created contexts. */
+    val effectiveDamageRecipientKinds: DamageRecipientKindSet
+        get() = when {
+            !damageRecipientKinds.isUnknown -> damageRecipientKinds
+            damageRecipientKind != DamageRecipientKind.UNKNOWN ->
+                DamageRecipientKindSet.of(damageRecipientKind)
+            else -> DamageRecipientKindSet.UNKNOWN
+        }
+
     /**
      * Resolve a symbolic effect target to a concrete entity id using just the context.
      *
@@ -585,8 +608,8 @@ data class EffectContext(
         fun forTriggeredAbility(
             ability: TriggeredAbilityOnStackComponent,
             targets: List<ChosenTarget> = emptyList(),
+            alignedTargets: List<ChosenTarget?> = targets,
             targetRequirements: List<TargetRequirement> = emptyList(),
-            alignedTargets: List<ChosenTarget?> = emptyList(),
             targetEntryStamps: Map<EntityId, Long> = emptyMap()
         ): EffectContext = EffectContext(
             sourceId = ability.sourceId,
@@ -607,6 +630,12 @@ data class EffectContext(
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,
             triggeringPlayerId = ability.triggeringPlayerId,
+            damageSourceEntityId = ability.damageSourceEntityId,
+            damageRecipientEntityId = ability.damageRecipientEntityId,
+            damageRecipientKind = ability.damageRecipientKind,
+            damageRecipientKinds = ability.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,
             triggerLastKnownPower = ability.lastKnownPower,

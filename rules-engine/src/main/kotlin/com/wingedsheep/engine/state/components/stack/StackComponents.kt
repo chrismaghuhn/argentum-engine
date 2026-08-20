@@ -2,6 +2,8 @@ package com.wingedsheep.engine.state.components.stack
 
 import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
@@ -197,6 +199,18 @@ data class TriggeredAbilityOnStackComponent(
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    /** The object that dealt the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageSourceEntityId: EntityId? = null,
+    /** The object or player that received the damage that caused this trigger, independent of triggeringEntityId. */
+    val damageRecipientEntityId: EntityId? = null,
+    /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All recipient roles at damage time; zero is explicit UNKNOWN. */
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
     val xValue: Int? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,
@@ -310,6 +324,15 @@ data class TriggeredAbilityOnStackComponent(
      */
     val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
 ) : Component {
+    /** New plural vocabulary with compatibility for older stack payloads. */
+    val effectiveDamageRecipientKinds: DamageRecipientKindSet
+        get() = when {
+            !damageRecipientKinds.isUnknown -> damageRecipientKinds
+            damageRecipientKind != DamageRecipientKind.UNKNOWN ->
+                DamageRecipientKindSet.of(damageRecipientKind)
+            else -> DamageRecipientKindSet.UNKNOWN
+        }
+
     val hasTargets: Boolean = false  // Will be updated based on effect
 }
 
@@ -450,24 +473,25 @@ data class TargetsComponent(
 
         /**
          * True when [entityId] is no longer the object that was targeted — it left its zone and
-         * returned between targeting and now (CR 400.7). Ids with no captured stamp (legacy
-         * payloads or synthetic fixtures built before the stamps existed) are treated as unchanged.
+         * returned between targeting and now (CR 400.7). A missing captured stamp is treated as
+         * different so an unproven target is never authorized. The legacy `0L` entry stamp remains
+         * the compatibility sentinel for synthetic fixtures that intentionally model a permanent
+         * without an explicit battlefield-entry component; a real captured stamp still differs
+         * from that sentinel when the current incarnation cannot be verified.
          */
         fun isDifferentObject(
             state: GameState,
             entityId: EntityId,
             capturedStamps: Map<EntityId, Long>
         ): Boolean {
-            val captured = capturedStamps[entityId] ?: return false
+            val captured = capturedStamps[entityId] ?: return true
             val current = state.objectIdentityStamps[entityId] ?: entryStamp(state, entityId)
             return current != captured
         }
 
         /**
-         * The permanent's battlefield-entry stamp, or 0 for a permanent that never got one —
-         * boards assembled directly (test fixtures) rather than through a real ETB. Capture and
-         * comparison read it the same way, so an unstamped permanent still registers as a new
-         * object once it re-enters for real.
+         * The permanent's battlefield-entry stamp, or the legacy `0L` compatibility sentinel for
+         * a fixture/entity with no explicit battlefield incarnation component.
          */
         private fun entryStamp(state: GameState, entityId: EntityId): Long =
             state.getEntity(entityId)

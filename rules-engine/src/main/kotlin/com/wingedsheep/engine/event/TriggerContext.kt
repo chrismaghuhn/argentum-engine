@@ -11,6 +11,10 @@ import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ControlChangedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
+import com.wingedsheep.engine.core.effectiveRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKinds
 import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.TappedEvent
@@ -20,6 +24,8 @@ import com.wingedsheep.engine.core.PhasedInEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.stampedFor
 
 /**
  * Context information about what caused a trigger.
@@ -28,6 +34,18 @@ import com.wingedsheep.sdk.model.EntityId
 data class TriggerContext(
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    /** The object that dealt the damage, preserved independently from the trigger's semantic entity. */
+    val damageSourceEntityId: EntityId? = null,
+    /** The object or player that received the damage, preserved independently from the trigger's semantic entity. */
+    val damageRecipientEntityId: EntityId? = null,
+    /** The recipient's explicit role at damage time; UNKNOWN is fail-closed for player-only reads. */
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All recipient roles at damage time; zero is explicit UNKNOWN. */
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
     val damageAmount: Int? = null,
     val step: Step? = null,
     val xValue: Int? = null,
@@ -198,6 +216,15 @@ data class TriggerContext(
      */
     val unattachedFromEntityId: EntityId? = null
 ) {
+    /** New plural vocabulary with compatibility for older manually-created contexts. */
+    val effectiveDamageRecipientKinds: DamageRecipientKindSet
+        get() = when {
+            !damageRecipientKinds.isUnknown -> damageRecipientKinds
+            damageRecipientKind != DamageRecipientKind.UNKNOWN ->
+                DamageRecipientKindSet.of(damageRecipientKind)
+            else -> DamageRecipientKindSet.UNKNOWN
+        }
+
     companion object {
         fun fromEvent(event: com.wingedsheep.engine.core.GameEvent): TriggerContext {
             return when (event) {
@@ -228,6 +255,12 @@ data class TriggerContext(
                 )
                 is DamageDealtEvent -> TriggerContext(
                     triggeringEntityId = event.targetId,
+                    damageSourceEntityId = event.sourceId,
+                    damageRecipientEntityId = event.targetId,
+                    damageRecipientKind = event.effectiveRecipientKind,
+                    damageRecipientKinds = event.effectiveRecipientKinds,
+                    damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
+                    damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot,
                     damageAmount = event.amount,
                     excessDamageAmount = event.excessAmount.takeIf { it > 0 },
                     recipientToughnessAtDamage = event.targetToughnessAtDamage
@@ -396,6 +429,41 @@ data class TriggerContext(
                 )
                 else -> TriggerContext()
             }
+        }
+
+        /**
+         * Build a damage context while preserving the event's source/recipient pairing.
+         * [triggeringEntityId] remains caller-controlled for legacy trigger semantics: some
+         * observers mean the recipient, while source-filtered observers mean the source.
+         */
+        fun fromDamageEvent(
+            event: DamageDealtEvent,
+            triggeringEntityId: EntityId = event.targetId,
+            triggeringPlayerId: EntityId? = null
+        ): TriggerContext = fromEvent(event).copy(
+            triggeringEntityId = triggeringEntityId,
+            triggeringPlayerId = triggeringPlayerId
+        )
+
+        /**
+         * Build the context for an observer whose trigger explicitly filters the damage source.
+         * A source-filtered observer has no valid triggering entity when the event did not carry a
+         * source; returning null keeps that unknown source distinct from the damage recipient that
+         * [fromEvent] uses for source-blind damage observers.
+         */
+        fun fromSourceFilteredDamageEvent(
+            event: DamageDealtEvent,
+            triggeringPlayerId: EntityId? = event.targetId.takeIf {
+                event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)
+            }
+        ): TriggerContext? {
+            val sourceId = event.sourceId ?: return null
+            event.damageSourceLastKnownSnapshot.stampedFor(sourceId) ?: return null
+            return fromDamageEvent(
+                event = event,
+                triggeringEntityId = sourceId,
+                triggeringPlayerId = triggeringPlayerId
+            )
         }
     }
 }

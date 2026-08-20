@@ -8,6 +8,8 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.handlers.TargetingSourceType
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
@@ -15,6 +17,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.CardType
@@ -298,6 +301,12 @@ class TargetValidator {
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
         triggeringEntityId: EntityId? = null,
         triggeringPlayerId: EntityId? = null,
+        damageSourceId: EntityId? = null,
+        damageRecipientId: EntityId? = null,
+        damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+        damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+        damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+        damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
         storedCollections: Map<String, List<EntityId>> = emptyMap()
     ): ResolutionTargetPayload {
         fun malformedPayload() = ResolutionTargetPayload(
@@ -352,9 +361,17 @@ class TargetValidator {
                 val target = targets[index]
                 val sourceAwareLegal = allowedTargetSlots == null ||
                     (index < allowedTargetSlots.size && allowedTargetSlots[index] == target)
-                val sameObject = target.entityIdOrNull()?.let {
-                    !TargetsComponent.isDifferentObject(state, it, targetEntryStamps)
-                } ?: true
+                // Players do not change CR 400.7 object identity between target selection and
+                // resolution. Only object/card/spell targets need the captured identity stamp;
+                // applying that gate to a Player target would treat its normal absent stamp as a
+                // replacement and incorrectly fizzle an otherwise legal spell.
+                val sameObject = if (target is ChosenTarget.Player) {
+                    true
+                } else {
+                    target.entityIdOrNull()?.let {
+                        !TargetsComponent.isDifferentObject(state, it, targetEntryStamps)
+                    } ?: true
+                }
                 legal[index] = relationshipError == null && sourceAwareLegal && sameObject &&
                     validateSingleTarget(
                         state = state,
@@ -369,6 +386,12 @@ class TargetValidator {
                         targetingSourceType = targetingSourceType,
                         triggeringEntityId = triggeringEntityId,
                         triggeringPlayerId = triggeringPlayerId,
+                        damageSourceId = damageSourceId,
+                        damageRecipientId = damageRecipientId,
+                        damageRecipientKind = damageRecipientKind,
+                        damageRecipientKinds = damageRecipientKinds,
+                        damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
+                        damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot,
                         storedCollections = storedCollections
                     ) == null
             }
@@ -937,7 +960,13 @@ class TargetValidator {
         triggeringEntityId: EntityId? = null,
         triggeringPlayerId: EntityId? = null,
         storedCollections: Map<String, List<EntityId>> = emptyMap(),
-        predicateContext: PredicateContext? = null
+        predicateContext: PredicateContext? = null,
+        damageSourceId: EntityId? = null,
+        damageRecipientId: EntityId? = null,
+        damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+        damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+        damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+        damageRecipientLastKnownSnapshot: EntitySnapshot? = null
     ): String? {
         // A separately-chosen player target (target index 0 for "target player's graveyard"
         // spells) — lets a later requirement's filter resolve `OwnedByTargetPlayer` /
@@ -953,7 +982,13 @@ class TargetValidator {
             triggeringPlayerId = triggeringPlayerId,
             storedCollections = storedCollections,
             targets = allTargets,
-            xValue = xValue
+            xValue = xValue,
+            damageSourceId = damageSourceId,
+            damageRecipientId = damageRecipientId,
+            damageRecipientKind = damageRecipientKind,
+            damageRecipientKinds = damageRecipientKinds,
+            damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot
         )
         val error = when (requirement) {
             is TargetPlayer -> validatePlayerTarget(state, target, requirement, casterId, sourceId)
