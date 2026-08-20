@@ -29,6 +29,7 @@ import com.wingedsheep.engine.state.components.identity.MorphDataComponent
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
@@ -706,7 +707,7 @@ internal class AffectsFilterResolver {
         CardPredicate.IsNoncreature -> "CREATURE" !in types
         CardPredicate.IsNonenchantment -> "ENCHANTMENT" !in types
         CardPredicate.IsNonartifact -> "ARTIFACT" !in types
-        CardPredicate.IsBasicLand -> "LAND" in types && card.typeLine.supertypes.any { it.name == "BASIC" }
+        CardPredicate.IsBasicLand -> "LAND" in types && Supertype.BASIC.name in types
         CardPredicate.IsToken -> container.has<com.wingedsheep.engine.state.components.identity.TokenComponent>()
         CardPredicate.IsNontoken -> !container.has<com.wingedsheep.engine.state.components.identity.TokenComponent>()
         CardPredicate.IsLegendary -> "LEGENDARY" in types

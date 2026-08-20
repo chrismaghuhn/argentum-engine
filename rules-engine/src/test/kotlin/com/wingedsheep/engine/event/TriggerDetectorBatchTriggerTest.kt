@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.ControlChangedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
+import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -368,13 +369,15 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
             val driver = createDriver(KastralTheWindcrested, birdCreature)
             driver.putCreatureOnBattlefield(driver.player1, "Kastral, the Windcrested")
             val bird = driver.putCreatureOnBattlefield(driver.player1, "Test Sparrow")
+            val birdSnapshot = DamageUtils.captureDamageEntitySnapshot(driver.state, bird)
 
             val event = DamageDealtEvent(
                 sourceId = bird,
                 targetId = driver.player2,
                 amount = 1,
                 isCombatDamage = true,
-                targetIsPlayer = true
+                targetIsPlayer = true,
+                damageSourceLastKnownSnapshot = birdSnapshot,
             )
 
             val triggers = detectorFor(driver).detectTriggers(driver.state, listOf(event))
@@ -392,10 +395,26 @@ class TriggerDetectorBatchTriggerTest : FunSpec({
             driver.putCreatureOnBattlefield(driver.player1, "Kastral, the Windcrested")
             val birdA = driver.putCreatureOnBattlefield(driver.player1, "Test Sparrow")
             val birdB = driver.putCreatureOnBattlefield(driver.player1, "Test Sparrow")
+            val birdASnapshot = DamageUtils.captureDamageEntitySnapshot(driver.state, birdA)
+            val birdBSnapshot = DamageUtils.captureDamageEntitySnapshot(driver.state, birdB)
 
             val events = listOf(
-                DamageDealtEvent(birdA, driver.player2, 1, isCombatDamage = true, targetIsPlayer = true),
-                DamageDealtEvent(birdB, driver.player2, 1, isCombatDamage = true, targetIsPlayer = true)
+                DamageDealtEvent(
+                    birdA,
+                    driver.player2,
+                    1,
+                    isCombatDamage = true,
+                    targetIsPlayer = true,
+                    damageSourceLastKnownSnapshot = birdASnapshot,
+                ),
+                DamageDealtEvent(
+                    birdB,
+                    driver.player2,
+                    1,
+                    isCombatDamage = true,
+                    targetIsPlayer = true,
+                    damageSourceLastKnownSnapshot = birdBSnapshot,
+                )
             )
 
             val triggers = detectorFor(driver).detectTriggers(driver.state, events)

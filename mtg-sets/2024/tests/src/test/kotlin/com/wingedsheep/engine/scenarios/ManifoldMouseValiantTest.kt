@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.mechanics.layers.StateProjector
@@ -65,6 +66,11 @@ class ManifoldMouseValiantTest : FunSpec({
         driver.removeSummoningSickness(mouse2)
 
         driver.advanceToPlayer1BeginCombat()
+
+        val ordering = driver.pendingDecision as? OrderObjectsDecision
+        ordering?.let {
+            driver.submitObjectOrdering(it.playerId, it.objects).error shouldBe null
+        }
 
         // First begin-combat trigger targets Nettle Guard — this is the BecomesTargetEvent
         // that should fire Valiant. The bug was that this event was dropped because the

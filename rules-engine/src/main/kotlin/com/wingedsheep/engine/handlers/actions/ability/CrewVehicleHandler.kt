@@ -10,6 +10,7 @@ import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
+import com.wingedsheep.engine.mechanics.EffectiveKeywordAbilityResolver
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -18,8 +19,6 @@ import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.sdk.model.CharacteristicValue
-import com.wingedsheep.sdk.core.Keyword
-import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.effects.BecomeCreatureEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -63,23 +62,14 @@ class CrewVehicleHandler(
             return "You don't control this vehicle"
         }
 
-        // Vehicle must have Crew keyword ability
-        val cardDef = cardRegistry.getCard(vehicleCard.cardDefinitionId)
-            ?: return "Card definition not found"
-
-        val crewAbility = cardDef.keywordAbilities
-            .filterIsInstance<KeywordAbility.Numeric>()
-            .firstOrNull { it.keyword == Keyword.CREW }
-            ?: return "This permanent doesn't have crew"
-
-        // "Crew N. Activate only once each turn." (Luxurious Locomotive): block a second crew
-        // activation this turn. Vanilla Crew (onceEachTurn = false) has no such cap.
-        if (crewAbility.onceEachTurn) {
-            val crewActivations = vehicleContainer.get<CrewSaddleContributorsComponent>()?.crewActivations ?: 0
-            if (crewActivations >= 1) {
-                return "This Vehicle's crew ability can only be activated once each turn"
-            }
-        }
+        // Resolve the same effective printed/runtime/static grant instances as CrewEnumerator.
+        // A serialized key identifies the exact instance when more than one requirement is legal.
+        val crewAbilities = EffectiveKeywordAbilityResolver.effectiveCrewAbilities(
+            state = state,
+            cardRegistry = cardRegistry,
+            targetId = action.vehicleId
+        )
+        if (crewAbilities.isEmpty()) return "This permanent doesn't have crew"
 
         if (action.crewCreatures.isEmpty()) {
             return "Must select at least one creature to crew"
@@ -124,8 +114,33 @@ class CrewVehicleHandler(
             )
         }
 
-        if (totalPower < crewAbility.n) {
-            return "Total power ($totalPower) is less than crew requirement (${crewAbility.n})"
+        val crewActivations = vehicleContainer.get<CrewSaddleContributorsComponent>()?.crewActivations ?: 0
+        val selectedCrewAbility = if (action.crewAbilityKey != null) {
+            val matches = crewAbilities.filter { it.key == action.crewAbilityKey }
+            if (matches.size != 1) return "Crew ability is stale or ambiguous"
+            matches.single()
+        } else {
+            val payable = crewAbilities.filter { crewAbility ->
+                totalPower >= crewAbility.ability.n &&
+                    (!crewAbility.ability.onceEachTurn || crewActivations < 1)
+            }
+            when {
+                payable.size == 1 -> payable.single()
+                // Preserve the ordinary payment error for legacy/direct actions when the
+                // permanent has exactly one Crew instance but the selected creatures cannot pay.
+                payable.isEmpty() && crewAbilities.size == 1 -> crewAbilities.single()
+                else -> return "Crew ability identity is required"
+            }
+        }
+
+        // "Crew N. Activate only once each turn." (Luxurious Locomotive): block a second crew
+        // activation this turn. Vanilla Crew (onceEachTurn = false) has no such cap.
+        if (selectedCrewAbility.ability.onceEachTurn && crewActivations >= 1) {
+            return "This Vehicle's crew ability can only be activated once each turn"
+        }
+
+        if (totalPower < selectedCrewAbility.ability.n) {
+            return "Total power ($totalPower) is less than crew requirement (${selectedCrewAbility.ability.n})"
         }
 
         return null

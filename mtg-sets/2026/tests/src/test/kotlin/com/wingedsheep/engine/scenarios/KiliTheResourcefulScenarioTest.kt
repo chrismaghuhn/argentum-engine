@@ -13,6 +13,8 @@ import com.wingedsheep.mtg.sets.definitions.hob.cards.ThorinOakenshield
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -35,7 +37,7 @@ class KiliTheResourcefulScenarioTest : FunSpec({
         return driver
     }
 
-    val equipId = MyPrecious.activatedAbilities.first().id
+    val equipId = MyPrecious.activatedAbilities.single().id
 
     test("with an enduring story the first composite equip costs exactly zero") {
         val driver = createDriver()
@@ -50,7 +52,13 @@ class KiliTheResourcefulScenarioTest : FunSpec({
 
         // No mana is available. The alternative cost also replaces "Pay 2 life".
         driver.submit(
-            ActivateAbility(you, precious, equipId, targets = listOf(ChosenTarget.Permanent(firstTarget)))
+            ActivateAbility(
+                you,
+                precious,
+                equipId,
+                targets = listOf(ChosenTarget.Permanent(firstTarget)),
+                alternativePayment = AlternativePaymentChoice(equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP),
+            )
         ).isSuccess shouldBe true
         driver.bothPass()
         driver.state.lifeTotal(you) shouldBe 20

@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ExecutorModule
+import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachmentLegality
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.scripting.effects.Effect
@@ -24,6 +25,7 @@ import java.util.concurrent.atomic.AtomicReference
 class LibraryExecutors(
     private val cardRegistry: CardRegistry,
     private val targetFinder: TargetFinder? = null,
+    private val attachmentLegality: AttachmentLegality? = null,
 ) : ExecutorModule {
 
     private val castSpellHandlerRef = AtomicReference<CastSpellHandler?>(null)
@@ -94,7 +96,7 @@ class LibraryExecutors(
         ChoosePileExecutor(),
         SelectTargetPipelineExecutor(targetFinder = targetFinder ?: TargetFinder()),
         MoveCollectionExecutor(cardRegistry = cardRegistry, targetFinder = targetFinder),
-        FilterCollectionExecutor(),
+        FilterCollectionExecutor(attachmentLegality = attachmentLegality),
         ChooseOnePerCategoryExecutor(),
         PutOnTopOrBottomOfLibraryExecutor(),
         StoreNumberExecutor(),

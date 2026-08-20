@@ -177,4 +177,24 @@ describe('playLadderOptions', () => {
     )
     expect(playLadderOptions(options)).toEqual([])
   })
+
+  it('keeps explicit equip payment modes as separate activation options', () => {
+    const options = buildActionOptions(card('{1}'), [
+      action({
+        action: { type: 'ActivateAbility', alternativePayment: { equipPayment: 'NORMAL' } },
+        actionType: 'ActivateAbility',
+        description: 'Equip {1}',
+        manaCostString: '{1}',
+      }),
+      action({
+        action: { type: 'ActivateAbility', alternativePayment: { equipPayment: 'FREE_FIRST_EQUIP' } },
+        actionType: 'ActivateAbility',
+        description: 'Equip {0}',
+        manaCostString: '{0}',
+      }),
+    ])
+
+    expect(options.filter((option) => option.actionType === 'activate').map((option) => option.manaCost))
+      .toEqual(['{1}', '{0}'])
+  })
 })

@@ -213,6 +213,33 @@ sealed interface EffectTarget {
     }
 
     /**
+     * DAMAGE SOURCE: the object that dealt the damage that caused the trigger.
+     * This remains distinct from [TriggeringEntity], whose meaning depends on the observer. For a
+     * permanent, resolution uses the captured event-time snapshot and battlefield-entry
+     * incarnation; if that incarnation is gone or a newer same-id object is present, this object
+     * target fails closed rather than targeting the replacement.
+     */
+    @SerialName("DamageSource")
+    @Serializable
+    data object DamageSource : EffectTarget {
+        override val description: String = "the source of that damage"
+    }
+
+    /**
+     * DAMAGE RECIPIENT: the object or player that received the damage that caused the trigger.
+     * The recipient role (player, creature, planeswalker, battle, or another captured type set) and
+     * event-time permanent snapshot are retained separately from the entity id. A permanent target
+     * resolves only when its battlefield-entry incarnation is still present; otherwise the target
+     * fails closed, while property/predicate reads may use the captured LKI. A player resolves
+     * only from explicit player-role evidence.
+     */
+    @SerialName("DamageRecipient")
+    @Serializable
+    data object DamageRecipient : EffectTarget {
+        override val description: String = "the recipient of that damage"
+    }
+
+    /**
      * CONTROLLER OF TRIGGERING ENTITY: Refers to the controller/owner of the
      * entity that caused the trigger to fire.
      * Used for effects like Tephraderm: "deals that much damage to that spell's controller"

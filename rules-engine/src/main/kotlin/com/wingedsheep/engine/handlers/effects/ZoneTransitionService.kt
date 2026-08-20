@@ -12,6 +12,7 @@ import com.wingedsheep.engine.replacement.ProcessorResult
 import com.wingedsheep.engine.replacement.ReplacementEffectProcessor
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.mechanics.daynight.DayNightService
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
@@ -471,6 +472,8 @@ object ZoneTransitionService {
         val lastKnownSnapshot = if (leavingBattlefield) {
             com.wingedsheep.engine.state.components.stack.EntitySnapshot(
                 entityId = entityId,
+                battlefieldEntryTimestamp = state.getEntity(entityId)
+                    ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
                 power = lastKnownPower,
                 toughness = lastKnownToughness,
                 // Mirror the projected type line's subtypes into the snapshot's own `subtypes`
@@ -1322,9 +1325,15 @@ object ZoneTransitionService {
 
             // Tapped and attacking
             if (options.tappedAndAttacking) {
-                val defenderId = state.turnOrder.firstOrNull { it != controllerId }
+                val defenderId = state.activePlayers.firstOrNull { it != controllerId }
                 if (defenderId != null) {
-                    updated = updated.with(AttackingComponent(defenderId))
+                    updated = updated.with(
+                        CombatDefenders.attackingComponentFor(
+                            state = state,
+                            projected = state.projectedState,
+                            defenderId = defenderId,
+                        )
+                    )
                 }
             }
 

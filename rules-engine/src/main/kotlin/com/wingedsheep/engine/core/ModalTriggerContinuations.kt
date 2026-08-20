@@ -65,6 +65,8 @@ data class TriggerModalTargetSelectionContinuation(
     val chosenModeIndices: List<Int>,
     val resolvedModeTargets: List<List<ChosenTarget>>,
     val currentOrdinal: Int,
+    /** Exact per-requirement counts returned by each target decision, by mode ordinal. */
+    val resolvedModeTargetRequirements: List<List<TargetRequirement>> = emptyList(),
     val causedByAttack: Boolean = false,
     /**
      * "Choose one that hasn't been chosen" (Gandalf the Grey): record every chosen mode in the

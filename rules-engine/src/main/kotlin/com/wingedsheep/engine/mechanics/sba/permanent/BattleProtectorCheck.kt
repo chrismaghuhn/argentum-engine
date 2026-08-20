@@ -7,6 +7,7 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.mechanics.battle.Battles
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.mechanics.sba.SbaOrder
 import com.wingedsheep.engine.mechanics.sba.SbaZoneMovementHelper
 import com.wingedsheep.engine.mechanics.sba.StateBasedActionCheck
@@ -119,10 +120,17 @@ class BattleProtectorCheck : StateBasedActionCheck {
  * [BattleProtectorCheck] and its decision resumer so both take the same single path.
  */
 object ProtectorAssignment {
-    fun assign(state: GameState, battleId: EntityId, protectorId: EntityId): GameState =
-        state.updateEntity(battleId) { container ->
+    fun assign(state: GameState, battleId: EntityId, protectorId: EntityId): GameState {
+        val priorProtector = Battles.protectorOf(state, battleId)
+        val updated = state.updateEntity(battleId) { container ->
             container.with(
                 com.wingedsheep.engine.state.components.battlefield.ProtectorComponent(protectorId)
             )
         }
+        return if (priorProtector == protectorId) {
+            updated
+        } else {
+            CombatDefenders.latchInvalidatedAttackRelationships(updated)
+        }
+    }
 }

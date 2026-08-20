@@ -11,7 +11,6 @@ import com.wingedsheep.engine.handlers.effects.composite.asMayDecide
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.Gate
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
-import com.wingedsheep.sdk.scripting.targets.withCount
 import java.util.UUID
 
 /**
@@ -40,7 +39,8 @@ class EffectAndTriggerContinuationResumer(
         resumer(BeholdContinuation::class, ::resumeBehold),
         resumer(MayTriggerContinuation::class, ::resumeMayTrigger),
         resumer(BatchMayTriggerContinuation::class, ::resumeBatchMayTrigger),
-        resumer(DelayedTriggerOccurrenceChoiceContinuation::class, ::resumeDelayedTriggerOccurrenceChoice)
+        resumer(DelayedTriggerOccurrenceChoiceContinuation::class, ::resumeDelayedTriggerOccurrenceChoice),
+        resumer(TriggerOrderingContinuation::class, ::resumeTriggerOrdering)
     )
 
     private fun resumeEffect(
@@ -95,7 +95,14 @@ class EffectAndTriggerContinuationResumer(
             if (targetIds.isEmpty()) continue
             targetIds.forEach { entityId -> selectedTargets.add(entityIdToChosenTarget(state, entityId)) }
             continuation.targetRequirements.getOrNull(slotIndex)
-                ?.let { alignedRequirements.add(it.withCount(targetIds.size)) }
+                ?.let {
+                    alignedRequirements.add(
+                        services.targetValidator.lockRequirementsForSelectedCounts(
+                            listOf(it),
+                            listOf(targetIds.size)
+                        ).single()
+                    )
+                }
         }
 
         // Zero-target resolution path. Two cases:
@@ -117,6 +124,12 @@ class EffectAndTriggerContinuationResumer(
                 triggeringEntityId = continuation.triggeringEntityId,
                 triggeringPlayerId = continuation.triggeringPlayerId,
                 defendingPlayerId = continuation.defendingPlayerId,
+                damageSourceEntityId = continuation.damageSourceEntityId,
+                damageRecipientEntityId = continuation.damageRecipientEntityId,
+                damageRecipientKind = continuation.damageRecipientKind,
+                damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
                 triggerCounterCount = continuation.triggerCounterCount,
                 triggerTotalCounterCount = continuation.triggerTotalCounterCount,
                 triggerLastKnownCounters = continuation.triggerLastKnownCounters,
@@ -161,7 +174,7 @@ class EffectAndTriggerContinuationResumer(
                 )
             } ?: effect.totalDamage
             return createTriggerDamageDistributionDecision(
-                state, continuation, selectedTargets, total, checkForMore
+                state, continuation, selectedTargets, alignedRequirements, total, checkForMore
             )
         }
 
@@ -176,6 +189,12 @@ class EffectAndTriggerContinuationResumer(
             triggeringEntityId = continuation.triggeringEntityId,
             triggeringPlayerId = continuation.triggeringPlayerId,
             defendingPlayerId = continuation.defendingPlayerId,
+            damageSourceEntityId = continuation.damageSourceEntityId,
+            damageRecipientEntityId = continuation.damageRecipientEntityId,
+            damageRecipientKind = continuation.damageRecipientKind,
+            damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
             triggerCounterCount = continuation.triggerCounterCount,
             triggerTotalCounterCount = continuation.triggerTotalCounterCount,
             triggerLastKnownCounters = continuation.triggerLastKnownCounters,
@@ -221,6 +240,7 @@ class EffectAndTriggerContinuationResumer(
         state: GameState,
         continuation: TriggeredAbilityContinuation,
         selectedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
+        targetRequirements: List<TargetRequirement>,
         totalDamage: Int,
         checkForMore: CheckForMore
     ): ExecutionResult {
@@ -263,6 +283,12 @@ class EffectAndTriggerContinuationResumer(
             triggeringEntityId = continuation.triggeringEntityId,
             triggeringPlayerId = continuation.triggeringPlayerId,
             defendingPlayerId = continuation.defendingPlayerId,
+            damageSourceEntityId = continuation.damageSourceEntityId,
+            damageRecipientEntityId = continuation.damageRecipientEntityId,
+            damageRecipientKind = continuation.damageRecipientKind,
+            damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
             triggerCounterCount = continuation.triggerCounterCount,
             triggerTotalCounterCount = continuation.triggerTotalCounterCount,
             triggerLastKnownCounters = continuation.triggerLastKnownCounters,
@@ -271,7 +297,7 @@ class EffectAndTriggerContinuationResumer(
             triggerLastKnownDamageDealtByPlayers = continuation.triggerLastKnownDamageDealtByPlayers,
             triggerLastKnownBlockingOrBlockedByIds = continuation.triggerLastKnownBlockingOrBlockedByIds,
             selectedTargets = selectedTargets,
-            targetRequirements = continuation.targetRequirements,
+            targetRequirements = targetRequirements,
             totalDamage = totalDamage,
             interveningIf = continuation.interveningIf
         )
@@ -317,6 +343,12 @@ class EffectAndTriggerContinuationResumer(
             triggeringEntityId = continuation.triggeringEntityId,
             triggeringPlayerId = continuation.triggeringPlayerId,
             defendingPlayerId = continuation.defendingPlayerId,
+            damageSourceEntityId = continuation.damageSourceEntityId,
+            damageRecipientEntityId = continuation.damageRecipientEntityId,
+            damageRecipientKind = continuation.damageRecipientKind,
+            damageRecipientKinds = continuation.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = continuation.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = continuation.damageRecipientLastKnownSnapshot,
             triggerCounterCount = continuation.triggerCounterCount,
             triggerTotalCounterCount = continuation.triggerTotalCounterCount,
             triggerLastKnownCounters = continuation.triggerLastKnownCounters,
@@ -392,10 +424,41 @@ class EffectAndTriggerContinuationResumer(
         // preserving APNAP order without choosing another occurrence implicitly.
         val result = services.triggerProcessor.processTriggers(
             state,
-            listOf(selected) + continuation.remainingTriggers
+            listOf(selected) + continuation.remainingTriggers,
+            preorderedTriggerCount = continuation.preorderedTriggerCount
         )
         if (result.isPaused || !result.isSuccess) return result
         return checkForMore(result.newState, result.events.toList())
+    }
+
+    private fun resumeTriggerOrdering(
+        state: GameState,
+        continuation: TriggerOrderingContinuation,
+        response: DecisionResponse,
+        checkForMore: CheckForMore
+    ): ExecutionResult {
+        if (response !is OrderedResponse) {
+            return ExecutionResult.error(state, "Expected ordering response for simultaneous triggers")
+        }
+        if (response.orderedObjects.size != continuation.objectIds.size ||
+            response.orderedObjects.toSet() != continuation.objectIds.toSet() ||
+            response.orderedObjects.size != response.orderedObjects.toSet().size
+        ) {
+            return ExecutionResult.error(state, "Ordered trigger objects must contain exactly the decision domain")
+        }
+
+        val triggerByObjectId = continuation.objectIds.zip(continuation.triggers).toMap()
+        val orderedTriggers = response.orderedObjects.map { objectId ->
+            triggerByObjectId[objectId]
+                ?: return ExecutionResult.error(state, "Unknown trigger ordering object: ${objectId.value}")
+        }
+        val result = services.triggerProcessor.processTriggers(
+            state,
+            orderedTriggers + continuation.remainingTriggers,
+            preorderedTriggerCount = orderedTriggers.size
+        )
+        return if (result.isPaused || !result.isSuccess) result
+        else checkForMore(result.newState, result.events.toList())
     }
 
     /**
@@ -430,7 +493,11 @@ class EffectAndTriggerContinuationResumer(
             }
             // Yes to all — unwrap each may and let the standard pipeline target them one by one.
             val unwrapped = run.mapNotNull(::unwrapMayTrigger)
-            val result = services.triggerProcessor.processTriggers(state, unwrapped)
+            val result = services.triggerProcessor.processTriggers(
+                state,
+                unwrapped,
+                preorderedTriggerCount = unwrapped.size
+            )
             if (result.isPaused || !result.isSuccess) return result
             return checkForMore(result.newState, result.events.toList())
         }
@@ -443,7 +510,8 @@ class EffectAndTriggerContinuationResumer(
             workingState = workingState.pushContinuation(
                 PendingTriggersContinuation(
                     decisionId = "batch-may-peel-${java.util.UUID.randomUUID()}",
-                    remainingTriggers = rest
+                    remainingTriggers = rest,
+                    preorderedTriggerCount = rest.size
                 )
             )
         }
@@ -455,7 +523,11 @@ class EffectAndTriggerContinuationResumer(
 
         val unwrapped = unwrapMayTrigger(first)
             ?: return ExecutionResult.error(state, "Batch may continuation resumed on a non-may trigger")
-        val result = services.triggerProcessor.processTriggers(workingState, listOf(unwrapped))
+        val result = services.triggerProcessor.processTriggers(
+            workingState,
+            listOf(unwrapped),
+            preorderedTriggerCount = 1
+        )
         if (result.isPaused || !result.isSuccess) return result
         return checkForMore(result.newState, result.events.toList())
     }

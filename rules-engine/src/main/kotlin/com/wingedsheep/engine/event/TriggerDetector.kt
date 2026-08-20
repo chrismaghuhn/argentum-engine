@@ -14,6 +14,9 @@ import com.wingedsheep.engine.core.UntappedEvent
 import com.wingedsheep.engine.core.ControlChangedEvent
 import com.wingedsheep.engine.core.DoorUnlockedEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKind
+import com.wingedsheep.engine.core.effectiveRecipientKinds
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ReflexiveAbilityTriggeredEvent
 import com.wingedsheep.engine.core.SpellCastEvent
@@ -44,6 +47,9 @@ import com.wingedsheep.engine.state.components.identity.RoomFaceId
 import com.wingedsheep.engine.state.components.identity.RoomFaceStatics
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.matchesIncarnation
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.sdk.core.CounterType
@@ -254,7 +260,22 @@ class TriggerDetector(
                     .filter { it.playerId == event.playerId }
                     .sumOf { it.count }
             } else 0
-            triggers.addAll(detectTriggersForEvent(state, event, index, samePlayerDrawsLaterInBatch))
+            triggers.addAll(
+                detectTriggersForEvent(state, event, index, samePlayerDrawsLaterInBatch)
+                    .map { pending ->
+                        pending.withObservedPlacementStage(
+                            matcher.placementStageFor(
+                                trigger = pending.ability.trigger,
+                                binding = pending.ability.binding,
+                                event = event,
+                                sourceId = pending.sourceId,
+                                controllerId = state.projectedState.getController(pending.sourceId)
+                                    ?: pending.controllerId,
+                                state = state,
+                            )
+                        )
+                    }
+            )
         }
 
         // Rule 603.10: "Look back in time" for simultaneous deaths.
@@ -870,6 +891,8 @@ class TriggerDetector(
                         delayed.sourceId,
                         delayed.controllerId,
                         state,
+                        delayed.watchedEntitySnapshot,
+                        delayed.watchedRecipientSnapshot,
                     )
                 ) continue
 
@@ -940,6 +963,14 @@ class TriggerDetector(
                         )
                     }
                 } else {
+                    val damageTriggerContext = if (
+                        specEvent is com.wingedsheep.sdk.scripting.EventPattern.DealsDamageEvent &&
+                        event is DamageDealtEvent && specEvent.sourceFilter != null
+                    ) {
+                        TriggerContext.fromSourceFilteredDamageEvent(event)
+                    } else {
+                        TriggerContext.fromEvent(event)
+                    } ?: continue
                     eventCandidates.add(
                         PendingTrigger(
                             ability = TriggeredAbility.create(
@@ -952,9 +983,9 @@ class TriggerDetector(
                             sourceId = delayed.sourceId,
                             sourceName = delayed.sourceName,
                             controllerId = delayed.controllerId,
-                            triggerContext = TriggerContext.fromEvent(event).copy(
+                            triggerContext = damageTriggerContext.copy(
                                 triggeringEntityId = delayed.watchedEntityId
-                                    ?: TriggerContext.fromEvent(event).triggeringEntityId
+                                    ?: damageTriggerContext.triggeringEntityId
                             ),
                             consumesDelayedTriggerId = if (delayed.fireOnce) delayed.id else null
                         )
@@ -962,11 +993,23 @@ class TriggerDetector(
                 }
 
                 if (eventCandidates.isEmpty()) continue
+                val observedCandidates = eventCandidates.map { candidate ->
+                    candidate.withObservedPlacementStage(
+                        matcher.placementStageFor(
+                            trigger = spec.event,
+                            binding = spec.binding,
+                            event = event,
+                            sourceId = delayed.sourceId,
+                            controllerId = delayed.controllerId,
+                            state = state,
+                        )
+                    )
+                }
                 if (delayed.fireOnce) {
-                    encounters.add(Encounter(delayed, eventCandidates.toList()))
+                    encounters.add(Encounter(delayed, observedCandidates))
                     matchedFireOnceIds.add(delayed.id)
                 } else {
-                    eventCandidates.forEach { encounters.add(Encounter(delayed, listOf(it))) }
+                    observedCandidates.forEach { encounters.add(Encounter(delayed, listOf(it))) }
                 }
             }
         }
@@ -980,7 +1023,10 @@ class TriggerDetector(
                 triggers.add(
                     first.copy(
                         consumesDelayedTriggerId = null,
-                        occurrenceChoice = encounter.candidates.map { it.toOccurrenceCandidate() }
+                        occurrenceChoice = TriggerOrderingKey.canonicalOccurrenceCandidates(
+                            state,
+                            encounter.candidates.map { it.toOccurrenceCandidate() }
+                        )
                     )
                 )
             } else {
@@ -1067,7 +1113,9 @@ class TriggerDetector(
         delayedId: String,
         sourceId: EntityId,
         controllerId: EntityId,
-        state: GameState
+        state: GameState,
+        watchedEntitySnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+        watchedRecipientSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     ): Boolean {
         val specEvent = spec.event
         return when (specEvent) {
@@ -1098,16 +1146,41 @@ class TriggerDetector(
                 matcher.matchesTrigger(specEvent, spec.binding, event, sourceId, controllerId, state)
             is com.wingedsheep.sdk.scripting.EventPattern.DealsDamageEvent -> {
                 if (event !is com.wingedsheep.engine.core.DamageDealtEvent) return false
-                if (watchedEntityId != null && event.sourceId != watchedEntityId) return false
+                if (watchedEntityId != null &&
+                    (event.sourceId != watchedEntityId ||
+                        !watchedEntitySnapshot.matchesIncarnation(event.damageSourceLastKnownSnapshot, watchedEntityId))
+                ) return false
                 // Recipient-scoped ("…to *that player* this turn"): the damaged entity must be
                 // the baked recipient. The spec's recipient filter still applies on top.
-                if (watchedRecipientId != null && event.targetId != watchedRecipientId) return false
+                if (watchedRecipientId != null) {
+                    if (event.targetId != watchedRecipientId) return false
+                    val recipientKinds = event.effectiveRecipientKinds
+                    val hasPermanentRole = recipientKinds.contains(DamageRecipientKind.CREATURE) ||
+                        recipientKinds.contains(DamageRecipientKind.PLANESWALKER) ||
+                        recipientKinds.contains(DamageRecipientKind.BATTLE) ||
+                        recipientKinds.contains(DamageRecipientKind.OTHER)
+                    if (hasPermanentRole &&
+                        !watchedRecipientSnapshot.matchesIncarnation(
+                            event.damageRecipientLastKnownSnapshot,
+                            watchedRecipientId,
+                        )
+                    ) return false
+                    if (!hasPermanentRole && !recipientKinds.contains(DamageRecipientKind.PLAYER)) return false
+                }
                 matcher.matchesDealsDamageTrigger(specEvent, event, state, controllerId)
             }
             // "When damage is prevented this way": fires only for this delayed trigger's own
             // shield, matched by the linkId echoed back on the DamagePreventedEvent.
             is com.wingedsheep.sdk.scripting.EventPattern.DamagePreventedEvent -> {
-                event is com.wingedsheep.engine.core.DamagePreventedEvent && event.linkId == delayedId
+                event is com.wingedsheep.engine.core.DamagePreventedEvent &&
+                    event.linkId == delayedId &&
+                    (watchedEntityId == null || (
+                        event.sourceId == watchedEntityId &&
+                            watchedEntitySnapshot.matchesIncarnation(
+                                event.sourceLastKnownSnapshot,
+                                watchedEntityId,
+                            )
+                        ))
             }
             // "When you play a card this way": fires only for the may-play permission that this
             // delayed trigger is linked to, matched by the linkId echoed on the event.
@@ -1121,6 +1194,7 @@ class TriggerDetector(
                     // entity already narrows the trigger, so we only check the zone transition —
                     // the spec's GameObjectFilter does not apply.
                     if (event.entityId != watchedEntityId) return false
+                    if (!watchedEntitySnapshot.matchesIncarnation(event.lastKnown, watchedEntityId)) return false
                     if (specEvent.from != null && event.fromZone != specEvent.from) return false
                     if (specEvent.to != null && event.toZone != specEvent.to) return false
                     if (specEvent.excludeTo != null && event.toZone == specEvent.excludeTo) return false
@@ -1172,6 +1246,16 @@ class TriggerDetector(
 
             for (ability in entry.abilities) {
                 if (Zone.BATTLEFIELD !in ability.activeZones) continue
+                // A damage event can outlive the object that received it while the engine reuses
+                // the same entity id for a replacement permanent. The replacement is not the
+                // SELF-bound DamageReceived observer that saw the event; its event-time LKI is
+                // dispatched by DamageTriggerDetector below instead.
+                if (event is DamageDealtEvent &&
+                    ability.binding == TriggerBinding.SELF &&
+                    ability.trigger is EventPattern.DamageReceivedEvent &&
+                    entityId == event.targetId &&
+                    damageRecipientIsNotEventObject(state, event)
+                ) continue
                 val matchingAttackedPlayers = matchingAttackedPlayersForTrigger(
                     trigger = ability.trigger,
                     binding = ability.binding,
@@ -1655,7 +1739,9 @@ class TriggerDetector(
 
         // Handle damage-received triggers for creatures no longer on the battlefield
         // (e.g., Broodhatch Nantuko dies from combat damage but trigger still fires)
-        if (event is DamageDealtEvent && event.targetId !in state.getBattlefield()) {
+        if (event is DamageDealtEvent &&
+            (event.targetId !in state.getBattlefield() || damageRecipientIsNotEventObject(state, event))
+        ) {
             damageDetector.detectDamageReceivedTriggers(state, index.statics, event, triggers)
         }
 
@@ -1670,7 +1756,8 @@ class TriggerDetector(
         }
 
         // Handle "whenever a creature deals damage to you" triggers (e.g., Aurification)
-        if (event is DamageDealtEvent && event.sourceId != null && event.targetId in state.turnOrder) {
+        if (event is DamageDealtEvent &&
+            event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
             damageDetector.detectDamageToControllerTriggers(state, event, triggers, projected, index)
         }
 
@@ -1680,7 +1767,8 @@ class TriggerDetector(
         }
 
         // Handle "whenever a [subtype] deals combat damage to a player" triggers (e.g., Cabal Slaver)
-        if (event is DamageDealtEvent && event.sourceId != null && event.isCombatDamage && event.targetId in state.turnOrder) {
+        if (event is DamageDealtEvent && event.sourceId != null && event.isCombatDamage &&
+            event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
             damageDetector.detectSubtypeDamageToPlayerTriggers(state, event, triggers, projected, index)
         }
 
@@ -1720,6 +1808,20 @@ class TriggerDetector(
         }
 
         return triggers
+    }
+
+    /**
+     * True when the event does not carry a stamped snapshot proving that the current id is the
+     * damaged object. Missing/unstamped data is unknown and must not authorize current-index
+     * ability dispatch; the damage detector fails closed instead.
+     */
+    private fun damageRecipientIsNotEventObject(
+        state: GameState,
+        event: DamageDealtEvent,
+    ): Boolean {
+        val snapshot = event.damageRecipientLastKnownSnapshot ?: return true
+        return snapshot.stampedFor(event.targetId) == null ||
+            !state.isCapturedBattlefieldObjectLive(event.targetId, snapshot)
     }
 
     /**
@@ -2400,7 +2502,8 @@ class TriggerDetector(
                     controllerId = event.controllerId,
                     granterId = event.granterId,
                     triggerContext = event.carriedTriggerContext,
-                    carriedPipeline = event.carriedPipeline
+                    carriedPipeline = event.carriedPipeline,
+                    stage = TriggerStage.REFLEXIVE
                 )
             )
         }
@@ -2854,20 +2957,24 @@ class TriggerDetector(
     ) {
         // Collect all combat damage-to-player events, grouped by the controller of the damage
         // source (offensive batch) and, separately, by the damaged player (defensive batch).
-        data class CombatDamageInfo(val sourceId: EntityId, val targetPlayerId: EntityId)
+        data class CombatDamageInfo(
+            val event: DamageDealtEvent,
+            val sourceId: EntityId,
+            val targetPlayerId: EntityId
+        )
         val combatDamageByController = mutableMapOf<EntityId, MutableList<CombatDamageInfo>>()
         val combatDamageByDamagedPlayer = mutableMapOf<EntityId, MutableList<CombatDamageInfo>>()
         for (event in events) {
             if (event is DamageDealtEvent && event.isCombatDamage && event.sourceId != null &&
-                event.targetId in state.turnOrder) {
-                val sourceContainer = state.getEntity(event.sourceId) ?: continue
-                val controller = sourceContainer.get<ControllerComponent>()?.playerId ?: continue
-                val info = CombatDamageInfo(event.sourceId, event.targetId)
-                combatDamageByController.getOrPut(controller) { mutableListOf() }.add(info)
+                event.effectiveRecipientKinds.contains(DamageRecipientKind.PLAYER)) {
+                val info = CombatDamageInfo(event, event.sourceId, event.targetId)
+                damageSourceControllerAtDamage(event)?.let { controller ->
+                    combatDamageByController.getOrPut(controller) { mutableListOf() }.add(info)
+                }
                 combatDamageByDamagedPlayer.getOrPut(event.targetId) { mutableListOf() }.add(info)
             }
         }
-        if (combatDamageByController.isEmpty()) return
+        if (combatDamageByController.isEmpty() && combatDamageByDamagedPlayer.isEmpty()) return
 
         for (entry in index.getEntitiesForCategory(TriggerCategory.COMBAT_DAMAGE_BATCH)) {
             for (ability in entry.abilities) {
@@ -2879,14 +2986,10 @@ class TriggerDetector(
                     val controllerId = entry.controllerId
                     val damageEvents = combatDamageByDamagedPlayer[controllerId] ?: continue
                     val firstMatchingInfo = damageEvents.firstOrNull { info ->
-                        val sourceContainer = state.getEntity(info.sourceId) ?: return@firstOrNull false
-                        sourceContainer.get<CardComponent>() ?: return@firstOrNull false
-                        if (!projected.isCreature(info.sourceId)) return@firstOrNull false
-                        if (sourceContainer.has<FaceDownComponent>()) return@firstOrNull false
-                        predicateEvaluator.matches(
-                            state, projected, info.sourceId, trigger.sourceFilter,
-                            PredicateContext(controllerId = controllerId, sourceId = entry.entityId)
-                        )
+                        matcher.isDamageSourceCreatureAtDamage(state, projected, info.event) &&
+                            matcher.matchesDamageSourceFilter(
+                                trigger.sourceFilter, info.event, state, controllerId
+                            )
                     }
                     if (firstMatchingInfo != null) {
                         triggers.add(
@@ -2895,7 +2998,11 @@ class TriggerDetector(
                                 sourceId = entry.entityId,
                                 sourceName = entry.cardComponent.name,
                                 controllerId = controllerId,
-                                triggerContext = TriggerContext(triggeringEntityId = firstMatchingInfo.sourceId)
+                                triggerContext = TriggerContext.fromDamageEvent(
+                                    firstMatchingInfo.event,
+                                    triggeringEntityId = firstMatchingInfo.sourceId,
+                                    triggeringPlayerId = firstMatchingInfo.targetPlayerId
+                                )
                             )
                         )
                     }
@@ -2913,18 +3020,10 @@ class TriggerDetector(
                 // predicates (e.g. +1/+1 counters) and any other card/controller predicates are
                 // honored — not just the handful of card predicates handled inline.
                 val matchingInfos = damageEvents.filter { info ->
-                    val sourceContainer = state.getEntity(info.sourceId) ?: return@filter false
-                    sourceContainer.get<CardComponent>() ?: return@filter false
-                    if (!projected.isCreature(info.sourceId)) return@filter false
-                    if (sourceContainer.has<FaceDownComponent>()) return@filter false
-
-                    predicateEvaluator.matches(
-                        state,
-                        projected,
-                        info.sourceId,
-                        trigger.sourceFilter,
-                        PredicateContext(controllerId = controllerId, sourceId = entry.entityId)
-                    )
+                    matcher.isDamageSourceCreatureAtDamage(state, projected, info.event) &&
+                        matcher.matchesDamageSourceFilter(
+                            trigger.sourceFilter, info.event, state, controllerId
+                        )
                 }
 
                 // "deal combat damage to a player" batches per damaged player: the ability
@@ -2941,7 +3040,8 @@ class TriggerDetector(
                             sourceId = entry.entityId,
                             sourceName = entry.cardComponent.name,
                             controllerId = controllerId,
-                            triggerContext = TriggerContext(
+                            triggerContext = TriggerContext.fromDamageEvent(
+                                infos.first().event,
                                 triggeringEntityId = infos.first().sourceId,
                                 triggeringPlayerId = damagedPlayerId
                             )
@@ -2950,6 +3050,20 @@ class TriggerDetector(
                 }
             }
         }
+    }
+
+    /**
+     * Resolve the source controller from the damage-time object, not an entity with the same id
+     * after a zone change. A missing source snapshot leaves the source controller unknown; using
+     * the current entity in that case would let a same-id replacement enter the wrong batch.
+     */
+    private fun damageSourceControllerAtDamage(
+        event: DamageDealtEvent,
+    ): EntityId? {
+        val sourceId = event.sourceId ?: return null
+        return event.damageSourceLastKnownSnapshot
+            .stampedFor(sourceId)
+            ?.controllerId
     }
 
     /**

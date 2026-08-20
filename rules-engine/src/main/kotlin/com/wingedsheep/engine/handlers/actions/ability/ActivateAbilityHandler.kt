@@ -170,6 +170,26 @@ class ActivateAbilityHandler(
             ?: resolveIntrinsicManaAbility(state, action.sourceId, action.abilityId)
             ?: return "Ability not found on this card"
 
+        // FreeFirstEquipEachTurn is an explicit alternative-payment domain. A legal action carries
+        // NORMAL or FREE_FIRST_EQUIP, and a missing mode is rejected while the free choice is
+        // available; the engine must never infer the mode from the mana pool. Equip mode is also
+        // mutually exclusive with the resource-payment fields used by Delve/Convoke/etc.
+        val equipPayment = action.alternativePayment?.equipPayment
+        val canChooseFreeEquip = castPermissionUtils.canChooseFreeFirstEquip(state, action.playerId, ability)
+        if (equipPayment != null) {
+            if (!ability.isEquipAbility) {
+                return "Equip payment mode is only valid for equip abilities"
+            }
+            if (action.alternativePayment.hasResourcePayment) {
+                return "Equip payment mode cannot be combined with another alternative payment"
+            }
+            if (!canChooseFreeEquip) {
+                return "No alternative equip payment is available"
+            }
+        } else if (canChooseFreeEquip) {
+            return "Choose an equip payment mode"
+        }
+
         // The mana-payment window (CR 605.3a) opens the door for mana abilities only — everything
         // else still needs priority.
         if (manaPaymentWindow != null && state.priorityPlayerId != action.playerId && !ability.isManaAbility) {
@@ -250,7 +270,7 @@ class ActivateAbilityHandler(
         // Apply ability-specific generic cost reduction (e.g., The Dominion Bracelet's
         // "{X} less, where X is this creature's power"). Per Scryfall ruling, the reduced
         // cost is locked in here, before costs are paid. Then apply generic equip-cost reduction
-        // (Éowyn) and finally Forge Anew's free-first-equip.
+        // (Éowyn) and finally the explicitly selected Forge Anew free-first-equip mode.
         val equipTargetIdForCost = action.targets.filterIsInstance<ChosenTarget.Permanent>().firstOrNull()?.entityId
         val effectiveCost = castPermissionUtils.relaxAbilityCostColorsIfAny(
             state, action.sourceId,
@@ -263,7 +283,7 @@ class ActivateAbilityHandler(
                     ability, state, action.playerId, equipTargetIdForCost,
                     abilitySourceId = action.sourceId
                 ),
-                ability, state, action.playerId
+                ability, state, action.playerId, equipPayment
             )
         )
         val effectiveTargetReqs = if (textReplacement != null) {
@@ -363,7 +383,7 @@ class ActivateAbilityHandler(
         // Check cost requirements (using ManaSolver for mana costs to consider untapped sources)
         // If the ability has convoke or waterbend and the player provided alternative payment,
         // account for the reduced cost.
-        val costAfterConvokeReduction = if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && !action.alternativePayment.isEmpty) {
+        val costAfterConvokeReduction = if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && action.alternativePayment.hasResourcePayment) {
             val mc = extractManaCost(effectiveCost) ?: effectiveCost
             if (mc is ManaCost || effectiveCost.manaCostOrNull != null || effectiveCost is AbilityCost.Composite) {
                 val reducedManaCost = extractManaCost(effectiveCost)?.let {
@@ -599,7 +619,8 @@ class ActivateAbilityHandler(
         }
         // Apply ability-specific generic cost reduction (e.g., The Dominion Bracelet's
         // "{X} less, where X is this creature's power"). Locked in before payment. Then apply
-        // generic equip-cost reduction (Éowyn) and Forge Anew's free-first-equip discount.
+        // generic equip-cost reduction (Éowyn) and the explicitly selected Forge Anew
+        // free-first-equip mode.
         // Finally relax colored requirements when "mana of any type can be spent" applies (Sharkey).
         val equipTargetIdForCost = action.targets.filterIsInstance<ChosenTarget.Permanent>().firstOrNull()?.entityId
         val effectiveCost = castPermissionUtils.relaxAbilityCostColorsIfAny(
@@ -613,7 +634,7 @@ class ActivateAbilityHandler(
                     ability, state, action.playerId, equipTargetIdForCost,
                     abilitySourceId = action.sourceId
                 ),
-                ability, state, action.playerId
+                ability, state, action.playerId, action.alternativePayment?.equipPayment
             )
         )
 
@@ -1141,7 +1162,7 @@ class ActivateAbilityHandler(
         val xValue = effectiveXValue ?: 0
 
         // Apply convoke payment for abilities with hasConvoke (e.g., Heirloom Epic)
-        if (effectiveManaCost != null && ability.hasConvoke && action.alternativePayment != null && !action.alternativePayment.isEmpty) {
+        if (effectiveManaCost != null && ability.hasConvoke && action.alternativePayment != null && action.alternativePayment.hasResourcePayment) {
             val convokeResult = alternativePaymentHandler.applyConvokeForAbility(
                 currentState, effectiveManaCost, action.alternativePayment, action.playerId
             )
@@ -1152,7 +1173,7 @@ class ActivateAbilityHandler(
 
         // Apply waterbend payment for abilities with hasWaterbend (Avatar: The Last Airbender) —
         // tap untapped artifacts/creatures you control, each paying {1} of the generic cost.
-        if (effectiveManaCost != null && ability.hasWaterbend && action.alternativePayment != null && !action.alternativePayment.isEmpty) {
+        if (effectiveManaCost != null && ability.hasWaterbend && action.alternativePayment != null && action.alternativePayment.hasResourcePayment) {
             val waterbendResult = alternativePaymentHandler.applyWaterbendForAbility(
                 currentState, effectiveManaCost, action.alternativePayment, action.playerId
             )
@@ -1334,7 +1355,7 @@ class ActivateAbilityHandler(
         )
         val costForPayment = if (action.paymentStrategy is PaymentStrategy.Explicit) {
             stripManaCost(effectiveCostAfterPreResolvedMoves)
-        } else if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && !action.alternativePayment.isEmpty && manaCost != null) {
+        } else if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && action.alternativePayment.hasResourcePayment && manaCost != null) {
             // Convoke/waterbend reduced the mana cost — update the cost structure so payAbilityCost
             // deducts the reduced amount from the pool instead of the original full amount
             when (effectiveCostAfterPreResolvedMoves) {
@@ -1851,7 +1872,10 @@ class ActivateAbilityHandler(
             targetRequirements = effectiveTargetReqs,
             costsTap = hasTapCost(effectiveCost),
             isExhaust = ability.isExhaust,
-            cantBeCopied = ability.cantBeCopied
+            cantBeCopied = ability.cantBeCopied,
+            // CR 602.2b -> 601.2c-d: targets, counts, and distribution are announced before
+            // costs mutate the board. Keep the original choice state for the stack payload.
+            targetLockState = state
         )
         currentState = stackResult.newState
         events.addAll(stackResult.events)
@@ -1859,6 +1883,12 @@ class ActivateAbilityHandler(
         // Handle repeated activations (repeatCount > 1)
         if (action.repeatCount > 1) {
             for (i in 2..action.repeatCount) {
+                // CR 602.2b -> 601.2b-i: this repeat's targets and dynamic target metadata are
+                // announced before its mana abilities and costs mutate the state. Keep the
+                // pre-payment state for the stack payload; currentState below is the payment
+                // result and must not be used to recompute the locked choice.
+                val repeatTargetLockState = currentState
+
                 // Re-read mana pool from current state
                 val repeatPoolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
@@ -1942,6 +1972,7 @@ class ActivateAbilityHandler(
                     currentState, repeatAbilityOnStack, action.targets,
                     targetRequirements = effectiveTargetReqs,
                     isExhaust = ability.isExhaust,
+                    targetLockState = repeatTargetLockState
                 )
                 currentState = repeatStackResult.newState
                 events.addAll(repeatStackResult.events)

@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.combat.AttackersDeclaredThisCombatComponent
@@ -267,10 +268,36 @@ class GameTestDriver {
      */
     fun bothPass(): ExecutionResult {
         autoSubmitCombatDeclarationIfNeeded()
+        // Simultaneous triggered abilities now expose CR 603.3b's controller-owned relative
+        // order through the same generic decision contract used by production callers.  A
+        // helper named bothPass is still expected to advance the stack, so answer this test-only
+        // setup decision deterministically before passing priority; scenario tests that need to
+        // assert the domain submit the OrderObjectsDecision explicitly.
+        fun resolveOrderingIfPresent(): ExecutionResult? {
+            val decision = state.pendingDecision as? OrderObjectsDecision ?: return null
+            return submitDecision(
+                decision.playerId,
+                OrderedResponse(decision.id, decision.objects)
+            )
+        }
+
+        resolveOrderingIfPresent()?.let { result ->
+            if (state.pendingDecision != null) return result
+        }
         var result = passPriority(state.priorityPlayerId ?: player1)
+        // The order decision is raised while the first pass resolves the triggering object.  It
+        // may therefore appear as the result of that pass rather than at the start of this helper.
+        resolveOrderingIfPresent()?.let { orderingResult ->
+            result = orderingResult
+            if (state.pendingDecision != null) return result
+        }
         if (result.isSuccess && state.priorityPlayerId != null) {
             autoSubmitCombatDeclarationIfNeeded()
             result = passPriority(state.priorityPlayerId!!)
+            resolveOrderingIfPresent()?.let { orderingResult ->
+                result = orderingResult
+                if (state.pendingDecision != null) return result
+            }
         }
         return result
     }
@@ -858,11 +885,18 @@ class GameTestDriver {
         container = staticAbilityHandler.addContinuousEffectComponent(container, cardDef)
         container = staticAbilityHandler.addReplacementEffectComponent(container, cardDef)
 
+        // Directly seeded permanents still represent battlefield objects. Give them the same
+        // incarnation stamp that the real entry pipeline carries so strict damage LKI tests do not
+        // have to fall back to an unsafe bare-id match.
+        val entryStamp = _state.timestamp + 1
+        container = container.with(BattlefieldEntryTimestampComponent(entryStamp))
+
         _state = _state.withEntity(cardId, container)
 
         // Add to battlefield
         val battlefieldZone = ZoneKey(playerId, Zone.BATTLEFIELD)
         _state = _state.addToZone(battlefieldZone, cardId)
+        _state = _state.tick()
 
         return cardId
     }
@@ -928,10 +962,15 @@ class GameTestDriver {
         container = staticAbilityHandler.addContinuousEffectComponent(container, cardDef)
         container = staticAbilityHandler.addReplacementEffectComponent(container, cardDef)
 
+        // Keep direct fixture placement aligned with real battlefield entry identity.
+        val entryStamp = _state.timestamp + 1
+        container = container.with(BattlefieldEntryTimestampComponent(entryStamp))
+
         _state = _state.withEntity(cardId, container)
 
         val battlefieldZone = ZoneKey(playerId, Zone.BATTLEFIELD)
         _state = _state.addToZone(battlefieldZone, cardId)
+        _state = _state.tick()
 
         return cardId
     }
@@ -1028,11 +1067,16 @@ class GameTestDriver {
         container = staticAbilityHandler.addContinuousEffectComponent(container, cardDef)
         container = staticAbilityHandler.addReplacementEffectComponent(container, cardDef)
 
+        // Keep direct fixture placement aligned with real battlefield entry identity.
+        val entryStamp = _state.timestamp + 1
+        container = container.with(BattlefieldEntryTimestampComponent(entryStamp))
+
         _state = _state.withEntity(cardId, container)
 
         // Add to battlefield
         val battlefieldZone = ZoneKey(playerId, Zone.BATTLEFIELD)
         _state = _state.addToZone(battlefieldZone, cardId)
+        _state = _state.tick()
 
         return cardId
     }
@@ -1321,6 +1365,12 @@ class GameTestDriver {
             is ReorderLibraryDecision -> {
                 submitOrderedResponse(decision.playerId, decision.cards)
             }
+            is OrderObjectsDecision -> {
+                submitDecision(
+                    decision.playerId,
+                    OrderedResponse(decision.id, decision.objects)
+                )
+            }
             is DistributeDecision -> {
                 // Auto-resolve: assign all to the first target
                 val distribution = decision.targets.associateWith { 0 }.toMutableMap()
@@ -1429,6 +1479,16 @@ class GameTestDriver {
     fun submitOrderedResponse(playerId: EntityId, orderedObjects: List<EntityId>): ExecutionResult {
         val decision = pendingDecision as? ReorderLibraryDecision
             ?: throw IllegalStateException("No pending ReorderLibraryDecision")
+        return submitDecision(
+            playerId,
+            OrderedResponse(decision.id, orderedObjects)
+        )
+    }
+
+    /** Submit the complete semantic handle order for a CR 603.3b trigger-ordering decision. */
+    fun submitObjectOrdering(playerId: EntityId, orderedObjects: List<EntityId>): ExecutionResult {
+        val decision = pendingDecision as? OrderObjectsDecision
+            ?: throw IllegalStateException("No pending OrderObjectsDecision")
         return submitDecision(
             playerId,
             OrderedResponse(decision.id, orderedObjects)

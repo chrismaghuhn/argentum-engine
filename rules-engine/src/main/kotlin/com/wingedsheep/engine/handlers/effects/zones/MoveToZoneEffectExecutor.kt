@@ -17,6 +17,7 @@ import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.destroyPermanent
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionResult
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -42,6 +43,8 @@ class MoveToZoneEffectExecutor(
     private val cardRegistry: CardRegistry,
     private val targetFinder: TargetFinder = TargetFinder()
 ) : EffectExecutor<MoveToZoneEffect> {
+
+    private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
 
     override val effectType: KClass<MoveToZoneEffect> = MoveToZoneEffect::class
 
@@ -84,7 +87,7 @@ class MoveToZoneEffectExecutor(
             ownerId
         }
 
-        // CR 303.4g — an Aura entering the battlefield by any means other than resolving as an
+        // CR 303.4f — an Aura entering the battlefield by any means other than resolving as an
         // Aura spell (here: reanimation / return from graveyard, exile, etc.) has its controller
         // choose what it enchants as it enters. Without that choice the Aura would enter
         // unattached and immediately die to a state-based action (CR 704.5n). Cast Auras attach
@@ -199,7 +202,7 @@ class MoveToZoneEffectExecutor(
 
     /**
      * Handle an Aura that is being put onto the battlefield by something other than resolving as
-     * an Aura spell (CR 303.4g). The controller chooses what it enchants from among everything it
+     * an Aura spell (CR 303.4f). The controller chooses what it enchants from among everything it
      * can legally enchant (CR 303.4f — targeting restrictions like hexproof/shroud are ignored for
      * this choice). The actual move-and-attach happens in
      * [PutOntoBattlefieldAttachedToChosenContinuation], reused from the explicit "attached to"
@@ -213,13 +216,10 @@ class MoveToZoneEffectExecutor(
         controllerId: EntityId,
         context: EffectContext
     ): EffectResult {
-        val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
-        val legalHosts = if (auraTarget == null) emptyList() else targetFinder.findLegalTargets(
+        val legalHosts = auraHostLegality.findLegalHosts(
             state = state,
-            requirement = auraTarget,
-            controllerId = controllerId,
-            sourceId = cardId,
-            ignoreTargetingRestrictions = true
+            auraId = cardId,
+            hostControllerId = controllerId,
         )
 
         // No legal host — the Aura can't enter and stays in its current zone (CR 303.4g).
