@@ -105,32 +105,64 @@ internal object ObservationCanonicalizer {
     private fun semanticStructuredDomain(domain: JsonObject): JsonObject {
         val type = domain["type"]?.jsonPrimitive?.content
         if (type == "mana-sources") {
-            return JsonObject(
-                domain.entries
+            return stripStructuredPresentation(
+                JsonObject(domain.entries
                     .filter { (key, _) -> key != "autoPaySuggestion" }
-                    .associate { (key, value) -> key to value }
-            )
+                    .associate { (key, value) -> key to value })
+            ).jsonObject
         }
-        if (type != "ordering") return domain
+        if (type != "ordering") return stripStructuredPresentation(domain).jsonObject
 
         val objectIds = domain["objects"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }
         val labels = domain["objectLabels"]?.jsonObject
         val cardInfo = domain["cardInfo"]?.jsonObject
         val objectSemantics = objectIds.map { id ->
             buildJsonObject {
-                if (!id.startsWith("trigger-order-object-")) put("entityId", id)
-                labels?.get(id)?.let { put("label", it) }
-                cardInfo?.get(id)?.let { put("cardInfo", it) }
+                val opaque = id.startsWith("trigger-order-object-")
+                if (!opaque) put("entityId", id)
+                if (opaque) labels?.get(id)?.let { put("label", it) }
+                if (opaque) {
+                    cardInfo?.get(id)?.let {
+                        put("cardInfo", stripStructuredPresentation(it))
+                    }
+                }
             }
         }.sortedBy { canonicalize(it).toString() }
 
-        return buildJsonObject {
+        return stripStructuredPresentation(buildJsonObject {
             domain.entries
                 .filter { (key, _) -> key !in setOf("objects", "cardInfo", "objectLabels") }
                 .forEach { (key, value) -> put(key, value) }
             put("objectSemantics", JsonArray(objectSemantics))
-        }
+        }).jsonObject
     }
+
+    /**
+     * Keep legal constraints and visible card characteristics in semantic identity, but remove
+     * fields that only select a renderer or provide human-facing explanatory copy. These fields
+     * remain on the wire for clients; they must not make equivalent information sets hash apart.
+     */
+    private fun stripStructuredPresentation(element: JsonElement): JsonElement = when (element) {
+        is JsonObject -> JsonObject(
+            element.entries
+                .filter { (key, _) -> key !in structuredPresentationKeys }
+                .associate { (key, value) -> key to stripStructuredPresentation(value) }
+        )
+
+        is JsonArray -> JsonArray(element.map(::stripStructuredPresentation))
+        else -> element
+    }
+
+    private val structuredPresentationKeys = setOf(
+        "description",
+        "filterDescription",
+        "iconKey",
+        "imageUri",
+        "remainderLabel",
+        "selectedLabel",
+        "text",
+        "useTargetingUI"
+    )
 
     private val unorderedArrayKeys = setOf(
         "types",

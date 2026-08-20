@@ -1,7 +1,11 @@
 package com.wingedsheep.gym.server.controller
 
+import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.gym.contract.CardSelectionDomain
+import com.wingedsheep.gym.contract.SearchLibraryDomain
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
 import com.wingedsheep.gym.service.EnvId
@@ -28,6 +32,7 @@ import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.beans.factory.annotation.Autowired
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.Zone
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -56,6 +61,7 @@ class EnvControllerTest : FunSpec() {
         ignoreUnknownKeys = true
         encodeDefaults = true
         explicitNulls = false
+        allowStructuredMapKeys = true
     }
 
     private val client: HttpClient = HttpClient.newBuilder().build()
@@ -216,6 +222,106 @@ class EnvControllerTest : FunSpec() {
 
             // Observing a disposed env returns 404.
             get("/envs/${created.envId.value}").statusCode() shouldBe 404
+        }
+
+        test("HTTP structured decision observation supplies a candidate accepted by /decision") {
+            fun structuredConfig(seed: Long) = EnvConfig(
+                players = listOf(
+                    PlayerSpec(
+                        "Alice",
+                        DeckSpec.Explicit(mapOf("Forest" to 30, "Rampant Growth" to 10))
+                    ),
+                    PlayerSpec("Bob", DeckSpec.Explicit(mapOf("Forest" to 40)))
+                ),
+                skipMulligans = true,
+                useHandSmoother = false,
+                startingPlayerIndex = 0,
+                seed = seed,
+                perspectivePlayerIndex = 0,
+                maxSteps = 200
+            )
+
+            fun hand(observation: TrainingObservation) = observation.zones
+                .first { it.ownerId == observation.perspectivePlayerId && it.zoneType == Zone.HAND }
+                .cards
+
+            var selected: CreateEnvResponse? = null
+            var selectedObservation: TrainingObservation? = null
+            var envToDispose: EnvId? = null
+            try {
+                for (seed in 0L..100L) {
+                    val response = postJson("/envs", json.encodeToString(structuredConfig(seed)))
+                    response.statusCode() shouldBe 200
+                    val candidate = json.decodeFromString<CreateEnvResponse>(response.body())
+                    envToDispose = candidate.envId
+                    val opening = candidate.observation as TrainingObservation
+                    val openingHand = hand(opening)
+                    if (openingHand.count { it.name == "Forest" } >= 2 &&
+                        openingHand.any { it.name == "Rampant Growth" }
+                    ) {
+                        selected = candidate
+                        selectedObservation = opening
+                        break
+                    }
+                    deleteJson("/envs", json.encodeToString(DisposeBody(listOf(candidate.envId))))
+                    envToDispose = null
+                }
+
+                val created = checkNotNull(selected) { "No deterministic seed produced the structured-decision opening hand" }
+                var observation = checkNotNull(selectedObservation)
+                var structuredObservation: TrainingObservation? = null
+
+                for (stepIndex in 0 until 120) {
+                    if (observation.pendingDecision?.structuredDomain != null) {
+                        structuredObservation = observation
+                        break
+                    }
+
+                    val actorHand = hand(observation)
+                    val actorCardIds = actorHand.associateBy { it.name }
+                    val action = observation.legalActions.firstOrNull {
+                        it.kind == "PlayLand" && it.sourceEntityId == actorCardIds["Forest"]?.entityId
+                    } ?: observation.legalActions.firstOrNull {
+                        it.kind == "CastSpell" &&
+                            it.affordable &&
+                            it.sourceEntityId == actorCardIds["Rampant Growth"]?.entityId
+                    } ?: observation.legalActions.firstOrNull { it.kind == "PassPriority" }
+
+                    checkNotNull(action) {
+                        "Structured HTTP fixture stalled without a play, cast, or pass action"
+                    }
+                    val step = postJson(
+                        "/envs/${created.envId.value}/step",
+                        json.encodeToString(StepBody(action.actionId, action.actionSemantics))
+                    )
+                    step.statusCode() shouldBe 200
+                    observation = json.decodeFromString<TrainingObservation>(step.body())
+                }
+
+                val paused = checkNotNull(structuredObservation) {
+                    "HTTP fixture did not reach a structured decision"
+                }
+                val pending = checkNotNull(paused.pendingDecision)
+                val candidate = when (val domain = checkNotNull(pending.structuredDomain)) {
+                    is CardSelectionDomain -> domain.options.firstOrNull()
+                    is SearchLibraryDomain -> domain.options.firstOrNull()
+                    else -> error("Expected a card-selection/search structured domain, got ${domain::class.simpleName}")
+                }
+                val selectedCandidate = checkNotNull(candidate) { "Structured domain contained no legal candidate" }
+                val response = CardsSelectedResponse(checkNotNull(pending.decisionId), listOf(selectedCandidate))
+
+                val decisionResponse = postJson(
+                    "/envs/${created.envId.value}/decision",
+                    json.encodeToString(DecisionResponse.serializer(), response)
+                )
+                decisionResponse.statusCode() shouldBe 200
+                val afterDecision = json.decodeFromString<TrainingObservation>(decisionResponse.body())
+                afterDecision.pendingDecision shouldBe null
+            } finally {
+                envToDispose?.let {
+                    deleteJson("/envs", json.encodeToString(DisposeBody(listOf(it))))
+                }
+            }
         }
 
         test("HTTP observation routes legal actions to the player who has priority") {

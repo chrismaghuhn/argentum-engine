@@ -171,6 +171,104 @@ class ObservationCanonicalizationTest : FunSpec({
             ObservationCanonicalizer.semanticJson(withTargetOrder(listOf(second, first)))
     }
 
+    test("presentation-only structured-domain drift does not change the semantic digest") {
+        val base = observation(environment())
+        val candidate = EntityId("domain-card")
+
+        fun withPresentation(
+            imageUri: String?,
+            useTargetingUI: Boolean,
+            selectedLabel: String?
+        ): TrainingObservation {
+            val domain = CardSelectionDomain(
+                options = listOf(candidate),
+                minSelections = 1,
+                maxSelections = 1,
+                ordered = false,
+                cardInfo = mapOf(
+                    candidate to StructuredCardInfo(
+                        name = "Domain Card",
+                        manaCost = "{1}",
+                        typeLine = "Creature",
+                        imageUri = imageUri,
+                        colors = listOf("R"),
+                        power = 1
+                    )
+                ),
+                useTargetingUI = useTargetingUI,
+                selectedLabel = selectedLabel,
+                remainderLabel = "Keep",
+                nonSelectableOptions = emptyList(),
+                onePerCardType = false,
+                onePerColor = false,
+                availableColors = null,
+                onePerCardName = false,
+                onePerBasicLandType = false,
+                onePerPower = false,
+                maxTotalManaValue = null,
+                minTotalManaValue = null,
+                maxTotalPower = null,
+                conditionalMinimums = emptyList()
+            )
+            return base.copy(
+                pendingDecision = PendingDecisionView(
+                    decisionId = "routing-id",
+                    kind = PendingDecisionKind.SELECT_CARDS,
+                    playerId = base.perspectivePlayerId,
+                    prompt = "presentation prompt",
+                    requiresStructuredResponse = true,
+                    structuredDomain = domain
+                )
+            )
+        }
+
+        val first = withPresentation("https://cdn.example/one.png", false, "Select")
+        val presentationVariant = withPresentation("https://cdn.example/two.png", true, "Choose")
+
+        ObservationCanonicalizer.wireJson(first) shouldNotBe ObservationCanonicalizer.wireJson(presentationVariant)
+        StateDigest.compute(first) shouldBe StateDigest.compute(presentationVariant)
+    }
+
+    test("structured-domain candidate and constraint drift changes the semantic digest") {
+        val base = observation(environment())
+        val first = EntityId("domain-card-a")
+        val second = EntityId("domain-card-b")
+
+        fun withDomain(options: List<EntityId>, maxSelections: Int): TrainingObservation = base.copy(
+            pendingDecision = PendingDecisionView(
+                decisionId = "routing-id",
+                kind = PendingDecisionKind.SELECT_CARDS,
+                playerId = base.perspectivePlayerId,
+                prompt = "presentation prompt",
+                structuredDomain = CardSelectionDomain(
+                    options = options,
+                    minSelections = 1,
+                    maxSelections = maxSelections,
+                    ordered = false,
+                    useTargetingUI = false,
+                    selectedLabel = null,
+                    remainderLabel = null,
+                    nonSelectableOptions = emptyList(),
+                    onePerCardType = false,
+                    onePerColor = false,
+                    availableColors = null,
+                    onePerCardName = false,
+                    onePerBasicLandType = false,
+                    onePerPower = false,
+                    maxTotalManaValue = null,
+                    minTotalManaValue = null,
+                    maxTotalPower = null,
+                    conditionalMinimums = emptyList()
+                )
+            )
+        )
+
+        StateDigest.compute(withDomain(listOf(first), 1)) shouldNotBe
+            StateDigest.compute(withDomain(listOf(first, second), 1))
+        StateDigest.compute(withDomain(listOf(first), 1)) shouldNotBe
+            StateDigest.compute(withDomain(listOf(first), 2))
+    }
+
     test("rules-significant stack order remains observable") {
         val base = observation(environment())
         val lower = StackItemView(

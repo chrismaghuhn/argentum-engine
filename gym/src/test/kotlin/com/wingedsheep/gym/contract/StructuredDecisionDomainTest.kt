@@ -1,17 +1,21 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.CombatResolutionDecision
+import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModeOption
+import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ChooseModeDecision
 import com.wingedsheep.engine.core.ChooseReplacementDecision
 import com.wingedsheep.engine.core.DamageEdge
+import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DamageEdgeDirection
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ManaSourceOption
+import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.ModeOption
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.core.OrderObjectsDecision
@@ -27,8 +31,10 @@ import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.service.SnapshotCodec
@@ -38,6 +44,7 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
@@ -75,6 +82,31 @@ class StructuredDecisionDomainTest : FunSpec({
     ): TrainingObservation = ObservationBuilder(cardRegistry = registry())
         .build(env.state.copy(pendingDecision = decision), perspective, emptyList())
         .observation as TrainingObservation
+
+    fun gameWithPendingDecision(decision: com.wingedsheep.engine.core.PendingDecision): GameGymEnv {
+        val env = environment()
+        env.restore(
+            env.state.copy(pendingDecision = decision),
+            env.playerIds,
+            env.stepCount,
+            env.maxSteps
+        )
+        return GameGymEnv(
+            environment = env,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry())
+        )
+    }
+
+    fun pendingView(gym: GameGymEnv): PendingDecisionView =
+        checkNotNull((gym.observe().observation as TrainingObservation).pendingDecision)
+
+    fun decisionId(view: PendingDecisionView): String = checkNotNull(view.decisionId)
+
+    fun submitAndRequireResolved(gym: GameGymEnv, response: com.wingedsheep.engine.core.DecisionResponse) {
+        gym.submitDecision(response)
+        (gym.observe().observation as TrainingObservation).pendingDecision shouldBe null
+    }
 
     fun cardInfo(name: String) = SearchCardInfo(
         name = name,
@@ -281,6 +313,265 @@ class StructuredDecisionDomainTest : FunSpec({
         manaDomain.availableSources.single().entityId shouldBe source
         manaDomain.requiredCost shouldBe "{1}"
         manaDomain.canDecline shouldBe true
+    }
+
+    test("ChooseTargets domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val candidate = EntityId("target-candidate")
+        val gym = gameWithPendingDecision(
+            ChooseTargetsDecision(
+                id = "targets-acceptance",
+                playerId = owner,
+                prompt = "Choose a target",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                targetRequirements = listOf(TargetRequirementInfo(0, "one target", 1, 1)),
+                legalTargets = mapOf(0 to listOf(candidate))
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+        val requirement = domain.requirements.single()
+
+        submitAndRequireResolved(
+            gym,
+            TargetsResponse(
+                decisionId(view),
+                mapOf(requirement.index to listOf(requirement.candidates.single()))
+            )
+        )
+    }
+
+    test("multi-select card domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val gym = gameWithPendingDecision(
+            SelectCardsDecision(
+                id = "cards-acceptance",
+                playerId = owner,
+                prompt = "Select cards",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                options = listOf(EntityId("card-a"), EntityId("card-b")),
+                minSelections = 1,
+                maxSelections = 2,
+                ordered = true
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<CardSelectionDomain>()
+
+        submitAndRequireResolved(
+            gym,
+            CardsSelectedResponse(decisionId(view), domain.options.take(domain.minSelections))
+        )
+    }
+
+    test("OrderObjects domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val gym = gameWithPendingDecision(
+            OrderObjectsDecision(
+                id = "ordering-acceptance",
+                playerId = owner,
+                prompt = "Choose an order",
+                context = DecisionContext(phase = DecisionPhase.TRIGGER),
+                objects = listOf(EntityId("object-a"), EntityId("object-b"))
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<OrderingDomain>()
+
+        submitAndRequireResolved(gym, OrderedResponse(decisionId(view), domain.objects))
+    }
+
+    test("SearchLibrary domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val candidate = EntityId("search-candidate")
+        val gym = gameWithPendingDecision(
+            SearchLibraryDecision(
+                id = "search-acceptance",
+                playerId = owner,
+                prompt = "Search",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                options = listOf(candidate),
+                minSelections = 0,
+                maxSelections = 1,
+                cards = mapOf(candidate to cardInfo("Candidate")),
+                filterDescription = "a card"
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<SearchLibraryDomain>()
+
+        submitAndRequireResolved(
+            gym,
+            CardsSelectedResponse(decisionId(view), domain.options.take(domain.maxSelections))
+        )
+    }
+
+    test("ReorderLibrary domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val gym = gameWithPendingDecision(
+            ReorderLibraryDecision(
+                id = "reorder-acceptance",
+                playerId = owner,
+                prompt = "Reorder",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                cards = listOf(EntityId("top"), EntityId("bottom")),
+                cardInfo = emptyMap()
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<ReorderLibraryDomain>()
+
+        submitAndRequireResolved(gym, OrderedResponse(decisionId(view), domain.cards.reversed()))
+    }
+
+    test("CombatResolution domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val attacker = EntityId("attacker-acceptance")
+        val blocker = EntityId("blocker-acceptance")
+        val defender = EntityId("defender-acceptance")
+        val edge = DamageEdge(
+            id = "edge-acceptance",
+            sourceId = attacker,
+            targetId = blocker,
+            direction = DamageEdgeDirection.ATTACKER_TO_BLOCKER,
+            amount = 2,
+            maximum = 2,
+            lethal = 2,
+            isTrampleDrain = false,
+            editableBy = owner
+        )
+        val gym = gameWithPendingDecision(
+            CombatResolutionDecision(
+                id = "combat-acceptance",
+                playerId = owner,
+                prompt = "Assign combat damage",
+                context = DecisionContext(phase = DecisionPhase.COMBAT),
+                firstStrike = false,
+                attackers = listOf(
+                    ResolutionAttacker(
+                        attacker,
+                        "Attacker",
+                        2,
+                        2,
+                        false,
+                        false,
+                        false,
+                        false,
+                        true,
+                        null,
+                        defender,
+                        listOf(blocker),
+                        0
+                    )
+                ),
+                blockers = listOf(
+                    ResolutionBlocker(
+                        id = blocker,
+                        name = "Blocker",
+                        power = 1,
+                        toughness = 2,
+                        hasDeathtouch = false,
+                        hasFirstStrike = false,
+                        hasDoubleStrike = false,
+                        dealsDamageThisStep = true,
+                        blockedAttackerIds = listOf(attacker),
+                        markedDamage = 0
+                    )
+                ),
+                defenders = listOf(ResolutionDefender(defender, ResolutionTargetKind.PLAYER, "Defender", 20)),
+                edges = listOf(edge)
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<CombatResolutionDomain>()
+
+        submitAndRequireResolved(
+            gym,
+            CombatResolutionResponse(
+                decisionId(view),
+                domain.edges.map { DamageEdgeAmount(it.id, it.amount) }
+            )
+        )
+    }
+
+    test("SelectManaSources domain constructs a response accepted by GameGymEnv and Rules") {
+        val owner = environment().playerIds.first()
+        val source = EntityId("mana-source-acceptance")
+        val gym = gameWithPendingDecision(
+            SelectManaSourcesDecision(
+                id = "mana-acceptance",
+                playerId = owner,
+                prompt = "Select mana sources",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                availableSources = listOf(
+                    ManaSourceOption(source, "Mountain", setOf(Color.RED), false)
+                ),
+                requiredCost = "{1}",
+                autoPaySuggestion = listOf(source)
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<ManaSourcesDomain>()
+
+        submitAndRequireResolved(
+            gym,
+            ManaSourcesSelectedResponse(
+                decisionId(view),
+                selectedSources = domain.availableSources.map { it.entityId }
+            )
+        )
+    }
+
+    test("Rules rejects responses with candidates outside the projected domain") {
+        val owner = environment().playerIds.first()
+        val candidate = EntityId("search-candidate")
+        val gym = gameWithPendingDecision(
+            SearchLibraryDecision(
+                id = "search-reject-outside",
+                playerId = owner,
+                prompt = "Search",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                options = listOf(candidate),
+                minSelections = 0,
+                maxSelections = 1,
+                cards = mapOf(candidate to cardInfo("Candidate")),
+                filterDescription = "a card"
+            )
+        )
+        val view = pendingView(gym)
+
+        shouldThrow<IllegalArgumentException> {
+            gym.submitDecision(
+                CardsSelectedResponse(decisionId(view), listOf(EntityId("not-in-domain")))
+            )
+        }
+    }
+
+    test("Rules rejects responses that violate projected cardinality") {
+        val owner = environment().playerIds.first()
+        val candidate = EntityId("target-cardinality")
+        val gym = gameWithPendingDecision(
+            ChooseTargetsDecision(
+                id = "targets-reject-cardinality",
+                playerId = owner,
+                prompt = "Choose one target",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                targetRequirements = listOf(TargetRequirementInfo(0, "one target", 1, 1)),
+                legalTargets = mapOf(0 to listOf(candidate))
+            )
+        )
+        val view = pendingView(gym)
+        val domain = view.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+        val requirement = domain.requirements.single()
+
+        shouldThrow<IllegalArgumentException> {
+            gym.submitDecision(
+                TargetsResponse(
+                    decisionId(view),
+                    mapOf(requirement.index to listOf(requirement.candidates.single(), requirement.candidates.single()))
+                )
+            )
+        }
     }
 
     test("structured domains are actor-only and are absent from the opponent view") {
