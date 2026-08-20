@@ -92,6 +92,7 @@ class CostAtomSerializationTest : FunSpec({
 
     test("PayLife keeps fixed amounts compact while dynamic amounts retain their type") {
         val fixed = json.encodeToJsonElement(CostAtom.serializer(), CostAtom.PayLife(3)).jsonObject
+        fixed["type"]!!.jsonPrimitive.content shouldBe "AtomPayLife"
         fixed["amount"] shouldBe JsonPrimitive(3)
 
         val dynamic = json.encodeToJsonElement(

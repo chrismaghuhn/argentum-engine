@@ -26,7 +26,8 @@ import kotlinx.serialization.json.put
  */
 object CostAtomPayLifeSerializer : KSerializer<CostAtom.PayLife> {
     override val descriptor: SerialDescriptor =
-        buildClassSerialDescriptor("CostAtom.PayLife") {
+        // Keep the existing polymorphic discriminator used by every committed card snapshot.
+        buildClassSerialDescriptor("AtomPayLife") {
             element("amount", DynamicAmount.serializer().descriptor)
         }
 
