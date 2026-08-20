@@ -5,7 +5,12 @@ import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.MtgSet
 import com.wingedsheep.sdk.model.Printing
 
-/** Commander 2019; scaffolded for its exact-pair card definitions and printings. */
+/**
+ * Commander 2019 (2019)
+ *
+ * This package is intentionally incomplete: it contains the canonical definition for
+ * Sevinne's Reclamation, the card's earliest real printing.
+ */
 object Commander2019Set : MtgSet {
 
     override val code = "C19"
