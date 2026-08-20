@@ -174,6 +174,19 @@ class TriggerOrderingTest : FunSpec({
         normalOrder.objectLabels!!.values.any { it.startsWith("reflexive:") } shouldBe true
     }
 
+    test("TO-15: cast-time cost-linked triggers join the normal CR 603.3b ordering pass") {
+        val driver = newDriver()
+        val result = process(driver, listOf(
+            syntheticTrigger(driver, "cost-linked", stage = TriggerStage.COST_LINKED),
+            syntheticTrigger(driver, "normal-first"),
+            syntheticTrigger(driver, "normal-second"),
+        ))
+
+        val order = result.pendingDecision.shouldBeInstanceOf<OrderObjectsDecision>()
+        order.objects.size shouldBe 3
+        order.objectLabels!!.values.any { it.startsWith("cost-linked:") } shouldBe true
+    }
+
     test("TO-18: only an ability-triggering condition enters the second CR 603.3b stage") {
         val driver = newDriver()
         val abilityTriggeringCondition = syntheticTrigger(driver, "ability-triggered").let { trigger ->

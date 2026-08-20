@@ -665,10 +665,10 @@ object CardLinter {
         val abilityListFields = setOf(
             "triggeredAbilities", "stateTriggeredAbilities", "activatedAbilities",
             "staticAbilities", "replacementEffects", "sagaChapters", "classLevels",
-            "costPaidReflexiveTriggers",
+            "costPaidLinkedTriggers",
         )
         val orderedSpellFields = listOf(
-            "castTimeCaptures", "additionalCosts", "costPaidReflexiveTriggers", "selfAlternativeCost"
+            "castTimeCaptures", "additionalCosts", "costPaidLinkedTriggers", "selfAlternativeCost"
         )
         val deferredSpellFields = listOf("spellEffect", "kickerSpellEffect", "cleaveSpellEffect")
 
@@ -699,8 +699,8 @@ object CardLinter {
         (script["sagaChapters"] as? JsonArray)?.forEachIndexed { i, chapter ->
             walkAbilityScope(chapter, "saga chapter ${i + 1}", state)
         }
-        (script["costPaidReflexiveTriggers"] as? JsonArray)?.forEachIndexed { i, trigger ->
-            walkInto(trigger, state.newScope("cost-paid reflexive trigger ${i + 1}"), state)
+        (script["costPaidLinkedTriggers"] as? JsonArray)?.forEachIndexed { i, trigger ->
+            walkInto(trigger, state.newScope("cost-paid linked trigger ${i + 1}"), state)
         }
         (script["staticAbilities"] as? JsonArray)?.forEachIndexed { i, ability ->
             walkInto(ability, state.newScope("static ability ${i + 1}"), state)

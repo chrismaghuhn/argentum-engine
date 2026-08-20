@@ -99,7 +99,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.ChoiceSlot
-import com.wingedsheep.sdk.scripting.CostPaidReflexiveTriggerCost
+import com.wingedsheep.sdk.scripting.CostPaidLinkedTriggerCost
 import com.wingedsheep.sdk.scripting.TapReason
 import com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
 import com.wingedsheep.sdk.scripting.costs.CostAtom
@@ -3994,11 +3994,11 @@ class CastSpellHandler(
                 } else emptyList()
             } else emptyList()
 
-        // A completed variable-permanent sacrifice cost establishes a CR 603.12 reflexive
-        // trigger. The descriptor is generic SDK data: it links an existing cost atom to an
-        // effect, while this handler only lowers the completed payment into the normal pending-
-        // trigger pipeline. The spell is the pending trigger's source, so the effect context can
-        // read the immutable SpellOnStackComponent.sacrificedPermanents payload at resolution.
+        // A completed variable-permanent sacrifice cost establishes a cost-linked triggered
+        // ability (CR 603.11 / 607.2h / 607.2i). The descriptor is generic SDK data: it links an
+        // existing cost atom to an effect, while this handler only lowers the completed payment
+        // into the normal pending-trigger pipeline. The stack lowering freezes the source spell's
+        // copy payload before priority can move it away.
         val variablePermanentCosts = flattenedAllCosts.mapNotNull { additionalCost ->
             (additionalCost as? AdditionalCost.Atom)?.atom as? CostAtom.VariablePermanents
         }
@@ -4011,12 +4011,12 @@ class CastSpellHandler(
                 variablePermanentCosts.size == 1 &&
                 variablePermanentCosts.single().action == PermanentCostAction.SACRIFICE &&
                 !hasFixedSacrificeCost
-        val costPaidReflexivePendingTriggers: List<PendingTrigger> =
+        val costPaidLinkedPendingTriggers: List<PendingTrigger> =
             if (!action.castFaceDown && variableSacrificeCostPaid) {
-                castTimeScript?.costPaidReflexiveTriggers
+                castTimeScript?.costPaidLinkedTriggers
                     .orEmpty()
                     .filter { descriptor ->
-                        descriptor.cost == CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice
+                        descriptor.cost == CostPaidLinkedTriggerCost.VariablePermanentsSacrifice
                     }
                     .map { descriptor ->
                         val ability = TriggeredAbility(
@@ -4038,12 +4038,12 @@ class CastSpellHandler(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId,
                             ),
-                            stage = TriggerStage.REFLEXIVE,
+                            stage = TriggerStage.COST_LINKED,
                         )
                     }
             } else emptyList()
 
-        // Handle Conspire (CR 702.78): when the optional additional cost was paid, a reflexive
+        // Handle Conspire (CR 702.78): when the optional additional cost was paid, a cost-linked
         // trigger goes on the stack above the spell: "When you do, copy it and you may choose
         // new targets for the copy." Reuses StormCopyEffect with copyCount=1 so the existing
         // retargeting, modal-copy, and SpellOnStackComponent-clone plumbing applies unchanged.
@@ -4075,14 +4075,14 @@ class CastSpellHandler(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
                             ),
-                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
+                            stage = com.wingedsheep.engine.event.TriggerStage.COST_LINKED
                         )
                     )
                 } else emptyList()
             } else emptyList()
 
         // Handle Casualty (CR 702.153): when the optional additional cost (sacrifice a creature
-        // with power N or greater) was paid, a reflexive trigger goes on the stack above the spell:
+        // with power N or greater) was paid, a cost-linked trigger goes on the stack above the spell:
         // "When you do, copy it and you may choose new targets for the copy." Identical copy shape
         // to Conspire — reuses StormCopyEffect with copyCount=1.
         val casualtyPendingTriggers: List<PendingTrigger> =
@@ -4113,7 +4113,7 @@ class CastSpellHandler(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
                             ),
-                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
+                            stage = com.wingedsheep.engine.event.TriggerStage.COST_LINKED
                         )
                     )
                 } else emptyList()
@@ -4238,7 +4238,7 @@ class CastSpellHandler(
         // matching APNAP ordering within processTriggers.
         val detectedTriggers = triggerDetector.detectTriggers(currentCastState, allEvents)
         val triggers = riderPendingTriggers +
-            costPaidReflexivePendingTriggers +
+            costPaidLinkedPendingTriggers +
             conspirePendingTriggers +
             casualtyPendingTriggers +
             stormPendingTriggers +

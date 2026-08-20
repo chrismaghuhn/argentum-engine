@@ -1190,6 +1190,15 @@ class TriggerProcessor(
         effectOverride: Effect? = null
     ): ExecutionResult {
         val ability = trigger.ability
+        // A cast-time cost-linked trigger must retain the source spell's copyable state before
+        // priority can move that spell to another zone (CR 113.7a / 608.2h).  Capture this while
+        // the pending trigger is lowered to its serialized stack object; ordinary triggers keep
+        // the field null and continue using their normal source/LKI fields.
+        val resolvingSpellCopyPayload = if (trigger.stage == TriggerStage.COST_LINKED) {
+            stackResolver.captureResolvingSpellCopyPayload(state, trigger.sourceId)
+        } else {
+            null
+        }
 
         val abilityComponent = TriggeredAbilityOnStackComponent(
             sourceId = trigger.sourceId,
@@ -1242,6 +1251,7 @@ class TriggerProcessor(
             capturedEntityIds = trigger.triggerContext.capturedEntityIds ?: emptyList(),
             sagaChapterInfo = trigger.sagaChapterInfo,
             carriedPipeline = trigger.carriedPipeline,
+            resolvingSpellCopyPayload = resolvingSpellCopyPayload,
             // CR 603.4 — the intervening-"if" travels with the object so the resolver can check it
             // the second time. A `triggerRestriction` deliberately does not.
             interveningIf = ability.interveningIf

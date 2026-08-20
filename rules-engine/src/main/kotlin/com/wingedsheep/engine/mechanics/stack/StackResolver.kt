@@ -29,6 +29,7 @@ import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnCompon
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CantBeCounteredComponent
+import com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.CopyOfComponent
@@ -61,6 +62,7 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.effects.WarpExileEffect
 import com.wingedsheep.sdk.scripting.effects.MoveTrackedBattlefieldObjectEffect
+import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EntersAsCopy
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
@@ -100,6 +102,66 @@ class StackResolver(
     private val staticAbilityHandler: StaticAbilityHandler = StaticAbilityHandler(cardRegistry),
     private val predicateEvaluator: PredicateEvaluator = PredicateEvaluator()
 ) {
+
+    /**
+     * Capture the reusable copy payload for a spell that is still on the stack.
+     *
+     * Cost-linked triggered abilities call this before priority is returned to players.  The
+     * resulting snapshot is therefore available even when the source spell is countered before
+     * the linked ability resolves.  Resolution-time callers may provide the already calculated
+     * effective effect; otherwise this method derives the same face/kicker/cleave/text-replacement
+     * variant used by normal spell resolution.
+     */
+    internal fun captureResolvingSpellCopyPayload(
+        state: GameState,
+        sourceSpellId: EntityId,
+        effectiveSpellEffect: Effect? = null,
+    ): ResolvingSpellCopyPayload? {
+        val source = state.getEntity(sourceSpellId) ?: return null
+        val card = source.get<CardComponent>() ?: return null
+        val spell = source.get<SpellOnStackComponent>() ?: return null
+        val effectiveEffect = effectiveSpellEffect ?: effectiveSpellEffectForCopy(
+            state = state,
+            spellId = sourceSpellId,
+            spellComponent = spell,
+            cardComponent = card,
+        )
+        return ResolvingSpellCopyPayload(
+            sourceSpellId = sourceSpellId,
+            card = card,
+            spell = spell,
+            targets = source.get<TargetsComponent>(),
+            effectiveSpellEffect = effectiveEffect,
+            cantBeCopied = source.has<CantBeCopiedComponent>(),
+        )
+    }
+
+    private fun effectiveSpellEffectForCopy(
+        state: GameState,
+        spellId: EntityId,
+        spellComponent: SpellOnStackComponent,
+        cardComponent: CardComponent?,
+    ): Effect? {
+        val resolvedCardDef = cardComponent?.let { cardRegistry.getCard(it.name) }
+        val faceSpellEffect = spellComponent.faceIndex?.let { idx ->
+            resolvedCardDef?.cardFaces?.getOrNull(idx)?.script?.spellEffect
+        }
+        val rawSpellEffect = spellComponent.resolvingSpellEffectOverride ?: when {
+            faceSpellEffect != null -> faceSpellEffect
+            spellComponent.declaredCostSlot != null && cardComponent != null ->
+                resolvedCardDef?.script?.kickerSpellEffect ?: cardComponent.spellEffect
+            // Cleave (CR 702.148): the bracket-removed effect was selected at cast time.
+            spellComponent.wasCleaved && cardComponent != null ->
+                resolvedCardDef?.script?.cleaveSpellEffect ?: cardComponent.spellEffect
+            else -> cardComponent?.spellEffect
+        }
+        val textReplacement = state.getEntity(spellId)?.get<TextReplacementComponent>()
+        return if (rawSpellEffect != null && textReplacement != null) {
+            rawSpellEffect.applyTextReplacement(textReplacement)
+        } else {
+            rawSpellEffect
+        }
+    }
 
     /** A serialized target component needs resolution-time validation unless it is targetless. */
     private fun TargetsComponent.hasResolutionTargetPayload(): Boolean =
@@ -2284,41 +2346,20 @@ class StackResolver(
         // Adventure / split face cast (CR 715 / 709) — when the spell was cast as a face, read
         // the face's spell effect from `cardDef.cardFaces[faceIndex].script.spellEffect`.
         val resolvedCardDef = cardComponent?.let { cardRegistry.getCard(it.name) }
-        val faceSpellEffect = spellComponent.faceIndex?.let { idx ->
-            resolvedCardDef?.cardFaces?.getOrNull(idx)?.script?.spellEffect
-        }
-        val baseSpellEffect = spellComponent.resolvingSpellEffectOverride ?: when {
-            faceSpellEffect != null -> faceSpellEffect
-            spellComponent.declaredCostSlot != null && cardComponent != null ->
-                resolvedCardDef?.script?.kickerSpellEffect ?: cardComponent.spellEffect
-            // Cleave (CR 702.148): a spell cast for its cleave cost resolves with its
-            // brackets-removed effect variant, applied structurally at cast time rather than by
-            // editing text — so e.g. a bracketed delayed-trigger clause is never created.
-            spellComponent.wasCleaved && cardComponent != null ->
-                resolvedCardDef?.script?.cleaveSpellEffect ?: cardComponent.spellEffect
-            else -> cardComponent?.spellEffect
-        }
-        val rawSpellEffect = baseSpellEffect
-        val textReplacement = state.getEntity(spellId)?.get<TextReplacementComponent>()
-        val spellEffect = if (rawSpellEffect != null && textReplacement != null) {
-            rawSpellEffect.applyTextReplacement(textReplacement)
-        } else {
-            rawSpellEffect
-        }
+        val spellEffect = effectiveSpellEffectForCopy(
+            state = state,
+            spellId = spellId,
+            spellComponent = spellComponent,
+            cardComponent = cardComponent,
+        )
         // A resolution-time copy may answer its may/retarget decisions after this spell has left
         // the stack. Capture the complete reusable spell payload before the zone change removes
         // SpellOnStackComponent and TargetsComponent.
-        val resolvingSpellCopyPayload = cardComponent?.let { card ->
-            ResolvingSpellCopyPayload(
-                sourceSpellId = spellId,
-                card = card,
-                spell = spellComponent,
-                targets = state.getEntity(spellId)?.get<TargetsComponent>(),
-                effectiveSpellEffect = spellEffect,
-                cantBeCopied = state.getEntity(spellId)
-                    ?.has<com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent>() == true,
-            )
-        }
+        val resolvingSpellCopyPayload = captureResolvingSpellCopyPayload(
+            state = state,
+            sourceSpellId = spellId,
+            effectiveSpellEffect = spellEffect,
+        )
         // Splice (CR 702.47): the spliced cards' text is a tail that runs after the main spell's own
         // effects (CR 702.47b). Its targets were appended to the end of the flat list at cast time, so
         // the same tail is peeled off here — the main spell must see only its own targets, or an effect

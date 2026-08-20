@@ -475,7 +475,7 @@ object Costs {
         /**
          * Sacrifice any number of permanents matching [filter], subject to [minCount]. The
          * selected count is retained on the spell's cast payload for effects that refer to the
-         * completed payment (for example, a CR 603.12 cost-paid reflexive trigger).
+         * completed payment (for example, a CR 603.11 / 607.2h cost-linked trigger).
          */
         fun SacrificePermanents(
             filter: GameObjectFilter = GameObjectFilter.Creature,

@@ -8,44 +8,44 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * The cast-time payment rail that establishes a [CostPaidReflexiveTrigger].
+ * The cast-time payment rail that establishes a [CostPaidLinkedTrigger].
  *
  * The payment itself remains an [AdditionalCost] / [costs.CostAtom] concern. This type only
- * describes the CR 603.12 linkage that is created after the payment completes, so the shared
- * payable atom does not acquire card-specific rider behavior.
+ * describes the linked ability created after the payment completes under CR 603.11 and
+ * CR 607.2h/607.2i, so the shared payable atom does not acquire card-specific rider behavior.
  */
 @Serializable
-sealed interface CostPaidReflexiveTriggerCost {
+sealed interface CostPaidLinkedTriggerCost {
     val description: String
 
     /** A completed `CostAtom.VariablePermanents(SACRIFICE)` payment. */
     @SerialName("VariablePermanentsSacrifice")
     @Serializable
-    data object VariablePermanentsSacrifice : CostPaidReflexiveTriggerCost {
+    data object VariablePermanentsSacrifice : CostPaidLinkedTriggerCost {
         override val description: String = "a variable permanent sacrifice cost"
     }
 }
 
 /**
- * A generic CR 603.12 "when you do" ability established by a completed cast-time cost payment.
+ * A generic triggered ability linked to a completed cast-time cost payment.
  *
- * The engine lowers this descriptor into the normal [com.wingedsheep.engine.event.PendingTrigger]
- * / [com.wingedsheep.engine.event.TriggerStage.REFLEXIVE] rail. Its effect is therefore a real
- * triggered ability with the ordinary priority window, target locking, serialization, and replay
- * behavior; it is not resolved inline from the cost handler.
+ * This is not a CR 603.12 reflexive trigger: the sacrifice is paid during casting (CR 601.2h).
+ * The descriptor models the linked static/additional-cost relationship described by CR 603.11
+ * and CR 607.2h/607.2i. The engine lowers it into the ordinary pending-trigger and stack rails,
+ * including the normal CR 603.3b ordering window and a frozen source-LKI copy payload.
  */
 @Serializable
-data class CostPaidReflexiveTrigger(
-    val cost: CostPaidReflexiveTriggerCost = CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice,
+data class CostPaidLinkedTrigger(
+    val cost: CostPaidLinkedTriggerCost = CostPaidLinkedTriggerCost.VariablePermanentsSacrifice,
     val effect: Effect,
     val targetRequirements: List<TargetRequirement> = emptyList(),
     val descriptionOverride: String? = null,
-) : TextReplaceable<CostPaidReflexiveTrigger> {
+) : TextReplaceable<CostPaidLinkedTrigger> {
     val description: String
         get() = descriptionOverride ?: "When you pay ${cost.description}, " +
             effect.description.replaceFirstChar { it.lowercase() }
 
-    override fun applyTextReplacement(replacer: TextReplacer): CostPaidReflexiveTrigger {
+    override fun applyTextReplacement(replacer: TextReplacer): CostPaidLinkedTrigger {
         val newEffect = effect.applyTextReplacement(replacer)
         return if (newEffect !== effect) copy(effect = newEffect) else this
     }

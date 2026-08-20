@@ -9,23 +9,23 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldContain
 import kotlinx.serialization.json.Json
 
-/** Serialization contract for the generic cast-cost → reflexive-trigger SDK linkage. */
-class CostPaidReflexiveTriggerSerializationTest : FunSpec({
+/** Serialization contract for the generic cast-cost → linked-trigger SDK linkage. */
+class CostPaidLinkedTriggerSerializationTest : FunSpec({
 
-    test("a cost-paid reflexive trigger survives the CardScript JSON round-trip") {
-        val trigger = Triggers.costPaidReflexiveTrigger(
+    test("a cost-paid linked trigger survives the CardScript JSON round-trip") {
+        val trigger = Triggers.costPaidLinkedTrigger(
             effect = Effects.DrawCards(1, EffectTarget.Controller),
         )
         val script = CardScript(
             spellEffect = Effects.DrawCards(1, EffectTarget.Controller),
-            costPaidReflexiveTriggers = listOf(trigger),
+            costPaidLinkedTriggers = listOf(trigger),
         )
 
         val encoded = CardSerialization.json.encodeToString(CardScript.serializer(), script)
         val decoded = CardSerialization.json.decodeFromString(CardScript.serializer(), encoded)
 
         decoded shouldBe script
-        encoded shouldContain "costPaidReflexiveTriggers"
+        encoded shouldContain "costPaidLinkedTriggers"
 
         val explicitDefaultsJson = Json {
             serializersModule = CardSerialization.module

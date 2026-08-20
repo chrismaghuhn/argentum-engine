@@ -6,8 +6,8 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.ControlChangeDirection
-import com.wingedsheep.sdk.scripting.CostPaidReflexiveTrigger
-import com.wingedsheep.sdk.scripting.CostPaidReflexiveTriggerCost
+import com.wingedsheep.sdk.scripting.CostPaidLinkedTrigger
+import com.wingedsheep.sdk.scripting.CostPaidLinkedTriggerCost
 import com.wingedsheep.sdk.scripting.EventPattern.*
 import com.wingedsheep.sdk.scripting.ExploreReveal
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -40,16 +40,17 @@ import com.wingedsheep.sdk.scripting.references.Player
 object Triggers {
 
     /**
-     * A generic CR 603.12 "when you do" linkage established by a completed cast-time cost.
+     * A generic cast-time cost-linked ability established by a completed payment
+     * (CR 603.11 / 607.2h / 607.2i), not a CR 603.12 reflexive ability.
      * Declare the matching payment separately with `CardBuilder.additionalCost` (normally via
      * `Costs.additional.SacrificePermanents`).
      */
-    fun costPaidReflexiveTrigger(
+    fun costPaidLinkedTrigger(
         effect: Effect,
-        cost: CostPaidReflexiveTriggerCost = CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice,
+        cost: CostPaidLinkedTriggerCost = CostPaidLinkedTriggerCost.VariablePermanentsSacrifice,
         targetRequirements: List<TargetRequirement> = emptyList(),
         descriptionOverride: String? = null,
-    ): CostPaidReflexiveTrigger = CostPaidReflexiveTrigger(
+    ): CostPaidLinkedTrigger = CostPaidLinkedTrigger(
         cost = cost,
         effect = effect,
         targetRequirements = targetRequirements,

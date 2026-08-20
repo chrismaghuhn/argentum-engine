@@ -938,7 +938,7 @@ class CardBuilder(private val name: String) {
             kickerSpellEffect = spellBuilder?.kickerEffect,
             cleaveTargetRequirements = spellBuilder?.cleaveTargetRequirements ?: emptyList(),
             cleaveSpellEffect = spellBuilder?.cleaveEffect,
-            costPaidReflexiveTriggers = spellBuilder?.costPaidReflexiveTriggers ?: emptyList(),
+            costPaidLinkedTriggers = spellBuilder?.costPaidLinkedTriggers ?: emptyList(),
             classLevels = classLevelsList.toList(),
             sagaChapters = sagaChaptersList.toList(),
             selfExileOnResolve = spellBuilder?.exilesOnResolve ?: false,
@@ -1048,23 +1048,23 @@ class SpellBuilder {
     var effect: Effect? = null
     var target: TargetRequirement? = null
     var condition: Condition? = null
-    private val costPaidReflexiveTriggerList: MutableList<CostPaidReflexiveTrigger> = mutableListOf()
+    private val costPaidLinkedTriggerList: MutableList<CostPaidLinkedTrigger> = mutableListOf()
     /** Colors that may be spent on the `{X}` portion of this spell's cost (empty = any). */
     var xManaRestriction: Set<Color> = emptySet()
 
     /**
-     * Add a reflexive ability established after a cast-time cost completes (CR 603.12).
+     * Add a triggered ability linked to a completed cast-time cost (CR 603.11 / 607.2h / 607.2i).
      * The payment itself is still declared separately with [CardBuilder.additionalCost] or the
      * corresponding spell-cost DSL; this method only declares the "when you do" payoff.
      */
-    fun costPaidReflexiveTrigger(
+    fun costPaidLinkedTrigger(
         effect: Effect,
-        cost: CostPaidReflexiveTriggerCost = CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice,
+        cost: CostPaidLinkedTriggerCost = CostPaidLinkedTriggerCost.VariablePermanentsSacrifice,
         targetRequirements: List<TargetRequirement> = emptyList(),
         descriptionOverride: String? = null,
     ) {
-        costPaidReflexiveTriggerList.add(
-            Triggers.costPaidReflexiveTrigger(
+        costPaidLinkedTriggerList.add(
+            Triggers.costPaidLinkedTrigger(
                 effect = effect,
                 cost = cost,
                 targetRequirements = targetRequirements,
@@ -1073,8 +1073,8 @@ class SpellBuilder {
         )
     }
 
-    internal val costPaidReflexiveTriggers: List<CostPaidReflexiveTrigger>
-        get() = costPaidReflexiveTriggerList.toList()
+    internal val costPaidLinkedTriggers: List<CostPaidLinkedTrigger>
+        get() = costPaidLinkedTriggerList.toList()
     private var selfExileOnResolve: Boolean = false
 
     /**
@@ -2072,7 +2072,7 @@ class CardFaceBuilder(private val name: String) {
             activatedAbilities = activatedAbilities.toList(),
             staticAbilities = staticAbilities.toList(),
             additionalCosts = additionalCostsList.toList(),
-            costPaidReflexiveTriggers = spellBuilder?.costPaidReflexiveTriggers ?: emptyList(),
+            costPaidLinkedTriggers = spellBuilder?.costPaidLinkedTriggers ?: emptyList(),
             selfExileOnResolve = spellBuilder?.exilesOnResolve ?: false,
             paradigm = spellBuilder?.isParadigm ?: false,
         )

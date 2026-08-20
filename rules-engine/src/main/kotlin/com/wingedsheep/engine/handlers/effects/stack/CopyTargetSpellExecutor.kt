@@ -123,8 +123,8 @@ class CopyTargetSpellExecutor(
         // If the original spell has no targets, create the copy immediately. Every spell copy
         // uses StackResolver.putSpellCopy so the copy remains a real spell object and inherits
         // the complete immutable stack payload (including cast-time cost snapshots). This is
-        // especially important for a cost-paid reflexive trigger: its source spell stays on the
-        // stack, and each copy must retain the same copyable characteristics and payload under
+        // especially important for a cost-linked trigger: its source spell may leave the stack,
+        // and each copy must retain the same copyable characteristics and payload under
         // CR 707.10.
         if (targetRequirements.isEmpty()) {
             return EffectResult.from(

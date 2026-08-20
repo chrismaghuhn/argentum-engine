@@ -648,13 +648,14 @@ data class EffectContext(
             damageRecipientKinds = ability.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
-            // A cost-paid reflexive trigger uses the spell itself as its source. Read the
-            // immutable LKI payload from that spell rather than copying sacrificial history onto
-            // the triggered-ability component. The source remains on the stack while this CR
-            // 603.12 ability resolves, and ordinary spell-copy paths clone the same payload.
-            sacrificedPermanents = state?.getEntity(ability.sourceId)
-                ?.get<SpellOnStackComponent>()
-                ?.sacrificedPermanents
+            // A cost-linked trigger freezes its source spell when it is put on the stack. Prefer
+            // that LKI payload even after the original spell has been countered or otherwise left
+            // the stack; the live-source fallback preserves compatibility for older serialized
+            // stack objects and ordinary source-linked contexts (CR 113.7a / 608.2h).
+            sacrificedPermanents = ability.resolvingSpellCopyPayload?.spell?.sacrificedPermanents
+                ?: state?.getEntity(ability.sourceId)
+                    ?.get<SpellOnStackComponent>()
+                    ?.sacrificedPermanents
                 ?: emptyList(),
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,
@@ -699,7 +700,8 @@ data class EffectContext(
                 chosenValues = ability.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedNumbers = ability.carriedPipeline?.storedNumbers ?: emptyMap(),
                 storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap()
-            )
+            ),
+            resolvingSpellCopyPayload = ability.resolvingSpellCopyPayload
         )
     }
 }

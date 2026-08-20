@@ -9,6 +9,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CopyOfComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Color
@@ -56,8 +57,8 @@ class VariableSacrificeCopyLinkageTest : FunSpec({
                     minCount = 0,
                 )
             ),
-            costPaidReflexiveTriggers = listOf(
-                Triggers.costPaidReflexiveTrigger(
+            costPaidLinkedTriggers = listOf(
+                Triggers.costPaidLinkedTrigger(
                     effect = Effects.CopyTargetSpell(
                         target = EffectTarget.TriggeringEntity,
                         copies = DynamicAmounts.permanentsSacrificedThisWay(),
@@ -97,7 +98,7 @@ class VariableSacrificeCopyLinkageTest : FunSpec({
         }
     }
 
-    test("declining the optional cost creates no reflexive trigger and no copy") {
+    test("declining the optional cost creates no linked trigger and no copy") {
         val driver = createDriver()
         val player = driver.activePlayer!!
         val handBeforeCast = driver.getHandSize(player)
@@ -153,7 +154,7 @@ class VariableSacrificeCopyLinkageTest : FunSpec({
         driver.state.stack.count { id ->
             driver.state.getEntity(id)?.has<CopyOfComponent>() == true
         } shouldBe 0
-        // Change the board after payment but before the reflexive ability resolves. The copy
+        // Change the board after payment but before the linked ability resolves. The copy
         // count must remain the frozen completed-payment count, not a later battlefield count.
         driver.putCreatureOnBattlefield(player, sacrificeCreature.name)
         driver.bothPass()
@@ -166,6 +167,55 @@ class VariableSacrificeCopyLinkageTest : FunSpec({
         driver.getLifeTotal(player) shouldBe 16
     }
 
+    test("the linked trigger keeps the source LKI when the original spell is countered first") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        val opponent = driver.getOpponent(player)
+        val sacrifices = List(3) { driver.putCreatureOnBattlefield(player, sacrificeCreature.name) }
+        val counterspell = driver.putCardInHand(opponent, "Counterspell")
+        driver.giveMana(opponent, Color.BLUE, 2)
+
+        val spellId = castSpell(driver, player, sacrifices)
+        driver.passPriority(player)
+        driver.submit(
+            CastSpell(
+                playerId = opponent,
+                cardId = counterspell,
+                targets = listOf(ChosenTarget.Spell(spellId)),
+                paymentStrategy = PaymentStrategy.FromPool,
+            )
+        ).error shouldBe null
+
+        // Counterspell resolves while the cost-linked trigger remains above the original spell.
+        driver.bothPass().error shouldBe null
+        driver.state.stack shouldBe listOf(driver.state.stack.last())
+        driver.state.getEntity(spellId)?.has<SpellOnStackComponent>() shouldBe false
+
+        val linkedTrigger = driver.state.getEntity(driver.state.stack.single())!!
+            .get<TriggeredAbilityOnStackComponent>()!!
+        linkedTrigger.resolvingSpellCopyPayload?.spell?.sacrificedPermanents
+            ?.map { it.entityId } shouldBe sacrifices
+
+        // The LKI payload must remain serializable after the source spell has left the stack.
+        val json = Json {
+            serializersModule = engineSerializersModule
+            encodeDefaults = true
+            allowStructuredMapKeys = true
+        }
+        val restoredState = json.decodeFromString(
+            GameState.serializer(),
+            json.encodeToString(GameState.serializer(), driver.state),
+        )
+        restoredState shouldBe driver.state
+        driver.replaceState(restoredState)
+
+        // The trigger must use the frozen source payload even though the original entity is gone.
+        driver.bothPass().error shouldBe null
+        driver.state.stack.count { id ->
+            driver.state.getEntity(id)?.has<CopyOfComponent>() == true
+        } shouldBe sacrifices.size
+    }
+
     test("the cast payload records the exact selected sacrifice snapshots") {
         val driver = createDriver()
         val player = driver.activePlayer!!
@@ -176,7 +226,7 @@ class VariableSacrificeCopyLinkageTest : FunSpec({
             .sacrificedPermanents.map { it.entityId } shouldBe sacrifices
     }
 
-    test("the reflexive stack round-trips and replays deterministically") {
+    test("the linked-trigger stack round-trips and replays deterministically") {
         val driver = createDriver()
         val player = driver.activePlayer!!
         val sacrifices = List(2) { driver.putCreatureOnBattlefield(player, sacrificeCreature.name) }

@@ -462,13 +462,14 @@ excluded.
   `AdditionalCostPayment.variableCostPermanents`.
 
   A spell that says **"When you do, copy this spell for each permanent sacrificed this way"**
-  links this atom to `CardScript.costPaidReflexiveTriggers` with
-  `Triggers.costPaidReflexiveTrigger(...)` (the descriptor's
-  `CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice` default). The cast handler creates the
-  CR 603.12 reflexive ability only after a non-empty `AdditionalCostPayment.variableCostPermanents`
-  completes. The spell's immutable `SpellOnStackComponent.sacrificedPermanents` snapshots are the
-  authoritative count and payload; `DynamicAmounts.permanentsSacrificedThisWay()` reads them when
-  the reflexive effect resolves. Copies use the normal spell-copy path, so the snapshots remain
+  links this atom to `CardScript.costPaidLinkedTriggers` with
+  `Triggers.costPaidLinkedTrigger(...)` (the descriptor's
+  `CostPaidLinkedTriggerCost.VariablePermanentsSacrifice` default). The cast handler creates the
+  linked triggered ability only after a non-empty `AdditionalCostPayment.variableCostPermanents`
+  completes (CR 603.11 / 607.2h / 607.2i). The spell's immutable `SpellOnStackComponent.sacrificedPermanents`
+  snapshots are the authoritative count and payload; `DynamicAmounts.permanentsSacrificedThisWay()`
+  reads them when the linked effect resolves, including from the frozen source-LKI payload if the
+  original spell has left the stack. Copies use the normal spell-copy path, so the snapshots remain
   available to every copy without a card-specific hook.
 
   Backs **Fabrication Foundry** ("{2}{W}, {T}, Exile one or more other artifacts you control with
@@ -600,8 +601,8 @@ definitions construct these through the facade, e.g. `Costs.additional.Sacrifice
 - `Costs.additional.SacrificePermanents(filter = Filters.Creature, minCount = 1, excludeSelf = false)` —
   variable-count sacrifice additional cost. The selected permanent IDs are carried by
   `AdditionalCostPayment.variableCostPermanents`; pair it with
-  `Triggers.costPaidReflexiveTrigger(...)` when the completed payment establishes a CR 603.12
-  reflexive ability.
+  `Triggers.costPaidLinkedTrigger(...)` when the completed payment establishes a linked triggered
+  ability (CR 603.11 / 607.2h / 607.2i), not a CR 603.12 reflexive trigger.
 - `Costs.additional.ReturnToHand(filter = Filters.Any, count = 1)` — "as an additional cost to cast
   this spell, return [count] permanent(s) you control to its owner's hand" (Fear of Isolation). Paid
   as the spell is cast (CR 601.2f) via `additionalCostPayment.bouncedPermanents`; the enumerator
@@ -8958,7 +8959,7 @@ both spellings, and the ability its bare-noun line grants says "Regenerate this 
   permanents sacrificed by the current resolving effect ("this way"); reads the effect context's
   `sacrificedPermanents` snapshot list (populated when an edict resolves earlier in the same
   composite — the sibling-rider wiring from the sacrifice-snapshot work — or from the source spell
-  for a cost-paid CR 603.12 reflexive trigger). Used by "each opponent sacrifices a creature …
+  for a cast-time cost-linked trigger (CR 603.11 / 607.2h / 607.2i). Used by "each opponent sacrifices a creature …
   create a Food token for each creature sacrificed this way" (Voracious Fell Beast) and by the
   generic variable-sacrifice spell-copy linkage. Evaluates to 0 when nothing was sacrificed.
 - `LargestSharedCreatureTypeCount(player = You)` — the size of the largest creature-type tribe among
