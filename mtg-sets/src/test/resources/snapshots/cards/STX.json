@@ -410,6 +410,79 @@
     ]
 }
 
+// Plumb the Forbidden
+{
+    "name": "Plumb the Forbidden",
+    "manaCost": "{1}{B}",
+    "typeLine": "Instant",
+    "oracleText": "As an additional cost to cast this spell, you may sacrifice one or more creatures. When you do, copy this spell for each creature sacrificed this way.\nYou draw a card and lose 1 life.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                {
+                    "type": "LoseLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 1
+                    },
+                    "target": "Controller"
+                }
+            ]
+        },
+        "additionalCosts": [
+            {
+                "type": "AdditionalAtom",
+                "atom": {
+                    "type": "AtomVariablePermanents",
+                    "filter": "creature",
+                    "minCount": 0,
+                    "excludeSelf": false,
+                    "action": "SACRIFICE",
+                    "xMeasure": "COUNT"
+                }
+            }
+        ],
+        "costPaidLinkedTriggers": [
+            {
+                "effect": {
+                    "type": "CopyTargetSpell",
+                    "target": "TriggeringEntity",
+                    "copies": "PermanentsSacrificedThisWay"
+                },
+                "descriptionOverride": "When you do, copy this spell for each creature sacrificed this way."
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "81",
+        "rarity": "UNCOMMON",
+        "artist": "Andrey Kuzinskiy",
+        "flavorText": "Strixhaven forbade all magic from the Blood Age, so that is where Extus began his research.",
+        "imageUri": "https://cards.scryfall.io/normal/front/5/0/5034227f-3b8a-45bf-917c-c2cbd98f2192.jpg?1783927362",
+        "rulings": [
+            {
+                "date": "4/16/2021",
+                "text": "If you sacrifice a creature with a magecraft ability to cast Plumb the Forbidden, that creature's ability won't trigger."
+            },
+            {
+                "date": "4/16/2021",
+                "text": "If you copy Plumb the Forbidden multiple times, each magecraft ability of a creature you control will trigger that many times."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Spined Karok
 {
     "name": "Spined Karok",
