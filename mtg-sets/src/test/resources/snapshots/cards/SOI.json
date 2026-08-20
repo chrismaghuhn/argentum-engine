@@ -3164,7 +3164,35 @@
                     "source": {
                         "type": "FromZone",
                         "zone": "Library",
-                        "filter": "enchantment Aura"
+                        "filter": {
+                            "cardPredicates": [
+                                {
+                                    "type": "Or",
+                                    "predicates": [
+                                        {
+                                            "type": "And",
+                                            "predicates": [
+                                                "IsEnchantment",
+                                                {
+                                                    "type": "HasSubtype",
+                                                    "subtype": "Aura"
+                                                }
+                                            ]
+                                        },
+                                        {
+                                            "type": "And",
+                                            "predicates": [
+                                                "IsArtifact",
+                                                {
+                                                    "type": "HasSubtype",
+                                                    "subtype": "Equipment"
+                                                }
+                                            ]
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
                     },
                     "storeAs": "searchable"
                 },

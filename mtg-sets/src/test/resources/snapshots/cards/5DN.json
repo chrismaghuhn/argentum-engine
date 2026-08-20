@@ -1494,7 +1494,7 @@
         "rarity": "UNCOMMON",
         "artist": "David Martin",
         "flavorText": "The Moriok call the black moon the Whisperer. At her apex, she whispers of power.",
-        "imageUri": "https://cards.scryfall.io/normal/front/6/1/61f0c6f6-b90d-4eb1-a5db-86e0a3997501.jpg"
+        "imageUri": "https://cards.scryfall.io/normal/front/6/1/61f0c6f6-b90d-4eb1-a5db-86e0a3997501.jpg?1783944398"
     },
     "colorIdentityOverride": [
         "BLACK"
@@ -1936,6 +1936,63 @@
         "collectorNumber": "17",
         "artist": "Matt Cavotta",
         "imageUri": "https://cards.scryfall.io/normal/front/9/3/93d3a024-6cf3-4008-a4f6-1d96ff5de22a.jpg"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
+// Steelshaper's Gift
+{
+    "name": "Steelshaper's Gift",
+    "manaCost": "{W}",
+    "typeLine": "Sorcery",
+    "oracleText": "Search your library for an Equipment card, reveal that card, put it into your hand, then shuffle.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "GatherCards",
+                    "source": {
+                        "type": "FromZone",
+                        "zone": "Library",
+                        "filter": "artifact Equipment"
+                    },
+                    "storeAs": "searchable"
+                },
+                {
+                    "type": "SelectFromCollection",
+                    "from": "searchable",
+                    "selection": {
+                        "type": "ChooseUpTo",
+                        "count": {
+                            "type": "Fixed",
+                            "amount": 1
+                        }
+                    },
+                    "storeSelected": "found"
+                },
+                {
+                    "type": "MoveCollection",
+                    "from": "found",
+                    "destination": {
+                        "type": "ToZone",
+                        "zone": "Hand"
+                    },
+                    "revealed": true
+                },
+                "ShuffleLibrary",
+                "EmitLibrarySearchedEvent"
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "19",
+        "rarity": "UNCOMMON",
+        "artist": "Greg Hildebrandt",
+        "flavorText": "Some blades seek their own wielders.",
+        "imageUri": "https://cards.scryfall.io/normal/front/d/b/db75b77f-a230-4bad-b697-a40687671842.jpg?1783944407"
     },
     "colorIdentityOverride": [
         "WHITE"

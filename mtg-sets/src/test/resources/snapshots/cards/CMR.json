@@ -58,6 +58,267 @@
     ]
 }
 
+// Ardenn, Intrepid Archaeologist
+{
+    "name": "Ardenn, Intrepid Archaeologist",
+    "manaCost": "{2}{W}",
+    "typeLine": "Legendary Creature — Kor Scout",
+    "oracleText": "At the beginning of combat on your turn, you may attach any number of Auras and Equipment you control to target permanent or player.\nPartner (You can have two commanders if both have partner.)",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "StepEvent",
+                    "step": "BEGIN_COMBAT"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "Composite",
+                        "effects": [
+                            {
+                                "type": "GatherCards",
+                                "source": {
+                                    "type": "ControlledPermanents",
+                                    "filter": {
+                                        "cardPredicates": [
+                                            {
+                                                "type": "Or",
+                                                "predicates": [
+                                                    {
+                                                        "type": "And",
+                                                        "predicates": [
+                                                            "IsEnchantment",
+                                                            {
+                                                                "type": "HasSubtype",
+                                                                "subtype": "Aura"
+                                                            }
+                                                        ]
+                                                    },
+                                                    {
+                                                        "type": "And",
+                                                        "predicates": [
+                                                            "IsArtifact",
+                                                            {
+                                                                "type": "HasSubtype",
+                                                                "subtype": "Equipment"
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                },
+                                "storeAs": "ardenn_candidates"
+                            },
+                            {
+                                "type": "FilterCollection",
+                                "from": "ardenn_candidates",
+                                "filter": {
+                                    "type": "AttachableTo",
+                                    "target": {
+                                        "type": "ContextTarget",
+                                        "index": 0
+                                    }
+                                },
+                                "storeMatching": "ardenn_legal"
+                            },
+                            {
+                                "type": "SelectFromCollection",
+                                "from": "ardenn_legal",
+                                "selection": "ChooseAnyNumber",
+                                "storeSelected": "ardenn_selected",
+                                "prompt": "Choose any number of Auras and Equipment to attach",
+                                "alwaysPrompt": true
+                            },
+                            {
+                                "type": "AttachCollectionToTarget",
+                                "from": "ardenn_selected"
+                            }
+                        ]
+                    }
+                },
+                "targetRequirement": "TargetPermanentOrPlayer"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "10",
+        "rarity": "UNCOMMON",
+        "artist": "Jason Rainville",
+        "flavorText": "\"With the right tools, even the sky is within reach.\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/2/728b802c-969b-4865-b7a0-871c585d097a.jpg?1783928890"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
+// Armored Skyhunter
+{
+    "name": "Armored Skyhunter",
+    "manaCost": "{3}{W}",
+    "typeLine": "Creature — Cat Knight",
+    "oracleText": "Flying\nWhenever this creature attacks, look at the top six cards of your library. You may put an Aura or Equipment card from among them onto the battlefield. If an Equipment is put onto the battlefield this way, you may attach it to a creature you control. Put the rest of those cards on the bottom of your library in a random order.",
+    "creatureStats": {
+        "power": 3,
+        "toughness": 3
+    },
+    "keywords": [
+        "FLYING"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": "AttackEvent",
+                "effect": {
+                    "type": "Composite",
+                    "effects": [
+                        {
+                            "type": "GatherCards",
+                            "source": {
+                                "type": "TopOfLibrary",
+                                "count": {
+                                    "type": "Fixed",
+                                    "amount": 6
+                                }
+                            },
+                            "storeAs": "skyhunter_looked"
+                        },
+                        {
+                            "type": "SelectFromCollection",
+                            "from": "skyhunter_looked",
+                            "selection": {
+                                "type": "ChooseUpTo",
+                                "count": {
+                                    "type": "Fixed",
+                                    "amount": 1
+                                }
+                            },
+                            "filter": {
+                                "cardPredicates": [
+                                    {
+                                        "type": "Or",
+                                        "predicates": [
+                                            {
+                                                "type": "And",
+                                                "predicates": [
+                                                    "IsEnchantment",
+                                                    {
+                                                        "type": "HasSubtype",
+                                                        "subtype": "Aura"
+                                                    }
+                                                ]
+                                            },
+                                            {
+                                                "type": "And",
+                                                "predicates": [
+                                                    "IsArtifact",
+                                                    {
+                                                        "type": "HasSubtype",
+                                                        "subtype": "Equipment"
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                ]
+                            },
+                            "storeSelected": "skyhunter_selected",
+                            "storeRemainder": "skyhunter_rest",
+                            "prompt": "You may put an Aura or Equipment card onto the battlefield",
+                            "selectedLabel": "Put onto the battlefield",
+                            "remainderLabel": "Put on the bottom of your library",
+                            "showAllCards": true,
+                            "restrictions": [
+                                "AuraMustHaveLegalHost"
+                            ]
+                        },
+                        {
+                            "type": "MoveCollection",
+                            "from": "skyhunter_selected",
+                            "destination": {
+                                "type": "ToZone",
+                                "zone": "Battlefield"
+                            }
+                        },
+                        {
+                            "type": "ConditionalOnCollection",
+                            "collection": "skyhunter_selected",
+                            "ifNotEmpty": {
+                                "type": "Gated",
+                                "gate": "Gate.MayDecide",
+                                "then": {
+                                    "type": "Composite",
+                                    "effects": [
+                                        {
+                                            "type": "SelectTarget",
+                                            "requirement": {
+                                                "type": "TargetObject",
+                                                "filter": {
+                                                    "baseFilter": "creature ctrl:you"
+                                                }
+                                            },
+                                            "storeAs": "skyhunter_host"
+                                        },
+                                        {
+                                            "type": "AttachTargetEquipmentToCreature",
+                                            "equipmentTarget": {
+                                                "type": "PipelineTarget",
+                                                "collectionName": "skyhunter_selected"
+                                            },
+                                            "creatureTarget": {
+                                                "type": "PipelineTarget",
+                                                "collectionName": "skyhunter_host"
+                                            }
+                                        }
+                                    ]
+                                },
+                                "descriptionOverride": "You may attach it to a creature you control"
+                            },
+                            "filter": "artifact Equipment"
+                        },
+                        {
+                            "type": "MoveCollection",
+                            "from": "skyhunter_rest",
+                            "destination": {
+                                "type": "ToZone",
+                                "zone": "Library",
+                                "placement": "Bottom"
+                            },
+                            "order": "Random"
+                        }
+                    ]
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "11",
+        "rarity": "RARE",
+        "artist": "Denman Rooke",
+        "imageUri": "https://cards.scryfall.io/normal/front/2/b/2bf63241-9091-42f5-b997-9ce5aa3484f1.jpg?1783928889",
+        "rulings": [
+            {
+                "date": "2020-11-10",
+                "text": "An Aura put onto the battlefield this way doesn't target anything (so it could be attached to an opponent's permanent with hexproof, for example), but the Aura's enchant ability restricts what it can be attached to. If the Aura can't legally be attached to anything, you can't choose to put it onto the battlefield at all."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Boarding Party
 {
     "name": "Boarding Party",
@@ -667,6 +928,53 @@
     ]
 }
 
+// Reyav, Master Smith
+{
+    "name": "Reyav, Master Smith",
+    "manaCost": "{R}{W}",
+    "typeLine": "Legendary Creature — Dwarf Artificer",
+    "oracleText": "Whenever a creature you control that's enchanted or equipped attacks, that creature gains double strike until end of turn.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "AttackEvent",
+                    "filter": {
+                        "cardPredicates": [
+                            "IsCreature"
+                        ],
+                        "statePredicates": [
+                            "IsEquipped"
+                        ],
+                        "controllerPredicate": "ControlledByYou"
+                    }
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "GrantKeyword",
+                    "keyword": "DOUBLE_STRIKE",
+                    "target": "TriggeringEntity"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "290",
+        "rarity": "UNCOMMON",
+        "artist": "Scott Murphy",
+        "imageUri": "https://cards.scryfall.io/normal/front/9/0/90307dd6-196d-4d51-9b3f-6ff339882d31.jpg?1783928769"
+    },
+    "colorIdentityOverride": [
+        "RED",
+        "WHITE"
+    ]
+}
+
 // Slash the Ranks
 {
     "name": "Slash the Ranks",
@@ -702,6 +1010,69 @@
     ]
 }
 
+// War Room
+{
+    "name": "War Room",
+    "manaCost": "",
+    "typeLine": "Land",
+    "oracleText": "{T}: Add {C}.\n{3}, {T}, Pay life equal to the number of colors in your commanders' color identity: Draw a card.",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "ability_1",
+                "cost": "CostTap",
+                "effect": {
+                    "type": "AddColorlessMana",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "timing": "ManaAbility",
+                "isManaAbility": true
+            },
+            {
+                "id": "ability_2",
+                "cost": {
+                    "type": "CostComposite",
+                    "costs": [
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomMana",
+                                "cost": "{3}"
+                            }
+                        },
+                        "CostTap",
+                        {
+                            "type": "CostAtomWrapper",
+                            "atom": {
+                                "type": "AtomPayLife",
+                                "amount": "CommanderColorIdentityCount"
+                            }
+                        }
+                    ]
+                },
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "361",
+        "rarity": "RARE",
+        "artist": "Milivoj Ćeran",
+        "flavorText": "A figure is moved on a map, and the tide of war changes.",
+        "imageUri": "https://cards.scryfall.io/normal/front/4/8/48d6ce7c-5dc8-449b-acbd-db259ae687ed.jpg?1783928737"
+    },
+    "colorIdentityOverride": []
+}
+
 // Wyleth, Soul of Steel
 {
     "name": "Wyleth, Soul of Steel",
@@ -723,8 +1094,9 @@
                 "effect": {
                     "type": "DrawCards",
                     "count": {
-                        "type": "AggregateBattlefield",
-                        "player": "You"
+                        "type": "EntityProperty",
+                        "entity": "Source",
+                        "numericProperty": "AttachmentCount"
                     }
                 }
             }

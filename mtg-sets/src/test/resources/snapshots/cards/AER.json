@@ -242,6 +242,66 @@
     "colorIdentityOverride": []
 }
 
+// Sram, Senior Edificer
+{
+    "name": "Sram, Senior Edificer",
+    "manaCost": "{1}{W}",
+    "typeLine": "Legendary Creature — Dwarf Advisor",
+    "oracleText": "Whenever you cast an Aura, Equipment, or Vehicle spell, draw a card.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "SpellCastEvent",
+                    "spellFilter": {
+                        "cardPredicates": [
+                            {
+                                "type": "Or",
+                                "predicates": [
+                                    {
+                                        "type": "HasSubtype",
+                                        "subtype": "Aura"
+                                    },
+                                    {
+                                        "type": "HasSubtype",
+                                        "subtype": "Equipment"
+                                    },
+                                    {
+                                        "type": "HasSubtype",
+                                        "subtype": "Vehicle"
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "23",
+        "rarity": "RARE",
+        "artist": "Chris Rahn",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/b/1b323e2c-59dd-4d70-9a48-b10f807bb818.jpg?1783936777"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Universal Solvent
 {
     "name": "Universal Solvent",

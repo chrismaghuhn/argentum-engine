@@ -525,6 +525,7 @@
     "name": "Nature's Lore",
     "manaCost": "{1}{G}",
     "typeLine": "Sorcery",
+    "oracleText": "Search your library for a Forest card, put that card onto the battlefield, then shuffle.",
     "script": {
         "spellEffect": {
             "type": "Composite",
@@ -568,7 +569,13 @@
         "rarity": "UNCOMMON",
         "artist": "Rick Emond",
         "flavorText": "\"Fyndhorn is our home.\"\n—Kolbjörn, Elder Druid of the Juniper Order",
-        "imageUri": "https://cards.scryfall.io/normal/front/6/6/668d2969-b6b7-4507-bdd4-20bbaa68035a.jpg"
+        "imageUri": "https://cards.scryfall.io/normal/front/6/6/668d2969-b6b7-4507-bdd4-20bbaa68035a.jpg?1783947474",
+        "rulings": [
+            {
+                "date": "2022-12-08",
+                "text": "You may find a basic Forest or any land card with the land type Forest."
+            }
+        ]
     },
     "colorIdentityOverride": [
         "GREEN"

@@ -159,4 +159,71 @@ class ViridianLongbowScenarioTest : FunSpec({
         ).isSuccess shouldBe false
         driver.getLifeTotal(opponent) shouldBe 20
     }
+
+    test("Equip rejects opponents and combat timing, while the granted ability respects summoning sickness") {
+        val driver = createDriver()
+        driver.initMirrorMatch(deck = Deck.of("Forest" to 30), startingLife = 20)
+        val p1 = driver.activePlayer!!
+        val opponent = driver.getOpponent(p1)
+        val ownCreature = driver.putCreatureOnBattlefield(p1, "Centaur Courser")
+        val secondCreature = driver.putCreatureOnBattlefield(p1, "Centaur Courser")
+        val opponentCreature = driver.putCreatureOnBattlefield(opponent, "Centaur Courser")
+        val longbow = driver.putPermanentOnBattlefield(p1, "Viridian Longbow")
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        driver.giveColorlessMana(p1, 3)
+        driver.submit(
+            ActivateAbility(
+                playerId = p1,
+                sourceId = longbow,
+                abilityId = equipAbilityId(),
+                targets = listOf(ChosenTarget.Permanent(opponentCreature)),
+            )
+        ).isSuccess shouldBe false
+        driver.state.getEntity(longbow)?.get<AttachedToComponent>() shouldBe null
+
+        driver.submit(
+            ActivateAbility(
+                playerId = p1,
+                sourceId = longbow,
+                abilityId = equipAbilityId(),
+                targets = listOf(ChosenTarget.Permanent(ownCreature)),
+            )
+        ).isSuccess shouldBe true
+        driver.bothPass()
+        driver.state.getEntity(longbow)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
+
+        driver.submit(
+            ActivateAbility(
+                playerId = p1,
+                sourceId = ownCreature,
+                abilityId = grantedAbilityId(),
+                targets = listOf(ChosenTarget.Player(opponent)),
+            )
+        ).isSuccess shouldBe false
+
+        driver.removeSummoningSickness(ownCreature)
+        driver.submit(
+            ActivateAbility(
+                playerId = p1,
+                sourceId = ownCreature,
+                abilityId = grantedAbilityId(),
+                targets = listOf(ChosenTarget.Player(opponent)),
+            )
+        ).isSuccess shouldBe true
+        driver.bothPass()
+        driver.getLifeTotal(opponent) shouldBe 19
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.giveColorlessMana(p1, 3)
+        driver.submit(
+            ActivateAbility(
+                playerId = p1,
+                sourceId = longbow,
+                abilityId = equipAbilityId(),
+                targets = listOf(ChosenTarget.Permanent(secondCreature)),
+            )
+        ).isSuccess shouldBe false
+        driver.state.getEntity(longbow)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
+    }
 })

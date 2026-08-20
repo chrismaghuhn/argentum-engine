@@ -6,7 +6,7 @@ import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
-import com.wingedsheep.mtg.sets.definitions.blc.cards.ArcaneSignet
+import com.wingedsheep.mtg.sets.definitions.eld.cards.ArcaneSignet
 import com.wingedsheep.mtg.sets.definitions.iko.cards.ChevillBaneOfMonsters
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Format

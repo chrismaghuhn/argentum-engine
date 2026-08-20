@@ -486,7 +486,13 @@
         "collectorNumber": "87",
         "artist": "Gabor Szikszai",
         "flavorText": "\"Avacyn has abandoned us! We have nothing left except what we can take!\"",
-        "imageUri": "https://cards.scryfall.io/normal/front/a/1/a1b0da17-d595-441d-811c-a2d28d2bb232.jpg"
+        "imageUri": "https://cards.scryfall.io/normal/front/a/1/a1b0da17-d595-441d-811c-a2d28d2bb232.jpg?1783940820",
+        "rulings": [
+            {
+                "date": "2016-06-08",
+                "text": "You draw two cards and discard two cards all while Faithless Looting is resolving. Nothing can happen between the two, and no player may choose to take actions."
+            }
+        ]
     },
     "colorIdentityOverride": [
         "RED"

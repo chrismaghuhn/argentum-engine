@@ -3,7 +3,7 @@ package com.wingedsheep.mtg.sets.definitions.ncc.cards
 import com.wingedsheep.sdk.model.Printing
 import com.wingedsheep.sdk.model.Rarity
 
-/** Deathreap Ritual reprint in New Capenna Commander. */
+/** Deathreap Ritual reprint in New Capenna Commander. The canonical definition lives in CNS. */
 val DeathreapRitualReprint = Printing(
     oracleId = "b26e3596-5b28-4eb6-b3e2-03f63d8c6d49",
     name = "Deathreap Ritual",

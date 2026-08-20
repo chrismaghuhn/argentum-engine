@@ -1,3 +1,54 @@
+// Acidic Slime
+{
+    "name": "Acidic Slime",
+    "manaCost": "{3}{G}{G}",
+    "typeLine": "Creature — Ooze",
+    "oracleText": "Deathtouch\nWhen this creature enters, destroy target artifact, enchantment, or land.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "keywords": [
+        "DEATHTOUCH"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target"
+                    },
+                    "destination": "Graveyard",
+                    "byDestruction": true
+                },
+                "targetRequirement": {
+                    "type": "TargetObject",
+                    "filter": {
+                        "baseFilter": "artifact|enchantment|land"
+                    },
+                    "id": "target"
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "165",
+        "rarity": "UNCOMMON",
+        "artist": "Karl Kopinski",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/1/f1377f45-edee-4922-825b-6f22163ff63d.jpg?1783942367"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Centaur Courser
 {
     "name": "Centaur Courser",
@@ -412,6 +463,57 @@
     },
     "colorIdentityOverride": [
         "WHITE"
+    ]
+}
+
+// Sign in Blood
+{
+    "name": "Sign in Blood",
+    "manaCost": "{B}{B}",
+    "typeLine": "Sorcery",
+    "oracleText": "Target player draws two cards and loses 2 life.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 2
+                    },
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target player"
+                    }
+                },
+                {
+                    "type": "LoseLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 2
+                    },
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target player"
+                    }
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetPlayer",
+                "id": "target player"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "112",
+        "artist": "Howard Lyon",
+        "imageUri": "https://cards.scryfall.io/normal/front/1/9/1975ed97-acb8-4bb6-804a-e5da725d876e.jpg?1783942379"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
     ]
 }
 

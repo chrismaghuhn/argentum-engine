@@ -657,6 +657,53 @@
     ]
 }
 
+// Kor Blademaster
+{
+    "name": "Kor Blademaster",
+    "manaCost": "{1}{W}",
+    "typeLine": "Creature — Kor Warrior",
+    "oracleText": "Double strike\nEquipped Warriors you control have double strike.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 1
+    },
+    "keywords": [
+        "DOUBLE_STRIKE"
+    ],
+    "script": {
+        "staticAbilities": [
+            {
+                "type": "GrantKeyword",
+                "keyword": "DOUBLE_STRIKE",
+                "filter": {
+                    "baseFilter": {
+                        "cardPredicates": [
+                            "IsCreature",
+                            {
+                                "type": "HasSubtype",
+                                "subtype": "Warrior"
+                            }
+                        ],
+                        "statePredicates": [
+                            "IsEquipped"
+                        ],
+                        "controllerPredicate": "ControlledByYou"
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "21",
+        "rarity": "UNCOMMON",
+        "artist": "Darren Tan",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/c/fc6d6049-5599-47eb-ae58-a8eb96927ece.jpg?1783929416"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Luminarch Aspirant
 {
     "name": "Luminarch Aspirant",
@@ -877,6 +924,106 @@
             {
                 "date": "2024-11-08",
                 "text": "Whenever a land you control enters, each landfall ability of the permanents you control will trigger. You can put them on the stack in any order. The last ability you put on the stack will be the first one to resolve (As a result, you can have those abilities resolve in the order of your choosing.)."
+            }
+        ]
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
+// Skyclave Apparition
+{
+    "name": "Skyclave Apparition",
+    "manaCost": "{1}{W}{W}",
+    "typeLine": "Creature — Kor Spirit",
+    "oracleText": "When this creature enters, exile up to one target nonland, nontoken permanent you don't control with mana value 4 or less.\nWhen this creature leaves the battlefield, the exiled card's owner creates an X/X blue Illusion creature token, where X is the mana value of the exiled card.",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "to": "Battlefield"
+                },
+                "effect": {
+                    "type": "ExileUntilLeaves",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "up to one target nonland, nontoken permanent you don't control with mana value 4 or less"
+                    }
+                },
+                "targetRequirement": {
+                    "type": "TargetObject",
+                    "optional": true,
+                    "filter": {
+                        "baseFilter": "nonland permanent nontoken mv<=4 ctrl:opponent"
+                    },
+                    "id": "up to one target nonland, nontoken permanent you don't control with mana value 4 or less"
+                }
+            },
+            {
+                "id": "ability_2",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "from": "Battlefield"
+                },
+                "effect": {
+                    "type": "ForEach",
+                    "space": {
+                        "type": "IterationSpace.Players",
+                        "players": "OwnersOfLinkedExile"
+                    },
+                    "body": {
+                        "type": "Composite",
+                        "effects": [
+                            {
+                                "type": "GatherCards",
+                                "source": "FromLinkedExile",
+                                "storeAs": "exiledCard"
+                            },
+                            {
+                                "type": "CreateToken",
+                                "power": 0,
+                                "toughness": 0,
+                                "colors": [
+                                    "BLUE"
+                                ],
+                                "creatureTypes": [
+                                    "Illusion"
+                                ],
+                                "dynamicPower": {
+                                    "type": "StoredCardManaValue",
+                                    "collectionName": "exiledCard"
+                                },
+                                "dynamicToughness": {
+                                    "type": "StoredCardManaValue",
+                                    "collectionName": "exiledCard"
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "39",
+        "rarity": "RARE",
+        "artist": "Donato Giancola",
+        "imageUri": "https://cards.scryfall.io/normal/front/b/8/b83cfbaa-7890-4f6f-878b-4edb45677371.jpg?1783929406",
+        "rulings": [
+            {
+                "date": "2020-09-25",
+                "text": "If Skyclave Apparition leaves the battlefield before its first ability resolves, the target permanent is still exiled. No Illusion token will be created when the ability that exiled it resolves."
+            },
+            {
+                "date": "2020-09-25",
+                "text": "If the exiled card has an X in its mana cost, X is 0 when determining its mana value."
             }
         ]
     },

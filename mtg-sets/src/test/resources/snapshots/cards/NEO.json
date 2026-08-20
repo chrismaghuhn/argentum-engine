@@ -136,6 +136,61 @@
     ]
 }
 
+// Tamiyo's Safekeeping
+{
+    "name": "Tamiyo's Safekeeping",
+    "manaCost": "{G}",
+    "typeLine": "Instant",
+    "oracleText": "Target permanent you control gains hexproof and indestructible until end of turn. You gain 2 life.",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "GrantEvasionKeyword",
+                    "keyword": "HEXPROOF",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target permanent"
+                    }
+                },
+                {
+                    "type": "GrantKeyword",
+                    "keyword": "INDESTRUCTIBLE",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "target permanent"
+                    }
+                },
+                {
+                    "type": "GainLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 2
+                    }
+                }
+            ]
+        },
+        "targetRequirements": [
+            {
+                "type": "TargetObject",
+                "filter": {
+                    "baseFilter": "permanent ctrl:you"
+                },
+                "id": "target permanent"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "211",
+        "artist": "Aurore Folny",
+        "imageUri": "https://cards.scryfall.io/normal/front/f/d/fd4b7ee2-de65-4288-872d-486065a4f226.jpg?1783923839"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Uncharted Haven
 {
     "name": "Uncharted Haven",

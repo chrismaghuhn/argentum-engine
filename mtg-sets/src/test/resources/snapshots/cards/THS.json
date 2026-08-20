@@ -312,6 +312,116 @@
     ]
 }
 
+// Prowler's Helm
+{
+    "name": "Prowler's Helm",
+    "manaCost": "{2}",
+    "typeLine": "Artifact — Equipment",
+    "oracleText": "Equipped creature can't be blocked except by Walls.\nEquip {2}",
+    "script": {
+        "activatedAbilities": [
+            {
+                "id": "ability_1",
+                "cost": {
+                    "type": "CostAtomWrapper",
+                    "atom": {
+                        "type": "AtomMana",
+                        "cost": "{2}"
+                    }
+                },
+                "effect": {
+                    "type": "AttachEquipment",
+                    "target": {
+                        "type": "BoundVariable",
+                        "name": "creature you control"
+                    }
+                },
+                "targetRequirements": [
+                    {
+                        "type": "TargetObject",
+                        "filter": {
+                            "baseFilter": "creature ctrl:you"
+                        },
+                        "id": "creature you control"
+                    }
+                ],
+                "timing": "SorcerySpeed",
+                "isEquipAbility": true
+            }
+        ],
+        "staticAbilities": [
+            {
+                "type": "CantBeBlockedExceptBy",
+                "blockerFilter": {
+                    "cardPredicates": [
+                        "IsCreature",
+                        {
+                            "type": "HasSubtype",
+                            "subtype": "Wall"
+                        }
+                    ]
+                },
+                "filter": {
+                    "baseFilter": "permanent",
+                    "scope": "AttachedTo"
+                }
+            }
+        ]
+    },
+    "equipCost": "{2}",
+    "metadata": {
+        "collectorNumber": "219",
+        "rarity": "UNCOMMON",
+        "artist": "Igor Kieryluk",
+        "flavorText": "\"The youths prattle on about heroic deeds, but avoiding the noose is a feat more daring than their entire careers.\"\n—Basarios the Blade",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/1/c100a22c-bf34-42b7-9339-4733698c0935.jpg?1783939718"
+    },
+    "colorIdentityOverride": []
+}
+
+// Read the Bones
+{
+    "name": "Read the Bones",
+    "manaCost": "{2}{B}",
+    "typeLine": "Sorcery",
+    "oracleText": "Scry 2, then draw two cards. You lose 2 life. (To scry 2, look at the top two cards of your library, then put any number of them on the bottom and the rest on top in any order.)",
+    "script": {
+        "spellEffect": {
+            "type": "Composite",
+            "effects": [
+                {
+                    "type": "Scry",
+                    "count": 2
+                },
+                {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 2
+                    }
+                },
+                {
+                    "type": "LoseLife",
+                    "amount": {
+                        "type": "Fixed",
+                        "amount": 2
+                    },
+                    "target": "Controller"
+                }
+            ]
+        }
+    },
+    "metadata": {
+        "collectorNumber": "101",
+        "artist": "Lars Grant-West",
+        "flavorText": "The dead know lessons the living haven't learned.",
+        "imageUri": "https://cards.scryfall.io/normal/front/d/b/dbbdbf1a-2d15-4291-aa19-614f854d8cb3.jpg?1783939772"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Silent Artisan
 {
     "name": "Silent Artisan",
@@ -614,7 +724,7 @@
         "collectorNumber": "228",
         "rarity": "RARE",
         "artist": "Jason Felix",
-        "imageUri": "https://cards.scryfall.io/normal/front/4/f/4f53049c-2491-4d20-aa19-00eb5c55b438.jpg"
+        "imageUri": "https://cards.scryfall.io/normal/front/4/f/4f53049c-2491-4d20-aa19-00eb5c55b438.jpg?1783939714"
     },
     "colorIdentityOverride": [
         "WHITE",

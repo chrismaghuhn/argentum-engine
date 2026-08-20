@@ -83,4 +83,52 @@ class BonesplitterScenarioTest : FunSpec({
             .orEmpty() shouldContain equipment
         driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe secondCreature
     }
+
+    test("Equip only targets your creatures, only works at sorcery timing, and detaches from a leaving host") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        val opponent = driver.getOpponent(player)
+        val ownCreature = driver.putCreatureOnBattlefield(player, "Centaur Courser")
+        val opponentCreature = driver.putCreatureOnBattlefield(opponent, "Centaur Courser")
+        val equipment = driver.putPermanentOnBattlefield(player, "Bonesplitter")
+
+        equip(driver, player, equipment, ownCreature)
+        projector.getProjectedPower(driver.state, ownCreature) shouldBe 5
+
+        driver.giveColorlessMana(player, 1)
+        driver.submit(
+            ActivateAbility(
+                playerId = player,
+                sourceId = equipment,
+                abilityId = equipAbilityId,
+                targets = listOf(ChosenTarget.Permanent(opponentCreature)),
+            )
+        ).isSuccess shouldBe false
+        driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
+
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.giveColorlessMana(player, 1)
+        driver.submit(
+            ActivateAbility(
+                playerId = player,
+                sourceId = equipment,
+                abilityId = equipAbilityId,
+                targets = listOf(ChosenTarget.Permanent(ownCreature)),
+            )
+        ).isSuccess shouldBe false
+        driver.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe ownCreature
+
+        val caster = driver.priorityPlayer!!
+        val lightningBolt = driver.putCardInHand(caster, "Lightning Bolt")
+        driver.giveMana(caster, com.wingedsheep.sdk.core.Color.RED, 1)
+        driver.castSpellWithTargets(
+            caster,
+            lightningBolt,
+            listOf(ChosenTarget.Permanent(ownCreature)),
+        ).isSuccess shouldBe true
+        driver.bothPass()
+
+        driver.state.getEntity(equipment)?.get<AttachedToComponent>() shouldBe null
+        driver.findPermanent(player, "Centaur Courser") shouldBe null
+    }
 })

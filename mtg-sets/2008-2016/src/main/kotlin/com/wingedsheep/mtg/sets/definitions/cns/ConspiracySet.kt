@@ -6,13 +6,12 @@ import com.wingedsheep.sdk.model.MtgSet
 import com.wingedsheep.sdk.model.Printing
 
 /**
- * Conspiracy (2014)
+ * Conspiracy (2014).
  *
- * Scaffolded to hold cards whose earliest real printing is Conspiracy. Intentionally
- * incomplete relative to the official set.
+ * This scaffold currently contains only cards whose canonical earliest printing is Conspiracy.
  *
  * Set Code: CNS
- * Release Date: June 6, 2014
+ * Release Date: 2014-06-06
  */
 object ConspiracySet : MtgSet {
 

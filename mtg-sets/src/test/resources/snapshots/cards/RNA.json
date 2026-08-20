@@ -488,6 +488,45 @@
     ]
 }
 
+// Guardian Project
+{
+    "name": "Guardian Project",
+    "manaCost": "{3}{G}",
+    "typeLine": "Enchantment",
+    "oracleText": "Whenever a nontoken creature you control enters, if it doesn't have the same name as another creature you control or a creature card in your graveyard, draw a card.",
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "ZoneChangeEvent",
+                    "filter": "creature nontoken ctrl:you",
+                    "to": "Battlefield"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "DrawCards",
+                    "count": {
+                        "type": "Fixed",
+                        "amount": 1
+                    }
+                },
+                "interveningIf": "TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "130",
+        "rarity": "RARE",
+        "artist": "Chris Rallis",
+        "flavorText": "Simic's strength comes from its diversity.",
+        "imageUri": "https://cards.scryfall.io/normal/front/c/c/ccad6ce0-ddf0-458d-bdae-3d7805fdc775.jpg?1783933671"
+    },
+    "colorIdentityOverride": [
+        "GREEN"
+    ]
+}
+
 // Hydroid Krasis
 {
     "name": "Hydroid Krasis",

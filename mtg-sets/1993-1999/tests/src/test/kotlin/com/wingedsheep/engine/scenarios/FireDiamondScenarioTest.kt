@@ -3,6 +3,7 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.mtg.sets.definitions.mir.cards.FireDiamond
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
@@ -17,6 +18,16 @@ import io.kotest.matchers.shouldNotBe
 class FireDiamondScenarioTest : FunSpec({
 
     val abilityId = FireDiamond.activatedAbilities.single().id
+
+    test("matches current MIR Scryfall Oracle and canonical metadata") {
+        FireDiamond.manaCost.toString() shouldBe "{2}"
+        FireDiamond.typeLine.toString() shouldBe "Artifact"
+        FireDiamond.oracleText shouldBe "This artifact enters tapped.\n{T}: Add {R}."
+        FireDiamond.metadata.collectorNumber shouldBe "302"
+        FireDiamond.metadata.artist shouldBe "Richard Thomas"
+        FireDiamond.metadata.imageUri shouldBe
+            "https://cards.scryfall.io/normal/front/b/c/bcca5bbe-df01-45ea-a6ac-4e3d1cf237c8.jpg?1783947042"
+    }
 
     fun createDriver(): GameTestDriver {
         val driver = GameTestDriver()
@@ -45,10 +56,17 @@ class FireDiamondScenarioTest : FunSpec({
         ).isSuccess shouldBe true
 
         driver.isTapped(diamond) shouldBe true
-        driver.state.getEntity(player)?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()!!.red shouldBe 1
+
+        val manaPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()!!
+        manaPool.red shouldBe 1
+        manaPool.white shouldBe 0
+        manaPool.blue shouldBe 0
+        manaPool.black shouldBe 0
+        manaPool.green shouldBe 0
+        manaPool.colorless shouldBe 0
     }
 
-    test("Fire Diamond cannot activate while its enters-tapped state remains") {
+    test("Fire Diamond cannot activate while it is tapped") {
         val driver = createDriver()
         val player = driver.activePlayer!!
         val diamond = driver.putPermanentOnBattlefield(player, "Fire Diamond")
@@ -59,5 +77,14 @@ class FireDiamondScenarioTest : FunSpec({
         )
 
         result.isSuccess shouldBe false
+    }
+
+    test("Fire Diamond cannot be cast without paying its generic mana cost") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        val diamondInHand = driver.putCardInHand(player, "Fire Diamond")
+        driver.giveMana(player, Color.RED)
+
+        driver.castSpell(player, diamondInHand).isSuccess shouldBe false
     }
 })
