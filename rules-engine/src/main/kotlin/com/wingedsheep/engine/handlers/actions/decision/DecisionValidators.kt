@@ -416,13 +416,18 @@ object DecisionValidators {
             return "Expected distribution response"
         }
 
-        val total = response.distribution.values.sum()
+        // Sum in a wider type: Int.sum() can wrap a forged response back to the advertised
+        // total (for example MAX_VALUE + MAX_VALUE + 7 == 5 as an Int). Reject overflowed
+        // distributions rather than accepting an incomplete or over-budget response.
+        val total = response.distribution.values.fold(0L) { accumulated, amount ->
+            accumulated + amount.toLong()
+        }
         if (decision.allowPartial) {
-            if (total > decision.totalAmount) {
+            if (total > decision.totalAmount.toLong()) {
                 return "Distribution must not exceed ${decision.totalAmount}, got $total"
             }
         } else {
-            if (total != decision.totalAmount) {
+            if (total != decision.totalAmount.toLong()) {
                 return "Distribution must total ${decision.totalAmount}, got $total"
             }
         }

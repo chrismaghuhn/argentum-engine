@@ -8,6 +8,7 @@ import com.wingedsheep.engine.handlers.EffectHandler
 import com.wingedsheep.engine.handlers.effects.composite.PreTargetedEffectContext
 import com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue
 import com.wingedsheep.engine.mechanics.ControllerGrants
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.mechanics.FlashbackGrants
 import com.wingedsheep.engine.mechanics.HarmonizeGrants
 import com.wingedsheep.engine.mechanics.SpliceCasts
@@ -28,7 +29,6 @@ import com.wingedsheep.engine.state.components.battlefield.WarpedComponent
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
-import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.identity.CantBeCounteredComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
@@ -1852,14 +1852,20 @@ class StackResolver(
             // still on the battlefield (mirrors the defender check in AttackPhaseManager). If it's
             // no longer valid, the creature enters but is never attacking — no redirect.
             val legalDefender = spellComponent.sneakAttackDefenderId?.takeIf { d ->
-                (d in newState.turnOrder && d != controllerId) ||
+                (d in newState.activePlayers && d != controllerId) ||
                     (projected.isPlaneswalker(d) &&
                         d in newState.getBattlefield() &&
                         projected.getController(d) != controllerId)
             }
             if (legalDefender != null && projected.isCreature(spellId)) {
                 newState = newState.updateEntity(spellId) { c ->
-                    c.with(AttackingComponent(legalDefender))
+                    c.with(
+                        CombatDefenders.attackingComponentFor(
+                            state = newState,
+                            projected = projected,
+                            defenderId = legalDefender,
+                        )
+                    )
                 }
             }
         }
