@@ -6,6 +6,7 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.text.TextReplaceable
 import com.wingedsheep.sdk.scripting.text.TextReplacer
 import com.wingedsheep.sdk.scripting.util.quantify
+import com.wingedsheep.sdk.serialization.CostAtomPayLifeSerializer
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
@@ -63,7 +64,7 @@ sealed interface CostAtom : TextReplaceable<CostAtom> {
 
     /** Pay [amount] life (CR 119.4 — payable only while life total ≥ amount). */
     @SerialName("AtomPayLife")
-    @Serializable
+    @Serializable(with = CostAtomPayLifeSerializer::class)
     data class PayLife(val amount: DynamicAmount) : CostAtom {
         constructor(amount: Int) : this(DynamicAmount.Fixed(amount))
 
