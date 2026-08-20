@@ -10,6 +10,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
@@ -616,7 +617,8 @@ data class EffectContext(
             targets: List<ChosenTarget> = emptyList(),
             alignedTargets: List<ChosenTarget?> = targets,
             targetRequirements: List<TargetRequirement> = emptyList(),
-            targetEntryStamps: Map<EntityId, Long> = emptyMap()
+            targetEntryStamps: Map<EntityId, Long> = emptyMap(),
+            state: GameState? = null,
         ): EffectContext = EffectContext(
             sourceId = ability.sourceId,
             controllerId = ability.controllerId,
@@ -646,6 +648,14 @@ data class EffectContext(
             damageRecipientKinds = ability.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
+            // A cost-paid reflexive trigger uses the spell itself as its source. Read the
+            // immutable LKI payload from that spell rather than copying sacrificial history onto
+            // the triggered-ability component. The source remains on the stack while this CR
+            // 603.12 ability resolves, and ordinary spell-copy paths clone the same payload.
+            sacrificedPermanents = state?.getEntity(ability.sourceId)
+                ?.get<SpellOnStackComponent>()
+                ?.sacrificedPermanents
+                ?: emptyList(),
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,
             triggerLastKnownPower = ability.lastKnownPower,

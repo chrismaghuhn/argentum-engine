@@ -154,6 +154,16 @@ data class CardScript(
     val additionalCosts: List<AdditionalCost> = emptyList(),
 
     /**
+     * Reflexive abilities established by a completed cast-time cost payment (CR 603.12).
+     *
+     * These are deliberately separate from [additionalCosts]: the cost atom describes what is
+     * paid, while this list describes the optional "when you do" linkage that exists only after a
+     * payment succeeds. The engine currently supports [CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice].
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val costPaidReflexiveTriggers: List<CostPaidReflexiveTrigger> = emptyList(),
+
+    /**
      * A spell-level **waterbend** additional cost (Avatar: The Last Airbender) —
      * *"As an additional cost to cast this spell, [you may] waterbend {N}."* Kept separate from
      * [additionalCosts] because waterbend is paid through the alternative-payment channel
@@ -361,6 +371,7 @@ data class CardScript(
                 staticAbilities.isNotEmpty() ||
                 replacementEffects.isNotEmpty() ||
                 additionalCosts.isNotEmpty() ||
+                costPaidReflexiveTriggers.isNotEmpty() ||
                 auraTarget != null ||
                 castRestrictions.isNotEmpty() ||
                 classLevels.isNotEmpty() ||
@@ -459,11 +470,13 @@ data class CardScript(
         fun spell(
             effect: Effect,
             vararg targets: TargetRequirement,
-            additionalCosts: List<AdditionalCost> = emptyList()
+            additionalCosts: List<AdditionalCost> = emptyList(),
+            costPaidReflexiveTriggers: List<CostPaidReflexiveTrigger> = emptyList()
         ): CardScript = CardScript(
             spellEffect = effect,
             targetRequirements = targets.toList(),
-            additionalCosts = additionalCosts
+            additionalCosts = additionalCosts,
+            costPaidReflexiveTriggers = costPaidReflexiveTriggers
         )
 
         /**

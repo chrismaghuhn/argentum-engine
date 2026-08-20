@@ -3140,7 +3140,8 @@ class StackResolver(
         val preResolutionContext = EffectContext.forTriggeredAbility(
             abilityComponent,
             targets = chosenTargets,
-            targetRequirements = targetReqs
+            targetRequirements = targetReqs,
+            state = state
         )
         // CR 603.4 / 608.2a: an intervening-if condition is checked before the target legality
         // check in 608.2b. If it is false, the ability leaves the stack without validating targets
@@ -3207,7 +3208,8 @@ class StackResolver(
                 targets = resolutionPayload.targets,
                 targetRequirements = targetsComponent.targetRequirements,
                 alignedTargets = resolutionPayload.alignedTargets,
-                targetEntryStamps = targetsComponent.targetEntryStamps
+                targetEntryStamps = targetsComponent.targetEntryStamps,
+                state = state
             )
         } else {
             preResolutionContext

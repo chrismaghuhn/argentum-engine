@@ -1305,7 +1305,7 @@ class TriggerProcessor(
         val evaluated = DynamicAmountEvaluator().evaluate(
             state,
             dynamic,
-            EffectContext.forTriggeredAbility(ability)
+            EffectContext.forTriggeredAbility(ability, state = state)
         )
         return evaluated.coerceIn(0, modal.modes.size) to 0
     }

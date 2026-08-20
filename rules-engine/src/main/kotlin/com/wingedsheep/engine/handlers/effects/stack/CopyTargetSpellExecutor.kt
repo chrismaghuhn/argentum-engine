@@ -10,7 +10,6 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
-import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CopyTargetSpellEffect
 import kotlin.reflect.KClass
@@ -121,47 +120,20 @@ class CopyTargetSpellExecutor(
             ))
         }
 
-        // If the original spell has no targets, create the copy immediately.
-        // For permanent spells (no spellEffect) and when removing the Legendary supertype
-        // (CR 707.10f resolves the copy into a token), we use putSpellCopy so we get a real
-        // spell entity whose CardComponent can be patched. For instant/sorcery spells
-        // without the legendary clause, the lightweight TriggeredAbilityOnStackComponent
-        // path is sufficient.
+        // If the original spell has no targets, create the copy immediately. Every spell copy
+        // uses StackResolver.putSpellCopy so the copy remains a real spell object and inherits
+        // the complete immutable stack payload (including cast-time cost snapshots). This is
+        // especially important for a cost-paid reflexive trigger: its source spell stays on the
+        // stack, and each copy must retain the same copyable characteristics and payload under
+        // CR 707.10.
         if (targetRequirements.isEmpty()) {
-            if (resolvingPayload != null || effect.removeLegendary || spellEffect == null) {
-                return EffectResult.from(
-                    putInheritedCopies(
-                        state, stackResolver, spellEntityId, context.controllerId, copyCount,
-                        effect.keywordsForCopy.toSet(), effect.removeLegendary, tokenRiders,
-                        resolvingPayload
-                    )
+            return EffectResult.from(
+                putInheritedCopies(
+                    state, stackResolver, spellEntityId, context.controllerId, copyCount,
+                    effect.keywordsForCopy.toSet(), effect.removeLegendary, tokenRiders,
+                    resolvingPayload
                 )
-            }
-            var currentState = state
-            val allEvents = mutableListOf<GameEvent>()
-            val contextSourceId = context.sourceId
-            repeat(copyCount) {
-                val sourceId = if (contextSourceId != null) contextSourceId else {
-                    val (id, s) = currentState.newEntity()
-                    currentState = s
-                    id
-                }
-                val copyAbility = TriggeredAbilityOnStackComponent(
-                    sourceId = sourceId,
-                    sourceName = spellName,
-                    controllerId = context.controllerId,
-                    effect = spellEffect,
-                    description = "Copy of $spellName"
-                )
-                val pushed = applyKeywordsToCopy(
-                    stackResolver.putTriggeredAbility(currentState, copyAbility),
-                    effect.keywordsForCopy
-                )
-                if (!pushed.isSuccess) return EffectResult.from(pushed)
-                currentState = pushed.newState
-                allEvents.addAll(pushed.events)
-            }
-            return EffectResult.success(currentState, allEvents)
+            )
         }
 
         // Spell has targets — prompt for new target selection. Permanent spells
@@ -211,29 +183,6 @@ class CopyTargetSpellExecutor(
             allEvents.addAll(copyResult.events)
         }
         return ExecutionResult.success(currentState, allEvents)
-    }
-
-    private fun applyKeywordsToCopy(
-        result: com.wingedsheep.engine.core.ExecutionResult,
-        keywords: List<String>
-    ): com.wingedsheep.engine.core.ExecutionResult {
-        if (keywords.isEmpty() || !result.isSuccess) return result
-        val copyId = result.events.asReversed().firstNotNullOfOrNull { event ->
-            when (event) {
-                is com.wingedsheep.engine.core.SpellCopiedEvent -> event.copyEntityId
-                is com.wingedsheep.engine.core.AbilityActivatedEvent -> event.abilityEntityId
-                else -> null
-            }
-        } ?: return result
-        val updated = result.newState.updateEntity(copyId) { container ->
-            val existing = container.get<com.wingedsheep.engine.state.components.stack.SpellGrantedKeywordsComponent>()
-            container.with(
-                com.wingedsheep.engine.state.components.stack.SpellGrantedKeywordsComponent(
-                    (existing?.keywords ?: emptySet()) + keywords
-                )
-            )
-        }
-        return com.wingedsheep.engine.core.ExecutionResult.success(updated, result.events)
     }
 
     private fun promptForCopyTargets(

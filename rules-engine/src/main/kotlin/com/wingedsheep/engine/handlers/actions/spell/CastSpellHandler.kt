@@ -44,6 +44,7 @@ import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.event.TriggerContext
 import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.event.TriggerProcessor
+import com.wingedsheep.engine.event.TriggerStage
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
@@ -98,6 +99,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.ChoiceSlot
+import com.wingedsheep.sdk.scripting.CostPaidReflexiveTriggerCost
 import com.wingedsheep.sdk.scripting.TapReason
 import com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
 import com.wingedsheep.sdk.scripting.costs.CostAtom
@@ -3992,6 +3994,55 @@ class CastSpellHandler(
                 } else emptyList()
             } else emptyList()
 
+        // A completed variable-permanent sacrifice cost establishes a CR 603.12 reflexive
+        // trigger. The descriptor is generic SDK data: it links an existing cost atom to an
+        // effect, while this handler only lowers the completed payment into the normal pending-
+        // trigger pipeline. The spell is the pending trigger's source, so the effect context can
+        // read the immutable SpellOnStackComponent.sacrificedPermanents payload at resolution.
+        val variablePermanentCosts = flattenedAllCosts.mapNotNull { additionalCost ->
+            (additionalCost as? AdditionalCost.Atom)?.atom as? CostAtom.VariablePermanents
+        }
+        val hasFixedSacrificeCost = flattenedAllCosts.any { additionalCost ->
+            val atom = (additionalCost as? AdditionalCost.Atom)?.atom
+            atom is CostAtom.Sacrifice
+        }
+        val variableSacrificeCostPaid =
+            action.additionalCostPayment?.variableCostPermanents?.isNotEmpty() == true &&
+                variablePermanentCosts.size == 1 &&
+                variablePermanentCosts.single().action == PermanentCostAction.SACRIFICE &&
+                !hasFixedSacrificeCost
+        val costPaidReflexivePendingTriggers: List<PendingTrigger> =
+            if (!action.castFaceDown && variableSacrificeCostPaid) {
+                castTimeScript?.costPaidReflexiveTriggers
+                    .orEmpty()
+                    .filter { descriptor ->
+                        descriptor.cost == CostPaidReflexiveTriggerCost.VariablePermanentsSacrifice
+                    }
+                    .map { descriptor ->
+                        val ability = TriggeredAbility(
+                            id = AbilityId.generate(),
+                            trigger = SdkGameEvent.SpellCastEvent(player = Player.You),
+                            binding = TriggerBinding.SELF,
+                            effect = descriptor.effect,
+                            targetRequirement = descriptor.targetRequirements.firstOrNull(),
+                            additionalTargetRequirements = descriptor.targetRequirements.drop(1),
+                            activeZones = setOf(Zone.STACK),
+                            descriptionOverride = descriptor.description,
+                        )
+                        PendingTrigger(
+                            ability = ability,
+                            sourceId = action.cardId,
+                            sourceName = cardComponent.name,
+                            controllerId = action.playerId,
+                            triggerContext = TriggerContext(
+                                triggeringEntityId = action.cardId,
+                                triggeringPlayerId = action.playerId,
+                            ),
+                            stage = TriggerStage.REFLEXIVE,
+                        )
+                    }
+            } else emptyList()
+
         // Handle Conspire (CR 702.78): when the optional additional cost was paid, a reflexive
         // trigger goes on the stack above the spell: "When you do, copy it and you may choose
         // new targets for the copy." Reuses StormCopyEffect with copyCount=1 so the existing
@@ -4186,7 +4237,12 @@ class CastSpellHandler(
         // Other AP spell-cast triggers follow (placed higher on the stack), then NAP triggers on top,
         // matching APNAP ordering within processTriggers.
         val detectedTriggers = triggerDetector.detectTriggers(currentCastState, allEvents)
-        val triggers = riderPendingTriggers + conspirePendingTriggers + casualtyPendingTriggers + stormPendingTriggers + detectedTriggers
+        val triggers = riderPendingTriggers +
+            costPaidReflexivePendingTriggers +
+            conspirePendingTriggers +
+            casualtyPendingTriggers +
+            stormPendingTriggers +
+            detectedTriggers
         if (triggers.isNotEmpty()) {
             val triggerResult = triggerProcessor.processTriggers(currentCastState, triggers)
 
