@@ -473,6 +473,26 @@ object Costs {
             AdditionalCost.Atom(CostAtom.Sacrifice(filter, count))
 
         /**
+         * Sacrifice any number of permanents matching [filter], subject to [minCount]. The
+         * selected count is retained on the spell's cast payload for effects that refer to the
+         * completed payment (for example, a CR 603.11 / 607.2h cost-linked trigger).
+         */
+        fun SacrificePermanents(
+            filter: GameObjectFilter = GameObjectFilter.Creature,
+            minCount: Int = 1,
+            excludeSelf: Boolean = false,
+            xMeasure: VariableCostMeasure = VariableCostMeasure.COUNT,
+        ): AdditionalCost = AdditionalCost.Atom(
+            CostAtom.VariablePermanents(
+                filter = filter,
+                minCount = minCount,
+                excludeSelf = excludeSelf,
+                action = PermanentCostAction.SACRIFICE,
+                xMeasure = xMeasure,
+            )
+        )
+
+        /**
          * Tap any number of permanents matching [filter] you control whose **total projected
          * power** is [totalPower] or more — the "tap creatures for total power N" selection crew
          * and saddle already use, re-exposed as a spell's additional cost (Teamwork N,

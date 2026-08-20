@@ -319,6 +319,13 @@ data class TriggeredAbilityOnStackComponent(
      */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
     /**
+     * Last-known copy payload captured when a cast-time cost-linked trigger is put on the stack.
+     * The source spell may leave the stack before this ability resolves; retaining the payload
+     * makes CR 113.7a / 608.2h source-LKI explicit and lets generic copy effects still read the
+     * original cast-time payment choices.
+     */
+    val resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null,
+    /**
      * The ability's intervening-"if" clause (CR 603.4), carried onto the stack object because the
      * ability itself is no longer reachable by the time this resolves — the trigger has been
      * detected, the source may have left the battlefield, and the granting static may be gone.

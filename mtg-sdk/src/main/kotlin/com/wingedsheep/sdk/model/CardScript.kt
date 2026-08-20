@@ -154,6 +154,16 @@ data class CardScript(
     val additionalCosts: List<AdditionalCost> = emptyList(),
 
     /**
+     * Triggered abilities linked to a completed cast-time cost payment (CR 603.11 / 607.2h / 607.2i).
+     *
+     * These are deliberately separate from [additionalCosts]: the cost atom describes what is
+     * paid, while this list describes the optional "when you do" linkage that exists only after a
+     * payment succeeds. The engine currently supports [CostPaidLinkedTriggerCost.VariablePermanentsSacrifice].
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val costPaidLinkedTriggers: List<CostPaidLinkedTrigger> = emptyList(),
+
+    /**
      * A spell-level **waterbend** additional cost (Avatar: The Last Airbender) —
      * *"As an additional cost to cast this spell, [you may] waterbend {N}."* Kept separate from
      * [additionalCosts] because waterbend is paid through the alternative-payment channel
@@ -361,6 +371,7 @@ data class CardScript(
                 staticAbilities.isNotEmpty() ||
                 replacementEffects.isNotEmpty() ||
                 additionalCosts.isNotEmpty() ||
+                costPaidLinkedTriggers.isNotEmpty() ||
                 auraTarget != null ||
                 castRestrictions.isNotEmpty() ||
                 classLevels.isNotEmpty() ||
@@ -459,11 +470,13 @@ data class CardScript(
         fun spell(
             effect: Effect,
             vararg targets: TargetRequirement,
-            additionalCosts: List<AdditionalCost> = emptyList()
+            additionalCosts: List<AdditionalCost> = emptyList(),
+            costPaidLinkedTriggers: List<CostPaidLinkedTrigger> = emptyList()
         ): CardScript = CardScript(
             spellEffect = effect,
             targetRequirements = targets.toList(),
-            additionalCosts = additionalCosts
+            additionalCosts = additionalCosts,
+            costPaidLinkedTriggers = costPaidLinkedTriggers
         )
 
         /**
