@@ -31,7 +31,10 @@ fun CostAtom.repeated(times: Int): CostAtom {
     if (times == 1) return this
     return when (this) {
         is CostAtom.Mana -> copy(cost = cost * times)
-        is CostAtom.PayLife -> copy(amount = amount * times)
+        is CostAtom.PayLife -> copy(amount = when (val value = amount) {
+            is DynamicAmount.Fixed -> DynamicAmount.Fixed(value.amount * times)
+            else -> DynamicAmount.Multiply(value, times)
+        })
         is CostAtom.Mill -> copy(count = count * times)
         is CostAtom.Sacrifice -> copy(count = count * times)
         is CostAtom.VariablePermanents -> copy(minCount = minCount * times)

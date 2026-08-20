@@ -141,6 +141,12 @@ class DynamicAmountEvaluator(
             is DynamicAmount.LastKnownDamageDealtToSource ->
                 context.triggerLastKnownDamageDealtByPlayers?.values?.sum() ?: 0
 
+            // The generic evaluator has no authoritative card registry or commander context.
+            // Cost payment callers resolve this leaf through CostAmountResolver first; direct
+            // generic callers fail closed rather than throwing or inventing a commander identity.
+            DynamicAmount.CommanderColorIdentityCount ->
+                0
+
             // The {X} this object was cast with, read off the current object regardless of zone.
             // Reads, in order: the durable CastChoicesComponent on the battlefield permanent (and
             // for a later activated ability); the SpellOnStackComponent while the object is still
@@ -1058,7 +1064,8 @@ class DynamicAmountEvaluator(
         }
     }
 
-    private fun resolveUnifiedPlayerIds(
+    /** Shared player-scope resolution for amount consumers that need the same rebinding rules. */
+    internal fun resolveUnifiedPlayerIds(
         state: GameState,
         player: Player,
         context: EffectContext

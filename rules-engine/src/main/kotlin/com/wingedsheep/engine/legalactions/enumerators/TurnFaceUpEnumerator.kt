@@ -103,7 +103,15 @@ class TurnFaceUpEnumerator : ActionEnumerator {
                     // selection happens afterward as a decision pause (handled by the standard
                     // decision flow), not via AdditionalCostData pre-selection.
                     else -> {
-                        if (CostPaymentService.canAfford(state, playerId, cost, entityId, context.manaSolver)) {
+                        if (CostPaymentService.canAfford(
+                                state,
+                                playerId,
+                                cost,
+                                entityId,
+                                context.manaSolver,
+                                cardRegistry = context.cardRegistry,
+                            )
+                        ) {
                             result.add(
                                 LegalAction(
                                     actionType = "ActivateAbility",

@@ -23,6 +23,7 @@ import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.library.MillAmountModifier
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounterType
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.state.GameState
@@ -87,7 +88,9 @@ class CostPaymentService(private val services: EngineServices) {
         cost: PayCost,
         sourceId: EntityId,
         excludeSource: Boolean = true
-    ): Boolean = canAfford(state, payerId, cost, sourceId, services.manaSolver, excludeSource)
+    ): Boolean = canAfford(
+        state, payerId, cost, sourceId, services.manaSolver, excludeSource, services.cardRegistry
+    )
 
     // ---------------------------------------------------------------------------------------------
     // Pay — build the right prompt and push a single continuation.
@@ -121,7 +124,7 @@ class CostPaymentService(private val services: EngineServices) {
                 is CostAtom.Mana ->
                     yesNoPrompt(state, payerId, resolved, sourceId, sourceName, ctx, "Pay ${atom.cost}?", "Pay ${atom.cost}")
                 is CostAtom.PayLife ->
-                    yesNoPrompt(state, payerId, resolved, sourceId, sourceName, ctx, "Pay ${atom.amount} life?", "Pay ${atom.amount} life")
+                    yesNoPrompt(state, payerId, resolved, sourceId, sourceName, ctx, "Pay ${atom.description}?", atom.description)
                 is CostAtom.Discard ->
                     if (atom.random) {
                         val word = if (atom.count == 1) "a card" else "${atom.count} cards"
@@ -330,7 +333,15 @@ class CostPaymentService(private val services: EngineServices) {
         is PayCost.Choice -> CostPaymentExecution(state, emptyList(), success = false)
         is PayCost.Atom -> when (val atom = cost.atom) {
             is CostAtom.Mana -> payMana(state, payerId, atom.cost, sourceId)
-            is CostAtom.PayLife -> payLife(state, payerId, atom.amount)
+            is CostAtom.PayLife -> {
+                val amount = CostAmountResolver.resolve(
+                    state, atom.amount, sourceId, payerId, services.cardRegistry
+                ) ?: return CostPaymentExecution(state, emptyList(), success = false)
+                if (amount < 0) {
+                    return CostPaymentExecution(state, emptyList(), success = false)
+                }
+                payLife(state, payerId, amount)
+            }
             is CostAtom.Discard ->
                 if (atom.random) discardRandom(state, payerId, atom.filter, atom.count)
                 else discardSelected(state, payerId, selected.keys.toList())
@@ -477,10 +488,13 @@ class CostPaymentService(private val services: EngineServices) {
         if (!partial.remainingCost.isEmpty()) {
             val solution = services.manaSolver.solve(current, payerId, partial.remainingCost)
                 ?: return CostPaymentExecution(state, emptyList(), false)
-            val (afterTaps, tapEvents) = services.manaAbilitySideEffectExecutor
+            val tapResult = services.manaAbilitySideEffectExecutor
                 .tapSourcesWithSideEffects(current, solution, payerId)
-            current = afterTaps
-            events.addAll(tapEvents)
+            if (!tapResult.success) {
+                return CostPaymentExecution(state, emptyList(), success = false)
+            }
+            current = tapResult.state
+            events.addAll(tapResult.events)
             for ((_, production) in solution.manaProduced) {
                 combined = if (production.color != null) combined.add(production.color, production.amount)
                 else combined.addColorless(production.colorless)
@@ -650,17 +664,22 @@ class CostPaymentService(private val services: EngineServices) {
             cost: PayCost,
             sourceId: EntityId,
             manaSolver: ManaSolver,
-            excludeSource: Boolean = true
+            excludeSource: Boolean = true,
+            cardRegistry: CardRegistry? = null
         ): Boolean {
             return when (val c = resolve(state, cost, sourceId)) {
                 // Only unresolvable own-mana-costs reach here (missing source/card component) — unpayable.
                 is PayCost.OwnManaCost -> false
-                is PayCost.Choice -> c.options.any { canAfford(state, payerId, it, sourceId, manaSolver) }
+                is PayCost.Choice -> c.options.any {
+                    canAfford(state, payerId, it, sourceId, manaSolver, excludeSource, cardRegistry)
+                }
                 is PayCost.Atom -> when (val atom = c.atom) {
                     is CostAtom.Mana -> manaSolver.canPay(state, payerId, atom.cost)
                     // CR 119.4 — a player may pay life only if their life total is at least the amount; paying
                     // life that would reduce them to 0 or less is legal (they then lose as a state-based action).
-                    is CostAtom.PayLife -> life(state, payerId) >= atom.amount
+                    is CostAtom.PayLife -> CostAmountResolver.resolve(
+                        state, atom.amount, sourceId, payerId, cardRegistry
+                    )?.let { it >= 0 && life(state, payerId) >= it } == true
                     is CostAtom.Discard -> cardsInHand(state, payerId, atom.filter).size >= atom.count
                     is CostAtom.ExileFrom -> cardsInZone(state, payerId, atom.filter, atom.zone).size >= atom.count
                     // CR 701.59b — unpayable unless the graveyard's *total mana value* reaches N.
