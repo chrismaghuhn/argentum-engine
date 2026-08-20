@@ -3,19 +3,13 @@ package com.wingedsheep.engine.scenarios
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
+import com.wingedsheep.mtg.sets.definitions.m21.cards.HoodedBlightfang
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Effects
-import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
-import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.TriggerBinding
-import com.wingedsheep.sdk.scripting.events.DamageType
-import com.wingedsheep.sdk.scripting.events.RecipientFilter
-import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -29,50 +23,10 @@ import io.kotest.matchers.shouldBe
  * - Whenever a creature you control with deathtouch deals damage to a planeswalker, destroy that
  *   planeswalker.
  *
- * This is intentionally a RED characterization while the production card is still absent. The
- * second trigger uses only existing DSL vocabulary. Its source filter matches the damage source,
- * but the effect must resolve the damage recipient (the planeswalker), not the source creature.
- * Current DamageTriggerDetector source-filtered observer context exposes the former as
- * EffectTarget.TriggeringEntity, so the final assertion should fail until a reusable recipient
- * reference is available. No card-specific workaround belongs here.
+ * The second trigger uses the generic damage-recipient context: its source filter matches the
+ * damage source, while the destruction effect resolves the damage recipient (the planeswalker).
  */
 class HoodedBlightfangScenarioTest : FunSpec({
-
-    val hoodedBlightfang = card("Hooded Blightfang") {
-        manaCost = "{2}{B}"
-        colorIdentity = "B"
-        typeLine = "Creature — Snake"
-        power = 1
-        toughness = 4
-        oracleText = "Deathtouch\n" +
-            "Whenever a creature you control with deathtouch attacks, each opponent loses 1 life " +
-            "and you gain 1 life.\n" +
-            "Whenever a creature you control with deathtouch deals damage to a planeswalker, " +
-            "destroy that planeswalker."
-
-        keywords(Keyword.DEATHTOUCH)
-
-        triggeredAbility {
-            trigger = Triggers.attacks(
-                filter = GameObjectFilter.Creature.youControl().withKeyword(Keyword.DEATHTOUCH),
-                binding = TriggerBinding.ANY,
-            )
-            effect = Effects.Composite(
-                Effects.LoseLife(1, EffectTarget.PlayerRef(Player.EachOpponent)),
-                Effects.GainLife(1),
-            )
-        }
-
-        triggeredAbility {
-            trigger = Triggers.dealsDamage(
-                damageType = DamageType.Any,
-                recipient = RecipientFilter.Matching(GameObjectFilter.Planeswalker),
-                sourceFilter = GameObjectFilter.Creature.youControl().withKeyword(Keyword.DEATHTOUCH),
-                binding = TriggerBinding.ANY,
-            )
-            effect = Effects.Destroy(EffectTarget.TriggeringEntity)
-        }
-    }
 
     val deathtouchAttacker = card("Hooded Deathtouch Attacker") {
         manaCost = "{0}"
@@ -109,7 +63,6 @@ class HoodedBlightfangScenarioTest : FunSpec({
     fun driver(): GameTestDriver = GameTestDriver().apply {
         registerCards(
             TestCards.all + listOf(
-                hoodedBlightfang,
                 deathtouchAttacker,
                 damagingDeathtouchAttacker,
                 plainAttacker,
@@ -134,7 +87,7 @@ class HoodedBlightfangScenarioTest : FunSpec({
         val active = players[0]
         d.passPriorityUntil(Step.PRECOMBAT_MAIN)
 
-        val hooded = d.putCreatureOnBattlefield(active, "Hooded Blightfang")
+        val hooded = d.putCreatureOnBattlefield(active, HoodedBlightfang.name)
         val attacker = d.putCreatureOnBattlefield(active, "Hooded Deathtouch Attacker")
         d.removeSummoningSickness(attacker)
         d.state.projectedState.hasKeyword(hooded, Keyword.DEATHTOUCH) shouldBe true
@@ -159,7 +112,7 @@ class HoodedBlightfangScenarioTest : FunSpec({
         val opponent = d.getOpponent(active)
         d.passPriorityUntil(Step.PRECOMBAT_MAIN)
 
-        d.putCreatureOnBattlefield(active, "Hooded Blightfang")
+        d.putCreatureOnBattlefield(active, HoodedBlightfang.name)
         val attacker = d.putCreatureOnBattlefield(active, "Hooded Plain Attacker")
         d.removeSummoningSickness(attacker)
         val activeLife = d.getLifeTotal(active)
@@ -180,7 +133,7 @@ class HoodedBlightfangScenarioTest : FunSpec({
         val opponent = d.getOpponent(active)
         d.passPriorityUntil(Step.PRECOMBAT_MAIN)
 
-        d.putCreatureOnBattlefield(active, "Hooded Blightfang")
+        d.putCreatureOnBattlefield(active, HoodedBlightfang.name)
         val attacker = d.putCreatureOnBattlefield(active, "Hooded Damaging Deathtouch Attacker")
         val walker = d.putPermanentOnBattlefield(opponent, "Hooded Test Walker")
         d.replaceState(
@@ -205,7 +158,7 @@ class HoodedBlightfangScenarioTest : FunSpec({
         val opponent = d.getOpponent(active)
         d.passPriorityUntil(Step.PRECOMBAT_MAIN)
 
-        d.putCreatureOnBattlefield(active, "Hooded Blightfang")
+        d.putCreatureOnBattlefield(active, HoodedBlightfang.name)
         val attacker = d.putCreatureOnBattlefield(active, "Hooded Plain Attacker")
         val walker = d.putPermanentOnBattlefield(opponent, "Hooded Test Walker")
         d.replaceState(
