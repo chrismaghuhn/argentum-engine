@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -52,6 +53,19 @@ class MobilizeTest : FunSpec({
                 entity.get<CardComponent>()?.name == "Warrior Token"
         }
 
+    fun GameTestDriver.resolveStack() {
+        var guard = 0
+        while ((state.stack.isNotEmpty() || state.pendingDecision is OrderObjectsDecision) && guard++ < 40) {
+            when (val decision = state.pendingDecision) {
+                is OrderObjectsDecision -> {
+                    submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+                }
+                null -> bothPass()
+                else -> break
+            }
+        }
+    }
+
     test("Mobilize 1 creates one tapped and attacking Warrior token when the creature attacks") {
         val driver = createDriver()
         driver.initMirrorMatch(deck = Deck.of("Mountain" to 40), startingLife = 20)
@@ -98,7 +112,7 @@ class MobilizeTest : FunSpec({
 
         // Advance to the end step; the delayed trigger goes on the stack — resolve it.
         driver.passPriorityUntil(com.wingedsheep.sdk.core.Step.END)
-        while (driver.state.stack.isNotEmpty()) driver.bothPass()
+        driver.resolveStack()
 
         // The token has been sacrificed and no longer exists on the battlefield.
         driver.warriorTokens(attacker).size shouldBe 0
@@ -126,7 +140,7 @@ class MobilizeTest : FunSpec({
         driver.state.delayedTriggers.size shouldBe 2
 
         driver.passPriorityUntil(com.wingedsheep.sdk.core.Step.END)
-        while (driver.state.stack.isNotEmpty()) driver.bothPass()
+        driver.resolveStack()
 
         driver.warriorTokens(attacker).size shouldBe 0
         driver.state.delayedTriggers.size shouldBe 0

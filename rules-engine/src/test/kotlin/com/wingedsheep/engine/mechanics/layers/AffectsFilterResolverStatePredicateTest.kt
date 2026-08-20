@@ -23,12 +23,14 @@ import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.CreatureStats
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.predicates.StatePredicate
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
@@ -121,6 +123,43 @@ class AffectsFilterResolverStatePredicateTest : FunSpec({
 
     fun filterWith(predicate: StatePredicate): AffectsFilter =
         AffectsFilter.Generic(GroupFilter(GameObjectFilter(statePredicates = listOf(predicate))))
+
+    test("IsBasicLand reads projected supertypes for live affects filters") {
+        val land = EntityId.generate()
+        val state = battlefield(
+            listOf(
+                land to container(
+                    playerA,
+                    CardComponent(
+                        cardDefinitionId = "projected-basic-land",
+                        name = "Projected Basic Land",
+                        manaCost = ManaCost.ZERO,
+                        typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+                        ownerId = playerA,
+                    ),
+                ),
+            ),
+        )
+        val projected = mapOf(
+            land to MutableProjectedValues(
+                types = mutableSetOf("LAND", Supertype.BASIC.name),
+                controllerId = playerA,
+            ),
+        )
+
+        resolver.resolveAffectedEntities(
+            state = state,
+            sourceId = land,
+            filter = AffectsFilter.Generic(
+                GroupFilter(
+                    GameObjectFilter(
+                        cardPredicates = listOf(CardPredicate.IsBasicLand),
+                    ),
+                ),
+            ),
+            projectedValues = projected,
+        ) shouldContain land
+    }
 
     // =========================================================================
     // Tap state

@@ -35,6 +35,27 @@ data class GrantKeyword(
 }
 
 /**
+ * Grants a parameterized keyword ability to a filtered set of permanents.
+ *
+ * Unlike [GrantKeyword], this keeps the keyword's parameters intact. It is consumed at the
+ * relevant point of use (for example, a granted [KeywordAbility.Numeric] Crew value) rather than
+ * flattened into the projected keyword-name set, which cannot represent the parameter.
+ */
+@SerialName("GrantKeywordAbility")
+@Serializable
+data class GrantKeywordAbility(
+    val ability: KeywordAbility,
+    val filter: GroupFilter = GroupFilter.attachedCreature()
+) : StaticAbility {
+    override val description: String = "${filter.description} have ${ability.description.lowercase()}"
+
+    override fun applyTextReplacement(replacer: TextReplacer): StaticAbility {
+        val newFilter = filter.applyTextReplacement(replacer)
+        return if (newFilter !== filter) copy(filter = newFilter) else this
+    }
+}
+
+/**
  * Removes a keyword from the affected permanents (continuous static ability).
  * Used for Equipment that causes the equipped creature to lose a keyword.
  * E.g., Starforged Sword: "Equipped creature loses flying."

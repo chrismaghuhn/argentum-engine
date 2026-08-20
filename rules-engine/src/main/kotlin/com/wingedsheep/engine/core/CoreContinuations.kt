@@ -55,7 +55,20 @@ data class TriggeredAbilityContinuation(
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
+    val defendingPlayerId: EntityId? = null,
+    val damageSourceEntityId: EntityId? = null,
+    val damageRecipientEntityId: EntityId? = null,
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+    val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+    val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     val elseEffect: Effect? = null,
     val targetRequirements: List<TargetRequirement> = emptyList(),
     val triggerCounterCount: Int? = null,
@@ -114,6 +127,13 @@ data class TriggeredAbilityContinuation(
     val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
 ) : ContinuationFrame
 
+val TriggeredAbilityContinuation.effectiveDamageRecipientKinds: DamageRecipientKindSet
+    get() = when {
+        !damageRecipientKinds.isUnknown -> damageRecipientKinds
+        damageRecipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(damageRecipientKind)
+        else -> DamageRecipientKindSet.UNKNOWN
+    }
+
 /**
  * Resume placing a triggered ability on the stack after the player distributes damage.
  *
@@ -145,7 +165,20 @@ data class TriggerDamageDistributionContinuation(
     val abilityIdentity: com.wingedsheep.sdk.scripting.AbilityIdentity? = null,
     val triggerDamageAmount: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    /** Battlefield-entry object identity captured for the triggering occurrence. */
+    val triggeringEntityEntryTimestamp: Long? = null,
+    /** Projected name captured for the triggering object's occurrence; null is known nameless when [triggeringEntityNameKnown] is true. */
+    val triggeringEntityName: String? = null,
+    /** Whether [triggeringEntityName] was known when this trigger occurrence was captured. */
+    val triggeringEntityNameKnown: Boolean = false,
     val triggeringPlayerId: EntityId? = null,
+    val defendingPlayerId: EntityId? = null,
+    val damageSourceEntityId: EntityId? = null,
+    val damageRecipientEntityId: EntityId? = null,
+    val damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    val damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+    val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+    val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
     val triggerCounterCount: Int? = null,
     val triggerTotalCounterCount: Int? = null,
     val triggerLastKnownCounters: Map<String, Int>? = null,
@@ -166,6 +199,13 @@ data class TriggerDamageDistributionContinuation(
     val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
 ) : ContinuationFrame
 
+val TriggerDamageDistributionContinuation.effectiveDamageRecipientKinds: DamageRecipientKindSet
+    get() = when {
+        !damageRecipientKinds.isUnknown -> damageRecipientKinds
+        damageRecipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(damageRecipientKind)
+        else -> DamageRecipientKindSet.UNKNOWN
+    }
+
 /**
  * Stores remaining pending triggers that still need to be processed.
  *
@@ -177,6 +217,28 @@ data class TriggerDamageDistributionContinuation(
 @Serializable
 data class PendingTriggersContinuation(
     override val decisionId: String,
+    val remainingTriggers: List<PendingTrigger>,
+    /**
+     * Number of leading entries in [remainingTriggers] whose relative order was already chosen
+     * by the controller under CR 603.3b.  The prefix is consumed as triggers are processed and
+     * must survive target/may/batch pauses without asking the same ordering question again.
+     */
+    val preorderedTriggerCount: Int = 0
+) : ContinuationFrame
+
+/**
+ * Resumes the controller's CR 603.3b choice for one same-controller trigger group.
+ *
+ * [objectIds] are deterministic decision-scoped handles (ordinal tokens), not source IDs or
+ * generated stack entity IDs.  The response is mapped back to [triggers] before the ordinary
+ * trigger processor resumes, so target selection, may choices, delayed triggers, and continuations
+ * remain on the existing generic paths.
+ */
+@Serializable
+data class TriggerOrderingContinuation(
+    override val decisionId: String,
+    val objectIds: List<EntityId>,
+    val triggers: List<PendingTrigger>,
     val remainingTriggers: List<PendingTrigger>
 ) : ContinuationFrame
 
@@ -190,7 +252,9 @@ data class PendingTriggersContinuation(
 data class DelayedTriggerOccurrenceChoiceContinuation(
     override val decisionId: String,
     val candidates: List<PendingTrigger>,
-    val remainingTriggers: List<PendingTrigger> = emptyList()
+    val remainingTriggers: List<PendingTrigger> = emptyList(),
+    /** Number of already-ordered entries in the selected occurrence plus [remainingTriggers] after resumption. */
+    val preorderedTriggerCount: Int = 0
 ) : ContinuationFrame
 
 /**

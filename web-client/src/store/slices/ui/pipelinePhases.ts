@@ -337,6 +337,9 @@ export function mergeResult(
           alternativePayment: {
             delvedCards: result.delvedCards,
             convokedCreatures: action.alternativePayment?.convokedCreatures ?? {},
+            ...(action.alternativePayment?.equipPayment !== undefined
+              ? { equipPayment: action.alternativePayment.equipPayment }
+              : {}),
           },
         }
       }
@@ -350,6 +353,9 @@ export function mergeResult(
           alternativePayment: {
             delvedCards: action.alternativePayment?.delvedCards ?? [],
             convokedCreatures: result.convokedCreatures,
+            ...(action.alternativePayment?.equipPayment !== undefined
+              ? { equipPayment: action.alternativePayment.equipPayment }
+              : {}),
           },
         }
       }
@@ -364,6 +370,9 @@ export function mergeResult(
             delvedCards: action.alternativePayment?.delvedCards ?? [],
             convokedCreatures: action.alternativePayment?.convokedCreatures ?? {},
             tapForGenericPermanents: result.tapForGenericPermanents,
+            ...(action.alternativePayment?.equipPayment !== undefined
+              ? { equipPayment: action.alternativePayment.equipPayment }
+              : {}),
           },
         }
       }
@@ -378,6 +387,9 @@ export function mergeResult(
             delvedCards: action.alternativePayment?.delvedCards ?? [],
             convokedCreatures: action.alternativePayment?.convokedCreatures ?? {},
             harmonizeCreature: result.harmonizeCreature,
+            ...(action.alternativePayment?.equipPayment !== undefined
+              ? { equipPayment: action.alternativePayment.equipPayment }
+              : {}),
           },
         }
       }

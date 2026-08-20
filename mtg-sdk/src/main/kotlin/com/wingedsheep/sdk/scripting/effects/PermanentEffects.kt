@@ -370,6 +370,21 @@ data class AttachEquipmentEffect(
 }
 
 /**
+ * Attach an explicitly selected collection of Auras and/or Equipment to one already-resolved
+ * permanent or player. The collection is selected by an upstream pipeline step; this effect owns
+ * neither selection nor ordering policy. The engine executes the selected host changes as one
+ * batch and asks for relative timestamp order only when two or more objects actually move.
+ */
+@SerialName("AttachCollectionToTarget")
+@Serializable
+data class AttachCollectionToTargetEffect(
+    val from: String,
+    val target: EffectTarget = EffectTarget.ContextTarget(0),
+) : Effect {
+    override val description: String = "Attach the selected collection to ${target.description}"
+}
+
+/**
  * Attach a targeted Equipment to a targeted creature.
  * Unlike [AttachEquipmentEffect] which uses the source as the equipment,
  * this effect uses two explicit targets — one for the Equipment, one for the creature.

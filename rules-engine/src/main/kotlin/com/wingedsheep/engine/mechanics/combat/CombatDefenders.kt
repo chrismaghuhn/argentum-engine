@@ -1,8 +1,13 @@
 package com.wingedsheep.engine.mechanics.combat
 
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.mechanics.layers.ProjectedState
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
+import com.wingedsheep.engine.state.components.combat.AttackedDefenderKind
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.sdk.model.EntityId
 
 /**
@@ -18,18 +23,193 @@ import com.wingedsheep.sdk.model.EntityId
 object CombatDefenders {
 
     /**
+     * Stamp the attack target's rule-relevant identity at declaration time. A later combat-damage
+     * pass must not infer an attacked planeswalker/battle's defending relationship from its
+     * current controller or protector: CR 506.4 removes that object from combat when either
+     * relationship changes.
+     */
+    fun attackingComponentFor(
+        state: GameState,
+        projected: ProjectedState,
+        defenderId: EntityId,
+        bandId: String? = null,
+    ): AttackingComponent {
+        val kind = defenderKind(state, projected, defenderId)
+        return AttackingComponent(
+            defenderId = defenderId,
+            bandId = bandId,
+            defenderKindAtDeclaration = kind,
+            defenderControllerAtDeclaration = kind
+                ?.takeUnless { it == AttackedDefenderKind.PLAYER }
+                ?.let { projected.getController(defenderId) },
+            defenderProtectorAtDeclaration = kind
+                ?.takeIf { it == AttackedDefenderKind.BATTLE }
+                ?.let { com.wingedsheep.engine.mechanics.battle.Battles.protectorOf(state, defenderId) },
+            defenderBattlefieldObjectTimestampAtDeclaration = kind
+                ?.takeUnless { it == AttackedDefenderKind.PLAYER }
+                ?.let {
+                    state.getEntity(defenderId)
+                        ?.get<BattlefieldEntryTimestampComponent>()
+                        ?.timestamp
+                },
+        )
+    }
+
+    /**
+     * True only when [targetId] is still the object/player that [attackerId] may damage this
+     * combat. This is the single combat-damage recipient predicate used by the assignment board,
+     * automatic/manual assignment, and prevention aggregation.
+     *
+     * CR 506.4c leaves an attacker in combat after its attacked planeswalker/battle is gone, but
+     * CR 510.1b gives that unblocked attacker no combat damage recipient. CR 702.19f likewise
+     * forbids ordinary trample from inventing a player recipient after the attacked object is
+     * gone. Players use [GameState.activePlayers], not the historical [GameState.turnOrder].
+     */
+    fun isCurrentAttackedRecipient(
+        state: GameState,
+        projected: ProjectedState,
+        attackerId: EntityId,
+        targetId: EntityId,
+    ): Boolean {
+        val attacking = state.getEntity(attackerId)?.get<AttackingComponent>() ?: return false
+        if (attacking.defenderId != targetId) return false
+        if (attacking.defenderRelationshipInvalidated) return false
+
+        // Legacy/synthetic player-only components can still be inferred safely. An object target
+        // without declaration metadata cannot prove the original relationship, so fail closed
+        // rather than treating the current controller/protector as historical truth.
+        val declaredKind = attacking.defenderKindAtDeclaration
+            ?: if (isLivePlayer(state, targetId)) AttackedDefenderKind.PLAYER else return false
+        return when (declaredKind) {
+            AttackedDefenderKind.PLAYER -> isLivePlayer(state, targetId)
+            AttackedDefenderKind.PLANESWALKER ->
+                isCurrentPlaneswalkerRecipient(state, projected, attacking, targetId)
+            AttackedDefenderKind.BATTLE ->
+                isCurrentBattleRecipient(state, projected, attacking, targetId)
+        }
+    }
+
+    private fun defenderKind(
+        state: GameState,
+        projected: ProjectedState,
+        defenderId: EntityId,
+    ): AttackedDefenderKind? = when {
+        isLivePlayer(state, defenderId) -> AttackedDefenderKind.PLAYER
+        defenderId !in state.getBattlefield() -> null
+        projected.isPlaneswalker(defenderId) -> AttackedDefenderKind.PLANESWALKER
+        projected.isBattle(defenderId) -> AttackedDefenderKind.BATTLE
+        else -> null
+    }
+
+    fun isLivePlayer(state: GameState, entityId: EntityId): Boolean {
+        val container = state.getEntity(entityId) ?: return false
+        return entityId in state.activePlayers &&
+            container.get<LifeTotalComponent>() != null &&
+            container.get<CardComponent>() == null
+    }
+
+    /**
+     * Latch CR 506.4 removal for attacked planeswalkers and battles. The current projected
+     * relationship is intentionally sampled before any later effect can restore it: once the
+     * controller/protector differs during combat, the object stays out of combat even if the
+     * relationship later returns (CR 506.4).
+     */
+    fun latchInvalidatedAttackRelationships(state: GameState): GameState {
+        val projected = state.projectedState
+        var latched = state
+        for (attackerId in state.getBattlefield()) {
+            val attacking = state.getEntity(attackerId)?.get<AttackingComponent>() ?: continue
+            if (attacking.defenderRelationshipInvalidated) continue
+            if (attacking.defenderKindAtDeclaration == AttackedDefenderKind.PLAYER) continue
+            if (attacking.defenderKindAtDeclaration == null) continue
+            if (isCurrentAttackedRecipient(state, projected, attackerId, attacking.defenderId)) continue
+
+            latched = latched.updateEntity(attackerId) { container ->
+                container.with(attacking.copy(defenderRelationshipInvalidated = true))
+            }
+        }
+        return latched
+    }
+
+    private fun isCurrentPlaneswalkerRecipient(
+        state: GameState,
+        projected: ProjectedState,
+        attacking: AttackingComponent,
+        targetId: EntityId,
+    ): Boolean {
+        if (targetId !in state.getBattlefield() || !projected.isPlaneswalker(targetId)) return false
+        if (!sameBattlefieldObject(state, attacking, targetId)) return false
+        val controller = projected.getController(targetId) ?: return false
+        if (controller !in state.activePlayers) return false
+        return attacking.defenderControllerAtDeclaration == controller
+    }
+
+    private fun isCurrentBattleRecipient(
+        state: GameState,
+        projected: ProjectedState,
+        attacking: AttackingComponent,
+        targetId: EntityId,
+    ): Boolean {
+        if (targetId !in state.getBattlefield() || !projected.isBattle(targetId)) return false
+        if (!sameBattlefieldObject(state, attacking, targetId)) return false
+        val controller = projected.getController(targetId) ?: return false
+        val protector = com.wingedsheep.engine.mechanics.battle.Battles.protectorOf(state, targetId)
+            ?: return false
+        if (controller !in state.activePlayers || protector !in state.activePlayers) return false
+        return attacking.defenderControllerAtDeclaration == controller &&
+            attacking.defenderProtectorAtDeclaration == protector
+    }
+
+    private fun sameBattlefieldObject(
+        state: GameState,
+        attacking: AttackingComponent,
+        targetId: EntityId,
+    ): Boolean {
+        val declaredTimestamp = attacking.defenderBattlefieldObjectTimestampAtDeclaration ?: return true
+        return state.getEntity(targetId)
+            ?.get<BattlefieldEntryTimestampComponent>()
+            ?.timestamp == declaredTimestamp
+    }
+
+    /**
      * The player defending against an attack aimed at [defenderId]: a player defends as
      * themselves, a planeswalker defends on behalf of its controller (CR 508.5), and a **battle
-     * defends on behalf of its protector, not its controller** (CR 310.8d — for a battle being
+     * defends on behalf of its protector, not its controller** (CR 310.9d — for a battle being
      * attacked, every rule and effect that refers to the defending player means its protector).
      * That asymmetry is the whole point of a Siege: its controller attacks it while an opponent
      * defends it.
      */
-    fun defendingPlayerOf(state: GameState, defenderId: EntityId): EntityId {
+    fun defendingPlayerOf(state: GameState, defenderId: EntityId): EntityId? {
         if (defenderId in state.turnOrder) return defenderId
         com.wingedsheep.engine.mechanics.battle.Battles.protectorOf(state, defenderId)
+            ?.takeIf { it in state.turnOrder }
             ?.let { return it }
-        return state.getEntity(defenderId)?.get<ControllerComponent>()?.playerId ?: defenderId
+        state.projectedState.getController(defenderId)
+            ?.takeIf { it in state.turnOrder }
+            ?.let { return it }
+        return state.getEntity(defenderId)
+            ?.get<ControllerComponent>()
+            ?.playerId
+            ?.takeIf { it in state.turnOrder }
+    }
+
+    /**
+     * Resolve the defending player from the attack declaration, preserving CR 508.5's historical
+     * controller/protector relationship after a planeswalker/battle is removed from combat.
+     */
+    fun defendingPlayerOf(state: GameState, attacking: AttackingComponent): EntityId {
+        return when (attacking.defenderKindAtDeclaration) {
+            AttackedDefenderKind.PLAYER -> attacking.defenderId
+            AttackedDefenderKind.PLANESWALKER ->
+                attacking.defenderControllerAtDeclaration
+                    ?: defendingPlayerOf(state, attacking.defenderId)
+                    ?: attacking.defenderId
+            AttackedDefenderKind.BATTLE ->
+                attacking.defenderProtectorAtDeclaration
+                    ?: defendingPlayerOf(state, attacking.defenderId)
+                    ?: attacking.defenderId
+            null -> defendingPlayerOf(state, attacking.defenderId) ?: attacking.defenderId
+        }
     }
 
     /** Every distinct defending player in the current combat: anyone who has a creature attacking
@@ -40,7 +220,7 @@ object CombatDefenders {
      *  (`sharedTurnTeam` is a singleton there), so a teammate can't block for you. */
     fun defendingPlayers(state: GameState): Set<EntityId> =
         state.getBattlefield()
-            .mapNotNull { state.getEntity(it)?.get<AttackingComponent>()?.defenderId }
+            .mapNotNull { state.getEntity(it)?.get<AttackingComponent>() }
             .map { defendingPlayerOf(state, it) }
             .flatMap { state.sharedTurnTeam(it) }
             .toSet()
@@ -80,9 +260,9 @@ object CombatDefenders {
      * practice this is the defenders in turn order after the active player, wrapping around.
      */
     fun defendingPlayersInApnapOrder(state: GameState): List<EntityId> {
-        val defenders = defendingPlayers(state)
+        val defenders = defendingPlayers(state).filter { it in state.activePlayers }.toSet()
         if (defenders.isEmpty()) return emptyList()
-        val order = state.turnOrder
+        val order = state.activePlayers
         if (order.isEmpty()) return defenders.toList()
         val startIdx = state.activePlayerId?.let { order.indexOf(it) }?.coerceAtLeast(0) ?: 0
         return (order.indices)

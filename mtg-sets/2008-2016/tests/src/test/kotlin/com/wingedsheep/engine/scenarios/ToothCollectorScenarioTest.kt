@@ -25,7 +25,7 @@ class ToothCollectorScenarioTest : ScenarioTestBase() {
                 .build()
 
             val bears = game.findPermanent("Grizzly Bears")!!
-            game.castSpell(1, "Tooth Collector", bears).error shouldBe null
+            game.castSpell(1, "Tooth Collector").error shouldBe null
             game.resolveStack()
             if (game.state.pendingDecision != null) {
                 game.selectTargets(listOf(bears))

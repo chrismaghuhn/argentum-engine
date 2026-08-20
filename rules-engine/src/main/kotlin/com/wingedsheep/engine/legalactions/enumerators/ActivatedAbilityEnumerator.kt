@@ -16,6 +16,7 @@ import com.wingedsheep.engine.state.components.identity.EmblemActivatedAbilityCo
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.CounterType
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.*
@@ -149,10 +150,13 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 } else {
                     ability.cost
                 }
+                val equipPaymentChoices = context.castPermissionUtils.equipPaymentChoices(state, playerId, ability)
+                for (equipPaymentChoice in equipPaymentChoices) {
                 // Apply ability-specific generic cost reduction so payability is checked against
                 // the locked-in cost (e.g., The Dominion Bracelet — "{X} less, where X is this
-                // creature's power"). Then apply Forge Anew's free-first-equip discount, so the
-                // displayed cost and affordability reflect the {0} the player will actually pay.
+                // creature's power"). Then apply the explicitly selected Forge Anew
+                // free-first-equip mode, so the displayed cost and affordability reflect the
+                // payment mode the controller submitted.
                 val effectiveCost = context.castPermissionUtils.relaxAbilityCostColorsIfAny(
                     state, entityId,
                     context.castPermissionUtils.applyFreeFirstEquipDiscount(
@@ -163,9 +167,12 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             ),
                             ability, state, playerId, abilitySourceId = entityId
                         ),
-                        ability, state, playerId
+                        ability, state, playerId, equipPaymentChoice
                     )
                 )
+                val equipAlternativePayment = equipPaymentChoice?.let {
+                    AlternativePaymentChoice(equipPayment = it)
+                }
 
                 // Description shown to the player. When the effective cost differs from the printed
                 // cost — a generic cost reduction (Starport Security "{3}{W}…" → "{1}{W}…"), or a
@@ -208,6 +215,14 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 var collectEvidenceInfo: AdditionalCostData? = null
                 var costAffordable = true
 
+                // PayLife leaves are one mandatory total, not independent greyed-out choices.
+                // Resolve that total once so the solver can combine it with the exact mana-source
+                // activation costs it selects for this same activation.
+                val resolvedPayLifeTotal = context.costUtils.resolvePayLifeCostTotal(
+                    state, playerId, entityId, effectiveCost
+                ) ?: continue
+                if (state.lifeTotal(playerId) < resolvedPayLifeTotal) continue
+
                 when (effectiveCost) {
                     is AbilityCost.Tap -> {
                         if (container.has<TappedComponent>()) continue
@@ -240,17 +255,36 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     }
                     is AbilityCost.Atom -> when (val atom = effectiveCost.atom) {
                         is CostAtom.Mana -> {
-                            if (!context.manaSolver.canPay(state, playerId, atom.cost, precomputedSources = context.availableManaSources, spellContext = abilityContext)) {
+                            val canPayManaWithLife = context.manaSolver.canPay(
+                                    state,
+                                    playerId,
+                                    atom.cost,
+                                    precomputedSources = context.availableManaSources,
+                                    spellContext = abilityContext,
+                                    additionalPayLife = resolvedPayLifeTotal,
+                                )
+                            if (!canPayManaWithLife) {
+                                // A normal mana shortfall remains a greyed-out action, but a
+                                // dynamic-life total that only fails when the caller's PayLife is
+                                // combined with the selected source is not a legal action at all.
+                                if (resolvedPayLifeTotal > 0 && context.manaSolver.canPay(
+                                        state,
+                                        playerId,
+                                        atom.cost,
+                                        precomputedSources = context.availableManaSources,
+                                        spellContext = abilityContext,
+                                    )
+                                ) continue
                                 // If the ability has convoke or waterbend, check if the tap-to-pay
                                 // helpers close the affordability gap.
-                                val affordableViaConvoke = ability.hasConvoke &&
+                                val affordableViaConvoke = resolvedPayLifeTotal == 0 && ability.hasConvoke &&
                                     context.costUtils.canAffordWithConvoke(
                                         state, playerId, atom.cost,
                                         context.costUtils.findConvokeCreatures(state, playerId),
                                         precomputedSources = context.availableManaSources,
                                         spellContext = abilityContext
                                     )
-                                val affordableViaWaterbend = ability.hasWaterbend &&
+                                val affordableViaWaterbend = resolvedPayLifeTotal == 0 && ability.hasWaterbend &&
                                     context.costUtils.canAffordWithTapForGeneric(
                                         state, playerId, atom.cost,
                                         context.costUtils.findTapForGenericPermanents(state, playerId, TapForGeneric.WATERBEND),
@@ -315,11 +349,9 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                 .CollectEvidenceResolver.costInfo(state, playerId, atom.amount)
                                 ?: continue
                         }
-                        // Pay-life / reveal carry no enumeration-time selection or affordability gate
-                        // here (life payability is validated at payment time, matching the prior
-                        // fall-through behavior for these costs). Putting counters on the source
-                        // costs nothing the player must have, so it never gates enumeration either.
-                        is CostAtom.PayLife, is CostAtom.RevealFromHand, is CostAtom.PutCountersOnSelf -> {}
+                        // PayLife was resolved as the complete cost total above.
+                        is CostAtom.PayLife -> {}
+                        is CostAtom.RevealFromHand, is CostAtom.PutCountersOnSelf -> {}
                         // CR 701.17b — a mill cost is unpayable when the library holds fewer cards.
                         // No selection: the milled cards are the top of the library.
                         is CostAtom.Mill -> {
@@ -376,6 +408,49 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         // If composite cost includes Tap, exclude the source from mana solving
                         val hasTapCost = compositeCost.costs.any { it is AbilityCost.Tap }
                         val excludeFromMana = if (hasTapCost) setOf(entityId) else emptySet()
+
+                        // Check every mana atom as one mana payment. In particular, the resolved
+                        // PayLife total is supplied once for the aggregate, never once per atom.
+                        val compositeManaCost = compositeCost.costs
+                            .mapNotNull { it.manaCostOrNull }
+                            .fold(ManaCost.ZERO) { total, manaCost -> total + manaCost }
+                        val compositeManaPayableWithLife = compositeManaCost.cmc == 0 || context.manaSolver.canPay(
+                            state,
+                            playerId,
+                            compositeManaCost,
+                            excludeSources = excludeFromMana,
+                            precomputedSources = context.availableManaSources,
+                            spellContext = abilityContext,
+                            additionalPayLife = resolvedPayLifeTotal,
+                        )
+                        if (compositeManaCost.cmc > 0 && !compositeManaPayableWithLife) {
+                            if (resolvedPayLifeTotal > 0 && context.manaSolver.canPay(
+                                    state,
+                                    playerId,
+                                    compositeManaCost,
+                                    excludeSources = excludeFromMana,
+                                    precomputedSources = context.availableManaSources,
+                                    spellContext = abilityContext,
+                                )
+                            ) continue
+                            val affordableViaConvoke = resolvedPayLifeTotal == 0 && ability.hasConvoke &&
+                                context.costUtils.canAffordWithConvoke(
+                                    state, playerId, compositeManaCost,
+                                    context.costUtils.findConvokeCreatures(state, playerId),
+                                    precomputedSources = context.availableManaSources,
+                                    spellContext = abilityContext
+                                )
+                            val affordableViaWaterbend = resolvedPayLifeTotal == 0 && ability.hasWaterbend &&
+                                context.costUtils.canAffordWithTapForGeneric(
+                                    state, playerId, compositeManaCost,
+                                    context.costUtils.findTapForGenericPermanents(state, playerId, TapForGeneric.WATERBEND),
+                                    precomputedSources = context.availableManaSources,
+                                    spellContext = abilityContext
+                                )
+                            if (!affordableViaConvoke && !affordableViaWaterbend) {
+                                costCanBePaid = false
+                            }
+                        }
                         for (subCost in compositeCost.costs) {
                             when (subCost) {
                                 is AbilityCost.Tap -> {
@@ -408,29 +483,9 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                     }
                                 }
                                 is AbilityCost.Atom -> when (val atom = subCost.atom) {
-                                    is CostAtom.Mana -> {
-                                        if (!context.manaSolver.canPay(state, playerId, atom.cost, excludeSources = excludeFromMana, precomputedSources = context.availableManaSources, spellContext = abilityContext)) {
-                                            // If the ability has convoke or waterbend, check with the tap-to-pay helpers.
-                                            val affordableViaConvoke = ability.hasConvoke &&
-                                                context.costUtils.canAffordWithConvoke(
-                                                    state, playerId, atom.cost,
-                                                    context.costUtils.findConvokeCreatures(state, playerId),
-                                                    precomputedSources = context.availableManaSources,
-                                                    spellContext = abilityContext
-                                                )
-                                            val affordableViaWaterbend = ability.hasWaterbend &&
-                                                context.costUtils.canAffordWithTapForGeneric(
-                                                    state, playerId, atom.cost,
-                                                    context.costUtils.findTapForGenericPermanents(state, playerId, TapForGeneric.WATERBEND),
-                                                    precomputedSources = context.availableManaSources,
-                                                    spellContext = abilityContext
-                                                )
-                                            if (!affordableViaConvoke && !affordableViaWaterbend) {
-                                                costCanBePaid = false
-                                                break
-                                            }
-                                        }
-                                    }
+                                    // The aggregate mana check above owns all mana atoms and the
+                                    // complete life total. Do not re-check this atom independently.
+                                    is CostAtom.Mana -> {}
                                     is CostAtom.Sacrifice -> {
                                         sacrificeCost = atom
                                         sacrificeTargets = context.costUtils.findAbilitySacrificeTargets(
@@ -510,9 +565,9 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                                             discardTargets = targets
                                         }
                                     }
-                                    // Pay-life / reveal / put-counters-on-self carry no enumeration-time
-                                    // gate here (matching the prior else fall-through for these sub-costs).
-                                    is CostAtom.PayLife, is CostAtom.RevealFromHand,
+                                    // PayLife was resolved as the complete cost total above.
+                                    is CostAtom.PayLife -> {}
+                                    is CostAtom.RevealFromHand,
                                     is CostAtom.PutCountersOnSelf -> {}
                                     // CR 701.17b — a mill cost is unpayable when the library holds
                                     // fewer cards. No selection: the milled cards are the top.
@@ -697,7 +752,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
                         description = displayDescription,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         affordable = false,
                         manaCostString = abilityManaCostString
                     ))
@@ -831,7 +886,13 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 // down once convoke is applied, and the engine re-solves at payment time
                 // with the non-chosen sources excluded (see ActivateAbilityHandler.execute).
                 val abilityAutoTapPreview = if (context.skipAutoTapPreview || abilityManaCost == null || abilityHasXCost) null
-                else context.manaSolver.solve(state, playerId, abilityManaCost, precomputedSources = context.availableManaSources)?.sources?.map { it.entityId }
+                else context.manaSolver.solve(
+                    state,
+                    playerId,
+                    abilityManaCost,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = resolvedPayLifeTotal,
+                )?.sources?.map { it.entityId }
 
                 // Compute maxRepeatableActivations for eligible self-targeting abilities.
                 // Eligible: pure mana cost, no X, no once-per-turn restriction, not a class level-up,
@@ -863,7 +924,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             val mid = (lo + hi + 1) / 2
                             val affordable = context.manaSolver.canPay(
                                 state, playerId, abilityManaCost * mid,
-                                precomputedSources = context.availableManaSources
+                                precomputedSources = context.availableManaSources,
+                                additionalPayLife = resolvedPayLifeTotal * mid,
                             )
                             if (affordable) lo = mid else hi = mid - 1
                         }
@@ -906,7 +968,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id),
+                            action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                             additionalCostInfo = costInfo,
                             manaCostString = abilityManaCostString
                         ))
@@ -922,7 +984,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget)),
+                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget), alternativePayment = equipAlternativePayment),
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
                             maxAffordableX = abilityMaxAffordableX,
@@ -941,7 +1003,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget)),
+                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget), alternativePayment = equipAlternativePayment),
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
                             maxAffordableX = abilityMaxAffordableX,
@@ -970,7 +1032,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id),
+                            action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                             validTargets = firstReqInfo.validTargets,
                             requiresTargets = true,
                             targetCount = firstReqInfo.maxTargets,
@@ -1001,7 +1063,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
                         description = displayDescription,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         additionalCostInfo = costInfo,
                         hasXCost = abilityHasXCost,
                         maxAffordableX = abilityMaxAffordableX,
@@ -1038,6 +1100,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             )
                         )
                     }
+                }
                 }
             }
         }
@@ -1079,16 +1142,37 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     ability.cost
                 }
 
-                // Check cost payability (Free cost always passes)
+                val equipPaymentChoices = context.castPermissionUtils.equipPaymentChoices(state, playerId, ability)
                 val anyPlayerAbilityContext = com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext(cardComponent, projected, entityId, ability)
-                val anyPlayerManaCostString = when (effectiveCost) {
+                for (equipPaymentChoice in equipPaymentChoices) {
+                val modeCost = context.castPermissionUtils.applyFreeFirstEquipDiscount(
+                    effectiveCost,
+                    ability,
+                    state,
+                    playerId,
+                    equipPaymentChoice
+                )
+                val equipAlternativePayment = equipPaymentChoice?.let {
+                    AlternativePaymentChoice(equipPayment = it)
+                }
+                val displayDescription =
+                    if (modeCost != effectiveCost && ability.descriptionOverride == null) {
+                        ability.describeWithCost(modeCost)
+                    } else {
+                        ability.description
+                    }
+
+                // Check cost payability (Free cost always passes)
+                val anyPlayerManaCostString = when (modeCost) {
                     is AbilityCost.Free -> null
                     is AbilityCost.Atom -> {
                         // Only mana costs on opponents' permanents are supported ("any player may
                         // activate"); other atoms (sacrifice/discard/…) fall through to continue.
-                        val mana = effectiveCost.manaCostOrNull ?: continue
+                        val mana = modeCost.manaCostOrNull ?: continue
                         if (!context.manaSolver.canPay(state, playerId, mana, precomputedSources = context.availableManaSources, spellContext = anyPlayerAbilityContext)) continue
-                        mana.toString()
+                        mana.toString().let { rendered ->
+                            if (equipPaymentChoice != null && rendered.isEmpty()) "{0}" else rendered
+                        }
                     }
                     else -> continue // Other costs on opponent's permanents not yet supported
                 }
@@ -1118,8 +1202,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     val firstReqInfo = targetReqInfos.first()
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
-                        description = ability.description,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        description = displayDescription,
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         validTargets = firstReqInfo.validTargets,
                         requiresTargets = true,
                         targetCount = firstReqInfo.maxTargets,
@@ -1131,10 +1215,11 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 } else {
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
-                        description = ability.description,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        description = displayDescription,
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         manaCostString = anyPlayerManaCostString
                     ))
+                }
                 }
             }
         }

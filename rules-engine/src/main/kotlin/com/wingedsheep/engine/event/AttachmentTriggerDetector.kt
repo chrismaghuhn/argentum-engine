@@ -56,13 +56,14 @@ class AttachmentTriggerDetector(
                     if (isZoneChange && ability.trigger is EventPattern.ZoneChangeEvent &&
                         !entry.cardComponent.typeLine.isEquipment) continue
                     if (matchesAttachedTrigger(ability.trigger, event, entityId, entry.controllerId, state)) {
+                        val triggerContext = buildTriggerContext(event, entityId, ability.trigger) ?: continue
                         triggers.add(
                             PendingTrigger(
                                 ability = ability,
                                 sourceId = entry.entityId,
                                 sourceName = entry.cardComponent.name,
                                 controllerId = entry.controllerId,
-                                triggerContext = buildTriggerContext(event, entityId)
+                                triggerContext = triggerContext
                             )
                         )
                     }
@@ -175,11 +176,14 @@ class AttachmentTriggerDetector(
     ): Boolean {
         return when (trigger) {
             is EventPattern.DamageReceivedEvent -> {
-                event is DamageDealtEvent && event.targetId == attachedEntityId
+                event is DamageDealtEvent &&
+                    event.targetId == attachedEntityId &&
+                    matcher.matchesDamageRecipientIdentity(event) &&
+                    matcher.matchesDamageReceivedSource(trigger.source, event)
             }
             is EventPattern.DealsDamageEvent -> {
                 event is DamageDealtEvent &&
-                    event.sourceId == attachedEntityId &&
+                    matcher.matchesAttachedDamageSourceIdentity(attachedEntityId, event, state) &&
                     matcher.matchesDealsDamageTrigger(trigger, event, state, auraControllerId)
             }
             is EventPattern.AttackEvent -> {
@@ -244,10 +248,16 @@ class AttachmentTriggerDetector(
      */
     private fun buildTriggerContext(
         event: EngineGameEvent,
-        attachedEntityId: com.wingedsheep.sdk.model.EntityId
-    ): TriggerContext {
-        return when (event) {
-            is DamageDealtEvent -> TriggerContext.fromEvent(event)
+        attachedEntityId: com.wingedsheep.sdk.model.EntityId,
+        trigger: EventPattern,
+    ): TriggerContext? {
+        return when {
+            event is DamageDealtEvent && trigger is EventPattern.DamageReceivedEvent &&
+                trigger.source != com.wingedsheep.sdk.scripting.events.SourceFilter.Any ->
+                TriggerContext.fromSourceFilteredDamageEvent(event)
+            event is DamageDealtEvent && trigger is EventPattern.DealsDamageEvent &&
+                trigger.sourceFilter != null -> TriggerContext.fromSourceFilteredDamageEvent(event)
+            event is DamageDealtEvent -> TriggerContext.fromEvent(event)
             else -> TriggerContext(triggeringEntityId = attachedEntityId)
         }
     }

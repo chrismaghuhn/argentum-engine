@@ -706,7 +706,8 @@ class WardCounterEffectExecutor(
                     producesColors = source.producesColors,
                     producesColorless = source.producesColorless,
                     requiresSacrifice = source.requiresSacrifice,
-                    requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null
+                    requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                    manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id
                 )
             }
 

@@ -7,8 +7,12 @@ import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 
 /**
  * §3.2 "one cost language": [CostAtom] is the single shared vocabulary of payable things, carried by
@@ -29,6 +33,7 @@ class CostAtomSerializationTest : FunSpec({
     val representatives: List<CostAtom> = listOf(
         CostAtom.Mana(ManaCost.parse("{2}{U}")),
         CostAtom.PayLife(3),
+        CostAtom.PayLife(DynamicAmount.CommanderColorIdentityCount),
         CostAtom.Sacrifice(GameObjectFilter.Creature, count = 2),
         CostAtom.Discard(count = 1, filter = GameObjectFilter.Any, random = true),
         CostAtom.ExileFrom(Zone.GRAVEYARD, GameObjectFilter.Creature, count = 3),
@@ -83,5 +88,18 @@ class CostAtomSerializationTest : FunSpec({
         CostAtom.Sacrifice(count = 2).selectionCount shouldBe 2
         CostAtom.ExileFrom(Zone.GRAVEYARD, count = 3).selectionCount shouldBe 3
         CostAtom.TapPermanents(count = 1).selectionCount shouldBe 1
+    }
+
+    test("PayLife keeps fixed amounts compact while dynamic amounts retain their type") {
+        val fixed = json.encodeToJsonElement(CostAtom.serializer(), CostAtom.PayLife(3)).jsonObject
+        fixed["type"]!!.jsonPrimitive.content shouldBe "AtomPayLife"
+        fixed["amount"] shouldBe JsonPrimitive(3)
+
+        val dynamic = json.encodeToJsonElement(
+            CostAtom.serializer(),
+            CostAtom.PayLife(DynamicAmount.CommanderColorIdentityCount)
+        ).jsonObject
+        dynamic["amount"]!!.jsonObject["type"]!!.jsonPrimitive.content shouldBe
+            "CommanderColorIdentityCount"
     }
 })

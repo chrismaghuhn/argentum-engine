@@ -24,6 +24,9 @@ import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.identity.RoomComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.sdk.core.CounterType
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
@@ -137,6 +140,12 @@ class DynamicAmountEvaluator(
             // the battlefield, so a dies trigger still reads it after the entity is gone.
             is DynamicAmount.LastKnownDamageDealtToSource ->
                 context.triggerLastKnownDamageDealtByPlayers?.values?.sum() ?: 0
+
+            // The generic evaluator has no authoritative card registry or commander context.
+            // Cost payment callers resolve this leaf through CostAmountResolver first; direct
+            // generic callers fail closed rather than throwing or inventing a commander identity.
+            DynamicAmount.CommanderColorIdentityCount ->
+                0
 
             // The {X} this object was cast with, read off the current object regardless of zone.
             // Reads, in order: the durable CastChoicesComponent on the battlefield permanent (and
@@ -380,7 +389,17 @@ class DynamicAmountEvaluator(
 
             // Composable entity property — replaces SourcePower, TargetPower, CountersOnSelf, etc.
             is DynamicAmount.EntityProperty -> {
-                val entityId = TargetResolutionUtils.resolveEntityReference(amount.entity, context, state)
+                // Damage-role properties need a symbolic id even after the original permanent has
+                // left, so the LKI branch below can read its captured snapshot. The shared target
+                // resolver intentionally returns null for a stamped same-id replacement; keep
+                // this property-only path explicit rather than weakening that object-safety gate.
+                val entityId = when (amount.entity) {
+                    EntityReference.DamageSource -> context.damageSourceEntityId
+                        ?.takeIf { context.damageSourceLastKnownSnapshot.stampedFor(it) != null }
+                    EntityReference.DamageRecipient -> context.damageRecipientEntityId
+                        ?.takeIf { context.damageRecipientLastKnownSnapshot.stampedFor(it) != null }
+                    else -> TargetResolutionUtils.resolveEntityReference(amount.entity, context, state)
+                }
                 // Enchanted-creature power reads use last-known information when the source aura
                 // has detached: the enchanted creature (and the aura) can leave the battlefield
                 // before the ability resolves — e.g. removed in response to the aura's ETB
@@ -402,14 +421,26 @@ class DynamicAmountEvaluator(
                 // projected P/T is null, so the final resolveNumericProperty yields base
                 // characteristics anyway — this replaces the former per-reference
                 // `useProjected = false` branches (Ghitu Fire-Eater, Heart-Piercer Manticore, …).
-                if (lkiPolicyFor(amount.entity) == LkiPolicy.LIVE_THEN_LKI &&
-                    entityId !in state.getBattlefield()
-                ) {
-                    val snapshot = context.lkiSnapshotFor(amount.entity, entityId)
-                    when (amount.numericProperty) {
-                        is EntityNumericProperty.Power -> snapshot?.power?.let { return it }
-                        is EntityNumericProperty.Toughness -> snapshot?.toughness?.let { return it }
-                        else -> { /* fall through to base characteristics */ }
+                if (lkiPolicyFor(amount.entity) == LkiPolicy.LIVE_THEN_LKI) {
+                    val snapshot = context.lkiSnapshotFor(amount.entity, entityId, state)
+                    snapshot?.let { resolveSnapshotNumericProperty(it, amount.numericProperty) }
+                        ?.let { return it }
+                    // DamageSource/DamageRecipient are event-time references. If their captured
+                    // snapshot is absent, or cannot prove that the current id is the same
+                    // battlefield object, never read a newer same-id object.
+                    if (amount.entity == EntityReference.DamageSource ||
+                        amount.entity == EntityReference.DamageRecipient
+                    ) {
+                        val captured = when (amount.entity) {
+                            EntityReference.DamageSource -> context.damageSourceLastKnownSnapshot
+                                .stampedFor(entityId)
+                            EntityReference.DamageRecipient -> context.damageRecipientLastKnownSnapshot
+                                .stampedFor(entityId)
+                            else -> null
+                        }
+                        if (captured == null ||
+                            !state.isCapturedBattlefieldObjectLive(entityId, captured)
+                        ) return 0
                     }
                 }
                 resolveNumericProperty(state, entityId, amount.numericProperty, context, useProjected = true, explicitProjected = projectedState)
@@ -1033,7 +1064,8 @@ class DynamicAmountEvaluator(
         }
     }
 
-    private fun resolveUnifiedPlayerIds(
+    /** Shared player-scope resolution for amount consumers that need the same rebinding rules. */
+    internal fun resolveUnifiedPlayerIds(
         state: GameState,
         player: Player,
         context: EffectContext
@@ -1139,6 +1171,20 @@ class DynamicAmountEvaluator(
     // =========================================================================
     // Entity Numeric Property Resolution
     // =========================================================================
+
+    /** Numeric properties that the generic [EntitySnapshot] can retain after a damage recipient or
+     * source leaves the battlefield. Unsupported properties deliberately fall through to the
+     * ordinary entity resolver rather than guessing from an unrelated component. */
+    private fun resolveSnapshotNumericProperty(
+        snapshot: EntitySnapshot,
+        property: EntityNumericProperty,
+    ): Int? = when (property) {
+        EntityNumericProperty.Power -> snapshot.power
+        EntityNumericProperty.Toughness -> snapshot.toughness
+        EntityNumericProperty.SubtypeCount -> snapshot.subtypes.size
+        EntityNumericProperty.ColorCount -> snapshot.colors.size
+        else -> null
+    }
 
     /**
      * Resolve a numeric property from an entity. Unified handler for [DynamicAmount.EntityProperty].

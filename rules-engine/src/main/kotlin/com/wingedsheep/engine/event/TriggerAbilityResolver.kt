@@ -19,6 +19,7 @@ import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.identity.RoomComponent
 import com.wingedsheep.engine.state.components.player.TheRingComponent
 import com.wingedsheep.engine.state.components.identity.TextReplacementComponent
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
@@ -44,6 +45,32 @@ class TriggerAbilityResolver(
     private val abilityRegistry: AbilityRegistry
 ) {
     private val predicateEvaluator = PredicateEvaluator()
+
+    /**
+     * Resolve intrinsic triggered abilities from an event-time permanent snapshot.
+     *
+     * Damage events can outlive both the source and recipient, and an engine entity id can be
+     * reused by a later battlefield object. In that situation the live entity is not an ability
+     * witness: only the definition captured in [snapshot] identifies which intrinsic abilities
+     * existed when the event happened. Snapshot-only resolution intentionally omits state-backed
+     * grants (and class/Room state) that cannot be reconstructed from the captured vocabulary;
+     * returning a newer object's grants would be less safe than failing closed.
+     */
+    fun getTriggeredAbilitiesFromSnapshot(
+        entityId: EntityId,
+        snapshot: EntitySnapshot,
+    ): List<TriggeredAbility> {
+        if (snapshot.entityId != entityId || snapshot.wasFaceDown || snapshot.lostAllAbilities) {
+            return emptyList()
+        }
+        val cardDefinitionId = snapshot.cardDefinitionId ?: return emptyList()
+        val registryAbilities = abilityRegistry.getTriggeredAbilities(entityId, cardDefinitionId)
+        if (registryAbilities.isNotEmpty()) return registryAbilities
+        return cardRegistry.getCard(cardDefinitionId)
+            ?.script
+            ?.effectiveTriggeredAbilities(null)
+            ?: emptyList()
+    }
 
     /**
      * Get triggered abilities for a card, checking both the AbilityRegistry

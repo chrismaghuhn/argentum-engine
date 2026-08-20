@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -241,6 +242,10 @@ class DeathTriggerTest : FunSpec({
             tokenComponent,
             TokenComponent,
             ControllerComponent(activePlayer),
+            // Direct fixture insertion bypasses PermanentEntryTracker; provide the same explicit
+            // incarnation evidence that a real battlefield object carries so target revalidation
+            // can fail closed when evidence is absent.
+            BattlefieldEntryTimestampComponent(1L),
             SummoningSicknessComponent
         )
         driver.replaceState(

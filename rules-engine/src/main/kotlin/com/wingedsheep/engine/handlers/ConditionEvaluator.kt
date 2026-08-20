@@ -8,6 +8,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.battlefield.CastFromHandComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.EnteredThisTurnComponent
@@ -34,6 +35,7 @@ import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.identity.RingBearerComponent
+import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.player.InAdditionalCombatPhaseComponent
 import com.wingedsheep.engine.state.components.player.InAdditionalEndStepComponent
 import com.wingedsheep.engine.state.components.player.LandDropsComponent
@@ -575,6 +577,8 @@ class ConditionEvaluator(
                 ifResolution { (it.triggerMinusOneMinusOneCounterCount ?: 0) > 0 }
             is TriggeringEntityHadCounters ->
                 ifResolution { (it.triggerTotalCounterCount ?: 0) > 0 }
+            is com.wingedsheep.sdk.scripting.conditions.TriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard ->
+                evaluateTriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard(state, ctx)
             is com.wingedsheep.sdk.scripting.conditions.TriggeringEntityHadSubtype ->
                 // Subtype names are captured in projected form (e.g. "Demon"); compare
                 // case-insensitively so card authors can pass either Subtype.X.value or a literal.
@@ -761,6 +765,82 @@ class ConditionEvaluator(
             } ?: false
         else -> false
     }
+
+    /**
+     * Guardian Project's name uniqueness clause. The triggering entity's projected name and
+     * battlefield incarnation are frozen in the trigger context; "you" and every other candidate
+     * are read live from the resolution-time state. The intervening-if is checked at trigger and
+     * resolution (CR 603.4), while object-specific information after a zone change follows LKI
+     * (CR 608.2h).
+     */
+    private fun evaluateTriggeringEntityNameNotSharedWithControlledCreatureOrGraveyard(
+        state: GameState,
+        ctx: ConditionEvaluationContext,
+    ): Boolean {
+        val resolution = ctx as? Resolution ?: return false
+        val triggeringId = resolution.effectContext.triggeringEntityId ?: return false
+        val controllerId = resolution.effectContext.controllerId
+        val projected = ctx.projectedStateFor(state)
+        val triggeringEntryTimestamp =
+            resolution.effectContext.triggeringEntityEntryTimestamp ?: return false
+        if (!resolution.effectContext.triggeringEntityNameKnown) return false
+        val triggeringName = resolution.effectContext.triggeringEntityName
+        // A live entity with the triggering id must still be the captured battlefield
+        // incarnation. Treat a missing or different entry timestamp as unknown rather than
+        // reclassifying the replacement as an "other" creature. Once the object has left the
+        // battlefield, the frozen occurrence metadata below is the appropriate LKI source.
+        if (triggeringId in state.getBattlefield()) {
+            val currentEntryTimestamp = battlefieldEntryTimestamp(state, triggeringId) ?: return false
+            if (currentEntryTimestamp != triggeringEntryTimestamp) return false
+        }
+        // CR 201.2a: objects with no name do not share a name, including with another nameless
+        // object. The occurrence identity is still required above so unknown trigger data cannot
+        // turn a missing BattlefieldEntryTimestamp into a concrete identity.
+        if (triggeringName == null) return true
+
+        val sharedOnBattlefield = state.getBattlefield().any { entityId ->
+            val candidateEntryTimestamp = if (entityId == triggeringId) {
+                battlefieldEntryTimestamp(state, entityId)
+            } else {
+                null
+            }
+            val isTriggeringObject = entityId == triggeringId &&
+                candidateEntryTimestamp == triggeringEntryTimestamp
+            !isTriggeringObject &&
+                projected.getController(entityId) == controllerId &&
+                projected.isCreature(entityId) &&
+                projectedEntityName(state, projected, entityId) == triggeringName
+        }
+        if (sharedOnBattlefield) return false
+
+        val predicateEvaluator = PredicateEvaluator()
+        val sharedInGraveyard = state.getZone(controllerId, Zone.GRAVEYARD).any { entityId ->
+            state.getEntity(entityId)?.has<TokenComponent>() != true &&
+                predicateEvaluator.matches(
+                    state,
+                    projected,
+                    entityId,
+                    GameObjectFilter.Creature,
+                    PredicateContext(controllerId = controllerId),
+                ) &&
+                projectedEntityName(state, projected, entityId) == triggeringName
+        }
+        return !sharedInGraveyard
+    }
+
+    private fun projectedEntityName(
+        state: GameState,
+        projected: ProjectedState,
+        entityId: EntityId,
+    ): String? = projected.getName(entityId)
+        ?: if (projected.isFaceDown(entityId)) {
+            null
+        } else {
+            state.getEntity(entityId)?.get<CardComponent>()?.name
+        }
+
+    private fun battlefieldEntryTimestamp(state: GameState, entityId: EntityId): Long? =
+        state.getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp
 
     /**
      * Match the card discarded to pay this spell's additional discard cost

@@ -48,6 +48,7 @@ import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.actions.ActionHandler
@@ -219,6 +220,9 @@ class CastSpellHandler(
         }
         if (state.priorityPlayerId != action.playerId) {
             return "You don't have priority"
+        }
+        if (action.alternativePayment?.equipPayment != null) {
+            return "Equip payment mode is only valid for equip abilities"
         }
 
         val container = state.getEntity(action.cardId)
@@ -623,6 +627,12 @@ class CastSpellHandler(
             }
         }
 
+        // All additional-cost sources above are one CR 601.2f total. Validate their selected
+        // PayLife leaves together as well as validating each source's non-life selections, so a
+        // printed cost plus a granted/runtime cost cannot each pass independently and then fail
+        // only after the cast has started.
+        validateCombinedAdditionalLifeCosts(state, action, cardDef)?.let { return it }
+
         // Validate Conspire optional additional cost (CR 702.78). Two untapped creatures the
         // caster controls, each sharing a color with the spell. The spell must have Conspire
         // either printed or granted (e.g., Raiding Schemes: "Each noncreature spell you cast
@@ -668,7 +678,24 @@ class CastSpellHandler(
         val playForFree = playForFreeFromComponent || action.useWithoutPayingManaCost
         val computedCost = computeTotalCastCost(state, action, cardDef, cardComponent, playForFree, hasCommanderCast)
             ?: return "No alternative casting cost available"
-        val paymentError = validatePayment(state, action, computedCost.cost, computedCost.paymentXValue)
+        val additionalLifeCostTotal = resolveAdditionalLifeCostTotal(
+            state = state,
+            costs = reduceCostAlternatives(
+                collectAdditionalCostsForCast(state, action, cardDef),
+                state,
+                action.playerId,
+                action.additionalCostPayment,
+                action.cardId,
+            ),
+            action = action,
+        ) ?: return "Cannot resolve life cost"
+        val paymentError = validatePayment(
+            state,
+            action,
+            computedCost.cost,
+            computedCost.paymentXValue,
+            additionalPayLife = additionalLifeCostTotal,
+        )
         if (paymentError != null) {
             return paymentError
         }
@@ -1165,7 +1192,7 @@ class CastSpellHandler(
         }
 
         // Account for Delve/Convoke reduction before validating payment
-        val costAfterAltPayment = if (action.alternativePayment != null && !action.alternativePayment.isEmpty && cardDef != null) {
+        val costAfterAltPayment = if (action.alternativePayment != null && action.alternativePayment.hasResourcePayment && cardDef != null) {
             alternativePaymentHandler.calculateReducedCost(
                 effectiveCost,
                 action.alternativePayment,
@@ -1217,8 +1244,18 @@ class CastSpellHandler(
         return ComputedCastCost(costAfterImprovise, paymentXValue)
     }
 
-    private fun validatePayment(state: GameState, action: CastSpell, cost: ManaCost, paymentXValue: Int = action.xValue ?: 0): String? {
+    private fun validatePayment(
+        state: GameState,
+        action: CastSpell,
+        cost: ManaCost,
+        paymentXValue: Int = action.xValue ?: 0,
+        additionalPayLife: Int = 0,
+    ): String? {
         val xValue = paymentXValue
+        if (additionalPayLife < 0) return "Cannot resolve life cost"
+        if (additionalPayLife > state.lifeTotal(action.playerId)) {
+            return "Not enough life to pay $additionalPayLife life"
+        }
 
         // Build spell context for conditional mana validation
         val cardComponent = state.getEntity(action.cardId)?.get<CardComponent>()
@@ -1252,7 +1289,16 @@ class CastSpellHandler(
 
         return when (action.paymentStrategy) {
             is PaymentStrategy.AutoPay -> {
-                if (!manaSolver.canPay(state, action.playerId, effectiveCost, xValue, spellContext = spellCtx, xManaRestriction = xManaRestriction)) {
+                if (!manaSolver.canPay(
+                        state,
+                        action.playerId,
+                        effectiveCost,
+                        xValue,
+                        spellContext = spellCtx,
+                        xManaRestriction = xManaRestriction,
+                        additionalPayLife = additionalPayLife,
+                    )
+                ) {
                     "Not enough mana to cast this spell"
                 } else null
             }
@@ -1314,7 +1360,17 @@ class CastSpellHandler(
                         .map { it.entityId }
                         .filter { it !in chosen }
                         .toSet()
-                    if (manaSolver.solve(state, action.playerId, remainingCost, xRemaining, excludeSources = excluded, spellContext = spellCtx, xManaRestriction = xManaRestriction) == null) {
+                    if (manaSolver.solve(
+                            state,
+                            action.playerId,
+                            remainingCost,
+                            xRemaining,
+                            excludeSources = excluded,
+                            spellContext = spellCtx,
+                            xManaRestriction = xManaRestriction,
+                            additionalPayLife = additionalPayLife,
+                        ) == null
+                    ) {
                         "Selected mana sources cannot pay this spell's cost"
                     } else null
                 }
@@ -1563,6 +1619,13 @@ class CastSpellHandler(
         if (action.modeTargetsOrdered.isNotEmpty() && action.modeTargetsOrdered.size != chosen.size) {
             return "modeTargetsOrdered size (${action.modeTargetsOrdered.size}) must match chosenModes size (${chosen.size})"
         }
+        val repeatedModeDistributions = action.modeDamageDistribution.keys
+            .filter { mode -> chosen.count { it == mode } > 1 }
+            .sorted()
+        if (repeatedModeDistributions.isNotEmpty()) {
+            return "modeDamageDistribution cannot be supplied for repeated mode index(es): " +
+                repeatedModeDistributions.joinToString()
+        }
         return null
     }
 
@@ -1645,6 +1708,98 @@ class CastSpellHandler(
     }
 
     /**
+     * Collect the additional costs selected for this cast from every authoritative source. Keep
+     * this list shared by validation and payment so dynamic life amounts are resolved against the
+     * same card, controller, and chosen alternative-cost context on both paths.
+     */
+    private fun collectAdditionalCostsForCast(
+        state: GameState,
+        action: CastSpell,
+        cardDef: com.wingedsheep.sdk.model.CardDefinition?,
+    ): List<AdditionalCost> = buildList {
+        if (cardDef != null) addAll(resolveAdditionalCostsForMode(cardDef, action))
+
+        declaredOptionalCosts(action, cardDef)
+            .firstOrNull { it.additionalCost != null }
+            ?.additionalCost
+            ?.let(::add)
+
+        if (action.useAlternativeCost && cardDef != null) {
+            val selfAltCost = cardDef.script.selfAlternativeCost
+            if (selfAltCost != null && action.altAllows(AlternativeCostType.SELF_ALTERNATIVE)) {
+                addAll(selfAltCost.additionalCosts)
+            }
+            if (action.altAllows(AlternativeCostType.FLASHBACK) &&
+                zoneResolver.hasFlashbackPermission(state, action.playerId, action.cardId)
+            ) {
+                cardDef.keywordAbilities
+                    .filterIsInstance<KeywordAbility.Flashback>()
+                    .firstOrNull()
+                    ?.additionalCost
+                    ?.let(::add)
+            }
+            if (action.altAllows(AlternativeCostType.WARP) &&
+                zoneResolver.hasWarpPermission(state, action.playerId, action.cardId)
+            ) {
+                WarpGrants.effectiveWarp(
+                    state, action.cardId, cardDef, action.playerId, cardRegistry, predicateEvaluator
+                )?.additionalCost?.let(::add)
+            }
+        }
+
+        state.getEntity(action.cardId)
+            ?.get<PlayWithAdditionalCostComponent>()
+            ?.takeIf { it.controllerId == action.playerId }
+            ?.additionalCosts
+            ?.let(::addAll)
+
+        zoneResolver.findLinkedExileGranter(state, action.playerId, action.cardId)
+            ?.additionalCost
+            ?.let(::add)
+        zoneResolver.findMayCastSelfFromZoneAbility(state, action.playerId, action.cardId)
+            ?.additionalCost
+            ?.let(::add)
+        zoneResolver.topOfLibraryAlternativeGrant(state, action.playerId, action.cardId)
+            ?.additionalCost
+            ?.let(::add)
+    }
+
+    private fun isLifeAdditionalCost(cost: AdditionalCost): Boolean = when (cost) {
+        is AdditionalCost.Atom -> cost.atom is CostAtom.PayLife
+        is AdditionalCost.PayLifePerTarget,
+        is AdditionalCost.PayXLife,
+        is AdditionalCost.PayLifeEqualToManaValueOfSpell -> true
+        else -> false
+    }
+
+    private fun validateCombinedAdditionalLifeCosts(
+        state: GameState,
+        action: CastSpell,
+        cardDef: com.wingedsheep.sdk.model.CardDefinition?,
+    ): String? {
+        val flattenedCosts = reduceCostAlternatives(
+            collectAdditionalCostsForCast(state, action, cardDef),
+            state,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
+        )
+        val lifeCosts = flattenedCosts.filter(::isLifeAdditionalCost)
+        // Preserve the dedicated mana-value error for the existing single-cost shape. Multiple
+        // life forms still use the atomic total below, including that dedicated shape.
+        if (lifeCosts.size == 1 && lifeCosts.single() is AdditionalCost.PayLifeEqualToManaValueOfSpell) {
+            return null
+        }
+        if (lifeCosts.isEmpty()) return null
+
+        val total = resolveAdditionalLifeCostTotal(state, flattenedCosts, action)
+            ?: return "Cannot resolve life cost"
+        return if (state.lifeTotal(action.playerId) < total) {
+            "Not enough life to pay $total life"
+        } else null
+    }
+
+    /**
      * Reduce each cost that offers the caster a *choice of legs* to the leg they actually took, so
      * every downstream cost path (validation, application, free-cast selection) handles a plain
      * cost with no alternatives awareness.
@@ -1670,11 +1825,12 @@ class CastSpellHandler(
         state: GameState,
         playerId: EntityId,
         payment: AdditionalCostPayment?,
+        sourceId: EntityId = playerId,
     ): List<AdditionalCost> = flattenComposites(costs).flatMap { cost ->
         when (cost) {
             is AdditionalCost.Choice -> listOf(
                 cost.options.firstOrNull { paymentSatisfied(it, payment) }
-                    ?: cost.options.firstOrNull { costHandler.canPayAdditionalCost(state, it, playerId) }
+                    ?: cost.options.firstOrNull { costHandler.canPayAdditionalCost(state, it, playerId, sourceId) }
                     ?: cost.options.first()
             )
             is AdditionalCost.OrPay ->
@@ -1741,7 +1897,23 @@ class CastSpellHandler(
         action: CastSpell
     ): String? {
         val projected = state.projectedState
-        val flattenedCosts = reduceCostAlternatives(additionalCosts, state, action.playerId, action.additionalCostPayment)
+        val flattenedCosts = reduceCostAlternatives(
+            additionalCosts,
+            state,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
+        )
+        // The shared atomic preflight is for CostAtom.PayLife. Dedicated additional-cost
+        // shapes (for example PayLifeEqualToManaValueOfSpell) retain their specialized
+        // validation below, including their context-specific error text.
+        if (flattenedCosts.any { it is AdditionalCost.Atom && it.atom is CostAtom.PayLife }) {
+            val lifeCostTotal = resolveAdditionalLifeCostTotal(state, flattenedCosts, action)
+                ?: return "Cannot resolve life cost"
+            if (state.lifeTotal(action.playerId) < lifeCostTotal) {
+                return "Not enough life to pay $lifeCostTotal life"
+            }
+        }
         for (additionalCost in flattenedCosts) {
             when (additionalCost) {
                 is AdditionalCost.Atom -> when (val atom = additionalCost.atom) {
@@ -1851,11 +2023,9 @@ class CastSpellHandler(
                         }
                     }
                     is CostAtom.PayLife -> {
-                        val currentLife = state.lifeTotal(action.playerId) // CR 810.9a — team's shared total
-                        // CR 119.4 — you can't pay life unless you have at least that much
-                        if (currentLife < atom.amount) {
-                            return "Not enough life to pay ${atom.amount} life"
-                        }
+                        // All PayLife leaves were resolved and affordability-checked as one total
+                        // before this validation loop. Keeping this branch empty prevents a
+                        // composite cost from reintroducing per-atom affordability semantics.
                     }
                     is CostAtom.ReturnToHand -> {
                         val bounced = action.additionalCostPayment?.bouncedPermanents ?: emptyList()
@@ -2180,7 +2350,57 @@ class CastSpellHandler(
         return null
     }
 
+    /**
+     * Resolve all selected life-payment forms against one pre-payment state/context. Returning
+     * null is deliberately fail-closed for unresolved, negative, or overflowing amounts.
+     */
+    private fun resolveAdditionalLifeCostTotal(
+        state: GameState,
+        costs: List<AdditionalCost>,
+        action: CastSpell,
+    ): Int? {
+        var total = 0
+        fun add(amount: Int): Boolean {
+            if (amount < 0 || amount > Int.MAX_VALUE - total) return false
+            total += amount
+            return true
+        }
+        for (cost in costs) {
+            val amount = when (cost) {
+                is AdditionalCost.Atom -> (cost.atom as? CostAtom.PayLife)?.let { atom ->
+                    CostAmountResolver.resolve(
+                        state = state,
+                        amount = atom.amount,
+                        sourceId = action.cardId,
+                        controllerId = action.playerId,
+                        cardRegistry = cardRegistry,
+                    )
+                }
+                is AdditionalCost.PayLifePerTarget -> {
+                    val product = cost.amountPerTarget.toLong() * action.targets.size.toLong()
+                    product.takeIf { it in 0..Int.MAX_VALUE }?.toInt()
+                }
+                is AdditionalCost.PayXLife -> action.additionalCostPayment?.payXLifeAmount ?: 0
+                is AdditionalCost.PayLifeEqualToManaValueOfSpell ->
+                    state.getEntity(action.cardId)?.get<CardComponent>()?.manaCost?.cmc ?: 0
+                else -> null
+            }
+            if (cost is AdditionalCost.Atom && cost.atom !is CostAtom.PayLife) continue
+            if (cost !is AdditionalCost.Atom &&
+                cost !is AdditionalCost.PayLifePerTarget &&
+                cost !is AdditionalCost.PayXLife &&
+                cost !is AdditionalCost.PayLifeEqualToManaValueOfSpell
+            ) continue
+            if (amount == null || !add(amount)) return null
+        }
+        return total
+    }
+
     override fun execute(state: GameState, action: CastSpell): ExecutionResult {
+        // All cost payment below is one immutable transaction. If a direct engine caller skips
+        // ActionProcessor validation, a later dynamic-life/source failure must still roll back the
+        // additional-cost mutations rather than returning a partially paid cast.
+        val transactionStartState = state
         var currentState = state
         val events = mutableListOf<GameEvent>()
 
@@ -2203,7 +2423,7 @@ class CastSpellHandler(
             }
         if (commanderBounceId != null) {
             val bounceContainer = state.getEntity(commanderBounceId)
-            val preResolvedPayment = action.additionalCostPayment?.copy(
+            val preResolvedPayment = action.additionalCostPayment.copy(
                 bouncedPermanents = action.additionalCostPayment.bouncedPermanents
                     .filterNot { it == commanderBounceId }
             )
@@ -2303,7 +2523,8 @@ class CastSpellHandler(
                 modes = modalEffect.modes,
                 chosenModeIndices = action.chosenModes,
                 resolvedModeTargets = emptyList(),
-                currentOrdinal = 0
+                currentOrdinal = 0,
+                resolvedModeTargetRequirements = emptyList()
             )
         }
 
@@ -2557,58 +2778,15 @@ class CastSpellHandler(
             .firstOrNull { it.additionalCost != null }
             ?.additionalCost
 
-        val allAdditionalCosts = buildList {
-            if (cardDef != null) addAll(resolveAdditionalCostsForMode(cardDef, action))
-            declaredSlotAdditionalCost?.let { add(it) }
-            if (action.useAlternativeCost && cardDef != null) {
-                // Each bundled additional cost is gated by the chosen alternative-cost type so a
-                // collision (e.g. granted warp on a card also being evoked) doesn't drag in the
-                // unchosen cost's bundled additional cost.
-                val selfAltCost = cardDef.script.selfAlternativeCost
-                if (selfAltCost != null && action.altAllows(AlternativeCostType.SELF_ALTERNATIVE)) addAll(selfAltCost.additionalCosts)
-                // Flashback's bundled additional cost (e.g., Behold three Elementals)
-                if (action.altAllows(AlternativeCostType.FLASHBACK) &&
-                    zoneResolver.hasFlashbackPermission(currentState, action.playerId, action.cardId)) {
-                    val flashbackAdditional = cardDef.keywordAbilities
-                        .filterIsInstance<KeywordAbility.Flashback>()
-                        .firstOrNull()
-                        ?.additionalCost
-                    if (flashbackAdditional != null) add(flashbackAdditional)
-                }
-                // Warp's bundled additional cost (e.g., "Pay 2 life" on Timeline Culler). Use
-                // [WarpGrants] so granted warps ([GrantWarpToCardsInHand]) participate too —
-                // currently they carry no additional cost, but routing through the same helper
-                // keeps the seam.
-                if (action.altAllows(AlternativeCostType.WARP) &&
-                    zoneResolver.hasWarpPermission(currentState, action.playerId, action.cardId)) {
-                    val warpAdditional = WarpGrants.effectiveWarp(
-                        currentState, action.cardId, cardDef, action.playerId, cardRegistry, predicateEvaluator
-                    )?.additionalCost
-                    if (warpAdditional != null) add(warpAdditional)
-                }
-            }
-            // Runtime additional costs from entity component (e.g., The Infamous Cruelclaw)
-            val runtimeCostComp = currentState.getEntity(action.cardId)
-                ?.get<PlayWithAdditionalCostComponent>()
-                ?.takeIf { it.controllerId == action.playerId }
-            if (runtimeCostComp != null) addAll(runtimeCostComp.additionalCosts)
+        val allAdditionalCosts = collectAdditionalCostsForCast(currentState, action, cardDef)
 
-            // Linked-exile granter additional cost (e.g., Dawnhand Dissident's
-            // "remove three counters from among creatures you control")
-            val linkedGranter = zoneResolver.findLinkedExileGranter(currentState, action.playerId, action.cardId)
-            linkedGranter?.additionalCost?.let { add(it) }
-
-            // Self-referential MayCastSelfFromZones grant's additional cost (e.g. Alien
-            // Symbiosis' "by discarding a card")
-            zoneResolver.findMayCastSelfFromZoneAbility(currentState, action.playerId, action.cardId)
-                ?.additionalCost?.let { add(it) }
-
-            // Gwenom: pay-life additional cost for a spell cast from the top of the library.
-            zoneResolver.topOfLibraryAlternativeGrant(currentState, action.playerId, action.cardId)
-                ?.additionalCost?.let { add(it) }
-        }
-
-        val flattenedAllCosts = reduceCostAlternatives(allAdditionalCosts, currentState, action.playerId, action.additionalCostPayment)
+        val flattenedAllCosts = reduceCostAlternatives(
+            allAdditionalCosts,
+            currentState,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
+        )
 
         // The declared slot's cost, put through the *same* reduction as the full list, so the
         // payment loop can recognise it by equality. Reducing both sides is what makes the match
@@ -2616,7 +2794,11 @@ class CastSpellHandler(
         // flattens composites and picks a Choice's leg, so comparing an unreduced wrapper against
         // the reduced list would never match and would silently drop the tap cause.
         val declaredSlotCosts: List<AdditionalCost> = reduceCostAlternatives(
-            listOfNotNull(declaredSlotAdditionalCost), currentState, action.playerId, action.additionalCostPayment
+            listOfNotNull(declaredSlotAdditionalCost),
+            currentState,
+            action.playerId,
+            action.additionalCostPayment,
+            action.cardId,
         )
 
         // Server-initiated free cast: pay the spell's printed additional costs even though the
@@ -2628,25 +2810,19 @@ class CastSpellHandler(
         // null when every selection-requiring cost is already satisfied — the normal path.
         surfaceUnpaidAdditionalCostSelection(currentState, action, flattenedAllCosts)?.let { return it }
 
-        // PayLife additional costs (e.g., Timeline Culler's "Warp—{B}, Pay 2 life")
-        // are auto-paid: the amount is fixed, so no player choice is required and the
-        // payment is applied regardless of whether the client included an
-        // AdditionalCostPayment object.
-        for (additionalCost in flattenedAllCosts) {
-            val atom = (additionalCost as? AdditionalCost.Atom)?.atom
-            val lifeToPay = when {
-                atom is CostAtom.PayLife -> atom.amount
-                additionalCost is AdditionalCost.PayLifePerTarget -> additionalCost.amountPerTarget * action.targets.size
-                additionalCost is AdditionalCost.PayXLife -> action.additionalCostPayment?.payXLifeAmount ?: 0
-                additionalCost is AdditionalCost.PayLifeEqualToManaValueOfSpell ->
-                    currentState.getEntity(action.cardId)?.get<CardComponent>()?.manaCost?.cmc ?: 0
-                else -> continue
-            }
-            if (lifeToPay == 0) continue
-            val (afterPayment, paymentEvents) =
-                LifePaymentService.pay(currentState, action.playerId, lifeToPay) ?: continue
-            currentState = afterPayment
-            events.addAll(paymentEvents)
+        // Pay all selected life additional costs atomically. The resolver sees the actual card
+        // being cast, the same pre-payment state, and one controller context; a failure is an
+        // execution error rather than a silently ignored partial payment.
+        val lifeToPay = resolveAdditionalLifeCostTotal(currentState, flattenedAllCosts, action)
+            ?: return ExecutionResult.error(transactionStartState, "Cannot resolve life cost")
+        if (currentState.lifeTotal(action.playerId) < lifeToPay) {
+            return ExecutionResult.error(transactionStartState, "Not enough life to pay $lifeToPay life")
+        }
+        if (lifeToPay > 0) {
+            val payment = LifePaymentService.pay(currentState, action.playerId, lifeToPay)
+                ?: return ExecutionResult.error(transactionStartState, "Unable to pay life cost")
+            currentState = payment.first
+            events.addAll(payment.second)
         }
         if (flattenedAllCosts.isNotEmpty() && action.additionalCostPayment != null) {
             for (additionalCost in flattenedAllCosts) {
@@ -3044,7 +3220,7 @@ class CastSpellHandler(
                                 events.addAll(forageResult.events)
                             }
                             is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Failure ->
-                                return ExecutionResult.error(currentState, forageResult.reason)
+                                return ExecutionResult.error(transactionStartState, forageResult.reason)
                         }
                     }
                     else -> {}
@@ -3089,7 +3265,7 @@ class CastSpellHandler(
             else harmonizePaymentXValue(currentState, action, cardDef, effectiveCost)
 
         // Apply alternative payment (Delve/Convoke/Harmonize)
-        if (action.alternativePayment != null && !action.alternativePayment.isEmpty && cardDef != null) {
+        if (action.alternativePayment != null && action.alternativePayment.hasResourcePayment && cardDef != null) {
             val altPaymentResult = alternativePaymentHandler.apply(
                 currentState,
                 effectiveCost,
@@ -3175,10 +3351,25 @@ class CastSpellHandler(
         val xManaRestriction = (action.faceIndex?.let { cardDef?.cardFaces?.getOrNull(it)?.script }
             ?: cardDef?.script)?.xManaRestriction ?: emptySet()
 
+        // Re-run the authoritative payment preflight against the untouched transaction state.
+        // This mirrors validatePayment for direct/internal execute callers and combines the
+        // additional life already resolved above with the exact solver source selection before
+        // the payment processor can tap or pay anything.
+        val paymentPreflightError = validatePayment(
+            transactionStartState,
+            action,
+            effectiveCost,
+            paymentXValue,
+            additionalPayLife = lifeToPay,
+        )
+        if (paymentPreflightError != null) {
+            return ExecutionResult.error(transactionStartState, paymentPreflightError)
+        }
+
         // Handle mana payment via dedicated processor
         val paymentResult = paymentProcessor.processPayment(currentState, action, effectiveCost, cardComponent.name, paymentXValue, spellContext, xManaRestriction)
         if (paymentResult.error != null) {
-            return ExecutionResult.error(currentState, paymentResult.error)
+            return ExecutionResult.error(transactionStartState, paymentResult.error)
         }
         currentState = paymentResult.state
         events.addAll(paymentResult.events)
@@ -3238,7 +3429,7 @@ class CastSpellHandler(
                     events.addAll(forageResult.events)
                 }
                 is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Failure ->
-                    return ExecutionResult.error(currentState, forageResult.reason)
+                    return ExecutionResult.error(transactionStartState, forageResult.reason)
             }
         }
 
@@ -3556,9 +3747,10 @@ class CastSpellHandler(
             currentState,
             action.cardId,
             action.playerId,
-            action.targets,
-            action.xValue,
-            sacrificedSnapshots,
+            targetLockState = state,
+            targets = action.targets,
+            xValue = action.xValue,
+            sacrificedPermanents = sacrificedSnapshots,
             castFaceDown = action.castFaceDown,
             castTransformed = transformedFace != null,
             damageDistribution = action.damageDistribution,
@@ -3587,6 +3779,7 @@ class CastSpellHandler(
             chosenModes = action.chosenModes,
             modeTargetsOrdered = effectiveModeTargetsOrdered,
             modeTargetRequirements = perModeTargetRequirements,
+            modeTargetRequirementsOrdered = action.modeTargetRequirementsOrdered,
             modeDamageDistribution = action.modeDamageDistribution,
             // Splice (CR 702.47a): the *text* the spell gained, recorded by card name. The cards
             // themselves stay in hand — nothing about splicing moves them.
@@ -3793,7 +3986,7 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
                         )
                     }
                 } else emptyList()
@@ -3830,7 +4023,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()
@@ -3867,7 +4061,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()
@@ -4494,16 +4689,30 @@ class CastSpellHandler(
         modes: List<com.wingedsheep.sdk.scripting.effects.Mode>,
         chosenModeIndices: List<Int>,
         resolvedModeTargets: List<List<ChosenTarget>>,
-        currentOrdinal: Int
+        currentOrdinal: Int,
+        resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
+        val effectiveModes = modes.map { mode ->
+            mode.copy(
+                targetRequirements = targetValidator.snapshotDynamicCounts(
+                    state = state,
+                    requirements = mode.targetRequirements,
+                    casterId = casterId,
+                    sourceId = cardId,
+                    xValue = baseCastAction.xValue
+                )
+            )
+        }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
+        var requirementsAccum = resolvedModeTargetRequirements
 
         while (ordinal < chosenModeIndices.size) {
             val modeIndex = chosenModeIndices[ordinal]
-            val mode = modes[modeIndex]
+            val mode = effectiveModes[modeIndex]
             if (mode.targetRequirements.isEmpty()) {
                 targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(emptyList())
                 ordinal++
                 continue
             }
@@ -4553,10 +4762,11 @@ class CastSpellHandler(
                 cardId = cardId,
                 casterId = casterId,
                 baseCastAction = baseCastAction,
-                modes = modes,
+                modes = effectiveModes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
-                currentOrdinal = ordinal
+                currentOrdinal = ordinal,
+                resolvedModeTargetRequirements = requirementsAccum
             )
 
             val pausedState = state
@@ -4579,7 +4789,13 @@ class CastSpellHandler(
         }
 
         // All modes resolved without needing another decision — finalize directly.
-        return finalizeModalCast(state, baseCastAction, chosenModeIndices, targetsAccum)
+        return finalizeModalCast(
+            state,
+            baseCastAction,
+            chosenModeIndices,
+            targetsAccum,
+            requirementsAccum
+        )
     }
 
     /**
@@ -4591,12 +4807,14 @@ class CastSpellHandler(
         state: GameState,
         baseCastAction: CastSpell,
         chosenModeIndices: List<Int>,
-        resolvedModeTargets: List<List<ChosenTarget>>
+        resolvedModeTargets: List<List<ChosenTarget>>,
+        resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
         val flatTargets = resolvedModeTargets.flatten()
         val finalAction = baseCastAction.copy(
             chosenModes = chosenModeIndices,
             modeTargetsOrdered = resolvedModeTargets,
+            modeTargetRequirementsOrdered = resolvedModeTargetRequirements,
             targets = flatTargets
         )
         return execute(state, finalAction)

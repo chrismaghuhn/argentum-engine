@@ -219,10 +219,11 @@ class CycleCardHandler(
                 val solution = manaSolver.solve(currentState, action.playerId, remainingCost, 0)
                     ?: return ExecutionResult.error(state, "Not enough mana to cycle")
 
-                val (stateAfterTaps, tapEvents) = manaAbilitySideEffectExecutor
+                val tapResult = manaAbilitySideEffectExecutor
                     .tapSourcesWithSideEffects(currentState, solution, action.playerId)
-                currentState = stateAfterTaps
-                events.addAll(tapEvents)
+                if (!tapResult.success) return ExecutionResult.error(currentState, "Unable to pay mana ability side effect")
+                currentState = tapResult.state
+                events.addAll(tapResult.events)
 
                 for ((_, production) in solution.manaProduced) {
                     when (production.color) {

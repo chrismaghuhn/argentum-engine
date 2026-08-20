@@ -38,6 +38,7 @@ class ContinuationHandler(
         registerModule(TextReplacementContinuationResumer(services))
         registerModule(DrawReplacementContinuationResumer(services))
         registerModule(CardSpecificContinuationResumer(services))
+        registerModule(AttachmentContinuationResumer(services))
         registerModule(DiscardAndDrawContinuationResumer(services))
         registerModule(StateBasedContinuationResumer(services))
         registerModule(SacrificeAndPayContinuationResumer(services))

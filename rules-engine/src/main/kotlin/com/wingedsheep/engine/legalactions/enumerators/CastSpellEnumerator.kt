@@ -21,6 +21,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
+import com.wingedsheep.engine.state.components.identity.PlayWithAdditionalCostComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.sdk.core.Keyword
@@ -163,9 +164,20 @@ class CastSpellEnumerator : ActionEnumerator {
                 // grayed-out secondary face in those rare cases). Used by enumerateSecondaryFace
                 // to decide whether an unaffordable secondary face is still worth showing.
                 val primaryFaceCost = context.costCalculator.calculateMinPossibleCost(state, cardDef, playerId)
-                val primaryFaceAffordable = context.manaSolver.canPay(
-                    state, playerId, primaryFaceCost, precomputedSources = context.availableManaSources
+                val primaryFaceAdditionalPayLife = resolveDynamicPayLifeCostForCast(
+                    context = context,
+                    cardId = cardId,
+                    cardDef = cardDef,
                 )
+                val primaryFaceAffordable = primaryFaceAdditionalPayLife != null &&
+                    state.lifeTotal(playerId) >= primaryFaceAdditionalPayLife &&
+                    context.manaSolver.canPay(
+                        state,
+                        playerId,
+                        primaryFaceCost,
+                        precomputedSources = context.availableManaSources,
+                        additionalPayLife = primaryFaceAdditionalPayLife,
+                    )
                 secondaryFaceAffordable = enumerateSecondaryFace(
                     context, cardId, cardDef, cardComponent, result,
                     primaryFaceAffordable = primaryFaceAffordable
@@ -207,7 +219,14 @@ class CastSpellEnumerator : ActionEnumerator {
             if (!isInstant && !grantedFlash && !context.canPlaySorcerySpeed) continue
 
             // Check additional cost payability
-            val additionalCosts = cardDef.script.additionalCosts
+            val additionalCosts = buildList {
+                addAll(cardDef.script.additionalCosts)
+                state.getEntity(cardId)
+                    ?.get<PlayWithAdditionalCostComponent>()
+                    ?.takeIf { it.controllerId == playerId }
+                    ?.additionalCosts
+                    ?.let(::addAll)
+            }
             val sacrificeTargets = mutableListOf<EntityId>()
             var variableSacrificeTargets = emptyList<EntityId>()
             var variableSacrificeReduction = 0
@@ -234,6 +253,10 @@ class CastSpellEnumerator : ActionEnumerator {
             val flattenedCosts = additionalCosts.flatMap {
                 if (it is AdditionalCost.Composite) it.steps else listOf(it)
             }
+            val resolvedAdditionalPayLife = context.costUtils.resolvePayLifeCostTotal(
+                state, playerId, cardId, additionalCosts
+            ) ?: continue
+            if (state.lifeTotal(playerId) < resolvedAdditionalPayLife) continue
             for (cost in flattenedCosts) {
                 when (cost) {
                     is AdditionalCost.Atom -> when (val atom = cost.atom) {
@@ -295,6 +318,9 @@ class CastSpellEnumerator : ActionEnumerator {
                             }
                             tapTargets = validTapTargets
                             tapCount = atom.count
+                        }
+                        is CostAtom.PayLife -> {
+                            // All PayLife leaves were preflighted as one total above.
                         }
                         // Mana / reveal aren't produced as spell additional costs today.
                         else -> {}
@@ -510,52 +536,65 @@ class CastSpellEnumerator : ActionEnumerator {
             // no-taps configuration has to stay reachable on its own.
             val improviseHelp = improviseArtifacts.takeIf { hasImprovise && it.isNotEmpty() }.orEmpty()
             val canAfford = if (hasConvoke && convokeCreatures != null && convokeCreatures.isNotEmpty()) {
-                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources) ||
-                    context.costUtils.canAffordWithConvoke(
+                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources, additionalPayLife = resolvedAdditionalPayLife) ||
+                    (resolvedAdditionalPayLife == 0 && context.costUtils.canAffordWithConvoke(
                         state, playerId, payableCost, convokeCreatures,
                         precomputedSources = cachedSources, spellContext = spellContext
-                    ) ||
-                    (improviseHelp.isNotEmpty() && context.costUtils.canAffordWithConvoke(
+                    )) ||
+                    (resolvedAdditionalPayLife == 0 && improviseHelp.isNotEmpty() && context.costUtils.canAffordWithConvoke(
                         state, playerId, payableCost, convokeCreatures,
                         precomputedSources = cachedSources, spellContext = spellContext,
                         tapForGenericPermanents = improviseHelp
                     ))
             } else if (hasDelve && delveCards != null && delveCards.isNotEmpty()) {
-                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources) ||
-                    context.costUtils.canAffordWithDelve(
+                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources, additionalPayLife = resolvedAdditionalPayLife) ||
+                    (resolvedAdditionalPayLife == 0 && context.costUtils.canAffordWithDelve(
                         state, playerId, payableCost, delveCards,
                         precomputedSources = cachedSources, spellContext = spellContext
-                    ) ||
-                    (improviseHelp.isNotEmpty() && context.costUtils.canAffordWithDelve(
+                    )) ||
+                    (resolvedAdditionalPayLife == 0 && improviseHelp.isNotEmpty() && context.costUtils.canAffordWithDelve(
                         state, playerId, payableCost, delveCards,
                         precomputedSources = cachedSources, spellContext = spellContext,
                         tapForGenericPermanents = improviseHelp
                     ))
             } else if (mandatoryWaterbend) {
                 // payableCost already includes the mandatory waterbend {N}; taps can cover up to {N}.
-                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources) ||
-                    context.costUtils.canAffordWithTapForGeneric(
+                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources, additionalPayLife = resolvedAdditionalPayLife) ||
+                    (resolvedAdditionalPayLife == 0 && context.costUtils.canAffordWithTapForGeneric(
                         state, playerId, payableCost,
                         waterbendPermanents.take(spellWaterbend.amount),
                         precomputedSources = cachedSources, spellContext = spellContext
-                    )
+                    ))
             } else if (improviseHelp.isNotEmpty()) {
                 // CR 702.126a: each tapped artifact pays {1} of the *generic* in the total cost,
                 // so the colored pips still have to come from mana.
-                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources) ||
-                    context.costUtils.canAffordWithTapForGeneric(
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    payableCost,
+                    spellContext = spellContext,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                ) ||
+                    (resolvedAdditionalPayLife == 0 && context.costUtils.canAffordWithTapForGeneric(
                         state, playerId, payableCost, improviseHelp,
                         precomputedSources = cachedSources, spellContext = spellContext
-                    )
+                    ))
             } else {
-                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources)
+                context.manaSolver.canPay(state, playerId, payableCost, spellContext = spellContext, precomputedSources = cachedSources, additionalPayLife = resolvedAdditionalPayLife)
             }
 
             // Check alternative casting cost affordability (e.g., Jodah's {W}{U}{B}{R}{G})
             val canAffordAlternative = context.alternativeCastingCosts.isNotEmpty() &&
                 context.alternativeCastingCosts.any { altCost ->
                     val altEffective = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, altCost)
-                    context.manaSolver.canPay(state, playerId, altEffective, precomputedSources = cachedSources)
+                    context.manaSolver.canPay(
+                        state,
+                        playerId,
+                        altEffective,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )
                 }
 
             // Check self-alternative cost (e.g., Zahid's {3}{U} + tap an artifact)
@@ -576,12 +615,29 @@ class CastSpellEnumerator : ActionEnumerator {
             val canAffordSelfAlternative = if (selfAltCost != null) {
                 val selfAltMana = selfAltCost.manaCost
                 val selfAltEffective = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, selfAltMana, playerId)
-                val canPayMana = context.manaSolver.canPay(state, playerId, selfAltEffective, precomputedSources = cachedSources)
-                val canPayAdditional = selfAltCost.additionalCosts.all { cost ->
+                val selfAltAdditionalCosts = buildList {
+                    addAll(additionalCosts)
+                    addAll(selfAltCost.additionalCosts)
+                }
+                val selfAltAdditionalLifeTotal = context.costUtils.resolvePayLifeCostTotal(
+                    state, playerId, cardId, selfAltAdditionalCosts
+                )
+                val canPayAdditionalLife = selfAltAdditionalLifeTotal != null &&
+                    state.lifeTotal(playerId) >= selfAltAdditionalLifeTotal
+                val canPayMana = selfAltAdditionalLifeTotal != null && context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    selfAltEffective,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = selfAltAdditionalLifeTotal,
+                )
+                val canPayAdditional = canPayAdditionalLife && selfAltCost.additionalCosts.all { cost ->
                     when (val atom = (cost as? AdditionalCost.Atom)?.atom) {
                         is CostAtom.TapPermanents -> {
                             context.costUtils.findAbilityTapTargets(state, playerId, atom.filter).size >= atom.count
                         }
+                        is CostAtom.PayLife ->
+                            true // Included in the combined total above.
                         else -> true
                     }
                 }
@@ -592,14 +648,26 @@ class CastSpellEnumerator : ActionEnumerator {
             val evokeAbility = cardDef.keywordAbilities.filterIsInstance<KeywordAbility.Evoke>().firstOrNull()
             val canAffordEvoke = if (evokeAbility != null) {
                 val evokeMana = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, evokeAbility.cost, playerId)
-                context.manaSolver.canPay(state, playerId, evokeMana, precomputedSources = cachedSources)
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    evokeMana,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                )
             } else false
 
             // Check impending cost (alternative cost from Impending keyword)
             val impendingAbility = cardDef.keywordAbilities.filterIsInstance<KeywordAbility.Impending>().firstOrNull()
             val canAffordImpending = if (impendingAbility != null) {
                 val impendingMana = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, impendingAbility.cost, playerId)
-                context.manaSolver.canPay(state, playerId, impendingMana, precomputedSources = cachedSources)
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    impendingMana,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                )
             } else false
 
             // Check cleave cost (CR 702.148 — alternative cost from the Cleave keyword). Emitted as
@@ -607,12 +675,25 @@ class CastSpellEnumerator : ActionEnumerator {
             val cleaveAbility = cardDef.keywordAbilities.filterIsInstance<KeywordAbility.Cleave>().firstOrNull()
             val canAffordCleave = if (cleaveAbility != null) {
                 val cleaveMana = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, cleaveAbility.cost, playerId)
-                context.manaSolver.canPay(state, playerId, cleaveMana, precomputedSources = cachedSources)
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    cleaveMana,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                )
             } else false
 
             // Check blight path affordability (base cost without the extra mana, but needs a creature)
             val canAffordBlightPath = if (blightOrPayCost != null && blightCreatures.isNotEmpty()) {
-                context.manaSolver.canPay(state, playerId, blightBaseCost, spellContext = spellContext, precomputedSources = cachedSources)
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    blightBaseCost,
+                    spellContext = spellContext,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                )
             } else false
 
             // Check the or-pay leg path's affordability (base cost without the extra mana, but needs
@@ -621,7 +702,14 @@ class CastSpellEnumerator : ActionEnumerator {
             val canAffordOrPayPath = if (orPayCost != null &&
                 orPayTargets.size >= SelectionCostPresentation.selectionCount(orPayCost.cost)
             ) {
-                context.manaSolver.canPay(state, playerId, orPayBaseCost, spellContext = spellContext, precomputedSources = cachedSources)
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    orPayBaseCost,
+                    spellContext = spellContext,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                )
             } else false
 
             // A `MayCastWithoutPayingManaCost` battlefield permission (e.g. Weftwalking) makes the
@@ -668,7 +756,13 @@ class CastSpellEnumerator : ActionEnumerator {
                 label = label,
                 manaCostString = baseCost.toString(),
                 autoTapPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, baseCost, precomputedSources = cachedSources)
+                    context.manaSolver.solve(
+                        state,
+                        playerId,
+                        baseCost,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )
                         ?.sources?.map { it.entityId }
                 },
                 costInfo = legCostInfo,
@@ -758,7 +852,13 @@ class CastSpellEnumerator : ActionEnumerator {
                 } else {
                     payableCost
                 }
-                context.manaSolver.solve(state, playerId, costForPreview, precomputedSources = cachedSources)
+                context.manaSolver.solve(
+                    state,
+                    playerId,
+                    costForPreview,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = resolvedAdditionalPayLife,
+                )
                     ?.sources?.map { it.entityId }
             }
 
@@ -774,18 +874,47 @@ class CastSpellEnumerator : ActionEnumerator {
                 val altCost = context.alternativeCastingCosts.first()
                 val altEffective = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, altCost)
                 val altPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, altEffective, precomputedSources = cachedSources)
+                    context.manaSolver.solve(
+                        state,
+                        playerId,
+                        altEffective,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )
                         ?.sources?.map { it.entityId }
                 }
-                Triple(altEffective.toString(), altPreview, context.manaSolver.canPay(state, playerId, altEffective, precomputedSources = cachedSources))
+                Triple(
+                    altEffective.toString(),
+                    altPreview,
+                    context.manaSolver.canPay(
+                        state,
+                        playerId,
+                        altEffective,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )
+                )
             } else null
 
             // Compute self-alternative cost info (e.g., Zahid)
             val selfAltCostResult = if (canAffordSelfAlternative && selfAltCost != null) {
                 val selfAltMana = selfAltCost.manaCost
                 val selfAltEffective = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, selfAltMana, playerId)
+                val selfAltAdditionalCosts = buildList {
+                    addAll(additionalCosts)
+                    addAll(selfAltCost.additionalCosts)
+                }
+                val selfAltAdditionalLifeTotal = context.costUtils.resolvePayLifeCostTotal(
+                    state, playerId, cardId, selfAltAdditionalCosts
+                )
                 val selfAltPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, selfAltEffective, precomputedSources = cachedSources)
+                    context.manaSolver.solve(
+                        state,
+                        playerId,
+                        selfAltEffective,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = selfAltAdditionalLifeTotal ?: -1,
+                    )
                         ?.sources?.map { it.entityId }
                 }
                 val tapCost = selfAltCost.additionalCosts.firstNotNullOfOrNull { (it as? AdditionalCost.Atom)?.atom as? CostAtom.TapPermanents }
@@ -809,7 +938,13 @@ class CastSpellEnumerator : ActionEnumerator {
             val evokeCostResult = if (canAffordEvoke && evokeAbility != null) {
                 val evokeMana = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, evokeAbility.cost, playerId)
                 val evokePreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, evokeMana, precomputedSources = cachedSources)
+                    context.manaSolver.solve(
+                        state,
+                        playerId,
+                        evokeMana,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )
                         ?.sources?.map { it.entityId }
                 }
                 SelfAltCostResult(
@@ -823,7 +958,13 @@ class CastSpellEnumerator : ActionEnumerator {
             val impendingCostResult = if (canAffordImpending && impendingAbility != null) {
                 val impendingMana = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, impendingAbility.cost, playerId)
                 val impendingPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, impendingMana, precomputedSources = cachedSources)
+                    context.manaSolver.solve(
+                        state,
+                        playerId,
+                        impendingMana,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )
                         ?.sources?.map { it.entityId }
                 }
                 SelfAltCostResult(
@@ -845,9 +986,21 @@ class CastSpellEnumerator : ActionEnumerator {
             } else null
             val miracleCostResult = if (miracleAbility != null) {
                 val miracleMana = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, miracleAbility.cost, playerId)
-                if (context.manaSolver.canPay(state, playerId, miracleMana, precomputedSources = cachedSources)) {
+                if (context.manaSolver.canPay(
+                        state,
+                        playerId,
+                        miracleMana,
+                        precomputedSources = cachedSources,
+                        additionalPayLife = resolvedAdditionalPayLife,
+                    )) {
                     val miraclePreview = if (context.skipAutoTapPreview) null else {
-                        context.manaSolver.solve(state, playerId, miracleMana, precomputedSources = cachedSources)
+                        context.manaSolver.solve(
+                            state,
+                            playerId,
+                            miracleMana,
+                            precomputedSources = cachedSources,
+                            additionalPayLife = resolvedAdditionalPayLife,
+                        )
                             ?.sources?.map { it.entityId }
                     }
                     SelfAltCostResult(
@@ -938,7 +1091,9 @@ class CastSpellEnumerator : ActionEnumerator {
                         playerId = playerId,
                         modeIndex = modeIndex,
                         mode = mode,
+                        cardDef = cardDef,
                         baseEffectiveCost = variant.baseEffectiveCost,
+                        baseAdditionalCosts = cardDef.script.additionalCosts,
                         cardLevelAdditionalCostInfo = variant.additionalCostInfo,
                         baseAutoTapPreview = variant.autoTapPreview,
                         spellContext = spellContext,
@@ -1555,10 +1710,18 @@ class CastSpellEnumerator : ActionEnumerator {
             // and an automatic payer that always fills it can tap a mana rock for {1} that was
             // worth more as mana and make its own cast unpayable — see [LegalAction.tapForGenericRequired].
             val payableWithManaAlone = la.manaCostString?.let { costString ->
-                context.manaSolver.canPay(
+                val additionalPayLife = resolveDynamicPayLifeCostForCast(
+                    context = context,
+                    cardId = cs.cardId,
+                    cardDef = context.cardRegistry.getCard(cardComponent.cardDefinitionId),
+                ) ?: return@let false
+                additionalPayLife >= 0 &&
+                    state.lifeTotal(cs.playerId) >= additionalPayLife &&
+                    context.manaSolver.canPay(
                     state, cs.playerId, ManaCost.parse(costString),
                     spellContext = spellPaymentContextFor(cardComponent),
-                    precomputedSources = context.availableManaSources
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = additionalPayLife,
                 )
             } ?: false
             la.copy(
@@ -1689,9 +1852,10 @@ class CastSpellEnumerator : ActionEnumerator {
         val out = mutableListOf<LegalAction>()
         for (la in actions) {
             val cs = la.action as? CastSpell
+            val cardComponent = cs?.let { state.getEntity(it.cardId)?.get<CardComponent>() }
+            val cardDef = cardComponent?.let { context.cardRegistry.getCard(it.cardDefinitionId) }
             val wb = if (cs != null && la.actionType == "CastSpell") {
-                val name = state.getEntity(cs.cardId)?.get<CardComponent>()?.name
-                name?.let { context.cardRegistry.getCard(it) }?.script?.spellWaterbend
+                cardDef?.script?.spellWaterbend
             } else null
             if (cs == null || wb == null) {
                 out.add(la)
@@ -1716,7 +1880,12 @@ class CastSpellEnumerator : ActionEnumerator {
                 val baseCost = la.manaCostString?.let { ManaCost.parse(it) }
                 if (!la.affordable || baseCost == null) continue
                 val paidCost = baseCost + ManaCost.parse("{${wb.amount}}")
-                val affordablePaid = context.costUtils.canAffordWithTapForGeneric(
+                // The tap-for-generic helper cannot prove which painful mana abilities its
+                // aggregate source count would select. Keep this optional variant fail-closed
+                // whenever the cast carries dynamic life; the ordinary solver-backed action above
+                // remains available and authoritative.
+                val additionalPayLife = resolveDynamicPayLifeCostForCast(context, cs.cardId, cardDef)
+                val affordablePaid = additionalPayLife == 0 && context.costUtils.canAffordWithTapForGeneric(
                     state, cs.playerId, paidCost, perms.take(wb.amount),
                     precomputedSources = context.availableManaSources,
                     // Eligible conditional floating mana counts toward the paid variant too.
@@ -1796,10 +1965,26 @@ class CastSpellEnumerator : ActionEnumerator {
             if (eligibleTapTargets.size < 2) continue
 
             val baseCost = context.costCalculator.calculateEffectiveCost(state, cardDef, playerId)
+            val additionalPayLife = resolveDynamicPayLifeCostForCast(context, cardId, cardDef) ?: continue
+            if (state.lifeTotal(playerId) < additionalPayLife) continue
             val spellContext = spellPaymentContextFor(cardComponent)
-            val canAfford = context.manaSolver.canPay(state, playerId, baseCost, spellContext = spellContext, precomputedSources = context.availableManaSources)
+            val canAfford = context.manaSolver.canPay(
+                state,
+                playerId,
+                baseCost,
+                spellContext = spellContext,
+                precomputedSources = context.availableManaSources,
+                additionalPayLife = additionalPayLife,
+            )
             val autoTapPreview = if (context.skipAutoTapPreview) null else {
-                context.manaSolver.solve(state, playerId, baseCost, spellContext = spellContext, precomputedSources = context.availableManaSources)
+                context.manaSolver.solve(
+                    state,
+                    playerId,
+                    baseCost,
+                    spellContext = spellContext,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = additionalPayLife,
+                )
                     ?.sources?.map { it.entityId }
             }
 
@@ -1896,10 +2081,26 @@ class CastSpellEnumerator : ActionEnumerator {
             if (eligibleSacrifices.isEmpty()) continue
 
             val baseCost = context.costCalculator.calculateEffectiveCost(state, cardDef, playerId)
+            val additionalPayLife = resolveDynamicPayLifeCostForCast(context, cardId, cardDef) ?: continue
+            if (state.lifeTotal(playerId) < additionalPayLife) continue
             val spellContext = spellPaymentContextFor(cardComponent)
-            val canAfford = context.manaSolver.canPay(state, playerId, baseCost, spellContext = spellContext, precomputedSources = context.availableManaSources)
+            val canAfford = context.manaSolver.canPay(
+                state,
+                playerId,
+                baseCost,
+                spellContext = spellContext,
+                precomputedSources = context.availableManaSources,
+                additionalPayLife = additionalPayLife,
+            )
             val autoTapPreview = if (context.skipAutoTapPreview) null else {
-                context.manaSolver.solve(state, playerId, baseCost, spellContext = spellContext, precomputedSources = context.availableManaSources)
+                context.manaSolver.solve(
+                    state,
+                    playerId,
+                    baseCost,
+                    spellContext = spellContext,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = additionalPayLife,
+                )
                     ?.sources?.map { it.entityId }
             }
 
@@ -2009,6 +2210,8 @@ class CastSpellEnumerator : ActionEnumerator {
             if (candidates.isEmpty()) continue
 
             val baseCost = context.costCalculator.calculateEffectiveCost(state, cardDef, playerId)
+            val additionalPayLife = resolveDynamicPayLifeCostForCast(context, cardId, cardDef) ?: continue
+            if (state.lifeTotal(playerId) < additionalPayLife) continue
             val spellContext = spellPaymentContextFor(cardComponent)
 
             for (candidate in candidates) {
@@ -2016,13 +2219,15 @@ class CastSpellEnumerator : ActionEnumerator {
                 val canAfford = context.manaSolver.canPay(
                     state, playerId, splicedCost,
                     spellContext = spellContext,
-                    precomputedSources = context.availableManaSources
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = additionalPayLife,
                 )
                 val autoTapPreview = if (context.skipAutoTapPreview) null else {
                     context.manaSolver.solve(
                         state, playerId, splicedCost,
                         spellContext = spellContext,
-                        precomputedSources = context.availableManaSources
+                        precomputedSources = context.availableManaSources,
+                        additionalPayLife = additionalPayLife,
                     )?.sources?.map { it.entityId }
                 }
 
@@ -2133,10 +2338,32 @@ class CastSpellEnumerator : ActionEnumerator {
                 val kickedManaCost = manaKicker?.manaCost ?: offspringAbility?.manaCost
                 val kickedCost = if (kickedManaCost != null) baseCost + kickedManaCost else baseCost
                 val kickedSpellContext = spellPaymentContextFor(cardComponent, isKicked = declaredSlot == ChoiceSlot.KICKED)
-                val canAffordKickedMana = context.manaSolver.canPay(state, playerId, kickedCost, spellContext = kickedSpellContext, precomputedSources = context.availableManaSources)
+                val kickerAdditionalPayLife = resolveDynamicPayLifeCostForCast(
+                    context = context,
+                    cardId = cardId,
+                    cardDef = cardDef,
+                    extraAdditionalCosts = listOfNotNull(additionalCostKicker?.additionalCost),
+                )
+                val canAffordKickedMana = kickerAdditionalPayLife != null &&
+                    state.lifeTotal(playerId) >= kickerAdditionalPayLife &&
+                    context.manaSolver.canPay(
+                        state,
+                        playerId,
+                        kickedCost,
+                        spellContext = kickedSpellContext,
+                        precomputedSources = context.availableManaSources,
+                        additionalPayLife = kickerAdditionalPayLife,
+                    )
                 val kickedCostString = kickedCost.toString()
                 val kickedAutoTapPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, kickedCost, spellContext = kickedSpellContext, precomputedSources = context.availableManaSources)
+                    context.manaSolver.solve(
+                        state,
+                        playerId,
+                        kickedCost,
+                        spellContext = kickedSpellContext,
+                        precomputedSources = context.availableManaSources,
+                        additionalPayLife = kickerAdditionalPayLife ?: -1,
+                    )
                         ?.sources?.map { it.entityId }
                 }
 
@@ -2155,8 +2382,12 @@ class CastSpellEnumerator : ActionEnumerator {
                 // Check additional cost payability (e.g., sacrifice a creature)
                 var kickerCostInfo: AdditionalCostData? = null
                 var canPayKickerAdditionalCost = true
-                if (additionalCostKicker?.additionalCost != null) {
-                    when (val cost = additionalCostKicker.additionalCost) {
+                val kickerAdditionalCost = additionalCostKicker?.additionalCost
+                if (kickerAdditionalCost != null) {
+                    if (kickerAdditionalPayLife == null || state.lifeTotal(playerId) < kickerAdditionalPayLife) {
+                        canPayKickerAdditionalCost = false
+                    }
+                    when (val cost = kickerAdditionalCost) {
                         is AdditionalCost.Atom -> when (val atom = cost.atom) {
                             is CostAtom.Sacrifice -> {
                                 val validSacTargets = context.costUtils.findSacrificeTargets(state, playerId, atom)
@@ -2215,6 +2446,9 @@ class CastSpellEnumerator : ActionEnumerator {
                                         }
                                     )
                                 }
+                            }
+                            is CostAtom.PayLife -> {
+                                // All PayLife leaves were preflighted as one total above.
                             }
                             else -> {}
                         }
@@ -2304,7 +2538,10 @@ class CastSpellEnumerator : ActionEnumerator {
                             playerId = playerId,
                             modeIndex = modeIndex,
                             mode = mode,
+                            cardDef = cardDef,
                             baseEffectiveCost = kickedCost,
+                            baseAdditionalCosts = cardDef.script.additionalCosts,
+                            extraAdditionalCosts = listOfNotNull(additionalCostKicker?.additionalCost),
                             cardLevelAdditionalCostInfo = kickerCostInfo,
                             baseAutoTapPreview = kickedAutoTapPreview,
                             spellContext = kickedSpellContext,
@@ -2427,7 +2664,17 @@ class CastSpellEnumerator : ActionEnumerator {
             // normal cast still shows as unaffordable. Priced with no declaration, so a
             // "costs less if it's bargained" reduction doesn't leak into the plain cast.
             val undeclaredCost = context.costCalculator.calculateEffectiveCost(state, cardDef, playerId)
-            if (!context.manaSolver.canPay(state, playerId, undeclaredCost, precomputedSources = context.availableManaSources)) {
+            val undeclaredPayLife = resolveDynamicPayLifeCostForCast(context, cardId, cardDef)
+            val undeclaredCanPay = undeclaredPayLife != null &&
+                state.lifeTotal(playerId) >= undeclaredPayLife &&
+                context.manaSolver.canPay(
+                    state,
+                    playerId,
+                    undeclaredCost,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = undeclaredPayLife,
+                )
+            if (!undeclaredCanPay && undeclaredPayLife == 0) {
                 result.add(LegalAction(
                     actionType = "CastSpell",
                     description = "Cast ${cardComponent.name}",
@@ -2479,10 +2726,24 @@ class CastSpellEnumerator : ActionEnumerator {
             // Cleave mana cost (CR 202.3b — mana value is still computed from the printed cost, not
             // the cleave cost; only affordability uses this).
             val cleaveCost = context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, cleaveAbility.cost, playerId)
-            val canAffordCleave = context.manaSolver.canPay(state, playerId, cleaveCost, precomputedSources = context.availableManaSources)
+            val additionalPayLife = resolveDynamicPayLifeCostForCast(context, cardId, cardDef) ?: continue
+            if (state.lifeTotal(playerId) < additionalPayLife) continue
+            val canAffordCleave = context.manaSolver.canPay(
+                state,
+                playerId,
+                cleaveCost,
+                precomputedSources = context.availableManaSources,
+                additionalPayLife = additionalPayLife,
+            )
             val cleaveCostString = cleaveCost.toString()
             val cleaveAutoTapPreview = if (context.skipAutoTapPreview) null else {
-                context.manaSolver.solve(state, playerId, cleaveCost, precomputedSources = context.availableManaSources)
+                context.manaSolver.solve(
+                    state,
+                    playerId,
+                    cleaveCost,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = additionalPayLife,
+                )
                     ?.sources?.map { it.entityId }
             }
 
@@ -2782,7 +3043,10 @@ class CastSpellEnumerator : ActionEnumerator {
         playerId: EntityId,
         modeIndex: Int,
         mode: Mode,
+        cardDef: CardDefinition,
         baseEffectiveCost: ManaCost,
+        baseAdditionalCosts: List<AdditionalCost> = emptyList(),
+        extraAdditionalCosts: List<AdditionalCost> = emptyList(),
         cardLevelAdditionalCostInfo: AdditionalCostData?,
         baseAutoTapPreview: List<EntityId>?,
         spellContext: SpellPaymentContext,
@@ -2796,11 +3060,34 @@ class CastSpellEnumerator : ActionEnumerator {
         } else {
             baseEffectiveCost
         }
-        val canAffordMana = if (modeExtraManaCost != null) {
-            context.manaSolver.canPay(
+        val modeAdditionalCosts = mode.additionalCosts
+        val selectedBaseAdditionalCosts = modeAdditionalCosts ?: baseAdditionalCosts
+        val modeAdditionalPayLife = resolveDynamicPayLifeCostForCast(
+            context = context,
+            cardId = cardId,
+            cardDef = cardDef,
+            printedAdditionalCosts = selectedBaseAdditionalCosts,
+            extraAdditionalCosts = extraAdditionalCosts,
+        )
+        val modeLifeAffordable = modeAdditionalPayLife != null &&
+            state.lifeTotal(playerId) >= modeAdditionalPayLife
+        val modeHasAdditionalCostOverride = modeAdditionalCosts != null
+        val modeNeedsIndependentPaymentCheck = modeExtraManaCost != null ||
+            modeHasAdditionalCostOverride ||
+            extraAdditionalCosts.isNotEmpty()
+        val canAffordMana = if (modeNeedsIndependentPaymentCheck) {
+            modeLifeAffordable && context.manaSolver.canPay(
                 state, playerId, modeEffectiveCost,
                 spellContext = spellContext,
-                precomputedSources = cachedSources
+                precomputedSources = cachedSources,
+                additionalPayLife = modeAdditionalPayLife,
+            )
+        } else if (modeHasAdditionalCostOverride) {
+            modeLifeAffordable && context.manaSolver.canPay(
+                state, playerId, modeEffectiveCost,
+                spellContext = spellContext,
+                precomputedSources = cachedSources,
+                additionalPayLife = modeAdditionalPayLife,
             )
         } else {
             true // base cost already checked upstream
@@ -2813,8 +3100,10 @@ class CastSpellEnumerator : ActionEnumerator {
         var modeDiscardTargets = emptyList<EntityId>()
         var modeDiscardCount = 0
 
-        val modeAdditionalCosts = mode.additionalCosts
         if (modeAdditionalCosts != null) {
+            if (!modeLifeAffordable || !context.costUtils.canPayLifeCost(state, playerId, cardId, modeAdditionalCosts)) {
+                canPayAdditionalCosts = false
+            }
             for (cost in modeAdditionalCosts) {
                 when (cost) {
                     is AdditionalCost.Atom -> when (val atom = cost.atom) {
@@ -2843,12 +3132,7 @@ class CastSpellEnumerator : ActionEnumerator {
                             modeDiscardCount = atom.count
                         }
                         is CostAtom.PayLife -> {
-                            // Per CR 119.4 you can't pay life unless you have that much. Mode-level
-                            // affordability gate so "discard a card or pay 3 life" modes don't
-                            // surface a Pay-3-Life action when the caster has fewer than 3 life
-                            // (Bitter Triumph). Validation in CastSpellHandler still backstops.
-                            val life = state.lifeTotal(playerId) // CR 810.9a — team's shared total
-                            if (life < atom.amount) canPayAdditionalCosts = false
+                            // All PayLife leaves were preflighted as one total above.
                         }
                         else -> {}
                     }
@@ -2887,8 +3171,14 @@ class CastSpellEnumerator : ActionEnumerator {
 
         val modeManaCostString = modeEffectiveCost.toString()
         val modeAutoTapPreview = if (context.skipAutoTapPreview) null
-        else if (modeExtraManaCost != null) {
-            context.manaSolver.solve(state, playerId, modeEffectiveCost, precomputedSources = cachedSources)
+        else if (modeNeedsIndependentPaymentCheck) {
+            context.manaSolver.solve(
+                state,
+                playerId,
+                modeEffectiveCost,
+                precomputedSources = cachedSources,
+                additionalPayLife = modeAdditionalPayLife ?: -1,
+            )
                 ?.sources?.map { it.entityId }
         } else {
             baseAutoTapPreview
@@ -2951,11 +3241,31 @@ class CastSpellEnumerator : ActionEnumerator {
         val cachedSources = context.availableManaSources
         val effectiveCost = context.costCalculator
             .calculateEffectiveCostWithAlternativeBase(state, cardDef, face.manaCost, playerId)
-        if (!context.manaSolver.canPay(state, playerId, effectiveCost, precomputedSources = cachedSources)) return
+        val additionalPayLife = resolveDynamicPayLifeCostForCast(
+            context = context,
+            cardId = cardId,
+            cardDef = cardDef,
+            printedAdditionalCosts = face.script.additionalCosts,
+        ) ?: return
+        if (state.lifeTotal(playerId) < additionalPayLife) return
+        if (!context.manaSolver.canPay(
+                state,
+                playerId,
+                effectiveCost,
+                precomputedSources = cachedSources,
+                additionalPayLife = additionalPayLife,
+            )
+        ) return
 
         val autoTapPreview = if (context.skipAutoTapPreview) null else {
             context.manaSolver
-                .solve(state, playerId, effectiveCost, precomputedSources = cachedSources)
+                .solve(
+                    state,
+                    playerId,
+                    effectiveCost,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = additionalPayLife,
+                )
                 ?.sources?.map { it.entityId }
         }
         val manaCostString = effectiveCost.toString()
@@ -3083,9 +3393,20 @@ class CastSpellEnumerator : ActionEnumerator {
             state, cardDef, back.manaCost, playerId
         )
         val costString = effectiveCost.toString()
+        val additionalPayLife = resolveDynamicPayLifeCostForCast(
+            context = context,
+            cardId = cardId,
+            cardDef = cardDef,
+            printedAdditionalCosts = back.script.additionalCosts,
+        ) ?: return
+        if (state.lifeTotal(playerId) < additionalPayLife) return
 
         val canAfford = context.manaSolver.canPay(
-            state, playerId, effectiveCost, precomputedSources = context.availableManaSources
+            state,
+            playerId,
+            effectiveCost,
+            precomputedSources = context.availableManaSources,
+            additionalPayLife = additionalPayLife,
         )
         if (!canAfford) {
             // Surface it grayed out rather than dropping it: both faces belong in the
@@ -3109,7 +3430,13 @@ class CastSpellEnumerator : ActionEnumerator {
         }
         val autoTapPreview = if (context.skipAutoTapPreview) null else {
             context.manaSolver
-                .solve(state, playerId, effectiveCost, precomputedSources = context.availableManaSources)
+                .solve(
+                    state,
+                    playerId,
+                    effectiveCost,
+                    precomputedSources = context.availableManaSources,
+                    additionalPayLife = additionalPayLife,
+                )
                 ?.sources?.map { it.entityId }
         }
 
@@ -3172,8 +3499,22 @@ class CastSpellEnumerator : ActionEnumerator {
         // conditional mana ("spend only to cast …") is judged identically on both sides and the
         // X ceiling below can never offer more than validation will accept.
         val spellContext = spellPaymentContextFor(cardComponent)
+        val additionalPayLife = resolveDynamicPayLifeCostForCast(
+            context = context,
+            cardId = cardId,
+            cardDef = cardDef,
+            printedAdditionalCosts = face.script.additionalCosts,
+        ) ?: return false
+        if (state.lifeTotal(playerId) < additionalPayLife) return false
         val canAfford = context.manaSolver
-            .canPay(state, playerId, effectiveCost, precomputedSources = cachedSources, spellContext = spellContext)
+            .canPay(
+                state,
+                playerId,
+                effectiveCost,
+                precomputedSources = cachedSources,
+                spellContext = spellContext,
+                additionalPayLife = additionalPayLife,
+            )
         if (!canAfford) {
             // Secondary face is unaffordable. If the primary face is affordable, still surface
             // this face as a grayed-out option so the drag-to-play menu presents both and the
@@ -3195,7 +3536,13 @@ class CastSpellEnumerator : ActionEnumerator {
         val targetReqs = face.script.targetRequirements
         val autoTapPreview = if (context.skipAutoTapPreview) null else {
             context.manaSolver
-                .solve(state, playerId, effectiveCost, precomputedSources = cachedSources)
+                .solve(
+                    state,
+                    playerId,
+                    effectiveCost,
+                    precomputedSources = cachedSources,
+                    additionalPayLife = additionalPayLife,
+                )
                 ?.sources?.map { it.entityId }
         }
         val manaCostString = effectiveCost.toString()
@@ -3256,5 +3603,35 @@ class CastSpellEnumerator : ActionEnumerator {
             )
         )
         return true
+    }
+
+    /**
+     * Resolve the dynamic life portion of a hand-cast variant against the actual spell entity.
+     * Optional-cost enumerators (kicker, splice, conspire, and casualty) do not pass through the
+     * normal additional-cost loop, so they use this same context-aware total before asking the
+     * mana solver for a source selection.
+     */
+    private fun resolveDynamicPayLifeCostForCast(
+        context: EnumerationContext,
+        cardId: EntityId,
+        cardDef: CardDefinition?,
+        printedAdditionalCosts: Iterable<AdditionalCost>? = null,
+        extraAdditionalCosts: Iterable<AdditionalCost> = emptyList(),
+    ): Int? {
+        val costs = buildList {
+            (printedAdditionalCosts ?: cardDef?.script?.additionalCosts.orEmpty()).let(::addAll)
+            addAll(extraAdditionalCosts)
+            context.state.getEntity(cardId)
+                ?.get<PlayWithAdditionalCostComponent>()
+                ?.takeIf { it.controllerId == context.playerId }
+                ?.additionalCosts
+                ?.let(::addAll)
+        }
+        return context.costUtils.resolvePayLifeCostTotal(
+            state = context.state,
+            playerId = context.playerId,
+            sourceId = cardId,
+            costs = costs,
+        )
     }
 }

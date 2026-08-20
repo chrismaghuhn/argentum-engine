@@ -44,7 +44,7 @@ class PlayerExecutors(
         AddAdditionalEndStepsExecutor(),
         AddCombatPhaseExecutor(),
         AddMainPhaseExecutor(),
-        AnyPlayerMayPayExecutor(executeEffect = effectExecutor),
+        AnyPlayerMayPayExecutor(executeEffect = effectExecutor, cardRegistry = cardRegistry),
         CantActivateLoyaltyAbilitiesExecutor(),
         CantCastSpellsExecutor(),
         CantCastSpellsFromNonHandZonesExecutor(),

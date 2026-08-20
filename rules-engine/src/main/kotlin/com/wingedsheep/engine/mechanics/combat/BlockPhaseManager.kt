@@ -386,7 +386,7 @@ internal class BlockPhaseManager(
             // games) sharedTurnTeam is a singleton, so you can only block attackers aimed at you.
             val attacking = state.getEntity(attackerId)?.get<AttackingComponent>()
                 ?: return "${cardComponent.name} can't block: ${attackerId.value} isn't attacking"
-            val attackedDefender = CombatDefenders.defendingPlayerOf(state, attacking.defenderId)
+            val attackedDefender = CombatDefenders.defendingPlayerOf(state, attacking)
             if (attackedDefender !in state.sharedTurnTeam(blockingPlayer)) {
                 return "${cardComponent.name} can't block a creature attacking another player"
             }
@@ -1132,6 +1132,7 @@ internal class BlockPhaseManager(
                 producesColorless = source.producesColorless,
                 requiresSacrifice = source.requiresSacrifice,
                 requiresTappingAnotherPermanent = source.tapPermanentsSubCost != null,
+                manaAbilityId = source.manaAbilityFor(source.producesColors.firstOrNull())?.id,
             )
         }
         val solution = manaSolver.solve(state, blockingPlayer, manaCost)
