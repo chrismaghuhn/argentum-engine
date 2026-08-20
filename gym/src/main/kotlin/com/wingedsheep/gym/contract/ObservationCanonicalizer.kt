@@ -7,7 +7,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -22,6 +24,7 @@ internal object ObservationCanonicalizer {
         explicitNulls = false
         prettyPrint = false
         classDiscriminator = "type"
+        allowStructuredMapKeys = true
     }
 
     /** Serialize the actual wire DTO, retaining transport IDs and presentation fields. */
@@ -39,11 +42,15 @@ internal object ObservationCanonicalizer {
 
         encoded["pendingDecision"]?.let { pending ->
             semantic["pendingDecision"] = if (pending is JsonObject) {
-                JsonObject(
-                    pending.filterKeys {
-                        it !in setOf("decisionId", "prompt", "sourceName", "effectHint")
+                val pendingSemantic = pending.filterKeys {
+                    it !in setOf("decisionId", "prompt", "sourceName", "effectHint")
+                }.toMutableMap()
+                pending["structuredDomain"]?.let { domain ->
+                    if (domain is JsonObject) {
+                        pendingSemantic["structuredDomain"] = semanticStructuredDomain(domain)
                     }
-                )
+                }
+                JsonObject(pendingSemantic)
             } else {
                 pending
             }
@@ -90,6 +97,41 @@ internal object ObservationCanonicalizer {
         put("isDecisionOption", action.isDecisionOption)
     }
 
+    /**
+     * Remove opaque routing handles from the semantic identity of ordering domains.  Ordinary
+     * entity IDs remain established public references; trigger ordering uses generated
+     * `trigger-order-object-*` handles whose stable actor-facing labels are the semantic value.
+     */
+    private fun semanticStructuredDomain(domain: JsonObject): JsonObject {
+        val type = domain["type"]?.jsonPrimitive?.content
+        if (type == "mana-sources") {
+            return JsonObject(
+                domain.entries
+                    .filter { (key, _) -> key != "autoPaySuggestion" }
+                    .associate { (key, value) -> key to value }
+            )
+        }
+        if (type != "ordering") return domain
+
+        val objectIds = domain["objects"]?.jsonArray.orEmpty().map { it.jsonPrimitive.content }
+        val labels = domain["objectLabels"]?.jsonObject
+        val cardInfo = domain["cardInfo"]?.jsonObject
+        val objectSemantics = objectIds.map { id ->
+            buildJsonObject {
+                if (!id.startsWith("trigger-order-object-")) put("entityId", id)
+                labels?.get(id)?.let { put("label", it) }
+                cardInfo?.get(id)?.let { put("cardInfo", it) }
+            }
+        }.sortedBy { canonicalize(it).toString() }
+
+        return buildJsonObject {
+            domain.entries
+                .filter { (key, _) -> key !in setOf("objects", "cardInfo", "objectLabels") }
+                .forEach { (key, value) -> put(key, value) }
+            put("objectSemantics", JsonArray(objectSemantics))
+        }
+    }
+
     private val unorderedArrayKeys = setOf(
         "types",
         "subtypes",
@@ -98,7 +140,15 @@ internal object ObservationCanonicalizer {
         "availableColors",
         "attachments",
         "targetEntityIds",
-        "validSacrificeTargets"
+        "validSacrificeTargets",
+        "candidates",
+        "nonSelectableOptions",
+        "matchingOptions",
+        "availableSources",
+        "waterbendPermanents",
+        "producesColors",
+        "blockedByIds",
+        "blockedAttackerIds"
     )
 
     private fun canonicalize(element: JsonElement, propertyName: String? = null): JsonElement = when (element) {

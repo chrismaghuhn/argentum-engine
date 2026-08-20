@@ -2,6 +2,10 @@
 
 This document defines the JSON payloads exchanged between `web-client` and `game-server`.
 
+The Gym observation contract is documented in the structured-decision section below as well;
+it uses the same server-authoritative principle but is consumed by training clients rather than
+the browser client.
+
 ## 1. Core Philosophy
 
 * **Server -> Client:** The Server pushes the **Truth**. The Client renders it.
@@ -740,3 +744,23 @@ replay up to the requested frame (so no full `GameState` is stored per frame). T
 A snapshot is exact but **not editable** in the card-search builder; the builder's own name-based
 `?s=` share remains for authoring/editing. The engine `GameState` is (de)serialized with
 `persistenceJson` (`allowStructuredMapKeys` — `zones` is keyed by `ZoneKey`).
+
+## Gym structured decision observations
+
+The Gym contract is currently `argentum-gym-contract@v1.8-structured-decision-domains`.
+`TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
+perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
+from the authoritative Rules decision. The opponent receives the existing generic view with no
+domain or private candidates.
+
+The domain hierarchy covers targets, card selection, modes, distribution, ordering, pile splitting,
+library search, library reorder, combat resolution, mana-source selection, replacement choices and
+budget modals. Simple one-mode and single-card choices remain flat `legalActions`. The obsolete
+legacy `AssignDamageDecision` shape is not projected as a modern domain; current combat uses the
+complete `CombatResolutionDecision` graph.
+
+The client must submit a complete `DecisionResponse` through the decision endpoint. It must not
+infer candidates from hidden zones or compute legality locally. Rules validates the response against
+the pending decision. `decisionId` is a routing value and is not part of `stateDigest`; candidate
+sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
+configuration are used by the JVM service and HTTP server.

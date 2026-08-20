@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.AssignDamageDecision
 import com.wingedsheep.engine.core.BatchYesNoDecision
 import com.wingedsheep.engine.core.BatchYesNoResponse
 import com.wingedsheep.engine.core.BottomCards
+import com.wingedsheep.engine.core.BudgetModeOption
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
@@ -19,10 +20,13 @@ import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionDecision
 import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
+import com.wingedsheep.engine.core.DamageEdgeDirection
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.ForetellCard
 import com.wingedsheep.engine.core.GameAction
+import com.wingedsheep.engine.core.ManaSourceOption
+import com.wingedsheep.engine.core.ModeOption
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -36,11 +40,14 @@ import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.SearchLibraryDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
+import com.wingedsheep.engine.core.SearchCardInfo
 import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.SuspendCardFromHand
+import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.TypecycleCard
 import com.wingedsheep.engine.core.UnlockRoomDoor
+import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.handlers.ConditionEvaluator
@@ -736,7 +743,7 @@ class ObservationBuilder(
      * into the unified action-ID space. For complex decisions (targets,
      * distribute, order, split, search, reorder, damage, mana sources) we emit
      * [PendingDecisionView.requiresStructuredResponse] = true; the trainer
-     * submits a `DecisionResponse` via a dedicated endpoint (Phase 3).
+     * submits a complete `DecisionResponse` via the dedicated decision endpoint.
      */
     private fun buildPendingDecision(
         decision: PendingDecision,
@@ -757,7 +764,6 @@ class ObservationBuilder(
             ) to ActionRegistry.EMPTY
         }
 
-        val ctx = decision.context
         val baseShape = DecisionShape()
 
         return when (decision) {
@@ -807,7 +813,18 @@ class ObservationBuilder(
                         minSelections = decision.minModes,
                         maxSelections = decision.maxModes
                     )
-                    baseView(decision, PendingDecisionKind.CHOOSE_MODE, shape, structured = true) to
+                    val domain = ModeSelectionDomain(
+                        modes = decision.modes.sortedBy { it.index }.map(::modeDomain),
+                        minModes = decision.minModes,
+                        maxModes = decision.maxModes
+                    )
+                    baseView(
+                        decision,
+                        PendingDecisionKind.CHOOSE_MODE,
+                        shape,
+                        structured = true,
+                        structuredDomain = domain
+                    ) to
                         ActionRegistry.EMPTY
                 }
             }
@@ -829,7 +846,20 @@ class ObservationBuilder(
             is ChooseReplacementDecision ->
                 // Two-index (from, to) pick — emitted as a structured decision (trainer submits the
                 // DecisionResponse directly rather than via the flat action-ID space).
-                baseView(decision, PendingDecisionKind.CHOOSE_REPLACEMENT, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.CHOOSE_REPLACEMENT,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = ReplacementDomain(
+                        fromOptions = decision.fromOptions,
+                        toOptions = decision.toOptions,
+                        fromMetadata = decision.fromMetadata.map(::optionMetadataDomain),
+                        toMetadata = decision.toMetadata.map(::optionMetadataDomain),
+                        allowedToByFrom = decision.allowedToByFrom,
+                        defaultFromIndex = decision.defaultFromIndex
+                    )
+                ) to
                     ActionRegistry.EMPTY
             is SelectCardsDecision -> {
                 if (decision.minSelections == 1 && decision.maxSelections == 1 && !decision.ordered) {
@@ -847,48 +877,148 @@ class ObservationBuilder(
                         minSelections = decision.minSelections,
                         maxSelections = decision.maxSelections
                     )
-                    baseView(decision, PendingDecisionKind.SELECT_CARDS, shape, structured = true) to
+                    baseView(
+                        decision,
+                        PendingDecisionKind.SELECT_CARDS,
+                        shape,
+                        structured = true,
+                        structuredDomain = decision.cardSelectionDomain()
+                    ) to
                         ActionRegistry.EMPTY
                 }
             }
             is BudgetModalDecision -> {
                 val shape = DecisionShape(budget = decision.budget)
-                baseView(decision, PendingDecisionKind.BUDGET_MODAL, shape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.BUDGET_MODAL,
+                    shape,
+                    structured = true,
+                    structuredDomain = BudgetModalDomain(
+                        budget = decision.budget,
+                        modes = decision.modes.map(::budgetModeDomain)
+                    )
+                ) to
                     ActionRegistry.EMPTY
             }
             is ChooseTargetsDecision ->
-                baseView(decision, PendingDecisionKind.CHOOSE_TARGETS, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.CHOOSE_TARGETS,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = TargetsDomain(
+                        requirements = decision.targetRequirements.sortedBy { it.index }.map { requirement ->
+                            targetRequirementDomain(requirement, decision.legalTargets[requirement.index].orEmpty())
+                        },
+                        canCancel = decision.canCancel
+                    )
+                ) to
                     ActionRegistry.EMPTY
             is DistributeDecision -> {
                 val shape = DecisionShape(totalToDistribute = decision.totalAmount)
-                baseView(decision, PendingDecisionKind.DISTRIBUTE, shape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.DISTRIBUTE,
+                    shape,
+                    structured = true,
+                    structuredDomain = DistributionDomain(
+                        totalAmount = decision.totalAmount,
+                        targets = unorderedEntityIds(decision.targets),
+                        minPerTarget = decision.minPerTarget,
+                        maxPerTarget = decision.maxPerTarget.filterKeys { it in decision.targets },
+                        allowPartial = decision.allowPartial
+                    )
+                ) to
                     ActionRegistry.EMPTY
             }
             is OrderObjectsDecision ->
-                baseView(decision, PendingDecisionKind.ORDER_OBJECTS, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.ORDER_OBJECTS,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = OrderingDomain(
+                        objects = unorderedEntityIds(decision.objects),
+                        cardInfo = decision.cardInfo
+                            ?.filterKeys { it in decision.objects }
+                            ?.mapValues { (_, info) -> structuredCardInfo(info) },
+                        objectLabels = decision.objectLabels?.filterKeys { it in decision.objects }
+                    )
+                ) to
                     ActionRegistry.EMPTY
             is SplitPilesDecision ->
-                baseView(decision, PendingDecisionKind.SPLIT_PILES, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.SPLIT_PILES,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = SplitPilesDomain(
+                        cards = unorderedEntityIds(decision.cards),
+                        numberOfPiles = decision.numberOfPiles,
+                        pileLabels = decision.pileLabels,
+                        cardInfo = decision.cardInfo
+                            ?.filterKeys { it in decision.cards }
+                            ?.mapValues { (_, info) -> structuredCardInfo(info) }
+                    )
+                ) to
                     ActionRegistry.EMPTY
             is SearchLibraryDecision -> {
                 val shape = DecisionShape(
                     minSelections = decision.minSelections,
                     maxSelections = decision.maxSelections
                 )
-                baseView(decision, PendingDecisionKind.SEARCH_LIBRARY, shape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.SEARCH_LIBRARY,
+                    shape,
+                    structured = true,
+                    structuredDomain = SearchLibraryDomain(
+                        options = unorderedEntityIds(decision.options),
+                        minSelections = decision.minSelections,
+                        maxSelections = decision.maxSelections,
+                        cards = decision.cards
+                            .filterKeys { it in decision.options }
+                            .mapValues { (_, info) -> structuredCardInfo(info) },
+                        filterDescription = decision.filterDescription
+                    )
+                ) to
                     ActionRegistry.EMPTY
             }
             is ReorderLibraryDecision ->
-                baseView(decision, PendingDecisionKind.REORDER_LIBRARY, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.REORDER_LIBRARY,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = ReorderLibraryDomain(
+                        cards = decision.cards,
+                        cardInfo = decision.cardInfo
+                            .filterKeys { it in decision.cards }
+                            .mapValues { (_, info) -> structuredCardInfo(info) }
+                    )
+                ) to
                     ActionRegistry.EMPTY
             is AssignDamageDecision ->
                 baseView(decision, PendingDecisionKind.ASSIGN_DAMAGE, baseShape, structured = true) to
                     ActionRegistry.EMPTY
             is CombatResolutionDecision ->
-                baseView(decision, PendingDecisionKind.COMBAT_RESOLUTION, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.COMBAT_RESOLUTION,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = decision.combatResolutionDomain()
+                ) to
                     ActionRegistry.EMPTY
             is SelectManaSourcesDecision ->
-                baseView(decision, PendingDecisionKind.SELECT_MANA_SOURCES, baseShape, structured = true) to
+                baseView(
+                    decision,
+                    PendingDecisionKind.SELECT_MANA_SOURCES,
+                    baseShape,
+                    structured = true,
+                    structuredDomain = decision.manaSourcesDomain()
+                ) to
                     ActionRegistry.EMPTY
         }
     }
@@ -897,7 +1027,8 @@ class ObservationBuilder(
         decision: PendingDecision,
         kind: PendingDecisionKind,
         shape: DecisionShape,
-        structured: Boolean
+        structured: Boolean,
+        structuredDomain: StructuredDecisionDomain? = null
     ): PendingDecisionView {
         val ctx = decision.context
         return PendingDecisionView(
@@ -910,9 +1041,169 @@ class ObservationBuilder(
             triggeringEntityId = ctx.triggeringEntityId,
             effectHint = ctx.effectHint,
             requiresStructuredResponse = structured,
-            shape = shape
+            shape = shape,
+            structuredDomain = structuredDomain
         )
     }
+
+    private fun targetRequirementDomain(
+        requirement: TargetRequirementInfo,
+        candidates: List<EntityId>
+    ): TargetRequirementDomain = TargetRequirementDomain(
+        index = requirement.index,
+        description = requirement.description,
+        minTargets = requirement.minTargets,
+        maxTargets = requirement.maxTargets,
+        candidates = unorderedEntityIds(candidates),
+        sameOwner = requirement.sameOwner,
+        totalManaValueAtMost = requirement.totalManaValueAtMost,
+        differentNames = requirement.differentNames
+    )
+
+    private fun SelectCardsDecision.cardSelectionDomain(): CardSelectionDomain = CardSelectionDomain(
+        options = unorderedEntityIds(options),
+        minSelections = minSelections,
+        maxSelections = maxSelections,
+        ordered = ordered,
+        cardInfo = cardInfo
+            ?.filterKeys { it in options || it in nonSelectableOptions }
+            ?.mapValues { (_, info) -> structuredCardInfo(info) },
+        useTargetingUI = useTargetingUI,
+        selectedLabel = selectedLabel,
+        remainderLabel = remainderLabel,
+        nonSelectableOptions = unorderedEntityIds(nonSelectableOptions),
+        onePerCardType = onePerCardType,
+        onePerColor = onePerColor,
+        availableColors = availableColors?.sorted(),
+        onePerCardName = onePerCardName,
+        onePerBasicLandType = onePerBasicLandType,
+        onePerPower = onePerPower,
+        maxTotalManaValue = maxTotalManaValue,
+        minTotalManaValue = minTotalManaValue,
+        maxTotalPower = maxTotalPower,
+        conditionalMinimums = conditionalMinimums.map { minimum ->
+            ConditionalSelectionMinimumDomain(
+                requiredSelections = minimum.requiredSelections,
+                minimumSelections = minimum.minimumSelections,
+                matchingOptions = unorderedEntityIds(minimum.matchingOptions),
+                requiredMatches = minimum.requiredMatches,
+                description = minimum.description
+            )
+        }
+    )
+
+    private fun structuredCardInfo(info: SearchCardInfo): StructuredCardInfo = StructuredCardInfo(
+        name = info.name,
+        manaCost = info.manaCost,
+        typeLine = info.typeLine,
+        imageUri = info.imageUri,
+        colors = info.colors.sorted(),
+        power = info.power
+    )
+
+    private fun modeDomain(mode: ModeOption): ModeOptionDomain = ModeOptionDomain(
+        index = mode.index,
+        text = mode.text,
+        available = mode.available
+    )
+
+    private fun optionMetadataDomain(metadata: OptionMetadata): OptionMetadataDomain = OptionMetadataDomain(
+        id = metadata.id,
+        description = metadata.description,
+        iconKey = metadata.iconKey,
+        triggeringPlayerId = metadata.triggeringPlayerId
+    )
+
+    private fun budgetModeDomain(mode: BudgetModeOption): BudgetModeDomain = BudgetModeDomain(
+        cost = mode.cost,
+        description = mode.description
+    )
+
+    private fun CombatResolutionDecision.combatResolutionDomain(): CombatResolutionDomain =
+        CombatResolutionDomain(
+            firstStrike = firstStrike,
+            attackers = attackers.sortedBy { it.id.value }.map { attacker ->
+                CombatAttackerDomain(
+                    id = attacker.id,
+                    name = attacker.name,
+                    power = attacker.power,
+                    toughness = attacker.toughness,
+                    hasTrample = attacker.hasTrample,
+                    hasDeathtouch = attacker.hasDeathtouch,
+                    hasFirstStrike = attacker.hasFirstStrike,
+                    hasDoubleStrike = attacker.hasDoubleStrike,
+                    dealsDamageThisStep = attacker.dealsDamageThisStep,
+                    bandId = attacker.bandId,
+                    attackedDefenderId = attacker.attackedDefenderId,
+                    blockedByIds = unorderedEntityIds(attacker.blockedByIds),
+                    markedDamage = attacker.markedDamage
+                )
+            },
+            blockers = blockers.sortedBy { it.id.value }.map { blocker ->
+                CombatBlockerDomain(
+                    id = blocker.id,
+                    name = blocker.name,
+                    power = blocker.power,
+                    toughness = blocker.toughness,
+                    hasDeathtouch = blocker.hasDeathtouch,
+                    hasFirstStrike = blocker.hasFirstStrike,
+                    hasDoubleStrike = blocker.hasDoubleStrike,
+                    dealsDamageThisStep = blocker.dealsDamageThisStep,
+                    blockedAttackerIds = unorderedEntityIds(blocker.blockedAttackerIds),
+                    markedDamage = blocker.markedDamage
+                )
+            },
+            defenders = defenders.sortedBy { it.id.value }.map { defender ->
+                CombatDefenderDomain(
+                    id = defender.id,
+                    kind = CombatTargetKind.valueOf(defender.kind.name),
+                    name = defender.name,
+                    lifeOrLoyaltyOrDefense = defender.lifeOrLoyaltyOrDefense
+                )
+            },
+            edges = edges.sortedBy { it.id }.map { edge ->
+                CombatDamageEdgeDomain(
+                    id = edge.id,
+                    sourceId = edge.sourceId,
+                    targetId = edge.targetId,
+                    direction = CombatDamageDirection.valueOf(edge.direction.name),
+                    amount = edge.amount,
+                    maximum = edge.maximum,
+                    lethal = edge.lethal,
+                    isTrampleDrain = edge.isTrampleDrain,
+                    editableBy = edge.editableBy
+                )
+            },
+            coChooserId = coChooserId
+        )
+
+    private fun SelectManaSourcesDecision.manaSourcesDomain(): ManaSourcesDomain = ManaSourcesDomain(
+        availableSources = availableSources.sortedBy { it.entityId.value }.map { source ->
+            ManaSourceDomain(
+                entityId = source.entityId,
+                name = source.name,
+                producesColors = source.producesColors,
+                producesColorless = source.producesColorless,
+                requiresSacrifice = source.requiresSacrifice,
+                requiresTappingAnotherPermanent = source.requiresTappingAnotherPermanent,
+                manaAbilityId = source.manaAbilityId?.value
+            )
+        },
+        requiredCost = requiredCost,
+        autoPaySuggestion = autoPaySuggestion,
+        canDecline = canDecline,
+        waterbendPermanents = waterbendPermanents.sortedBy { it.entityId.value }.map(::waterbendDomain)
+    )
+
+    private fun waterbendDomain(choice: WaterbendPermanentChoice): WaterbendPermanentDomain =
+        WaterbendPermanentDomain(
+            entityId = choice.entityId,
+            name = choice.name,
+            isCreature = choice.isCreature
+        )
+
+    private fun unorderedEntityIds(ids: List<EntityId>): List<EntityId> =
+        ids.sortedBy { it.value }
 
     private fun buildDecisionOptionViews(
         decision: PendingDecision,

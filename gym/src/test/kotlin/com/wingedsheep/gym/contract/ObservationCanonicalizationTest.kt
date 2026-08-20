@@ -12,6 +12,10 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class ObservationCanonicalizationTest : FunSpec({
 
@@ -144,6 +148,27 @@ class ObservationCanonicalizationTest : FunSpec({
         ObservationCanonicalizer.semanticJson(withTargetsA) shouldBe
             ObservationCanonicalizer.semanticJson(withTargetsB)
         StateDigest.compute(withTargetsA) shouldBe StateDigest.compute(withTargetsB)
+    }
+
+    test("structured action target slot order remains semantic") {
+        val base = observation(environment())
+        val first = EntityId("target-slot-a")
+        val second = EntityId("target-slot-b")
+
+        fun withTargetOrder(order: List<EntityId>): TrainingObservation = base.copy(
+            legalActions = listOf(
+                base.legalActions.first().copy(
+                    actionSemantics = buildJsonObject {
+                        put("targets", buildJsonArray {
+                            order.forEach { add(JsonPrimitive(it.value)) }
+                        })
+                    }
+                )
+            )
+        )
+
+        ObservationCanonicalizer.semanticJson(withTargetOrder(listOf(first, second))) shouldNotBe
+            ObservationCanonicalizer.semanticJson(withTargetOrder(listOf(second, first)))
     }
 
     test("rules-significant stack order remains observable") {
