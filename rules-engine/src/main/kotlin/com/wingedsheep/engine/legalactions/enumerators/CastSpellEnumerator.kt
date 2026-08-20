@@ -230,6 +230,7 @@ class CastSpellEnumerator : ActionEnumerator {
             val sacrificeTargets = mutableListOf<EntityId>()
             var variableSacrificeTargets = emptyList<EntityId>()
             var variableSacrificeReduction = 0
+            var variablePermanentsCostInfo: AdditionalCostData? = null
             var exileTargets = emptyList<EntityId>()
             var exileMinCount = 0
             var discardTargets = emptyList<EntityId>()
@@ -318,6 +319,28 @@ class CastSpellEnumerator : ActionEnumerator {
                             }
                             tapTargets = validTapTargets
                             tapCount = atom.count
+                        }
+                        is CostAtom.VariablePermanents -> {
+                            // Normal casts use the same variable-permanent domain and picker
+                            // contract as the optional-cost rail. The explicit info holder is kept
+                            // even when the candidate list is empty so minCount=0 remains a real,
+                            // structured zero-choice payment rather than disappearing.
+                            if (atom.action == PermanentCostAction.SACRIFICE) {
+                                val candidates = SelectionCostPresentation.candidates(
+                                    state,
+                                    playerId,
+                                    cardId,
+                                    cost,
+                                    context.costUtils,
+                                    context.predicateEvaluator,
+                                )
+                                if (!VariablePermanentsCost.canPay(state, playerId, atom)) {
+                                    canPayAdditionalCosts = false
+                                }
+                                variablePermanentsCostInfo = SelectionCostPresentation
+                                    .costData(cost, candidates)
+                                    ?.second
+                            }
                         }
                         is CostAtom.PayLife -> {
                             // All PayLife leaves were preflighted as one total above.
@@ -747,7 +770,8 @@ class CastSpellEnumerator : ActionEnumerator {
                 tapTargets, tapCount,
                 beholdTargets, beholdCount,
                 blightVariableCost, blightVariableCreatures, blightVariableMaxX,
-                payXLifeCost, payXLifeMaxX
+                payXLifeCost, payXLifeMaxX,
+                variablePermanentsCostInfo,
             )
 
             // Compute the "… or pay {N}" cast paths — one extra legal action each, carrying the
@@ -2850,7 +2874,8 @@ class CastSpellEnumerator : ActionEnumerator {
         blightVariableCreatures: List<EntityId> = emptyList(),
         blightVariableMaxX: Int = 0,
         payXLifeCost: AdditionalCost.PayXLife? = null,
-        payXLifeMaxX: Int = 0
+        payXLifeMaxX: Int = 0,
+        variablePermanentsCostInfo: AdditionalCostData? = null,
     ): AdditionalCostData? {
         if (blightVariableCost != null) {
             return AdditionalCostData(
@@ -2867,6 +2892,7 @@ class CastSpellEnumerator : ActionEnumerator {
                 payXLifeMaxX = payXLifeMaxX
             )
         }
+        if (variablePermanentsCostInfo != null) return variablePermanentsCostInfo
         return if (variableSacrificeTargets.isNotEmpty()) {
             val varSacCost = additionalCosts.filterIsInstance<AdditionalCost.SacrificeCreaturesForCostReduction>().firstOrNull()
             AdditionalCostData(
