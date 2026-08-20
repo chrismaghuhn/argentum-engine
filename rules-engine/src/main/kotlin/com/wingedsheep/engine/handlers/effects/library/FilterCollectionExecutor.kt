@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachmentLegality
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Subtype
@@ -21,7 +22,9 @@ import kotlin.reflect.KClass
  * Splits a named collection into matching and non-matching subsets based on
  * a [CollectionFilter]. This is a purely automatic filter with no player choice.
  */
-class FilterCollectionExecutor : EffectExecutor<FilterCollectionEffect> {
+class FilterCollectionExecutor(
+    private val attachmentLegality: AttachmentLegality? = null,
+) : EffectExecutor<FilterCollectionEffect> {
 
     override val effectType: KClass<FilterCollectionEffect> = FilterCollectionEffect::class
 
@@ -72,6 +75,22 @@ class FilterCollectionExecutor : EffectExecutor<FilterCollectionEffect> {
                 val predicateContext = PredicateContext.fromEffectContext(context)
                 cards.partition { cardId ->
                     predicateEvaluator.matches(state, projected, cardId, filter.filter, predicateContext)
+                }
+            }
+
+            is CollectionFilter.AttachableTo -> {
+                val legality = attachmentLegality
+                    ?: return EffectResult.error(state, "Attachment legality seam is not configured")
+                val targetId = TargetResolutionUtils.resolveTarget(filter.target, context, state)
+                    ?: return EffectResult.error(state, "No valid attachment destination")
+                cards.partition { attachmentId ->
+                    legality.isLegal(
+                        state = state,
+                        attachmentId = attachmentId,
+                        targetId = targetId,
+                        controllerId = context.controllerId,
+                        context = context,
+                    )
                 }
             }
 

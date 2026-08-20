@@ -1720,6 +1720,15 @@ sealed interface CollectionFilter {
     data class MatchesFilter(val filter: GameObjectFilter) : CollectionFilter
 
     /**
+     * Keep only currently legal battlefield Auras and/or Equipment for [target]. The target is
+     * already selected by the enclosing effect; this filter publishes the complete current
+     * candidate domain and never chooses or orders attachments itself.
+     */
+    @SerialName("AttachableTo")
+    @Serializable
+    data class AttachableTo(val target: EffectTarget) : CollectionFilter
+
+    /**
      * Keep only creatures with the greatest power in the collection.
      * Uses projected state to determine power (respects continuous effects).
      * If multiple creatures are tied for the greatest power, all of them are kept.

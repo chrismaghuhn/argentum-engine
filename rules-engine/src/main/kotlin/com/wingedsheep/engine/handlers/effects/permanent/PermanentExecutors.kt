@@ -21,6 +21,8 @@ import com.wingedsheep.engine.handlers.effects.permanent.abilities.RemoveAllAbil
 import com.wingedsheep.engine.handlers.effects.permanent.abilities.RemoveKeywordExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachEquipmentExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachTargetEquipmentToCreatureExecutor
+import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachmentLegality
+import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachCollectionToTargetExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.attachments.UnattachEquipmentExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.attachments.GrantExileOnLeaveExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.control.ExchangeControlExecutor
@@ -109,7 +111,8 @@ import com.wingedsheep.engine.registry.CardRegistry
 class PermanentExecutors(
     private val decisionHandler: DecisionHandler = DecisionHandler(),
     private val amountEvaluator: DynamicAmountEvaluator = DynamicAmountEvaluator(),
-    private val cardRegistry: CardRegistry
+    private val cardRegistry: CardRegistry,
+    private val attachmentLegality: AttachmentLegality? = null,
 ) : ExecutorModule {
     private val staticAbilityHandler = StaticAbilityHandler(cardRegistry)
 
@@ -197,6 +200,11 @@ class PermanentExecutors(
         // attachments
         AttachEquipmentExecutor(),
         AttachTargetEquipmentToCreatureExecutor(),
+        AttachCollectionToTargetExecutor(
+            decisionHandler = decisionHandler,
+            attachmentLegality = attachmentLegality
+                ?: AttachmentLegality(cardRegistry, com.wingedsheep.engine.handlers.TargetFinder()),
+        ),
         UnattachEquipmentExecutor(),
         GrantExileOnLeaveExecutor(),
         // stats
