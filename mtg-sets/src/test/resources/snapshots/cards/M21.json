@@ -291,6 +291,83 @@
     ]
 }
 
+// Hooded Blightfang
+{
+    "name": "Hooded Blightfang",
+    "manaCost": "{2}{B}",
+    "typeLine": "Creature — Snake",
+    "oracleText": "Deathtouch\nWhenever a creature you control with deathtouch attacks, each opponent loses 1 life and you gain 1 life.\nWhenever a creature you control with deathtouch deals damage to a planeswalker, destroy that planeswalker.",
+    "creatureStats": {
+        "power": 1,
+        "toughness": 4
+    },
+    "keywords": [
+        "DEATHTOUCH"
+    ],
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "AttackEvent",
+                    "filter": "creature kw:deathtouch ctrl:you"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Composite",
+                    "effects": [
+                        {
+                            "type": "LoseLife",
+                            "amount": {
+                                "type": "Fixed",
+                                "amount": 1
+                            },
+                            "target": {
+                                "type": "PlayerRef",
+                                "player": "EachOpponent"
+                            }
+                        },
+                        {
+                            "type": "GainLife",
+                            "amount": {
+                                "type": "Fixed",
+                                "amount": 1
+                            }
+                        }
+                    ]
+                }
+            },
+            {
+                "id": "ability_2",
+                "trigger": {
+                    "type": "DealsDamageEvent",
+                    "recipient": {
+                        "type": "RecipientMatching",
+                        "filter": "planeswalker"
+                    },
+                    "sourceFilter": "creature kw:deathtouch ctrl:you"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "MoveToZone",
+                    "target": "DamageRecipient",
+                    "destination": "Graveyard",
+                    "byDestruction": true
+                }
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "104",
+        "rarity": "RARE",
+        "artist": "Uriah Voth",
+        "imageUri": "https://cards.scryfall.io/normal/front/a/c/ac38a51f-9a3b-451c-b72d-6d4e0b296fbd.jpg?1783930706"
+    },
+    "colorIdentityOverride": [
+        "BLACK"
+    ]
+}
+
 // Library Larcenist
 {
     "name": "Library Larcenist",
