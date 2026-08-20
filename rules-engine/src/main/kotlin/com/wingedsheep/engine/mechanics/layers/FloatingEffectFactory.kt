@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.layers
 
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.model.EntityId
@@ -42,7 +43,12 @@ fun GameState.addFloatingEffect(
         sourceCondition = sourceCondition,
         timestamp = timestamp
     )
-    return stateWithId.copy(floatingEffects = stateWithId.floatingEffects + effect)
+    val updated = stateWithId.copy(floatingEffects = stateWithId.floatingEffects + effect)
+    return if (modification is SerializableModification.ChangeController) {
+        CombatDefenders.latchInvalidatedAttackRelationships(updated)
+    } else {
+        updated
+    }
 }
 
 /**
@@ -91,5 +97,11 @@ fun GameState.createFloatingEffect(
  * Use with [createFloatingEffect] for executors that create multiple effects atomically
  * (e.g., BecomeCreatureExecutor which creates 6-7 effects with a shared timestamp).
  */
-fun GameState.addFloatingEffects(effects: List<ActiveFloatingEffect>): GameState =
-    copy(floatingEffects = floatingEffects + effects)
+fun GameState.addFloatingEffects(effects: List<ActiveFloatingEffect>): GameState {
+    val updated = copy(floatingEffects = floatingEffects + effects)
+    return if (effects.any { it.effect.modification is SerializableModification.ChangeController }) {
+        CombatDefenders.latchInvalidatedAttackRelationships(updated)
+    } else {
+        updated
+    }
+}

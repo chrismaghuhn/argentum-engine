@@ -3,6 +3,9 @@ package com.wingedsheep.engine.handlers.effects
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.snapshotFor
+import com.wingedsheep.engine.state.components.stack.stampedFor
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.values.EntityReference
 
@@ -30,6 +33,8 @@ fun lkiPolicyFor(reference: EntityReference): LkiPolicy = when (reference) {
     // chosen) are all routinely read after they have left the battlefield (CR 112.7a / 608.2h).
     EntityReference.Source,
     EntityReference.Triggering,
+    EntityReference.DamageSource,
+    EntityReference.DamageRecipient,
     EntityReference.EnchantedCreature,
     is EntityReference.Sacrificed,
     is EntityReference.TappedAsCost,
@@ -49,15 +54,25 @@ fun lkiPolicyFor(reference: EntityReference): LkiPolicy = when (reference) {
 /**
  * The captured [EntitySnapshot] backing a [LkiPolicy.LIVE_THEN_LKI] [reference] that resolved to
  * [entityId] after it left the battlefield, or null if none was captured (the read then falls
- * through to base characteristics). Triggering- and enchanted-creature last-known P/T are still
- * carried as scalars on [EffectContext] and resolved at their own read sites, so they return null
- * here.
+ * through to base characteristics). Enchanted-creature last-known P/T is still carried as a
+ * scalar on [EffectContext] and resolved at its own read site, so it returns null here.
  */
-fun EffectContext.lkiSnapshotFor(reference: EntityReference, entityId: EntityId): EntitySnapshot? =
+fun EffectContext.lkiSnapshotFor(
+    reference: EntityReference,
+    entityId: EntityId,
+    state: GameState,
+): EntitySnapshot? =
     when (reference) {
         is EntityReference.Sacrificed -> sacrificedPermanents.snapshotFor(entityId)
         is EntityReference.TappedAsCost -> tappedEntitySnapshots.snapshotFor(entityId)
         is EntityReference.FromCostStorage -> chosenEntitySnapshots.snapshotFor(entityId)
-        EntityReference.Source -> lastKnownSourceSnapshot?.takeIf { it.entityId == entityId }
+        EntityReference.Source -> lastKnownSourceSnapshot
+            ?.takeIf { it.entityId == entityId && !state.isCapturedBattlefieldObjectLive(entityId, it) }
+        EntityReference.DamageSource -> damageSourceLastKnownSnapshot
+            .stampedFor(entityId)
+            ?.takeIf { !state.isCapturedBattlefieldObjectLive(entityId, it) }
+        EntityReference.DamageRecipient -> damageRecipientLastKnownSnapshot
+            .stampedFor(entityId)
+            ?.takeIf { !state.isCapturedBattlefieldObjectLive(entityId, it) }
         else -> null
     }

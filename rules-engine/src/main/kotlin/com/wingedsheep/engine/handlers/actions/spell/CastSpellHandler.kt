@@ -220,6 +220,9 @@ class CastSpellHandler(
         if (state.priorityPlayerId != action.playerId) {
             return "You don't have priority"
         }
+        if (action.alternativePayment?.equipPayment != null) {
+            return "Equip payment mode is only valid for equip abilities"
+        }
 
         val container = state.getEntity(action.cardId)
             ?: return "Card not found: ${action.cardId}"
@@ -1165,7 +1168,7 @@ class CastSpellHandler(
         }
 
         // Account for Delve/Convoke reduction before validating payment
-        val costAfterAltPayment = if (action.alternativePayment != null && !action.alternativePayment.isEmpty && cardDef != null) {
+        val costAfterAltPayment = if (action.alternativePayment != null && action.alternativePayment.hasResourcePayment && cardDef != null) {
             alternativePaymentHandler.calculateReducedCost(
                 effectiveCost,
                 action.alternativePayment,
@@ -1562,6 +1565,13 @@ class CastSpellHandler(
         }
         if (action.modeTargetsOrdered.isNotEmpty() && action.modeTargetsOrdered.size != chosen.size) {
             return "modeTargetsOrdered size (${action.modeTargetsOrdered.size}) must match chosenModes size (${chosen.size})"
+        }
+        val repeatedModeDistributions = action.modeDamageDistribution.keys
+            .filter { mode -> chosen.count { it == mode } > 1 }
+            .sorted()
+        if (repeatedModeDistributions.isNotEmpty()) {
+            return "modeDamageDistribution cannot be supplied for repeated mode index(es): " +
+                repeatedModeDistributions.joinToString()
         }
         return null
     }
@@ -2303,7 +2313,8 @@ class CastSpellHandler(
                 modes = modalEffect.modes,
                 chosenModeIndices = action.chosenModes,
                 resolvedModeTargets = emptyList(),
-                currentOrdinal = 0
+                currentOrdinal = 0,
+                resolvedModeTargetRequirements = emptyList()
             )
         }
 
@@ -3089,7 +3100,7 @@ class CastSpellHandler(
             else harmonizePaymentXValue(currentState, action, cardDef, effectiveCost)
 
         // Apply alternative payment (Delve/Convoke/Harmonize)
-        if (action.alternativePayment != null && !action.alternativePayment.isEmpty && cardDef != null) {
+        if (action.alternativePayment != null && action.alternativePayment.hasResourcePayment && cardDef != null) {
             val altPaymentResult = alternativePaymentHandler.apply(
                 currentState,
                 effectiveCost,
@@ -3556,9 +3567,10 @@ class CastSpellHandler(
             currentState,
             action.cardId,
             action.playerId,
-            action.targets,
-            action.xValue,
-            sacrificedSnapshots,
+            targetLockState = state,
+            targets = action.targets,
+            xValue = action.xValue,
+            sacrificedPermanents = sacrificedSnapshots,
             castFaceDown = action.castFaceDown,
             castTransformed = transformedFace != null,
             damageDistribution = action.damageDistribution,
@@ -3587,6 +3599,7 @@ class CastSpellHandler(
             chosenModes = action.chosenModes,
             modeTargetsOrdered = effectiveModeTargetsOrdered,
             modeTargetRequirements = perModeTargetRequirements,
+            modeTargetRequirementsOrdered = action.modeTargetRequirementsOrdered,
             modeDamageDistribution = action.modeDamageDistribution,
             // Splice (CR 702.47a): the *text* the spell gained, recorded by card name. The cards
             // themselves stay in hand — nothing about splicing moves them.
@@ -3793,7 +3806,7 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
                         )
                     }
                 } else emptyList()
@@ -3830,7 +3843,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()
@@ -3867,7 +3881,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()
@@ -4494,16 +4509,30 @@ class CastSpellHandler(
         modes: List<com.wingedsheep.sdk.scripting.effects.Mode>,
         chosenModeIndices: List<Int>,
         resolvedModeTargets: List<List<ChosenTarget>>,
-        currentOrdinal: Int
+        currentOrdinal: Int,
+        resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
+        val effectiveModes = modes.map { mode ->
+            mode.copy(
+                targetRequirements = targetValidator.snapshotDynamicCounts(
+                    state = state,
+                    requirements = mode.targetRequirements,
+                    casterId = casterId,
+                    sourceId = cardId,
+                    xValue = baseCastAction.xValue
+                )
+            )
+        }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
+        var requirementsAccum = resolvedModeTargetRequirements
 
         while (ordinal < chosenModeIndices.size) {
             val modeIndex = chosenModeIndices[ordinal]
-            val mode = modes[modeIndex]
+            val mode = effectiveModes[modeIndex]
             if (mode.targetRequirements.isEmpty()) {
                 targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(emptyList())
                 ordinal++
                 continue
             }
@@ -4553,10 +4582,11 @@ class CastSpellHandler(
                 cardId = cardId,
                 casterId = casterId,
                 baseCastAction = baseCastAction,
-                modes = modes,
+                modes = effectiveModes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
-                currentOrdinal = ordinal
+                currentOrdinal = ordinal,
+                resolvedModeTargetRequirements = requirementsAccum
             )
 
             val pausedState = state
@@ -4579,7 +4609,13 @@ class CastSpellHandler(
         }
 
         // All modes resolved without needing another decision — finalize directly.
-        return finalizeModalCast(state, baseCastAction, chosenModeIndices, targetsAccum)
+        return finalizeModalCast(
+            state,
+            baseCastAction,
+            chosenModeIndices,
+            targetsAccum,
+            requirementsAccum
+        )
     }
 
     /**
@@ -4591,12 +4627,14 @@ class CastSpellHandler(
         state: GameState,
         baseCastAction: CastSpell,
         chosenModeIndices: List<Int>,
-        resolvedModeTargets: List<List<ChosenTarget>>
+        resolvedModeTargets: List<List<ChosenTarget>>,
+        resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
         val flatTargets = resolvedModeTargets.flatten()
         val finalAction = baseCastAction.copy(
             chosenModes = chosenModeIndices,
             modeTargetsOrdered = resolvedModeTargets,
+            modeTargetRequirementsOrdered = resolvedModeTargetRequirements,
             targets = flatTargets
         )
         return execute(state, finalAction)

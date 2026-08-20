@@ -5,10 +5,14 @@ import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.DamageSourceLki
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
@@ -30,6 +34,8 @@ interface EntityView {
 
     /** Counter-type-string → count (e.g. "+1/+1", "-1/-1", "loyalty"). Matches the counter wire format. */
     val counters: Map<String, Int>
+    /** Projected colors at capture time, represented by their stable enum names. */
+    val colors: Set<String>
     val keywords: Set<String>
     val subtypes: Set<String>
     val supertypes: Set<String>
@@ -54,6 +60,7 @@ class LiveEntityView(
     override val toughness: Int? get() = projected.getToughness(entityId)
     override val controllerId: EntityId? get() = projected.getController(entityId)
     override val counters: Map<String, Int> get() = countersOf(state, entityId)
+    override val colors: Set<String> get() = projected.getColors(entityId)
     override val keywords: Set<String> get() = projected.getKeywords(entityId)
     override val subtypes: Set<String> get() = projected.getSubtypes(entityId)
     override val supertypes: Set<String> get() = projected.getSupertypes(entityId)
@@ -79,6 +86,8 @@ class LiveEntityView(
 data class EntitySnapshot(
     override val entityId: EntityId,
     override val power: Int? = null,
+    /** Printed base power captured with the projected power for relative-power predicates. */
+    val basePower: Int? = null,
     override val toughness: Int? = null,
     override val subtypes: Set<String> = emptySet(),
     /** Projected supertypes at capture time (e.g. "LEGENDARY", "BASIC", "SNOW", "WORLD"). */
@@ -91,6 +100,7 @@ data class EntitySnapshot(
      */
     override val controllerId: EntityId? = null,
     override val counters: Map<String, Int> = emptyMap(),
+    override val colors: Set<String> = emptySet(),
     override val keywords: Set<String> = emptySet(),
     override val lostAllAbilities: Boolean = false,
     // --- battlefield-exit-only fields (no meaning for a live permanent) ---
@@ -98,6 +108,19 @@ data class EntitySnapshot(
     val typeLine: TypeLine? = null,
     /** Card definition id, so dies/leaves triggers resolve for tokens after 704.5d cleanup. */
     val cardDefinitionId: String? = null,
+    /**
+     * Battlefield-object incarnation captured with this snapshot (CR 400.7). Entity ids are
+     * reused by this engine across zone changes, so a damage reference must compare this stamp
+     * before reading a live object; a mismatched stamp is a different object, never the captured
+     * one.
+     */
+    val battlefieldEntryTimestamp: Long? = null,
+    /**
+     * A zone-independent incarnation stamp for event-time references. Battlefield objects use the
+     * entry stamp above; stack/spell objects use the engine timestamp at capture. A non-null value
+     * is required before a damage source or recipient id can authorize identity-sensitive matching.
+     */
+    val objectIncarnationStamp: Long? = null,
     /**
      * The permanent's name at capture time. Frozen because a *cost* has to be describable after the
      * permanent it consumed is gone: the emerge sacrifice (CR 702.119a) is named on the stack card
@@ -149,6 +172,10 @@ data class EntitySnapshot(
     val wasAttacking: Boolean = false,
     /** True if the leaving entity was a token (CR 704.5d — suppress persist-style return triggers). */
     val wasToken: Boolean = false,
+    /** True if the projected permanent was face down at capture time. */
+    val wasFaceDown: Boolean = false,
+    /** Whether the object was tapped at capture time. */
+    val wasTapped: Boolean = false,
     /**
      * True if this permanent carried the suspected designation (CR 701.60a) at capture time.
      *
@@ -177,14 +204,22 @@ data class EntitySnapshot(
             return EntitySnapshot(
                 entityId = entityId,
                 power = projected.getPower(entityId),
+                basePower = state.getEntity(entityId)?.get<CardComponent>()?.baseStats?.basePower,
                 toughness = projected.getToughness(entityId),
                 subtypes = projected.getSubtypes(entityId),
                 supertypes = projected.getSupertypes(entityId),
                 controllerId = projected.getController(entityId),
                 counters = countersOf(state, entityId),
+                colors = projected.getColors(entityId),
                 keywords = projected.getKeywords(entityId),
                 lostAllAbilities = projected.hasLostAllAbilities(entityId),
                 wasSuspected = projected.isSuspected(entityId),
+                wasToken = state.getEntity(entityId)?.has<TokenComponent>() == true,
+                wasFaceDown = projected.isFaceDown(entityId),
+                wasTapped = state.getEntity(entityId)?.has<TappedComponent>() == true,
+                wasAttacking = state.getEntity(entityId)?.has<AttackingComponent>() == true,
+                battlefieldEntryTimestamp = state.getEntity(entityId)
+                    ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
                 name = projected.getName(entityId)
                     ?: if (projected.isFaceDown(entityId)) {
                         null
@@ -219,6 +254,8 @@ fun captureEntitySnapshots(
         subtypes = projected.getSubtypes(id),
         supertypes = projected.getSupertypes(id),
         controllerId = projected.getController(id),
+        colors = projected.getColors(id),
+        wasFaceDown = projected.isFaceDown(id),
         wasSuspected = projected.isSuspected(id),
     )
 }
@@ -239,6 +276,9 @@ fun captureEntitySnapshots(
     val container = state.getEntity(snapshot.entityId)
     snapshot.copy(
         wasToken = container?.has<TokenComponent>() ?: false,
+        wasFaceDown = state.projectedState.isFaceDown(snapshot.entityId),
+        battlefieldEntryTimestamp = container
+            ?.get<BattlefieldEntryTimestampComponent>()?.timestamp,
         name = state.projectedState.getName(snapshot.entityId)
             ?: if (state.projectedState.isFaceDown(snapshot.entityId)) {
                 null
@@ -246,6 +286,61 @@ fun captureEntitySnapshots(
                 container?.get<CardComponent>()?.name
             },
     )
+}
+
+/**
+ * Whether [entityId] is still the battlefield object represented by [snapshot]. A snapshot with
+ * no stamp is never considered a live-object identity witness. A damage reference without an
+ * event-time incarnation cannot distinguish an original object from a same-id replacement, so it
+ * must use LKI or fail closed. This keeps the no-bare-id rule explicit even for legacy payloads.
+ */
+fun GameState.isCapturedBattlefieldObjectLive(entityId: EntityId, snapshot: EntitySnapshot): Boolean {
+    if (entityId !in getBattlefield() || snapshot.entityId != entityId) return false
+    val currentStamp = getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp
+    return snapshot.battlefieldEntryTimestamp != null &&
+        currentStamp != null &&
+        currentStamp == snapshot.battlefieldEntryTimestamp
+}
+
+/**
+ * Whether [snapshot] carries a usable event-time incarnation witness for [entityId]. A matching
+ * entity id without the battlefield-entry stamp is not enough to distinguish a departed object,
+ * a same-id replacement, or malformed legacy damage data.
+ */
+fun EntitySnapshot.isStampedFor(entityId: EntityId): Boolean =
+    this.entityId == entityId &&
+        (objectIncarnationStamp != null || battlefieldEntryTimestamp != null)
+
+/**
+ * Return this snapshot only when it is an event-time identity witness for [entityId]. Damage-role
+ * consumers use this nullable form so an id-only legacy snapshot cannot accidentally authorize a
+ * read from the current entity or a same-id replacement.
+ */
+fun EntitySnapshot?.stampedFor(entityId: EntityId): EntitySnapshot? =
+    this?.takeIf { it.isStampedFor(entityId) }
+
+/**
+ * Whether two event-time snapshots describe the same object incarnation. A matching entity id is
+ * not sufficient: this engine reuses ids across zone changes, and a missing stamp is therefore
+ * unknown rather than an implicit match. Battlefield entry stamps take precedence over the
+ * zone-independent object stamp so a stack object can never match a battlefield replacement that
+ * happens to have the same numeric timestamp.
+ */
+fun EntitySnapshot?.matchesIncarnation(
+    other: EntitySnapshot?,
+    entityId: EntityId,
+): Boolean {
+    val expected = this.stampedFor(entityId) ?: return false
+    val actual = other.stampedFor(entityId) ?: return false
+    return if (expected.battlefieldEntryTimestamp != null || actual.battlefieldEntryTimestamp != null) {
+        expected.battlefieldEntryTimestamp != null &&
+            actual.battlefieldEntryTimestamp != null &&
+            expected.battlefieldEntryTimestamp == actual.battlefieldEntryTimestamp
+    } else {
+        expected.objectIncarnationStamp != null &&
+            actual.objectIncarnationStamp != null &&
+            expected.objectIncarnationStamp == actual.objectIncarnationStamp
+    }
 }
 
 /**
@@ -272,9 +367,13 @@ fun projectedTypeLine(state: GameState, entityId: EntityId, baseTypeLine: TypeLi
         .mapNotNull { runCatching { CardType.valueOf(it) }.getOrNull() }
         .toSet()
         .ifEmpty { baseTypeLine.cardTypes }
+    val supertypes = projected.types
+        .mapNotNull { runCatching { Supertype.valueOf(it) }.getOrNull() }
+        .toSet()
     return baseTypeLine.copy(
         cardTypes = cardTypes,
         subtypes = projected.subtypes.map { Subtype(it) }.toSet(),
+        supertypes = supertypes,
     )
 }
 

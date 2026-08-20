@@ -25,6 +25,8 @@ import com.wingedsheep.engine.state.components.player.ManaSpentOnSpellsThisTurnC
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
+import com.wingedsheep.engine.state.components.stack.isCapturedBattlefieldObjectLive
+import com.wingedsheep.engine.state.components.stack.stampedFor
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
@@ -48,6 +50,47 @@ class TriggerMatcher(
     private val predicateEvaluator: PredicateEvaluator,
     private val conditionEvaluator: ConditionEvaluator
 ) {
+
+    /**
+     * Resolve the CR 603.3b placement pass for one concrete event occurrence. The second pass is
+     * reserved for the branch whose condition is itself an [EventPattern.AbilityTriggeredEvent].
+     * In particular, [EventPattern.SpellOrAbilityOnStackEvent] can match the same engine event but
+     * describes an object being put on the stack, not another ability triggering.
+     */
+    fun placementStageFor(
+        trigger: EventPattern,
+        binding: TriggerBinding,
+        event: EngineGameEvent,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        state: GameState
+    ): TriggerPlacementStage = if (
+        matchesAbilityTriggeredPlacementCondition(
+            trigger, binding, event, sourceId, controllerId, state
+        )
+    ) {
+        TriggerPlacementStage.ABILITY_TRIGGERED
+    } else {
+        TriggerPlacementStage.NORMAL
+    }
+
+    private fun matchesAbilityTriggeredPlacementCondition(
+        trigger: EventPattern,
+        binding: TriggerBinding,
+        event: EngineGameEvent,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        state: GameState
+    ): Boolean = when (trigger) {
+        is EventPattern.AnyOf -> trigger.events.any {
+            matchesAbilityTriggeredPlacementCondition(
+                it, binding, event, sourceId, controllerId, state
+            )
+        }
+        is EventPattern.AbilityTriggeredEvent ->
+            matchesTrigger(trigger, binding, event, sourceId, controllerId, state)
+        else -> false
+    }
 
     fun matchesTrigger(
         trigger: EventPattern,
@@ -216,7 +259,9 @@ class TriggerMatcher(
                 // Generic (source=Any) DamageReceivedEvent can match in the main loop
                 // Specific source-filtered ones are handled in detectDamagedBySourceTriggers
                 if (trigger.source != SourceFilter.Any) return false
-                event is DamageDealtEvent && (binding != TriggerBinding.SELF || event.targetId == sourceId)
+                event is DamageDealtEvent &&
+                    (binding != TriggerBinding.SELF || event.targetId == sourceId) &&
+                    matchesDamageRecipientIdentity(event)
             }
             is EventPattern.SpellCastEvent -> {
                 event is SpellCastEvent &&
@@ -1489,45 +1534,45 @@ class TriggerMatcher(
         val combatMatches = trigger.damageType == DamageType.Any ||
             (trigger.damageType == DamageType.Combat && event.isCombatDamage) ||
             (trigger.damageType == DamageType.NonCombat && !event.isCombatDamage)
+        val recipientKinds = event.effectiveRecipientKinds
+        val recipientSnapshot = stampedDamageRecipientSnapshot(event)
+        val permanentRecipient = recipientKinds.contains(DamageRecipientKind.CREATURE) ||
+            recipientKinds.contains(DamageRecipientKind.PLANESWALKER) ||
+            recipientKinds.contains(DamageRecipientKind.BATTLE) ||
+            recipientKinds.contains(DamageRecipientKind.OTHER)
         val recipientMatches = when (trigger.recipient) {
             RecipientFilter.Any -> true
-            RecipientFilter.AnyPlayer -> event.targetId in state.turnOrder
+            RecipientFilter.AnyPlayer -> recipientKinds.contains(DamageRecipientKind.PLAYER)
             RecipientFilter.AnyPlayerOrPlaneswalker -> {
-                event.targetId in state.turnOrder ||
-                    state.projectedState.isPlaneswalker(event.targetId)
+                recipientKinds.contains(DamageRecipientKind.PLAYER) ||
+                    (recipientKinds.contains(DamageRecipientKind.PLANESWALKER) && recipientSnapshot != null)
             }
-            RecipientFilter.AnyCreature -> event.targetId !in state.turnOrder
+            RecipientFilter.AnyCreature ->
+                recipientKinds.contains(DamageRecipientKind.CREATURE) && recipientSnapshot != null
             RecipientFilter.You -> false // handled separately in detectDamageToControllerTriggers
             RecipientFilter.Opponent -> {
-                event.targetId in state.turnOrder && event.targetId != controllerId
+                recipientKinds.contains(DamageRecipientKind.PLAYER) && event.targetId != controllerId
             }
             RecipientFilter.CreatureOpponentControls -> {
                 val targetController = recipientControllerLki(event, state)
-                recipientIsCreatureLki(event, state) && targetController != null && targetController != controllerId
+                recipientIsCreatureLki(event) && recipientSnapshot != null &&
+                    targetController != null && targetController != controllerId
             }
             RecipientFilter.CreatureYouControl -> {
-                recipientIsCreatureLki(event, state) && recipientControllerLki(event, state) == controllerId
+                recipientIsCreatureLki(event) && recipientSnapshot != null &&
+                    recipientControllerLki(event, state) == controllerId
             }
             RecipientFilter.PermanentYouControl -> {
-                recipientControllerLki(event, state) == controllerId
+                permanentRecipient &&
+                    recipientSnapshot != null &&
+                    recipientControllerLki(event, state) == controllerId
             }
-            RecipientFilter.AnyPermanent -> event.targetId !in state.turnOrder
+            RecipientFilter.AnyPermanent -> permanentRecipient && recipientSnapshot != null
             is RecipientFilter.Matching -> {
-                // "deals damage to a [filtered] creature/permanent" (East-Mark Cavalier,
-                // Mauhur, Spider-Slayer). Evaluate the filter against the recipient in projected
-                // state — mirrors DamageCalculator's Matching handling. A recipient that left the
-                // battlefield to the same damage is no longer projectable, but there is nothing
-                // left to act on ("destroy that creature"), so a live match is sufficient. A null
-                // controller can't evaluate controller-relative filters (e.g. "a creature an
-                // opponent controls"), so require it rather than passing an empty sentinel id.
                 val filter = (trigger.recipient as RecipientFilter.Matching).filter
                 controllerId != null &&
-                    event.targetId !in state.turnOrder &&
-                    state.getEntity(event.targetId) != null &&
-                    predicateEvaluator.matches(
-                        state, state.projectedState, event.targetId, filter,
-                        PredicateContext(controllerId = controllerId)
-                    )
+                    permanentRecipient &&
+                    matchesDamageRecipientFilter(filter, event, state, controllerId)
             }
             RecipientFilter.Self -> false // handled elsewhere
             else -> false
@@ -1549,6 +1594,43 @@ class TriggerMatcher(
     }
 
     /**
+     * Match the source clause of a [EventPattern.DamageReceivedEvent] from the event-time source
+     * characteristics. Source-blind `Any` deliberately accepts an unknown source; every concrete
+     * source clause requires a stamped snapshot and never consults a mutable same-id entity.
+     * Direct damage-received dispatch currently defines only creature and spell source vocabulary;
+     * unsupported concrete clauses fail closed until their event-time semantics are modeled.
+     */
+    fun matchesDamageReceivedSource(
+        source: SourceFilter,
+        event: DamageDealtEvent,
+    ): Boolean {
+        if (source == SourceFilter.Any) return true
+        val snapshot = stampedDamageSourceSnapshot(event) ?: return false
+        val typeLine = snapshot.typeLine ?: return false
+        return when (source) {
+            SourceFilter.Creature -> typeLine.isCreature && !snapshot.wasFaceDown
+            SourceFilter.Spell ->
+                (typeLine.isInstant || typeLine.isSorcery) && !snapshot.wasFaceDown
+            else -> false
+        }
+    }
+
+    /**
+     * Match a concrete ATTACHED source identity. The attachment index supplies the host id, but
+     * that id is not an object identity: require the event-time source snapshot's battlefield
+     * entry stamp to prove it is still the attached host rather than a same-id replacement.
+     */
+    fun matchesAttachedDamageSourceIdentity(
+        attachedEntityId: EntityId,
+        event: DamageDealtEvent,
+        state: GameState,
+    ): Boolean {
+        if (event.sourceId != attachedEntityId) return false
+        val snapshot = stampedDamageSourceSnapshot(event) ?: return false
+        return state.isCapturedBattlefieldObjectLive(attachedEntityId, snapshot)
+    }
+
+    /**
      * Whether the *source* of [event] matches [sourceFilter], evaluated relative to [controllerId]
      * so controller-relative predicates ("a source you control" / "an opponent controls") read from
      * the observing permanent's controller. A null filter matches every source — "whenever you're
@@ -1565,14 +1647,43 @@ class TriggerMatcher(
         state: GameState,
         controllerId: EntityId?
     ): Boolean {
-        if (sourceFilter == null || event.sourceId == null) return true
+        if (sourceFilter == null) return true
+        // A source-filtered observer must never match an event whose source is unknown. In
+        // particular, do not let the generic damage context bind TriggeringEntity to the
+        // recipient when this branch later constructs a source-filtered trigger context.
+        val sourceId = event.sourceId ?: return false
+        val sourceSnapshot = stampedDamageSourceSnapshot(event)
+            ?: return false
         val predicateContext = com.wingedsheep.engine.handlers.PredicateContext(
             controllerId = controllerId ?: EntityId(""),
-            sourceId = null
+            sourceId = null,
+            damageSourceId = sourceId,
+            damageRecipientId = event.targetId,
+            damageRecipientKind = event.effectiveRecipientKind,
+            damageRecipientKinds = event.effectiveRecipientKinds,
+            damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot
         )
-        return predicateEvaluator.matches(
-            state, state.projectedState, event.sourceId, sourceFilter, predicateContext
-        )
+        // Always read the captured event-time characteristics. The stamp proves which live
+        // incarnation the snapshot describes; it does not authorize mutable current/base
+        // characteristics to replace that snapshot.
+        return predicateEvaluator.matchesSnapshot(state, sourceSnapshot, sourceFilter, predicateContext)
+    }
+
+    /**
+     * Whether a damage source was a creature at damage time, retaining the same stamped/LKI
+     * choice as [matchesDamageSourceFilter]. Combat batch and subtype-specialized dispatches have
+     * an intrinsic creature gate in addition to their source filter; reading the current entity
+     * unconditionally would classify a same-id replacement instead of the event source.
+     */
+    fun isDamageSourceCreatureAtDamage(
+        state: GameState,
+        projected: ProjectedState,
+        event: DamageDealtEvent,
+    ): Boolean {
+        val snapshot = stampedDamageSourceSnapshot(event)
+            ?: return false
+        return snapshot.typeLine?.isCreature == true && !snapshot.wasFaceDown
     }
 
     /**
@@ -1583,14 +1694,92 @@ class TriggerMatcher(
      * trigger ("a creature you control / an opponent controls is dealt damage") would silently miss
      * the killing blow (CR 603.10).
      */
-    private fun recipientControllerLki(event: DamageDealtEvent, state: GameState): EntityId? =
-        state.getEntity(event.targetId)?.get<ControllerComponent>()?.playerId
-            ?: event.targetControllerId
+    private fun recipientControllerLki(event: DamageDealtEvent, state: GameState): EntityId? {
+        val snapshot = stampedDamageRecipientSnapshot(event)
+        val liveIsOriginal = snapshot?.let {
+            state.isCapturedBattlefieldObjectLive(event.targetId, it)
+        } ?: false
+        return if (liveIsOriginal) {
+            state.projectedState.getController(event.targetId)
+                ?: state.getEntity(event.targetId)?.get<ControllerComponent>()?.playerId
+                ?: snapshot.controllerId
+                ?: event.targetControllerId
+        } else {
+            snapshot?.controllerId ?: event.targetControllerId.takeIf { snapshot != null }
+        }
+    }
 
     /** Whether the damage recipient was a creature, with the same LKI fallback as [recipientControllerLki]. */
-    private fun recipientIsCreatureLki(event: DamageDealtEvent, state: GameState): Boolean =
-        state.getEntity(event.targetId)?.get<CardComponent>()?.typeLine?.isCreature == true ||
-            event.targetWasCreature
+    private fun recipientIsCreatureLki(event: DamageDealtEvent): Boolean =
+        event.effectiveRecipientKinds.contains(DamageRecipientKind.CREATURE)
+
+    /**
+     * Read the role captured on the damage event. An unknown role is deliberately not reconstructed
+     * from the current state: the recipient may have changed zones or characteristics before
+     * trigger detection, and an entity id is not a type witness.
+     */
+    private fun matchesDamageRecipientFilter(
+        filter: GameObjectFilter,
+        event: DamageDealtEvent,
+        state: GameState,
+        controllerId: EntityId,
+    ): Boolean {
+        val snapshot = stampedDamageRecipientSnapshot(event) ?: return false
+        val liveIsOriginal = state.isCapturedBattlefieldObjectLive(event.targetId, snapshot)
+        val context = damagePredicateContext(event, controllerId)
+        return when {
+            liveIsOriginal -> predicateEvaluator.matches(
+                state, state.projectedState, event.targetId, filter, context
+            )
+            else -> predicateEvaluator.matchesSnapshot(state, snapshot, filter, context)
+        }
+    }
+
+    private fun damagePredicateContext(
+        event: DamageDealtEvent,
+        controllerId: EntityId?,
+    ): PredicateContext = PredicateContext(
+        controllerId = controllerId ?: EntityId(""),
+        damageSourceId = event.sourceId,
+        damageRecipientId = event.targetId,
+        damageRecipientKind = event.effectiveRecipientKind,
+        damageRecipientKinds = event.effectiveRecipientKinds,
+        damageSourceLastKnownSnapshot = event.damageSourceLastKnownSnapshot,
+        damageRecipientLastKnownSnapshot = event.damageRecipientLastKnownSnapshot,
+    )
+
+    /**
+     * The recipient identity witness carried by a damage event. Recipient matching is allowed to
+     * read either the live projected object (when this stamp still proves it is the same object)
+     * or the captured LKI after it leaves. An id-only snapshot is unknown and never reaches either
+     * branch.
+     */
+    fun stampedDamageRecipientSnapshot(event: DamageDealtEvent): com.wingedsheep.engine.state.components.stack.EntitySnapshot? =
+        event.damageRecipientLastKnownSnapshot.stampedFor(event.targetId)
+
+    /** Source counterpart used by source-filtered, subtype, and combat-batch matching. */
+    fun stampedDamageSourceSnapshot(event: DamageDealtEvent): com.wingedsheep.engine.state.components.stack.EntitySnapshot? {
+        val sourceId = event.sourceId ?: return null
+        return event.damageSourceLastKnownSnapshot.stampedFor(sourceId)
+    }
+
+    /**
+     * Whether a generic damage-received observer can identify its recipient without consulting a
+     * mutable same-id entity. Players are explicit event roles and have no battlefield snapshot;
+     * permanent recipients require the stamped event-time snapshot.
+     */
+    fun matchesDamageRecipientIdentity(event: DamageDealtEvent): Boolean {
+        val kinds = event.effectiveRecipientKinds
+        val hasPermanentRole = kinds.contains(DamageRecipientKind.CREATURE) ||
+            kinds.contains(DamageRecipientKind.PLANESWALKER) ||
+            kinds.contains(DamageRecipientKind.BATTLE) ||
+            kinds.contains(DamageRecipientKind.OTHER)
+        return when {
+            hasPermanentRole -> stampedDamageRecipientSnapshot(event) != null
+            kinds.contains(DamageRecipientKind.PLAYER) -> true
+            else -> false
+        }
+    }
 
     fun matchesStepTrigger(
         trigger: EventPattern,
@@ -1897,6 +2086,12 @@ class TriggerMatcher(
                 triggeringEntityName = trigger.triggerContext.triggeringEntityName,
                 triggeringEntityNameKnown = trigger.triggerContext.triggeringEntityNameKnown,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
                 triggerCounterCount = trigger.triggerContext.counterCount,
                 triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,

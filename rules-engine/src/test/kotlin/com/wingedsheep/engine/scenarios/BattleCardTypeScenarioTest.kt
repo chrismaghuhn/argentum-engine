@@ -108,7 +108,7 @@ class BattleCardTypeScenarioTest : ScenarioTestBase() {
                 withClue("CR 310.11a — only an opponent of a Siege's controller may protect it") {
                     protectorOf(game, "Test Siege") shouldBe game.player2Id
                 }
-                withClue("the Siege is still controlled by the player who cast it (CR 310.8d asymmetry)") {
+                withClue("the Siege is still controlled by the player who cast it (CR 310.9d asymmetry)") {
                     game.state.projectedState.getController(game.findPermanent("Test Siege")!!) shouldBe game.player1Id
                 }
             }
@@ -333,7 +333,7 @@ class BattleCardTypeScenarioTest : ScenarioTestBase() {
                 ).error shouldBe null
 
                 val siege = game.findPermanent("Test Siege")!!
-                withClue("CR 310.8d — the defending player is the Siege's protector, not its controller") {
+                withClue("CR 310.9d — the defending player is the Siege's protector, not its controller") {
                     com.wingedsheep.engine.mechanics.combat.CombatDefenders
                         .defendingPlayerOf(game.state, siege) shouldBe game.player2Id
                 }

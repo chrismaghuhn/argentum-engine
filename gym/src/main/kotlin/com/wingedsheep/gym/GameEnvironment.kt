@@ -312,7 +312,9 @@ class GameEnvironment private constructor(
             candidate is TypecycleCard && submitted is TypecycleCard ->
                 candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
             candidate is CrewVehicle && submitted is CrewVehicle ->
-                candidate.playerId == submitted.playerId && candidate.vehicleId == submitted.vehicleId
+                candidate.playerId == submitted.playerId &&
+                    candidate.vehicleId == submitted.vehicleId &&
+                    candidate.crewAbilityKey == submitted.crewAbilityKey
             candidate is SaddleMount && submitted is SaddleMount ->
                 candidate.playerId == submitted.playerId && candidate.mountId == submitted.mountId
             candidate is TurnFaceUp && submitted is TurnFaceUp ->
@@ -354,7 +356,17 @@ class GameEnvironment private constructor(
         xValue = null,
         repeatCount = 1,
         paymentStrategy = PaymentStrategy.AutoPay,
-        alternativePayment = null,
+        // Equip payment is a candidate identity: NORMAL and FREE_FIRST_EQUIP are distinct
+        // server-offered actions. Other alternative-payment assignments are caller-filled
+        // resource choices and remain normalized away as before.
+        alternativePayment = action.alternativePayment
+            ?.takeIf { it.equipPayment != null }
+            ?.copy(
+                delvedCards = emptyList(),
+                convokedCreatures = emptyMap(),
+                harmonizeCreature = null,
+                tapForGenericPermanents = emptySet(),
+            ),
     )
 
     /**

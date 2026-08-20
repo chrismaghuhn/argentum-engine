@@ -1,6 +1,5 @@
 package com.wingedsheep.engine.scenarios
 
-import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.ScenarioTestBase
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
@@ -27,7 +26,6 @@ class AbundantMawScenarioTest : ScenarioTestBase() {
 
                 val cast = game.castSpellWithEmerge(
                     1, "Abundant Maw", "Centaur Courser",
-                    targets = listOf(ChosenTarget.Player(game.player2Id)),
                 )
                 withClue("the emerge cast should succeed: ${cast.error}") { cast.error shouldBe null }
                 game.isInGraveyard(1, "Centaur Courser") shouldBe true
@@ -52,7 +50,6 @@ class AbundantMawScenarioTest : ScenarioTestBase() {
 
                 game.castSpellWithEmerge(
                     1, "Abundant Maw", "Centaur Courser",
-                    targets = listOf(ChosenTarget.Player(game.player2Id)),
                 ).error shouldBe null
                 game.resolveStack()
 

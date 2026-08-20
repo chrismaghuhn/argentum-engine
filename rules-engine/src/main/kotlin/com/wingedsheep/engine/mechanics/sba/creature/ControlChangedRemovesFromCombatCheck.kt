@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.sba.creature
 
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.mechanics.combat.CombatRemovalHelper
 import com.wingedsheep.engine.mechanics.sba.SbaOrder
 import com.wingedsheep.engine.mechanics.sba.StateBasedActionCheck
@@ -31,12 +32,13 @@ class ControlChangedRemovesFromCombatCheck : StateBasedActionCheck {
     override val order = SbaOrder.CONTROL_CHANGED_COMBAT
 
     override fun check(state: GameState): ExecutionResult {
-        val activePlayerId = state.activePlayerId
-        val projected = state.projectedState
+        val latchedState = CombatDefenders.latchInvalidatedAttackRelationships(state)
+        val activePlayerId = latchedState.activePlayerId
+        val projected = latchedState.projectedState
 
         val toRemove = mutableListOf<EntityId>()
-        for (entityId in state.getBattlefield()) {
-            val container = state.getEntity(entityId) ?: continue
+        for (entityId in latchedState.getBattlefield()) {
+            val container = latchedState.getEntity(entityId) ?: continue
             val isAttacking = container.has<AttackingComponent>()
             val isBlocking = container.has<BlockingComponent>()
             if (!isAttacking && !isBlocking) continue
@@ -50,9 +52,9 @@ class ControlChangedRemovesFromCombatCheck : StateBasedActionCheck {
             if (mismatched) toRemove.add(entityId)
         }
 
-        if (toRemove.isEmpty()) return ExecutionResult.success(state)
+        if (toRemove.isEmpty()) return ExecutionResult.success(latchedState)
 
-        var newState = state
+        var newState = latchedState
         for (entityId in toRemove) {
             newState = CombatRemovalHelper.removeFromCombat(newState, entityId)
         }

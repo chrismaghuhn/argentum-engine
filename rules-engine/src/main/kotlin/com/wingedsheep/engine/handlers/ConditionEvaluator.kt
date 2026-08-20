@@ -785,6 +785,14 @@ class ConditionEvaluator(
             resolution.effectContext.triggeringEntityEntryTimestamp ?: return false
         if (!resolution.effectContext.triggeringEntityNameKnown) return false
         val triggeringName = resolution.effectContext.triggeringEntityName
+        // A live entity with the triggering id must still be the captured battlefield
+        // incarnation. Treat a missing or different entry timestamp as unknown rather than
+        // reclassifying the replacement as an "other" creature. Once the object has left the
+        // battlefield, the frozen occurrence metadata below is the appropriate LKI source.
+        if (triggeringId in state.getBattlefield()) {
+            val currentEntryTimestamp = battlefieldEntryTimestamp(state, triggeringId) ?: return false
+            if (currentEntryTimestamp != triggeringEntryTimestamp) return false
+        }
         // CR 201.2a: objects with no name do not share a name, including with another nameless
         // object. The occurrence identity is still required above so unknown trigger data cannot
         // turn a missing BattlefieldEntryTimestamp into a concrete identity.
@@ -792,7 +800,7 @@ class ConditionEvaluator(
 
         val sharedOnBattlefield = state.getBattlefield().any { entityId ->
             val candidateEntryTimestamp = if (entityId == triggeringId) {
-                battlefieldEntryTimestamp(state, entityId) ?: return false
+                battlefieldEntryTimestamp(state, entityId)
             } else {
                 null
             }

@@ -107,6 +107,65 @@ enum class LifeChangeReason {
 // =============================================================================
 
 /**
+ * The role occupied by a damage recipient at the moment damage was dealt.
+ *
+ * The role is part of the event rather than inferred from the recipient id later: a recipient can
+ * leave the battlefield before triggers are detected or resolve, and player ids are not a safe
+ * substitute for object type. [UNKNOWN] is deliberately not player-like so old/incomplete event
+ * payloads fail closed in player-only resolution paths.
+ */
+@Serializable
+enum class DamageRecipientKind {
+    PLAYER,
+    CREATURE,
+    PLANESWALKER,
+    BATTLE,
+    OTHER,
+    UNKNOWN,
+}
+
+/**
+ * The card/player roles a damage recipient occupied when the damage event was emitted.
+ *
+ * A permanent can have more than one relevant card type at once (for example, an animated
+ * planeswalker can also be a creature), so a single [DamageRecipientKind] loses information.
+ * This compact bit set is deliberately a data class rather than a Kotlin [Set]: its integer wire
+ * representation is deterministic for replay/state-digest purposes and remains forward-readable
+ * when older payloads omit the field. A zero bit set is [UNKNOWN] and is never treated as PLAYER.
+ */
+@Serializable
+data class DamageRecipientKindSet(val bits: Int = 0) {
+    fun contains(kind: DamageRecipientKind): Boolean =
+        kind != DamageRecipientKind.UNKNOWN && bits and kind.bit != 0
+
+    val isUnknown: Boolean get() = bits == 0
+
+    fun asList(): List<DamageRecipientKind> = DamageRecipientKind.entries.filter(::contains)
+
+    companion object {
+        val UNKNOWN = DamageRecipientKindSet(0)
+        val PLAYER = of(DamageRecipientKind.PLAYER)
+        val CREATURE = of(DamageRecipientKind.CREATURE)
+        val PLANESWALKER = of(DamageRecipientKind.PLANESWALKER)
+        val BATTLE = of(DamageRecipientKind.BATTLE)
+        val OTHER = of(DamageRecipientKind.OTHER)
+
+        fun of(vararg kinds: DamageRecipientKind): DamageRecipientKindSet =
+            DamageRecipientKindSet(kinds.fold(0) { bits, kind -> bits or kind.bit })
+    }
+}
+
+private val DamageRecipientKind.bit: Int
+    get() = when (this) {
+        DamageRecipientKind.PLAYER -> 1 shl 0
+        DamageRecipientKind.CREATURE -> 1 shl 1
+        DamageRecipientKind.PLANESWALKER -> 1 shl 2
+        DamageRecipientKind.BATTLE -> 1 shl 3
+        DamageRecipientKind.OTHER -> 1 shl 4
+        DamageRecipientKind.UNKNOWN -> 0
+    }
+
+/**
  * Damage was dealt.
  */
 @Serializable
@@ -154,8 +213,37 @@ data class DamageDealtEvent(
      * their TargetsComponent before event-trigger detection, so target/recipient relationship
      * predicates consume this event-side snapshot instead of consulting later state.
      */
-    val sourceTargetIdsAtDamage: List<EntityId>? = null
+    val sourceTargetIdsAtDamage: List<EntityId>? = null,
+    /** Explicit recipient role captured at damage time, including when the recipient later leaves. */
+    val recipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+    /** All recipient roles captured at damage time, including simultaneous card types. */
+    val recipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+    /** Last-known characteristics of the damage source, when it was a battlefield permanent. */
+    val damageSourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
+    /** Last-known characteristics of the damage recipient, when it was a battlefield permanent. */
+    val damageRecipientLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null
 ) : GameEvent
+
+/**
+ * Resolve the event's explicit role while retaining compatibility with older serialized/manual
+ * events that only carried the pre-existing boolean LKI flags. Those flags are explicit event data;
+ * no entity-id or component heuristic is used here.
+ */
+val DamageDealtEvent.effectiveRecipientKinds: DamageRecipientKindSet
+    get() = when {
+        !recipientKinds.isUnknown -> recipientKinds
+        recipientKind != DamageRecipientKind.UNKNOWN -> DamageRecipientKindSet.of(recipientKind)
+        targetIsPlayer -> DamageRecipientKindSet.PLAYER
+        targetWasCreature -> DamageRecipientKindSet.CREATURE
+        else -> DamageRecipientKindSet.UNKNOWN
+    }
+
+/**
+ * Compatibility projection for callers that can only represent one role. A multi-role recipient
+ * deliberately projects to UNKNOWN instead of selecting an arbitrary bit.
+ */
+val DamageDealtEvent.effectiveRecipientKind: DamageRecipientKind
+    get() = effectiveRecipientKinds.asList().singleOrNull() ?: DamageRecipientKind.UNKNOWN
 
 /**
  * A "next damage from a chosen source" shield fired on an instance of damage (Deflecting Palm,
@@ -180,7 +268,9 @@ data class DamagePreventedEvent(
     val recipientId: EntityId,
     val amount: Int,
     val linkId: String,
-    val sourceName: String? = null
+    val sourceName: String? = null,
+    /** Event-time identity/LKI for the source watched by the linked delayed trigger. */
+    val sourceLastKnownSnapshot: com.wingedsheep.engine.state.components.stack.EntitySnapshot? = null,
 ) : GameEvent
 
 /**
@@ -887,6 +977,8 @@ data class TargetsChosenEvent(
 data class DeclaredAttack(
     val attackerId: EntityId,
     val defenderId: EntityId,
+    /** The player actually being defended, captured before the attack can change zones. */
+    val defendingPlayerId: EntityId? = null,
 )
 
 @Serializable

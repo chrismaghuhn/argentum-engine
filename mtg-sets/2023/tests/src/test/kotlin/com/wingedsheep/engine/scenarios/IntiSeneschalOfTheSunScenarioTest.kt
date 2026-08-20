@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.YesNoDecision
@@ -73,6 +74,7 @@ class IntiSeneschalOfTheSunScenarioTest : FunSpec({
                 is SelectCardsDecision -> submitCardSelection(you, dec.options.take(dec.minSelections.coerceAtLeast(1)))
                 is ChooseTargetsDecision -> { submitTargetSelection(you, listOf(target)); targeted = true }
                 is SelectManaSourcesDecision -> submitManaAutoPayOrDecline(you, autoPay = false)
+                is OrderObjectsDecision -> submitObjectOrdering(dec.playerId, dec.objects).error shouldBe null
                 else -> if (state.stack.isNotEmpty()) bothPass() else return targeted
             }
         }

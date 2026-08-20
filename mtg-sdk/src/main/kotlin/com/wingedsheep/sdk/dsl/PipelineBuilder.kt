@@ -36,7 +36,9 @@ import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.StoreCardNameEffect
 import com.wingedsheep.sdk.scripting.effects.StoreNumberEffect
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.effects.AttachCollectionToTargetEffect
 import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
@@ -756,6 +758,12 @@ class PipelineBuilder private constructor(private val shared: Shared) {
         player: Player = Player.You,
         order: CardOrder = CardOrder.ControllerChooses
     ) = move(from, CardDestination.ToZone(Zone.LIBRARY, player, ZonePlacement.Bottom), order = order)
+
+    /** Attach the selected Auras and/or Equipment to an already-selected target as one generic batch. */
+    fun attach(from: CollectionSlot, target: EffectTarget = EffectTarget.ContextTarget(0)) {
+        nextIndex()
+        steps += AttachCollectionToTargetEffect(from = from.key, target = target)
+    }
 
     // =========================================================================
     // Branching / iteration

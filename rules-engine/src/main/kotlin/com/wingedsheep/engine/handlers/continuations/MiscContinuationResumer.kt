@@ -384,9 +384,11 @@ class MiscContinuationResumer(
             return ExecutionResult.error(state, "Expected target selection response for Storm copy")
         }
 
-        val selectedTargets = response.selectedTargets.flatMap { (_, targetIds) ->
-            targetIds.map { entityId -> entityIdToChosenTarget(state, entityId) }
-        }
+        val selectedTargets = response.selectedTargets.entries
+            .sortedBy { it.key }
+            .flatMap { (_, targetIds) ->
+                targetIds.map { entityId -> entityIdToChosenTarget(state, entityId) }
+            }
 
         val allEvents = mutableListOf<GameEvent>()
         var currentState = state
@@ -400,7 +402,8 @@ class MiscContinuationResumer(
             targetRequirements = continuation.spellTargetRequirements,
             copyIndex = copyIndex,
             copyTotal = continuation.totalCopies,
-            controllerId = continuation.controllerId
+            controllerId = continuation.controllerId,
+            resolvingSpellCopyPayload = continuation.resolvingSpellCopyPayload
         )
         if (!stackResult.isSuccess) return stackResult
         currentState = com.wingedsheep.engine.handlers.effects.stack.StormCopyEffectExecutor
@@ -416,7 +419,7 @@ class MiscContinuationResumer(
         }
 
         // Prompt for next copy's targets
-        val decisionId = "storm-copy-target-${System.nanoTime()}"
+        val decisionId = "storm-copy-target-${java.util.UUID.randomUUID()}"
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
         for ((index, requirement) in continuation.spellTargetRequirements.withIndex()) {
             val legalTargets = services.targetFinder.findLegalTargets(
@@ -441,7 +444,8 @@ class MiscContinuationResumer(
                     sourceSpellId = continuation.sourceId,
                     copyIndex = nextCopyIndex,
                     copyTotal = continuation.totalCopies,
-                    controllerId = continuation.controllerId
+                    controllerId = continuation.controllerId,
+                    resolvingSpellCopyPayload = continuation.resolvingSpellCopyPayload
                 )
                 if (!res.isSuccess) return res
                 loopState = com.wingedsheep.engine.handlers.effects.stack.StormCopyEffectExecutor
@@ -465,7 +469,8 @@ class MiscContinuationResumer(
             sourceId = continuation.sourceId,
             totalCopies = continuation.totalCopies,
             keywordsForCopy = continuation.keywordsForCopy,
-            removeLegendary = continuation.removeLegendary
+            removeLegendary = continuation.removeLegendary,
+            resolvingSpellCopyPayload = continuation.resolvingSpellCopyPayload
         )
         val targetReqInfos = continuation.spellTargetRequirements.mapIndexed { index, req ->
             TargetRequirementInfo(
@@ -530,7 +535,8 @@ class MiscContinuationResumer(
             totalCopies = continuation.totalCopies,
             priorEvents = emptyList(),
             keywordsForCopy = continuation.keywordsForCopy,
-            removeLegendary = continuation.removeLegendary
+            removeLegendary = continuation.removeLegendary,
+            resolvingSpellCopyPayload = continuation.resolvingSpellCopyPayload
         )
 
         if (result.isPaused) {

@@ -6,6 +6,7 @@ import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.modal.ChosenModeMemory
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.TriggeredAbilityEffectAppliedThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.TriggeredAbilityFiredEverComponent
@@ -56,6 +57,7 @@ class TriggerProcessor(
     private val targetFinder: TargetFinder = TargetFinder(),
     private val decisionHandler: DecisionHandler = DecisionHandler()
 ) {
+    private val targetValidator = TargetValidator()
 
     /**
      * Process a list of pending triggers, placing them on the stack.
@@ -67,7 +69,11 @@ class TriggerProcessor(
      * @param triggers List of pending triggers in APNAP order
      * @return ExecutionResult - may be paused if a trigger requires targets
      */
-    fun processTriggers(state: GameState, triggers: List<PendingTrigger>): ExecutionResult {
+    fun processTriggers(
+        state: GameState,
+        triggers: List<PendingTrigger>,
+        preorderedTriggerCount: Int = 0
+    ): ExecutionResult {
         // Rule 704.6 / 800.4a: once the game has ended (or a player has left), triggered
         // abilities don't resolve. In particular, dies/leaves-battlefield triggers from a
         // creature whose controller just lost must not pause the game asking that player
@@ -76,11 +82,32 @@ class TriggerProcessor(
         if (state.gameOver) {
             return ExecutionResult.success(state)
         }
-        val liveTriggers = triggers.filterNot { trigger ->
-            state.getEntity(trigger.controllerId)?.has<PlayerLostComponent>() == true
+        // A positive prefix is the controller's already-selected order, so filter it separately
+        // from the still-unordered suffix.  Filtering the concatenated list and reusing the old
+        // count would let a lost prefix entry consume the first live suffix entry's order domain
+        // (for example, [A2, B1, B2] with count 1 becoming [B1, B2] with stale count 1).
+        val requestedPreorderedCount = preorderedTriggerCount.coerceIn(0, triggers.size)
+        val preorderedPrefix = triggers.take(requestedPreorderedCount)
+        val unorderedSuffix = triggers.drop(requestedPreorderedCount)
+        val isLive: (PendingTrigger) -> Boolean = { trigger ->
+            state.getEntity(trigger.controllerId)?.has<PlayerLostComponent>() != true
         }
+        val livePreorderedPrefix = preorderedPrefix.filter(isLive)
+        val liveUnorderedSuffix = unorderedSuffix.filter(isLive)
+        var liveTriggers = livePreorderedPrefix + liveUnorderedSuffix
+        val livePreorderedTriggerCount = livePreorderedPrefix.size
         if (liveTriggers.isEmpty()) {
             return ExecutionResult.success(state)
+        }
+
+        // Callers may assemble one complete trigger wave from independently sorted batches (for
+        // example, event triggers + SBA triggers + a state-trigger poll), yielding A1, N1, A2.
+        // CR 603.3b requires all first-pass triggers for a controller to be one choice domain, and
+        // requires that pass to precede the ability-triggered pass. Normalize only an unchosen
+        // wave; a positive prefix is the controller's already-selected order and must remain an
+        // immutable prefix while target/may/continuation frames resume.
+        if (livePreorderedTriggerCount == 0) {
+            liveTriggers = normalizeTriggerWave(state, liveTriggers)
         }
 
         var currentState = state
@@ -95,8 +122,59 @@ class TriggerProcessor(
                     currentState,
                     occurrenceChoices.map { it.toPendingTrigger() },
                     remainingTriggers,
-                    allEvents
+                    allEvents,
+                    // The selected occurrence is prepended by the resumer.  Count it as part of
+                    // the retained prefix, while excluding entries already consumed before the
+                    // occurrence marker.  This keeps a confirmed [A, marker, B] order from being
+                    // reopened as [marker, B] after the occurrence decision.
+                    preorderedTriggerCount =
+                        (livePreorderedTriggerCount - index).coerceAtLeast(0)
                 )
+            }
+
+            // CR 603.3b: after APNAP has assigned this controller's trigger group, that
+            // controller chooses the relative order of every trigger it controls.  Detector order
+            // is only a deterministic transport order; it is not a legal choice.  A prefix marked
+            // by a TriggerOrderingContinuation has already been chosen and must pass through here
+            // without being asked a second time after a target/may pause.
+            if (index >= livePreorderedTriggerCount) {
+                val sameControllerRun = liveTriggers
+                    .drop(index)
+                    .takeWhile {
+                        it.controllerId == liveTriggers[index].controllerId &&
+                            it.placementStage == liveTriggers[index].placementStage
+                    }
+                val occurrenceIndex = sameControllerRun.indexOfFirst {
+                    it.occurrenceChoice.size > 1
+                }
+                if (occurrenceIndex >= 0) {
+                    // CR 603.7b chooses which simultaneous occurrence of the fire-once delayed
+                    // ability survives, but that choice does not place the surviving trigger ahead
+                    // of the other same-controller triggers. Resolve every occurrence marker in
+                    // this still-unordered run before processing any member of the run; the next
+                    // pass then sees the selected occurrence and all ordinary members together as
+                    // one complete CR 603.3b ordering domain. A marker in a previously confirmed
+                    // prefix is handled by the compatibility path above and remains a boundary.
+                    val occurrenceMarker = sameControllerRun[occurrenceIndex]
+                    val remainingRun = sameControllerRun.toMutableList().apply {
+                        removeAt(occurrenceIndex)
+                    }
+                    return raiseDelayedTriggerOccurrenceChoice(
+                        currentState,
+                        occurrenceMarker.occurrenceChoice.map { it.toPendingTrigger() },
+                        remainingRun + liveTriggers.drop(index + sameControllerRun.size),
+                        allEvents,
+                        preorderedTriggerCount = 0
+                    )
+                }
+                if (sameControllerRun.size > 1) {
+                    return raiseTriggerOrdering(
+                        currentState,
+                        sameControllerRun,
+                        liveTriggers.drop(index + sameControllerRun.size),
+                        allEvents
+                    )
+                }
             }
 
             // Batch the may-question for a run of structurally identical optional ("you may …
@@ -106,7 +184,14 @@ class TriggerProcessor(
             val run = batchRunAt(currentState, liveTriggers, index)
             if (run != null) {
                 val remainingTriggers = liveTriggers.drop(index + run.size)
-                return raiseBatchMayDecision(currentState, run, remainingTriggers, allEvents)
+                return raiseBatchMayDecision(
+                    currentState,
+                    run,
+                    remainingTriggers,
+                    allEvents,
+                    preorderedTriggerCount =
+                        (livePreorderedTriggerCount - index - run.size).coerceAtLeast(0)
+                )
             }
 
             val trigger = liveTriggers[index]
@@ -132,7 +217,9 @@ class TriggerProcessor(
                 if (remainingTriggers.isNotEmpty()) {
                     val pendingContinuation = PendingTriggersContinuation(
                         decisionId = "pending-triggers-${java.util.UUID.randomUUID()}",
-                        remainingTriggers = remainingTriggers
+                        remainingTriggers = remainingTriggers,
+                        preorderedTriggerCount =
+                            (livePreorderedTriggerCount - index - 1).coerceAtLeast(0)
                     )
                     // Push BELOW the TriggeredAbilityContinuation that was just pushed
                     // by inserting at the bottom of what was just added
@@ -157,6 +244,134 @@ class TriggerProcessor(
         return ExecutionResult.success(currentState, allEvents)
     }
 
+    private fun raiseTriggerOrdering(
+        state: GameState,
+        triggers: List<PendingTrigger>,
+        remainingTriggers: List<PendingTrigger>,
+        priorEvents: List<GameEvent>
+    ): ExecutionResult {
+        val controllerId = triggers.firstOrNull()?.controllerId
+            ?: return ExecutionResult.error(state, "Trigger ordering group has no controller")
+        if (triggers.size < 2 || triggers.any { it.controllerId != controllerId }) {
+            return ExecutionResult.error(state, "Invalid same-controller trigger ordering group")
+        }
+
+        val objectIds = triggers.indices.map(::triggerOrderingObjectId)
+        val objectLabels = triggerOrderingLabels(triggers)
+        // This is only the routing handle for the pending decision.  The ordered domain itself is
+        // the deterministic ordinal object IDs above; do not make a runtime stack/entity ID the
+        // public identity of a trigger.
+        val decisionId = "trigger-order-${java.util.UUID.randomUUID()}"
+        val decision = OrderObjectsDecision(
+            id = decisionId,
+            playerId = controllerId,
+            prompt = "Choose the order for your simultaneous triggered abilities",
+            context = DecisionContext(phase = DecisionPhase.TRIGGER),
+            objects = objectIds,
+            objectLabels = objectLabels
+        )
+        val continuation = TriggerOrderingContinuation(
+            decisionId = decisionId,
+            objectIds = objectIds,
+            triggers = triggers,
+            remainingTriggers = remainingTriggers
+        )
+        val pausedState = state.withPendingDecision(decision).pushContinuation(continuation)
+        return ExecutionResult.paused(
+            pausedState,
+            decision,
+            priorEvents + DecisionRequestedEvent(
+                decisionId = decisionId,
+                playerId = controllerId,
+                decisionType = "ORDER_OBJECTS",
+                prompt = decision.prompt
+            )
+        )
+    }
+
+    private fun triggerOrderingObjectId(index: Int): EntityId =
+        EntityId("trigger-order-object-$index")
+
+    /**
+     * Build actor-facing labels without serializing the pending trigger or its context.
+     *
+     * Source and ability text is normally enough, but repeated instances can have different
+     * triggering entities, players, damage, or last-known information.  Those values are not a
+     * privacy-safe display contract, so equal public labels receive a deterministic occurrence
+     * suffix within this already-normalized decision domain.  The suffix identifies the row for
+     * the actor; the opaque object ID remains the only response handle.
+     */
+    private fun triggerOrderingLabels(triggers: List<PendingTrigger>): Map<EntityId, String> {
+        val baseLabels = triggers.map { trigger ->
+            "${trigger.sourceName}: ${trigger.ability.description}"
+        }
+        val duplicateCounts = baseLabels.groupingBy { it }.eachCount()
+        val occurrenceByLabel = mutableMapOf<String, Int>()
+
+        return baseLabels.mapIndexed { index, baseLabel ->
+            val occurrence = (occurrenceByLabel[baseLabel] ?: 0) + 1
+            occurrenceByLabel[baseLabel] = occurrence
+            val duplicateCount = duplicateCounts.getValue(baseLabel)
+            val label = if (duplicateCount == 1) {
+                baseLabel
+            } else {
+                "$baseLabel (simultaneous instance $occurrence of $duplicateCount)"
+            }
+            triggerOrderingObjectId(index) to label
+        }.toMap()
+    }
+
+    /**
+     * Put a complete trigger wave into the deterministic APNAP transport order required by
+     * CR 603.3b. Each still-unordered same-controller/stage group is canonically normalized before
+     * ordinal decision handles are assigned; this removes detector/map iteration order from the
+     * serialized continuation without choosing the controller's eventual relative order.
+     */
+    private fun normalizeTriggerWave(
+        state: GameState,
+        triggers: List<PendingTrigger>
+    ): List<PendingTrigger> {
+        val apnapPlayers = state.apnapOrder
+        return TriggerPlacementStage.values().flatMap { placementStage ->
+            val stageTriggers = triggers
+                .filter { it.placementStage == placementStage }
+            apnapPlayers.flatMap { controllerId ->
+                canonicalizeTriggerGroup(
+                    state,
+                    stageTriggers.filter { it.controllerId == controllerId }
+                )
+            }
+        }
+    }
+
+    /**
+     * Preserve a marker's transport position while normalizing a wave. Unordered runs now resolve
+     * their markers before entering this loop, so this split is only the compatibility behavior
+     * for a marker carried inside a previously confirmed prefix.
+     */
+    private fun canonicalizeTriggerGroup(
+        state: GameState,
+        triggers: List<PendingTrigger>
+    ): List<PendingTrigger> {
+        if (triggers.size < 2) return triggers
+        val result = mutableListOf<PendingTrigger>()
+        var segment = mutableListOf<PendingTrigger>()
+        fun flushSegment() {
+            result += segment.sortedBy { TriggerOrderingKey.forTrigger(state, it) }
+            segment = mutableListOf()
+        }
+        for (trigger in triggers) {
+            if (trigger.occurrenceChoice.size > 1) {
+                flushSegment()
+                result += trigger
+            } else {
+                segment += trigger
+            }
+        }
+        flushSegment()
+        return result
+    }
+
     /**
      * Externalize CR 603.7b instead of selecting an occurrence by detector order.  The candidates
      * are ordinary pending triggers carrying their own trigger contexts; only the selected one is
@@ -167,11 +382,19 @@ class TriggerProcessor(
         state: GameState,
         candidates: List<PendingTrigger>,
         remainingTriggers: List<PendingTrigger>,
-        priorEvents: List<GameEvent>
+        priorEvents: List<GameEvent>,
+        preorderedTriggerCount: Int
     ): ExecutionResult {
-        val first = candidates.firstOrNull()
+        // CR 603.7b exposes a choice among semantic simultaneous occurrences.  Candidate
+        // encounter order is detector transport, not policy: canonicalize the complete candidate
+        // payload before assigning option indices, so a reordered detector batch cannot retarget
+        // an otherwise identical external response.
+        val orderedCandidates = candidates.sortedBy {
+            TriggerOrderingKey.occurrenceCandidateKey(state, it.toOccurrenceCandidate())
+        }
+        val first = orderedCandidates.firstOrNull()
             ?: return ExecutionResult.error(state, "Delayed-trigger occurrence choice has no candidates")
-        val delayedId = candidates.firstNotNullOfOrNull { it.consumesDelayedTriggerId }
+        val delayedId = orderedCandidates.firstNotNullOfOrNull { it.consumesDelayedTriggerId }
         val decisionId = buildString {
             append("delayed-occurrence-")
             append(delayedId ?: first.sourceId.value)
@@ -189,12 +412,12 @@ class TriggerProcessor(
                 sourceName = first.sourceName,
                 phase = DecisionPhase.TRIGGER
             ),
-            options = candidates.mapIndexed { index, candidate ->
+            options = orderedCandidates.mapIndexed { index, candidate ->
                 candidate.triggerContext.triggeringPlayerId?.let { playerId ->
                     "Trigger for player ${playerId.value}"
                 } ?: "Occurrence ${index + 1}"
             },
-            optionMetadata = candidates.map { candidate ->
+            optionMetadata = orderedCandidates.map { candidate ->
                 val triggeringPlayerId = candidate.triggerContext.triggeringPlayerId
                 OptionMetadata(
                     id = triggeringPlayerId?.value,
@@ -205,8 +428,9 @@ class TriggerProcessor(
         )
         val continuation = DelayedTriggerOccurrenceChoiceContinuation(
             decisionId = decisionId,
-            candidates = candidates,
-            remainingTriggers = remainingTriggers
+            candidates = orderedCandidates,
+            remainingTriggers = remainingTriggers,
+            preorderedTriggerCount = preorderedTriggerCount
         )
         val pausedState = state.withPendingDecision(decision).pushContinuation(continuation)
         return ExecutionResult.paused(
@@ -269,6 +493,13 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                defendingPlayerId = trigger.triggerContext.defendingPlayerId,
+                damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -312,7 +543,8 @@ class TriggerProcessor(
         state: GameState,
         run: List<PendingTrigger>,
         remainingTriggers: List<PendingTrigger>,
-        priorEvents: List<GameEvent>
+        priorEvents: List<GameEvent>,
+        preorderedTriggerCount: Int
     ): ExecutionResult {
         val first = run.first()
         val ability = first.ability
@@ -337,7 +569,8 @@ class TriggerProcessor(
             stateWithContinuations = stateWithContinuations.pushContinuation(
                 PendingTriggersContinuation(
                     decisionId = "pending-triggers-${java.util.UUID.randomUUID()}",
-                    remainingTriggers = remainingTriggers
+                    remainingTriggers = remainingTriggers,
+                    preorderedTriggerCount = preorderedTriggerCount
                 )
             )
         }
@@ -494,6 +727,13 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                defendingPlayerId = trigger.triggerContext.defendingPlayerId,
+                damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -609,6 +849,13 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                defendingPlayerId = trigger.triggerContext.defendingPlayerId,
+                damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 // The X carried by the triggering event (an {X} cycling cost, a megamorph turn-up)
                 // so an X-relative target filter — `manaValueEqualsX()` on Webstrike Elite's
                 // "artifact or enchantment with mana value X" — finds targets at legality time.
@@ -706,6 +953,13 @@ class TriggerProcessor(
                     controllerId = trigger.controllerId,
                     triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                     triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                    defendingPlayerId = trigger.triggerContext.defendingPlayerId,
+                    damageSourceId = trigger.triggerContext.damageSourceEntityId,
+                    damageRecipientId = trigger.triggerContext.damageRecipientEntityId,
+                    damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                    damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                    damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                    damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                     // See the note on the other findLegalTargets call sites: an X-relative target
                     // filter needs the triggering event's X bound to match anything.
                     xValue = trigger.triggerContext.xValue,
@@ -810,6 +1064,12 @@ class TriggerProcessor(
                 triggeringEntityName = trigger.triggerContext.triggeringEntityName,
                 triggeringEntityNameKnown = trigger.triggerContext.triggeringEntityNameKnown,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
                 triggerCounterCount = trigger.triggerContext.counterCount,
                 triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,
@@ -869,6 +1129,13 @@ class TriggerProcessor(
             triggeringEntityName = trigger.triggerContext.triggeringEntityName,
             triggeringEntityNameKnown = trigger.triggerContext.triggeringEntityNameKnown,
             triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+            defendingPlayerId = trigger.triggerContext.defendingPlayerId,
+            damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+            damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+            damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+            damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
             elseEffect = ability.elseEffect,
             targetRequirements = allRequirements,
             triggerCounterCount = trigger.triggerContext.counterCount,
@@ -939,6 +1206,13 @@ class TriggerProcessor(
             triggeringEntityName = trigger.triggerContext.triggeringEntityName,
             triggeringEntityNameKnown = trigger.triggerContext.triggeringEntityNameKnown,
             triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+            defendingPlayerId = trigger.triggerContext.defendingPlayerId,
+            damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+            damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+            damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+            damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
             xValue = trigger.triggerContext.xValue ?: computeXForDisplay(state, trigger),
             triggerCounterCount = trigger.triggerContext.counterCount,
             triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,
@@ -1002,7 +1276,11 @@ class TriggerProcessor(
 
         return stackResolver.putTriggeredAbility(
             state, abilityComponent, targets,
-            targetRequirements = outerRequirements,
+            // When a mandatory target was unavailable, [effectOverride] is the printed
+            // "otherwise" branch. It no longer carries the original target choice, so keep the
+            // stack object targetless; otherwise CR 608.2b would incorrectly fizzle the alternate
+            // effect merely because the original target requirement remains in metadata.
+            targetRequirements = if (effectOverride != null) emptyList() else outerRequirements,
             causedByAttack = causedByAttack
         )
     }
@@ -1086,7 +1364,8 @@ class TriggerProcessor(
             }
             return presentTriggerModalTargetDecision(
                 state, ability, outerTargets, outerTargetRequirements,
-                modal.modes, selectedModeIndices, emptyList(), currentOrdinal = 0, causedByAttack,
+                modal.modes, selectedModeIndices, emptyList(), currentOrdinal = 0,
+                causedByAttack = causedByAttack,
                 recordChosenModesOnSource = modal.excludePreviouslyChosenModes,
                 recordChosenModesThisTurn = modal.excludeModesChosenThisTurn
             )
@@ -1171,17 +1450,33 @@ class TriggerProcessor(
         chosenModeIndices: List<Int>,
         resolvedModeTargets: List<List<com.wingedsheep.engine.state.components.stack.ChosenTarget>>,
         currentOrdinal: Int,
+        resolvedModeTargetRequirements: List<List<TargetRequirement>> = emptyList(),
         causedByAttack: Boolean,
         recordChosenModesOnSource: Boolean,
         recordChosenModesThisTurn: Boolean
     ): ExecutionResult {
+        val effectiveModes = modes.map { mode ->
+            mode.copy(
+                targetRequirements = targetValidator.snapshotDynamicCounts(
+                    state = state,
+                    requirements = mode.targetRequirements,
+                    casterId = ability.controllerId,
+                    sourceId = ability.sourceId,
+                    xValue = ability.xValue,
+                    triggeringEntityId = ability.triggeringEntityId,
+                    triggeringPlayerId = ability.triggeringPlayerId,
+                    storedCollections = ability.carriedPipeline?.storedCollections ?: emptyMap()
+                )
+            )
+        }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
-
+        var requirementsAccum = resolvedModeTargetRequirements
         while (ordinal < chosenModeIndices.size) {
-            val mode = modes[chosenModeIndices[ordinal]]
+            val mode = effectiveModes[chosenModeIndices[ordinal]]
             if (mode.targetRequirements.isEmpty()) {
                 targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(emptyList())
                 ordinal++
                 continue
             }
@@ -1196,7 +1491,6 @@ class TriggerProcessor(
                     maxTargets = req.count
                 )
             }
-
             // Auto-select the lone legal player target instead of prompting (mirrors
             // processTargetedTrigger's single-player-target shortcut).
             val soleReq = mode.targetRequirements.singleOrNull()
@@ -1205,6 +1499,9 @@ class TriggerProcessor(
                 soleReq is com.wingedsheep.sdk.scripting.targets.TargetOpponent
             if (isPlayerTarget && soleLegal.size == 1 && soleReq.count == 1) {
                 targetsAccum = targetsAccum + listOf(listOf(createChosenTarget(state, soleLegal.first())))
+                requirementsAccum = requirementsAccum + listOf(
+                    targetValidator.lockRequirementsForSelectedCounts(listOf(soleReq), listOf(1))
+                )
                 ordinal++
                 continue
             }
@@ -1230,16 +1527,16 @@ class TriggerProcessor(
                 targetRequirements = requirementInfos,
                 legalTargets = legalTargetsMap
             )
-
             val continuation = TriggerModalTargetSelectionContinuation(
                 decisionId = decisionId,
                 ability = ability,
                 outerTargets = outerTargets,
                 outerTargetRequirements = outerTargetRequirements,
-                modes = modes,
+                modes = effectiveModes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
                 currentOrdinal = ordinal,
+                resolvedModeTargetRequirements = requirementsAccum,
                 causedByAttack = causedByAttack,
                 recordChosenModesOnSource = recordChosenModesOnSource,
                 recordChosenModesThisTurn = recordChosenModesThisTurn
@@ -1261,8 +1558,8 @@ class TriggerProcessor(
 
         return finalizeModalTrigger(
             state, ability, outerTargets, outerTargetRequirements,
-            modes, chosenModeIndices, targetsAccum, causedByAttack,
-            recordChosenModesOnSource, recordChosenModesThisTurn
+            effectiveModes, chosenModeIndices, targetsAccum, causedByAttack,
+            recordChosenModesOnSource, recordChosenModesThisTurn, requirementsAccum
         )
     }
 
@@ -1283,7 +1580,8 @@ class TriggerProcessor(
         resolvedModeTargets: List<List<com.wingedsheep.engine.state.components.stack.ChosenTarget>>,
         causedByAttack: Boolean,
         recordChosenModesOnSource: Boolean,
-        recordChosenModesThisTurn: Boolean
+        recordChosenModesThisTurn: Boolean,
+        resolvedModeTargetRequirements: List<List<TargetRequirement>>
     ): ExecutionResult {
         if (chosenModeIndices.isEmpty()) {
             // CR 603.3c — no mode was chosen, so the ability never reaches the stack. Either every
@@ -1302,14 +1600,45 @@ class TriggerProcessor(
             )
         }
 
+        // CR 603.3d locks the triggered ability's complete flat target payload before it reaches
+        // the stack. Preserve each mode's original offset rather than making the resolution
+        // executor infer it from a compact target list; the first mode follows the trigger's own
+        // target slots, and later modes follow the preceding mode slots, including zero-slot modes.
+        val modeTargetSlotStarts = if (
+            resolvedModeTargets.size == chosenModeIndices.size &&
+            resolvedModeTargetRequirements.size == chosenModeIndices.size
+        ) {
+            buildList {
+                var nextStart = outerTargets.size
+                resolvedModeTargets.forEach { modeTargets ->
+                    add(nextStart)
+                    nextStart += modeTargets.size
+                }
+            }
+        } else {
+            // Malformed pre-chosen payloads must fail closed in the generic queue rather than
+            // falling back to a recomputed offset.
+            List(chosenModeIndices.size) { -1 }
+        }
+
         val component = ability.copy(
             chosenModes = chosenModeIndices,
             modeTargetsOrdered = resolvedModeTargets,
-            modeTargetRequirements = chosenModeIndices.associateWith { modes[it].targetRequirements }
+            modeTargetRequirements = chosenModeIndices.distinct().associateWith { modeIndex ->
+                val ordinal = chosenModeIndices.indexOf(modeIndex)
+                resolvedModeTargetRequirements.getOrNull(ordinal)
+                    ?: modes[modeIndex].targetRequirements
+            },
+            modeTargetRequirementsOrdered = resolvedModeTargetRequirements,
+            modeTargetSlotStarts = modeTargetSlotStarts
         )
         val flatTargets = outerTargets + resolvedModeTargets.flatten()
         val flatRequirements = outerTargetRequirements +
-            chosenModeIndices.flatMap { modes[it].targetRequirements }
+            if (resolvedModeTargetRequirements.size == chosenModeIndices.size) {
+                resolvedModeTargetRequirements.flatten()
+            } else {
+                chosenModeIndices.flatMap { modes[it].targetRequirements }
+            }
 
         return stackResolver.putTriggeredAbility(
             stateWithMemory, component, flatTargets,
@@ -1333,6 +1662,12 @@ class TriggerProcessor(
             controllerId = ability.controllerId,
             triggeringEntityId = ability.triggeringEntityId,
             triggeringPlayerId = ability.triggeringPlayerId,
+            damageSourceId = ability.damageSourceEntityId,
+            damageRecipientId = ability.damageRecipientEntityId,
+            damageRecipientKind = ability.damageRecipientKind,
+            damageRecipientKinds = ability.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
             // Same reason as the pending-trigger call sites: an X-relative target filter must see
             // the X the ability went on the stack with, or it re-checks as having no legal targets.
             xValue = ability.xValue,
@@ -1502,6 +1837,12 @@ class TriggerProcessor(
                         controllerId = trigger.controllerId,
                         triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                         triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                        damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+                        damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+                        damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                        damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                        damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                        damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                         xValue = trigger.triggerContext.xValue,
                         triggerDamageAmount = trigger.triggerContext.damageAmount,
                         triggerCounterCount = trigger.triggerContext.counterCount,
@@ -1568,6 +1909,12 @@ class TriggerProcessor(
                 controllerId = trigger.controllerId,
                 triggeringEntityId = trigger.triggerContext.triggeringEntityId,
                 triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
+                damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
+                damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
+                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
+                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
+                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
                 xValue = trigger.triggerContext.xValue,
                 triggerDamageAmount = trigger.triggerContext.damageAmount,
                 triggerCounterCount = trigger.triggerContext.counterCount,

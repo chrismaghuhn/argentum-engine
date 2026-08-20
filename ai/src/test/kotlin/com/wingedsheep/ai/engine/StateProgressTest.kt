@@ -4,6 +4,8 @@ import com.wingedsheep.engine.state.components.battlefield.HasBecomeTappedCompon
 import com.wingedsheep.engine.state.components.battlefield.TargetedByControllerThisTurnComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.DayNight
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.GameRng
@@ -48,6 +50,51 @@ class StateProgressTest : FunSpec({
         withClue("priorityPassedBy") {
             StateProgress.digest(base.copy(priorityPassedBy = base.turnOrder.toSet())) shouldBe here
         }
+    }
+
+    test("runtime object identity bookkeeping is not a semantic position") {
+        val base = state()
+        val here = StateProgress.digest(base)
+
+        // CR 400.7 identity stamps protect locked targets at runtime, but they do not describe
+        // the semantic game position. A resolution that only creates or retains those stamps
+        // must remain comparable to its starting position for AI loop detection.
+        withClue("nextObjectIdentityStamp") {
+            StateProgress.digest(base.copy(nextObjectIdentityStamp = base.nextObjectIdentityStamp + 17L)) shouldBe here
+        }
+        withClue("objectIdentityStamps") {
+            val objectId = base.turnOrder.first()
+            StateProgress.digest(
+                base.copy(objectIdentityStamps = base.objectIdentityStamps + (objectId to 999L)),
+            ) shouldBe here
+        }
+    }
+
+    test("target-entry identity stamps are not a semantic position") {
+        val driver = GameTestDriver().apply {
+            registerCards(TestCards.all)
+            initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true, startingPlayer = 0)
+        }
+        val target = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val targetChoice = ChosenTarget.Permanent(target)
+        val base = driver.state
+
+        // TargetsComponent carries both semantic locked choices and transient CR 400.7 stamps.
+        // Only the latter must be invisible to loop detection.
+        val stampedAtCast = base.updateEntity(target) {
+            it.with(TargetsComponent(
+                targets = listOf(targetChoice),
+                targetEntryStamps = mapOf(target to 11L)
+            ))
+        }
+        val stampedAfterResolution = stampedAtCast.updateEntity(target) {
+            it.with(TargetsComponent(
+                targets = listOf(targetChoice),
+                targetEntryStamps = mapOf(target to 12L)
+            ))
+        }
+
+        StateProgress.digest(stampedAfterResolution) shouldBe StateProgress.digest(stampedAtCast)
     }
 
     test("a turn-level rider an ability can set without touching a permanent is a change") {

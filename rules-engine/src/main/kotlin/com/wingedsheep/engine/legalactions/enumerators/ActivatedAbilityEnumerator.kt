@@ -149,10 +149,13 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 } else {
                     ability.cost
                 }
+                val equipPaymentChoices = context.castPermissionUtils.equipPaymentChoices(state, playerId, ability)
+                for (equipPaymentChoice in equipPaymentChoices) {
                 // Apply ability-specific generic cost reduction so payability is checked against
                 // the locked-in cost (e.g., The Dominion Bracelet — "{X} less, where X is this
-                // creature's power"). Then apply Forge Anew's free-first-equip discount, so the
-                // displayed cost and affordability reflect the {0} the player will actually pay.
+                // creature's power"). Then apply the explicitly selected Forge Anew
+                // free-first-equip mode, so the displayed cost and affordability reflect the
+                // payment mode the controller submitted.
                 val effectiveCost = context.castPermissionUtils.relaxAbilityCostColorsIfAny(
                     state, entityId,
                     context.castPermissionUtils.applyFreeFirstEquipDiscount(
@@ -163,9 +166,12 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             ),
                             ability, state, playerId, abilitySourceId = entityId
                         ),
-                        ability, state, playerId
+                        ability, state, playerId, equipPaymentChoice
                     )
                 )
+                val equipAlternativePayment = equipPaymentChoice?.let {
+                    AlternativePaymentChoice(equipPayment = it)
+                }
 
                 // Description shown to the player. When the effective cost differs from the printed
                 // cost — a generic cost reduction (Starport Security "{3}{W}…" → "{1}{W}…"), or a
@@ -697,7 +703,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
                         description = displayDescription,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         affordable = false,
                         manaCostString = abilityManaCostString
                     ))
@@ -906,7 +912,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id),
+                            action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                             additionalCostInfo = costInfo,
                             manaCostString = abilityManaCostString
                         ))
@@ -922,7 +928,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget)),
+                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget), alternativePayment = equipAlternativePayment),
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
                             maxAffordableX = abilityMaxAffordableX,
@@ -941,7 +947,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget)),
+                            action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget), alternativePayment = equipAlternativePayment),
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
                             maxAffordableX = abilityMaxAffordableX,
@@ -970,7 +976,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         result.add(LegalAction(
                             actionType = "ActivateAbility",
                             description = displayDescription,
-                            action = ActivateAbility(playerId, entityId, ability.id),
+                            action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                             validTargets = firstReqInfo.validTargets,
                             requiresTargets = true,
                             targetCount = firstReqInfo.maxTargets,
@@ -1001,7 +1007,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
                         description = displayDescription,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         additionalCostInfo = costInfo,
                         hasXCost = abilityHasXCost,
                         maxAffordableX = abilityMaxAffordableX,
@@ -1038,6 +1044,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             )
                         )
                     }
+                }
                 }
             }
         }
@@ -1079,16 +1086,37 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     ability.cost
                 }
 
-                // Check cost payability (Free cost always passes)
+                val equipPaymentChoices = context.castPermissionUtils.equipPaymentChoices(state, playerId, ability)
                 val anyPlayerAbilityContext = com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext(cardComponent, projected, entityId, ability)
-                val anyPlayerManaCostString = when (effectiveCost) {
+                for (equipPaymentChoice in equipPaymentChoices) {
+                val modeCost = context.castPermissionUtils.applyFreeFirstEquipDiscount(
+                    effectiveCost,
+                    ability,
+                    state,
+                    playerId,
+                    equipPaymentChoice
+                )
+                val equipAlternativePayment = equipPaymentChoice?.let {
+                    AlternativePaymentChoice(equipPayment = it)
+                }
+                val displayDescription =
+                    if (modeCost != effectiveCost && ability.descriptionOverride == null) {
+                        ability.describeWithCost(modeCost)
+                    } else {
+                        ability.description
+                    }
+
+                // Check cost payability (Free cost always passes)
+                val anyPlayerManaCostString = when (modeCost) {
                     is AbilityCost.Free -> null
                     is AbilityCost.Atom -> {
                         // Only mana costs on opponents' permanents are supported ("any player may
                         // activate"); other atoms (sacrifice/discard/…) fall through to continue.
-                        val mana = effectiveCost.manaCostOrNull ?: continue
+                        val mana = modeCost.manaCostOrNull ?: continue
                         if (!context.manaSolver.canPay(state, playerId, mana, precomputedSources = context.availableManaSources, spellContext = anyPlayerAbilityContext)) continue
-                        mana.toString()
+                        mana.toString().let { rendered ->
+                            if (equipPaymentChoice != null && rendered.isEmpty()) "{0}" else rendered
+                        }
                     }
                     else -> continue // Other costs on opponent's permanents not yet supported
                 }
@@ -1118,8 +1146,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     val firstReqInfo = targetReqInfos.first()
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
-                        description = ability.description,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        description = displayDescription,
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         validTargets = firstReqInfo.validTargets,
                         requiresTargets = true,
                         targetCount = firstReqInfo.maxTargets,
@@ -1131,10 +1159,11 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 } else {
                     result.add(LegalAction(
                         actionType = "ActivateAbility",
-                        description = ability.description,
-                        action = ActivateAbility(playerId, entityId, ability.id),
+                        description = displayDescription,
+                        action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
                         manaCostString = anyPlayerManaCostString
                     ))
+                }
                 }
             }
         }

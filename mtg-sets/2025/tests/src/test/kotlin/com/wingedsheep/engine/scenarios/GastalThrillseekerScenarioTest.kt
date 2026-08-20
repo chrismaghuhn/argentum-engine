@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.mechanics.speed.SpeedService
-import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.core.Keyword
@@ -38,8 +37,7 @@ class GastalThrillseekerScenarioTest : ScenarioTestBase() {
             val cast = game.execute(
                 CastSpell(
                     playerId = game.player1Id,
-                    cardId = card,
-                    targets = listOf(ChosenTarget.Player(game.player2Id))
+                    cardId = card
                 )
             )
             withClue("Cast should succeed: ${cast.error}") { cast.error shouldBe null }
