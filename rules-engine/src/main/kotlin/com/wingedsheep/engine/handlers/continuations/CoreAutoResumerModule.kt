@@ -156,7 +156,13 @@ class CoreAutoResumerModule(
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
                 xValue = continuation.xValue,
-                triggeringEntityId = continuation.triggeringEntityId
+                triggeringEntityId = continuation.triggeringEntityId,
+                triggeringPlayerId = continuation.triggeringPlayerId,
+                storedCollections = continuation.storedCollections,
+                targetingSourceType = continuation.targetingSourceType,
+                outerTargets = continuation.outerTargets,
+                outerAlignedTargets = continuation.outerAlignedTargets,
+                outerNamedTargets = continuation.outerNamedTargets
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
                 state = state,
@@ -177,8 +183,10 @@ class CoreAutoResumerModule(
                 controllerId = continuation.controllerId,
                 sourceId = continuation.sourceId,
                 sourceName = continuation.sourceName,
-                xValue = null,
-                triggeringEntityId = null
+                xValue = continuation.xValue,
+                triggeringEntityId = continuation.triggeringEntityId,
+                storedCollections = continuation.storedCollections,
+                targetingSourceType = continuation.targetingSourceType
             )
             val result = com.wingedsheep.engine.handlers.effects.composite.processPreTargetedEffectQueue(
                 state = state,
@@ -206,6 +214,7 @@ class CoreAutoResumerModule(
                 triggeringEntityId = continuation.triggeringEntityId,
                 allowCancelBackToModesList = null,
                 outerTargets = continuation.outerTargets,
+                outerAlignedTargets = continuation.outerAlignedTargets,
                 outerNamedTargets = continuation.outerNamedTargets,
                 accumulatedEvents = events,
                 checkForMore = checkForMore
