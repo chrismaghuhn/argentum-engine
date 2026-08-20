@@ -90,8 +90,10 @@ authoritative; Gym never auto-selects a target or payment.
 Choice-bearing combat and keyword actions require their explicit slots even when
 the choice is empty: `attackers` plus `bands`, `blockers`, `orderedBlockers`,
 `crewCreatures`, or `saddleCreatures`. The candidate matcher still requires the
-original actor and source/card identity, so a completed payload cannot be rebound
-to another action.
+original actor and source/card identity. For `CrewVehicle`, it also requires the
+serialized effective Crew-ability identity; the creature list remains the external
+choice. A completed payload therefore cannot be rebound to another vehicle or Crew
+requirement.
 
 ## Design choices worth knowing about
 

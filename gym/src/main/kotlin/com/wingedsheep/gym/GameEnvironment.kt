@@ -312,7 +312,9 @@ class GameEnvironment private constructor(
             candidate is TypecycleCard && submitted is TypecycleCard ->
                 candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
             candidate is CrewVehicle && submitted is CrewVehicle ->
-                candidate.playerId == submitted.playerId && candidate.vehicleId == submitted.vehicleId
+                candidate.playerId == submitted.playerId &&
+                    candidate.vehicleId == submitted.vehicleId &&
+                    candidate.crewAbilityKey == submitted.crewAbilityKey
             candidate is SaddleMount && submitted is SaddleMount ->
                 candidate.playerId == submitted.playerId && candidate.mountId == submitted.mountId
             candidate is TurnFaceUp && submitted is TurnFaceUp ->
