@@ -2310,7 +2310,8 @@ class CastSpellHandler(
                 modes = modalEffect.modes,
                 chosenModeIndices = action.chosenModes,
                 resolvedModeTargets = emptyList(),
-                currentOrdinal = 0
+                currentOrdinal = 0,
+                resolvedModeTargetRequirements = emptyList()
             )
         }
 
@@ -3563,9 +3564,10 @@ class CastSpellHandler(
             currentState,
             action.cardId,
             action.playerId,
-            action.targets,
-            action.xValue,
-            sacrificedSnapshots,
+            targetLockState = state,
+            targets = action.targets,
+            xValue = action.xValue,
+            sacrificedPermanents = sacrificedSnapshots,
             castFaceDown = action.castFaceDown,
             castTransformed = transformedFace != null,
             damageDistribution = action.damageDistribution,
@@ -3594,6 +3596,7 @@ class CastSpellHandler(
             chosenModes = action.chosenModes,
             modeTargetsOrdered = effectiveModeTargetsOrdered,
             modeTargetRequirements = perModeTargetRequirements,
+            modeTargetRequirementsOrdered = action.modeTargetRequirementsOrdered,
             modeDamageDistribution = action.modeDamageDistribution,
             // Splice (CR 702.47a): the *text* the spell gained, recorded by card name. The cards
             // themselves stay in hand — nothing about splicing moves them.
@@ -4503,16 +4506,30 @@ class CastSpellHandler(
         modes: List<com.wingedsheep.sdk.scripting.effects.Mode>,
         chosenModeIndices: List<Int>,
         resolvedModeTargets: List<List<ChosenTarget>>,
-        currentOrdinal: Int
+        currentOrdinal: Int,
+        resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
+        val effectiveModes = modes.map { mode ->
+            mode.copy(
+                targetRequirements = targetValidator.snapshotDynamicCounts(
+                    state = state,
+                    requirements = mode.targetRequirements,
+                    casterId = casterId,
+                    sourceId = cardId,
+                    xValue = baseCastAction.xValue
+                )
+            )
+        }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
+        var requirementsAccum = resolvedModeTargetRequirements
 
         while (ordinal < chosenModeIndices.size) {
             val modeIndex = chosenModeIndices[ordinal]
-            val mode = modes[modeIndex]
+            val mode = effectiveModes[modeIndex]
             if (mode.targetRequirements.isEmpty()) {
                 targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(emptyList())
                 ordinal++
                 continue
             }
@@ -4562,10 +4579,11 @@ class CastSpellHandler(
                 cardId = cardId,
                 casterId = casterId,
                 baseCastAction = baseCastAction,
-                modes = modes,
+                modes = effectiveModes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
-                currentOrdinal = ordinal
+                currentOrdinal = ordinal,
+                resolvedModeTargetRequirements = requirementsAccum
             )
 
             val pausedState = state
@@ -4588,7 +4606,13 @@ class CastSpellHandler(
         }
 
         // All modes resolved without needing another decision — finalize directly.
-        return finalizeModalCast(state, baseCastAction, chosenModeIndices, targetsAccum)
+        return finalizeModalCast(
+            state,
+            baseCastAction,
+            chosenModeIndices,
+            targetsAccum,
+            requirementsAccum
+        )
     }
 
     /**
@@ -4600,12 +4624,14 @@ class CastSpellHandler(
         state: GameState,
         baseCastAction: CastSpell,
         chosenModeIndices: List<Int>,
-        resolvedModeTargets: List<List<ChosenTarget>>
+        resolvedModeTargets: List<List<ChosenTarget>>,
+        resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
         val flatTargets = resolvedModeTargets.flatten()
         val finalAction = baseCastAction.copy(
             chosenModes = chosenModeIndices,
             modeTargetsOrdered = resolvedModeTargets,
+            modeTargetRequirementsOrdered = resolvedModeTargetRequirements,
             targets = flatTargets
         )
         return execute(state, finalAction)

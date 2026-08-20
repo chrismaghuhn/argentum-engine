@@ -58,6 +58,8 @@ data class ModalContinuation(
     val selectedModeIndices: List<Int> = emptyList(),
     val availableIndices: List<Int>? = null,
     val outerTargets: List<ChosenTarget> = emptyList(),
+    /** Position-preserving outer target slots, including nulls dropped by CR 608.2b. */
+    val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
     val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
     /**
      * "Choose one that hasn't been chosen" (Gandalf the Grey): when true, each chosen
@@ -93,7 +95,19 @@ data class ModalContinuation(
 data class PreTargetedEffectEntry(
     val effect: @Serializable Effect,
     val targets: List<ChosenTarget>,
-    val targetRequirements: List<@Serializable TargetRequirement>
+    val targetRequirements: List<@Serializable TargetRequirement>,
+    /** Object-identity stamps captured when these locked targets were chosen (CR 400.7). */
+    val targetEntryStamps: Map<EntityId, Long> = emptyMap(),
+    /** Start of this entry's immutable slice in the original flat target payload. */
+    val flatSlotStart: Int = -1,
+    /** Number of target slots in this entry's immutable slice. */
+    val flatSlotCount: Int = -1,
+    /** Current target value at each original slot, null when the slot was illegal. */
+    val alignedTargets: List<ChosenTarget?> = emptyList(),
+    /** Explicit CR 608.2b legality mask for the original slots. */
+    val targetSlotLegality: List<Boolean> = emptyList(),
+    /** False for legacy/malformed queue entries whose cast-time slot metadata is unavailable. */
+    val slotMetadataLocked: Boolean = false
 )
 
 /**
@@ -120,6 +134,21 @@ data class ModalPreChosenContinuation(
     val sourceName: String?,
     val xValue: Int? = null,
     val triggeringEntityId: EntityId? = null,
+    val triggeringPlayerId: EntityId? = null,
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
+        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
+    /**
+     * Legacy compact legality payload retained only so older serialized frames decode. New
+     * frames carry the authoritative slot-aligned mask on each [remainingEntries] entry and never
+     * consult this membership-only list.
+     */
+    @Deprecated("Use each PreTargetedEffectEntry.alignedTargets slot mask")
+    val legalTargets: List<ChosenTarget>? = null,
+    /** Outer target scope retained for targetless pre-chosen modes after a nested pause. */
+    val outerTargets: List<ChosenTarget> = emptyList(),
+    val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
+    val outerNamedTargets: Map<String, ChosenTarget> = emptyMap(),
     val remainingEntries: List<PreTargetedEffectEntry>
 ) : ContinuationFrame
 
@@ -144,6 +173,18 @@ data class SpliceTailContinuation(
     val controllerId: EntityId,
     val sourceId: EntityId?,
     val sourceName: String?,
+    val xValue: Int? = null,
+    val triggeringEntityId: EntityId? = null,
+    val storedCollections: Map<String, List<EntityId>> = emptyMap(),
+    val targetingSourceType: com.wingedsheep.engine.handlers.TargetingSourceType =
+        com.wingedsheep.engine.handlers.TargetingSourceType.ANY,
+    /**
+     * Legacy compact legality payload retained only so older serialized frames decode. New
+     * frames carry the authoritative slot-aligned mask on each [remainingEntries] entry and never
+     * consult this membership-only list.
+     */
+    @Deprecated("Use each PreTargetedEffectEntry.alignedTargets slot mask")
+    val legalTargets: List<ChosenTarget>? = null,
     val remainingEntries: List<PreTargetedEffectEntry>
 ) : ContinuationFrame
 
@@ -177,6 +218,7 @@ data class ModalChosenModeTailContinuation(
     /** Outer-scope targets propagated to any remaining no-target modes. See
      *  [ModalContinuation.outerTargets]. */
     val outerTargets: List<ChosenTarget> = emptyList(),
+    val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
     val outerNamedTargets: Map<String, ChosenTarget> = emptyMap()
 ) : ContinuationFrame
 
@@ -209,6 +251,7 @@ data class ModalTargetContinuation(
     /** Outer-scope targets from the enclosing spell/ability, propagated to any
      *  remaining no-target modes. See [ModalContinuation.outerTargets]. */
     val outerTargets: List<ChosenTarget> = emptyList(),
+    val outerAlignedTargets: List<ChosenTarget?> = emptyList(),
     val outerNamedTargets: Map<String, ChosenTarget> = emptyMap()
 ) : ContinuationFrame
 

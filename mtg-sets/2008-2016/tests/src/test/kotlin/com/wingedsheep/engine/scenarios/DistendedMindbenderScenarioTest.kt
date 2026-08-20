@@ -1,6 +1,5 @@
 package com.wingedsheep.engine.scenarios
 
-import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.ScenarioTestBase
 import io.kotest.assertions.withClue
 import io.kotest.matchers.shouldBe
@@ -33,7 +32,6 @@ class DistendedMindbenderScenarioTest : ScenarioTestBase() {
 
                 val cast = game.castSpellWithEmerge(
                     1, "Distended Mindbender", "Centaur Courser",
-                    targets = listOf(ChosenTarget.Player(game.player2Id)),
                 )
                 withClue("the emerge cast should succeed: ${cast.error}") { cast.error shouldBe null }
                 game.isInGraveyard(1, "Centaur Courser") shouldBe true

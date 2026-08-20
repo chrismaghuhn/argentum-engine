@@ -47,11 +47,11 @@ internal object CombatDamageUtils {
         } else {
             // Keep the helper deterministic for synthetic/offline callers that pass an
             // explicit active player without stamping it onto GameState.
-            val activeIndex = state.turnOrder.indexOf(activePlayerId)
+            val activeIndex = state.activePlayers.indexOf(activePlayerId)
             if (activeIndex >= 0) {
-                state.turnOrder.drop(activeIndex) + state.turnOrder.take(activeIndex)
+                state.activePlayers.drop(activeIndex) + state.activePlayers.take(activeIndex)
             } else {
-                state.turnOrder
+                state.activePlayers
             }
         }
         return (apnapOrder.filter { it in relevant } + relevant.filter { it !in apnapOrder }).distinct()
@@ -95,11 +95,12 @@ internal object CombatDamageUtils {
         if (!blockerHasBanding) return DamageChooser(defaultChooser)
 
         // CR 702.22j: the defending player divides this attacker's damage "as they choose".
-        val defenderId = container.get<AttackingComponent>()?.defenderId
+        val attacking = container.get<AttackingComponent>()
         val chooser = when {
-            defenderId == null -> defaultChooser
-            state.turnOrder.contains(defenderId) -> defenderId
-            else -> projected.getController(defenderId) ?: defaultChooser
+            attacking == null -> defaultChooser
+            else -> CombatDefenders.defendingPlayerOf(state, attacking)
+                .takeIf { it in state.activePlayers }
+                ?: defaultChooser
         }
         return DamageChooser(chooser)
     }

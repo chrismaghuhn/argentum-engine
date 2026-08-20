@@ -8,6 +8,7 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.ChoiceSlot
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -120,6 +121,8 @@ data class CastSpell(
     val useAlternativeCost: Boolean = false,
     val chosenModes: List<Int> = emptyList(),
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),
+    /** Per-mode target requirements with cast-time effective slot counts locked by ordinal. */
+    val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
     val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     val graveyardLifeCost: Int = 0,
     /**
