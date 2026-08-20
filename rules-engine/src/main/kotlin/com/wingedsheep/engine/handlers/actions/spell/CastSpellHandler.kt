@@ -1563,6 +1563,13 @@ class CastSpellHandler(
         if (action.modeTargetsOrdered.isNotEmpty() && action.modeTargetsOrdered.size != chosen.size) {
             return "modeTargetsOrdered size (${action.modeTargetsOrdered.size}) must match chosenModes size (${chosen.size})"
         }
+        val repeatedModeDistributions = action.modeDamageDistribution.keys
+            .filter { mode -> chosen.count { it == mode } > 1 }
+            .sorted()
+        if (repeatedModeDistributions.isNotEmpty()) {
+            return "modeDamageDistribution cannot be supplied for repeated mode index(es): " +
+                repeatedModeDistributions.joinToString()
+        }
         return null
     }
 
@@ -3796,7 +3803,7 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
                         )
                     }
                 } else emptyList()
@@ -3833,7 +3840,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()
@@ -3870,7 +3878,8 @@ class CastSpellHandler(
                             triggerContext = TriggerContext(
                                 triggeringEntityId = action.cardId,
                                 triggeringPlayerId = action.playerId
-                            )
+                            ),
+                            stage = com.wingedsheep.engine.event.TriggerStage.REFLEXIVE
                         )
                     )
                 } else emptyList()

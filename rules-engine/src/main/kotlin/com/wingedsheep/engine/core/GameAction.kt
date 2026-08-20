@@ -55,7 +55,9 @@ data class PassPriority(
  *           may repeat when the [ModalEffect.allowRepeat] flag is set (Escalate/Spree).
  * @property modeTargetsOrdered Per-mode target bindings, aligned 1:1 with [chosenModes]. Required for
  *           choose-N modal spells so the resolution pipeline can resolve `ContextTarget(k)` inside each mode's scope.
- * @property modeDamageDistribution Per-mode DividedDamageEffect allocations (future — no current card uses this).
+ * @property modeDamageDistribution Per-mode DividedDamageEffect allocations (future — no current
+ * card uses this). Because this map is keyed by mode index rather than mode occurrence, the
+ * handler rejects a non-empty entry for a mode selected more than once.
  */
 @Serializable
 @SerialName("CastSpell")
