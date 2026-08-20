@@ -10,6 +10,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
@@ -616,7 +617,8 @@ data class EffectContext(
             targets: List<ChosenTarget> = emptyList(),
             alignedTargets: List<ChosenTarget?> = targets,
             targetRequirements: List<TargetRequirement> = emptyList(),
-            targetEntryStamps: Map<EntityId, Long> = emptyMap()
+            targetEntryStamps: Map<EntityId, Long> = emptyMap(),
+            state: GameState? = null,
         ): EffectContext = EffectContext(
             sourceId = ability.sourceId,
             controllerId = ability.controllerId,
@@ -646,6 +648,15 @@ data class EffectContext(
             damageRecipientKinds = ability.effectiveDamageRecipientKinds,
             damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
             damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
+            // A cost-linked trigger freezes its source spell when it is put on the stack. Prefer
+            // that LKI payload even after the original spell has been countered or otherwise left
+            // the stack; the live-source fallback preserves compatibility for older serialized
+            // stack objects and ordinary source-linked contexts (CR 113.7a / 608.2h).
+            sacrificedPermanents = ability.resolvingSpellCopyPayload?.spell?.sacrificedPermanents
+                ?: state?.getEntity(ability.sourceId)
+                    ?.get<SpellOnStackComponent>()
+                    ?.sacrificedPermanents
+                ?: emptyList(),
             targetingSourceEntityId = ability.targetingSourceEntityId,
             triggerUnattachedFromEntityId = ability.triggerUnattachedFromEntityId,
             triggerLastKnownPower = ability.lastKnownPower,
@@ -689,7 +700,8 @@ data class EffectContext(
                 chosenValues = ability.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedNumbers = ability.carriedPipeline?.storedNumbers ?: emptyMap(),
                 storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap()
-            )
+            ),
+            resolvingSpellCopyPayload = ability.resolvingSpellCopyPayload
         )
     }
 }

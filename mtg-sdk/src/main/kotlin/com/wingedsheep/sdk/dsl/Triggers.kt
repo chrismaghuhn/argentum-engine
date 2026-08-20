@@ -6,6 +6,8 @@ import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.ControlChangeDirection
+import com.wingedsheep.sdk.scripting.CostPaidLinkedTrigger
+import com.wingedsheep.sdk.scripting.CostPaidLinkedTriggerCost
 import com.wingedsheep.sdk.scripting.EventPattern.*
 import com.wingedsheep.sdk.scripting.ExploreReveal
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -18,6 +20,8 @@ import com.wingedsheep.sdk.scripting.events.AttackPredicate
 import com.wingedsheep.sdk.scripting.events.RecipientFilter
 import com.wingedsheep.sdk.scripting.events.SourceFilter
 import com.wingedsheep.sdk.scripting.events.SpellCastPredicate
+import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 
 import com.wingedsheep.sdk.scripting.references.Player
 
@@ -34,6 +38,24 @@ import com.wingedsheep.sdk.scripting.references.Player
  * ```
  */
 object Triggers {
+
+    /**
+     * A generic cast-time cost-linked ability established by a completed payment
+     * (CR 603.11 / 607.2h / 607.2i), not a CR 603.12 reflexive ability.
+     * Declare the matching payment separately with `CardBuilder.additionalCost` (normally via
+     * `Costs.additional.SacrificePermanents`).
+     */
+    fun costPaidLinkedTrigger(
+        effect: Effect,
+        cost: CostPaidLinkedTriggerCost = CostPaidLinkedTriggerCost.VariablePermanentsSacrifice,
+        targetRequirements: List<TargetRequirement> = emptyList(),
+        descriptionOverride: String? = null,
+    ): CostPaidLinkedTrigger = CostPaidLinkedTrigger(
+        cost = cost,
+        effect = effect,
+        targetRequirements = targetRequirements,
+        descriptionOverride = descriptionOverride,
+    )
 
     /** Combines trigger atoms that use the same binding into one disjunctive trigger. */
     fun or(first: TriggerSpec, second: TriggerSpec, vararg others: TriggerSpec): TriggerSpec {

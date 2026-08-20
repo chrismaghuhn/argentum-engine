@@ -665,8 +665,11 @@ object CardLinter {
         val abilityListFields = setOf(
             "triggeredAbilities", "stateTriggeredAbilities", "activatedAbilities",
             "staticAbilities", "replacementEffects", "sagaChapters", "classLevels",
+            "costPaidLinkedTriggers",
         )
-        val orderedSpellFields = listOf("castTimeCaptures", "additionalCosts", "selfAlternativeCost")
+        val orderedSpellFields = listOf(
+            "castTimeCaptures", "additionalCosts", "costPaidLinkedTriggers", "selfAlternativeCost"
+        )
         val deferredSpellFields = listOf("spellEffect", "kickerSpellEffect", "cleaveSpellEffect")
 
         // A declared cast-time creature-type choice writes the chosen type before resolution.
@@ -695,6 +698,9 @@ object CardLinter {
         }
         (script["sagaChapters"] as? JsonArray)?.forEachIndexed { i, chapter ->
             walkAbilityScope(chapter, "saga chapter ${i + 1}", state)
+        }
+        (script["costPaidLinkedTriggers"] as? JsonArray)?.forEachIndexed { i, trigger ->
+            walkInto(trigger, state.newScope("cost-paid linked trigger ${i + 1}"), state)
         }
         (script["staticAbilities"] as? JsonArray)?.forEachIndexed { i, ability ->
             walkInto(ability, state.newScope("static ability ${i + 1}"), state)

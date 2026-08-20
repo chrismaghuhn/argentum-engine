@@ -7,13 +7,15 @@ import com.wingedsheep.sdk.scripting.TriggeredAbility
 /**
  * The semantic kind of a pending triggered ability.
  *
- * [REFLEXIVE] identifies a CR 603.12 "when you do" ability. It is deliberately separate from
- * [TriggerPlacementStage], because a CR 603.12 reflexive ability's trigger condition is the action
- * it watches for, not another ability triggering.
+ * [COST_LINKED] identifies a triggered ability linked to a cast-time/additional-cost payment
+ * (CR 603.11 / 607.2h / 607.2i). [REFLEXIVE] remains reserved for a genuine CR 603.12
+ * "when you do" ability. Both are deliberately separate from [TriggerPlacementStage], because
+ * their semantic kind does not determine the ordinary CR 603.3b ordering pass.
  */
 @kotlinx.serialization.Serializable
 enum class TriggerStage {
     NORMAL,
+    COST_LINKED,
     REFLEXIVE
 }
 
@@ -50,7 +52,7 @@ data class DelayedTriggerOccurrenceCandidate(
     val consumesDelayedTriggerId: String? = null,
     val sagaChapterInfo: SagaChapterInfo? = null,
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
-    /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
+    /** Semantic kind; [TriggerStage.COST_LINKED] marks a cast-time cost-linked ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
     /**
      * The placement pass observed for this concrete trigger occurrence. Detectors stamp this from
@@ -113,7 +115,7 @@ data class PendingTrigger(
      * when this pending trigger is placed on the stack. Null for ordinary triggered abilities.
      */
     val carriedPipeline: com.wingedsheep.engine.handlers.PipelineState? = null,
-    /** Semantic kind; [TriggerStage.REFLEXIVE] marks a CR 603.12 reflexive ability. */
+    /** Semantic kind; [TriggerStage.COST_LINKED] marks a cast-time cost-linked ability. */
     val stage: TriggerStage = TriggerStage.NORMAL,
     @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val observedPlacementStage: TriggerPlacementStage? = null,
@@ -130,11 +132,12 @@ data class PendingTrigger(
  * Resolve the CR 603.3b placement pass for one concrete trigger occurrence. Detectors normally
  * provide [PendingTrigger.observedPlacementStage], derived from the event that matched. The
  * condition-shape fallback keeps synthetic and pre-marker serialized callers compatible; a
- * reflexive trigger is always first-pass regardless of its carried action context.
+ * cost-linked or reflexive trigger is always first-pass regardless of its carried action context.
  */
 val PendingTrigger.placementStage: TriggerPlacementStage
     get() = when {
-        stage == TriggerStage.REFLEXIVE -> TriggerPlacementStage.NORMAL
+        stage == TriggerStage.COST_LINKED || stage == TriggerStage.REFLEXIVE ->
+            TriggerPlacementStage.NORMAL
         observedPlacementStage != null -> observedPlacementStage
         ability.trigger is EventPattern.AbilityTriggeredEvent -> TriggerPlacementStage.ABILITY_TRIGGERED
         else -> TriggerPlacementStage.NORMAL
@@ -142,7 +145,7 @@ val PendingTrigger.placementStage: TriggerPlacementStage
 
 /**
  * Stamp the placement pass from the condition branch that actually caused this occurrence. This
- * is separate from [TriggerStage]: CR 603.12's "when you do" marker describes the ability's kind,
+ * is separate from [TriggerStage]: the cost-linked/CR 603.12 marker describes the ability's kind,
  * while CR 603.3b asks whether this particular trigger condition was another ability triggering.
  */
 fun PendingTrigger.withObservedPlacementStage(stage: TriggerPlacementStage): PendingTrigger = copy(
