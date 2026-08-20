@@ -1,7 +1,6 @@
 # #47 Generic Attachment Transfer for Selected Auras and Equipment
 
-Status: Way A architecture approved; `SPEC_REVIEW_PASS = NO` pending this
-revision's review.
+Status: Way A architecture approved; `SPEC_REVIEW_PASS = YES`.
 
 ## Decision
 
@@ -41,12 +40,12 @@ single-object attach effect.
   exact resolved URL, effective date, and SHA-256 in the implementation
   evidence. That execution-time record is the authority for the run.
 
-Relevant rules contracts are CR 608.2f for multi-object instructions and the
-relative ordering of actions on same-controller objects, CR 101.4c for a
-player choosing the order of multiple simultaneous choices when no order is
-specified, CR 701.3 for attaching and unattaching, CR 301.5 for Equipment
-attachment, CR 303.4 for Aura enchant restrictions, and CR 613.7e/613.7m for
-new timestamps and their APNAP-relative order. Rule numbers are recorded here
+Relevant rules contracts are CR 608.2f for processing a multi-object
+instruction as a simultaneous batch, CR 701.3 for attaching and unattaching,
+CR 301.5 for Equipment attachment, CR 303.4 for Aura enchant restrictions, and
+CR 613.7e/613.7m for new attachment timestamps and their APNAP-relative order.
+CR 608.2f's fallback for actions that cannot be processed simultaneously is
+intentionally not used here. Rule numbers are recorded here
 only after checking the live rules document; they are not a substitute for
 checking the file again at implementation start.
 
