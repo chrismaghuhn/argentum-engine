@@ -394,7 +394,7 @@ data class CountersComponent(
  * The player designated as this battle's protector (CR 310.8).
  *
  * A battle's protector — not its controller — is the defending player for every rule and effect
- * that refers to one while the battle is being attacked (CR 310.8d), may never attack it, and is
+ * that refers to one while the battle is being attacked (CR 310.9d), may never attack it, and is
  * the only player who may block creatures attacking it (CR 310.8b/c).
  *
  * Assigned and repaired as a state-based action by
@@ -529,13 +529,12 @@ data class ReplacementEffectSourceComponent(
 /**
  * Timestamp for ordering continuous effects in the layer system (Rule 613.7).
  *
- * Currently never stamped — [com.wingedsheep.engine.mechanics.layers.StateProjector]
- * falls back to the current [com.wingedsheep.engine.state.GameState.timestamp] when it
- * is absent. Conceptually this is the same moment as
- * [BattlefieldEntryTimestampComponent] (both are "when the permanent entered the
- * battlefield"), but the two stay separate: stamping this one on every entry would
- * change layer ordering engine-wide, while the entry stamp is a pure identity marker
- * with no projection impact.
+ * Stamped with a fresh, checked timestamp when an already-attached permanent is reattached to
+ * a different host. A same-host attach is a no-op and does not receive a fresh timestamp.
+ * [com.wingedsheep.engine.mechanics.layers.StateProjector] falls back to the current
+ * [com.wingedsheep.engine.state.GameState.timestamp] when this component is absent. This stays
+ * separate from [BattlefieldEntryTimestampComponent]: the latter is a pure CR 400.7 object
+ * identity marker, while this component orders continuous effects after a reattachment.
  */
 @Serializable
 data class TimestampComponent(

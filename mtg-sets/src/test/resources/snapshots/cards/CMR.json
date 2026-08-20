@@ -58,6 +58,110 @@
     ]
 }
 
+// Ardenn, Intrepid Archaeologist
+{
+    "name": "Ardenn, Intrepid Archaeologist",
+    "manaCost": "{2}{W}",
+    "typeLine": "Legendary Creature — Kor Scout",
+    "oracleText": "At the beginning of combat on your turn, you may attach any number of Auras and Equipment you control to target permanent or player.\nPartner (You can have two commanders if both have partner.)",
+    "creatureStats": {
+        "power": 2,
+        "toughness": 2
+    },
+    "script": {
+        "triggeredAbilities": [
+            {
+                "id": "ability_1",
+                "trigger": {
+                    "type": "StepEvent",
+                    "step": "BEGIN_COMBAT"
+                },
+                "binding": "ANY",
+                "effect": {
+                    "type": "Gated",
+                    "gate": "Gate.MayDecide",
+                    "then": {
+                        "type": "Composite",
+                        "effects": [
+                            {
+                                "type": "GatherCards",
+                                "source": {
+                                    "type": "ControlledPermanents",
+                                    "filter": {
+                                        "cardPredicates": [
+                                            {
+                                                "type": "Or",
+                                                "predicates": [
+                                                    {
+                                                        "type": "And",
+                                                        "predicates": [
+                                                            "IsEnchantment",
+                                                            {
+                                                                "type": "HasSubtype",
+                                                                "subtype": "Aura"
+                                                            }
+                                                        ]
+                                                    },
+                                                    {
+                                                        "type": "And",
+                                                        "predicates": [
+                                                            "IsArtifact",
+                                                            {
+                                                                "type": "HasSubtype",
+                                                                "subtype": "Equipment"
+                                                            }
+                                                        ]
+                                                    }
+                                                ]
+                                            }
+                                        ]
+                                    }
+                                },
+                                "storeAs": "ardenn_candidates"
+                            },
+                            {
+                                "type": "FilterCollection",
+                                "from": "ardenn_candidates",
+                                "filter": {
+                                    "type": "AttachableTo",
+                                    "target": {
+                                        "type": "ContextTarget",
+                                        "index": 0
+                                    }
+                                },
+                                "storeMatching": "ardenn_legal"
+                            },
+                            {
+                                "type": "SelectFromCollection",
+                                "from": "ardenn_legal",
+                                "selection": "ChooseAnyNumber",
+                                "storeSelected": "ardenn_selected",
+                                "prompt": "Choose any number of Auras and Equipment to attach",
+                                "alwaysPrompt": true
+                            },
+                            {
+                                "type": "AttachCollectionToTarget",
+                                "from": "ardenn_selected"
+                            }
+                        ]
+                    }
+                },
+                "targetRequirement": "TargetPermanentOrPlayer"
+            }
+        ]
+    },
+    "metadata": {
+        "collectorNumber": "10",
+        "rarity": "UNCOMMON",
+        "artist": "Jason Rainville",
+        "flavorText": "\"With the right tools, even the sky is within reach.\"",
+        "imageUri": "https://cards.scryfall.io/normal/front/7/2/728b802c-969b-4865-b7a0-871c585d097a.jpg?1783928890"
+    },
+    "colorIdentityOverride": [
+        "WHITE"
+    ]
+}
+
 // Boarding Party
 {
     "name": "Boarding Party",

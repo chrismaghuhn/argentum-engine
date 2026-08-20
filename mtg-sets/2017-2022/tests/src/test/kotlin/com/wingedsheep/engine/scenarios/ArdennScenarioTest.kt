@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
@@ -9,78 +10,31 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
-import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
-import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.effects.CardSource
-import com.wingedsheep.sdk.scripting.references.Player
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.collections.shouldContainExactlyInAnyOrder
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
-/**
- * RED-first characterization for Ardenn, Intrepid Archaeologist (CMR #10).
- *
- * Current Oracle, verified against Scryfall:
- *
- * At the beginning of combat on your turn, you may attach any number of Auras and Equipment you
- * control to target permanent or player.
- * Partner (You can have two commanders if both have partner.)
- *
- * The test-only card deliberately stops after the explicit attachment selection. The engine has
- * no generic primitive that can then attach an arbitrary selected mixture of existing Auras and
- * Equipment to one target permanent or player while re-checking each attachment's legality. Do
- * not replace this characterization with card-specific effect code.
- */
+/** Focused GREEN scenarios for the production Ardenn card definition (CMR #10). */
 class ArdennScenarioTest : ScenarioTestBase() {
 
     private companion object {
-        const val ARDENN = "Ardenn, Intrepid Archaeologist [characterization]"
-        const val OWN_HOST = "Ardenn Own Host"
+        const val ARDENN = "Ardenn, Intrepid Archaeologist"
+        const val OWN_HOST = "Grizzly Bears"
         const val ARTIFACT_HOST = "Ardenn Artifact Host"
-        const val OPPONENT_TARGET = "Ardenn Opponent Target"
+        const val OPPONENT_TARGET = "Hill Giant"
         const val VALID_AURA = "Ardenn Valid Aura"
         const val INVALID_AURA = "Ardenn Invalid Aura"
-        const val VALID_EQUIPMENT = "Ardenn Valid Equipment"
+        const val EQUIPMENT_A = "Ardenn Equipment A"
+        const val EQUIPMENT_B = "Ardenn Equipment B"
         const val OPPONENT_EQUIPMENT = "Ardenn Opponent Equipment"
-    }
-
-    private val characterizedArdenn = card(ARDENN) {
-        manaCost = "{2}{W}"
-        colorIdentity = "W"
-        typeLine = "Legendary Creature — Kor Scout"
-        oracleText = "At the beginning of combat on your turn, you may attach any number of Auras " +
-            "and Equipment you control to target permanent or player.\n" +
-            "Partner (You can have two commanders if both have partner.)"
-        power = 2
-        toughness = 2
-
-        triggeredAbility {
-            trigger = Triggers.BeginCombat
-            optional = true
-            target = Targets.PermanentOrPlayer
-            effect = Effects.Pipeline {
-                val candidates = gather(
-                    source = CardSource.ControlledPermanents(
-                        player = Player.You,
-                        filter = GameObjectFilter.Enchantment.withSubtype("Aura") or
-                            GameObjectFilter.Artifact.withSubtype("Equipment"),
-                    ),
-                    name = "ardenn_candidates",
-                )
-                chooseAnyNumber(
-                    from = candidates,
-                    prompt = "Choose any number of Auras and Equipment to attach",
-                    alwaysPrompt = true,
-                    name = "ardenn_selected",
-                )
-            }
-        }
+        const val PLAYER_AURA = "Ardenn Player Aura"
+        const val CREATURE_AURA = "Ardenn Creature Aura"
     }
 
     private val validAura = card(VALID_AURA) {
@@ -97,49 +51,166 @@ class ArdennScenarioTest : ScenarioTestBase() {
         auraTarget = Targets.Artifact
     }
 
-    private val validEquipment = card(VALID_EQUIPMENT) {
-        manaCost = "{2}"
+    private val equipmentA = card(EQUIPMENT_A) {
+        manaCost = "{0}"
         typeLine = "Artifact — Equipment"
-        oracleText = "Equip {1}"
+        oracleText = "Equip {0}"
+        equipAbility("{0}")
+    }
+
+    private val equipmentB = card(EQUIPMENT_B) {
+        manaCost = "{0}"
+        typeLine = "Artifact — Equipment"
+        oracleText = "Equip {0}"
+        equipAbility("{0}")
     }
 
     private val opponentEquipment = card(OPPONENT_EQUIPMENT) {
-        manaCost = "{2}"
+        manaCost = "{0}"
         typeLine = "Artifact — Equipment"
-        oracleText = "Equip {1}"
+        oracleText = "Equip {0}"
+        equipAbility("{0}")
+    }
+
+    private val playerAura = card(PLAYER_AURA) {
+        manaCost = "{0}"
+        typeLine = "Enchantment — Aura"
+        oracleText = "Enchant player"
+        auraTarget = Targets.Player
+    }
+
+    private val creatureAura = card(CREATURE_AURA) {
+        manaCost = "{0}"
+        typeLine = "Enchantment — Aura"
+        oracleText = "Enchant creature"
+        auraTarget = Targets.Creature
     }
 
     private val artifactHost = card(ARTIFACT_HOST) {
-        manaCost = "{2}"
+        manaCost = "{0}"
         typeLine = "Artifact"
         oracleText = ""
     }
 
-    private val ownHost = card(OWN_HOST) {
-        manaCost = "{1}{G}"
-        typeLine = "Creature — Bear"
-        oracleText = ""
-        power = 2
-        toughness = 2
-    }
-
-    private val opponentTarget = card(OPPONENT_TARGET) {
-        manaCost = "{1}{R}"
-        typeLine = "Creature — Goblin"
-        oracleText = ""
-        power = 2
-        toughness = 2
-    }
-
     init {
-        cardRegistry.register(characterizedArdenn)
-        cardRegistry.register(validAura)
-        cardRegistry.register(invalidAura)
-        cardRegistry.register(validEquipment)
-        cardRegistry.register(opponentEquipment)
-        cardRegistry.register(artifactHost)
-        cardRegistry.register(ownHost)
-        cardRegistry.register(opponentTarget)
+        cardRegistry.register(
+            listOf(
+                validAura,
+                invalidAura,
+                equipmentA,
+                equipmentB,
+                opponentEquipment,
+                playerAura,
+                creatureAura,
+                artifactHost,
+            )
+        )
+
+        test("moves selected mixed attachments through one order boundary and excludes opponent sources") {
+            val game = scenarioWithAttachments()
+            val target = game.permanent(OPPONENT_TARGET)
+
+            val may = game.beginArdenn()
+            may.playerId shouldBe game.player1Id
+            game.answerYesNo(true).error shouldBe null
+            game.chooseArdennTarget(target)
+            game.selectTargets(listOf(target)).error shouldBe null
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            val selectedA = game.permanent(EQUIPMENT_A)
+            val selectedB = game.permanent(EQUIPMENT_B)
+            val optionNames = selection.options.mapNotNull { game.cardNameOf(it) }.toSet()
+            optionNames shouldBe setOf(EQUIPMENT_A, EQUIPMENT_B, VALID_AURA)
+            selection.options shouldContain selectedA
+            selection.options shouldContain selectedB
+            selection.options shouldNotContain game.permanent(INVALID_AURA)
+            selection.options shouldNotContain game.permanent(OPPONENT_EQUIPMENT)
+
+            game.selectCards(listOf(selectedA, selectedB)).error shouldBe null
+            val order = game.getPendingDecision().shouldBeInstanceOf<OrderObjectsDecision>()
+            game.submitObjectOrdering(listOf(selectedB, selectedA)).error shouldBe null
+
+            game.state.getEntity(selectedA)?.get<AttachedToComponent>()?.targetId shouldBe target
+            game.state.getEntity(selectedB)?.get<AttachedToComponent>()?.targetId shouldBe target
+            game.state.getEntity(target)?.get<AttachmentsComponent>()?.attachedIds
+                .orEmpty().shouldContainExactlyInAnyOrder(selectedA, selectedB)
+            order.objects.toSet() shouldBe setOf(selectedA, selectedB)
+        }
+
+        test("player target keeps player-enchanting Auras and rejects creature Auras") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, ARDENN)
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardAttachedTo(1, PLAYER_AURA, "Grizzly Bears")
+                .withCardAttachedTo(1, CREATURE_AURA, "Grizzly Bears")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val playerAuraId = game.permanent(PLAYER_AURA)
+            val creatureAuraId = game.permanent(CREATURE_AURA)
+            val may = game.beginArdenn()
+            game.answerYesNo(true).error shouldBe null
+            game.chooseArdennTarget(game.player2Id)
+            game.selectTargets(listOf(game.player2Id)).error shouldBe null
+            game.resolveStack()
+
+            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            selection.options shouldBe listOf(playerAuraId)
+            game.selectCards(listOf(playerAuraId)).error shouldBe null
+            game.getPendingDecision() shouldBe null
+            game.state.getEntity(playerAuraId)?.get<AttachedToComponent>()?.targetId shouldBe game.player2Id
+            game.state.getEntity(creatureAuraId)?.get<AttachedToComponent>()?.targetId shouldBe
+                game.permanent("Grizzly Bears")
+            withClue("the optional trigger was offered to Ardenn's controller") {
+                may.playerId shouldBe game.player1Id
+            }
+        }
+
+        test("declining the explicit any-number selection leaves every attachment unchanged") {
+            val game = scenario()
+                .withPlayers()
+                .withCardOnBattlefield(1, ARDENN)
+                .withCardOnBattlefield(1, "Grizzly Bears")
+                .withCardOnBattlefield(1, "Hill Giant")
+                .withCardAttachedTo(1, EQUIPMENT_A, "Grizzly Bears")
+                .withActivePlayer(1)
+                .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
+                .build()
+
+            val source = game.permanent("Grizzly Bears")
+            val destination = game.permanent("Hill Giant")
+            val equipment = game.permanent(EQUIPMENT_A)
+            game.beginArdenn()
+            game.answerYesNo(true).error shouldBe null
+            game.chooseArdennTarget(destination)
+            game.selectTargets(listOf(destination)).error shouldBe null
+            game.resolveStack()
+            game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
+            game.selectCards(emptyList()).error shouldBe null
+            game.getPendingDecision() shouldBe null
+
+            game.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe source
+            game.state.getEntity(destination)?.get<AttachmentsComponent>()?.attachedIds
+                .orEmpty() shouldNotContain equipment
+        }
+
+        test("declining Ardenn's optional trigger leaves the board untouched") {
+            val game = scenarioWithAttachments(includeInvalidAura = false)
+            val aura = game.permanent(VALID_AURA)
+            val equipment = game.permanent(EQUIPMENT_A)
+            val source = game.permanent(OWN_HOST)
+
+            game.beginArdenn()
+            game.answerYesNo(false).error shouldBe null
+            game.resolveStack()
+
+            game.state.getEntity(aura)?.get<AttachedToComponent>()?.targetId shouldBe source
+            game.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe source
+            game.hasPendingDecision() shouldBe false
+        }
     }
 
     private fun scenarioWithAttachments(includeInvalidAura: Boolean = true): TestGame {
@@ -148,9 +219,11 @@ class ArdennScenarioTest : ScenarioTestBase() {
             .withCardOnBattlefield(1, ARDENN)
             .withCardOnBattlefield(1, OWN_HOST)
             .withCardAttachedTo(1, VALID_AURA, OWN_HOST)
-            .withCardAttachedTo(1, VALID_EQUIPMENT, OWN_HOST)
+            .withCardAttachedTo(1, EQUIPMENT_A, OWN_HOST)
+            .withCardAttachedTo(1, EQUIPMENT_B, OWN_HOST)
             .withCardOnBattlefield(2, OPPONENT_TARGET)
-            .withCardAttachedTo(2, OPPONENT_EQUIPMENT, OPPONENT_TARGET)
+            .withCardOnBattlefield(2, "Centaur Courser")
+            .withCardAttachedTo(2, OPPONENT_EQUIPMENT, "Centaur Courser")
             .withActivePlayer(1)
             .inPhase(Phase.PRECOMBAT_MAIN, Step.PRECOMBAT_MAIN)
 
@@ -159,11 +232,9 @@ class ArdennScenarioTest : ScenarioTestBase() {
                 .withCardOnBattlefield(1, ARTIFACT_HOST)
                 .withCardAttachedTo(1, INVALID_AURA, ARTIFACT_HOST)
         }
-
         return builder.build()
     }
 
-    /** Pass priority only; never auto-answer the consent, target, or collection decision. */
     private fun TestGame.beginArdenn(): YesNoDecision {
         var iterations = 0
         while (
@@ -178,7 +249,6 @@ class ArdennScenarioTest : ScenarioTestBase() {
         if (state.pendingDecision == null) {
             resolveStack()
         }
-
         return getPendingDecision().shouldBeInstanceOf<YesNoDecision>()
     }
 
@@ -195,94 +265,4 @@ class ArdennScenarioTest : ScenarioTestBase() {
 
     private fun TestGame.cardNameOf(id: EntityId): String? =
         state.getEntity(id)?.get<CardComponent>()?.name
-
-    init {
-        test("offers only controller-owned and legally attachable candidates, never collection order") {
-            val game = scenarioWithAttachments()
-            val target = game.permanent(OPPONENT_TARGET)
-
-            val may = game.beginArdenn()
-            may.playerId shouldBe game.player1Id
-            game.answerYesNo(true).error shouldBe null
-            game.chooseArdennTarget(target)
-            game.selectTargets(listOf(target)).error shouldBe null
-            game.resolveStack()
-
-            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
-            val optionNames = selection.options.mapNotNull { game.cardNameOf(it) }.toSet()
-
-            withClue("the explicit domain contains the controller's valid Aura and Equipment") {
-                optionNames shouldBe setOf(VALID_AURA, VALID_EQUIPMENT)
-            }
-            withClue("an Aura with no legal enchant target is not offered") {
-                selection.options shouldNotContain game.permanent(INVALID_AURA)
-            }
-            withClue("an opponent-controlled Equipment is not offered") {
-                selection.options shouldNotContain game.permanent(OPPONENT_EQUIPMENT)
-            }
-        }
-
-        test("moves exactly the explicitly selected Aura/Equipment to an opponent permanent") {
-            val game = scenarioWithAttachments(includeInvalidAura = false)
-            val target = game.permanent(OPPONENT_TARGET)
-            val aura = game.permanent(VALID_AURA)
-            val equipment = game.permanent(VALID_EQUIPMENT)
-
-            val may = game.beginArdenn()
-            may.playerId shouldBe game.player1Id
-            game.answerYesNo(true).error shouldBe null
-            game.chooseArdennTarget(target)
-            game.selectTargets(listOf(target)).error shouldBe null
-            game.resolveStack()
-
-            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
-            selection.options shouldContain aura
-            selection.options shouldContain equipment
-
-            // Selecting Equipment explicitly proves that no implicit first()/collection-order
-            // choice may move the Aura as a side effect.
-            game.selectCards(listOf(equipment)).error shouldBe null
-            game.resolveStack()
-
-            withClue("the selected Equipment attaches to the targeted opponent permanent") {
-                game.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe target
-                game.state.getEntity(target)?.get<AttachmentsComponent>()?.attachedIds
-                    .orEmpty() shouldContain equipment
-            }
-            withClue("the unselected Aura remains on its original host") {
-                game.state.getEntity(aura)?.get<AttachedToComponent>()?.targetId shouldBe
-                    game.permanent(OWN_HOST)
-            }
-        }
-
-        test("accepts a player target and filters attachments by target legality") {
-            val game = scenarioWithAttachments(includeInvalidAura = false)
-
-            val may = game.beginArdenn()
-            may.playerId shouldBe game.player1Id
-            game.answerYesNo(true).error shouldBe null
-            game.chooseArdennTarget(game.player2Id)
-            game.selectTargets(listOf(game.player2Id)).error shouldBe null
-            game.resolveStack()
-
-            val selection = game.getPendingDecision().shouldBeInstanceOf<SelectCardsDecision>()
-            selection.options shouldBe emptyList()
-        }
-
-        test("declining the optional trigger leaves attachments unchanged") {
-            val game = scenarioWithAttachments(includeInvalidAura = false)
-            val aura = game.permanent(VALID_AURA)
-            val equipment = game.permanent(VALID_EQUIPMENT)
-            val ownHost = game.permanent(OWN_HOST)
-
-            val may = game.beginArdenn()
-            may.playerId shouldBe game.player1Id
-            game.answerYesNo(false).error shouldBe null
-            game.resolveStack()
-
-            game.state.getEntity(aura)?.get<AttachedToComponent>()?.targetId shouldBe ownHost
-            game.state.getEntity(equipment)?.get<AttachedToComponent>()?.targetId shouldBe ownHost
-            game.hasPendingDecision() shouldBe false
-        }
-    }
 }

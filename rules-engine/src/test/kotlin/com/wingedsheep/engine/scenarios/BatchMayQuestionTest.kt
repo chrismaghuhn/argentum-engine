@@ -2,6 +2,8 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.BatchYesNoDecision
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
+import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
@@ -69,6 +71,14 @@ class BatchMayQuestionTest : FunSpec({
         val bear = driver.putCardInHand(player, "Batch Bear")
         driver.castSpell(player, bear).isSuccess shouldBe true
         driver.bothPass() // resolve the bear; it enters and every Batch Pinger triggers
+        // CR 603.3b: the controller orders simultaneous trigger instances before the existing
+        // batch-May behavior is exercised by the tests below.
+        (driver.pendingDecision as? OrderObjectsDecision)?.let { ordering ->
+            driver.submitDecision(
+                ordering.playerId,
+                OrderedResponse(ordering.id, ordering.objects)
+            )
+        }
         return Triple(driver, player, opponent)
     }
 

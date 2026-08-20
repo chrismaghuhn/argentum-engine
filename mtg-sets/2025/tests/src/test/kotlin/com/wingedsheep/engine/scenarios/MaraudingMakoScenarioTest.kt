@@ -1,5 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.core.CounterType
@@ -65,10 +67,22 @@ class MaraudingMakoScenarioTest : ScenarioTestBase() {
 
             val cycle = game.cycleCard(1, "Agonasaur Rex")
             withClue("Cycling should succeed: ${cycle.error}") { cycle.error shouldBe null }
-            if (game.hasPendingDecision()) game.submitManaSourcesAutoPay()
-            // The Rex's own cycle trigger targets "up to one" — decline it, we only care about the Mako.
-            if (game.hasPendingDecision()) game.skipTargets()
-            game.resolveStack()
+            when (game.state.pendingDecision) {
+                is OrderObjectsDecision, is ChooseTargetsDecision -> Unit
+                null -> Unit
+                else -> game.submitManaSourcesAutoPay()
+            }
+            // The order response uses the complete semantic handle domain. The Rex's own cycle
+            // trigger targets "up to one" — decline it; we only care about the Mako.
+            var guard = 0
+            while (guard++ < 20) {
+                when (val decision = game.state.pendingDecision) {
+                    is OrderObjectsDecision -> game.submitObjectOrdering(decision.objects)
+                    is ChooseTargetsDecision -> game.skipTargets()
+                    null -> if (game.state.stack.isNotEmpty()) game.resolveStack() else break
+                    else -> break
+                }
+            }
 
             withClue("One card discarded → one counter") { game.counters(mako) shouldBe 1 }
         }

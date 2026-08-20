@@ -17,7 +17,6 @@ import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.CastChoicesComponent
 import com.wingedsheep.engine.state.components.battlefield.ChoiceValue
-import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.CounterType
@@ -32,6 +31,7 @@ import com.wingedsheep.engine.event.GrantedActivatedAbility
 import com.wingedsheep.engine.event.GrantedStaticAbility
 import com.wingedsheep.engine.event.GrantedTriggeredAbility
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
+import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.registry.TokenArtRegistry
 import com.wingedsheep.sdk.dsl.Triggers
@@ -219,7 +219,13 @@ class CreateTokenExecutor(
                     .resolveDefendingPlayer(context, newState)
                     ?: newState.getOpponents(tokenControllerId).firstOrNull()
                 if (defenderId != null) {
-                    components.add(AttackingComponent(defenderId))
+                    components.add(
+                        CombatDefenders.attackingComponentFor(
+                            state = newState,
+                            projected = newState.projectedState,
+                            defenderId = defenderId,
+                        )
+                    )
                 }
             }
             var container = ComponentContainer.of(*components.toTypedArray())

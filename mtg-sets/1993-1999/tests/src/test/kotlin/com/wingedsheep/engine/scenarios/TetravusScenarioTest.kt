@@ -75,9 +75,10 @@ class TetravusScenarioTest : FunSpec({
                     // First YesNo encountered is the convert trigger, second is reabsorb — but
                     // ordering is the controller's choice; decide by what's on the board.
                     val hasTokens = tetraviteTokens(tetravus).isNotEmpty()
-                    val accept = if (hasTokens && plusOne(this, tetravus) == 0) acceptReabsorb
-                        else if (!hasTokens) acceptConvert
-                        else acceptConvert
+                    // The controller may order the two upkeep triggers either way. Once tokens
+                    // exist, answer according to the reabsorb policy so a conversion trigger that
+                    // happens to be presented second cannot be mistaken for the reabsorb trigger.
+                    val accept = if (hasTokens) acceptReabsorb else acceptConvert
                     submitYesNo(d.playerId, accept)
                 }
                 is ChooseNumberDecision -> submitDecision(d.playerId, NumberChosenResponse(d.id, removeCount))

@@ -13,6 +13,7 @@ import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -23,11 +24,17 @@ import io.kotest.matchers.shouldBe
  */
 private fun resolveAttackTriggers(driver: GameTestDriver, you: EntityId, attacker: EntityId) {
     var guard = 0
-    while ((driver.state.stack.isNotEmpty() || driver.state.pendingDecision is ChooseTargetsDecision) && guard++ < 30) {
-        if (driver.state.pendingDecision is ChooseTargetsDecision) {
-            driver.submitTargetSelection(you, listOf(attacker))
-        } else {
-            driver.bothPass()
+    while ((driver.state.stack.isNotEmpty() ||
+            driver.state.pendingDecision is ChooseTargetsDecision ||
+            driver.state.pendingDecision is OrderObjectsDecision) && guard++ < 30
+    ) {
+        when (val decision = driver.state.pendingDecision) {
+            is ChooseTargetsDecision -> driver.submitTargetSelection(you, listOf(attacker))
+            is OrderObjectsDecision -> {
+                driver.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+            }
+            null -> driver.bothPass()
+            else -> break
         }
     }
 }

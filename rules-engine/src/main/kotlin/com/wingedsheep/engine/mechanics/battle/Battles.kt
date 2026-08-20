@@ -20,7 +20,7 @@ import com.wingedsheep.sdk.scripting.events.CounterTypeFilter
  *    (CR 120.3h). [defenseOf].
  *  - **A protector, not a controller, defends it.** Every battle has a player designated as its
  *    protector (CR 310.8), and for a battle being attacked *that* player — not its controller — is
- *    the defending player for every rule and effect (CR 310.8d). [protectorOf].
+ *    the defending player for every rule and effect (CR 310.9d). [protectorOf].
  *  - **Its protector can never attack it.** Anyone for whom the protector is a defending player
  *    can, which for a Siege notably includes the battle's own controller (CR 310.8b).
  *    [canBeAttackedBy].
@@ -68,9 +68,9 @@ object Battles {
     fun eligibleProtectors(state: GameState, battleId: EntityId): List<EntityId> {
         val controller = state.projectedState.getController(battleId) ?: return emptyList()
         return if (isSiege(state, battleId)) {
-            state.turnOrder.filter { it != controller }
+            state.activePlayers.filter { it != controller }
         } else {
-            listOf(controller).filter { it in state.turnOrder }
+            listOf(controller).filter { it in state.activePlayers }
         }
     }
 

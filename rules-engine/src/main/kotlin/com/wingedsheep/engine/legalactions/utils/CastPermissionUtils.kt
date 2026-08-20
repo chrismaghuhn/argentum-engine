@@ -33,6 +33,7 @@ import com.wingedsheep.sdk.scripting.CastSpellTypesFromTopOfLibrary
 import com.wingedsheep.sdk.scripting.ExtraLoyaltyActivation
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.EquipAbilitiesAtInstantSpeed
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import com.wingedsheep.sdk.scripting.FreeFirstEquipEachTurn
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.MayPlayLandsFromGraveyard
@@ -521,6 +522,36 @@ class CastPermissionUtils(
         hasActiveEquipPermission(state, playerId) { it is FreeFirstEquipEachTurn }
 
     /**
+     * True when the controller may explicitly choose the free-first-equip mode for
+     * [ability] right now. The turn counter is checked here so enumeration and action validation
+     * expose exactly the same payment domain.
+     */
+    fun canChooseFreeFirstEquip(
+        state: GameState,
+        playerId: EntityId,
+        ability: ActivatedAbility,
+    ): Boolean {
+        if (!ability.isEquipAbility) return false
+        val activations = state.getEntity(playerId)?.get<EquipActivationsThisTurnComponent>()?.count ?: 0
+        return activations == 0 && hasFreeFirstEquip(state, playerId)
+    }
+
+    /**
+     * Payment modes to enumerate for an ability. `null` means the ordinary action payload needs
+     * no explicit alternative-payment object; non-null modes are deliberately carried by the
+     * action so a controller, replay, or Gym candidate chooses the mode rather than the engine.
+     */
+    fun equipPaymentChoices(
+        state: GameState,
+        playerId: EntityId,
+        ability: ActivatedAbility,
+    ): List<EquipPaymentChoice?> = if (canChooseFreeFirstEquip(state, playerId, ability)) {
+        listOf(EquipPaymentChoice.NORMAL, EquipPaymentChoice.FREE_FIRST_EQUIP)
+    } else {
+        listOf(null)
+    }
+
+    /**
      * Total generic-mana reduction [playerId] has for activating equip abilities, summed across
      * every controlled [ReduceEquipCost] grant whose condition (if any) currently holds
      * (Éowyn, Lady of Rohan). Multiple sources stack additively. Returns 0 when none apply.
@@ -579,23 +610,22 @@ class CastPermissionUtils(
     }
 
     /**
-     * Replace [cost] with {0} when [ability] is an equip ability, [playerId] has an active
-     * [FreeFirstEquipEachTurn] grant (Forge Anew), and this is their first equip this turn
-     * (`EquipActivationsThisTurnComponent.count == 0`). Shared by the enumerator (offered/displayed
-     * cost) and [ActivateAbilityHandler] (paid cost) so the two always agree. "Pay {0} rather than
-     * pay the equip cost" is an alternative cost for the activation, so it replaces every part of
-     * the equip cost, including nonmana costs such as paying life.
+     * Replace [cost] with {0} only when [paymentChoice] explicitly selects the free mode and
+     * [ability] is eligible. Shared by the enumerator (offered/displayed cost) and
+     * [ActivateAbilityHandler] (paid cost) so the two always agree. "Pay {0} rather than pay the
+     * equip cost" is an alternative cost for the activation, so it replaces every part of the
+     * equip cost, including nonmana costs such as paying life. There is intentionally no implicit
+     * fallback based on available mana.
      */
     fun applyFreeFirstEquipDiscount(
         cost: AbilityCost,
         ability: ActivatedAbility,
         state: GameState,
-        playerId: EntityId
+        playerId: EntityId,
+        paymentChoice: EquipPaymentChoice?
     ): AbilityCost {
-        if (!ability.isEquipAbility) return cost
-        val activations = state.getEntity(playerId)?.get<EquipActivationsThisTurnComponent>()?.count ?: 0
-        if (activations > 0) return cost
-        if (!hasFreeFirstEquip(state, playerId)) return cost
+        if (paymentChoice != EquipPaymentChoice.FREE_FIRST_EQUIP) return cost
+        if (!canChooseFreeFirstEquip(state, playerId, ability)) return cost
         return AbilityCost.Atom(CostAtom.Mana(ManaCost.ZERO))
     }
 
