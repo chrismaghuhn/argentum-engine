@@ -135,6 +135,7 @@ internal fun canonicalActionTrace(action: GameAction): String = when (action) {
         "playerId=${action.playerId}",
         "vehicleId=${action.vehicleId}",
         "crewCreatures=${action.crewCreatures}",
+        "crewAbilityKey=${action.crewAbilityKey}",
     )
     is SaddleMount -> fields(
         "SaddleMount",
@@ -208,6 +209,7 @@ private fun canonicalAlternativePayment(payment: AlternativePaymentChoice?): Str
             "convokedCreatures=${it.convokedCreatures}",
             "harmonizeCreature=${it.harmonizeCreature}",
             "tapForGenericPermanents=${it.tapForGenericPermanents}",
+            *listOfNotNull(it.equipPayment?.let { mode -> "equipPayment=$mode" }).toTypedArray(),
         )
     } ?: "null"
 

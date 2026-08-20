@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
@@ -51,8 +52,14 @@ class FirebendingScenarioTest : FunSpec({
     /** Fully resolve the stack, resolving every triggered ability that lands on it. */
     fun GameTestDriver.resolveStack() {
         var guard = 0
-        while (state.stack.isNotEmpty() && guard < 50) {
-            bothPass()
+        while ((state.stack.isNotEmpty() || state.pendingDecision is OrderObjectsDecision) && guard < 50) {
+            when (val decision = state.pendingDecision) {
+                is OrderObjectsDecision -> {
+                    submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+                }
+                null -> bothPass()
+                else -> break
+            }
             guard++
         }
     }

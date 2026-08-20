@@ -6,6 +6,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
+import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.modal.ChosenModeMemory
 import com.wingedsheep.engine.state.GameState
@@ -28,6 +30,7 @@ class ModalAndCloneContinuationResumer(
 ) : ContinuationResumerModule {
 
     private val dynamicAmountEvaluator = DynamicAmountEvaluator()
+    private val auraHostLegality = AuraHostLegality(services.cardRegistry, TargetFinder())
 
     override fun resumers(): List<ContinuationResumer<*>> = listOf(
         resumer(ModalContinuation::class, ::resumeModal),
@@ -157,6 +160,7 @@ class ModalAndCloneContinuationResumer(
             triggeringEntityId = continuation.triggeringEntityId,
             allowCancelBackToModesList = if (allowCancelBackToModes) continuation.modes else null,
             outerTargets = continuation.outerTargets,
+            outerAlignedTargets = continuation.outerAlignedTargets,
             outerNamedTargets = continuation.outerNamedTargets,
             accumulatedEvents = emptyList(),
             checkForMore = checkForMore
@@ -192,12 +196,20 @@ class ModalAndCloneContinuationResumer(
                 }
             }
 
+        val selectedCounts = continuation.targetRequirements.indices.map { index ->
+            response.selectedTargets[index].orEmpty().size
+        }
+        val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            continuation.targetRequirements,
+            selectedCounts
+        )
+
         val context = EffectContext(
             sourceId = continuation.sourceId,
             controllerId = continuation.controllerId,
             xValue = continuation.xValue,
             targets = chosenTargets,
-            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(continuation.targetRequirements, chosenTargets)),
+            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, chosenTargets)),
             triggeringEntityId = continuation.triggeringEntityId
         )
 
@@ -217,6 +229,7 @@ class ModalAndCloneContinuationResumer(
             xValue = continuation.xValue,
             triggeringEntityId = continuation.triggeringEntityId,
             outerTargets = continuation.outerTargets,
+            outerAlignedTargets = continuation.outerAlignedTargets,
             outerNamedTargets = continuation.outerNamedTargets,
             accumulatedEvents = emptyList(),
             checkForMore = checkForMore
@@ -1413,12 +1426,12 @@ class ModalAndCloneContinuationResumer(
     }
 
     /**
-     * Resume after the controller chose what an Aura token copy enchants (CR 303.4h).
+     * Resume after the controller chose what an Aura token copy enchants (CR 303.4f).
      *
      * Creates exactly one token, already attached to the chosen host, then asks again for the
      * next one when the effect owes more than one Aura copy. An empty pick (or a host that left
-     * the battlefield while the decision was outstanding) means no legal attachment, so that
-     * token isn't created — CR 303.4g.
+     * the legal attachment domain while the decision was outstanding) is rejected so a stale
+     * response cannot consume the continuation or silently drop an owed token.
      */
     fun resumeCreateTokenCopyAuraHost(
         state: GameState,
@@ -1431,8 +1444,18 @@ class ModalAndCloneContinuationResumer(
         }
 
         val hostId = response.selectedTargets[0]?.firstOrNull()
-        if (hostId == null || hostId !in state.getBattlefield()) {
-            return checkForMore(state, emptyList())
+        if (hostId == null) {
+            return ExecutionResult.error(state, "Selected Aura token host is no longer legal")
+        }
+
+        val legalHosts = auraHostLegality.findLegalHostsForDefinition(
+            state = state,
+            auraDefinitionId = continuation.auraDefinitionId,
+            hostControllerId = continuation.controllerId,
+            effectiveSource = continuation.effectiveSource,
+        )
+        if (hostId !in legalHosts) {
+            return ExecutionResult.error(state, "Selected Aura token host is no longer legal")
         }
 
         val executor = com.wingedsheep.engine.handlers.effects.token.CreateTokenCopyOfTargetExecutor(
@@ -1463,6 +1486,7 @@ class ModalAndCloneContinuationResumer(
             controllerId = continuation.controllerId,
             remaining = remaining,
             cardRegistry = services.cardRegistry,
+            effectiveSource = continuation.effectiveSource,
         )
         val nextDecision = next.pendingDecision
             ?: return checkForMore(next.state, created.events.toList() + next.events.toList())
@@ -1503,6 +1527,7 @@ class ModalAndCloneContinuationResumer(
             xValue = continuation.xValue,
             triggeringEntityId = continuation.triggeringEntityId,
             outerTargets = continuation.outerTargets,
+            outerAlignedTargets = continuation.outerAlignedTargets,
             outerNamedTargets = continuation.outerNamedTargets
         )
 
@@ -1593,6 +1618,7 @@ internal fun processChosenModeQueue(
     triggeringEntityId: EntityId?,
     allowCancelBackToModesList: List<Mode>?,
     outerTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
+    outerAlignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?>,
     outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget>,
     accumulatedEvents: List<GameEvent>,
     checkForMore: CheckForMore
@@ -1612,13 +1638,14 @@ internal fun processChosenModeQueue(
             controllerId = controllerId,
             xValue = xValue,
             targets = outerTargets,
+            alignedTargets = outerAlignedTargets,
             pipeline = PipelineState(namedTargets = outerNamedTargets),
             triggeringEntityId = triggeringEntityId
         )
         return executeChosenModeWithTail(
             services, state, head.effect, context, tail,
             controllerId, sourceId, sourceName, xValue, triggeringEntityId,
-            outerTargets, outerNamedTargets, accumulatedEvents, checkForMore
+            outerTargets, outerAlignedTargets, outerNamedTargets, accumulatedEvents, checkForMore
         )
     }
 
@@ -1647,7 +1674,7 @@ internal fun processChosenModeQueue(
         // Fizzle just this mode; continue with the rest.
         return processChosenModeQueue(
             services, state, tail, controllerId, sourceId, sourceName, xValue,
-            triggeringEntityId, allowCancelBackToModesList, outerTargets, outerNamedTargets,
+            triggeringEntityId, allowCancelBackToModesList, outerTargets, outerAlignedTargets, outerNamedTargets,
             accumulatedEvents, checkForMore
         )
     }
@@ -1659,18 +1686,22 @@ internal fun processChosenModeQueue(
         val isPlayerTarget = req is TargetPlayer || req is TargetOpponent
         if (isPlayerTarget && targets.size == 1 && req.count == 1) {
             val chosenTargets = listOf(entityIdToChosenTarget(state, targets[0]))
+            val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+                listOf(req),
+                listOf(1)
+            )
             val context = EffectContext(
                 sourceId = sourceId,
                 controllerId = controllerId,
                 xValue = xValue,
                 targets = chosenTargets,
-                pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(head.targetRequirements, chosenTargets)),
+                pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, chosenTargets)),
                 triggeringEntityId = triggeringEntityId
             )
             return executeChosenModeWithTail(
                 services, state, head.effect, context, tail,
                 controllerId, sourceId, sourceName, xValue, triggeringEntityId,
-                outerTargets, outerNamedTargets, accumulatedEvents, checkForMore
+                outerTargets, outerAlignedTargets, outerNamedTargets, accumulatedEvents, checkForMore
             )
         }
     }
@@ -1707,6 +1738,7 @@ internal fun processChosenModeQueue(
         triggeringEntityId = triggeringEntityId,
         remainingChosenModes = tail,
         outerTargets = outerTargets,
+        outerAlignedTargets = outerAlignedTargets,
         outerNamedTargets = outerNamedTargets
     )
 
@@ -1748,6 +1780,7 @@ private fun executeChosenModeWithTail(
     xValue: Int?,
     triggeringEntityId: EntityId?,
     outerTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget>,
+    outerAlignedTargets: List<com.wingedsheep.engine.state.components.stack.ChosenTarget?>,
     outerNamedTargets: Map<String, com.wingedsheep.engine.state.components.stack.ChosenTarget>,
     accumulatedEvents: List<GameEvent>,
     checkForMore: CheckForMore
@@ -1763,6 +1796,7 @@ private fun executeChosenModeWithTail(
                 triggeringEntityId = triggeringEntityId,
                 remainingChosenModes = tail,
                 outerTargets = outerTargets,
+                outerAlignedTargets = outerAlignedTargets,
                 outerNamedTargets = outerNamedTargets
             )
         )
@@ -1783,6 +1817,6 @@ private fun executeChosenModeWithTail(
     return processChosenModeQueue(
         services, nextState, tail, controllerId, sourceId, sourceName, xValue,
         triggeringEntityId, allowCancelBackToModesList = null,
-        outerTargets, outerNamedTargets, events, checkForMore
+        outerTargets, outerAlignedTargets, outerNamedTargets, events, checkForMore
     )
 }

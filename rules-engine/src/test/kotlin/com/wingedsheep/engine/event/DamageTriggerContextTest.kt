@@ -61,6 +61,7 @@ import com.wingedsheep.sdk.scripting.events.DamageType
 import com.wingedsheep.sdk.scripting.events.RecipientFilter
 import com.wingedsheep.sdk.scripting.events.SourceFilter
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.values.EntityNumericProperty
@@ -1210,6 +1211,7 @@ class DamageTriggerContextTest : FunSpec({
         val putResult = resolver.putTriggeredAbility(
             state = initialState,
             ability = ability,
+            targetRequirements = listOf(TargetCreature(count = 2)),
             targets = listOf(
                 ChosenTarget.Permanent(removedTargetId),
                 ChosenTarget.Permanent(legalTargetId),

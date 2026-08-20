@@ -2,6 +2,7 @@ package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.mechanics.layers.StateProjector
@@ -103,7 +104,15 @@ class DireFlailScenarioTest : FunSpec({
 
     fun GameTestDriver.drainStack() {
         var guard = 0
-        while (state.stack.isNotEmpty() && pendingDecision == null && guard++ < 20) bothPass()
+        while ((state.stack.isNotEmpty() || pendingDecision is OrderObjectsDecision) && guard++ < 20) {
+            when (val decision = pendingDecision) {
+                is OrderObjectsDecision -> {
+                    submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+                }
+                null -> bothPass()
+                else -> break
+            }
+        }
     }
 
     fun GameTestDriver.resolveUntilDecision() {
@@ -243,6 +252,7 @@ class DireFlailScenarioTest : FunSpec({
                     val pick = if (fodder in d.options) fodder else victim
                     driver.submitCardSelection(p1, listOf(pick))
                 }
+                is OrderObjectsDecision -> driver.submitObjectOrdering(d.playerId, d.objects).error shouldBe null
                 else -> break
             }
             if (driver.pendingDecision == null) driver.drainStack()
@@ -337,6 +347,7 @@ class DireFlailScenarioTest : FunSpec({
                     }
                 }
                 is SelectCardsDecision -> driver.submitCardSelection(p1, listOf(b2))
+                is OrderObjectsDecision -> driver.submitObjectOrdering(d.playerId, d.objects).error shouldBe null
                 else -> break
             }
             if (driver.pendingDecision == null) driver.drainStack()
@@ -394,6 +405,7 @@ class DireFlailScenarioTest : FunSpec({
                     }
                 }
                 is SelectCardsDecision -> driver.submitCardSelection(p1, listOf(coEquip))
+                is OrderObjectsDecision -> driver.submitObjectOrdering(d.playerId, d.objects).error shouldBe null
                 else -> break
             }
             if (driver.pendingDecision == null) driver.drainStack()
@@ -451,6 +463,7 @@ class DireFlailScenarioTest : FunSpec({
                     val pick = d.options.firstOrNull { it == b1 || it == b2 } ?: d.options.first()
                     driver.submitCardSelection(p1, listOf(pick))
                 }
+                is OrderObjectsDecision -> driver.submitObjectOrdering(d.playerId, d.objects).error shouldBe null
                 else -> break
             }
             if (driver.pendingDecision == null) driver.drainStack()

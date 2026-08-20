@@ -317,6 +317,17 @@ data class GameState(
     val nextEntityId: Long = 0L,
 
     /**
+     * Monotonic object-identity counter (CR 400.7). Unlike [timestamp], this advances for every
+     * zone entry, including ordinary hand/graveyard/library/exile transitions that do not advance
+     * the rules timestamp. It is state-owned so serialization, replay, and forks preserve the
+     * exact object identity sequence.
+     */
+    val nextObjectIdentityStamp: Long = 1L,
+
+    /** Current CR 400.7 identity stamp for each entity's current zone object. */
+    val objectIdentityStamps: Map<EntityId, Long> = emptyMap(),
+
+    /**
      * Per-player persistent "yield" preferences keyed by [com.wingedsheep.sdk.scripting.AbilityIdentity]
      * (MTGO right-click yields — see `backlog/stack-collapse-and-batch-decisions.md` §C). Lives on
      * [GameState] (not the server session) so it survives serialization, replays deterministically,
@@ -468,7 +479,15 @@ data class GameState(
      */
     fun addToZone(key: ZoneKey, entityId: EntityId): GameState {
         val current = zones[key] ?: emptyList()
-        var newState = copy(zones = zones + (key to current + entityId))
+        // Every zone entry creates a new object, including non-battlefield cards. Keeping this
+        // stamp at the state boundary prevents resolution from confusing an id that returned to
+        // the same graveyard/hand/exile zone with the object that was originally targeted.
+        val stamp = nextObjectIdentityStamp
+        var newState = copy(
+            zones = zones + (key to current + entityId),
+            nextObjectIdentityStamp = stamp + 1,
+            objectIdentityStamps = objectIdentityStamps + (entityId to stamp)
+        )
         if (key.zoneType != Zone.BATTLEFIELD && key.zoneType != Zone.STACK) {
             val container = newState.getEntity(entityId)
             if (container != null && container.get<TappedComponent>() != null) {
@@ -821,8 +840,19 @@ data class GameState(
     /**
      * Push an entity onto the stack (returns new state).
      */
-    fun pushToStack(entityId: EntityId): GameState =
-        copy(stack = stack + entityId)
+    fun pushToStack(entityId: EntityId): GameState {
+        // A card is stamped when the cast path removes it from its origin zone; a newly-created
+        // ability or spell copy has no prior zone stamp and receives one here. Re-pushing an
+        // already-stamped object (for example while a paused resolution keeps it coherent on the
+        // stack) must not manufacture a new object identity.
+        if (entityId in objectIdentityStamps) return copy(stack = stack + entityId)
+        val stamp = nextObjectIdentityStamp
+        return copy(
+            stack = stack + entityId,
+            nextObjectIdentityStamp = stamp + 1,
+            objectIdentityStamps = objectIdentityStamps + (entityId to stamp)
+        )
+    }
 
     /**
      * Pop the top entity from the stack (returns entity ID and new state).

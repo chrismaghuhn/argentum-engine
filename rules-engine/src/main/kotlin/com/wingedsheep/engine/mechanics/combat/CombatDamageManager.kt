@@ -75,11 +75,12 @@ internal class CombatDamageManager(
         // The first invocation of the first-strike step is the historical boundary needed by
         // CR 510.4. Capture it before any prevention or assignment decision can pause the step;
         // continuation re-entry sees the already stamped components and leaves them unchanged.
-        val state = if (firstStrike) {
+        val stateBeforeRelationshipLatch = if (firstStrike) {
             captureFirstCombatDamageStepEligibility(inputState)
         } else {
             inputState
         }
+        val state = CombatDefenders.latchInvalidatedAttackRelationships(stateBeforeRelationshipLatch)
         if (isAllCombatDamagePrevented(state)) {
             return ExecutionResult.success(state)
         }
@@ -104,6 +105,17 @@ internal class CombatDamageManager(
             if (blockedBy.blockerIds.isEmpty()) continue
             val liveBlockers = blockedBy.blockerIds.filter { it in state.getBattlefield() }
             if (liveBlockers.isEmpty()) continue
+
+            // If the attacked planeswalker/battle is no longer the current recipient, the
+            // "as though unblocked" choice has no legal damage destination. Let the normal
+            // blocked-attacker path handle the live blockers instead (CR 506.4c/510.1b).
+            if (!CombatDefenders.isCurrentAttackedRecipient(
+                    state,
+                    projected,
+                    attackerId,
+                    attackingComponent.defenderId,
+                )
+            ) continue
 
             // Already has a manual assignment (decision already made)
             if (attackerContainer.get<DamageAssignmentComponent>() != null) continue
@@ -136,7 +148,7 @@ internal class CombatDamageManager(
             val continuation = AssignAsUnblockedContinuation(
                 decisionId = decisionId,
                 attackerId = attackerId,
-                defendingPlayerId = attackingComponent.defenderId,
+                defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent),
                 firstStrike = firstStrike
             )
 
@@ -186,15 +198,31 @@ internal class CombatDamageManager(
                 }
             }
 
+            // An unblocked attacker whose attacked planeswalker/battle left combat has no damage
+            // recipient at all. Do not expose the free-division targets as a retargeting choice;
+            // CR 506.4c/510.1b leaves the attacker in combat but assigns no damage.
+            if (blockedBy == null && !CombatDefenders.isCurrentAttackedRecipient(
+                    state,
+                    projected,
+                    attackerId,
+                    defenderId,
+                )
+            ) continue
+
             // Otherwise (unblocked, or blocked by at least one live creature) the damage may be
             // divided freely among the defending player and ANY number of creatures they control —
             // not just the creatures blocking Butcher Orgg.
             val targets = mutableListOf<EntityId>()
-            val defendingCreatures = state.getBattlefield().filter { entityId ->
-                projected.getController(entityId) == defenderId && projected.isCreature(entityId)
+            val defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent)
+            if (CombatDefenders.isLivePlayer(state, defendingPlayerId)) {
+                // CR 508.5: a planeswalker attack is an attack on its controller, and a battle
+                // attack is an attack on its protector for defending-player purposes. The attacked
+                // permanent itself is not part of DivideCombatDamageFreely's recipient domain.
+                targets.add(defendingPlayerId)
+                targets.addAll(state.getBattlefield().filter { entityId ->
+                    projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
+                })
             }
-            targets.addAll(defendingCreatures)
-            targets.add(defenderId)
 
             if (targets.size <= 1) continue
 
@@ -218,7 +246,7 @@ internal class CombatDamageManager(
             val continuation = DamageAssignmentContinuation(
                 decisionId = decisionId,
                 attackerId = attackerId,
-                defendingPlayerId = defenderId,
+                defendingPlayerId = defendingPlayerId,
                 firstStrike = firstStrike
             )
 
@@ -498,7 +526,16 @@ internal class CombatDamageManager(
             ?: candidates.firstOrNull()?.chooser
             ?: blockerCandidates.first().chooser
         val blockerIds = (candidates.flatMap { it.liveBlockers } + blockerCandidates.map { it.blockerId }).toSet()
-        val defenderIds = candidates.map { it.attackingComponent.defenderId }.toSet()
+        val defenderIds = candidates.mapNotNull { candidate ->
+            candidate.attackingComponent.defenderId.takeIf {
+                CombatDefenders.isCurrentAttackedRecipient(
+                    state,
+                    projected,
+                    candidate.attackerId,
+                    it,
+                )
+            }
+        }.toSet()
 
         val candidateByAttacker = candidates.associateBy { it.attackerId }
         val attackerIds = linkedSetOf<EntityId>().apply {
@@ -553,6 +590,7 @@ internal class CombatDamageManager(
         val defenderNodes = defenderIds.mapNotNull { defenderId ->
             val container = state.getEntity(defenderId) ?: return@mapNotNull null
             val isPlayer = container.get<LifeTotalComponent>() != null && container.get<CardComponent>() == null
+            if (!isPlayer && defenderId !in battlefield) return@mapNotNull null
             when {
                 isPlayer -> ResolutionDefender(defenderId, ResolutionTargetKind.PLAYER, "Player",
                     state.lifeTotal(defenderId)) // CR 810.9a — team's shared total
@@ -561,9 +599,10 @@ internal class CombatDamageManager(
                     container.get<CountersComponent>()?.getCount(CounterType.LOYALTY))
                 // A battle's remaining "life" is its defense — its defense-counter count
                 // (CR 310.4c) — so the damage-division UI can show how much is left to remove.
-                else -> ResolutionDefender(defenderId, ResolutionTargetKind.BATTLE,
+                projected.isBattle(defenderId) -> ResolutionDefender(defenderId, ResolutionTargetKind.BATTLE,
                     container.get<CardComponent>()?.name ?: "Battle",
                     container.get<CountersComponent>()?.getCount(CounterType.DEFENSE))
+                else -> null
             }
         }
 
@@ -596,6 +635,13 @@ internal class CombatDamageManager(
                 val defenderId = c.attackingComponent.defenderId
                 val container = state.getEntity(defenderId)
                 val isPlayer = container?.get<LifeTotalComponent>() != null && container.get<CardComponent>() == null
+                val hasLiveDefender = CombatDefenders.isCurrentAttackedRecipient(
+                    state,
+                    projected,
+                    c.attackerId,
+                    defenderId,
+                )
+                if (!hasLiveDefender) continue
                 val direction = when {
                     isPlayer -> DamageEdgeDirection.ATTACKER_TO_PLAYER
                     projected.isPlaneswalker(defenderId) -> DamageEdgeDirection.ATTACKER_TO_PLANESWALKER
@@ -763,7 +809,24 @@ internal class CombatDamageManager(
         for ((attackerId, attackingComponent) in attackers) {
             if (attackerId !in state.getBattlefield()) continue
             val attackerContainer = state.getEntity(attackerId) ?: continue
-            attackerContainer.get<CardComponent>() ?: continue
+            val attackerCard = attackerContainer.get<CardComponent>() ?: continue
+
+            val dividesFreely = !attackerContainer.has<FaceDownComponent>() &&
+                cardRegistry.getCard(attackerCard.cardDefinitionId)
+                    ?.staticAbilities
+                    ?.any { it is DivideCombatDamageFreely } == true
+            val currentAttackedRecipient = CombatDefenders.isCurrentAttackedRecipient(
+                state,
+                projected,
+                attackerId,
+                attackingComponent.defenderId,
+            )
+            val freeDefendingPlayerId = if (dividesFreely && currentAttackedRecipient) {
+                CombatDefenders.defendingPlayerOf(state, attackingComponent)
+                    .takeIf { CombatDefenders.isLivePlayer(state, it) }
+            } else {
+                null
+            }
 
             val blockedBy = attackerContainer.get<BlockedComponent>()
             val blockers = blockedBy?.blockerIds ?: emptyList()
@@ -775,31 +838,60 @@ internal class CombatDamageManager(
                     val manualAssignment = attackerContainer.get<DamageAssignmentComponent>()
                     when {
                         manualAssignment != null && manualAssignment.assignments.isNotEmpty() -> {
-                            // A chosen assignment can still name a target that has since left the
-                            // battlefield. Per CR 702.19d, an attacker with trample whose blockers
-                            // have been removed from combat assigns the freed-up damage to the
-                            // defending player/planeswalker; without trample it is simply lost.
-                            // (Assignments never cross a combat damage step — CR 510.1 makes each
-                            // step a fresh division, and CombatManager
-                            // .clearDamageAssignmentsForNewDamageStep drops the first-strike one.)
+                            // A response that was shaped before the attacked object left combat
+                            // can contain a now-invalid recipient. Do not preserve that stale id,
+                            // redirect it to a player, or silently apply a partial plan. Re-seed a
+                            // complete legal blocker-only/default plan instead (CR 510.1c,
+                            // 702.19b/f). The shared predicate is also used by prevention below.
                             val defenderId = attackingComponent.defenderId
-                            val hasTrample = projected.hasKeyword(attackerId, Keyword.TRAMPLE)
-                            var trampleRedirect = 0
-                            for ((targetId, damage) in manualAssignment.assignments) {
-                                if (damage <= 0) continue
-                                val targetIsLive = targetId in state.getBattlefield() || targetId == defenderId
-                                if (targetIsLive) {
-                                    assignments.add(CombatDamageAssignment(attackerId, targetId, damage))
-                                } else if (hasTrample) {
-                                    trampleRedirect += damage
-                                }
+                            val currentDefender = CombatDefenders.isCurrentAttackedRecipient(
+                                state,
+                                projected,
+                                attackerId,
+                                defenderId,
+                            )
+                            val liveBlockers = blockers.filter { it in state.getBattlefield() }
+                            val validTargets = validAttackerDamageTargets(
+                                state,
+                                projected,
+                                attackerId,
+                                attackingComponent,
+                                liveBlockers,
+                            )
+                            val hasInvalidTarget = manualAssignment.assignments.any { (targetId, damage) ->
+                                damage > 0 && targetId !in validTargets
                             }
-                            if (trampleRedirect > 0) {
-                                assignments.add(CombatDamageAssignment(attackerId, defenderId, trampleRedirect))
+                            if (hasInvalidTarget) {
+                                if (liveBlockers.isNotEmpty()) {
+                                    damageCalculator.calculateAutoDamageDistribution(state, attackerId)
+                                        .assignments
+                                        .forEach { (targetId, damage) ->
+                                            if (damage > 0) {
+                                                assignments.add(CombatDamageAssignment(attackerId, targetId, damage))
+                                            }
+                                        }
+                                } else if (blockedBy == null && currentDefender) {
+                                    val fallbackTarget = freeDefendingPlayerId ?: defenderId
+                                    assignments.add(CombatDamageAssignment(attackerId, fallbackTarget, power))
+                                }
+                            } else {
+                                manualAssignment.assignments.forEach { (targetId, damage) ->
+                                    if (damage > 0) {
+                                        assignments.add(CombatDamageAssignment(attackerId, targetId, damage))
+                                    }
+                                }
                             }
                         }
                         blockedBy == null -> {
-                            assignments.add(CombatDamageAssignment(attackerId, attackingComponent.defenderId, power))
+                            // CR 510.1b / 506.4c: an unblocked creature that no longer attacks
+                            // anything assigns no combat damage. In particular, ordinary trample
+                            // cannot turn a stale planeswalker/battle id into a player recipient.
+                            val currentDefender = currentAttackedRecipient
+                            val targetId = freeDefendingPlayerId
+                                ?: attackingComponent.defenderId.takeIf { currentDefender }
+                            if (targetId != null) {
+                                assignments.add(CombatDamageAssignment(attackerId, targetId, power))
+                            }
                         }
                         else -> {
                             val liveBlockers = blockedBy.blockerIds.filter { it in state.getBattlefield() }
@@ -810,7 +902,14 @@ internal class CombatDamageManager(
                                         assignments.add(CombatDamageAssignment(attackerId, targetId, damage))
                                     }
                                 }
-                            } else if (projected.hasKeyword(attackerId, Keyword.TRAMPLE)) {
+                            } else if (projected.hasKeyword(attackerId, Keyword.TRAMPLE) &&
+                                CombatDefenders.isCurrentAttackedRecipient(
+                                    state,
+                                    projected,
+                                    attackerId,
+                                    attackingComponent.defenderId,
+                                )
+                            ) {
                                 // CR 702.19d: Blocked attacker with trample and no remaining blockers
                                 // assigns all damage to the defending player/planeswalker.
                                 assignments.add(CombatDamageAssignment(attackerId, attackingComponent.defenderId, power))
@@ -882,6 +981,46 @@ internal class CombatDamageManager(
         }
 
         return assignments
+    }
+
+    /**
+     * Return the complete current recipient domain for an attacker's manual assignment.
+     *
+     * Ordinary assignments may name only live blockers and the current attacked recipient.
+     * DivideCombatDamageFreely is the deliberate exception: its Oracle-defined domain also
+     * includes every current creature controlled by the historical defending player (CR 508.5).
+     * Keep the attacked-object predicate separate so a stale planeswalker/battle is never
+     * reintroduced merely because the attacker has that id in its declaration component.
+     */
+    private fun validAttackerDamageTargets(
+        state: GameState,
+        projected: ProjectedState,
+        attackerId: EntityId,
+        attackingComponent: AttackingComponent,
+        liveBlockers: List<EntityId>,
+    ): Set<EntityId> {
+        val defenderId = attackingComponent.defenderId
+        val targets = liveBlockers.toMutableSet()
+
+        val attackerContainer = state.getEntity(attackerId)
+        val attackerCard = attackerContainer?.get<CardComponent>()
+        val dividesFreely = attackerCard != null &&
+            !attackerContainer.has<FaceDownComponent>() &&
+            cardRegistry.getCard(attackerCard.cardDefinitionId)
+                ?.staticAbilities
+                ?.any { it is DivideCombatDamageFreely } == true
+        if (dividesFreely) {
+            val defendingPlayerId = CombatDefenders.defendingPlayerOf(state, attackingComponent)
+            if (CombatDefenders.isLivePlayer(state, defendingPlayerId)) {
+                targets += defendingPlayerId
+                targets += state.getBattlefield().filter { entityId ->
+                    projected.getController(entityId) == defendingPlayerId && projected.isCreature(entityId)
+                }
+            }
+        } else if (CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId)) {
+            targets += defenderId
+        }
+        return targets
     }
 
     private fun dealsDamageThisStep(
@@ -1593,7 +1732,8 @@ internal class CombatDamageManager(
 
             if (blockedBy == null) {
                 val defenderId = attackingComponent.defenderId
-                if (!isProtectedFromAttackingCreatureDamage(state, defenderId) &&
+                if (CombatDefenders.isCurrentAttackedRecipient(state, projected, attackerId, defenderId) &&
+                    !isProtectedFromAttackingCreatureDamage(state, defenderId) &&
                     !isCombatDamagePreventedByGroupFilter(state, attackerId, projected)) {
                     val amplified = DamageUtils.applyStaticDamageAmplification(state, defenderId, attackerPower, attackerId, isCombatDamage = true)
                     incomingDamage.getOrPut(defenderId) { mutableMapOf() }
@@ -1601,14 +1741,38 @@ internal class CombatDamageManager(
                 }
             } else {
                 val manualAssignment = attackerContainer.get<DamageAssignmentComponent>()
-                val damageDistribution = if (manualAssignment != null) {
+                val defenderId = attackingComponent.defenderId
+                val currentDefender = CombatDefenders.isCurrentAttackedRecipient(
+                    state,
+                    projected,
+                    attackerId,
+                    defenderId,
+                )
+                val liveBlockers = blockedBy.blockerIds.filter { it in state.getBattlefield() }
+                val validTargets = validAttackerDamageTargets(
+                    state,
+                    projected,
+                    attackerId,
+                    attackingComponent,
+                    liveBlockers,
+                )
+                val manualHasInvalidTarget = manualAssignment?.assignments?.any { (targetId, damage) ->
+                    damage > 0 && targetId !in validTargets
+                } == true
+                val damageDistribution = if (manualAssignment != null &&
+                    manualAssignment.assignments.isNotEmpty() && !manualHasInvalidTarget
+                ) {
                     manualAssignment.assignments
                 } else {
+                    // If a pending response names a target that left combat, do not let the
+                    // prevention aggregation preserve that stale recipient. Rebuild the same
+                    // current-state default used by the assignment pipeline.
                     damageCalculator.calculateAutoDamageDistribution(state, attackerId).assignments
                 }
 
                 for ((targetId, damage) in damageDistribution) {
                     if (damage <= 0) continue
+                    if (targetId !in validTargets) continue
                     val targetContainer = state.getEntity(targetId)
                     val isPlayer = targetContainer?.get<LifeTotalComponent>() != null &&
                         targetContainer.get<CardComponent>() == null

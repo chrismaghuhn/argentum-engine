@@ -54,7 +54,8 @@ internal object TransitionSemanticGameStateCanonicalizer {
                 "remainderLabel",
                 "nonSelectableOptions",
             ),
-        "OrderObjectsDecision" to setOf("cardInfo"),
+        // The object IDs and their order are semantic; labels are actor-facing presentation text.
+        "OrderObjectsDecision" to setOf("cardInfo", "objectLabels"),
         "SplitPilesDecision" to setOf("pileLabels", "cardInfo"),
         "OptionMetadata" to setOf("description", "iconKey"),
         "ChooseOptionDecision" to setOf("defaultSearch", "optionCardIds"),

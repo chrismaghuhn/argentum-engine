@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.core
 
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
@@ -418,7 +419,9 @@ data class StormCopyTargetContinuation(
     val totalCopies: Int = remainingCopies,  // Original total copies (defaults to remainingCopies for backward compat)
     /** Keyword enum names (e.g., "WITHER") to grant to each copy while it's on the stack. */
     val keywordsForCopy: Set<String> = emptySet(),
-    val removeLegendary: Boolean = false
+    val removeLegendary: Boolean = false,
+    /** Snapshot of a resolving source whose stack components were removed before retargeting. */
+    val resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
 ) : ContinuationFrame
 
 /**
@@ -480,7 +483,9 @@ data class StormCopyModalTargetContinuation(
     /** Keyword enum names (e.g., "WITHER") to grant to each copy while it's on the stack. */
     val keywordsForCopy: Set<String> = emptySet(),
     /** If true, strip the Legendary supertype from each resulting copy. */
-    val removeLegendary: Boolean = false
+    val removeLegendary: Boolean = false,
+    /** Snapshot of a resolving source whose stack components were removed before retargeting. */
+    val resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
 ) : ContinuationFrame
 
 /**

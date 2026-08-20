@@ -59,10 +59,17 @@ data class SpellOnStackComponent(
      * own targets and a spliced card's `ContextTarget(0)` means its own first target.
      */
     val splicedTargetsOrdered: List<List<ChosenTarget>> = emptyList(),
+    /** Cast-time-normalized target requirements for each spliced text block. */
+    val splicedTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
     val chosenModes: List<Int> = emptyList(),  // For modal spells (700.2). Ordered; same index may repeat when allowRepeat.
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),  // Per-mode chosen targets, aligned 1:1 with chosenModes
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),  // Per-mode TargetRequirements for 608.2b re-validation at resolution
-    val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),  // Per-mode DividedDamageEffect allocations (future)
+    /** Per-mode requirements in chosen-mode ordinal order, with cast-time slot counts locked. */
+    val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
+    // Per-mode DividedDamageEffect allocations (future). The mode-indexed shape cannot encode
+    // occurrence-specific allocations when the same mode is selected more than once; such casts
+    // are rejected at the action boundary.
+    val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     /** Snapshots of permanents sacrificed as additional cost (Rule 112.7a — last known info). */
     val sacrificedPermanents: List<EntitySnapshot> = emptyList(),
     val castFaceDown: Boolean = false,  // For morph - creature enters face-down
@@ -160,7 +167,13 @@ data class SpellOnStackComponent(
      * the board has changed (e.g. Steer Clear's "if you controlled a Mount as you cast this spell").
      * Declared on the card via the `captureAtCast` DSL.
      */
-    val castTimeFlags: Set<String> = emptySet()
+    val castTimeFlags: Set<String> = emptySet(),
+    /**
+     * Effective effect captured at resolution start when a spell may be copied after leaving the
+     * stack. Null for ordinary spells; copies carry it forward so kicker/cleave/text-replaced
+     * effects do not get re-derived from a card definition after the zone change.
+     */
+    val resolvingSpellEffectOverride: Effect? = null
 ) : Component
 
 /**
@@ -276,6 +289,12 @@ data class TriggeredAbilityOnStackComponent(
     val chosenModes: List<Int> = emptyList(),
     val modeTargetsOrdered: List<List<ChosenTarget>> = emptyList(),
     val modeTargetRequirements: Map<Int, List<TargetRequirement>> = emptyMap(),
+    /** Per-mode requirements in chosen-mode ordinal order, with cast-time slot counts locked. */
+    val modeTargetRequirementsOrdered: List<List<TargetRequirement>> = emptyList(),
+    /** Original flat target-payload start for each chosen mode, including outer trigger targets. */
+    val modeTargetSlotStarts: List<Int> = emptyList(),
+    // Per-mode DividedDamageEffect allocations (future); repeated mode occurrences are rejected
+    // at the action boundary because this mode-indexed shape cannot distinguish them.
     val modeDamageDistribution: Map<Int, Map<EntityId, Int>> = emptyMap(),
     /** Entities a batch trigger captured (the matching permanents in a `PermanentsEnteredEvent`
      *  batch). Seeded into the resolving ability's pipeline under
@@ -402,7 +421,7 @@ data class AbilityOnStackComponent(
  * @property targets The chosen targets
  * @property targetRequirements The original target requirements, used for re-validation
  *           on resolution (Rule 608.2b — targets must still be legal when the spell/ability resolves)
- * @property targetEntryStamps Object-identity stamps for the permanent targets (CR 400.7),
+ * @property targetEntryStamps Object-identity stamps for non-player object targets (CR 400.7),
  *           captured when the targets were chosen — see [capture].
  */
 @Serializable
@@ -414,16 +433,14 @@ data class TargetsComponent(
 
     companion object {
         /**
-         * Build the component, snapshotting each permanent target's
-         * [com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent]
-         * as it is targeted.
+         * Build the component, snapshotting each non-player object target's current object
+         * identity as it is targeted.
          *
-         * Entity ids survive zone round-trips in this engine, so "that id is still a creature on
-         * the battlefield" doesn't prove the target is still the object that was targeted: a
-         * permanent blinked in response (Personify, Cloudshift, bounce-and-recast) comes back as a
-         * *new object* (CR 400.7), and a spell or ability that targeted the old one has an illegal
-         * target — if that's its only target, it doesn't resolve (CR 608.2b). Comparing the entry
-         * stamp at resolution is what makes that visible; see [isDifferentObject].
+         * Entity ids survive zone round-trips in this engine, so an id still present in the
+         * expected zone does not prove it is still the object that was targeted: a permanent
+         * blinked in response, or a card/spell that left and returned, is a *new object* (CR 400.7).
+         * Comparing the identity stamp at resolution is what makes that visible; see
+         * [isDifferentObject].
          *
          * Every path that chooses or *re-*chooses targets for a stack object goes through here
          * (putting a spell / triggered / activated ability on the stack, and the retarget
@@ -437,20 +454,30 @@ data class TargetsComponent(
         ): TargetsComponent = TargetsComponent(
             targets = targets,
             targetRequirements = targetRequirements,
-            targetEntryStamps = targets.filterIsInstance<ChosenTarget.Permanent>()
-                .filter { it.entityId in state.getBattlefield() }
-                .mapNotNull { target ->
-                    entryStamp(state, target.entityId)?.let { target.entityId to it }
-                }
-                .toMap()
+            targetEntryStamps = targets.mapNotNull { target ->
+                val entityId = when (target) {
+                    is ChosenTarget.Permanent -> target.entityId
+                    is ChosenTarget.Card -> target.cardId
+                    is ChosenTarget.Spell -> target.spellEntityId
+                    is ChosenTarget.Player -> null
+                } ?: return@mapNotNull null
+                val stamp = state.objectIdentityStamps[entityId]
+                    ?: if (target is ChosenTarget.Permanent && entityId in state.getBattlefield()) {
+                        entryStamp(state, entityId)
+                    } else {
+                        null
+                    }
+                stamp?.let { entityId to it }
+            }.toMap()
         )
 
         /**
-         * True when [entityId] is no longer the object that was targeted — it left the battlefield
-         * and returned between targeting and now (CR 400.7). Ids with no captured stamp (targets
-         * chosen off the battlefield, or a stack object built before the stamps existed) are
-         * treated as unproven and therefore different. Target identity is required for
-         * resolution-time authorization; a missing stamp must not silently authorize a target.
+         * True when [entityId] is no longer the object that was targeted — it left its zone and
+         * returned between targeting and now (CR 400.7). A missing captured stamp is treated as
+         * different so an unproven target is never authorized. The legacy `0L` entry stamp remains
+         * the compatibility sentinel for synthetic fixtures that intentionally model a permanent
+         * without an explicit battlefield-entry component; a real captured stamp still differs
+         * from that sentinel when the current incarnation cannot be verified.
          */
         fun isDifferentObject(
             state: GameState,
@@ -458,19 +485,19 @@ data class TargetsComponent(
             capturedStamps: Map<EntityId, Long>
         ): Boolean {
             val captured = capturedStamps[entityId] ?: return true
-            val current = entryStamp(state, entityId) ?: return true
+            val current = state.objectIdentityStamps[entityId] ?: entryStamp(state, entityId)
             return current != captured
         }
 
         /**
-         * The permanent's battlefield-entry stamp, or null when a fixture/entity has no
-         * verifiable battlefield incarnation. Missing stamps are deliberately not identity
-         * evidence during target revalidation.
+         * The permanent's battlefield-entry stamp, or the legacy `0L` compatibility sentinel for
+         * a fixture/entity with no explicit battlefield incarnation component.
          */
-        private fun entryStamp(state: GameState, entityId: EntityId): Long? =
+        private fun entryStamp(state: GameState, entityId: EntityId): Long =
             state.getEntity(entityId)
                 ?.get<com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent>()
                 ?.timestamp
+                ?: 0L
     }
 }
 

@@ -185,7 +185,7 @@ The engine supplies the rest; **do not** write any of it onto the card:
   protector must be an opponent of its controller (CR 310.11a); a battle with no battle types is protected
   by its own controller (CR 310.8a). If no player qualifies, the battle is put into its owner's graveyard.
 - **Its protector, not its controller, is the defending player** for every rule and effect while it is
-  being attacked (CR 310.8d). That asymmetry is the point of a Siege: you cast it, an opponent protects it,
+  being attacked (CR 310.9d). That asymmetry is the point of a Siege: you cast it, an opponent protects it,
   and *you* attack it. Its protector can never attack it (CR 310.8b) and is the only player who may block
   creatures attacking it (CR 310.8c).
 
@@ -2011,6 +2011,18 @@ Atomic effect factories. For library/zone manipulation, prefer the pipelines in 
   `Effects.AttachTargetEquipmentToCreature(equipmentTarget, creatureTarget)` force-attaches one
   *targeted* Equipment to one *targeted* creature (both are explicit targets, not the source) — used
   by Stolen Uniform's "Attach it to the chosen creature".
+- `AttachCollectionToTargetEffect(from, target = ContextTarget(0))` — attach the explicitly selected
+  collection of currently legal Auras and/or Equipment to one resolved permanent or player. The
+  collection is selected upstream; this effect does not infer a selection or an ordering policy.
+  Revalidation is fail-closed on resume: every selected object must still be the same battlefield
+  object, be controlled by the ability's controller, remain an Aura/Equipment under projected state,
+  remain in the frozen domain, and satisfy **all** applicable Aura `enchant` and Equipment
+  creature-only restrictions. Actual host changes commit as one batch, emitting the normal
+  detach/attach events; a same-host object is a no-op. When two or more objects actually move, the
+  controller first orders those real battlefield objects with `OrderObjectsDecision`; that response
+  controls only the relative fresh timestamps required by CR 613.7m, never a sequential A → B → C
+  mutation. Do not implement this with `ForEachInCollection`, and never derive timestamp order from
+  collection order, entity ids, map iteration, or executor order.
 - `UnattachEquipmentEffect(target = Self)` — facade `Effects.UnattachEquipment(target)`. The inverse of
   the attach effects: **unattach** an Aura/Equipment from its host *without moving zones* (CR 701.3d) —
   clears the attachment's `AttachedToComponent` and drops it from the host's attachment list, emitting
@@ -2800,6 +2812,7 @@ with cards):
 | `gatherUntilMatch(filter, …)` → `(match, revealed)` | `GatherUntilMatchEffect` |
 | `chooseExactly(n, from)` / `chooseUpTo` / `chooseAnyNumber` / `chooseRandom` / `selectAll` (+ `…Split` variants returning `(selected, remainder)`) | `SelectFromCollectionEffect` |
 | `filter(from, filter)` / `filterSplit(…)` → `(matching, rest)` / `exclude(from, minus)` (set difference via `CollectionFilter.ExcludeOtherCollection`) | `FilterCollectionEffect` |
+| `filter(from, CollectionFilter.AttachableTo(target))` | `FilterCollectionEffect` |
 | `chooseOnePerCategory(from, categories)` | `ChooseOnePerCategoryEffect` |
 | `move(from, destination, …)` / `moveTracked(…)` / sugar `destroy`, `sacrifice`, `exile`, `toHand`, `toGraveyard`, `toLibraryTop`, `toLibraryBottom` | `MoveCollectionEffect` |
 | `pairWithSource(from)` (soulbond, CR 702.95a — empty `from` is a legal no-op, i.e. a declined "you may pair") | `PairWithSourceEffect` |
@@ -2812,6 +2825,7 @@ with cards):
 | `chooseOption(optionType, …)` / `noteCreatureType(…)` | `ChooseOptionEffect` / `NoteCreatureTypeEffect` |
 | `choosePile(a, b, chooser?, …)` → `(chosen, other)` | `ChoosePileEffect` |
 | `selectTarget(requirement)` (resolution-time choice — never printed "target") | `SelectTargetEffect` |
+| `attach(from, target?)` | `AttachCollectionToTargetEffect` |
 | `ifNotEmpty(slot, filter?, minSize?) { … } orElse { … }` | `ConditionalOnCollectionEffect` |
 | `whenMatches(slot, filter)` (returns a `Condition`, adds no step) | `CollectionContainsMatch` |
 | `run(effect)` | any other `Effect`, verbatim |
@@ -5455,6 +5469,13 @@ staticAbility {
 - `SetToughness(t)` — overwrite toughness.
 - `SetStats(p, t)` — overwrite both.
 - `GrantKeyword(keyword)` — grant a keyword.
+- `GrantKeywordAbility(ability, filter = attachedCreature())` — grant a parameterized keyword
+  ability without flattening its value into the projected keyword-name set. Point-of-use readers
+  resolve the intact ability alongside printed and runtime grants; this is the generic shape for
+  dynamic values such as `GrantKeywordAbility(KeywordAbility.crew(1),
+  GroupFilter(GameObjectFilter.Artifact.withSubtype(Subtype.VEHICLE).youControl()))`. Crew action
+  enumeration and validation carry a deterministic serialized ability key, so replay/fork/Gym
+  paths cannot silently choose a different requirement when several Crew instances apply.
 - `RemoveKeyword(keyword)` — remove a keyword.
 - `GrantProtection(color)` — grant protection from a color.
 - `Custom(...)` — escape hatch for one-off modifications.
@@ -6299,13 +6320,17 @@ riders, matching how the engine already treats e.g. City of Brass's damage durin
   a bare grant (Leonin Shikari) applies unconditionally. Consulted by `CastPermissionUtils
   .canEquipAtInstantSpeed` (enumerator) and `ActivateAbilityHandler.validate` (submit path), both
   keyed on `ActivatedAbility.isEquipAbility`.
-- `FreeFirstEquipEachTurn` — the controller may pay {0} rather than the equip cost of the **first**
-  equip ability they activate each turn (Kíli the Resourceful; Forge Anew's separate timing gate
-  confines its equip activations to its controller's turns). This is
-  an alternative activation cost: it replaces the whole equip cost, including colored mana and
-  nonmana parts such as paying life, while the per-player
-  `EquipActivationsThisTurnComponent.count == 0`, and increments that counter on every equip
-  activation (reset at turn start by `TurnManager`).
+- `FreeFirstEquipEachTurn` — while the per-player
+  `EquipActivationsThisTurnComponent.count == 0`, the legal-action domain exposes two explicit
+  payment modes for an equip ability when the normal cost is also payable: `NORMAL` (the effective
+  equip cost) and `FREE_FIRST_EQUIP` ({0}). The controller selects the mode in
+  `AlternativePaymentChoice.equipPayment`; the action is serialized with that choice for server
+  submission, Gym candidates, and replay. `FREE_FIRST_EQUIP` is an alternative activation cost: it
+  replaces the whole equip cost, including colored mana and nonmana parts such as paying life.
+  There is no automatic choice based on available mana, and `ActivateAbilityHandler` rejects a
+  missing or stale mode. The counter increments on every equip activation and resets at turn start
+  by `TurnManager` (Kíli the Resourceful; Forge Anew's separate timing gate confines its equip
+  activations to its controller's turns).
 - `ReduceEquipCost(amount, onlyIfTargetIsSource = false, onlyOwnEquip = false)` — the controller's equip abilities cost
   `{amount}` generic mana less to activate (Éowyn, Lady of Rohan: "Equip abilities you activate cost
   {1} less to activate"). The engine reduces only the generic portion of the equip cost (floored at
@@ -7894,8 +7919,9 @@ composite abilities).
   the attach effect's generated `"{1}: Attach this equipment to Human creature you control"`. A
   non-mana equip cost takes the printed em dash instead: `"Equip—Pay 3 life"`. Because the line is
   derived rather than a per-card `descriptionOverride`, the cost stays live: the legal-action
-  enumerator re-renders against the *effective* cost, so Éowyn's discount and Forge Anew's free first
-  equip show as the `{0}`/`{2}` the player actually pays. **Never give a mana-cost equip ability a
+  enumerator re-renders against the *effective* cost, so Éowyn's discount and the selected Forge
+  Anew free-first-equip mode show as the `{0}`/`{2}` the player actually pays. When both modes are
+  legal, the server sends both action rows; the client renders those rows independently. **Never give a mana-cost equip ability a
   `descriptionOverride`** — it freezes exactly the number those effects rewrite. Only a non-mana equip
   cost with card-specific naming needs one (Dark Knight's Greatsword: "Chaosbringer — Equip—Pay 3
   life. Activate only once each turn."). `EquipQualityVariantTest` (mtg-sets) pins all three
@@ -10545,7 +10571,11 @@ Counter effects live in §4 (`AddCounters`, `RemoveCounters`, `Proliferate`, `Mo
   `DynamicAmount.XValue` for "with total mana value X or less"; the executor resolves it to a fixed cap up front so every
   downstream consumer sees an integer — The Rise of Sozin // Fire Lord Sozin),
   `TotalPowerAtMost(max)`, `OnePerBasicLandType`, `ReducedMinimumIfMatches(reducedMinimum, filter, requiredMatches?)`, and
-  `MaxAffordablePayment(manaPerSelected, payer?)`. `TotalPowerAtMost(max)` caps the sum of selected creatures'
+  `MaxAffordablePayment(manaPerSelected, payer?)`, and the opt-in `AuraMustHaveLegalHost` restriction. The latter
+  removes an Aura from the selectable card domain when its registered Aura target requirement has no currently legal
+  host for the acting player; missing Aura definitions/requirements fail closed, while non-Aura cards including
+  Equipment are unaffected. The host IDs are not part of the selection payload and are chosen only by the later
+  attachment decision. `TotalPowerAtMost(max)` caps the sum of selected creatures'
   **projected** power at `max` (a creature with undefined power contributes 0); it is the power analogue of
   `TotalManaValueAtMost` and surfaces `maxTotalPower` on `SelectCardsDecision` so the UI shows a running "Total power: X / N"
   and disables over-cap picks while the server trims oversubmits in response order — used for "choose any number of

@@ -5,6 +5,7 @@ import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.ChooserResolution
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
@@ -45,6 +46,8 @@ class SelectFromCollectionExecutor(
     private val amountEvaluator = DynamicAmountEvaluator()
     private val predicateEvaluator = PredicateEvaluator()
     private val manaSolver by lazy { ManaSolver(cardRegistry) }
+    private val targetFinder = TargetFinder()
+    private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
 
     override fun execute(
         state: GameState,
@@ -130,6 +133,19 @@ class SelectFromCollectionExecutor(
             eligibleCards = eligibleCards.filter { cardId ->
                 val cardColors = state.getEntity(cardId)?.get<CardComponent>()?.colors ?: emptySet()
                 cardColors.any { it in controllerPermanentColors }
+            }
+        }
+
+        // Aura host legality is opt-in. Resolve the host domain from the same player who will
+        // answer this selection; only the card domain is carried in the decision payload. The
+        // later attachment decision owns host selection and therefore no host IDs are exposed here.
+        val auraHostRestrictions = effect.restrictions.filterIsInstance<SelectionRestriction.AuraMustHaveLegalHost>()
+        if (auraHostRestrictions.isNotEmpty()) {
+            val hostContext = context.copy(controllerId = chooserId)
+            eligibleCards = eligibleCards.filter { cardId ->
+                auraHostRestrictions.all {
+                    auraHostLegality.isSelectionEligible(state, cardId, hostContext)
+                }
             }
         }
 
@@ -391,6 +407,7 @@ class SelectFromCollectionExecutor(
                     if (restriction.manaPerSelected <= 0) Int.MAX_VALUE
                     else available / restriction.manaPerSelected
                 }
+                is SelectionRestriction.AuraMustHaveLegalHost -> Int.MAX_VALUE
             }
             if (limit < ceiling) ceiling = limit
         }

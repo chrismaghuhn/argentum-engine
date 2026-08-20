@@ -3,15 +3,22 @@ package com.wingedsheep.engine.mechanics.targeting
 import com.wingedsheep.engine.handlers.SourceTypeTargeting
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.handlers.TargetingSourceType
+import com.wingedsheep.engine.core.DamageRecipientKind
+import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
@@ -29,6 +36,9 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
  */
 private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()) { it.name }
 
+/** Negative caps cannot be legal target limits; this value marks an unavailable locked cap. */
+private const val UNAVAILABLE_DYNAMIC_AGGREGATE_CAP = -1
+
 /**
  * Validates that chosen targets match their target requirements.
  *
@@ -40,6 +50,678 @@ private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()
  */
 class TargetValidator {
     private val predicateEvaluator = PredicateEvaluator()
+
+    /**
+     * Evaluate a target aggregate cap without turning unavailable data into an unlimited cap.
+     * A negative fixed value is the serialized fail-closed marker produced when announcement-time
+     * locking could not resolve the dynamic expression. Valid locked caps are non-negative.
+     */
+    private fun evaluateAggregateCapOrNull(
+        state: GameState,
+        expression: DynamicAmount,
+        context: EffectContext
+    ): Int? {
+        if (expression is DynamicAmount.Fixed && expression.amount < 0) return null
+        return runCatching {
+            DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
+        }.getOrNull()
+    }
+
+    /**
+     * Lock the effective target-slot counts at announcement time. Resolution must consume this
+     * metadata rather than re-evaluating a dynamic/unlimited declaration against a changed board.
+     */
+    fun lockRequirementsForSelectedCounts(
+        requirements: List<TargetRequirement>,
+        selectedCounts: List<Int>
+    ): List<TargetRequirement> = requirements.mapIndexed { index, requirement ->
+        lockRequirement(requirement, selectedCounts.getOrNull(index) ?: requirement.count)
+    }
+
+    /**
+     * Lock a flat target payload when a legacy/direct caller has not carried per-requirement
+     * counts separately. The deterministic partition prefers the largest legal prefix while
+     * reserving every later requirement's mandatory minimum. Normal decision continuations should
+     * use [lockRequirementsForSelectedCounts], which preserves the player's exact slot response.
+     */
+    fun lockRequirementsForTargets(
+        state: GameState,
+        targets: List<ChosenTarget>,
+        requirements: List<TargetRequirement>,
+        casterId: EntityId,
+        sourceColors: Set<Color> = emptySet(),
+        sourceSubtypes: Set<String> = emptySet(),
+        sourceId: EntityId? = null,
+        xValue: Int? = null,
+        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        triggeringEntityId: EntityId? = null,
+        triggeringPlayerId: EntityId? = null,
+        storedCollections: Map<String, List<EntityId>> = emptyMap()
+    ): List<TargetRequirement> {
+        if (requirements.isEmpty()) return emptyList()
+        val effectiveRequirements = snapshotDynamicCounts(
+            state = state,
+            requirements = requirements,
+            casterId = casterId,
+            sourceId = sourceId,
+            xValue = xValue,
+            triggeringEntityId = triggeringEntityId,
+            triggeringPlayerId = triggeringPlayerId,
+            storedCollections = storedCollections
+        )
+        // An empty payload is ambiguous at this legacy/direct boundary. Preserve a mandatory
+        // requirement's locked slot count so a malformed empty payload remains a target payload
+        // and CR 608.2b can reject it at resolution. Optional/up-to requirements legitimately
+        // selected zero targets and therefore keep zero slots.
+        val counts = if (targets.isEmpty()) {
+            effectiveRequirements.map { requirement ->
+                if (requirement.effectiveMinCount > 0) requirement.count else 0
+            }
+        } else {
+            inferSelectedCounts(
+                state = state,
+                targets = targets,
+                requirements = effectiveRequirements,
+                casterId = casterId,
+                sourceColors = sourceColors,
+                sourceSubtypes = sourceSubtypes,
+                sourceId = sourceId,
+                xValue = xValue,
+                targetingSourceType = targetingSourceType
+            )
+        }
+        val locked = lockRequirementsForSelectedCounts(effectiveRequirements, counts)
+        return locked.map { requirement ->
+            lockDynamicAggregate(
+                state = state,
+                requirement = requirement,
+                casterId = casterId,
+                sourceId = sourceId,
+                xValue = xValue,
+                triggeringEntityId = triggeringEntityId,
+                triggeringPlayerId = triggeringPlayerId,
+                storedCollections = storedCollections
+            )
+        }
+    }
+
+    /**
+     * Resolve board/trigger/X-dependent target-count caps at announcement time and remove the
+     * dynamic expression from the stored requirement. Later target rechecks must use this exact
+     * slot shape even when the board or trigger context has changed.
+     */
+    fun snapshotDynamicCounts(
+        state: GameState,
+        requirements: List<TargetRequirement>,
+        casterId: EntityId,
+        sourceId: EntityId? = null,
+        xValue: Int? = null,
+        triggeringEntityId: EntityId? = null,
+        triggeringPlayerId: EntityId? = null,
+        storedCollections: Map<String, List<EntityId>> = emptyMap()
+    ): List<TargetRequirement> = requirements.map { requirement ->
+        snapshotDynamicCount(
+            state = state,
+            requirement = requirement,
+            casterId = casterId,
+            sourceId = sourceId,
+            xValue = xValue,
+            triggeringEntityId = triggeringEntityId,
+            triggeringPlayerId = triggeringPlayerId,
+            storedCollections = storedCollections
+        )
+    }
+
+    private fun snapshotDynamicCount(
+        state: GameState,
+        requirement: TargetRequirement,
+        casterId: EntityId,
+        sourceId: EntityId?,
+        xValue: Int?,
+        triggeringEntityId: EntityId?,
+        triggeringPlayerId: EntityId?,
+        storedCollections: Map<String, List<EntityId>>
+    ): TargetRequirement = when (requirement) {
+        is TargetObject -> {
+            val expression = requirement.dynamicMaxCount ?: return requirement
+            val context = EffectContext(
+                sourceId = sourceId,
+                controllerId = casterId,
+                triggeringEntityId = triggeringEntityId,
+                triggeringPlayerId = triggeringPlayerId,
+                xValue = xValue,
+                pipeline = PipelineState(storedCollections = storedCollections)
+            )
+            val resolved = runCatching {
+                DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
+            }.getOrElse { requirement.count }
+            requirement.copy(
+                count = resolved,
+                minCount = requirement.minCount.coerceAtMost(resolved),
+                unlimited = false,
+                dynamicMaxCount = null
+            )
+        }
+        is TargetOther -> requirement.copy(
+            baseRequirement = snapshotDynamicCount(
+                state,
+                requirement.baseRequirement,
+                casterId,
+                sourceId,
+                xValue,
+                triggeringEntityId,
+                triggeringPlayerId,
+                storedCollections
+            )
+        )
+        else -> requirement
+    }
+
+    /** Freeze aggregate target caps alongside dynamic target counts at announcement time. */
+    private fun lockDynamicAggregate(
+        state: GameState,
+        requirement: TargetRequirement,
+        casterId: EntityId,
+        sourceId: EntityId?,
+        xValue: Int?,
+        triggeringEntityId: EntityId?,
+        triggeringPlayerId: EntityId?,
+        storedCollections: Map<String, List<EntityId>>
+    ): TargetRequirement = when (requirement) {
+        is TargetObject -> requirement.totalManaValueAtMost?.let { expression ->
+            val context = EffectContext(
+                sourceId = sourceId,
+                controllerId = casterId,
+                triggeringEntityId = triggeringEntityId,
+                triggeringPlayerId = triggeringPlayerId,
+                xValue = xValue,
+                pipeline = EffectContext(sourceId = sourceId, controllerId = casterId).pipeline
+                    .copy(storedCollections = storedCollections)
+            )
+            val resolved = evaluateAggregateCapOrNull(state, expression, context)
+                ?: return requirement.copy(
+                    totalManaValueAtMost = DynamicAmount.Fixed(UNAVAILABLE_DYNAMIC_AGGREGATE_CAP)
+                )
+            requirement.copy(totalManaValueAtMost = DynamicAmount.Fixed(resolved))
+        } ?: requirement
+        is TargetOther -> requirement.copy(
+            baseRequirement = lockDynamicAggregate(
+                state,
+                requirement.baseRequirement,
+                casterId,
+                sourceId,
+                xValue,
+                triggeringEntityId,
+                triggeringPlayerId,
+                storedCollections
+            )
+        )
+        else -> requirement
+    }
+
+    /**
+     * The payload that remains after CR 608.2b re-checks each originally locked target.
+     *
+     * [targets] is the compact list consumed by effects. [alignedTargets] keeps the original
+     * target slots, replacing an illegal target with null, so positional references do not shift
+     * onto a later survivor. The target requirements remain the original requirements: resolution
+     * filters locked choices; it does not manufacture a new choice or retarget a slot.
+     */
+    data class ResolutionTargetPayload(
+        val targets: List<ChosenTarget>,
+        val alignedTargets: List<ChosenTarget?>
+    )
+
+    /**
+     * Filter a locked target payload for resolution without applying cast-time cardinality rules.
+     *
+     * CR 608.2b removes individually-illegal targets when at least one target remains legal. The
+     * announcement-time minimum/maximum and distinctness checks are deliberately not repeated here:
+     * the choices are already locked, and this function only determines which of those choices can
+     * still be affected. [allowedTargetSlots], when supplied by a nested queue, is the
+     * position-preserving source-aware result captured by the outer resolution check; it prevents
+     * a per-mode queue from re-admitting a target into a different original slot.
+     */
+    fun filterTargetsAtResolution(
+        state: GameState,
+        targets: List<ChosenTarget>,
+        requirements: List<TargetRequirement>,
+        casterId: EntityId,
+        sourceColors: Set<Color> = emptySet(),
+        sourceSubtypes: Set<String> = emptySet(),
+        sourceId: EntityId? = null,
+        xValue: Int? = null,
+        /**
+         * Position-preserving source-aware target gate captured for a nested modal/splice
+         * queue. A target is allowed only when it occupies the same original slot; membership
+         * anywhere in the list would let a survivor fill an earlier illegal slot.
+         */
+        allowedTargetSlots: List<ChosenTarget?>? = null,
+        targetEntryStamps: Map<EntityId, Long> = emptyMap(),
+        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        triggeringEntityId: EntityId? = null,
+        triggeringPlayerId: EntityId? = null,
+        damageSourceId: EntityId? = null,
+        damageRecipientId: EntityId? = null,
+        damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+        damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+        damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+        damageRecipientLastKnownSnapshot: EntitySnapshot? = null,
+        storedCollections: Map<String, List<EntityId>> = emptyMap()
+    ): ResolutionTargetPayload {
+        fun malformedPayload() = ResolutionTargetPayload(
+            targets = emptyList(),
+            alignedTargets = List(targets.size) { null }
+        )
+
+        // A targetless requirement set is valid only when the payload is also targetless. A
+        // nonempty payload with no requirements has no predicate that can prove any target legal.
+        // Conversely, an empty payload with a nonzero/negative locked slot is malformed rather
+        // than a targetless choice. Keep zero-count optional requirements valid.
+        if (targets.isEmpty()) {
+            return if (requirements.all { it.count == 0 }) {
+                ResolutionTargetPayload(emptyList(), emptyList())
+            } else {
+                malformedPayload()
+            }
+        }
+        if (requirements.isEmpty()) return malformedPayload()
+
+        // The locked requirement counts define the original flat payload shape. Never truncate a
+        // requirement to the number of supplied targets: a short or overlong serialized payload
+        // is malformed and must not leak a prefix to an executor under CR 608.2b.
+        var expectedSlots = 0
+        for (requirement in requirements) {
+            val slotCount = requirement.count
+            if (slotCount < 0 || slotCount > targets.size - expectedSlots) return malformedPayload()
+            expectedSlots += slotCount
+        }
+        if (expectedSlots != targets.size) return malformedPayload()
+
+        val legal = BooleanArray(targets.size)
+        var offset = 0
+        for (requirement in requirements) {
+            if (offset >= targets.size) break
+            // Requirements stored on a stack object are already normalized by the cast/trigger
+            // decision path. Do not re-evaluate dynamicMaxCount, X, or the current remaining list
+            // here: doing so recomputes a locked choice after the board has changed.
+            val slotCount = requirement.count
+            val end = offset + slotCount
+            val requirementTargets = targets.subList(offset, end)
+            val relationshipError = validateRequirementRelationships(
+                state = state,
+                requirement = requirement,
+                requirementTargets = requirementTargets,
+                priorTargets = targets.subList(0, offset),
+                casterId = casterId,
+                sourceId = sourceId,
+                xValue = xValue
+            )
+            for (index in offset until end) {
+                val target = targets[index]
+                val sourceAwareLegal = allowedTargetSlots == null ||
+                    (index < allowedTargetSlots.size && allowedTargetSlots[index] == target)
+                // Players do not change CR 400.7 object identity between target selection and
+                // resolution. Only object/card/spell targets need the captured identity stamp;
+                // applying that gate to a Player target would treat its normal absent stamp as a
+                // replacement and incorrectly fizzle an otherwise legal spell.
+                val sameObject = if (target is ChosenTarget.Player) {
+                    true
+                } else {
+                    target.entityIdOrNull()?.let {
+                        !TargetsComponent.isDifferentObject(state, it, targetEntryStamps)
+                    } ?: true
+                }
+                legal[index] = relationshipError == null && sourceAwareLegal && sameObject &&
+                    validateSingleTarget(
+                        state = state,
+                        target = target,
+                        requirement = requirement,
+                        casterId = casterId,
+                        sourceColors = sourceColors,
+                        sourceSubtypes = sourceSubtypes,
+                        sourceId = sourceId,
+                        xValue = xValue,
+                        allTargets = targets,
+                        targetingSourceType = targetingSourceType,
+                        triggeringEntityId = triggeringEntityId,
+                        triggeringPlayerId = triggeringPlayerId,
+                        damageSourceId = damageSourceId,
+                        damageRecipientId = damageRecipientId,
+                        damageRecipientKind = damageRecipientKind,
+                        damageRecipientKinds = damageRecipientKinds,
+                        damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
+                        damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot,
+                        storedCollections = storedCollections
+                    ) == null
+            }
+            offset = end
+        }
+
+        val compact = mutableListOf<ChosenTarget>()
+        val aligned = targets.mapIndexed { index, target ->
+            if (legal[index]) {
+                compact += target
+                target
+            } else {
+                null
+            }
+        }
+        return ResolutionTargetPayload(compact, aligned)
+    }
+
+    /** Normalize one requirement to the exact number of slots selected at announcement time. */
+    private fun lockRequirement(requirement: TargetRequirement, count: Int): TargetRequirement {
+        val lockedCount = count.coerceAtLeast(0)
+        return when (requirement) {
+            is TargetPlayer -> requirement.copy(
+                count = lockedCount,
+                optional = false,
+                unlimited = false
+            )
+            is TargetOpponent -> requirement.copy(
+                count = lockedCount,
+                optional = false,
+                unlimited = false
+            )
+            is AnyTarget -> requirement.copy(
+                count = lockedCount,
+                minCount = lockedCount,
+                optional = false
+            )
+            is TargetCreatureOrPlayer -> requirement.copy(
+                count = lockedCount,
+                optional = false
+            )
+            is TargetPermanentOrPlayer -> requirement.copy(
+                count = lockedCount,
+                optional = false
+            )
+            is TargetOpponentOrPlaneswalker -> requirement.copy(
+                count = lockedCount,
+                optional = false
+            )
+            is TargetPlayerOrPlaneswalker -> requirement.copy(
+                count = lockedCount,
+                optional = false
+            )
+            is TargetCreatureOrPlaneswalker -> requirement.copy(
+                count = lockedCount,
+                optional = false
+            )
+            is TargetSpellOrPermanent -> requirement.copy(
+                count = lockedCount,
+                optional = false
+            )
+            is TargetObject -> requirement.copy(
+                count = lockedCount,
+                minCount = lockedCount,
+                optional = false,
+                unlimited = false,
+                dynamicMaxCount = null
+            )
+            is TargetOther -> requirement.copy(
+                baseRequirement = lockRequirement(requirement.baseRequirement, lockedCount)
+            )
+        }
+    }
+
+    /** Infer a deterministic legacy partition when a caller did not carry response slot counts. */
+    private fun inferSelectedCounts(
+        state: GameState,
+        targets: List<ChosenTarget>,
+        requirements: List<TargetRequirement>,
+        casterId: EntityId,
+        sourceColors: Set<Color>,
+        sourceSubtypes: Set<String>,
+        sourceId: EntityId?,
+        xValue: Int?,
+        targetingSourceType: TargetingSourceType
+    ): List<Int> {
+        fun effectiveMax(requirement: TargetRequirement, remaining: Int): Int {
+            val objectRequirement = requirement.objectRequirement()
+            if (objectRequirement != null) {
+                val dynamic = objectRequirement.dynamicMaxCount
+                if (dynamic == DynamicAmount.XValue) return (xValue ?: 0).coerceAtLeast(0)
+                if (dynamic != null) {
+                    return try {
+                        DynamicAmountEvaluator().evaluate(
+                            state,
+                            dynamic,
+                            EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
+                        ).coerceAtLeast(0)
+                    } catch (_: Exception) {
+                        objectRequirement.count
+                    }
+                }
+            }
+            return if (requirement.unlimited) remaining else requirement.count
+        }
+
+        fun search(requirementIndex: Int, targetOffset: Int): List<Int>? {
+            if (requirementIndex == requirements.size) {
+                return if (targetOffset == targets.size) emptyList() else null
+            }
+
+            val requirement = requirements[requirementIndex]
+            val remaining = targets.size - targetOffset
+            val max = effectiveMax(requirement, remaining).coerceAtLeast(0).coerceAtMost(remaining)
+            val min = requirement.effectiveMinCount.coerceAtLeast(0).coerceAtMost(max)
+            val laterMinimum = requirements.drop(requirementIndex + 1).sumOf {
+                it.effectiveMinCount.coerceAtLeast(0)
+            }
+            val upper = (max - laterMinimum).coerceAtLeast(min)
+
+            // Prefer the declared maximum for ambiguous legacy payloads. Exact response counts
+            // take the separate path above, so this is only a compatibility fallback.
+            for (count in upper downTo min) {
+                val end = targetOffset + count
+                if (!segmentIsLegalAtChoice(
+                        state,
+                        targets.subList(targetOffset, end),
+                        targets.subList(0, targetOffset),
+                        requirement,
+                        targets,
+                        casterId,
+                        sourceColors,
+                        sourceSubtypes,
+                        sourceId,
+                        xValue,
+                        targetingSourceType
+                    )
+                ) continue
+                val tail = search(requirementIndex + 1, end) ?: continue
+                return listOf(count) + tail
+            }
+            return null
+        }
+
+        return search(0, 0) ?: run {
+            var remaining = targets.size
+            requirements.mapIndexed { index, requirement ->
+                val laterMinimum = requirements.drop(index + 1).sumOf {
+                    it.effectiveMinCount.coerceAtLeast(0)
+                }
+                val count = if (index == requirements.lastIndex) {
+                    remaining
+                } else {
+                    (remaining - laterMinimum).coerceAtLeast(0)
+                        .coerceAtMost(requirement.count.coerceAtLeast(0))
+                }
+                remaining -= count
+                count
+            }
+        }
+    }
+
+    private fun segmentIsLegalAtChoice(
+        state: GameState,
+        requirementTargets: List<ChosenTarget>,
+        priorTargets: List<ChosenTarget>,
+        requirement: TargetRequirement,
+        allTargets: List<ChosenTarget>,
+        casterId: EntityId,
+        sourceColors: Set<Color>,
+        sourceSubtypes: Set<String>,
+        sourceId: EntityId?,
+        xValue: Int?,
+        targetingSourceType: TargetingSourceType
+    ): Boolean {
+        if (requirementTargets.any { target ->
+                validateSingleTarget(
+                    state = state,
+                    target = target,
+                    requirement = requirement,
+                    casterId = casterId,
+                    sourceColors = sourceColors,
+                    sourceSubtypes = sourceSubtypes,
+                    sourceId = sourceId,
+                    xValue = xValue,
+                    allTargets = allTargets,
+                    targetingSourceType = targetingSourceType
+                ) != null
+            }
+        ) return false
+        return validateRequirementRelationships(
+            state = state,
+            requirement = requirement,
+            requirementTargets = requirementTargets,
+            priorTargets = priorTargets,
+            casterId = casterId,
+            sourceId = sourceId,
+            xValue = xValue
+        ) == null
+    }
+
+    /** Re-check cross-target restrictions against the current projected characteristics. */
+    private fun validateRequirementRelationships(
+        state: GameState,
+        requirement: TargetRequirement,
+        requirementTargets: List<ChosenTarget>,
+        priorTargets: List<ChosenTarget>,
+        casterId: EntityId,
+        sourceId: EntityId?,
+        xValue: Int?
+    ): String? {
+        if (requirement is TargetOther && requirementTargets.any { candidate ->
+                priorTargets.any { it == candidate }
+            }) {
+            return "Target must be different from the other chosen targets"
+        }
+
+        val objectRequirement = requirement.objectRequirement() ?: return null
+
+        // CR 115.9b says a target that has left its expected zone is ignored for a query about
+        // whether something targets it; CR 608.2b separately makes that target illegal. The
+        // relationship checks therefore compare only currently-present target objects. This is
+        // deliberately not a last-known-information fallback: LKI would reintroduce a departed
+        // target into the live legality relation and could make a legal survivor illegal.
+        val presentTargets = requirementTargets.filter { isCurrentTargetObject(state, it) }
+
+        // The aggregate cap applies to the complete chosen set, including a single target. Keep
+        // this check before the multi-target early return so an unavailable locked cap cannot be
+        // mistaken for an unlimited cap when only one slot was chosen.
+        objectRequirement.totalManaValueAtMost?.let { capExpression ->
+            val cap = evaluateAggregateCapOrNull(
+                state = state,
+                expression = capExpression,
+                context = EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
+            ) ?: return "Target aggregate mana value cap is unavailable"
+            val total = presentTargets.sumOf { target ->
+                (target as? ChosenTarget.Card)?.let { card ->
+                    state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue
+                        ?: return "Target characteristics are unavailable"
+                } ?: 0
+            }
+            if (total > cap) return "Targets must have total mana value $cap or less"
+        }
+
+        if (requirementTargets.size <= 1) return null
+
+        if (objectRequirement.sameController) {
+            val controllers = mutableListOf<EntityId>()
+            for (target in presentTargets) {
+                val permanent = target as? ChosenTarget.Permanent ?: continue
+                val controller = state.projectedState.getController(permanent.entityId)
+                    ?: state.getEntity(permanent.entityId)?.get<ControllerComponent>()?.playerId
+                    ?: return "Target controller is unavailable"
+                controllers += controller
+            }
+            if (controllers.toSet().size > 1) return "Targets must be controlled by the same player"
+        }
+        if (objectRequirement.sameOwner) {
+            val owners = mutableListOf<EntityId>()
+            for (target in presentTargets) {
+                val card = target as? ChosenTarget.Card ?: continue
+                state.getEntity(card.cardId)?.get<CardComponent>()
+                    ?: return "Target characteristics are unavailable"
+                owners += card.ownerId
+            }
+            if (owners.toSet().size > 1) return "Targets must be from a single graveyard"
+        }
+        if (objectRequirement.sameCreatureType) {
+            val subtypeSets = presentTargets.mapNotNull { target ->
+                val permanent = target as? ChosenTarget.Permanent ?: return@mapNotNull null
+                state.getEntity(permanent.entityId)?.get<CardComponent>()
+                    ?: return "Target characteristics are unavailable"
+                state.projectedState.getSubtypes(permanent.entityId)
+            }
+            if (subtypeSets.isNotEmpty() && subtypeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
+                return "Targets must share a creature type"
+            }
+        }
+        if (objectRequirement.sameCardType) {
+            val typeSets = presentTargets.mapNotNull { target ->
+                val permanent = target as? ChosenTarget.Permanent ?: return@mapNotNull null
+                state.getEntity(permanent.entityId)?.get<CardComponent>()
+                    ?: return "Target characteristics are unavailable"
+                state.projectedState.getTypes(permanent.entityId)
+                    .filter { it in CARD_TYPE_NAMES }
+                    .toSet()
+            }
+            if (typeSets.isNotEmpty() && typeSets.reduce { acc, next -> acc intersect next }.isEmpty()) {
+                return "Targets must share a card type"
+            }
+        }
+        if (objectRequirement.differentNames) {
+            val names = presentTargets.mapNotNull { target ->
+                val id = (target as? ChosenTarget.Permanent)?.entityId
+                    ?: (target as? ChosenTarget.Card)?.cardId
+                id?.let {
+                    state.getEntity(it)?.get<CardComponent>()
+                        ?: return "Target characteristics are unavailable"
+                    state.projectedState.getName(it) ?: state.getEntity(it)?.get<CardComponent>()?.name
+                }
+            }
+            if (names.size != names.toSet().size) return "Targets must have different names"
+        }
+        return null
+    }
+
+    /** Whether a locked target object is still present in the zone in which it was chosen. */
+    private fun isCurrentTargetObject(state: GameState, target: ChosenTarget): Boolean = when (target) {
+        is ChosenTarget.Player -> state.getEntity(target.playerId) != null
+        is ChosenTarget.Permanent ->
+            target.entityId in state.getBattlefield() && state.getEntity(target.entityId) != null
+        is ChosenTarget.Card ->
+            target.cardId in state.getZone(ZoneKey(target.ownerId, target.zone)) &&
+                state.getEntity(target.cardId) != null
+        is ChosenTarget.Spell -> target.spellEntityId in state.stack &&
+            state.getEntity(target.spellEntityId) != null
+    }
+
+    private fun TargetRequirement.objectRequirement(): TargetObject? = when (this) {
+        is TargetObject -> this
+        is TargetOther -> baseRequirement.objectRequirement()
+        else -> null
+    }
+
+    private fun ChosenTarget.entityIdOrNull(): EntityId? = when (this) {
+        is ChosenTarget.Player -> playerId
+        is ChosenTarget.Permanent -> entityId
+        is ChosenTarget.Card -> cardId
+        is ChosenTarget.Spell -> spellEntityId
+    }
 
     /**
      * Validate all targets for a spell/ability against their requirements.
@@ -225,15 +907,11 @@ class TargetValidator {
             // targets, which contribute 0.
             val totalManaCap = (requirement as? TargetObject)?.totalManaValueAtMost
             if (totalManaCap != null && targetsForReq.isNotEmpty()) {
-                val cap = try {
-                    DynamicAmountEvaluator().evaluate(
-                        state,
-                        totalManaCap,
-                        EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
-                    ).coerceAtLeast(0)
-                } catch (_: Exception) {
-                    Int.MAX_VALUE
-                }
+                val cap = evaluateAggregateCapOrNull(
+                    state = state,
+                    expression = totalManaCap,
+                    context = EffectContext(sourceId = sourceId, controllerId = casterId, xValue = xValue)
+                ) ?: return "Target aggregate mana value cap is unavailable"
                 val summedManaValue = targetsForReq.sumOf { target ->
                     (target as? ChosenTarget.Card)?.let { card ->
                         state.getEntity(card.cardId)?.get<CardComponent>()?.manaValue ?: 0
@@ -277,28 +955,102 @@ class TargetValidator {
         sourceSubtypes: Set<String> = emptySet(),
         sourceId: EntityId? = null,
         xValue: Int? = null,
-        allTargets: List<ChosenTarget> = emptyList()
+        allTargets: List<ChosenTarget> = emptyList(),
+        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        triggeringEntityId: EntityId? = null,
+        triggeringPlayerId: EntityId? = null,
+        storedCollections: Map<String, List<EntityId>> = emptyMap(),
+        predicateContext: PredicateContext? = null,
+        damageSourceId: EntityId? = null,
+        damageRecipientId: EntityId? = null,
+        damageRecipientKind: DamageRecipientKind = DamageRecipientKind.UNKNOWN,
+        damageRecipientKinds: DamageRecipientKindSet = DamageRecipientKindSet.UNKNOWN,
+        damageSourceLastKnownSnapshot: EntitySnapshot? = null,
+        damageRecipientLastKnownSnapshot: EntitySnapshot? = null
     ): String? {
         // A separately-chosen player target (target index 0 for "target player's graveyard"
         // spells) — lets a later requirement's filter resolve `OwnedByTargetPlayer` /
         // `ControlledByTargetPlayer` against the player already chosen for this same cast
         // (Drafna's Restoration, Hurkyl's-Recall-family relational predicates).
         val chosenPlayerTarget = allTargets.firstNotNullOfOrNull { (it as? ChosenTarget.Player)?.playerId }
+        val targetPredicateContext = predicateContext ?: PredicateContext(
+            controllerId = casterId,
+            targetOpponentId = chosenPlayerTarget,
+            targetPlayerId = chosenPlayerTarget,
+            sourceId = sourceId,
+            triggeringEntityId = triggeringEntityId,
+            triggeringPlayerId = triggeringPlayerId,
+            storedCollections = storedCollections,
+            targets = allTargets,
+            xValue = xValue,
+            damageSourceId = damageSourceId,
+            damageRecipientId = damageRecipientId,
+            damageRecipientKind = damageRecipientKind,
+            damageRecipientKinds = damageRecipientKinds,
+            damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot
+        )
         val error = when (requirement) {
             is TargetPlayer -> validatePlayerTarget(state, target, requirement, casterId, sourceId)
             is TargetOpponent -> validateOpponentTarget(state, target, requirement, casterId, sourceId)
             is AnyTarget -> validateAnyTarget(state, target, casterId)
             is TargetCreatureOrPlayer -> validateCreatureOrPlayerTarget(state, target, casterId)
             is TargetPermanentOrPlayer ->
-                validatePermanentOrPlayerTarget(state, target, requirement, casterId, sourceId, xValue, chosenPlayerTarget)
+                validatePermanentOrPlayerTarget(
+                    state, target, requirement, casterId, sourceId, xValue, chosenPlayerTarget, targetPredicateContext
+                )
             is TargetOpponentOrPlaneswalker -> validateOpponentOrPlaneswalkerTarget(state, target, casterId)
             is TargetPlayerOrPlaneswalker -> validatePlayerOrPlaneswalkerTarget(state, target, casterId)
             is TargetCreatureOrPlaneswalker -> validateCreatureOrPlaneswalkerTarget(state, target)
-            is TargetSpellOrPermanent -> validateSpellOrPermanentTarget(state, target, requirement, casterId, sourceId, xValue)
-            is TargetObject -> validateObjectTarget(state, target, requirement.filter, casterId, sourceId, xValue, chosenPlayerTarget)
-            is TargetOther -> validateSingleTarget(state, target, requirement.baseRequirement, casterId, sourceColors, sourceSubtypes, sourceId, xValue, allTargets)
+            is TargetSpellOrPermanent ->
+                validateSpellOrPermanentTarget(state, target, requirement, casterId, sourceId, xValue, targetPredicateContext)
+            is TargetObject ->
+                validateObjectTarget(
+                    state, target, requirement.filter, casterId, sourceId, xValue, chosenPlayerTarget,
+                    targetPredicateContext
+                )
+            is TargetOther -> validateSingleTarget(
+                state,
+                target,
+                requirement.baseRequirement,
+                casterId,
+                sourceColors,
+                sourceSubtypes,
+                sourceId,
+                xValue,
+                allTargets,
+                targetingSourceType,
+                triggeringEntityId,
+                triggeringPlayerId,
+                storedCollections,
+                targetPredicateContext
+            )
         }
         if (error != null) return error
+
+        // These source-aware restrictions are part of target legality, not a cast-time-only
+        // filter. Keep them in the canonical resolution validator so modal and splice entries do
+        // not bypass the same ability/spell distinction as ordinary stack objects.
+        if (target is ChosenTarget.Permanent) {
+            val projected = state.projectedState
+            val entityController = projected.getController(target.entityId)
+                ?: state.getEntity(target.entityId)?.get<ControllerComponent>()?.playerId
+            if (SourceTypeTargeting.cantBeTargetedBySourceTypeAbility(
+                    state, target.entityId, sourceId, targetingSourceType
+                )
+            ) {
+                return "Target is protected from this source type"
+            }
+            if (targetingSourceType != TargetingSourceType.SPELL &&
+                entityController != casterId &&
+                ControllerGrants.isActiveOn<CantBeTargetedByOpponentAbilitiesComponent>(
+                    state,
+                    target.entityId
+                )
+            ) {
+                return "Target can't be targeted by an opponent's ability"
+            }
+        }
 
         // Check player-level protection, e.g. The One Ring's "protection from everything" (Rule 702.16).
         // A protected player can't be the target of a source matching one of its protection scopes.
@@ -446,7 +1198,8 @@ class TargetValidator {
         if (entityId !in state.getBattlefield()) return null
 
         val projected = state.projectedState
-        val entityController = state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
+        val entityController = projected.getController(entityId)
+            ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
 
         if (projected.hasKeyword(entityId, Keyword.SHROUD)) {
             val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
@@ -482,8 +1235,10 @@ class TargetValidator {
         // Only check permanents on the battlefield
         if (entityId !in state.getBattlefield()) return null
 
-        // Hexproof from color only blocks opponents — owner can still target
-        val entityController = state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
+        // Hexproof from color only blocks opponents — owner can still target. Use projected
+        // control because a control-changing effect can resolve before this target recheck.
+        val entityController = state.projectedState.getController(entityId)
+            ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
         if (entityController == casterId) return null
 
         val projected = state.projectedState
@@ -527,7 +1282,8 @@ class TargetValidator {
         }
         if (entityId !in state.getBattlefield()) return null
 
-        val entityController = state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
+        val entityController = state.projectedState.getController(entityId)
+            ?: state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
         if (entityController == casterId) return null
 
         val projected = state.projectedState
@@ -611,7 +1367,8 @@ class TargetValidator {
         filter: TargetFilter,
         casterId: EntityId,
         sourceId: EntityId? = null,
-        xValue: Int? = null
+        xValue: Int? = null,
+        predicateContext: PredicateContext? = null
     ): String? {
         if (target !is ChosenTarget.Permanent) {
             return "Target must be a permanent"
@@ -634,8 +1391,9 @@ class TargetValidator {
 
         // Use unified filter with projection (face-down creatures have CMC 0 per Rule 708.2)
         val projected = state.projectedState
-        val predicateContext = PredicateContext(controllerId = casterId, sourceId = sourceId, xValue = xValue)
-        val matches = predicateEvaluator.matches(state, projected, target.entityId, filter.baseFilter, predicateContext)
+        val context = (predicateContext ?: PredicateContext(controllerId = casterId))
+            .copy(controllerId = casterId, sourceId = sourceId, xValue = xValue)
+        val matches = predicateEvaluator.matches(state, projected, target.entityId, filter.baseFilter, context)
         if (!matches) {
             return "Target does not match filter: ${filter.description}"
         }
@@ -750,7 +1508,8 @@ class TargetValidator {
         casterId: EntityId,
         sourceId: EntityId?,
         xValue: Int?,
-        chosenPlayerTarget: EntityId?
+        chosenPlayerTarget: EntityId?,
+        predicateContext: PredicateContext? = null
     ): String? {
         return when (target) {
             is ChosenTarget.Player -> {
@@ -761,7 +1520,8 @@ class TargetValidator {
             }
             is ChosenTarget.Permanent ->
                 validateObjectTarget(
-                    state, target, requirement.permanentFilter, casterId, sourceId, xValue, chosenPlayerTarget
+                    state, target, requirement.permanentFilter, casterId, sourceId, xValue, chosenPlayerTarget,
+                    predicateContext
                 )
             else -> "Target must be a ${requirement.permanentFilter.description} or player"
         }
@@ -781,11 +1541,13 @@ class TargetValidator {
                     ?: return "Target not found"
                 val cardComponent = container.get<CardComponent>()
                     ?: return "Target is not a card"
-                if (CardType.PLANESWALKER !in cardComponent.typeLine.cardTypes) {
-                    return "Target must be an opponent or planeswalker"
-                }
                 if (target.entityId !in state.getBattlefield()) {
                     return "Target must be on the battlefield"
+                }
+                val isPlaneswalker = state.projectedState.isPlaneswalker(target.entityId) ||
+                    CardType.PLANESWALKER in cardComponent.typeLine.cardTypes
+                if (!isPlaneswalker) {
+                    return "Target must be an opponent or planeswalker"
                 }
                 null
             }
@@ -806,11 +1568,13 @@ class TargetValidator {
                     ?: return "Target not found"
                 val cardComponent = container.get<CardComponent>()
                     ?: return "Target is not a card"
-                if (CardType.PLANESWALKER !in cardComponent.typeLine.cardTypes) {
-                    return "Target must be a player or planeswalker"
-                }
                 if (target.entityId !in state.getBattlefield()) {
                     return "Target must be on the battlefield"
+                }
+                val isPlaneswalker = state.projectedState.isPlaneswalker(target.entityId) ||
+                    CardType.PLANESWALKER in cardComponent.typeLine.cardTypes
+                if (!isPlaneswalker) {
+                    return "Target must be a player or planeswalker"
                 }
                 null
             }
@@ -847,7 +1611,8 @@ class TargetValidator {
         casterId: EntityId,
         sourceId: EntityId? = null,
         xValue: Int? = null,
-        targetPlayerId: EntityId? = null
+        targetPlayerId: EntityId? = null,
+        predicateContext: PredicateContext? = null
     ): String? {
         if (target !is ChosenTarget.Card) {
             return "Target must be a card in a graveyard"
@@ -868,8 +1633,15 @@ class TargetValidator {
         // Use unified filter - OwnedByYou predicate handles "your graveyard" restriction; a
         // separately-chosen player target (Drafna's Restoration) flows in via targetPlayerId so
         // OwnedByTargetPlayer matches "cards in target player's graveyard".
-        val predicateContext = PredicateContext(controllerId = casterId, ownerId = target.ownerId, sourceId = sourceId, xValue = xValue, targetPlayerId = targetPlayerId)
-        val matches = predicateEvaluator.matches(state, state.projectedState, target.cardId, filter.baseFilter, predicateContext)
+        val context = (predicateContext ?: PredicateContext(controllerId = casterId))
+            .copy(
+                controllerId = casterId,
+                ownerId = target.ownerId,
+                sourceId = sourceId,
+                xValue = xValue,
+                targetPlayerId = targetPlayerId ?: predicateContext?.targetPlayerId
+            )
+        val matches = predicateEvaluator.matches(state, state.projectedState, target.cardId, filter.baseFilter, context)
         if (!matches) {
             return "Target does not match filter: ${filter.description}"
         }
@@ -882,7 +1654,8 @@ class TargetValidator {
         filter: TargetFilter,
         casterId: EntityId,
         xValue: Int? = null,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null
     ): String? {
         if (target !is ChosenTarget.Spell) {
             return "Target must be a spell on the stack"
@@ -894,8 +1667,9 @@ class TargetValidator {
         // Use unified filter with projected state (face-down spells need projection to be seen as
         // creatures); sourceId lets source-relative predicates evaluate (Goblin Artisans'
         // NotTargetedByAbilityFromSameNamedSource).
-        val predicateContext = PredicateContext(controllerId = casterId, sourceId = sourceId, xValue = xValue)
-        val matches = predicateEvaluator.matches(state, state.projectedState, target.spellEntityId, filter.baseFilter, predicateContext)
+        val context = (predicateContext ?: PredicateContext(controllerId = casterId))
+            .copy(controllerId = casterId, sourceId = sourceId, xValue = xValue)
+        val matches = predicateEvaluator.matches(state, state.projectedState, target.spellEntityId, filter.baseFilter, context)
         if (!matches) {
             return "Target does not match filter: ${filter.description}"
         }
@@ -912,7 +1686,8 @@ class TargetValidator {
         casterId: EntityId,
         sourceId: EntityId? = null,
         xValue: Int? = null,
-        targetPlayerId: EntityId? = null
+        targetPlayerId: EntityId? = null,
+        predicateContext: PredicateContext? = null
     ): String? {
         // Cross-zone union: the target is legal if it satisfies *any* clause. Validate against each
         // single-zone clause; succeed on the first that accepts, otherwise report that clause's
@@ -920,17 +1695,23 @@ class TargetValidator {
         // filter). Each clause has no alternatives, so this recursion terminates.
         if (filter.isUnion) {
             val clauseErrors = filter.clauses().map { clause ->
-                validateObjectTarget(state, target, clause, casterId, sourceId, xValue, targetPlayerId)
+                validateObjectTarget(
+                    state, target, clause, casterId, sourceId, xValue, targetPlayerId, predicateContext
+                )
             }
             if (clauseErrors.any { it == null }) return null
             return clauseErrors.firstOrNull { it != null }
                 ?: "Target does not match filter: ${filter.description}"
         }
         return when (filter.zone) {
-            Zone.GRAVEYARD -> validateGraveyardTarget(state, target, filter, casterId, sourceId, xValue, targetPlayerId)
-            Zone.BATTLEFIELD -> validatePermanentTarget(state, target, filter, casterId, sourceId, xValue)
-            Zone.STACK -> validateSpellTarget(state, target, filter, casterId, xValue, sourceId)
-            else -> validateCardInZoneTarget(state, target, filter, casterId, xValue, sourceId)
+            Zone.GRAVEYARD ->
+                validateGraveyardTarget(state, target, filter, casterId, sourceId, xValue, targetPlayerId, predicateContext)
+            Zone.BATTLEFIELD ->
+                validatePermanentTarget(state, target, filter, casterId, sourceId, xValue, predicateContext)
+            Zone.STACK ->
+                validateSpellTarget(state, target, filter, casterId, xValue, sourceId, predicateContext)
+            else ->
+                validateCardInZoneTarget(state, target, filter, casterId, xValue, sourceId, predicateContext)
         }
     }
 
@@ -946,7 +1727,8 @@ class TargetValidator {
         requirement: TargetSpellOrPermanent,
         casterId: EntityId,
         sourceId: EntityId?,
-        xValue: Int? = null
+        xValue: Int? = null,
+        predicateContext: PredicateContext? = null
     ): String? {
         return when (target) {
             is ChosenTarget.Permanent -> {
@@ -958,7 +1740,8 @@ class TargetValidator {
                 val filter = requirement.permanentFilter
                 if (filter != null) {
                     val projected = state.projectedState
-                    val context = PredicateContext(controllerId = casterId, sourceId = sourceId, xValue = xValue)
+                    val context = (predicateContext ?: PredicateContext(controllerId = casterId))
+                        .copy(controllerId = casterId, sourceId = sourceId, xValue = xValue)
                     if (!predicateEvaluator.matches(state, projected, target.entityId, filter, context)) {
                         return "Target does not match ${filter.description}"
                     }
@@ -984,7 +1767,8 @@ class TargetValidator {
         filter: TargetFilter,
         casterId: EntityId,
         xValue: Int? = null,
-        sourceId: EntityId? = null
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null
     ): String? {
         if (target !is ChosenTarget.Card) {
             return "Target must be a card"
@@ -1003,8 +1787,9 @@ class TargetValidator {
 
         // sourceId lets source-relative predicates evaluate (e.g. ExiledWithSource — "target card
         // exiled with ~"). Mirrors the graveyard/spell validation paths.
-        val predicateContext = PredicateContext(controllerId = casterId, ownerId = target.ownerId, xValue = xValue, sourceId = sourceId)
-        val matches = predicateEvaluator.matches(state, state.projectedState, target.cardId, filter.baseFilter, predicateContext)
+        val context = (predicateContext ?: PredicateContext(controllerId = casterId))
+            .copy(controllerId = casterId, ownerId = target.ownerId, xValue = xValue, sourceId = sourceId)
+        val matches = predicateEvaluator.matches(state, state.projectedState, target.cardId, filter.baseFilter, context)
         if (!matches) {
             return "Target does not match filter: ${filter.description}"
         }
