@@ -106,8 +106,9 @@ class AstorBearerOfBladesScenarioTest : FunSpec({
 
         driver.submitCardSelection(active, listOf(topVehicle)).isSuccess shouldBe true
         driver.getHand(active) shouldContain topVehicle
-        libraryNames(driver, active).takeLast(5) shouldContainExactlyInAnyOrder
-            nonMatching.map { id -> driver.state.getEntity(id)?.get<CardComponent>()?.name!! }
+        // The unselected matching Equipment is part of the random-order remainder too.
+        libraryNames(driver, active).takeLast(6) shouldContainExactlyInAnyOrder
+            (nonMatching + topEquipment).map { id -> driver.state.getEntity(id)?.get<CardComponent>()?.name!! }
 
         // Astor grants a new equip {1} ability; it must not be represented as a global cost
         // reduction on the Equipment's printed equip {3} ability.
@@ -140,13 +141,16 @@ class AstorBearerOfBladesScenarioTest : FunSpec({
             .filter { legal ->
                 legal.action is CrewVehicle &&
                     (legal.action as CrewVehicle).vehicleId == vehicle
-        }
+            }
         crewActions.map { it.tapForPowerRequired }.toSet() shouldBe setOf(1, 3)
         val crewOne = crewActions.single { it.tapForPowerRequired == 1 }
         val selectableCrew = crewOne.tapForPowerCreatures
             ?: error("Crew 1 action must expose its selectable tap-for-power creatures")
         selectableCrew.map { it.entityId } shouldContain crewer
-        driver.submit(CrewVehicle(active, vehicle, listOf(crewer))).isSuccess shouldBe true
+        // Preserve the enumerated origin key: the printed Crew 3 and granted Crew 1 are
+        // intentionally distinct legal actions.
+        val crewOneAction = crewOne.action.shouldBeInstanceOf<CrewVehicle>()
+        driver.submit(crewOneAction.copy(crewCreatures = listOf(crewer))).isSuccess shouldBe true
         driver.bothPass()
         driver.state.projectedState.isCreature(vehicle) shouldBe true
     }
