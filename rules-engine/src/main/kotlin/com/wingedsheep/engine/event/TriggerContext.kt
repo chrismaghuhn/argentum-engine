@@ -34,6 +34,8 @@ import com.wingedsheep.engine.state.components.stack.stampedFor
 data class TriggerContext(
     val triggeringEntityId: EntityId? = null,
     val triggeringPlayerId: EntityId? = null,
+    /** The player defended by the attack that caused this trigger, captured at declaration time. */
+    val defendingPlayerId: EntityId? = null,
     /** The object that dealt the damage, preserved independently from the trigger's semantic entity. */
     val damageSourceEntityId: EntityId? = null,
     /** The object or player that received the damage, preserved independently from the trigger's semantic entity. */
@@ -226,7 +228,28 @@ data class TriggerContext(
         }
 
     companion object {
-        fun fromEvent(event: com.wingedsheep.engine.core.GameEvent): TriggerContext {
+        /**
+         * Create attack-trigger context from the replay-safe declaration snapshot. Historical
+         * events without [com.wingedsheep.engine.core.DeclaredAttack.defendingPlayerId] remain
+         * unresolved instead of guessing from current combat state.
+         */
+        fun forDeclaredAttack(event: AttackersDeclaredEvent, attackerId: EntityId): TriggerContext =
+            TriggerContext(
+                triggeringEntityId = attackerId,
+                triggeringPlayerId = event.attackingPlayerId,
+                defendingPlayerId = event.declaredAttacks
+                    .firstOrNull { it.attackerId == attackerId }
+                    ?.defendingPlayerId,
+            )
+
+        fun forDeclaredAttack(event: com.wingedsheep.engine.core.GameEvent?, attackerId: EntityId): TriggerContext =
+            (event as? AttackersDeclaredEvent)?.let { forDeclaredAttack(it, attackerId) }
+                ?: TriggerContext(triggeringEntityId = attackerId)
+
+        fun fromEvent(
+            event: com.wingedsheep.engine.core.GameEvent,
+            declaredAttackerId: EntityId? = null,
+        ): TriggerContext {
             return when (event) {
                 is ZoneChangeEvent -> TriggerContext(
                     triggeringEntityId = event.entityId,
@@ -358,7 +381,9 @@ data class TriggerContext(
                     triggeringEntityId = event.permanentId,
                     triggeringPlayerId = event.controllerId
                 )
-                is AttackersDeclaredEvent -> TriggerContext()
+                is AttackersDeclaredEvent -> declaredAttackerId?.let {
+                    forDeclaredAttack(event, it)
+                } ?: TriggerContext(triggeringPlayerId = event.attackingPlayerId)
                 is BlockersDeclaredEvent -> TriggerContext()
                 is TappedEvent -> TriggerContext(triggeringEntityId = event.entityId)
                 is UntappedEvent -> TriggerContext(triggeringEntityId = event.entityId)

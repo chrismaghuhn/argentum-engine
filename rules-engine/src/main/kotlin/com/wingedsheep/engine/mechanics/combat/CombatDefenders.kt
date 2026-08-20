@@ -179,11 +179,18 @@ object CombatDefenders {
      * That asymmetry is the whole point of a Siege: its controller attacks it while an opponent
      * defends it.
      */
-    fun defendingPlayerOf(state: GameState, defenderId: EntityId): EntityId {
-        if (defenderId in state.activePlayers) return defenderId
+    fun defendingPlayerOf(state: GameState, defenderId: EntityId): EntityId? {
+        if (defenderId in state.turnOrder) return defenderId
         com.wingedsheep.engine.mechanics.battle.Battles.protectorOf(state, defenderId)
+            ?.takeIf { it in state.turnOrder }
             ?.let { return it }
-        return state.getEntity(defenderId)?.get<ControllerComponent>()?.playerId ?: defenderId
+        state.projectedState.getController(defenderId)
+            ?.takeIf { it in state.turnOrder }
+            ?.let { return it }
+        return state.getEntity(defenderId)
+            ?.get<ControllerComponent>()
+            ?.playerId
+            ?.takeIf { it in state.turnOrder }
     }
 
     /**
@@ -196,10 +203,12 @@ object CombatDefenders {
             AttackedDefenderKind.PLANESWALKER ->
                 attacking.defenderControllerAtDeclaration
                     ?: defendingPlayerOf(state, attacking.defenderId)
+                    ?: attacking.defenderId
             AttackedDefenderKind.BATTLE ->
                 attacking.defenderProtectorAtDeclaration
                     ?: defendingPlayerOf(state, attacking.defenderId)
-            null -> defendingPlayerOf(state, attacking.defenderId)
+                    ?: attacking.defenderId
+            null -> defendingPlayerOf(state, attacking.defenderId) ?: attacking.defenderId
         }
     }
 

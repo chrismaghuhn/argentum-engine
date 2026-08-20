@@ -3177,6 +3177,7 @@ class StackResolver(
                 xValue = abilityComponent.xValue,
                 triggeringEntityId = abilityComponent.triggeringEntityId,
                 triggeringPlayerId = abilityComponent.triggeringPlayerId,
+                defendingPlayerId = abilityComponent.defendingPlayerId,
                 damageSourceId = abilityComponent.damageSourceEntityId,
                 damageRecipientId = abilityComponent.damageRecipientEntityId,
                 damageRecipientKind = abilityComponent.damageRecipientKind,

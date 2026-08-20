@@ -630,6 +630,7 @@ data class EffectContext(
             triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
             triggeringEntityId = ability.triggeringEntityId,
             triggeringPlayerId = ability.triggeringPlayerId,
+            defendingPlayerId = ability.defendingPlayerId,
             damageSourceEntityId = ability.damageSourceEntityId,
             damageRecipientEntityId = ability.damageRecipientEntityId,
             damageRecipientKind = ability.damageRecipientKind,

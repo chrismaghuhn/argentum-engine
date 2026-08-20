@@ -977,6 +977,8 @@ data class TargetsChosenEvent(
 data class DeclaredAttack(
     val attackerId: EntityId,
     val defenderId: EntityId,
+    /** The player actually being defended, captured before the attack can change zones. */
+    val defendingPlayerId: EntityId? = null,
 )
 
 @Serializable

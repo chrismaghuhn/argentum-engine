@@ -2021,6 +2021,8 @@ data class PredicateContext(
      * controls" on Fear of Burning Alive's "deals noncombat damage to an opponent" trigger.
      */
     val triggeringPlayerId: EntityId? = null,
+    /** The player defended by the attack that caused this trigger. */
+    val defendingPlayerId: EntityId? = null,
     /**
      * The entity a continuous effect is being applied to during projection (e.g. the creature an
      * Aura is enchanting). Lets filters resolve [EntityReference.AffectedEntity] — needed by
@@ -2118,6 +2120,7 @@ data class PredicateContext(
             is EffectTarget.PlayerRef -> return when (target.player) {
                 Player.You -> controllerId
                 Player.TriggeringPlayer -> triggeringPlayerId
+                Player.DefendingPlayer -> defendingPlayerId
                 Player.TargetPlayer, Player.TargetOpponent -> targetPlayerId
                 else -> null
             }
@@ -2148,6 +2151,7 @@ data class PredicateContext(
                 granterId = context.granterId,
                 triggeringEntityId = context.triggeringEntityId,
                 triggeringPlayerId = context.triggeringPlayerId,
+                defendingPlayerId = context.defendingPlayerId,
                 affectedEntityId = context.affectedEntityId,
                 chosenValues = context.pipeline.chosenValues,
                 storedStringLists = context.pipeline.storedStringLists,
