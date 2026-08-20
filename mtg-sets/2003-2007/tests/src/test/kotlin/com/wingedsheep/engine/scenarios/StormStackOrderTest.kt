@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.support.GameTestDriver
@@ -33,7 +34,11 @@ class StormStackOrderTest : FunSpec({
         driver.replaceState(driver.state.copy(spellsCastThisTurn = 1))
         repeat(4) { driver.putLandOnBattlefield(caster, "Swamp") }
         val tendrils = driver.putCardInHand(caster, "Tendrils of Agony")
-        driver.castSpell(caster, tendrils, listOf(opponent)).isSuccess shouldBe true
+        val cast = driver.castSpell(caster, tendrils, listOf(opponent))
+        cast.error shouldBe null
+        (driver.state.pendingDecision as? OrderObjectsDecision)?.let { decision ->
+            driver.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+        }
 
         val stack = driver.state.stack
         stack.size shouldBe 2
@@ -74,7 +79,11 @@ class StormStackOrderTest : FunSpec({
 
         repeat(4) { driver.putLandOnBattlefield(caster, "Swamp") }
         val tendrils = driver.putCardInHand(caster, "Tendrils of Agony")
-        driver.castSpell(caster, tendrils, listOf(opponent)).isSuccess shouldBe true
+        val cast = driver.castSpell(caster, tendrils, listOf(opponent))
+        cast.error shouldBe null
+        (driver.state.pendingDecision as? OrderObjectsDecision)?.let { decision ->
+            driver.submitObjectOrdering(decision.playerId, decision.objects).error shouldBe null
+        }
 
         val stack = driver.state.stack
         stack.first() shouldBe tendrils

@@ -1004,7 +1004,22 @@ abstract class ScenarioTestBase : FunSpec() {
         fun resolveStack(): List<ExecutionResult> {
             val results = mutableListOf<ExecutionResult>()
             var iterations = 0
-            while (state.stack.isNotEmpty() && state.pendingDecision == null && iterations++ < 20) {
+            while (
+                (state.stack.isNotEmpty() || state.pendingDecision is OrderObjectsDecision) &&
+                    iterations++ < 20
+            ) {
+                // CR 603.3b ordering is a real player decision in production, but this helper is
+                // explicitly a deterministic stack-drain fixture. Keep the original detector
+                // order when a scenario did not opt into checking the domain itself, then stop on
+                // all semantic decisions (may, targets, etc.) as before.
+                if (state.pendingDecision is OrderObjectsDecision) {
+                    val decision = state.pendingDecision as OrderObjectsDecision
+                    val result = submitDecision(OrderedResponse(decision.id, decision.objects))
+                    results.add(result)
+                    if (result.error != null) break
+                    continue
+                }
+                if (state.pendingDecision != null) break
                 val result = passPriority()
                 results.add(result)
                 if (result.error != null) {
@@ -1160,6 +1175,13 @@ abstract class ScenarioTestBase : FunSpec() {
             val playerId = state.pendingDecision?.playerId
                 ?: error("No pending decision to respond to")
             return execute(SubmitDecision(playerId, response))
+        }
+
+        /** Submit the complete semantic handle order for a CR 603.3b trigger-ordering decision. */
+        fun submitObjectOrdering(orderedObjects: List<EntityId>): ExecutionResult {
+            val decision = state.pendingDecision as? OrderObjectsDecision
+                ?: error("No pending OrderObjectsDecision")
+            return submitDecision(OrderedResponse(decision.id, orderedObjects))
         }
 
         /**

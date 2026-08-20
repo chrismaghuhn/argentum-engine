@@ -185,7 +185,7 @@ The engine supplies the rest; **do not** write any of it onto the card:
   protector must be an opponent of its controller (CR 310.11a); a battle with no battle types is protected
   by its own controller (CR 310.8a). If no player qualifies, the battle is put into its owner's graveyard.
 - **Its protector, not its controller, is the defending player** for every rule and effect while it is
-  being attacked (CR 310.8d). That asymmetry is the point of a Siege: you cast it, an opponent protects it,
+  being attacked (CR 310.9d). That asymmetry is the point of a Siege: you cast it, an opponent protects it,
   and *you* attack it. Its protector can never attack it (CR 310.8b) and is the only player who may block
   creatures attacking it (CR 310.8c).
 
@@ -10505,7 +10505,11 @@ Counter effects live in §4 (`AddCounters`, `RemoveCounters`, `Proliferate`, `Mo
   `DynamicAmount.XValue` for "with total mana value X or less"; the executor resolves it to a fixed cap up front so every
   downstream consumer sees an integer — The Rise of Sozin // Fire Lord Sozin),
   `TotalPowerAtMost(max)`, `OnePerBasicLandType`, `ReducedMinimumIfMatches(reducedMinimum, filter, requiredMatches?)`, and
-  `MaxAffordablePayment(manaPerSelected, payer?)`. `TotalPowerAtMost(max)` caps the sum of selected creatures'
+  `MaxAffordablePayment(manaPerSelected, payer?)`, and the opt-in `AuraMustHaveLegalHost` restriction. The latter
+  removes an Aura from the selectable card domain when its registered Aura target requirement has no currently legal
+  host for the acting player; missing Aura definitions/requirements fail closed, while non-Aura cards including
+  Equipment are unaffected. The host IDs are not part of the selection payload and are chosen only by the later
+  attachment decision. `TotalPowerAtMost(max)` caps the sum of selected creatures'
   **projected** power at `max` (a creature with undefined power contributes 0); it is the power analogue of
   `TotalManaValueAtMost` and surfaces `maxTotalPower` on `SelectCardsDecision` so the UI shows a running "Total power: X / N"
   and disables over-cap picks while the server trims oversubmits in response order — used for "choose any number of

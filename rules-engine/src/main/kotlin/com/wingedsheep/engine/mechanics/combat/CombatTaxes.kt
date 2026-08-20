@@ -52,7 +52,7 @@ object CombatTaxes {
         if (attackers.isEmpty()) return 0
         val attackersPerDefender = mutableMapOf<EntityId, Int>()
         for ((_, defenderId) in attackers) {
-            val defenderPlayerId = if (state.turnOrder.contains(defenderId)) {
+            val defenderPlayerId = if (defenderId in state.activePlayers) {
                 defenderId
             } else {
                 projected.getController(defenderId)

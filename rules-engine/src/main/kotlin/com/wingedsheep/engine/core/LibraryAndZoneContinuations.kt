@@ -8,6 +8,7 @@ import com.wingedsheep.sdk.scripting.effects.FaceDownMode
 import com.wingedsheep.sdk.scripting.effects.MoveType
 import com.wingedsheep.sdk.scripting.effects.SelectionRestriction
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import kotlinx.serialization.Serializable
 
@@ -237,7 +238,9 @@ data class MoveCollectionAuraTargetContinuation(
 data class PutOntoBattlefieldAttachedToChosenContinuation(
     override val decisionId: String,
     val cardId: EntityId,
-    val controllerId: EntityId
+    val controllerId: EntityId,
+    /** Original explicit host domain, or null for the generic Aura-entry path. */
+    val hostFilter: GameObjectFilter? = null,
 ) : ContinuationFrame
 
 /**

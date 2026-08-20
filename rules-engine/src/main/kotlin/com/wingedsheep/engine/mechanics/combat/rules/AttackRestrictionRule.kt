@@ -41,7 +41,7 @@ interface AttackDefenderRule {
      * Used by [getValidAttackers] for must-attack requirement validation.
      */
     fun restrictsAllDefenders(ctx: AttackCheckContext): Boolean {
-        val opponents = ctx.state.turnOrder.filter { it != ctx.attackingPlayer }
+        val opponents = ctx.state.activePlayers.filter { it != ctx.attackingPlayer }
         val projected = ctx.projected
         // Collect all valid defenders: opponent players + their planeswalkers
         val allDefenders = opponents.toMutableList()

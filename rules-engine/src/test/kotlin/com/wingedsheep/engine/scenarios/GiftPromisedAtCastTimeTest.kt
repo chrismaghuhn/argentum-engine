@@ -1,6 +1,8 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.OrderObjectsDecision
+import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -343,8 +345,13 @@ class GiftPromisedAtCastTimeTest : ScenarioTestBase() {
                 val handsBefore = players.associateWith { driver.state.getZone(it, Zone.HAND).size }
                 driver.submitSuccess(CastSpell(caster, scrapshooter, giftRecipient = secondOpponent))
                 var passes = 0
-                while (driver.state.stack.isNotEmpty() && driver.state.pendingDecision == null && passes++ < 30) {
-                    driver.passPriority(driver.priorityPlayer!!)
+                while ((driver.state.stack.isNotEmpty() || driver.state.pendingDecision != null) && passes++ < 30) {
+                    when (val decision = driver.state.pendingDecision) {
+                        is OrderObjectsDecision ->
+                            driver.submitDecision(decision.playerId, OrderedResponse(decision.id, decision.objects))
+                        null -> driver.passPriority(driver.priorityPlayer!!)
+                        else -> error("Unexpected decision while resolving Scrapshooter: ${decision::class.simpleName}")
+                    }
                 }
 
                 withClue("only the promised opponent draws") {

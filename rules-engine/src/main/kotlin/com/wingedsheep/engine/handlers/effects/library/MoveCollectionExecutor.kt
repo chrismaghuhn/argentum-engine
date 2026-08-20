@@ -46,6 +46,13 @@ class MoveCollectionExecutor(
     private val targetFinder: TargetFinder? = null
 ) : EffectExecutor<MoveCollectionEffect> {
 
+    /**
+     * The collection move has two separate decisions: select the hidden-zone card, then choose
+     * what an Aura entering the battlefield enchants. Both use the same attachment legality seam;
+     * only the latter receives the host IDs.
+     */
+    private val auraHostLegality = targetFinder?.let { AuraHostLegality(cardRegistry, it) }
+
     override val effectType: KClass<MoveCollectionEffect> = MoveCollectionEffect::class
 
     override fun execute(
@@ -710,13 +717,11 @@ class MoveCollectionExecutor(
             )
         }
 
-        val legalTargets = targetFinder!!.findLegalTargets(
+        val legalTargets = auraHostLegality?.findLegalHosts(
             state = state,
-            requirement = auraTarget,
-            controllerId = controllerId,
-            sourceId = auraId,
-            ignoreTargetingRestrictions = true
-        )
+            auraId = auraId,
+            hostControllerId = controllerId
+        ).orEmpty()
 
         if (legalTargets.isEmpty()) {
             // No legal targets — Aura stays in current zone per Rule 303.4g
