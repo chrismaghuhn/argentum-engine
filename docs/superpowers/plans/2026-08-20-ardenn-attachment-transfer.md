@@ -14,9 +14,9 @@
 
 This document is the implementation plan only. The production implementation remains on hold until this plan receives the requested review approval.
 
-Current review gate: SPEC_REVIEW_PASS = YES; PLAN_REVIEW_PASS = NO pending the
-verification, event/trigger, identity, overflow, and scope-gate corrections
-listed in this revision.
+Current review gate: SPEC_REVIEW_PASS = YES; PLAN_REVIEW_PASS = YES by explicit
+user instruction to execute this plan. The production implementation is now
+authorized in this dedicated worktree.
 
 Implementation must run in the dedicated #47 worktree, never in the dirty user main worktree. At implementation start:
 
