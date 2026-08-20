@@ -74,6 +74,15 @@ internal object ObservationCanonicalizer {
         put("maxAffordableX", action.maxAffordableX)
         put("minTargets", action.minTargets)
         put("maxTargets", action.maxTargets)
+        put(
+            "validSacrificeTargets",
+            buildJsonArray {
+                action.validSacrificeTargets.forEach { add(JsonPrimitive(it.value)) }
+            }
+        )
+        put("sacrificeCount", action.sacrificeCount)
+        put("sacrificeMinCount", action.sacrificeMinCount)
+        put("sacrificeMaxCount", action.sacrificeMaxCount)
         put("requiresDamageDistribution", action.requiresDamageDistribution)
         put("isManaAbility", action.isManaAbility)
         put("requiresStructuredAction", action.requiresStructuredAction)
@@ -88,7 +97,8 @@ internal object ObservationCanonicalizer {
         "keywords",
         "availableColors",
         "attachments",
-        "targetEntityIds"
+        "targetEntityIds",
+        "validSacrificeTargets"
     )
 
     private fun canonicalize(element: JsonElement, propertyName: String? = null): JsonElement = when (element) {

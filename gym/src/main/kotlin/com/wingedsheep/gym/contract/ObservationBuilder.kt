@@ -482,6 +482,8 @@ class ObservationBuilder(
     // =========================================================================
 
     private fun legalActionToView(state: GameState, actionId: Int, la: LegalAction): LegalActionView {
+        val sacrificeInfo = la.additionalCostInfo
+            ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
@@ -494,6 +496,15 @@ class ObservationBuilder(
             maxAffordableX = la.maxAffordableX,
             minTargets = la.minTargets,
             maxTargets = la.targetCount,
+            validSacrificeTargets = sacrificeInfo?.validSacrificeTargets
+                ?.sortedBy { it.value }
+                ?: emptyList(),
+            sacrificeCount = sacrificeInfo?.sacrificeCount ?: 0,
+            sacrificeMinCount = sacrificeInfo?.sacrificeMinCount ?: 0,
+            sacrificeMaxCount = sacrificeInfo?.sacrificeMaxCount
+                ?.takeIf { it > 0 }
+                ?: sacrificeInfo?.sacrificeCount?.takeIf { it > 0 }
+                ?: 0,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
             requiresStructuredAction = ActionPayloadRequirements.requiresStructuredAction(la),
