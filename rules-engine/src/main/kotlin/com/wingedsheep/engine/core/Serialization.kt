@@ -205,6 +205,7 @@ val engineSerializersModule = SerializersModule {
     // ContinuationFrame hierarchy
     polymorphic(ContinuationFrame::class) {
         subclass(EffectContinuation::class)
+        subclass(AttachCollectionOrderContinuation::class)
         subclass(TriggeredAbilityContinuation::class)
         subclass(TriggerDamageDistributionContinuation::class)
         subclass(DamageAssignmentContinuation::class)

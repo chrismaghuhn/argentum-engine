@@ -67,6 +67,18 @@ class AuraHostLegality(
     }
 
     /**
+     * Check one already-selected destination against the Aura's printed `enchant` requirement
+     * and the normal attachment restrictions. This is the single-object form of
+     * [findLegalHosts], used by generic attachment operations after their target is known.
+     */
+    fun isLegalAttachmentTarget(
+        state: GameState,
+        auraId: EntityId,
+        hostId: EntityId,
+        auraControllerId: EntityId,
+    ): Boolean = hostId in findLegalHosts(state, auraId, auraControllerId)
+
+    /**
      * Find legal hosts for an Aura definition that does not have an entity yet, such as an Aura
      * token copy. The definition supplies the printed Aura characteristics before token creation.
      */

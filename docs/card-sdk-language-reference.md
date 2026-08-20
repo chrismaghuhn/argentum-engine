@@ -2011,6 +2011,18 @@ Atomic effect factories. For library/zone manipulation, prefer the pipelines in 
   `Effects.AttachTargetEquipmentToCreature(equipmentTarget, creatureTarget)` force-attaches one
   *targeted* Equipment to one *targeted* creature (both are explicit targets, not the source) — used
   by Stolen Uniform's "Attach it to the chosen creature".
+- `AttachCollectionToTargetEffect(from, target = ContextTarget(0))` — attach the explicitly selected
+  collection of currently legal Auras and/or Equipment to one resolved permanent or player. The
+  collection is selected upstream; this effect does not infer a selection or an ordering policy.
+  Revalidation is fail-closed on resume: every selected object must still be the same battlefield
+  object, be controlled by the ability's controller, remain an Aura/Equipment under projected state,
+  remain in the frozen domain, and satisfy **all** applicable Aura `enchant` and Equipment
+  creature-only restrictions. Actual host changes commit as one batch, emitting the normal
+  detach/attach events; a same-host object is a no-op. When two or more objects actually move, the
+  controller first orders those real battlefield objects with `OrderObjectsDecision`; that response
+  controls only the relative fresh timestamps required by CR 613.7m, never a sequential A → B → C
+  mutation. Do not implement this with `ForEachInCollection`, and never derive timestamp order from
+  collection order, entity ids, map iteration, or executor order.
 - `UnattachEquipmentEffect(target = Self)` — facade `Effects.UnattachEquipment(target)`. The inverse of
   the attach effects: **unattach** an Aura/Equipment from its host *without moving zones* (CR 701.3d) —
   clears the attachment's `AttachedToComponent` and drops it from the host's attachment list, emitting
@@ -2800,6 +2812,7 @@ with cards):
 | `gatherUntilMatch(filter, …)` → `(match, revealed)` | `GatherUntilMatchEffect` |
 | `chooseExactly(n, from)` / `chooseUpTo` / `chooseAnyNumber` / `chooseRandom` / `selectAll` (+ `…Split` variants returning `(selected, remainder)`) | `SelectFromCollectionEffect` |
 | `filter(from, filter)` / `filterSplit(…)` → `(matching, rest)` / `exclude(from, minus)` (set difference via `CollectionFilter.ExcludeOtherCollection`) | `FilterCollectionEffect` |
+| `filter(from, CollectionFilter.AttachableTo(target))` | `FilterCollectionEffect` |
 | `chooseOnePerCategory(from, categories)` | `ChooseOnePerCategoryEffect` |
 | `move(from, destination, …)` / `moveTracked(…)` / sugar `destroy`, `sacrifice`, `exile`, `toHand`, `toGraveyard`, `toLibraryTop`, `toLibraryBottom` | `MoveCollectionEffect` |
 | `pairWithSource(from)` (soulbond, CR 702.95a — empty `from` is a legal no-op, i.e. a declined "you may pair") | `PairWithSourceEffect` |
@@ -2812,6 +2825,7 @@ with cards):
 | `chooseOption(optionType, …)` / `noteCreatureType(…)` | `ChooseOptionEffect` / `NoteCreatureTypeEffect` |
 | `choosePile(a, b, chooser?, …)` → `(chosen, other)` | `ChoosePileEffect` |
 | `selectTarget(requirement)` (resolution-time choice — never printed "target") | `SelectTargetEffect` |
+| `attach(from, target?)` | `AttachCollectionToTargetEffect` |
 | `ifNotEmpty(slot, filter?, minSize?) { … } orElse { … }` | `ConditionalOnCollectionEffect` |
 | `whenMatches(slot, filter)` (returns a `Condition`, adds no step) | `CollectionContainsMatch` |
 | `run(effect)` | any other `Effect`, verbatim |

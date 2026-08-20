@@ -17,6 +17,7 @@ import com.wingedsheep.engine.handlers.effects.life.LifeExecutors
 import com.wingedsheep.engine.handlers.effects.mana.ManaExecutors
 import com.wingedsheep.engine.handlers.effects.linkedexile.LinkedExileExecutors
 import com.wingedsheep.engine.handlers.effects.permanent.PermanentExecutors
+import com.wingedsheep.engine.handlers.effects.permanent.attachments.AttachmentLegality
 import com.wingedsheep.engine.handlers.effects.player.PlayerExecutors
 import com.wingedsheep.engine.handlers.effects.regeneration.RegenerationExecutors
 import com.wingedsheep.engine.handlers.effects.stack.StackExecutors
@@ -46,7 +47,9 @@ class EffectExecutorRegistry(
         com.wingedsheep.engine.replacement.ReplacementEffectProcessor()
 ) {
     private val executors = mutableMapOf<KClass<out Effect>, EffectExecutor<*>>()
-    private val compositeExecutors = CompositeExecutors(cardRegistry, TargetFinder(), decisionHandler)
+    private val targetFinder = TargetFinder()
+    private val attachmentLegality = AttachmentLegality(cardRegistry, targetFinder)
+    private val compositeExecutors = CompositeExecutors(cardRegistry, targetFinder, decisionHandler)
     private val drawingExecutors = DrawingExecutors(
         amountEvaluator,
         decisionHandler,
@@ -57,13 +60,22 @@ class EffectExecutorRegistry(
     private val chainExecutors = ChainExecutors()
     // Held as a field so its recursion (for ModifyExplore's Composite delegation) can be wired
     // before the module is registered, mirroring libraryExecutors.
-    private val permanentExecutors = PermanentExecutors(decisionHandler, amountEvaluator, cardRegistry)
+    private val permanentExecutors = PermanentExecutors(
+        decisionHandler,
+        amountEvaluator,
+        cardRegistry,
+        attachmentLegality,
+    )
 
     /**
      * Exposed so [com.wingedsheep.engine.core.EngineServices] can call
      * [LibraryExecutors.initialize] once the rest of the service graph is wired.
      */
-    val libraryExecutors: LibraryExecutors = LibraryExecutors(cardRegistry = cardRegistry, targetFinder = TargetFinder())
+    val libraryExecutors: LibraryExecutors = LibraryExecutors(
+        cardRegistry = cardRegistry,
+        targetFinder = targetFinder,
+        attachmentLegality = attachmentLegality,
+    )
 
     init {
         // Register all effect executors by module
