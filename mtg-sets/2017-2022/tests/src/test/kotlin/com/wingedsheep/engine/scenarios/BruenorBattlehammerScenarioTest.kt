@@ -5,72 +5,29 @@ import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.mtg.sets.definitions.afr.cards.BruenorBattlehammer
 import com.wingedsheep.mtg.sets.definitions.mrd.cards.Bonesplitter
 import com.wingedsheep.mtg.sets.definitions.wwk.cards.BasiliskCollar
 import com.wingedsheep.sdk.core.Step
-import com.wingedsheep.sdk.dsl.DynamicAmounts
-import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
-import com.wingedsheep.sdk.scripting.FreeFirstEquipEachTurn
-import com.wingedsheep.sdk.scripting.GameObjectFilter
-import com.wingedsheep.sdk.scripting.GrantDynamicStatsEffect
-import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
-import com.wingedsheep.sdk.scripting.values.AttachmentKind
-import com.wingedsheep.sdk.scripting.values.DynamicAmount
-import com.wingedsheep.sdk.scripting.values.EntityNumericProperty
-import com.wingedsheep.sdk.scripting.values.EntityReference
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.assertions.withClue
+import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
-import io.kotest.core.spec.style.FunSpec
 
 /**
  * Bruenor Battlehammer (AFR #219).
  *
- * Current Oracle:
- * - Each creature you control gets +2/+0 for each Equipment attached to it.
- * - You may pay {0} rather than pay the equip cost of the first equip ability you activate each
- *   turn.
- *
- * The first clause is characterized with the trusted dynamic-stat and attachment primitives. The
- * second test is intentionally RED: FreeFirstEquipEachTurn currently rewrites the first equip
- * cost to {0} before the player can choose, so the normal equip-cost alternative is not exposed at
- * the legal-action boundary. Bruenor must remain unimplemented until that reusable payment choice
- * is externally controlled.
+ * Covers both Oracle abilities: the Equipment-count power bonus and the explicit free/normal
+ * payment choices for the first equip ability activated each turn.
  */
 class BruenorBattlehammerScenarioTest : FunSpec({
 
-    val bruenorFixture = card("Bruenor Battlehammer") {
-        manaCost = "{2}{R}{W}"
-        colorIdentity = "RW"
-        typeLine = "Legendary Creature — Dwarf Warrior"
-        oracleText = "Each creature you control gets +2/+0 for each Equipment attached to it.\n" +
-            "You may pay {0} rather than pay the equip cost of the first equip ability you activate each turn."
-        power = 5
-        toughness = 3
-
-        staticAbility {
-            ability = GrantDynamicStatsEffect(
-                filter = GroupFilter(GameObjectFilter.Creature.youControl()),
-                powerBonus = DynamicAmount.Multiply(
-                    DynamicAmount.EntityProperty(
-                        EntityReference.AffectedEntity,
-                        EntityNumericProperty.AttachmentCount(AttachmentKind.EQUIPMENT)
-                    ),
-                    2
-                ),
-                toughnessBonus = DynamicAmount.Fixed(0),
-            )
-        }
-        staticAbility {
-            ability = FreeFirstEquipEachTurn
-        }
-    }
-
     fun createDriver(): GameTestDriver {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + bruenorFixture + Bonesplitter + BasiliskCollar)
+        driver.registerCards(TestCards.all + BruenorBattlehammer + Bonesplitter + BasiliskCollar)
         driver.initMirrorMatch(deck = Deck.of("Plains" to 40), startingLife = 20)
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return driver
@@ -86,7 +43,7 @@ class BruenorBattlehammerScenarioTest : FunSpec({
         replaceState(updated)
     }
 
-    test("counts every attached Equipment on each creature you control") {
+    test("each creature you control gets +2/+0 for each Equipment attached to it") {
         val driver = createDriver()
         val you = driver.activePlayer!!
         val opponent = driver.getOpponent(you)
@@ -94,14 +51,16 @@ class BruenorBattlehammerScenarioTest : FunSpec({
         val bruenor = driver.putCreatureOnBattlefield(you, "Bruenor Battlehammer")
         val equippedCreature = driver.putCreatureOnBattlefield(you, "Centaur Courser")
         val opponentCreature = driver.putCreatureOnBattlefield(opponent, "Centaur Courser")
-        val bruenorEquipment = driver.putPermanentOnBattlefield(you, "Basilisk Collar")
+        val firstEquipment = driver.putPermanentOnBattlefield(you, "Basilisk Collar")
+        val secondEquipment = driver.putPermanentOnBattlefield(you, "Basilisk Collar")
         val creatureEquipment = driver.putPermanentOnBattlefield(you, "Basilisk Collar")
 
-        driver.attachEquipment(bruenorEquipment, bruenor)
+        driver.attachEquipment(firstEquipment, bruenor)
+        driver.attachEquipment(secondEquipment, bruenor)
         driver.attachEquipment(creatureEquipment, equippedCreature)
 
-        withClue("Bruenor gets +2/+0 for its one attached Equipment") {
-            driver.state.projectedState.getPower(bruenor) shouldBe 7
+        withClue("Bruenor gets +4/+0 for its two attached Equipment") {
+            driver.state.projectedState.getPower(bruenor) shouldBe 9
         }
         withClue("another creature you control gets +2/+0 for its one attached Equipment") {
             driver.state.projectedState.getPower(equippedCreature) shouldBe 5
@@ -111,7 +70,7 @@ class BruenorBattlehammerScenarioTest : FunSpec({
         }
     }
 
-    test("exposes both the free and normal first-equip payment choices") {
+    test("offers free and normal payment choices for the first equip ability each turn") {
         val driver = createDriver()
         val you = driver.activePlayer!!
         val creature = driver.putCreatureOnBattlefield(you, "Centaur Courser")
@@ -127,10 +86,13 @@ class BruenorBattlehammerScenarioTest : FunSpec({
             }
 
         val offeredCosts = equipActions.mapNotNull { it.manaCostString }.toSet()
+        val offeredModes = equipActions.mapNotNull {
+            (it.action as ActivateAbility).alternativePayment?.equipPayment
+        }.toSet()
+
         equipActions.flatMap { it.validTargets.orEmpty() } shouldContain creature
-        withClue("Bruenor's may choice must be visible to the activating player") {
-            offeredCosts shouldContain "{0}"
-            offeredCosts shouldContain "{1}"
-        }
+        offeredCosts shouldContain "{0}"
+        offeredCosts shouldContain "{1}"
+        offeredModes shouldBe setOf(EquipPaymentChoice.NORMAL, EquipPaymentChoice.FREE_FIRST_EQUIP)
     }
 })
