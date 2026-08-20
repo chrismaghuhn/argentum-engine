@@ -3,6 +3,7 @@ package com.wingedsheep.engine.targeting
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.DeclaredAttack
 import com.wingedsheep.engine.event.TriggerContext
+import com.wingedsheep.engine.event.TriggerDetector
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.TargetFinder
@@ -13,6 +14,8 @@ import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.Triggers
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
@@ -23,6 +26,7 @@ import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 
@@ -54,9 +58,30 @@ class DefendingPlayerTargetContextTest : FunSpec({
         startingDefense = 5
     }
 
+    val watcher = card("Defending Context Watcher") {
+        manaCost = "{2}{W}"
+        typeLine = "Creature — Human Soldier"
+        power = 2
+        toughness = 2
+        triggeredAbility {
+            trigger = Triggers.Attacks
+            val target = target(
+                "target artifact or enchantment defending player controls",
+                TargetObject(
+                    filter = TargetFilter(
+                        GameObjectFilter.ArtifactOrEnchantment.targetPlayerControls(
+                            EffectTarget.PlayerRef(Player.DefendingPlayer)
+                        )
+                    )
+                )
+            )
+            effect = Effects.Destroy(target)
+        }
+    }
+
     fun driver(): GameTestDriver {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + artifact + enchantment + walker + siege)
+        driver.registerCards(TestCards.all + artifact + enchantment + walker + siege + watcher)
         driver.initMultiplayer(
             decks = listOf(
                 Deck.of("Forest" to 40),
@@ -109,6 +134,25 @@ class DefendingPlayerTargetContextTest : FunSpec({
             sourceId = attacker,
             predicateContext = context,
         ) shouldBe listOf(defendingArtifact)
+    }
+
+    test("generic attack detection carries the declared defender into the trigger context") {
+        val driver = driver()
+        val watcherId = driver.putCreatureOnBattlefield(driver.player1, watcher.name)
+        val event = AttackersDeclaredEvent(
+            attackers = listOf(watcherId),
+            attackingPlayerId = driver.player1,
+            declaredAttacks = listOf(DeclaredAttack(watcherId, driver.player2, driver.player2)),
+        )
+
+        val triggers = TriggerDetector(driver.cardRegistry)
+            .detectTriggers(driver.state, listOf(event))
+            .filter { it.sourceId == watcherId }
+
+        triggers shouldHaveSize 1
+        triggers.single().triggerContext.triggeringEntityId shouldBe watcherId
+        triggers.single().triggerContext.triggeringPlayerId shouldBe driver.player1
+        triggers.single().triggerContext.defendingPlayerId shouldBe driver.player2
     }
 
     test("planeswalker and battle declarations use controller and protector respectively") {
