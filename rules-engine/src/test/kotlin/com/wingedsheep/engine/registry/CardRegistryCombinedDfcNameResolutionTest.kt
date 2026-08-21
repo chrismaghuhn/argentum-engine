@@ -174,6 +174,52 @@ class CardRegistryCombinedDfcNameResolutionTest : FunSpec({
         local.requireCard(canonicalSplit.name) shouldBe canonicalSplit
     }
 
+    test("rejects an incompatible canonical back face before registering a DFC") {
+        val unrelatedBack = CardDefinition.creature(
+            name = "Synthetic Back",
+            manaCost = ManaCost.ZERO,
+            subtypes = emptySet(),
+            power = 99,
+            toughness = 99,
+        )
+        val dfc = syntheticDfc("Synthetic Front", "Synthetic Back")
+        val local = CardRegistry().apply { register(unrelatedBack) }
+
+        shouldThrow<IllegalArgumentException> { local.register(dfc) }
+        local.requireCard("Synthetic Back") shouldBe unrelatedBack
+        local.getFrontFace("Synthetic Back").shouldBeNull()
+        local.getCard("Synthetic Front") shouldBe null
+        local.getCard("Synthetic Front // Synthetic Back") shouldBe null
+    }
+
+    test("rejects an incompatible canonical registration over an existing DFC back face") {
+        val dfc = syntheticDfc("Synthetic Front", "Synthetic Back")
+        val unrelatedBack = CardDefinition.creature(
+            name = "Synthetic Back",
+            manaCost = ManaCost.ZERO,
+            subtypes = emptySet(),
+            power = 99,
+            toughness = 99,
+        )
+        val local = CardRegistry().apply { register(dfc) }
+
+        shouldThrow<IllegalArgumentException> { local.register(unrelatedBack) }
+        (local.requireCard("Synthetic Back") === dfc.backFace) shouldBe true
+        (local.requireCard("Synthetic Front // Synthetic Back") === dfc) shouldBe true
+        local.getFrontFace("Synthetic Back")?.name shouldBe "Synthetic Front"
+    }
+
+    test("allows identical back-face re-registration without losing DFC linkage") {
+        val dfc = syntheticDfc("Synthetic Front", "Synthetic Back")
+        val local = CardRegistry().apply { register(dfc) }
+
+        local.register(dfc.backFace!!)
+
+        (local.requireCard("Synthetic Back") === dfc.backFace) shouldBe true
+        (local.requireCard("Synthetic Front // Synthetic Back") === dfc) shouldBe true
+        local.getFrontFace("Synthetic Back")?.name shouldBe "Synthetic Front"
+    }
+
     test("incompatible local DFC aliases are rejected and identical re-registration is idempotent") {
         val first = syntheticDfc("Synthetic Front // Left", "Right")
         val incompatible = syntheticDfc("Synthetic Front", "Left // Right")

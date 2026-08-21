@@ -227,6 +227,13 @@ class CardRegistry(private val parent: CardRegistry? = null) {
             "Cannot register canonical card '${card.name}': it is already a local combined DFC alias"
         }
 
+        backFaceToFrontFace[card.name]?.let { existingFrontName ->
+            require(cardsByName[card.name] == card) {
+                "Cannot register canonical card '${card.name}': it is already registered as the " +
+                    "back face of '$existingFrontName' with an incompatible definition"
+            }
+        }
+
         val aliasesForFront = combinedDfcAliases.values.filter { it.frontName == card.name }
         val backName = card.backFace?.name
         require(aliasesForFront.all { it.backName == backName }) {
@@ -234,6 +241,20 @@ class CardRegistry(private val parent: CardRegistry? = null) {
         }
 
         card.backFace?.let { backFace ->
+            cardsByName[backFace.name]?.let { existingBackFace ->
+                require(existingBackFace == backFace) {
+                    "Cannot register DFC '${card.name}': back face '${backFace.name}' is already " +
+                        "registered with an incompatible definition"
+                }
+            }
+
+            backFaceToFrontFace[backFace.name]?.let { existingFrontName ->
+                require(existingFrontName == card.name) {
+                    "Cannot register DFC '${card.name}': back face '${backFace.name}' is already " +
+                        "linked to '$existingFrontName'"
+                }
+            }
+
             require(backFace.name !in combinedDfcAliases) {
                 "Cannot register back face '${backFace.name}': it is already a local combined DFC alias"
             }
