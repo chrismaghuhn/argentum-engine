@@ -188,6 +188,20 @@ class GameEnvironment private constructor(
     }
 
     /**
+     * Submit exactly one externally chosen action without entering the AI simulator's quiet-state
+     * loop. This is the execution seam used by [GameGymEnv]; the public [step] method deliberately
+     * keeps its historical simulation behavior for legacy AI/MCTS callers.
+     */
+    internal fun stepStrict(action: GameAction): StepResult {
+        check(playerIds.isNotEmpty()) { "Call reset() before stepStrict()" }
+        check(!isTerminal) { "Cannot step a terminal environment" }
+        check(!isTruncated) { "Cannot step a truncated environment" }
+
+        validateActionMembership(action)
+        return processAndCommit(action)
+    }
+
+    /**
      * Execute a caller-completed action while retaining the action-ID candidate binding.
      *
      * [candidate] is the targetless/payment-template action held by the current Gym registry;
@@ -212,6 +226,26 @@ class GameEnvironment private constructor(
         }
 
         return simulateAndCommit(submitted)
+    }
+
+    /** Strict counterpart of [stepFromCandidate] for the trusted Gym adapter. */
+    internal fun stepFromCandidateStrict(candidate: GameAction, submitted: GameAction): StepResult {
+        check(playerIds.isNotEmpty()) { "Call reset() before stepStrict()" }
+        check(!isTerminal) { "Cannot step a terminal environment" }
+        check(!isTruncated) { "Cannot step a truncated environment" }
+        require(candidate !is SubmitDecision && submitted !is SubmitDecision) {
+            "Structured action payloads are only valid for legal game actions"
+        }
+
+        val currentActions = legalActions()
+        require(currentActions.any { it.action == candidate }) {
+            "Action candidate is not in the current legal action set for ${agentToAct}: $candidate"
+        }
+        require(isCurrentActionCandidate(candidate, submitted)) {
+            "Structured action does not belong to the selected current legal candidate: $submitted"
+        }
+
+        return processAndCommit(submitted)
     }
 
     private fun validateActionMembership(action: GameAction) {
@@ -252,6 +286,21 @@ class GameEnvironment private constructor(
         stepCount++
 
         return buildStepResult(simResult.events)
+    }
+
+    /** Commit one direct ActionProcessor transition without legacy quiet-state simulation. */
+    private fun processAndCommit(action: GameAction): StepResult {
+        val result = processor.process(state, action).result
+        if (result.error != null) {
+            throw IllegalArgumentException(result.error)
+        }
+
+        state = result.state
+        events = events + result.events
+        lastStepEvents = result.events
+        stepCount++
+
+        return buildStepResult(result.events)
     }
 
     /**

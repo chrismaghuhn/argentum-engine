@@ -27,6 +27,10 @@ import kotlinx.serialization.json.jsonObject
  * active, observations are routed to [GameEnvironment.agentToAct] so every
  * player can drive the same 1v1 environment. The configured perspective is
  * retained only for states without an acting player (terminal or truncated).
+ * Every externally callable step and decision-submission method is the trusted
+ * strict-control boundary: it commits one validated Rules transition and never
+ * enters [GameEnvironment]'s legacy simulator quiet-state loop. Legacy AI/MCTS
+ * callers continue to use [GameEnvironment.step] directly.
  * The underlying
  * [GameEnvironment] is left untouched, since the trainer SPI drives it directly.
  */
@@ -103,7 +107,7 @@ class GameGymEnv(
                 "copy actionSemantics and fill every required choice"
         }
         val submitted = materializeAction(legal.action, actionPayload)
-        environment.stepFromCandidate(legal.action, submitted)
+        environment.stepFromCandidateStrict(legal.action, submitted)
         return build()
     }
 
@@ -143,7 +147,7 @@ class GameGymEnv(
         check(response.decisionId == pending.id) {
             "Decision ID mismatch: response=${response.decisionId}, pending=${pending.id}"
         }
-        environment.step(SubmitDecision(pending.playerId, response))
+        environment.stepStrict(SubmitDecision(pending.playerId, response))
         return build()
     }
 
@@ -215,11 +219,11 @@ class GameGymEnv(
 
     private fun executeResolved(resolved: ResolvedAction, actionId: Int) {
         when (resolved) {
-            is ResolvedAction.Legal -> environment.step(resolved.action)
+            is ResolvedAction.Legal -> environment.stepStrict(resolved.action)
             is ResolvedAction.Decision -> {
                 val pending = environment.state.pendingDecision
                     ?: throw IllegalStateException("Registry has a decision response but env is not paused")
-                environment.step(SubmitDecision(pending.playerId, resolved.response))
+                environment.stepStrict(SubmitDecision(pending.playerId, resolved.response))
             }
             ResolvedAction.Unknown ->
                 throw IllegalArgumentException("Action ID $actionId is not valid for the current step")
