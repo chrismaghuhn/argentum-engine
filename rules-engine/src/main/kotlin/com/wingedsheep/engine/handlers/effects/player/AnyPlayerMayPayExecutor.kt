@@ -55,7 +55,6 @@ class AnyPlayerMayPayExecutor(
                 "Unsupported cost type for AnyPlayerMayPay",
                 diagnostics = listOf(
                     DiagnosticSignal(
-                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                         code = DiagnosticCode.ANY_PLAYER_MAY_PAY_COST_UNSUPPORTED,
                     )
                 )
@@ -139,7 +138,6 @@ class AnyPlayerMayPayExecutor(
                 "Unsupported cost type for AnyPlayerMayPay",
                 diagnostics = listOf(
                     DiagnosticSignal(
-                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                         code = DiagnosticCode.ANY_PLAYER_MAY_PAY_COST_UNSUPPORTED,
                     )
                 )

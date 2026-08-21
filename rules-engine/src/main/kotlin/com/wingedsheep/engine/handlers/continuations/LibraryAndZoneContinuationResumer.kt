@@ -126,7 +126,6 @@ class LibraryAndZoneContinuationResumer(
                 "Unsupported graveyard return destination",
                 diagnostics = listOf(
                     DiagnosticSignal(
-                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                         code = DiagnosticCode.LIBRARY_DESTINATION_UNSUPPORTED,
                     )
                 )

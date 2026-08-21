@@ -106,7 +106,6 @@ class ChainSpellContinuationResumer(
                     "Unsupported cost type for chain copy",
                     diagnostics = listOf(
                         DiagnosticSignal(
-                            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                             code = DiagnosticCode.CHAIN_COPY_COST_UNSUPPORTED,
                         )
                     )
@@ -468,7 +467,6 @@ class ChainSpellContinuationResumer(
                     "Unsupported cost type for chain copy",
                     diagnostics = listOf(
                         DiagnosticSignal(
-                            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                             code = DiagnosticCode.CHAIN_COPY_COST_UNSUPPORTED,
                         )
                     )

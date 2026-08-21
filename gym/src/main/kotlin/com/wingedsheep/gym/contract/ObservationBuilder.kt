@@ -164,7 +164,6 @@ class ObservationBuilder(
         ) {
             listOf(
                 DiagnosticSignal(
-                    kind = DiagnosticKind.UNSUPPORTED_DECISION,
                     code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING,
                 )
             )

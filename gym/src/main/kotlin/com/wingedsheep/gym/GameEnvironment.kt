@@ -610,7 +610,6 @@ class GameEnvironment private constructor(
         if (executionMode != GameEnvironmentMode.TRUSTED) return
         val signals = listOf(
             DiagnosticSignal(
-                kind = DiagnosticKind.NATIVE_POLICY_FALLBACK,
                 code = DiagnosticCode.TRUSTED_NATIVE_POLICY_FALLBACK,
             )
         )

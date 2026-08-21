@@ -298,7 +298,6 @@ class PreventDamageExecutor(
                     "Unsupported PreventDamageEffect configuration",
                     diagnostics = listOf(
                         DiagnosticSignal(
-                            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                             code = DiagnosticCode.PREVENT_DAMAGE_CONFIGURATION_UNSUPPORTED,
                         )
                     )

@@ -14,7 +14,6 @@ class ExecutionDiagnosticsTest : FunSpec({
 
     test("ExecutionResult diagnostics survive EffectResult conversion but stay off the wire") {
         val signal = DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
             code = DiagnosticCode.PREVENT_DAMAGE_CONFIGURATION_UNSUPPORTED
         )
         val result = ExecutionResult.success(GameState()).copy(diagnostics = listOf(signal))
@@ -34,9 +33,12 @@ class ExecutionDiagnosticsTest : FunSpec({
 
         (failure is IllegalArgumentException) shouldBe true
         failure.code shouldBe DiagnosticCode.CARD_DEFINITION_MISSING.name
-        failure.diagnostic shouldBe DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_CARD,
-            code = DiagnosticCode.CARD_DEFINITION_MISSING,
-        )
+        failure.diagnostic shouldBe DiagnosticSignal(DiagnosticCode.CARD_DEFINITION_MISSING)
+    }
+
+    test("DiagnosticSignal derives its category from the stable code") {
+        DiagnosticCode.entries.forEach { code ->
+            DiagnosticSignal(code).kind shouldBe code.kind
+        }
     }
 })

@@ -2105,7 +2105,6 @@ class ActivateAbilityHandler(
                 "Opponent-chosen targets are only supported with fixed-count requirements",
                 diagnostics = listOf(
                     DiagnosticSignal(
-                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                         code = DiagnosticCode.ACTIVATED_ABILITY_SHAPE_UNSUPPORTED,
                     )
                 )

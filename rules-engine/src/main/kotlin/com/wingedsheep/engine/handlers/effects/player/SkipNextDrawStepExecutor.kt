@@ -40,7 +40,6 @@ class SkipNextDrawStepExecutor : EffectExecutor<SkipNextDrawStepEffect> {
                 "Unsupported target for SkipNextDrawStepEffect",
                 diagnostics = listOf(
                     DiagnosticSignal(
-                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                         code = DiagnosticCode.SKIP_NEXT_DRAW_TARGET_UNSUPPORTED,
                     )
                 )

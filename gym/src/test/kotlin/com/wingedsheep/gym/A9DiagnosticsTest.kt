@@ -114,7 +114,6 @@ class A9DiagnosticsTest : FunSpec({
         environment.reset(config())
         val playerId = environment.playerIds.first()
         val signal = com.wingedsheep.engine.core.DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_DECISION,
             code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING,
         )
         val cursor = environment.projectionCursor(playerId)
@@ -128,7 +127,6 @@ class A9DiagnosticsTest : FunSpec({
         environment.diagnostics.unsupportedDecisionCount shouldBe 1
 
         val childOnlySignal = com.wingedsheep.engine.core.DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_CARD,
             code = DiagnosticCode.CARD_DEFINITION_MISSING,
         )
         fork.recordObservationDiagnostics(
@@ -144,7 +142,6 @@ class A9DiagnosticsTest : FunSpec({
         environment.reset(config())
         val playerId = environment.playerIds.first()
         val firstSignal = com.wingedsheep.engine.core.DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_DECISION,
             code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING,
         )
         val firstCursor = environment.projectionCursor(playerId)
@@ -155,7 +152,6 @@ class A9DiagnosticsTest : FunSpec({
         val handle = gym.snapshot(codec)
 
         val secondSignal = com.wingedsheep.engine.core.DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
             code = DiagnosticCode.LIBRARY_DESTINATION_UNSUPPORTED,
         )
         environment.recordObservationDiagnostics(
@@ -204,7 +200,6 @@ class A9DiagnosticsTest : FunSpec({
                 environment.playerIds.first()),
             listOf(
                 com.wingedsheep.engine.core.DiagnosticSignal(
-                    kind = DiagnosticKind.UNSUPPORTED_CARD,
                     code = DiagnosticCode.CARD_DEFINITION_MISSING,
                 )
             ),
@@ -228,7 +223,6 @@ class A9DiagnosticsTest : FunSpec({
             first.projectionCursor(first.playerIds.first()),
             listOf(
                 com.wingedsheep.engine.core.DiagnosticSignal(
-                    kind = DiagnosticKind.UNSUPPORTED_CARD,
                     code = DiagnosticCode.CARD_DEFINITION_MISSING,
                 )
             ),

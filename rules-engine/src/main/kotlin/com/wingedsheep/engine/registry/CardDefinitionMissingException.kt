@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.registry
 
 import com.wingedsheep.engine.core.DiagnosticCode
-import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DiagnosticSignal
 
 /**
@@ -15,8 +14,5 @@ class CardDefinitionMissingException(
 ) : IllegalArgumentException("Card not found in registry: $requestedName") {
     val code: String = DiagnosticCode.CARD_DEFINITION_MISSING.name
     val diagnosticCode: DiagnosticCode = DiagnosticCode.CARD_DEFINITION_MISSING
-    val diagnostic: DiagnosticSignal = DiagnosticSignal(
-        kind = DiagnosticKind.UNSUPPORTED_CARD,
-        code = diagnosticCode,
-    )
+    val diagnostic: DiagnosticSignal = DiagnosticSignal(diagnosticCode)
 }

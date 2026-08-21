@@ -699,7 +699,6 @@ class SacrificeAndPayContinuationResumer(
                 "Unsupported cost type for AnyPlayerMayPay resume",
                 diagnostics = listOf(
                     DiagnosticSignal(
-                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
                         code = DiagnosticCode.SACRIFICE_AND_PAY_COST_UNSUPPORTED,
                     )
                 )

@@ -35,6 +35,22 @@ enum class ReplayFidelity {
     DIVERGED,
 }
 
+/**
+ * Diagnostics re-executed from a compact replay together with the trust status of that replay.
+ *
+ * An empty [diagnostics] list is only evidence of zero unsupported paths when [fidelity] is
+ * [ReplayFidelity.EXACT]. A prefix from a replay that stopped early or lacks its v3 checkpoint
+ * proof must never be consumed as a zero-diagnostics proof.
+ */
+data class ReconstructedDiagnostics(
+    val diagnostics: List<DiagnosticSignal>,
+    val fidelity: ReplayFidelity,
+    /** Recorded action index at which re-execution stopped, when it diverged. */
+    val divergedAtAction: Int? = null,
+    /** Human-readable cause of divergence or an unverified replay proof. */
+    val failure: String? = null,
+)
+
 /** A replay reconstructed back into the snapshot + delta stream the client replay viewer consumes. */
 data class ReconstructedReplay(
     val initialSnapshot: ServerMessage.SpectatorStateUpdate,
@@ -161,26 +177,55 @@ class ReplayReconstructor(
 
     /**
      * Re-execute the recorded input stream and return the transient rules diagnostics produced by
-     * that execution. This deliberately does not add anything to [CompactReplay]: replay parity
-     * is proved by running the same [ActionProcessor] path used by [reconstruct], not by persisting
-     * a second diagnostic stream.
+     * that execution together with replay fidelity. This deliberately does not add anything to
+     * [CompactReplay]: replay parity is proved by running the same [ActionProcessor] path used by
+     * [reconstruct], not by persisting a second diagnostic stream.
      *
-     * Diagnostics are returned only for the prefix that can be re-executed. If the replay diverges,
-     * the already-produced prefix remains useful evidence and the first rejected action stops the
-     * fold just as [reconstruct] stops rendering it.
+     * If the initial checkpoint or an action fails, the returned result is [ReplayFidelity.DIVERGED]
+     * even when the collected prefix is empty. If every action applies, the normal reconstruction
+     * fidelity still distinguishes a fully checkpointed v3 replay from an unverified legacy or
+     * checkpoint-less replay.
      */
-    fun reconstructDiagnostics(replay: CompactReplay): List<DiagnosticSignal> {
+    fun reconstructDiagnostics(replay: CompactReplay): ReconstructedDiagnostics {
         val engine = engineFor(replay)
         var state = engine.initialState(replay)
         val diagnostics = mutableListOf<DiagnosticSignal>()
 
+        if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version)) {
+            when (val initialCheck = engine.verifyCheckpoint(replay, state, afterActionCount = 0)) {
+                is CheckpointCheck.Mismatch -> {
+                    return ReconstructedDiagnostics(
+                        diagnostics = diagnostics,
+                        fidelity = ReplayFidelity.DIVERGED,
+                        divergedAtAction = 0,
+                        failure = initialCheck.failure,
+                    )
+                }
+                CheckpointCheck.None, CheckpointCheck.Match -> Unit
+            }
+        }
+
         for ((index, action) in replay.actions.withIndex()) {
             val step = engine.applyAction(replay, state, action, index)
             diagnostics += step.diagnostics
-            if (step.failure != null) break
+            if (step.failure != null) {
+                return ReconstructedDiagnostics(
+                    diagnostics = diagnostics,
+                    fidelity = ReplayFidelity.DIVERGED,
+                    divergedAtAction = index,
+                    failure = step.failure,
+                )
+            }
             state = step.state!!
         }
-        return diagnostics
+
+        val reconstructed = reconstruct(replay)
+        return ReconstructedDiagnostics(
+            diagnostics = diagnostics,
+            fidelity = reconstructed.fidelity,
+            divergedAtAction = reconstructed.divergedAtFrame,
+            failure = reconstructed.divergenceReason,
+        )
     }
 
     /**

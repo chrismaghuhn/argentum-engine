@@ -25,14 +25,12 @@ class UnsupportedBoundaryDiagnosticsTest : FunSpec({
         )
 
         result.diagnostics.single() shouldBe DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
             code = DiagnosticCode.SKIP_NEXT_DRAW_TARGET_UNSUPPORTED
         )
     }
 
     test("composite execution preserves a diagnostic from a failing child") {
         val signal = DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
             code = DiagnosticCode.SKIP_NEXT_DRAW_TARGET_UNSUPPORTED
         )
         val executor = CompositeEffectExecutor { state, _, _ ->
@@ -50,7 +48,6 @@ class UnsupportedBoundaryDiagnosticsTest : FunSpec({
 
     test("composite execution fails closed even when a diagnostic child reports success") {
         val signal = DiagnosticSignal(
-            kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
             code = DiagnosticCode.SKIP_NEXT_DRAW_TARGET_UNSUPPORTED
         )
         var executions = 0

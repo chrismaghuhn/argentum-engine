@@ -1,5 +1,6 @@
 package com.wingedsheep.gameserver.replay
 
+import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.view.ClientStateTransformer
 import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.session.GameSession
@@ -96,8 +97,55 @@ class CompactReplayReconstructionTest : ScenarioTestBase() {
             reconstructed.frameCount shouldBe (1 + actions.size)
 
             // Rules diagnostics are transient: parity is proven by the real replay fold, not by
-            // adding a diagnostics field to CompactReplay or changing its version.
-            reconstructor.reconstructDiagnostics(replay) shouldBe emptyList()
+            // adding a diagnostics field to CompactReplay or changing its version. A v3 tail
+            // checkpoint is required before an empty result can prove zero unsupported paths.
+            val exactReplay = replay.copy(
+                checkpoints = listOf(
+                    ReplayCheckpoint(
+                        afterActionCount = actions.size,
+                        fingerprint = ReplayFingerprint.of(liveFinal, replay.version),
+                    )
+                )
+            )
+            val reconstructedDiagnostics = reconstructor.reconstructDiagnostics(exactReplay)
+            reconstructedDiagnostics.fidelity shouldBe ReplayFidelity.EXACT
+            reconstructedDiagnostics.diagnostics shouldBe emptyList()
+            reconstructedDiagnostics.divergedAtAction shouldBe null
+            reconstructedDiagnostics.failure shouldBe null
+        }
+
+        test("a divergent replay without a diagnostic is not a zero-unsupported proof") {
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val p1 = EntityId.of("divergence-player-1")
+            val p2 = EntityId.of("divergence-player-2")
+            session.addPlayer(PlayerSession(mockWs("divergence-ws1"), p1, "Alice"), mapOf("Forest" to 40))
+            session.addPlayer(PlayerSession(mockWs("divergence-ws2"), p2, "Bob"), mapOf("Forest" to 40))
+            session.startGame()
+            session.keepHand(p1)
+            session.keepHand(p2)
+            repeat(4) {
+                val state = session.getStateForTesting().shouldNotBeNull()
+                state.priorityPlayerId?.let(session::executeAutoPass)
+            }
+
+            val setup = session.getReplaySetup().shouldNotBeNull()
+            val replay = CompactReplay(
+                gameId = session.sessionId,
+                players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
+                startedAt = Instant.now().toString(),
+                endedAt = Instant.now().toString(),
+                winnerName = null,
+                setup = setup,
+                actions = session.getRecordedActions() + PassPriority(EntityId("not-a-player")),
+            )
+
+            val reconstructedDiagnostics = ReplayReconstructor(cardRegistry, null)
+                .reconstructDiagnostics(replay)
+
+            reconstructedDiagnostics.fidelity shouldBe ReplayFidelity.DIVERGED
+            reconstructedDiagnostics.diagnostics shouldBe emptyList()
+            reconstructedDiagnostics.divergedAtAction shouldBe replay.actions.lastIndex
+            reconstructedDiagnostics.failure.shouldNotBeNull()
         }
 
         test("a game whose state was injected (no recorded setup) is not replayable") {
