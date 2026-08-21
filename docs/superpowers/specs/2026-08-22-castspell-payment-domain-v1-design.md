@@ -120,6 +120,14 @@ The action-level mana boundary is fail-closed for every payable mana action:
 - `manaCostString == null`: this is outside the action-level mana boundary and
   keeps the existing non-payment action behavior.
 
+Both trusted entry points, `step(actionId)` and
+`step(actionId, actionPayload)`, must pass a resolved legal action through this
+same guard before `environment.stepStrict`/`stepFromCandidateStrict` is
+called. The action-ID-only path must not bypass the guard by calling
+`executeResolved` directly; a published payment domain still requires a
+complete structured plan, and a null domain on a payable action still fails
+with `PAYMENT_DOMAIN_UNSUPPORTED`.
+
 This is one generic guard keyed by the canonical published-domain result, not
 separate `ActivateAbility` and `CastSpell` policies.
 
@@ -149,8 +157,9 @@ Add tests before implementation and keep the first RED visible:
 2. Explicit multicolor source production choice.
 3. Explicit controller-selected generic floating-pool remainder.
 4. Trusted Gym rejects a payable CastSpell with `paymentDomain == null` before
-   execution, with `PAYMENT_DOMAIN_UNSUPPORTED`; AutoPay and legacy Explicit
-   cannot bypass that boundary.
+   execution from both `step(actionId)` and `step(actionId, actionPayload)`,
+   with `PAYMENT_DOMAIN_UNSUPPORTED`; AutoPay and legacy Explicit cannot bypass
+   that boundary.
 5. Trusted Gym rejects AutoPay, FromPool, and legacy Explicit for a published
    domain and accepts only a complete PaymentPlanV1.
 6. Unsupported cast-payment shapes publish no domain and emit
