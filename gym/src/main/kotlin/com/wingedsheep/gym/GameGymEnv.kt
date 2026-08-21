@@ -31,8 +31,7 @@ import kotlinx.serialization.json.jsonObject
  * strict-control boundary: it commits one validated Rules transition and never
  * enters [GameEnvironment]'s legacy simulator quiet-state loop. Legacy AI/MCTS
  * callers continue to use [GameEnvironment.step] directly.
- * The underlying
- * [GameEnvironment] is left untouched, since the trainer SPI drives it directly.
+ * Legacy [GameEnvironment.step] semantics remain untouched for those callers.
  */
 class GameGymEnv(
     val environment: GameEnvironment,
