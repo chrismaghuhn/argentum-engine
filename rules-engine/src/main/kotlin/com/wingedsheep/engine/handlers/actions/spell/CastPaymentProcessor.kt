@@ -2,10 +2,13 @@ package com.wingedsheep.engine.handlers.actions.spell
 
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
+import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
@@ -63,6 +66,8 @@ class CastPaymentProcessor(
     private val costHandler: CostHandler,
     private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor
 ) {
+    private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
+
     private fun toManaPool(component: ManaPoolComponent) = ManaPool(
         white = component.white,
         blue = component.blue,
@@ -130,7 +135,16 @@ class CastPaymentProcessor(
         return when (action.paymentStrategy) {
             is PaymentStrategy.FromPool -> payFromPool(state, action.playerId, effectiveCost, cardName, xValue, spellContext, xManaRestriction)
             is PaymentStrategy.AutoPay -> autoPay(state, action.playerId, effectiveCost, cardName, xValue, spellContext, xManaRestriction = xManaRestriction)
-            is PaymentStrategy.Explicit -> explicitPay(
+            is PaymentStrategy.Explicit -> action.paymentStrategy.paymentPlan?.let { plan ->
+                explicitPlanPay(
+                    state = state,
+                    playerId = action.playerId,
+                    plan = plan,
+                    cost = effectiveCost,
+                    cardName = cardName,
+                    spellContext = spellContext,
+                )
+            } ?: explicitPay(
                 state,
                 action.playerId,
                 action.paymentStrategy,
@@ -141,6 +155,92 @@ class CastPaymentProcessor(
                 xManaRestriction
             )
         }
+    }
+
+    /**
+     * Materialize a complete external PaymentPlanV1 without choosing a different payment.
+     *
+     * This path deliberately has no fallback to [autoPay], [payFromPool], or the legacy
+     * source-ID-only explicit path. The validator has already checked every source production and
+     * cost allocation, so the only remaining engine work is to consume the submitted pool units,
+     * run the selected mana-ability side effects, and emit the normal cast payment event.
+     */
+    private fun explicitPlanPay(
+        state: GameState,
+        playerId: EntityId,
+        plan: PaymentPlanV1,
+        cost: ManaCost,
+        cardName: String,
+        spellContext: SpellPaymentContext?,
+    ): PaymentResult {
+        val validation = paymentPlanValidator.validate(
+            state = state,
+            playerId = playerId,
+            cost = cost,
+            plan = plan,
+            spellContext = spellContext,
+        )
+        val accepted = validation as? PaymentPlanValidation.Accepted
+            ?: return PaymentResult(
+                state = state,
+                events = emptyList(),
+                error = (validation as PaymentPlanValidation.Rejected).reason,
+            )
+
+        var currentState = state.updateEntity(playerId) { container ->
+            container.with(toComponent(accepted.poolAfterSpend))
+        }
+        val events = mutableListOf<GameEvent>()
+
+        val spentProvenance = tappedSourceProvenance(state, accepted.solution.manaProduced)
+        if (accepted.solution.sources.isNotEmpty()) {
+            val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                state = currentState,
+                solution = accepted.solution,
+                controllerId = playerId,
+            )
+            if (!sideEffectResult.success) {
+                return PaymentResult(currentState, events, "PaymentPlanV1 source activation failed")
+            }
+            currentState = sideEffectResult.state
+            events.addAll(sideEffectResult.events)
+        }
+
+        var whiteSpent = plan.poolSpend.white
+        var blueSpent = plan.poolSpend.blue
+        var blackSpent = plan.poolSpend.black
+        var redSpent = plan.poolSpend.red
+        var greenSpent = plan.poolSpend.green
+        var colorlessSpent = plan.poolSpend.colorless
+        for (production in accepted.solution.manaProduced.values) {
+            when (production.color) {
+                Color.WHITE -> whiteSpent += production.amount
+                Color.BLUE -> blueSpent += production.amount
+                Color.BLACK -> blackSpent += production.amount
+                Color.RED -> redSpent += production.amount
+                Color.GREEN -> greenSpent += production.amount
+                null -> colorlessSpent += production.colorless
+            }
+        }
+
+        events.add(
+            ManaSpentEvent(
+                playerId = playerId,
+                reason = "Cast $cardName",
+                white = whiteSpent,
+                blue = blueSpent,
+                black = blackSpent,
+                red = redSpent,
+                green = greenSpent,
+                colorless = colorlessSpent,
+            )
+        )
+        return PaymentResult(
+            state = currentState,
+            events = events,
+            error = null,
+            spentManaProvenance = spentProvenance,
+        )
     }
 
     private fun payFromPool(

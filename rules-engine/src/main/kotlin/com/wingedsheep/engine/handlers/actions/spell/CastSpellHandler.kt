@@ -33,8 +33,8 @@ import com.wingedsheep.engine.mechanics.SneakWindow
 import com.wingedsheep.engine.mechanics.WebSlinging
 import com.wingedsheep.engine.mechanics.WarpGrants
 import com.wingedsheep.engine.mechanics.MiracleGrants
-import com.wingedsheep.engine.mechanics.mana.paymentSubtypesOf
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
+import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.tap
@@ -63,6 +63,8 @@ import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.registry.CardRegistry
@@ -94,6 +96,7 @@ import com.wingedsheep.engine.state.components.player.ManaSpentOnSpellsThisTurnC
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -184,6 +187,20 @@ private fun declaredOptionalCosts(
         ?: emptyList()
 }
 
+private const val PAYMENT_DOMAIN_UNSUPPORTED = "PAYMENT_DOMAIN_UNSUPPORTED"
+
+private fun paymentDomainUnsupported(reason: String): String =
+    "$PAYMENT_DOMAIN_UNSUPPORTED: $reason"
+
+private fun containsSecondaryManaCost(cost: AdditionalCost): Boolean = when (cost) {
+    is AdditionalCost.Atom -> cost.atom is CostAtom.Mana
+    is AdditionalCost.Choice -> cost.options.any(::containsSecondaryManaCost)
+    is AdditionalCost.OrPay -> true
+    is AdditionalCost.BlightOrPay -> true
+    is AdditionalCost.Composite -> cost.steps.any(::containsSecondaryManaCost)
+    else -> false
+}
+
 class CastSpellHandler(
     private val cardRegistry: CardRegistry,
     private val turnManager: TurnManager,
@@ -207,6 +224,7 @@ class CastSpellHandler(
         cardRegistry, predicateEvaluator, conditionEvaluator
     )
     private val paymentProcessor = CastPaymentProcessor(manaSolver, costHandler, manaAbilitySideEffectExecutor)
+    private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
     private val grantedKeywordResolver = com.wingedsheep.engine.mechanics.mana.GrantedKeywordResolver(cardRegistry)
     private val costEnumerationUtils = com.wingedsheep.engine.legalactions.utils.CostEnumerationUtils(
         manaSolver, costCalculator, predicateEvaluator, cardRegistry
@@ -1266,17 +1284,11 @@ class CastSpellHandler(
             // conditional mana is judged against the nameless 2/2 creature it actually is.
             SpellPaymentContext.faceDownCast(isFromHand = isCastFromHand(state, action.cardId))
         } else if (cardComponent != null) {
-            SpellPaymentContext(
-                isInstantOrSorcery = cardComponent.typeLine.isInstant || cardComponent.typeLine.isSorcery,
+            spellPaymentContextFor(
+                cardComponent = cardComponent,
                 isKicked = action.declaredCostSlot == ChoiceSlot.KICKED,
-                isCreature = cardComponent.typeLine.isCreature,
-                isLegendary = cardComponent.typeLine.isLegendary,
-                manaValue = cardComponent.manaCost.cmc,
-                hasXInCost = cardComponent.manaCost.hasX,
-                subtypes = paymentSubtypesOf(cardComponent),
                 isFromExile = isCastFromExile(state, action.cardId),
                 isFromHand = isCastFromHand(state, action.cardId),
-                cardTypes = cardComponent.typeLine.cardTypes,
             )
         } else null
 
@@ -1288,6 +1300,45 @@ class CastSpellHandler(
         val cardDef = cardComponent?.let { cardRegistry.getCard(it.cardDefinitionId) }
         val xManaRestriction = (action.faceIndex?.let { cardDef?.cardFaces?.getOrNull(it)?.script }
             ?: cardDef?.script)?.xManaRestriction ?: emptySet()
+
+        val explicitStrategy = action.paymentStrategy as? PaymentStrategy.Explicit
+        val explicitPlan = explicitStrategy?.paymentPlan
+        if (explicitPlan != null) {
+            val unsupportedReason = when {
+                action.castFaceDown -> "face-down payment choices are not representable"
+                action.xValue != null || cost.symbols.any {
+                    it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
+                } -> "X, hybrid, Phyrexian, and twobrid costs are not representable"
+                action.useAlternativeCost -> "alternative mana costs are not representable"
+                action.faceIndex != null -> "alternative face payment choices are not representable"
+                action.alternativePayment?.hasResourcePayment == true ->
+                    "convoke, delve, harmonize, and tap-for-generic choices are not representable"
+                action.wasWaterbendPaid -> "waterbend choices are not representable"
+                action.splicedCardIds.isNotEmpty() -> "splice adds an unresolved secondary payment choice"
+                action.chosenModes.isNotEmpty() || action.modeTargetsOrdered.isNotEmpty() ->
+                    "modal payment choices are not representable"
+                action.useWithoutPayingManaCost -> "free-cast payment choices are not representable"
+                cardDef?.script?.additionalCosts?.any(::containsSecondaryManaCost) == true ->
+                    "secondary mana costs are not representable"
+                else -> null
+            }
+            if (unsupportedReason != null) return paymentDomainUnsupported(unsupportedReason)
+            if (explicitStrategy.manaAbilitiesToActivate.isNotEmpty()) {
+                return "PaymentPlanV1 must not include legacy runtime mana source handles"
+            }
+            return when (
+                val paymentValidation = paymentPlanValidator.validate(
+                    state = state,
+                    playerId = action.playerId,
+                    cost = effectiveCost,
+                    plan = explicitPlan,
+                    spellContext = spellCtx,
+                )
+            ) {
+                is PaymentPlanValidation.Accepted -> null
+                is PaymentPlanValidation.Rejected -> paymentValidation.reason
+            }
+        }
 
         return when (action.paymentStrategy) {
             is PaymentStrategy.AutoPay -> {
@@ -3332,17 +3383,11 @@ class CastSpellHandler(
         // rather than the printed card's — see `validatePayment`.
         val spellContext = if (action.castFaceDown) {
             SpellPaymentContext.faceDownCast(isFromHand = isCastFromHand(currentState, action.cardId))
-        } else SpellPaymentContext(
-            isInstantOrSorcery = cardComponent.typeLine.isInstant || cardComponent.typeLine.isSorcery,
+        } else spellPaymentContextFor(
+            cardComponent = cardComponent,
             isKicked = action.declaredCostSlot == ChoiceSlot.KICKED,
-            isCreature = cardComponent.typeLine.isCreature,
-            isLegendary = cardComponent.typeLine.isLegendary,
-            manaValue = cardComponent.manaCost.cmc,
-            hasXInCost = cardComponent.manaCost.hasX,
-            subtypes = paymentSubtypesOf(cardComponent),
             isFromExile = isCastFromExile(currentState, action.cardId),
             isFromHand = isCastFromHand(currentState, action.cardId),
-            cardTypes = cardComponent.typeLine.cardTypes,
         )
 
         // "Mana of any type can be spent" — relax colored requirements for cast-from-exile
