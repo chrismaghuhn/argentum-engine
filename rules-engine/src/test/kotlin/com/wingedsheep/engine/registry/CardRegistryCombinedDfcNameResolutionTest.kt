@@ -222,7 +222,15 @@ private fun readDeckNames(path: Path): List<String> =
 
 private fun sha256(path: Path): String =
     MessageDigest.getInstance("SHA-256")
-        .digest(Files.readAllBytes(path))
+        // Git checkouts use platform-dependent line endings; the locked hashes are defined over
+        // the repository's CRLF text representation, so canonicalize before hashing.
+        .digest(
+            Files.readString(path)
+                .replace("\r\n", "\n")
+                .replace('\r', '\n')
+                .replace("\n", "\r\n")
+                .toByteArray(Charsets.UTF_8),
+        )
         .joinToString("") { "%02X".format(it) }
 
 private fun syntheticDfc(frontName: String, backName: String): CardDefinition =
