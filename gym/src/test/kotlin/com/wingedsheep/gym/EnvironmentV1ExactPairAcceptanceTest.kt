@@ -96,9 +96,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 }) {
     private companion object {
         const val AKIRI_SHA256 =
-            "E774200BF9444DBF420B27573C63BAC4659F59568BBB53340D3A0FD7BDBE5E04"
+            "0C5878E3B393A2CB6317FBE64E0827E4E9A562A0346E5A75820F11081F0909C6"
         const val CHEVILL_SHA256 =
-            "0257823208E24D8EAC90773081B98ECF875FB77639BAFD820BC24CA41FC06474"
+            "D158760D404F32C32110C377B1CA6E3EF9406FD6E0CC29B620CB5BCF573AC8B2"
         const val MAX_STEPS = 2_000
 
         fun runExactPairCorpus(): CorpusEvidence {
@@ -576,10 +576,12 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 .first { it.resolve("docs/ml/curriculum").toFile().isDirectory }
         }
 
-        fun sha256(path: Path): String =
-            MessageDigest.getInstance("SHA-256")
-                .digest(path.readBytes())
+        fun sha256(path: Path): String {
+            val canonicalBytes = path.readText().replace("\r\n", "\n").toByteArray()
+            return MessageDigest.getInstance("SHA-256")
+                .digest(canonicalBytes)
                 .joinToString("") { byte -> "%02X".format(byte) }
+        }
     }
 }
 
