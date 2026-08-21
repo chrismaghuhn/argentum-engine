@@ -618,12 +618,17 @@ class ObservationBuilder(
                         isFromHand = isInZone(state, action.cardId, Zone.HAND),
                     )
                 }
-                paymentDomainBuilder.build(
+                val paymentDomain = paymentDomainBuilder.build(
                     state = state,
                     playerId = action.playerId,
                     requiredCost = effectivePaymentCost.toString(),
                     spellContext = spellContext,
                 )
+                if (paymentDomain == null || hasUnrepresentableAdditionalPayment(legalAction, paymentDomain)) {
+                    null
+                } else {
+                    paymentDomain
+                }
             }
 
             else -> null
@@ -641,7 +646,6 @@ class ObservationBuilder(
             (legalAction.hasDelve && !legalAction.delveCards.isNullOrEmpty()) ||
             (legalAction.hasTapForGeneric && !legalAction.tapForGenericPermanents.isNullOrEmpty()) ||
             (legalAction.hasHarmonize && !legalAction.harmonizeCreatures.isNullOrEmpty()) ||
-            legalAction.additionalCostInfo != null ||
             legalAction.modalEnumeration != null
         ) return false
         if (action.castFaceDown ||
@@ -658,6 +662,36 @@ class ObservationBuilder(
         val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return false
         val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return false
         return cardDef.script.additionalCosts.none(::containsSecondaryManaCost)
+    }
+
+    /**
+     * A non-mana cast choice may still invalidate the published mana domain. Sacrificing, tapping,
+     * or bouncing a candidate that is itself one of the published mana sources changes what the
+     * submitted plan can legally activate. Cost reductions and variable X-like additional choices
+     * also make the enumerator's advertised mana cost non-final. Choices that are inert for this
+     * concrete state remain compatible with PaymentPlanV1 and are carried by the normal action
+     * payload alongside the mana plan.
+     */
+    private fun hasUnrepresentableAdditionalPayment(
+        legalAction: LegalAction,
+        paymentDomain: PaymentDomainV1,
+    ): Boolean {
+        val info = legalAction.additionalCostInfo ?: return false
+        if (info.costAfterSacrifice.isNotEmpty() ||
+            (info.costType == "SacrificeForCostReduction" && info.validSacrificeTargets.isNotEmpty()) ||
+            (info.costType == "BlightVariable" && info.blightVariableMaxX > 0) ||
+            (info.costType == "PayXLife" && info.payXLifeMaxX > 0)
+        ) return true
+
+        val publishedSources = paymentDomain.sourceActivations.mapTo(mutableSetOf()) { it.sourceId }
+        val additionalCostCandidates = buildSet {
+            addAll(info.validSacrificeTargets)
+            addAll(info.validTapTargets)
+            addAll(info.validBounceTargets)
+            addAll(info.tapForPowerCreatures.map { it.entityId })
+            addAll(info.validCraftMaterials)
+        }
+        return additionalCostCandidates.any { it in publishedSources }
     }
 
     private fun isInZone(state: GameState, cardId: EntityId, zone: Zone): Boolean =

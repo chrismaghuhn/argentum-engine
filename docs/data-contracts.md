@@ -775,6 +775,9 @@ multicolor production, and multiple source combinations. A payable action whose 
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
+Non-mana structured cast choices may be submitted alongside the plan when they do not alter the
+effective mana cost or the published source set; cost-changing or source-affecting choices remain
+fail-closed.
 The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
 while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
 

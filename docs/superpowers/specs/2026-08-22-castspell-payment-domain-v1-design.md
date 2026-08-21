@@ -61,6 +61,9 @@ true:
 - the concrete action has no unresolved convoke, delve, tap-for-generic,
   harmonize, secondary mana cost, face-down payment shape, splice,
   mode-dependent cost, or other payment choice that V1 cannot encode;
+- non-mana structured choices may remain in the ordinary action payload when
+  they are inert for this state; if a candidate can reduce the mana cost or
+  remove/tap/bounce a published mana source, the domain remains unsupported;
 - the cost parser accepts only ordinary colored, colorless, and generic units;
   X, hybrid, Phyrexian, and twobrid symbols fail closed; and
 - `PaymentDomainBuilder` accepts the available mana pool and sources without
