@@ -218,6 +218,16 @@ if (explicit?.paymentPlan != null) {
 
 Use the already relaxed authoritative effectiveCost and shared context. Do not call ManaSolver.solve on this branch. Leave AutoPay, FromPool, and plan-null Explicit behavior unchanged.
 
+Before calling the validator, reject a CastSpell plan when the concrete action
+still carries an unresolved alternative, X, face-down, modal, convoke/delve/
+tap-for-generic/harmonize, secondary mana, or other payment-affecting choice.
+The predicate must inspect the concrete action and the already computed final
+cost; it must not reject commander tax, kicker, a cost increase, or a reduction
+solely because the feature path exists. Return an error containing the stable
+code PAYMENT_DOMAIN_UNSUPPORTED for a shape that is not completely fixed or
+representable. This keeps direct Rules callers fail-closed even when they do
+not pass through Gym.
+
 - [ ] **Step 5: Add a direct CastPaymentProcessor plan path.**
 
 Dispatch a non-null plan before the existing explicitPay function:
@@ -327,16 +337,27 @@ git commit -m "feat: publish CastSpell payment domains"
 
 - [ ] **Step 1: Add the null-domain boundary RED test.**
 
-Create a stale legal-action registry scenario or equivalent focused fixture so trusted GameGymEnv receives a payable CastSpell whose canonical domain now resolves to null. Assert both entry points fail before Rules execution and expose the typed diagnostic:
+Start from the ordinary CastSpell observation fixture. Keep the Gym registry
+and cached action from that observation, then mutate only the underlying
+GameEnvironment state through its public restore method by adding a
+RestrictedManaEntry to the acting player's ManaPoolComponent. The stale
+LegalAction still has manaCostString, while the canonical domain recomputed by
+the boundary must now be null because V1 rejects restricted floating mana.
+Assert both entry points fail before Rules execution and expose the typed
+diagnostic:
 
 ~~~kotlin
 val failure = shouldThrow<UnsupportedPathFailure> {
-    gym.step(actionId, actionPayloadWith(PaymentStrategy.AutoPay))
+    gym.step(actionId, autoPayPayload)
 }
 failure.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
 ~~~
 
-Repeat with legacy Explicit and with gym.step(actionId), and assert the state digest and tapped-source state remain unchanged.
+Build autoPayPayload and legacyPayload by copying view.actionSemantics and
+overwriting paymentStrategy with the serialized AutoPay and legacy Explicit
+values, as the existing GameGymEnvPaymentPlanTest helper does. Repeat with
+legacyPayload and with gym.step(actionId), and assert the state digest and
+tapped-source state remain unchanged.
 
 - [ ] **Step 2: Replace the ActivateAbility-only guard with one generic boundary.**
 
