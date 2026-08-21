@@ -25,7 +25,7 @@ import com.wingedsheep.sdk.model.EntityId
  * (a granted ability the caller can't look up); the equip fact then reads false, i.e. the
  * restriction refuses, which is the safe direction.
  */
-internal fun buildAbilityPaymentContext(
+fun buildAbilityPaymentContext(
     cardComponent: CardComponent,
     projected: ProjectedState,
     sourceId: EntityId,

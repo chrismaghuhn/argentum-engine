@@ -59,6 +59,9 @@ import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
+import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
+import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -128,6 +131,10 @@ class ObservationBuilder(
     private val castPermissionUtils by lazy {
         CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
     }
+    private val paymentDomainBuilder by lazy {
+        PaymentDomainBuilder(ManaSolver(cardRegistry))
+    }
+    private val manaSolver by lazy { ManaSolver(cardRegistry) }
     private val actionSerialization = Json {
         encodeDefaults = true
         explicitNulls = false
@@ -153,22 +160,25 @@ class ObservationBuilder(
         }
 
         val pendingDecisionAndRegistry = state.pendingDecision
-            ?.let { buildPendingDecision(it, mayReceiveActions) }
+            ?.let { buildPendingDecision(state, it, mayReceiveActions) }
         val pendingDecisionView = pendingDecisionAndRegistry?.first
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
-        val diagnostics = if (
-            mayReceiveActions &&
-            state.pendingDecision != null &&
-            pendingDecisionView?.requiresStructuredResponse == true &&
-            pendingDecisionView.structuredDomain == null
-        ) {
-            listOf(
-                DiagnosticSignal(
-                    code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING,
-                )
-            )
-        } else {
-            emptyList()
+        val diagnostics = buildList {
+            if (
+                mayReceiveActions &&
+                state.pendingDecision != null &&
+                pendingDecisionView?.requiresStructuredResponse == true &&
+                pendingDecisionView.structuredDomain == null
+            ) {
+                add(DiagnosticSignal(code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
+            }
+            if (mayReceiveActions && state.pendingDecision == null && legalActions.any { action ->
+                    action.action is ActivateAbility &&
+                        action.manaCostString != null &&
+                        paymentDomainFor(state, action) == null
+                }) {
+                add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
+            }
         }
 
         // Build legal-action views and their registry. When mid-decision the
@@ -180,7 +190,7 @@ class ObservationBuilder(
             actionRegistry = ActionRegistry.EMPTY
         } else if (state.pendingDecision != null) {
             val responses = decisionRegistry.decisionResponses.map { it.second }
-            legalActionViews = buildDecisionOptionViews(state.pendingDecision!!, responses)
+            legalActionViews = buildDecisionOptionViews(state, state.pendingDecision!!, responses)
             actionRegistry = decisionRegistry
         } else {
             legalActionViews = legalActions.mapIndexed { idx, la -> legalActionToView(state, idx, la) }
@@ -516,6 +526,7 @@ class ObservationBuilder(
             sourceEntityId = actionSourceEntityId(la),
             targetEntityIds = (la.validTargets ?: emptyList()).sortedBy { it.value },
             manaCost = la.manaCostString,
+            paymentDomain = paymentDomainFor(state, la),
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
             minTargets = la.minTargets,
@@ -535,6 +546,83 @@ class ObservationBuilder(
             actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )
+    }
+
+    private fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV1? {
+        val action = legalAction.action as? ActivateAbility ?: return null
+        val requiredCost = legalAction.manaCostString ?: return null
+        val ability = resolveActivatedAbility(state, action) ?: return null
+        if (legalAction.hasXCost ||
+            legalAction.hasConvoke ||
+            legalAction.hasTapForGeneric ||
+            action.alternativePayment != null ||
+            ability.hasConvoke ||
+            ability.hasWaterbend ||
+            legalAction.additionalCostInfo != null ||
+            ability.isEquipAbility ||
+            (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
+        ) {
+            // The action payload does not yet carry the non-mana/target choices that determine
+            // these costs. Publishing the enumerator's optimistic cost would make the payment
+            // domain describe a different action than the handler later validates.
+            return null
+        }
+
+        val source = state.getEntity(action.sourceId)?.get<CardComponent>() ?: return null
+        val spellContext = buildAbilityPaymentContext(
+            cardComponent = source,
+            projected = state.projectedState,
+            sourceId = action.sourceId,
+            ability = ability,
+        )
+        val excludeSources = if (hasTapCost(ability.cost)) setOf(action.sourceId) else emptySet()
+        return paymentDomainBuilder.build(
+            state = state,
+            playerId = action.playerId,
+            requiredCost = requiredCost,
+            spellContext = spellContext,
+            excludeSources = excludeSources,
+        )
+    }
+
+    /** Resolve the same printed/granted/intrinsic ability provenance used by [stableAbilityKey]. */
+    private fun resolveActivatedAbility(state: GameState, action: ActivateAbility): ActivatedAbility? {
+        val source = state.getEntity(action.sourceId)
+        val card = source?.get<CardComponent>()
+        val cardDefinition = card?.cardDefinitionId?.let(cardRegistry::getCard)
+        val classLevel = source?.get<ClassLevelComponent>()?.currentLevel
+        val printedAbility = cardDefinition?.script
+            ?.effectiveActivatedAbilities(classLevel)
+            ?.firstOrNull { it.id == action.abilityId }
+        if (printedAbility != null) return printedAbility
+
+        val classLevelUp = classLevelUpAbility(cardDefinition, source, action.abilityId)
+        if (classLevelUp != null) return classLevelUp
+
+        val grantedAbility = state.grantedActivatedAbilities
+            .firstOrNull { it.entityId == action.sourceId && it.ability.id == action.abilityId }
+            ?.ability
+        if (grantedAbility != null) return grantedAbility
+
+        val staticAbility = castPermissionUtils
+            .getStaticGrantedAbilitiesWithGranter(action.sourceId, state)
+            .firstOrNull { it.ability.id == action.abilityId }
+            ?.ability
+        if (staticAbility != null) return staticAbility
+
+        val emblemAbility = activeEmblemAbilities(state, action.sourceId)
+            .firstOrNull { it.id == action.abilityId }
+        if (emblemAbility != null) return emblemAbility
+
+        return IntrinsicManaAbilities.forEntity(state, state.projectedState, action.sourceId)
+            .firstOrNull { it.id == action.abilityId }
+    }
+
+    /** Match ActivateAbilityHandler's outer-source exclusion for a tap-bearing ability cost. */
+    private fun hasTapCost(cost: AbilityCost): Boolean = when (cost) {
+        is AbilityCost.Tap -> true
+        is AbilityCost.Composite -> cost.costs.any(::hasTapCost)
+        else -> false
     }
 
     private fun actionSemantic(state: GameState, action: GameAction): JsonObject {
@@ -763,6 +851,7 @@ class ObservationBuilder(
      * submits a complete `DecisionResponse` via the dedicated decision endpoint.
      */
     private fun buildPendingDecision(
+        state: GameState,
         decision: PendingDecision,
         exposeToPerspective: Boolean
     ): Pair<PendingDecisionView, ActionRegistry> {
@@ -1034,7 +1123,7 @@ class ObservationBuilder(
                     PendingDecisionKind.SELECT_MANA_SOURCES,
                     baseShape,
                     structured = true,
-                    structuredDomain = decision.manaSourcesDomain()
+                    structuredDomain = decision.manaSourcesDomain(state)
                 ) to
                     ActionRegistry.EMPTY
         }
@@ -1194,23 +1283,34 @@ class ObservationBuilder(
             coChooserId = coChooserId
         )
 
-    private fun SelectManaSourcesDecision.manaSourcesDomain(): ManaSourcesDomain = ManaSourcesDomain(
-        availableSources = availableSources.sortedBy { it.entityId.value }.map { source ->
-            ManaSourceDomain(
-                entityId = source.entityId,
-                name = source.name,
-                producesColors = source.producesColors,
-                producesColorless = source.producesColorless,
-                requiresSacrifice = source.requiresSacrifice,
-                requiresTappingAnotherPermanent = source.requiresTappingAnotherPermanent,
-                manaAbilityId = source.manaAbilityId?.value
-            )
-        },
-        requiredCost = requiredCost,
-        autoPaySuggestion = autoPaySuggestion,
-        canDecline = canDecline,
-        waterbendPermanents = waterbendPermanents.sortedBy { it.entityId.value }.map(::waterbendDomain)
-    )
+    private fun SelectManaSourcesDecision.manaSourcesDomain(state: GameState): ManaSourcesDomain {
+        val runtimeSources = manaSolver.findAvailableManaSources(state, playerId).associateBy { it.entityId }
+        return ManaSourcesDomain(
+            availableSources = availableSources.sortedBy { it.entityId.value }.map { source ->
+                ManaSourceDomain(
+                    entityId = source.entityId,
+                    name = source.name,
+                    producesColors = source.producesColors,
+                    producesColorless = source.producesColorless,
+                    requiresSacrifice = source.requiresSacrifice,
+                    requiresTappingAnotherPermanent = source.requiresTappingAnotherPermanent,
+                    manaAbilityKey = source.manaAbilityId?.let { runtimeId ->
+                        runtimeSources[source.entityId]
+                            ?.let { runtimeSource ->
+                                (runtimeSource.producesColors.flatMap(runtimeSource::manaAbilityOptionsFor) +
+                                    runtimeSource.manaAbilityOptionsFor(null))
+                                    .firstOrNull { it.id == runtimeId }
+                            }
+                            ?.let(ManaAbilityIdentity::key)
+                    }
+                )
+            },
+            requiredCost = requiredCost,
+            autoPaySuggestion = autoPaySuggestion,
+            canDecline = canDecline,
+            waterbendPermanents = waterbendPermanents.sortedBy { it.entityId.value }.map(::waterbendDomain)
+        )
+    }
 
     private fun waterbendDomain(choice: WaterbendPermanentChoice): WaterbendPermanentDomain =
         WaterbendPermanentDomain(
@@ -1223,6 +1323,7 @@ class ObservationBuilder(
         ids.sortedBy { it.value }
 
     private fun buildDecisionOptionViews(
+        state: GameState,
         decision: PendingDecision,
         responses: List<DecisionResponse>
     ): List<LegalActionView> {

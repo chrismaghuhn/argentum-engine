@@ -1,6 +1,8 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.DecisionResponse
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
@@ -108,6 +110,7 @@ class GameGymEnv(
                 "copy actionSemantics and fill every required choice"
         }
         val submitted = materializeAction(legal.action, actionPayload)
+        requireActionPaymentPlan(legal, submitted)
         environment.stepFromCandidateStrict(legal.action, submitted)
         return build()
     }
@@ -268,5 +271,26 @@ class GameGymEnv(
             }
         }
         return actionSerialization.decodeFromJsonElement(GameAction.serializer(), merged)
+    }
+
+    /**
+     * A trusted Gym submission for an action-level mana payment must carry the complete public
+     * plan. The legacy engine still supports AutoPay/FromPool/Explicit(source IDs) for non-Gym
+     * callers, but none of those forms is a valid policy contract here.
+     */
+    private fun requireActionPaymentPlan(resolved: ResolvedAction.Legal, submitted: GameAction) {
+        if (resolved.legalAction.action !is ActivateAbility || resolved.legalAction.manaCostString == null) return
+        val activate = submitted as? ActivateAbility
+            ?: throw IllegalArgumentException("Structured action changed its action type")
+        val explicit = activate.paymentStrategy as? PaymentStrategy.Explicit
+            ?: throw IllegalArgumentException(
+                "ActivateAbility payment must submit a complete PaymentPlanV1; automatic payment is not allowed"
+            )
+        require(explicit.paymentPlan != null) {
+            "ActivateAbility payment must submit a complete PaymentPlanV1; source IDs alone are not sufficient"
+        }
+        require(explicit.manaAbilitiesToActivate.isEmpty()) {
+            "PaymentPlanV1 must not include legacy runtime mana source handles"
+        }
     }
 }

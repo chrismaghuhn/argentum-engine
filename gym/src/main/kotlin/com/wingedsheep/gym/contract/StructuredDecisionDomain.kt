@@ -7,6 +7,8 @@ import kotlinx.serialization.Serializable
 
 /** Version of the typed structured-decision payloads nested in [PendingDecisionView]. */
 const val STRUCTURED_DECISION_DOMAIN_VERSION: Int = 1
+/** Version of the mana-source pending-decision payload after replacing runtime ability handles. */
+const val MANA_SOURCES_DOMAIN_VERSION: Int = 2
 
 /**
  * Perspective-safe, typed descriptions of decisions that cannot be represented by one flat
@@ -244,7 +246,8 @@ data class ManaSourceDomain(
     val producesColorless: Boolean,
     val requiresSacrifice: Boolean,
     val requiresTappingAnotherPermanent: Boolean,
-    val manaAbilityId: String?
+    /** Stable structural identity; runtime AbilityId handles are never published. */
+    val manaAbilityKey: String?
 )
 
 @Serializable
@@ -257,7 +260,7 @@ data class WaterbendPermanentDomain(
 @Serializable
 @SerialName("mana-sources")
 data class ManaSourcesDomain(
-    override val version: Int = STRUCTURED_DECISION_DOMAIN_VERSION,
+    override val version: Int = MANA_SOURCES_DOMAIN_VERSION,
     val availableSources: List<ManaSourceDomain>,
     val requiredCost: String,
     /** Advisory only; it is never treated as the sole legal response. */

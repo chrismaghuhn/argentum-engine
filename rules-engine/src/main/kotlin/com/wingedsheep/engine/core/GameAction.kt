@@ -348,14 +348,22 @@ sealed interface PaymentStrategy {
     data object FromPool : PaymentStrategy
 
     /**
-     * Advanced: Player specifies exactly which mana abilities to activate.
-     * The engine activates these abilities and uses the resulting mana.
+     * Advanced payment selection. Legacy callers may still provide only
+     * [manaAbilitiesToActivate]; the Gym trusted boundary requires [paymentPlan] for every
+     * action-level payment domain and never lets the engine fill missing choices on that path.
      *
-     * @property manaAbilitiesToActivate Entity IDs of permanents whose mana abilities to activate
+     * @property manaAbilitiesToActivate Legacy entity IDs of permanents whose mana abilities to
+     * activate. This remains for existing engine/replay callers and is ignored when [paymentPlan]
+     * is present.
+     * @property paymentPlan Complete externally selected source production, pool spend, and cost
+     * allocation. Runtime mana ability handles are never serialized in this plan.
      */
     @Serializable
     @SerialName("Explicit")
-    data class Explicit(val manaAbilitiesToActivate: List<EntityId>) : PaymentStrategy
+    data class Explicit(
+        val manaAbilitiesToActivate: List<EntityId> = emptyList(),
+        val paymentPlan: PaymentPlanV1? = null,
+    ) : PaymentStrategy
 }
 
 // =============================================================================
