@@ -41,9 +41,9 @@ Gym must not reconstruct an independent approximation of cast semantics.
 ### Domain publication is conservative and cost-authoritative
 
 The canonical observation/domain publication function is reused by both
-`ObservationBuilder` and the trusted Gym guard. Conceptually, the guard is
-based on `legalAction.paymentDomain != null`; it does not have independent
-`ActivateAbility` and `CastSpell` policies.
+`ObservationBuilder` and the trusted Gym guard. The guard does not have
+independent `ActivateAbility` and `CastSpell` policies; it operates on the
+single published-domain result for the resolved legal action.
 
 An ordinary `CastSpell` may publish a domain only when all of the following are
 true:
@@ -51,11 +51,16 @@ true:
 - the action is the ordinary fixed-cost CastSpell variant;
 - `manaCostString` is present and is already the final effective cost for this
   exact action, not a printed, minimum, alternative, or pre-reduction cost;
-- no X value, alternative cost, cost reduction choice, kicker or other
-  payment-affecting choice remains unresolved;
-- there is no convoke, delve, tap-for-generic, harmonize, secondary mana cost,
-  additional mana cost, face-down payment shape, splice, mode-dependent cost,
-  or other payment choice that V1 cannot encode;
+- Rules has resolved every payment-affecting choice for this concrete legal
+  action. X, alternative costs, reductions, commander tax, kicker, additional
+  mana costs, and similar mechanisms are not rejected merely because their
+  feature path exists; they are rejected when they change the effective cost
+  or leave a payment choice unresolved. An inert mechanism, such as a current
+  commander-tax contribution of `{0}`, is allowed when the final cost and
+  context are otherwise proven complete;
+- the concrete action has no unresolved convoke, delve, tap-for-generic,
+  harmonize, secondary mana cost, face-down payment shape, splice,
+  mode-dependent cost, or other payment choice that V1 cannot encode;
 - the cost parser accepts only ordinary colored, colorless, and generic units;
   X, hybrid, Phyrexian, and twobrid symbols fail closed; and
 - `PaymentDomainBuilder` accepts the available mana pool and sources without
@@ -70,9 +75,8 @@ action's cost can no longer be proven fixed and final, no domain is published
 and the unsupported diagnostic is emitted.
 
 Unsupported shapes remain `paymentDomain = null` and fail closed with
-`PAYMENT_DOMAIN_UNSUPPORTED` at the external-policy/diagnostic boundary. This
-milestone does not attempt lossy reconstruction of unsupported payment
-semantics.
+`PAYMENT_DOMAIN_UNSUPPORTED`. This milestone does not attempt lossy
+reconstruction of unsupported payment semantics.
 
 ### Exact PaymentPlanV1 execution
 
@@ -100,17 +104,29 @@ guard prevents that path for any action that published a domain.
 
 ### Trusted Gym boundary
 
-`GameGymEnv` asks the same canonical observation/domain function whether the
-resolved legal action published a domain. If it did, the submitted action must
-carry `PaymentStrategy.Explicit` with a non-null `paymentPlan` and an empty
-legacy `manaAbilitiesToActivate` list. `AutoPay`, `FromPool`, and legacy
-Explicit submissions are rejected before execution. Actions without a
-published domain are not silently upgraded; the existing unsupported/invalid
-action behavior remains in force.
+`GameGymEnv` asks the same canonical observation/domain function used by
+`ObservationBuilder` for the published domain of the resolved legal action.
+The action-level mana boundary is fail-closed for every payable mana action:
+
+- `manaCostString != null` and published domain is `null`: reject the trusted
+  submission with `PAYMENT_DOMAIN_UNSUPPORTED` before passing it to game
+  execution. The diagnostic is additional evidence, not the protection. A
+  payable CastSpell with no representable domain must never fall through to
+  default AutoPay or legacy Explicit handling.
+- `manaCostString != null` and published domain is non-null: require
+  `PaymentStrategy.Explicit` with a non-null `paymentPlan` and an empty legacy
+  `manaAbilitiesToActivate` list. `AutoPay`, `FromPool`, and legacy Explicit
+  submissions are rejected before execution.
+- `manaCostString == null`: this is outside the action-level mana boundary and
+  keeps the existing non-payment action behavior.
+
+This is one generic guard keyed by the canonical published-domain result, not
+separate `ActivateAbility` and `CastSpell` policies.
 
 Diagnostics cover both domain-backed ability and ordinary cast candidates that
-have a mana cost but cannot publish a complete V1 domain, so an external policy
-sees `PAYMENT_DOMAIN_UNSUPPORTED` rather than a null-domain payment gap.
+have a mana cost but cannot publish a complete V1 domain. They make the
+unsupported condition observable, while the trusted boundary independently
+prevents hidden-policy execution.
 
 ### Contract, replay, and digest semantics
 
@@ -132,13 +148,16 @@ Add tests before implementation and keep the first RED visible:
    processor path, then GREEN with exact plan execution.
 2. Explicit multicolor source production choice.
 3. Explicit controller-selected generic floating-pool remainder.
-4. Trusted Gym rejects AutoPay, FromPool, and legacy Explicit for a published
+4. Trusted Gym rejects a payable CastSpell with `paymentDomain == null` before
+   execution, with `PAYMENT_DOMAIN_UNSUPPORTED`; AutoPay and legacy Explicit
+   cannot bypass that boundary.
+5. Trusted Gym rejects AutoPay, FromPool, and legacy Explicit for a published
    domain and accepts only a complete PaymentPlanV1.
-5. Unsupported cast-payment shapes publish no domain and emit
+6. Unsupported cast-payment shapes publish no domain and emit
    `PAYMENT_DOMAIN_UNSUPPORTED`.
-6. CastSpell PaymentPlanV1 replay encode/decode/reconstruct.
-7. Payment domain survives fork/snapshot and participates in StateDigest.
-8. The exact seed-0 / step-163 reproducer no longer reports the `{1}{B}`
+7. CastSpell PaymentPlanV1 replay encode/decode/reconstruct.
+8. Payment domain survives fork/snapshot and participates in StateDigest.
+9. The exact seed-0 / step-163 reproducer no longer reports the `{1}{B}`
    payment gap after the separate fix is merged into its base.
 
 Retain all existing ActivateAbility payment-domain coverage. Run focused Rules
