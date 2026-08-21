@@ -62,6 +62,8 @@ import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
+import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
+import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -90,7 +92,10 @@ import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
@@ -173,9 +178,7 @@ class ObservationBuilder(
                 add(DiagnosticSignal(code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
             }
             if (mayReceiveActions && state.pendingDecision == null && legalActions.any { action ->
-                    action.action is ActivateAbility &&
-                        action.manaCostString != null &&
-                        paymentDomainFor(state, action) == null
+                    action.manaCostString != null && paymentDomainFor(state, action) == null
                 }) {
                 add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             }
@@ -548,41 +551,125 @@ class ObservationBuilder(
         )
     }
 
-    private fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV1? {
-        val action = legalAction.action as? ActivateAbility ?: return null
+    /**
+     * Canonical action-level payment-domain publication used by both observations and the trusted
+     * Gym submission guard. A null result is meaningful: a payable action without a complete V1
+     * domain is unsupported and must not fall back to an engine-selected policy.
+     */
+    internal fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV1? {
         val requiredCost = legalAction.manaCostString ?: return null
-        val ability = resolveActivatedAbility(state, action) ?: return null
-        if (legalAction.hasXCost ||
-            legalAction.hasConvoke ||
-            legalAction.hasTapForGeneric ||
-            action.alternativePayment != null ||
-            ability.hasConvoke ||
-            ability.hasWaterbend ||
-            legalAction.additionalCostInfo != null ||
-            ability.isEquipAbility ||
-            (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
-        ) {
-            // The action payload does not yet carry the non-mana/target choices that determine
-            // these costs. Publishing the enumerator's optimistic cost would make the payment
-            // domain describe a different action than the handler later validates.
-            return null
-        }
+        return when (val action = legalAction.action) {
+            is ActivateAbility -> {
+                val ability = resolveActivatedAbility(state, action) ?: return null
+                if (legalAction.hasXCost ||
+                    legalAction.hasConvoke ||
+                    legalAction.hasTapForGeneric ||
+                    action.alternativePayment != null ||
+                    ability.hasConvoke ||
+                    ability.hasWaterbend ||
+                    legalAction.additionalCostInfo != null ||
+                    ability.isEquipAbility ||
+                    (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
+                ) {
+                    // The action payload does not yet carry the non-mana/target choices that
+                    // determine these costs. Publishing the enumerator's optimistic cost would
+                    // make the payment domain describe a different action than the handler later
+                    // validates.
+                    return null
+                }
 
-        val source = state.getEntity(action.sourceId)?.get<CardComponent>() ?: return null
-        val spellContext = buildAbilityPaymentContext(
-            cardComponent = source,
-            projected = state.projectedState,
-            sourceId = action.sourceId,
-            ability = ability,
-        )
-        val excludeSources = if (hasTapCost(ability.cost)) setOf(action.sourceId) else emptySet()
-        return paymentDomainBuilder.build(
-            state = state,
-            playerId = action.playerId,
-            requiredCost = requiredCost,
-            spellContext = spellContext,
-            excludeSources = excludeSources,
-        )
+                val source = state.getEntity(action.sourceId)?.get<CardComponent>() ?: return null
+                val spellContext = buildAbilityPaymentContext(
+                    cardComponent = source,
+                    projected = state.projectedState,
+                    sourceId = action.sourceId,
+                    ability = ability,
+                )
+                val excludeSources = if (hasTapCost(ability.cost)) setOf(action.sourceId) else emptySet()
+                paymentDomainBuilder.build(
+                    state = state,
+                    playerId = action.playerId,
+                    requiredCost = requiredCost,
+                    spellContext = spellContext,
+                    excludeSources = excludeSources,
+                )
+            }
+
+            is CastSpell -> {
+                if (!isSupportedCastSpellPayment(legalAction, action, state)) return null
+                val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return null
+                val parsedCost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
+                if (parsedCost.symbols.any {
+                        it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
+                    }) return null
+                val effectivePaymentCost = castPermissionUtils.relaxSpellCostColorsIfAny(
+                    state = state,
+                    playerId = action.playerId,
+                    cardId = action.cardId,
+                    cost = parsedCost,
+                )
+                val spellContext = if (action.castFaceDown) {
+                    SpellPaymentContext.faceDownCast(isFromHand = isInZone(state, action.cardId, Zone.HAND))
+                } else {
+                    spellPaymentContextFor(
+                        cardComponent = card,
+                        isKicked = action.declaredCostSlot == com.wingedsheep.sdk.scripting.ChoiceSlot.KICKED,
+                        isFromExile = isInZone(state, action.cardId, Zone.EXILE),
+                        isFromHand = isInZone(state, action.cardId, Zone.HAND),
+                    )
+                }
+                paymentDomainBuilder.build(
+                    state = state,
+                    playerId = action.playerId,
+                    requiredCost = effectivePaymentCost.toString(),
+                    spellContext = spellContext,
+                )
+            }
+
+            else -> null
+        }
+    }
+
+    private fun isSupportedCastSpellPayment(
+        legalAction: LegalAction,
+        action: CastSpell,
+        state: GameState,
+    ): Boolean {
+        if (legalAction.actionType != "CastSpell" ||
+            legalAction.hasXCost ||
+            (legalAction.hasConvoke && !legalAction.convokeCreatures.isNullOrEmpty()) ||
+            (legalAction.hasDelve && !legalAction.delveCards.isNullOrEmpty()) ||
+            (legalAction.hasTapForGeneric && !legalAction.tapForGenericPermanents.isNullOrEmpty()) ||
+            (legalAction.hasHarmonize && !legalAction.harmonizeCreatures.isNullOrEmpty()) ||
+            legalAction.additionalCostInfo != null ||
+            legalAction.modalEnumeration != null
+        ) return false
+        if (action.castFaceDown ||
+            action.xValue != null ||
+            action.alternativePayment?.hasResourcePayment == true ||
+            action.wasWaterbendPaid ||
+            action.splicedCardIds.isNotEmpty() ||
+            action.chosenModes.isNotEmpty() ||
+            action.modeTargetsOrdered.isNotEmpty() ||
+            action.useAlternativeCost ||
+            action.useWithoutPayingManaCost ||
+            action.faceIndex != null
+        ) return false
+        val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return false
+        val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return false
+        return cardDef.script.additionalCosts.none(::containsSecondaryManaCost)
+    }
+
+    private fun isInZone(state: GameState, cardId: EntityId, zone: Zone): Boolean =
+        state.turnOrder.any { ownerId -> cardId in state.getZone(ZoneKey(ownerId, zone)) }
+
+    private fun containsSecondaryManaCost(cost: AdditionalCost): Boolean = when (cost) {
+        is AdditionalCost.Atom -> cost.atom is CostAtom.Mana
+        is AdditionalCost.Choice -> cost.options.any(::containsSecondaryManaCost)
+        is AdditionalCost.OrPay -> true
+        is AdditionalCost.BlightOrPay -> true
+        is AdditionalCost.Composite -> cost.steps.any(::containsSecondaryManaCost)
+        else -> false
     }
 
     /** Resolve the same printed/granted/intrinsic ability provenance used by [stableAbilityKey]. */
