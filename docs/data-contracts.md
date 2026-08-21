@@ -747,7 +747,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.9-structured-domain-semantic-canonicalization`.
+The Gym contract is currently `argentum-gym-contract@v1.10-payment-plan-v1-semantic-domain`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -764,3 +764,54 @@ infer candidates from hidden zones or compute legality locally. Rules validates 
 the pending decision. `decisionId` is a routing value and is not part of `stateDigest`; candidate
 sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
 configuration are used by the JVM service and HTTP server.
+
+### Action-level mana payment (PaymentPlanV1)
+
+An affordable structured `ActivateAbility` whose action-level mana cost is published in
+`LegalActionView.manaCost` also publishes `LegalActionView.paymentDomain`. This domain is complete
+for the supported V1 slice: ordinary fixed colored/colorless/generic costs, unrestricted floating
+mana, ordinary tap sources, explicit multicolor production, and multiple source combinations.
+`autoPaySuggestion` is not part of this action-level domain and is never a policy input.
+The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
+while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
+
+The controller submits the choices inside `PaymentStrategy.Explicit.paymentPlan`:
+
+```json
+{
+  "paymentStrategy": {
+    "type": "Explicit",
+    "manaAbilitiesToActivate": [],
+    "paymentPlan": {
+      "sourceActivations": [
+        {
+          "sourceId": "ent-land",
+          "manaAbilityKey": "<stable structural ability identity>",
+          "productionChoice": { "producedColor": "BLACK", "amount": 1 }
+        }
+      ],
+      "poolSpend": { "black": 0, "green": 0, "colorless": 0 },
+      "spendAllocation": {
+        "costUnits": [
+          { "symbolIndex": 0, "spends": [{ "sourceId": "ent-land", "amount": 1 }] }
+        ],
+        "x": [],
+        "restricted": [],
+        "riderBearingSourceIds": []
+      }
+    }
+  }
+}
+```
+
+`manaAbilityKey` is a stable public identity derived from the current ability structure; a
+runtime-generated `AbilityId` is not accepted as a substitute. The plan must explicitly choose the
+source activation, production color, unrestricted pool units, and cost-symbol allocation. Rules
+validates and materializes those choices but does not fill in a missing ability, color, floating
+unit, generic/hybrid/X allocation, restriction bucket, or rider-bearing path. The trusted Gym
+boundary rejects `AutoPay`, `FromPool`, and the legacy source-ID-only form for these actions.
+
+Secondary mana-ability choices, sacrifice or other secondary sub-costs, bonus/restricted mana,
+riders, hybrid/X shapes, and other exotic payment forms fail closed until their choices have a
+corresponding public V1 field. Such a reachable shape is an unsupported Gym diagnostic, not a
+partial domain.

@@ -74,6 +74,13 @@ data class ManaSource(
     val isBasicLand: Boolean = false,
     /** Whether this source is a land (any land type) */
     val isLand: Boolean = false,
+    /**
+     * Colors supplied by an intrinsic basic-land-subtype mana ability before explicit or granted
+     * abilities are aggregated. A non-empty value combined with explicit mana abilities means the
+     * source currently has two distinct ability identities that ManaSource does not yet expose as
+     * a complete public choice set.
+     */
+    val intrinsicManaColors: Set<Color> = emptySet(),
     /** Whether this source is a creature */
     val isCreature: Boolean = false,
     /** Whether this source has non-mana activated abilities (utility land/creature) */
@@ -152,6 +159,14 @@ data class ManaSource(
     /** Exact mana ability selected by the solver for colorless production. */
     val manaAbilityForColorless: ActivatedAbility? = null,
     /**
+     * Every currently usable explicit mana ability for each colored production. The solver's
+     * singular maps above remain its deterministic auto-pay choice; payment-domain callers must
+     * use these complete lists so a preferred runtime ability is never hidden from a controller.
+     */
+    val manaAbilityOptionsForColor: Map<Color, List<ActivatedAbility>> = emptyMap(),
+    /** Every currently usable explicit mana ability for colorless production. */
+    val manaAbilityOptionsForColorless: List<ActivatedAbility> = emptyList(),
+    /**
      * Tapping this source also requires sacrificing it (e.g. Treasure tokens —
      * "{T}, Sacrifice this artifact: Add one mana of any color"). The auto-pay
      * solver (`solve()`) refuses to pick these because silently sacrificing a
@@ -193,6 +208,16 @@ data class ManaSource(
 
     fun manaAbilityFor(color: Color?): ActivatedAbility? =
         if (color == null) manaAbilityForColorless else manaAbilityForColor[color]
+
+    /** All explicit ability choices for this production, with legacy-source fallback. */
+    fun manaAbilityOptionsFor(color: Color?): List<ActivatedAbility> =
+        if (color == null) {
+            manaAbilityOptionsForColorless.ifEmpty { manaAbilityForColorless?.let(::listOf).orEmpty() }
+        } else {
+            manaAbilityOptionsForColor[color].orEmpty().ifEmpty {
+                manaAbilityForColor[color]?.let(::listOf).orEmpty()
+            }
+        }
 }
 
 /**
@@ -1221,6 +1246,7 @@ class ManaSolver(
                             producesColorless = false,
                             isBasicLand = isBasicLand,
                             isLand = true,
+                            intrinsicManaColors = effectiveColors,
                             isCreature = isCreature,
                             hasNonManaAbilities = hasNonManaAbilities,
                             hasPainCost = false,
@@ -1278,6 +1304,8 @@ class ManaSolver(
             var cheapestColorlessPain = Int.MAX_VALUE
             val perColorManaAbility = mutableMapOf<Color, ManaAbilitySelection>()
             var colorlessManaAbility: ManaAbilitySelection? = null
+            val perColorManaAbilities = mutableMapOf<Color, MutableList<ActivatedAbility>>()
+            val colorlessManaAbilities = mutableListOf<ActivatedAbility>()
             // Track which colors are produceable WITHOUT sacrificing the source. A color is
             // sacrifice-free if any accepted ability producing it has no SacrificeSelf cost.
             // Colors in `combinedColors` but not here can only be made by sacrificing — the
@@ -1524,6 +1552,7 @@ class ManaSolver(
 
                 // Record the cheapest activation mana cost per color this ability produces.
                 for (color in effectColors) {
+                    perColorManaAbilities.getOrPut(color) { mutableListOf() }.add(ability)
                     val existing = perColorActivationCost[color]
                     perColorActivationCost[color] = if (existing == null) abilityActivationManaCost
                     else minOf(existing, abilityActivationManaCost)
@@ -1546,6 +1575,7 @@ class ManaSolver(
                     else minOf(existing, abilityPainAmount)
                 }
                 if (manaEffect is AddColorlessManaEffect) {
+                    colorlessManaAbilities.add(ability)
                     cheapestColorlessPain = minOf(cheapestColorlessPain, abilityPainAmount)
                     val candidate = ManaAbilitySelection(
                         ability = ability,
@@ -1660,6 +1690,7 @@ class ManaSolver(
                     producesColorless = producesColorless,
                     isBasicLand = isBasicLand,
                     isLand = card.typeLine.isLand,
+                    intrinsicManaColors = landSubtypeSeedColors.orEmpty(),
                     isCreature = isCreature,
                     hasNonManaAbilities = hasNonManaAbilities,
                     hasPainCost = hasPainCost,
@@ -1679,6 +1710,10 @@ class ManaSolver(
                     } else 0,
                     manaAbilityForColor = perColorManaAbility.mapValues { (_, selection) -> selection.ability },
                     manaAbilityForColorless = colorlessManaAbility?.ability,
+                    manaAbilityOptionsForColor = perColorManaAbilities.mapValues { (_, abilities) ->
+                        abilities.distinctBy { it.id.value }
+                    },
+                    manaAbilityOptionsForColorless = colorlessManaAbilities.distinctBy { it.id.value },
                     requiresSacrifice = requiresSacrifice,
                     colorsRequiringSacrifice = colorsRequiringSacrifice,
                     hasContextSensitiveAbilities = hasMixedRestrictions,
