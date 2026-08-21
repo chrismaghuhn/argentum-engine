@@ -192,6 +192,7 @@ object OpenLifeBidLogic {
         if (lifeResult.error != null) return lifeResult.toExecutionResult()
         var currentState = lifeResult.state
         events.addAll(lifeResult.events)
+        val diagnostics = lifeResult.diagnostics.toMutableList()
 
         // If you win the bidding, apply the payoff (counter the spell) against the targets.
         if (highBidder == casterId) {
@@ -204,11 +205,21 @@ object OpenLifeBidLogic {
             currentState = winResult.state
             events.addAll(winResult.events)
             if (winResult.pendingDecision != null) {
-                return ExecutionResult.paused(currentState, winResult.pendingDecision, events)
+                return ExecutionResult.paused(
+                    currentState,
+                    winResult.pendingDecision,
+                    events,
+                    diagnostics = diagnostics + winResult.diagnostics,
+                )
             }
-            if (winResult.error != null) return winResult.toExecutionResult()
+            if (winResult.error != null) {
+                return winResult.toExecutionResult().copy(
+                    diagnostics = diagnostics + winResult.diagnostics,
+                )
+            }
+            diagnostics.addAll(winResult.diagnostics)
         }
 
-        return ExecutionResult(currentState, events)
+        return ExecutionResult(currentState, events, diagnostics = diagnostics)
     }
 }

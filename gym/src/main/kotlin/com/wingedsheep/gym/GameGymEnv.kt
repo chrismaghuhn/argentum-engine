@@ -1,6 +1,7 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.DecisionResponse
+import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.SubmitDecision
@@ -68,6 +69,7 @@ class GameGymEnv(
 
     override val isTerminal: Boolean get() = environment.state.gameOver
     override val isTruncated: Boolean get() = environment.isTruncated
+    val diagnostics: EpisodeDiagnostics get() = environment.diagnostics
 
     override fun observe(): ObservationResult = build()
 
@@ -156,6 +158,8 @@ class GameGymEnv(
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
             maxSteps = environment.maxSteps,
+            diagnostics = environment.diagnostics,
+            projectionGeneration = environment.projectionGeneration,
         )
 
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
@@ -163,7 +167,14 @@ class GameGymEnv(
         cachedObservation = null
         cachedStepCount = null
         cachedPerspectivePlayerId = null
-        environment.restore(snap.state, snap.playerIds, snap.stepCount, snap.maxSteps)
+        environment.restore(
+            state = snap.state,
+            playerIds = snap.playerIds,
+            stepCount = snap.stepCount,
+            maxSteps = snap.maxSteps,
+            diagnostics = snap.diagnostics,
+            projectionGeneration = snap.projectionGeneration,
+        )
         return build()
     }
 
@@ -181,6 +192,13 @@ class GameGymEnv(
             environment.legalActions(),
             truncated = environment.isTruncated
         )
+        if (result.diagnostics.isNotEmpty()) {
+            environment.recordObservationDiagnostics(
+                environment.projectionCursor(perspective),
+                result.diagnostics,
+            )
+            throw UnsupportedPathFailure(result.diagnostics)
+        }
         val rawObservation = result.observation as? TrainingObservation
             ?: error("GameGymEnv requires a TrainingObservation")
         val previous = cachedObservation
@@ -202,7 +220,8 @@ class GameGymEnv(
         )
         val remapped = ObservationResult(
             observation = remappedObservation,
-            registry = result.registry.remapIds(idMapping)
+            registry = result.registry.remapIds(idMapping),
+            diagnostics = result.diagnostics,
         )
         cachedObservation = remapped
         cachedStepCount = environment.stepCount

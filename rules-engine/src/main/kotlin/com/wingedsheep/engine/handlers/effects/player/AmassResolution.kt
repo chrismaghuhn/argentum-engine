@@ -37,6 +37,7 @@ object AmassResolution {
         val context = EffectContext(sourceId = sourceId, controllerId = controllerId)
         var newState = state
         val events = mutableListOf<GameEvent>()
+        val diagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
 
         // Put N +1/+1 counters on the Army. Routing through AddCountersEffect keeps counter-placement
         // replacements (Hardened Scales, Doubling Season, …) applying to amassed counters.
@@ -48,6 +49,7 @@ object AmassResolution {
             )
             newState = counterResult.state
             events += counterResult.events
+            diagnostics += counterResult.diagnostics
         }
 
         // "If it isn't a [subtype], it becomes a [subtype] in addition to its other types."
@@ -68,7 +70,8 @@ object AmassResolution {
         return EffectResult(
             state = newState,
             events = events,
-            updatedCollections = mapOf(EntityReference.AmassedArmy.STORAGE_KEY to listOf(armyId))
+            updatedCollections = mapOf(EntityReference.AmassedArmy.STORAGE_KEY to listOf(armyId)),
+            diagnostics = diagnostics,
         )
     }
 }

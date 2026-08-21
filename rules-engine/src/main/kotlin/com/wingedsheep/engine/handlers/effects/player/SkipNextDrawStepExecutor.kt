@@ -1,5 +1,8 @@
 package com.wingedsheep.engine.handlers.effects.player
 
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.DiagnosticKind
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
@@ -32,7 +35,16 @@ class SkipNextDrawStepExecutor : EffectExecutor<SkipNextDrawStepEffect> {
                     .resolvePlayerRef(target.player, context, state)
                     ?: return EffectResult.error(state, "Cannot resolve player for SkipNextDrawStepEffect")
             }
-            else -> return EffectResult.error(state, "Unsupported target for SkipNextDrawStepEffect")
+            else -> return EffectResult.error(
+                state,
+                "Unsupported target for SkipNextDrawStepEffect",
+                diagnostics = listOf(
+                    DiagnosticSignal(
+                        kind = DiagnosticKind.UNSUPPORTED_RULE_OR_MECHANIC,
+                        code = DiagnosticCode.SKIP_NEXT_DRAW_TARGET_UNSUPPORTED,
+                    )
+                )
+            )
         }
 
         val newState = state.updateEntity(targetPlayerId) { container ->

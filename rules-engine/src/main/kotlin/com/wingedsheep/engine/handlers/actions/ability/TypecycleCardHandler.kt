@@ -224,7 +224,8 @@ class TypecycleCardHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
 
@@ -251,14 +252,15 @@ class TypecycleCardHandler(
             return ExecutionResult.paused(
                 searchResult.state,
                 searchResult.pendingDecision!!,
-                events + searchResult.events
+                events + searchResult.events,
+                diagnostics = searchResult.diagnostics,
             )
         }
         currentState = searchResult.newState
         events.addAll(searchResult.events)
 
         // Typecycling doesn't change priority
-        return ExecutionResult.success(currentState, events)
+        return ExecutionResult.success(currentState, events, searchResult.diagnostics)
     }
 
     /**

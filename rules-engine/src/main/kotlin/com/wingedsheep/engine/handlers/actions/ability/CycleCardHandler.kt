@@ -262,6 +262,7 @@ class CycleCardHandler(
             .discardCards(currentState, action.playerId, listOf(action.cardId), asCyclingCost = true)
         currentState = discardResult.state
         events.addAll(discardResult.events)
+        val diagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
 
         // Emit cycling event (for cycling triggers like Astral Slide)
         events.add(CardCycledEvent(action.playerId, action.cardId, cardComponent.name, announcedX))
@@ -288,7 +289,8 @@ class CycleCardHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = diagnostics + triggerResult.diagnostics,
                 ).copy(triggersAlreadyProcessed = true)
             }
 
@@ -296,6 +298,7 @@ class CycleCardHandler(
             val (_, stateAfterPop) = triggerResult.newState.popContinuation()
             currentState = stateAfterPop
             events.addAll(triggerResult.events)
+            diagnostics.addAll(triggerResult.diagnostics)
         }
 
         // Draw a card using DrawCardsExecutor (checks replacement shields).
@@ -311,14 +314,16 @@ class CycleCardHandler(
             return ExecutionResult.paused(
                 drawResult.state,
                 drawResult.pendingDecision!!,
-                events + drawResult.events
+                events + drawResult.events,
+                diagnostics = diagnostics + drawResult.diagnostics,
             ).copy(triggersAlreadyProcessed = true)
         }
         currentState = drawResult.newState
         events.addAll(drawResult.events)
+        diagnostics.addAll(drawResult.diagnostics)
 
         // Cycling doesn't change priority
-        return ExecutionResult.success(currentState, events)
+        return ExecutionResult.success(currentState, events, diagnostics)
             .copy(triggersAlreadyProcessed = true)
     }
 

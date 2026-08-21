@@ -42,7 +42,7 @@ class DiscardAndDrawContinuationResumer(
         val chosenX = response.number.coerceAtLeast(0)
         val result = cycleCardHandler.execute(state, continuation.action.copy(xValue = chosenX))
         return if (result.isPaused || result.error != null) result
-        else checkForMore(result.newState, result.events)
+        else checkForMore(result.newState, result.events).withDiagnosticsFrom(result.diagnostics)
     }
 
     fun resumeHandSizeDiscard(
@@ -168,9 +168,10 @@ class DiscardAndDrawContinuationResumer(
         )
 
         return ExecutionResult(
-            lifeLossResult.state,
-            discardEvents + lifeLossResult.events,
-            lifeLossResult.error
+            state = lifeLossResult.state,
+            events = discardEvents + lifeLossResult.events,
+            error = lifeLossResult.error,
+            diagnostics = lifeLossResult.diagnostics,
         )
     }
 
@@ -186,9 +187,10 @@ class DiscardAndDrawContinuationResumer(
                 state, continuation.discardedCreature, continuation.lifeLoss
             )
             return ExecutionResult(
-                lifeLossResult.state,
-                priorEvents + lifeLossResult.events,
-                lifeLossResult.error
+                state = lifeLossResult.state,
+                events = priorEvents + lifeLossResult.events,
+                error = lifeLossResult.error,
+                diagnostics = lifeLossResult.diagnostics,
             )
         }
 

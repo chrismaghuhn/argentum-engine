@@ -449,6 +449,7 @@ class TurnManager(
         }
 
         events.add(StepChangedEvent(nextStep))
+        var diagnostics = emptyList<DiagnosticSignal>()
 
         // Perform automatic step actions
         when (nextStep) {
@@ -459,17 +460,22 @@ class TurnManager(
                     return ExecutionResult.paused(
                         untapResult.newState,
                         untapResult.pendingDecision!!,
-                        events + untapResult.events
+                        events + untapResult.events,
+                        diagnostics = untapResult.diagnostics,
                     )
                 }
                 newState = untapResult.newState
                 events.addAll(untapResult.events)
+                diagnostics = untapResult.diagnostics
                 // Immediately advance past untap (no priority). Carry the untap-step events
                 // (untaps, and phase-ins from Rule 702.26) forward on the result so the caller's
                 // trigger detection sees them — e.g. King of the Oathbreakers' "phases in" trigger,
                 // which fires when its controller's untap step phases it back in.
                 val afterUntap = advanceStep(newState.copy(step = Step.UNTAP))
-                return afterUntap.copy(events = events + afterUntap.events)
+                return afterUntap.copy(
+                    events = events + afterUntap.events,
+                    diagnostics = diagnostics + afterUntap.diagnostics,
+                )
             }
 
             Step.UPKEEP -> {
@@ -487,23 +493,27 @@ class TurnManager(
                     return ExecutionResult.paused(
                         drawResult.state,
                         drawResult.pendingDecision!!,
-                        events + drawResult.events
+                        events + drawResult.events,
+                        diagnostics = drawResult.diagnostics,
                     )
                 }
                 if (!drawResult.isSuccess) return drawResult
                 newState = drawResult.newState
                 events.addAll(drawResult.events)
+                diagnostics = drawResult.diagnostics
                 // Check state-based actions after draw (Rule 704.3)
                 val sbaResult = sbaChecker.checkAndApply(newState)
                 if (sbaResult.isPaused) {
                     return ExecutionResult.paused(
                         sbaResult.state,
                         sbaResult.pendingDecision!!,
-                        events + sbaResult.events
+                        events + sbaResult.events,
+                        diagnostics = diagnostics + sbaResult.diagnostics,
                     )
                 }
                 newState = sbaResult.newState
                 events.addAll(sbaResult.events)
+                diagnostics = diagnostics + sbaResult.diagnostics
                 if (newState.gameOver) {
                     newState = newState.copy(priorityPlayerId = null)
                 }
@@ -513,6 +523,7 @@ class TurnManager(
                 val sagaLoreResult = beginningPhaseManager.addLoreCountersToSagas(newState, activePlayer)
                 newState = sagaLoreResult.newState
                 events.addAll(sagaLoreResult.events)
+                diagnostics = sagaLoreResult.diagnostics
                 newState = newState.withPriority(activePlayer)
             }
 
@@ -524,6 +535,7 @@ class TurnManager(
                 if (!endCombatResult.isSuccess) return endCombatResult
                 newState = endCombatResult.newState
                 events.addAll(endCombatResult.events)
+                diagnostics = endCombatResult.diagnostics
 
                 newState = newState.withPriority(activePlayer)
             }
@@ -599,14 +611,18 @@ class TurnManager(
                 if (!damageResult.isSuccess) return damageResult
                 newState = damageResult.newState
                 events.addAll(damageResult.events)
+                diagnostics = damageResult.diagnostics
                 val sbaHelperResult = StepActionHelper.applySbasAndCheckGameOver(newState, activePlayer, sbaChecker, events)
-                if (sbaHelperResult.isPaused) return sbaHelperResult
+                if (sbaHelperResult.isPaused) {
+                    return sbaHelperResult.copy(diagnostics = diagnostics + sbaHelperResult.diagnostics)
+                }
                 newState = sbaHelperResult.newState
+                diagnostics = diagnostics + sbaHelperResult.diagnostics
                 // events already updated by helper
                 if (!newState.gameOver) {
                     newState = newState.withPriority(activePlayer)
                 }
-                return ExecutionResult.success(newState, sbaHelperResult.events)
+                return ExecutionResult.success(newState, sbaHelperResult.events, diagnostics)
             }
 
             Step.COMBAT_DAMAGE -> {
@@ -621,13 +637,17 @@ class TurnManager(
                 if (!damageResult.isSuccess) return damageResult
                 newState = damageResult.newState
                 events.addAll(damageResult.events)
+                diagnostics = damageResult.diagnostics
                 val sbaHelperResult = StepActionHelper.applySbasAndCheckGameOver(newState, activePlayer, sbaChecker, events)
-                if (sbaHelperResult.isPaused) return sbaHelperResult
+                if (sbaHelperResult.isPaused) {
+                    return sbaHelperResult.copy(diagnostics = diagnostics + sbaHelperResult.diagnostics)
+                }
                 newState = sbaHelperResult.newState
+                diagnostics = diagnostics + sbaHelperResult.diagnostics
                 if (!newState.gameOver) {
                     newState = newState.withPriority(activePlayer)
                 }
-                return ExecutionResult.success(newState, sbaHelperResult.events)
+                return ExecutionResult.success(newState, sbaHelperResult.events, diagnostics)
             }
 
             Step.END_COMBAT -> {
@@ -666,14 +686,16 @@ class TurnManager(
                             return ExecutionResult.paused(
                                 sbaResult.state,
                                 sbaResult.pendingDecision!!,
-                                events + sbaResult.events
+                                events + sbaResult.events,
+                                diagnostics = sbaResult.diagnostics,
                             )
                         }
                         newState = sbaResult.newState
                         events.addAll(sbaResult.events)
+                        diagnostics = sbaResult.diagnostics
                         if (newState.gameOver) {
                             newState = newState.copy(priorityPlayerId = null)
-                            return ExecutionResult.success(newState, events)
+                            return ExecutionResult.success(newState, events, diagnostics)
                         }
                     } else {
                         newState = newState.updateEntity(activePlayer) { container ->
@@ -690,18 +712,20 @@ class TurnManager(
                 if (!cleanupResult.isSuccess) return cleanupResult
                 newState = cleanupResult.newState
                 events.addAll(cleanupResult.events)
+                diagnostics = cleanupResult.diagnostics
 
                 if (newState.priorityPlayerId == null && newState.pendingDecision == null) {
                     val endTurnResult = endTurn(newState)
-                    return ExecutionResult.success(
+                    return endTurnResult.copy(
                         endTurnResult.newState,
-                        events + endTurnResult.events
+                        events + endTurnResult.events,
+                        diagnostics = diagnostics + endTurnResult.diagnostics,
                     )
                 }
             }
         }
 
-        return ExecutionResult.success(newState, events)
+        return ExecutionResult.success(newState, events, diagnostics)
     }
 
     /**
@@ -745,13 +769,16 @@ class TurnManager(
 
         // Perform the untap step
         val untapResult = beginningPhaseManager.performUntapStep(turnResult.newState)
-        if (!untapResult.isSuccess) return untapResult
+        if (!untapResult.isSuccess) {
+            return untapResult.copy(diagnostics = turnResult.diagnostics + untapResult.diagnostics)
+        }
 
         if (untapResult.isPaused) {
             return ExecutionResult.paused(
                 untapResult.newState,
                 untapResult.pendingDecision!!,
-                turnResult.events + untapResult.events
+                turnResult.events + untapResult.events,
+                diagnostics = turnResult.diagnostics + untapResult.diagnostics,
             )
         }
 
@@ -769,7 +796,8 @@ class TurnManager(
 
         return ExecutionResult.success(
             advanceResult.newState,
-            turnResult.events + untapResult.events + goadEvents + advanceResult.events
+            turnResult.events + untapResult.events + goadEvents + advanceResult.events,
+            turnResult.diagnostics + untapResult.diagnostics + advanceResult.diagnostics,
         )
     }
 
@@ -805,12 +833,18 @@ class TurnManager(
         // wipe are already handled by that effect; this catches any other pending SBA.)
         val sbaResult = sbaChecker.checkAndApply(newState)
         if (sbaResult.isPaused) {
-            return ExecutionResult.paused(sbaResult.newState, sbaResult.pendingDecision!!, events + sbaResult.events)
+            return ExecutionResult.paused(
+                sbaResult.newState,
+                sbaResult.pendingDecision!!,
+                events + sbaResult.events,
+                diagnostics = sbaResult.diagnostics,
+            )
         }
         newState = sbaResult.newState
         events.addAll(sbaResult.events)
+        var diagnostics = sbaResult.diagnostics
         if (newState.gameOver) {
-            return ExecutionResult.success(newState.copy(priorityPlayerId = null), events)
+            return ExecutionResult.success(newState.copy(priorityPlayerId = null), events, diagnostics)
         }
 
         // CR 720.1a: exile every remaining spell and ability on the stack. Snapshot the ids first
@@ -825,9 +859,16 @@ class TurnManager(
                 // Triggered / activated abilities on the stack simply cease to exist.
                 resolver.counterAbility(newState, entityId)
             }
+            if (result.diagnostics.isNotEmpty()) {
+                return result.copy(
+                    events = events + result.events,
+                    diagnostics = diagnostics + result.diagnostics,
+                )
+            }
             if (result.isSuccess) {
                 newState = result.newState
                 events.addAll(result.events)
+                diagnostics = diagnostics + result.diagnostics
             }
         }
 
@@ -842,9 +883,16 @@ class TurnManager(
         // CR 720.1b: remove all creatures and players from combat.
         if (newState.phase == Phase.COMBAT) {
             val endCombatResult = combatManager.endCombat(newState)
+            if (endCombatResult.diagnostics.isNotEmpty()) {
+                return endCombatResult.copy(
+                    events = events + endCombatResult.events,
+                    diagnostics = diagnostics + endCombatResult.diagnostics,
+                )
+            }
             if (endCombatResult.isSuccess) {
                 newState = endCombatResult.newState
                 events.addAll(endCombatResult.events)
+                diagnostics = diagnostics + endCombatResult.diagnostics
             }
         }
 
@@ -868,24 +916,34 @@ class TurnManager(
             return ExecutionResult.paused(
                 cleanupResult.newState,
                 cleanupResult.pendingDecision!!,
-                events + cleanupResult.events
+                events + cleanupResult.events,
+                diagnostics = diagnostics + cleanupResult.diagnostics,
             )
         }
         if (cleanupResult.error != null) {
-            return ExecutionResult.error(cleanupResult.newState, cleanupResult.error)
+            return ExecutionResult.error(
+                cleanupResult.newState,
+                cleanupResult.error,
+                diagnostics + cleanupResult.diagnostics,
+            )
         }
         newState = cleanupResult.newState
         events.addAll(cleanupResult.events)
+        diagnostics = diagnostics + cleanupResult.diagnostics
 
         val endTurnResult = endTurn(newState)
         if (endTurnResult.isPaused) {
             return ExecutionResult.paused(
                 endTurnResult.newState,
                 endTurnResult.pendingDecision!!,
-                events + endTurnResult.events
+                events + endTurnResult.events,
+                diagnostics = diagnostics + endTurnResult.diagnostics,
             )
         }
-        return ExecutionResult.success(endTurnResult.newState, events + endTurnResult.events)
+        return endTurnResult.copy(
+            events = events + endTurnResult.events,
+            diagnostics = diagnostics + endTurnResult.diagnostics,
+        )
     }
 
     /**

@@ -55,7 +55,7 @@ class CardSpecificContinuationResumer(
         return if (result.pendingDecision != null) {
             result.toExecutionResult()
         } else {
-            checkForMore(result.state, result.events)
+            checkForMore(result.state, result.events).withDiagnosticsFrom(result.diagnostics)
         }
     }
 
@@ -85,7 +85,8 @@ class CardSpecificContinuationResumer(
                         state, continuation.casterId, continuation.highBidder, continuation.highBid,
                         continuation.onWin, continuation.targets, continuation.sourceId, executeEffect
                     )
-                    if (result.pendingDecision != null) result else checkForMore(result.state, result.events)
+                    if (result.pendingDecision != null) result
+                    else checkForMore(result.state, result.events).withDiagnosticsFrom(result.diagnostics)
                 } else {
                     OpenLifeBidLogic.askAmount(state, continuation)
                 }
@@ -104,7 +105,8 @@ class CardSpecificContinuationResumer(
                     targets = continuation.targets, sourceId = continuation.sourceId,
                     sourceName = continuation.sourceName, executeEffect = executeEffect
                 )
-                if (result.pendingDecision != null) result else checkForMore(result.state, result.events)
+                if (result.pendingDecision != null) result
+                else checkForMore(result.state, result.events).withDiagnosticsFrom(result.diagnostics)
             }
         }
     }
@@ -176,6 +178,7 @@ class CardSpecificContinuationResumer(
     ): ExecutionResult {
         var currentState = state
         val allEvents = mutableListOf<GameEvent>()
+        val allDiagnostics = mutableListOf<DiagnosticSignal>()
 
         val nonZeroBids = chosenNumbers.filter { it.value > 0 }
 
@@ -191,6 +194,7 @@ class CardSpecificContinuationResumer(
                     if (result.error != null) return result
                     currentState = result.state
                     allEvents.addAll(result.events)
+                    allDiagnostics.addAll(result.diagnostics)
                 }
             }
 
@@ -202,6 +206,7 @@ class CardSpecificContinuationResumer(
                     if (result.error != null) return result
                     currentState = result.state
                     allEvents.addAll(result.events)
+                    allDiagnostics.addAll(result.diagnostics)
                 }
             }
 
@@ -212,11 +217,12 @@ class CardSpecificContinuationResumer(
                     if (result.error != null) return result
                     currentState = result.state
                     allEvents.addAll(result.events)
+                    allDiagnostics.addAll(result.diagnostics)
                 }
             }
         }
 
-        return checkForMore(currentState, allEvents)
+        return checkForMore(currentState, allEvents).withDiagnosticsFrom(allDiagnostics)
     }
 
     private fun executeForBidder(

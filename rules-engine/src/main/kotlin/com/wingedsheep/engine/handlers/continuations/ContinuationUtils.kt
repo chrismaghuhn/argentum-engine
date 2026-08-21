@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.continuations
 
+import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.state.GameState
@@ -53,7 +54,8 @@ fun mergeAndContinue(
         return ExecutionResult.paused(
             result.state,
             result.pendingDecision!!,
-            events + result.events
+            events + result.events,
+            diagnostics = result.diagnostics,
         )
     }
 
@@ -61,14 +63,39 @@ fun mergeAndContinue(
         return ExecutionResult(
             state = result.state,
             events = events + result.events,
-            error = result.error
+            error = result.error,
+            diagnostics = result.diagnostics,
         )
     }
 
     val mergedEvents = events + result.events
     return if (checkForMore != null) {
-        checkForMore(result.newState, mergedEvents)
+        checkForMore(result.newState, mergedEvents).withDiagnosticsFrom(result.diagnostics)
     } else {
-        ExecutionResult.success(result.newState, mergedEvents)
+        ExecutionResult.success(result.newState, mergedEvents, result.diagnostics)
     }
 }
+
+/**
+ * Preserve diagnostics while a continuation hands its state and events to the next continuation.
+ * The callback only accepts state/events for historical API reasons, so the transient sidecar has
+ * to be explicitly merged at this boundary.
+ */
+fun continueWithDiagnostics(
+    result: ExecutionResult,
+    checkForMore: CheckForMore,
+    state: GameState = result.state,
+    events: List<GameEvent> = result.events,
+): ExecutionResult = checkForMore(state, events).withDiagnosticsFrom(result.diagnostics)
+
+/** Effect-pipeline overload for the same continuation boundary. */
+fun continueWithDiagnostics(
+    result: EffectResult,
+    checkForMore: CheckForMore,
+    state: GameState = result.state,
+    events: List<GameEvent> = result.events,
+): ExecutionResult = continueWithDiagnostics(result.toExecutionResult(), checkForMore, state, events)
+
+/** Prefix transient diagnostics without changing the wire-visible result shape. */
+fun ExecutionResult.withDiagnosticsFrom(prefix: List<com.wingedsheep.engine.core.DiagnosticSignal>): ExecutionResult =
+    if (prefix.isEmpty()) this else copy(diagnostics = prefix + diagnostics)

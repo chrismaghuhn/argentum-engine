@@ -55,7 +55,8 @@ class DeclareAttackersHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    result.events + triggerResult.events
+                    result.events + triggerResult.events,
+                    diagnostics = result.diagnostics + triggerResult.diagnostics,
                 )
             }
 
@@ -74,13 +75,16 @@ class DeclareAttackersHandler(
                 return ExecutionResult.paused(
                     cascadeResult.state,
                     cascadeResult.pendingDecision!!,
-                    result.events + triggerResult.events + cascadeResult.events
+                    result.events + triggerResult.events + cascadeResult.events,
+                    diagnostics = result.diagnostics + triggerResult.diagnostics +
+                        cascadeResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 cascadeResult.newState,
-                result.events + triggerResult.events + cascadeResult.events
+                result.events + triggerResult.events + cascadeResult.events,
+                result.diagnostics + triggerResult.diagnostics + cascadeResult.diagnostics,
             )
         }
 
@@ -97,6 +101,7 @@ class DeclareAttackersHandler(
     private fun processAttackCascade(state: GameState, priorEvents: List<GameEvent>): ExecutionResult {
         var workingState = state
         val emitted = mutableListOf<GameEvent>()
+        val diagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
         var wave = priorEvents.filterIsInstance<AbilityTriggeredEvent>().filter { it.causedByAttack }
         var guard = 0
         while (wave.isNotEmpty() && guard < CASCADE_GUARD) {
@@ -104,14 +109,20 @@ class DeclareAttackersHandler(
             if (cascadeTriggers.isEmpty()) break
             val roundResult = triggerProcessor.processTriggers(workingState, cascadeTriggers)
             emitted.addAll(roundResult.events)
+            diagnostics.addAll(roundResult.diagnostics)
             if (roundResult.isPaused) {
-                return ExecutionResult.paused(roundResult.state, roundResult.pendingDecision!!, emitted)
+                return ExecutionResult.paused(
+                    roundResult.state,
+                    roundResult.pendingDecision!!,
+                    emitted,
+                    diagnostics = diagnostics,
+                )
             }
             workingState = roundResult.newState
             wave = roundResult.events.filterIsInstance<AbilityTriggeredEvent>().filter { it.causedByAttack }
             guard++
         }
-        return ExecutionResult.success(workingState, emitted)
+        return ExecutionResult.success(workingState, emitted, diagnostics)
     }
 
     companion object {

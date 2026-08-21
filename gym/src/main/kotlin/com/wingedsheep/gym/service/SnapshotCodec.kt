@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.service
 
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.gym.EpisodeDiagnostics
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 import java.util.concurrent.ConcurrentHashMap
@@ -38,17 +39,23 @@ class SnapshotCodec {
         val state: GameState,
         val playerIds: List<EntityId>,
         val stepCount: Int,
-        val maxSteps: Int?
+        val maxSteps: Int?,
+        /** In-process episode evidence; not part of the serialized slot handle. */
+        val diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
+        /** Environment-local state generation used by the observation exactly-once cursor. */
+        val projectionGeneration: Long = 0L,
     )
 
     fun save(
         state: GameState,
         playerIds: List<EntityId>,
         stepCount: Int,
-        maxSteps: Int?
+        maxSteps: Int?,
+        diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
+        projectionGeneration: Long = 0L,
     ): SnapshotHandle.Slot {
         val id = nextId.getAndIncrement()
-        slots[id] = Entry(state, playerIds, stepCount, maxSteps)
+        slots[id] = Entry(state, playerIds, stepCount, maxSteps, diagnostics, projectionGeneration)
         return SnapshotHandle.Slot(id)
     }
 

@@ -202,7 +202,8 @@ class TriggerProcessor(
                 return ExecutionResult(
                     state = result.state,
                     events = allEvents + result.events,
-                    error = result.error
+                    error = result.error,
+                    diagnostics = result.diagnostics,
                 )
             }
 
@@ -232,7 +233,8 @@ class TriggerProcessor(
                 return ExecutionResult.paused(
                     stateWithContinuations,
                     result.pendingDecision!!,
-                    allEvents + result.events
+                    allEvents + result.events,
+                    diagnostics = result.diagnostics,
                 )
             }
 

@@ -49,5 +49,6 @@ class AttachmentContinuationResumer(
         )
         if (result.error != null) return result.toExecutionResult()
         return checkForMore(result.state, result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 }

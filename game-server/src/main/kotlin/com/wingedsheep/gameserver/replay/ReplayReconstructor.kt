@@ -1,6 +1,7 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.ActionProcessor
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
@@ -159,6 +160,30 @@ class ReplayReconstructor(
     }
 
     /**
+     * Re-execute the recorded input stream and return the transient rules diagnostics produced by
+     * that execution. This deliberately does not add anything to [CompactReplay]: replay parity
+     * is proved by running the same [ActionProcessor] path used by [reconstruct], not by persisting
+     * a second diagnostic stream.
+     *
+     * Diagnostics are returned only for the prefix that can be re-executed. If the replay diverges,
+     * the already-produced prefix remains useful evidence and the first rejected action stops the
+     * fold just as [reconstruct] stops rendering it.
+     */
+    fun reconstructDiagnostics(replay: CompactReplay): List<DiagnosticSignal> {
+        val engine = engineFor(replay)
+        var state = engine.initialState(replay)
+        val diagnostics = mutableListOf<DiagnosticSignal>()
+
+        for ((index, action) in replay.actions.withIndex()) {
+            val step = engine.applyAction(replay, state, action, index)
+            diagnostics += step.diagnostics
+            if (step.failure != null) break
+            state = step.state!!
+        }
+        return diagnostics
+    }
+
+    /**
      * The full, unmasked [GameState] at [frame] (0 = initial state, N = after the Nth action).
      * Powers the "share frame as scenario" path. Returns null if the frame is out of range or the
      * replay diverges before reaching it — a shared scenario must be the real position or nothing.
@@ -195,6 +220,7 @@ private class StepResult(
     val state: GameState?,
     val failure: String?,
     val checkpointVerified: Boolean = false,
+    val diagnostics: List<DiagnosticSignal> = emptyList(),
 )
 
 private sealed interface CheckpointCheck {
@@ -248,7 +274,20 @@ private class ReplayEngine(
      */
     fun applyAction(replay: CompactReplay, state: GameState, action: GameAction, index: Int): StepResult {
         val result = actionProcessor.process(state, rebind(action, state)).result
-        if (result.error != null) return StepResult(null, "action rejected: ${result.error}")
+        if (result.error != null) {
+            return StepResult(
+                state = null,
+                failure = "action rejected: ${result.error}",
+                diagnostics = result.diagnostics,
+            )
+        }
+        if (result.diagnostics.isNotEmpty()) {
+            return StepResult(
+                state = null,
+                failure = "unsupported rules path: ${result.diagnostics.joinToString { it.semanticCode }}",
+                diagnostics = result.diagnostics,
+            )
+        }
 
         val afterActionCount = index + 1
         // Re-apply any yields set right after this action was originally applied, so the engine's
@@ -256,9 +295,18 @@ private class ReplayEngine(
         val next = applyYields(result.state, replay.yields, afterActionCount)
 
         return when (val checkpoint = verifyCheckpoint(replay, next, afterActionCount)) {
-            CheckpointCheck.None -> StepResult(next, null)
-            CheckpointCheck.Match -> StepResult(next, null, checkpointVerified = true)
-            is CheckpointCheck.Mismatch -> StepResult(null, checkpoint.failure)
+            CheckpointCheck.None -> StepResult(next, null, diagnostics = result.diagnostics)
+            CheckpointCheck.Match -> StepResult(
+                next,
+                null,
+                checkpointVerified = true,
+                diagnostics = result.diagnostics,
+            )
+            is CheckpointCheck.Mismatch -> StepResult(
+                state = null,
+                failure = checkpoint.failure,
+                diagnostics = result.diagnostics,
+            )
         }
     }
 

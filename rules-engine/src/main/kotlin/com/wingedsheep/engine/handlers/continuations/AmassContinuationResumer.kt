@@ -56,5 +56,6 @@ class AmassContinuationResumer(
         val stateWithArmyExposed = exposeCollectionsToNextFrame(result.state, result.updatedCollections)
 
         return checkForMore(stateWithArmyExposed, result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 }

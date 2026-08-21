@@ -94,6 +94,10 @@ class CompactReplayReconstructionTest : ScenarioTestBase() {
             // (a divergence would truncate the delta list short).
             val reconstructed = reconstructor.reconstruct(replay)
             reconstructed.frameCount shouldBe (1 + actions.size)
+
+            // Rules diagnostics are transient: parity is proven by the real replay fold, not by
+            // adding a diagnostics field to CompactReplay or changing its version.
+            reconstructor.reconstructDiagnostics(replay) shouldBe emptyList()
         }
 
         test("a game whose state was injected (no recorded setup) is not replayable") {

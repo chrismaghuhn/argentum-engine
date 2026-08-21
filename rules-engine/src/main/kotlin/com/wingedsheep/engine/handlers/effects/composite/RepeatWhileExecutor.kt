@@ -97,6 +97,16 @@ class RepeatWhileExecutor(
             // Execute the body
             val result = effectExecutor(stateWithContinuation, body, context)
 
+            if (result.diagnostics.isNotEmpty()) {
+                val (_, stateWithoutCont) = result.state.popContinuation()
+                return EffectResult(
+                    state = stateWithoutCont,
+                    events = priorEvents + result.events,
+                    error = result.error ?: "Unsupported path during repeat resolution",
+                    diagnostics = result.diagnostics,
+                )
+            }
+
             if (result.isPaused) {
                 // Body paused — AFTER_BODY continuation is below body's continuation on the stack.
                 // checkForMoreContinuations will handle AFTER_BODY after the body's decision resolves.

@@ -211,6 +211,7 @@ class CombatContinuationResumer(
 
         val distribution = response.distribution
         val events = mutableListOf<GameEvent>()
+        val diagnostics = mutableListOf<DiagnosticSignal>()
         var newState = state
 
         for ((targetId, damageAmount) in distribution) {
@@ -223,15 +224,21 @@ class CombatContinuationResumer(
                 )
 
                 if (!result.isSuccess) {
-                    return ExecutionResult(newState, events, result.error)
+                    return ExecutionResult(
+                        state = newState,
+                        events = events,
+                        error = result.error,
+                        diagnostics = result.diagnostics,
+                    )
                 }
 
                 newState = result.state
                 events.addAll(result.events)
+                diagnostics.addAll(result.diagnostics)
             }
         }
 
-        return checkForMore(newState, events)
+        return checkForMore(newState, events).withDiagnosticsFrom(diagnostics)
     }
 
     fun resumeDeflectDamageSourceChoice(

@@ -173,9 +173,11 @@ class ReplacementContinuationResumer(
                         result.error,
                         result.pendingDecision,
                         result.triggersAlreadyProcessed,
+                        result.diagnostics,
                     )
                 }
                 checkForMore(result.state, events + result.events)
+                    .withDiagnosticsFrom(result.diagnostics)
             }
             is PendingGameEvent.ActivateAbilityZoneChangeCompletion -> {
                 val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -185,6 +187,7 @@ class ReplacementContinuationResumer(
                     return result.copy(events = events + transition.events + result.events)
                 }
                 checkForMore(result.state, events + transition.events + result.events)
+                    .withDiagnosticsFrom(result.diagnostics)
             }
             is PendingGameEvent.CastSpellZoneChangeCompletion -> {
                 val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -194,6 +197,7 @@ class ReplacementContinuationResumer(
                     return result.copy(events = events + transition.events + result.events)
                 }
                 checkForMore(result.state, events + transition.events + result.events)
+                    .withDiagnosticsFrom(result.diagnostics)
             }
             PendingGameEvent.LibraryRevealZoneChangeCompletion -> {
                 val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -500,10 +504,18 @@ class ReplacementContinuationResumer(
             if (effectResult.isPaused) {
                 // Clear chain on pause so subsequent execution is unaffected.
                 val clearedState = effectResult.state.copy(activeReplacementChain = null)
-                return ExecutionResult(clearedState, effectResult.events, effectResult.error, effectResult.pendingDecision, effectResult.triggersAlreadyProcessed)
+                return ExecutionResult(
+                    state = clearedState,
+                    events = effectResult.events,
+                    error = effectResult.error,
+                    pendingDecision = effectResult.pendingDecision,
+                    triggersAlreadyProcessed = effectResult.triggersAlreadyProcessed,
+                    diagnostics = effectResult.diagnostics,
+                )
             }
             val clearedState = effectResult.state.copy(activeReplacementChain = null)
             return checkForMore(clearedState, effectResult.events)
+                .withDiagnosticsFrom(effectResult.diagnostics)
         }
 
         return checkForMore(stateWithResumeFrame, emptyList())

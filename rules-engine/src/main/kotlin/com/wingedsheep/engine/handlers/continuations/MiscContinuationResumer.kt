@@ -77,6 +77,7 @@ class MiscContinuationResumer(
         if (!stackResult.isSuccess) return stackResult
 
         return checkForMore(stackResult.newState, stackResult.events)
+            .withDiagnosticsFrom(stackResult.diagnostics)
     }
 
     private fun resumeCopyActivatedAbilityTarget(
@@ -115,6 +116,7 @@ class MiscContinuationResumer(
         if (!stackResult.isSuccess) return stackResult
 
         return checkForMore(stackResult.newState, stackResult.events)
+            .withDiagnosticsFrom(stackResult.diagnostics)
     }
 
     /**
@@ -165,6 +167,7 @@ class MiscContinuationResumer(
             )
         return if (driveResult.isPaused) driveResult
         else checkForMore(driveResult.newState, driveResult.events)
+            .withDiagnosticsFrom(driveResult.diagnostics)
     }
 
     private fun resumeAddCountersUpTo(
@@ -200,6 +203,7 @@ class MiscContinuationResumer(
         }
 
         return checkForMore(result.state, result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     private fun resumePayCounters(
@@ -279,6 +283,7 @@ class MiscContinuationResumer(
         }
 
         return checkForMore(result.state, result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     private fun resumeRepeatWhile(
@@ -320,6 +325,7 @@ class MiscContinuationResumer(
                 }
 
                 return checkForMore(result.state, result.events.toList())
+                    .withDiagnosticsFrom(result.diagnostics)
             }
         }
     }
@@ -372,6 +378,7 @@ class MiscContinuationResumer(
         // otherwise let the engine continue resolving the stack.
         if (result.isPaused || result.error != null) return result
         return checkForMore(result.newState, result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     private fun resumeStormCopyTarget(
@@ -544,6 +551,7 @@ class MiscContinuationResumer(
         }
 
         return checkForMore(result.state, result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     private fun resumeDistributeCounters(
@@ -678,6 +686,7 @@ class MiscContinuationResumer(
         events.addAll(tokenResult.events)
 
         return checkForMore(newState, events)
+            .withDiagnosticsFrom(tokenResult.diagnostics)
     }
 
     private fun resumeRemoveAnyNumberOfCounters(
@@ -864,13 +873,15 @@ class MiscContinuationResumer(
         }
 
         // All kinds processed. Draw a card if requested and at least one counter moved.
+        var diagnostics = emptyList<DiagnosticSignal>()
         if (continuation.drawCardOnMove && anyMoved) {
             val drawResult = services.turnManager.drawCards(newState, continuation.controllerId, 1)
             newState = drawResult.state
             events.addAll(drawResult.events)
+            diagnostics = drawResult.diagnostics
         }
 
-        return checkForMore(newState, events)
+        return checkForMore(newState, events).withDiagnosticsFrom(diagnostics)
     }
 
     private fun resumeReturnFromLinkedExile(
@@ -895,6 +906,7 @@ class MiscContinuationResumer(
             .returnCardToBattlefield(state, selectedCard, continuation.sourceId)
 
         return checkForMore(result.state, result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     private fun resumeProliferate(

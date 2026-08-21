@@ -22,6 +22,9 @@ import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.DamageEdgeDirection
 import com.wingedsheep.engine.core.DecisionResponse
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.DiagnosticKind
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.DistributeDecision
 import com.wingedsheep.engine.core.ForetellCard
 import com.wingedsheep.engine.core.GameAction
@@ -153,6 +156,21 @@ class ObservationBuilder(
             ?.let { buildPendingDecision(it, mayReceiveActions) }
         val pendingDecisionView = pendingDecisionAndRegistry?.first
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
+        val diagnostics = if (
+            mayReceiveActions &&
+            state.pendingDecision != null &&
+            pendingDecisionView?.requiresStructuredResponse == true &&
+            pendingDecisionView.structuredDomain == null
+        ) {
+            listOf(
+                DiagnosticSignal(
+                    kind = DiagnosticKind.UNSUPPORTED_DECISION,
+                    code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING,
+                )
+            )
+        } else {
+            emptyList()
+        }
 
         // Build legal-action views and their registry. When mid-decision the
         // engine's `legalActions` is empty — we use the decision options instead.
@@ -190,7 +208,7 @@ class ObservationBuilder(
             stateDigest = ""
         )
         val digested = obs.copy(stateDigest = StateDigest.compute(obs))
-        return ObservationResult(digested, actionRegistry)
+        return ObservationResult(digested, actionRegistry, diagnostics)
     }
 
     // =========================================================================
@@ -1248,5 +1266,7 @@ class ObservationBuilder(
  */
 data class ObservationResult(
     val observation: Observation,
-    val registry: ActionRegistry
+    val registry: ActionRegistry,
+    /** Internal non-wire diagnostics; the observation DTO itself remains unchanged. */
+    val diagnostics: List<DiagnosticSignal> = emptyList(),
 )
