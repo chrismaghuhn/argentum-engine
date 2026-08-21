@@ -161,6 +161,26 @@ class CardRegistryCombinedDfcNameResolutionTest : FunSpec({
         (registry.requireCard("Outland Liberator") === pinned) shouldBe false
     }
 
+    test("a child combined alias shadows a parent canonical name in overlay enumerations") {
+        val combinedName = "Synthetic Front // Synthetic Back"
+        val parentCanonical = CardDefinition.sorcery(
+            name = combinedName,
+            manaCost = ManaCost.ZERO,
+            oracleText = "",
+        ).copy(layout = CardLayout.SPLIT)
+        val dfc = syntheticDfc("Synthetic Front", "Synthetic Back")
+        val parent = CardRegistry().apply { register(parentCanonical) }
+        val overlay = CardRegistry(parent = parent).apply { register(dfc) }
+
+        (overlay.requireCard(combinedName) === dfc) shouldBe true
+        overlay.allCardNames().contains(combinedName) shouldBe false
+        overlay.size shouldBe 2
+        overlay.cardNamesIn(com.wingedsheep.sdk.scripting.CardNamePool.ANY)
+            .contains(combinedName) shouldBe false
+        overlay.nonlandCardNames().contains(combinedName) shouldBe false
+        overlay.getCardsByName(combinedName).shouldBeEmpty()
+    }
+
     test("a local canonical split name cannot be overwritten by a DFC alias") {
         val canonicalSplit = CardDefinition.sorcery(
             name = "Synthetic Front // Synthetic Back",

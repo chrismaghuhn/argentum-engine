@@ -137,7 +137,11 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      * Get all registered card names (unique names only, not variants).
      */
     fun allCardNames(): Set<String> =
-        if (parent == null) cardsByName.keys.toSet() else parent.allCardNames() + cardsByName.keys
+        if (parent == null) {
+            cardsByName.keys.toSet()
+        } else {
+            parent.allCardNames().filterNot(::isLocallyShadowed).toSet() + cardsByName.keys
+        }
 
     /**
      * Get the names of every registered card whose type line includes Land (e.g. for
@@ -146,7 +150,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
     fun landCardNames(): Set<String> {
         val own = cardsByName.values.filter { it.isLand }.map { it.name }.toSet()
         // An overlay only shadows definitions; a name is a land name if it is one in either layer.
-        return if (parent == null) own else own + parent.landCardNames().filter { it !in cardsByName }
+        return if (parent == null) own else own + parent.landCardNames().filterNot(::isLocallyShadowed)
     }
 
     /**
@@ -155,7 +159,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      */
     fun nonlandCardNames(): Set<String> {
         val own = cardsByName.values.filter { !it.isLand }.map { it.name }.toSet()
-        return if (parent == null) own else own + parent.nonlandCardNames().filter { it !in cardsByName }
+        return if (parent == null) own else own + parent.nonlandCardNames().filterNot(::isLocallyShadowed)
     }
 
     /**
@@ -176,6 +180,8 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      * @return All cards with that name, including variants
      */
     fun getCardsByName(name: String): List<CardDefinition> {
+        if (name in combinedDfcAliases) return emptyList()
+
         val own = cardsByNameAndNumber.entries
             .filter { (key, _) -> key.startsWith("$name#") }
             .map { it.value }
@@ -196,7 +202,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      */
     val size: Int get() {
         val parent = this.parent ?: return cardsByName.size
-        return cardsByName.size + parent.allCardNames().count { it !in cardsByName }
+        return cardsByName.size + parent.allCardNames().count { !isLocallyShadowed(it) }
     }
 
     /**
@@ -280,4 +286,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
             }
         }
     }
+
+    private fun isLocallyShadowed(name: String): Boolean =
+        name in cardsByName || name in combinedDfcAliases
 }
