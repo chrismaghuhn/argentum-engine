@@ -28,6 +28,20 @@ class CardRegistry(private val parent: CardRegistry? = null) {
     private val cardsByNameAndNumber = mutableMapOf<String, CardDefinition>()
     // Reverse DFC index: back face name -> front face name
     private val backFaceToFrontFace = mutableMapOf<String, String>()
+    /**
+     * Lookup-only aliases for the external name printed across a physical DFC.
+     *
+     * These deliberately do not live in [cardsByName]: a combined name is not a third card
+     * definition and must not appear in card-name pools, registry size, or printing indexes.
+     */
+    private val combinedDfcAliases = mutableMapOf<String, CombinedDfcAlias>()
+
+    private data class CombinedDfcAlias(
+        val frontName: String,
+        val backName: String,
+    ) {
+        val externalName: String get() = "$frontName // $backName"
+    }
 
     /**
      * Register a single card definition.
@@ -37,6 +51,8 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      * carries no further `backFace` pointer — it stands alone as the back-face identity.
      */
     fun register(card: CardDefinition) {
+        validateRegistration(card)
+
         cardsByName[card.name] = card
         // Also register by name#collectorNumber for variants.
         // When setCode is present, use "Name#SetCode-CollectorNumber" to avoid collisions
@@ -60,6 +76,12 @@ class CardRegistry(private val parent: CardRegistry? = null) {
             }
             // Track the reverse mapping so scenario builders can find the front face.
             backFaceToFrontFace[backFace.name] = card.name
+
+            // A linked backFace is the authoritative discriminator for a physical DFC. This
+            // creates only an additional external lookup key; the front definition remains the
+            // sole deck/library definition.
+            val alias = CombinedDfcAlias(card.name, backFace.name)
+            combinedDfcAliases[alias.externalName] = alias
         }
     }
 
@@ -84,7 +106,14 @@ class CardRegistry(private val parent: CardRegistry? = null) {
         // First try exact match with collector number format
         cardsByNameAndNumber[name]?.let { return it }
         // Fall back to name-only lookup, then to the parent registry for an overlay.
-        return cardsByName[name] ?: parent?.getCard(name)
+        cardsByName[name]?.let { return it }
+        combinedDfcAliases[name]?.let { alias ->
+            // Registration validates that the local front definition exists. Resolving through
+            // the canonical local name keeps re-registration idempotent and preserves overlay
+            // shadowing: a child alias can never accidentally return the parent's live front.
+            return cardsByName[alias.frontName]
+        }
+        return parent?.getCard(name)
     }
 
     /**
@@ -108,7 +137,11 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      * Get all registered card names (unique names only, not variants).
      */
     fun allCardNames(): Set<String> =
-        if (parent == null) cardsByName.keys.toSet() else parent.allCardNames() + cardsByName.keys
+        if (parent == null) {
+            cardsByName.keys.toSet()
+        } else {
+            parent.allCardNames().filterNot(::isLocallyShadowed).toSet() + cardsByName.keys
+        }
 
     /**
      * Get the names of every registered card whose type line includes Land (e.g. for
@@ -117,7 +150,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
     fun landCardNames(): Set<String> {
         val own = cardsByName.values.filter { it.isLand }.map { it.name }.toSet()
         // An overlay only shadows definitions; a name is a land name if it is one in either layer.
-        return if (parent == null) own else own + parent.landCardNames().filter { it !in cardsByName }
+        return if (parent == null) own else own + parent.landCardNames().filterNot(::isLocallyShadowed)
     }
 
     /**
@@ -126,7 +159,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      */
     fun nonlandCardNames(): Set<String> {
         val own = cardsByName.values.filter { !it.isLand }.map { it.name }.toSet()
-        return if (parent == null) own else own + parent.nonlandCardNames().filter { it !in cardsByName }
+        return if (parent == null) own else own + parent.nonlandCardNames().filterNot(::isLocallyShadowed)
     }
 
     /**
@@ -147,6 +180,8 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      * @return All cards with that name, including variants
      */
     fun getCardsByName(name: String): List<CardDefinition> {
+        if (name in combinedDfcAliases) return emptyList()
+
         val own = cardsByNameAndNumber.entries
             .filter { (key, _) -> key.startsWith("$name#") }
             .map { it.value }
@@ -167,7 +202,7 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      */
     val size: Int get() {
         val parent = this.parent ?: return cardsByName.size
-        return cardsByName.size + parent.allCardNames().count { it !in cardsByName }
+        return cardsByName.size + parent.allCardNames().count { !isLocallyShadowed(it) }
     }
 
     /**
@@ -186,5 +221,72 @@ class CardRegistry(private val parent: CardRegistry? = null) {
         cardsByName.clear()
         cardsByNameAndNumber.clear()
         backFaceToFrontFace.clear()
+        combinedDfcAliases.clear()
     }
+
+    /**
+     * Validate all local-name interactions before mutating any registry index. Parent entries are
+     * intentionally ignored here: a child registry is allowed to shadow a parent's answer.
+     */
+    private fun validateRegistration(card: CardDefinition) {
+        require(card.name !in combinedDfcAliases) {
+            "Cannot register canonical card '${card.name}': it is already a local combined DFC alias"
+        }
+
+        backFaceToFrontFace[card.name]?.let { existingFrontName ->
+            require(cardsByName[card.name] == card) {
+                "Cannot register canonical card '${card.name}': it is already registered as the " +
+                    "back face of '$existingFrontName' with an incompatible definition"
+            }
+        }
+
+        val aliasesForFront = combinedDfcAliases.values.filter { it.frontName == card.name }
+        val backName = card.backFace?.name
+        require(aliasesForFront.all { it.backName == backName }) {
+            "Cannot register card '${card.name}': its DFC face linkage conflicts with an existing local alias"
+        }
+
+        card.backFace?.let { backFace ->
+            cardsByName[backFace.name]?.let { existingBackFace ->
+                require(existingBackFace == backFace) {
+                    "Cannot register DFC '${card.name}': back face '${backFace.name}' is already " +
+                        "registered with an incompatible definition"
+                }
+            }
+
+            backFaceToFrontFace[backFace.name]?.let { existingFrontName ->
+                require(existingFrontName == card.name) {
+                    "Cannot register DFC '${card.name}': back face '${backFace.name}' is already " +
+                        "linked to '$existingFrontName'"
+                }
+            }
+
+            require(backFace.name !in combinedDfcAliases) {
+                "Cannot register back face '${backFace.name}': it is already a local combined DFC alias"
+            }
+
+            val alias = CombinedDfcAlias(card.name, backFace.name)
+            require(alias.externalName != card.name && alias.externalName != backFace.name) {
+                "Cannot register DFC '${card.name}': combined name '${alias.externalName}' conflicts with a face name"
+            }
+
+            cardsByName[alias.externalName]?.let {
+                throw IllegalArgumentException(
+                    "Cannot register combined DFC alias '${alias.externalName}': " +
+                        "a local canonical card with that name is already registered",
+                )
+            }
+
+            combinedDfcAliases[alias.externalName]?.let { existing ->
+                require(existing == alias) {
+                    "Cannot register combined DFC alias '${alias.externalName}': " +
+                        "its face linkage conflicts with the existing local alias " +
+                        "'${existing.frontName} // ${existing.backName}'"
+                }
+            }
+        }
+    }
+
+    private fun isLocallyShadowed(name: String): Boolean =
+        name in cardsByName || name in combinedDfcAliases
 }
