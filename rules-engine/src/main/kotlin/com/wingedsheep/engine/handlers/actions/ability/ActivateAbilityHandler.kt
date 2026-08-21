@@ -33,6 +33,8 @@ import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.stack.StackResolver
@@ -122,6 +124,7 @@ class ActivateAbilityHandler(
     private val castPermissionUtils: CastPermissionUtils,
 ) : ActionHandler<ActivateAbility> {
     override val actionType: KClass<ActivateAbility> = ActivateAbility::class
+    private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
 
     /** The first [CostAtom.TapPermanents] atom anywhere in this cost, or null if it has none. */
     private fun AbilityCost.firstTapPermanentsAtomOrNull(): CostAtom.TapPermanents? = when (this) {
@@ -411,6 +414,28 @@ class ActivateAbilityHandler(
         } else effectiveCost
 
         val abilityPaymentContext = buildAbilityPaymentContext(cardComponent, state.projectedState, action.sourceId, ability)
+
+        val submittedPaymentPlan = (action.paymentStrategy as? PaymentStrategy.Explicit)?.paymentPlan
+        if (submittedPaymentPlan != null) {
+            if (action.xValue != null || action.alternativePayment?.hasResourcePayment == true) {
+                return "PaymentPlanV1 does not support X or alternative resource payment choices"
+            }
+            val paymentCost = extractManaCost(costAfterConvokeReduction)
+                ?: return "PaymentPlanV1 requires an ordinary mana cost"
+            when (
+                val paymentValidation = paymentPlanValidator.validate(
+                    state = state,
+                    playerId = action.playerId,
+                    cost = paymentCost,
+                    plan = submittedPaymentPlan,
+                    spellContext = abilityPaymentContext,
+                    excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
+                )
+            ) {
+                is PaymentPlanValidation.Accepted -> Unit
+                is PaymentPlanValidation.Rejected -> return paymentValidation.reason
+            }
+        }
 
         // The granter of a statically-granted ability, so AbilityCost.TapGrantingPermanent can be
         // checked against the *Equipment's* tap state rather than the host creature's.
@@ -1225,49 +1250,83 @@ class ActivateAbilityHandler(
         if (manaCost != null) {
             when (action.paymentStrategy) {
                 is PaymentStrategy.Explicit -> {
-                    // Spend floating mana first, then tap only the minimum subset of chosen
-                    // sources required to cover what the pool can't — parity with the auto-tap
-                    // branch below (autoTapForManaCost) and CastPaymentProcessor.autoPay. Without
-                    // the payPartial, mana already in the pool is stranded: the solver would tap
-                    // sources for the whole cost and the pool deduction is skipped (Mana stripped
-                    // in costForPayment below), so pre-floated mana is never spent. This bit
-                    // waterbend/convoke abilities in particular — the client always routes them
-                    // through Explicit payment, and the enumerator deems them affordable counting
-                    // pool + sources, so ignoring the pool here made a legal activation fail
-                    // ("Selected mana sources cannot pay this ability's cost") or over-tap lands.
-                    // The reduced [manaPool] flows into payAbilityCost and is persisted afterward.
-                    val partialResult = manaPool.payPartial(manaCost, executeAbilityContext)
-                    manaPool = partialResult.newPool
-                    val remainingCost = partialResult.remainingCost
-                    if (!remainingCost.isEmpty() || manaXValue > 0) {
-                        // Solve the remainder against the chosen sources only (non-chosen excluded),
-                        // matching CastPaymentProcessor.explicitPay so we never tap more than needed.
-                        // The client's auto-tap preview is computed against the full cost and may
-                        // over-select; excluding the rest keeps validation and execution in sync.
-                        val chosen = action.paymentStrategy.manaAbilitiesToActivate.toSet()
-                        val excluded = manaSolver.findAvailableManaSources(currentState, action.playerId)
-                            .map { it.entityId }
-                            .filter { it !in chosen }
-                            .toSet() + selfExcludedSources
-                        val solution = manaSolver.solve(
-                            currentState,
-                            action.playerId,
-                            remainingCost,
-                            manaXValue,
-                            excludeSources = excluded,
-                            xManaRestriction = ability.xManaRestriction,
-                            additionalPayLife = abilityPayLifeTotal,
-                        ) ?: return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
-                        val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                    val paymentPlan = action.paymentStrategy.paymentPlan
+                    if (paymentPlan != null) {
+                        val paymentValidation = paymentPlanValidator.validate(
                             state = currentState,
-                            solution = solution,
-                            controllerId = action.playerId,
+                            playerId = action.playerId,
+                            cost = manaCost,
+                            plan = paymentPlan,
+                            spellContext = executeAbilityContext,
+                            excludeSources = selfExcludedSources,
                         )
-                        if (!sideEffectResult.success) {
-                            return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
+                        val accepted = paymentValidation as? PaymentPlanValidation.Accepted
+                            ?: return ExecutionResult.error(
+                                state,
+                                (paymentValidation as PaymentPlanValidation.Rejected).reason,
+                            )
+                        // Source-produced units are allocated directly by the submitted plan and
+                        // are therefore consumed as part of this payment. Only the explicitly
+                        // selected floating pool remainder is carried into the later cost path;
+                        // adding fresh source mana here would leave paid units floating.
+                        manaPool = accepted.poolAfterSpend
+                        if (accepted.solution.sources.isNotEmpty()) {
+                            val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                                state = currentState,
+                                solution = accepted.solution,
+                                controllerId = action.playerId,
+                            )
+                            if (!sideEffectResult.success) {
+                                return ExecutionResult.error(state, "PaymentPlanV1 source activation failed")
+                            }
+                            currentState = sideEffectResult.state
+                            events.addAll(sideEffectResult.events)
                         }
-                        currentState = sideEffectResult.state
-                        events.addAll(sideEffectResult.events)
+                    } else {
+                        // Spend floating mana first, then tap only the minimum subset of chosen
+                        // sources required to cover what the pool can't — parity with the auto-tap
+                        // branch below (autoTapForManaCost) and CastPaymentProcessor.autoPay. Without
+                        // the payPartial, mana already in the pool is stranded: the solver would tap
+                        // sources for the whole cost and the pool deduction is skipped (Mana stripped
+                        // in costForPayment below), so pre-floated mana is never spent. This bit
+                        // waterbend/convoke abilities in particular — the client always routes them
+                        // through Explicit payment, and the enumerator deems them affordable counting
+                        // pool + sources, so ignoring the pool here made a legal activation fail
+                        // ("Selected mana sources cannot pay this ability's cost") or over-tap lands.
+                        // The reduced [manaPool] flows into payAbilityCost and is persisted afterward.
+                        val partialResult = manaPool.payPartial(manaCost, executeAbilityContext)
+                        manaPool = partialResult.newPool
+                        val remainingCost = partialResult.remainingCost
+                        if (!remainingCost.isEmpty() || manaXValue > 0) {
+                            // Solve the remainder against the chosen sources only (non-chosen excluded),
+                            // matching CastPaymentProcessor.explicitPay so we never tap more than needed.
+                            // The client's auto-tap preview is computed against the full cost and may
+                            // over-select; excluding the rest keeps validation and execution in sync.
+                            val chosen = action.paymentStrategy.manaAbilitiesToActivate.toSet()
+                            val excluded = manaSolver.findAvailableManaSources(currentState, action.playerId)
+                                .map { it.entityId }
+                                .filter { it !in chosen }
+                                .toSet() + selfExcludedSources
+                            val solution = manaSolver.solve(
+                                currentState,
+                                action.playerId,
+                                remainingCost,
+                                manaXValue,
+                                excludeSources = excluded,
+                                xManaRestriction = ability.xManaRestriction,
+                                additionalPayLife = abilityPayLifeTotal,
+                            ) ?: return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
+                            val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                                state = currentState,
+                                solution = solution,
+                                controllerId = action.playerId,
+                            )
+                            if (!sideEffectResult.success) {
+                                return ExecutionResult.error(state, "Selected mana sources cannot pay this ability's cost")
+                            }
+                            currentState = sideEffectResult.state
+                            events.addAll(sideEffectResult.events)
+                        }
                     }
                 }
                 else -> {

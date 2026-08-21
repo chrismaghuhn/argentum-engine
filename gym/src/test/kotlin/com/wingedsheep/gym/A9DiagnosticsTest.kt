@@ -1,5 +1,6 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AssignDamageDecision
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DiagnosticCode
@@ -9,6 +10,8 @@ import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.registry.CardDefinitionMissingException
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationCanonicalizer
 import com.wingedsheep.gym.contract.TrainingObservation
@@ -16,6 +19,11 @@ import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.scripting.AbilityId
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -35,6 +43,15 @@ class A9DiagnosticsTest : FunSpec({
         skipMulligans = true,
         startingPlayerIndex = 0
     )
+
+    val unsupportedPaymentSource = card("A9 Unsupported Payment Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(Costs.Tap, Costs.SacrificeSelf)
+            effect = Effects.AddManaOfChoice()
+            manaAbility = true
+        }
+    }
 
     fun unsupportedDecision(playerId: EntityId) = AssignDamageDecision(
         id = "legacy-damage",
@@ -63,6 +80,41 @@ class A9DiagnosticsTest : FunSpec({
         result.diagnostics.single().kind shouldBe DiagnosticKind.UNSUPPORTED_DECISION
         result.diagnostics.single().code shouldBe DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
         (result.observation as TrainingObservation).pendingDecision!!.structuredDomain shouldBe null
+    }
+
+    test("unsupported action-level payment shapes fail closed with a typed diagnostic") {
+        val cardRegistry = registry().apply { register(unsupportedPaymentSource) }
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            config().copy(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of("Mountain" to 20, unsupportedPaymentSource.name to 1)),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                )
+            )
+        )
+        val player = environment.playerIds.first()
+        val sourceId = environment.state.entities.entries.first { (id, container) ->
+            id in environment.state.getZone(player, Zone.HAND) +
+                environment.state.getZone(player, Zone.LIBRARY) &&
+                container.get<CardComponent>()?.name == unsupportedPaymentSource.name
+        }.key
+        val from = environment.state.zones.entries.first { (_, ids) -> sourceId in ids }.key
+        val state = environment.state.moveToZone(
+            sourceId,
+            from,
+            ZoneKey(player, Zone.BATTLEFIELD),
+        )
+        val action = com.wingedsheep.engine.legalactions.LegalAction(
+            action = ActivateAbility(player, sourceId, AbilityId("payment")),
+            actionType = "ActivateAbility",
+            description = "Unsupported payment probe",
+            manaCostString = "{1}",
+        )
+
+        val result = ObservationBuilder(cardRegistry = cardRegistry).build(state, player, listOf(action))
+        result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        (result.observation as TrainingObservation).legalActions.single().paymentDomain shouldBe null
     }
 
     test("missing card setup fails at the registry boundary without an episode ledger entry") {

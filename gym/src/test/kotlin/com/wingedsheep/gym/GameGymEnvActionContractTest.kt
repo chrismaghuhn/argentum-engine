@@ -12,11 +12,16 @@ import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.PaymentDomainV1
+import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
 import com.wingedsheep.sdk.model.Deck
@@ -27,9 +32,15 @@ import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.collections.shouldContain
+import com.wingedsheep.sdk.core.Zone
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 
 /**
  * Regression coverage for action IDs whose LegalAction is a target/payment template rather than
@@ -129,6 +140,62 @@ class GameGymEnvActionContractTest : FunSpec({
             gym.step(staleActionId)
         }
         environment.stepCount shouldBe stepCountBefore + 1
+    }
+
+    test("payable structured ActivateAbility publishes an externally usable payment domain") {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(config())
+        val player = environment.playerIds.first()
+        val sourceId = environment.state.entities.entries
+            .first { (id, container) ->
+                id in environment.state.getZone(player, Zone.HAND) + environment.state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == "Mountain"
+            }
+            .key
+        val sourceZone = environment.state.zones.entries.first { (_, ids) -> sourceId in ids }.key
+        val sourceState = environment.state.moveToZone(
+            sourceId,
+            sourceZone,
+            ZoneKey(player, Zone.BATTLEFIELD),
+        )
+        environment.restore(sourceState, environment.playerIds, environment.stepCount)
+        val legalAction = LegalAction(
+            action = ActivateAbility(
+                playerId = player,
+                sourceId = sourceId,
+                abilityId = AbilityId("payment-ability"),
+            ),
+            actionType = "ActivateAbility",
+            description = "Activate payable test ability",
+            affordable = true,
+            manaCostString = "{1}{R}",
+        )
+
+        val observation = ObservationBuilder(cardRegistry = cardRegistry)
+            .build(environment.state, player, listOf(legalAction))
+            .observation as TrainingObservation
+        val view = observation.legalActions.single()
+
+        view.manaCost shouldBe "{1}{R}"
+        view.requiresStructuredAction shouldBe true
+        val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV1")
+        paymentDomain.sourceActivations.single().sourceId shouldBe sourceId
+        paymentDomain.sourceActivations.single().productionChoices
+            .map { it.producedColor } shouldContain PaymentManaColor.RED
+        paymentDomain.sourceActivations.single().manaAbilityKey shouldBe "intrinsic:R"
+        Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }.encodeToJsonElement(PaymentDomainV1.serializer(), paymentDomain)
+            .jsonObject.containsKey("autoPaySuggestion") shouldBe false
+        Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }.encodeToString(TrainingObservation.serializer(), observation)
+            .contains("\"paymentDomain\"") shouldBe true
     }
 
     test("variable sacrifice publishes candidates and complete cardinality in the observation") {

@@ -77,6 +77,9 @@ internal object ObservationCanonicalizer {
             }
         )
         put("manaCost", action.manaCost)
+        action.paymentDomain?.let {
+            put("paymentDomain", json.encodeToJsonElement(PaymentDomainV1.serializer(), it))
+        }
         put("hasXCost", action.hasXCost)
         put("maxAffordableX", action.maxAffordableX)
         put("minTargets", action.minTargets)
