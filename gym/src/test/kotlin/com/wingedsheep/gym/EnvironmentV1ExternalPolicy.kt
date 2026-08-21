@@ -1,5 +1,14 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PoolSpend
+import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.DistributionDomain
@@ -7,6 +16,10 @@ import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
 import com.wingedsheep.gym.contract.PendingDecisionView
+import com.wingedsheep.gym.contract.PAYMENT_DOMAIN_VERSION
+import com.wingedsheep.gym.contract.PaymentCostKind
+import com.wingedsheep.gym.contract.PaymentCostUnitDomain
+import com.wingedsheep.gym.contract.PaymentDomainV1
 import com.wingedsheep.gym.contract.ReorderLibraryDomain
 import com.wingedsheep.gym.contract.ReplacementDomain
 import com.wingedsheep.gym.contract.SearchLibraryDomain
@@ -17,12 +30,14 @@ import com.wingedsheep.gym.contract.TargetsDomain
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.put
 
 /**
@@ -68,6 +83,11 @@ sealed interface SemanticChoice {
         override val family: String,
         val code: String,
         val reason: String,
+        val actionKind: String? = null,
+        val classification: String = "A5_DECISION_GAP",
+        val diagnostic: String = code,
+        val publicDomain: String = "not captured",
+        val proposedFollowUp: String = "Expose a complete public domain for this choice",
     ) : SemanticChoice
 }
 
@@ -85,11 +105,6 @@ sealed interface SemanticDecision {
     data class Replacement(val from: Int, val to: Int) : SemanticDecision
     data class Budget(val selected: List<Int>) : SemanticDecision
     data class Damage(val selected: List<EdgeAmount>) : SemanticDecision
-    data class Mana(
-        val selectedSources: List<EntityId>,
-        val waterbendPermanents: List<EntityId>,
-        val declined: Boolean,
-    ) : SemanticDecision
 }
 
 data class EdgeAmount(val edgeId: String, val amount: Int)
@@ -150,22 +165,39 @@ class DeterministicExternalPolicy {
             return SemanticChoice.Action(action.actionId, semanticKey, action.kind, null)
         }
 
-        /*
-         * The wire view deliberately does not publish a complete payment-source domain for a
-         * mana-paying legal action. AutoPay/autoTapPreview is an advisory engine suggestion, not
-         * proof of a unique external payment choice. Stop rather than reintroducing hidden
-         * AutomaticPaymentSelection through a test helper.
-         */
-        if (action.manaCost != null) {
-            return SemanticChoice.Gap(
-                family = "PAYMENT",
-                code = "A5_DECISION_GAP",
-                reason = "Structured mana action has no published source-choice domain; " +
-                    "manaCost=" + action.manaCost,
-            )
+        val payload = linkedMapOf<String, JsonElement>().apply {
+            action.actionSemantics?.forEach { (key, value) -> put(key, value) }
         }
+        var completedChoice = false
 
-        val payload = linkedMapOf<String, JsonElement>()
+        if (action.manaCost != null) {
+            val domain = action.paymentDomain
+                ?: return SemanticChoice.Gap(
+                    family = "PAYMENT",
+                    code = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    reason = "Structured mana action published no PaymentDomainV1",
+                    actionKind = action.kind,
+                    diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    publicDomain = "LegalActionView.paymentDomain=null; manaCost=${action.manaCost}",
+                    proposedFollowUp = "Publish a complete PaymentDomainV1 for this legal action",
+                )
+            val paymentPlan = explicitPaymentPlan(domain)
+                ?: return SemanticChoice.Gap(
+                    family = "PAYMENT",
+                    code = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    reason = "Published PaymentDomainV1 cannot be completed deterministically",
+                    actionKind = action.kind,
+                    diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    publicDomain = domain.toString(),
+                    proposedFollowUp =
+                        "Extend PaymentDomainV1 until source, production, pool, and allocation choices are representable",
+                )
+            payload["paymentStrategy"] = paymentJson.encodeToJsonElement(
+                PaymentStrategy.serializer(),
+                PaymentStrategy.Explicit(paymentPlan = paymentPlan),
+            )
+            completedChoice = true
+        }
 
         if (action.hasXCost) {
             val maxX = action.maxAffordableX
@@ -173,8 +205,10 @@ class DeterministicExternalPolicy {
                     family = action.kind,
                     code = "A5_DECISION_GAP",
                     reason = "X action has no published upper bound",
+                    actionKind = action.kind,
                 )
             payload["xValue"] = JsonPrimitive(maxX.coerceAtLeast(0))
+            completedChoice = true
         }
 
         if (action.minTargets > 0 || action.targetEntityIds.isNotEmpty()) {
@@ -184,6 +218,7 @@ class DeterministicExternalPolicy {
                     family = "TARGETS",
                     code = "A5_DECISION_GAP",
                     reason = "Published target cardinality cannot be satisfied",
+                    actionKind = action.kind,
                 )
             }
             val targetIds = action.targetEntityIds
@@ -195,9 +230,11 @@ class DeterministicExternalPolicy {
                         family = "TARGETS",
                         code = "A5_DECISION_GAP",
                         reason = "Target identity kind is not derivable from the public observation",
+                        actionKind = action.kind,
                     )
             }
             payload["targets"] = JsonArray(targetValues)
+            completedChoice = true
         }
 
         if (action.sacrificeCount > 0 || action.sacrificeMinCount > 0) {
@@ -212,6 +249,7 @@ class DeterministicExternalPolicy {
                     family = "ADDITIONAL_COST",
                     code = "A5_DECISION_GAP",
                     reason = "Published sacrifice domain cannot satisfy its cardinality",
+                    actionKind = action.kind,
                 )
             }
             val field = if (action.kind.contains("Activate", ignoreCase = true)) {
@@ -225,6 +263,7 @@ class DeterministicExternalPolicy {
                     JsonArray(choices.map { id -> JsonPrimitive(id.value) }),
                 )
             }
+            completedChoice = true
         }
 
         if (action.requiresDamageDistribution) {
@@ -232,19 +271,20 @@ class DeterministicExternalPolicy {
                 family = "DAMAGE_ASSIGNMENT",
                 code = "A5_DECISION_GAP",
                 reason = "Flat action does not publish a complete damage-distribution domain",
+                actionKind = action.kind,
             )
         }
 
         /*
-         * Crew, saddle, mana-color, alternative-payment, life-cost, modal, and combat
-         * declarations have no complete actor-facing domain in LegalActionView. They must not be
-         * completed from action descriptions or raw engine objects.
+         * A structured action still needs at least one concrete public choice in addition to its
+         * semantic identity. Descriptions and opaque engine-shaped payloads are not choices.
          */
-        if (action.requiresStructuredAction && payload.isEmpty()) {
+        if (action.requiresStructuredAction && !completedChoice) {
             return SemanticChoice.Gap(
                 family = action.kind,
                 code = "A5_DECISION_GAP",
                 reason = "Structured action has no complete public choice domain",
+                actionKind = action.kind,
             )
         }
 
@@ -256,6 +296,128 @@ class DeterministicExternalPolicy {
         )
     }
 
+    /**
+     * Enumerates only the concrete origins and production choices published by PaymentDomainV1.
+     * There is deliberately no cost parser, source discovery, or engine payment helper here.
+     */
+    private fun explicitPaymentPlan(domain: PaymentDomainV1): PaymentPlanV1? {
+        if (domain.version != PAYMENT_DOMAIN_VERSION || domain.requiredCost.isBlank()) return null
+
+        val units = domain.costUnits.sortedBy { it.symbolIndex }
+        if (units.map { it.symbolIndex } != units.indices.toList()) return null
+
+        fun allowedColors(unit: PaymentCostUnitDomain): Set<PaymentManaColor>? = when (unit.kind) {
+            PaymentCostKind.COLORED -> unit.allowedColors.takeIf { it.isNotEmpty() }
+            PaymentCostKind.COLORLESS ->
+                unit.allowedColors.takeIf { it == setOf(PaymentManaColor.COLORLESS) }
+            PaymentCostKind.GENERIC ->
+                if (unit.allowedColors.isEmpty()) PaymentManaColor.entries.toSet()
+                else unit.allowedColors
+        }
+
+        if (units.any { unit ->
+            unit.amount < 0 ||
+                (unit.kind != PaymentCostKind.GENERIC && unit.amount != 1) ||
+                allowedColors(unit) == null
+        }) {
+            return null
+        }
+
+        val demands = buildList {
+            for (unit in units) {
+                repeat(unit.amount) {
+                    add(
+                        PaymentDemand(
+                            symbolIndex = unit.symbolIndex,
+                            allowedColors = checkNotNull(allowedColors(unit)),
+                        ),
+                    )
+                }
+            }
+        }
+
+        val paymentColors = PaymentManaColor.entries.toList()
+        val poolRemaining = linkedMapOf(
+            PaymentManaColor.WHITE to domain.currentPool.white,
+            PaymentManaColor.BLUE to domain.currentPool.blue,
+            PaymentManaColor.BLACK to domain.currentPool.black,
+            PaymentManaColor.RED to domain.currentPool.red,
+            PaymentManaColor.GREEN to domain.currentPool.green,
+            PaymentManaColor.COLORLESS to domain.currentPool.colorless,
+        )
+        if (poolRemaining.values.any { it < 0 }) return null
+
+        val sourceChoices = domain.sourceActivations
+            .flatMap { source ->
+                source.productionChoices.map { production ->
+                    PublicSourceChoice(
+                        sourceId = source.sourceId,
+                        manaAbilityKey = source.manaAbilityKey,
+                        productionChoice = production,
+                    )
+                }
+            }
+            .filter { it.productionChoice.amount == 1 && it.productionChoice.bonusChoice == null }
+            .sortedWith(
+                compareBy(
+                    { it.sourceId.value },
+                    { it.manaAbilityKey },
+                    { it.productionChoice.producedColor.ordinal },
+                ),
+            )
+
+        val poolSpent = linkedMapOf<PaymentManaColor, Int>()
+        val allocations = linkedMapOf<Int, MutableList<ManaSpendReference>>()
+        val selectedSources = linkedMapOf<EntityId, SourceActivation>()
+
+        fun allocate(index: Int): Boolean {
+            if (index == demands.size) return true
+            val demand = demands[index]
+            val spends = allocations.getOrPut(demand.symbolIndex) { mutableListOf() }
+
+            for (color in paymentColors) {
+                if (color !in demand.allowedColors || (poolRemaining[color] ?: 0) <= 0) continue
+                poolRemaining[color] = poolRemaining.getValue(color) - 1
+                poolSpent[color] = (poolSpent[color] ?: 0) + 1
+                spends += ManaSpendReference(poolColor = color)
+                if (allocate(index + 1)) return true
+                spends.removeAt(spends.lastIndex)
+                poolSpent[color] = poolSpent.getValue(color) - 1
+                poolRemaining[color] = poolRemaining.getValue(color) + 1
+            }
+
+            for (choice in sourceChoices) {
+                val color = choice.productionChoice.producedColor
+                if (color !in demand.allowedColors || choice.sourceId in selectedSources) continue
+                selectedSources[choice.sourceId] = SourceActivation(
+                    sourceId = choice.sourceId,
+                    manaAbilityKey = choice.manaAbilityKey,
+                    productionChoice = choice.productionChoice,
+                )
+                spends += ManaSpendReference(sourceId = choice.sourceId)
+                if (allocate(index + 1)) return true
+                spends.removeAt(spends.lastIndex)
+                selectedSources.remove(choice.sourceId)
+            }
+            return false
+        }
+
+        if (!allocate(0)) return null
+
+        return PaymentPlanV1(
+            sourceActivations = selectedSources.values.sortedBy { it.sourceId.value },
+            poolSpend = PoolSpend.fromAmounts(poolSpent),
+            spendAllocation = SpendAllocation(
+                costUnits = units.map { unit ->
+                    CostUnitAllocation(
+                        symbolIndex = unit.symbolIndex,
+                        spends = allocations[unit.symbolIndex]?.toList().orEmpty(),
+                    )
+                },
+            ),
+        )
+    }
+
     private fun chooseStructured(
         observation: TrainingObservation,
         pending: PendingDecisionView,
@@ -263,9 +425,10 @@ class DeterministicExternalPolicy {
     ): SemanticChoice {
         val domain = pending.structuredDomain
             ?: return SemanticChoice.Gap(
-                family = pending.kind.name,
-                code = "A5_DECISION_GAP",
-                reason = "Structured decision is published without structuredDomain",
+                    family = pending.kind.name,
+                    code = "A5_DECISION_GAP",
+                    reason = "Structured decision is published without structuredDomain",
+                    actionKind = "DECISION",
             )
 
         val selection: SemanticDecision = when (domain) {
@@ -415,21 +578,15 @@ class DeterministicExternalPolicy {
             }
 
             is ManaSourcesDomain -> {
-                val selected = domain.autoPaySuggestion
-                    .distinct()
-                    .sortedBy { it.value }
-                val declined = selected.isEmpty() && domain.canDecline
-                if (selected.isEmpty() && !declined) {
-                    return SemanticChoice.Gap(
-                        family = "PAYMENT",
-                        code = "A5_DECISION_GAP",
-                        reason = "Mana-source domain has no explicit payable selection or decline",
-                    )
-                }
-                SemanticDecision.Mana(
-                    selectedSources = selected,
-                    waterbendPermanents = emptyList(),
-                    declined = declined,
+                return SemanticChoice.Gap(
+                    family = "PAYMENT",
+                    code = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    reason =
+                        "Pending payment publishes no complete source, production, pool, and allocation domain",
+                    actionKind = "DECISION",
+                    diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    publicDomain = domain.toString(),
+                    proposedFollowUp = "Publish PaymentDomainV1 for this pending payment",
                 )
             }
 
@@ -612,7 +769,23 @@ class DeterministicExternalPolicy {
         }
 
     private companion object {
+        val paymentJson = Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }
         val TOKEN_REGEX = Regex("\\{([^}]+)}")
         val BASIC_LAND_TYPES = setOf("PLAINS", "ISLAND", "SWAMP", "MOUNTAIN", "FOREST")
     }
+
+    private data class PaymentDemand(
+        val symbolIndex: Int,
+        val allowedColors: Set<PaymentManaColor>,
+    )
+
+    private data class PublicSourceChoice(
+        val sourceId: EntityId,
+        val manaAbilityKey: String,
+        val productionChoice: ProductionChoice,
+    )
 }

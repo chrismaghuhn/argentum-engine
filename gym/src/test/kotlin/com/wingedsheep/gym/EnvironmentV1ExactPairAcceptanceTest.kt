@@ -8,11 +8,13 @@ import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DistributionResponse
-import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
@@ -21,6 +23,12 @@ import com.wingedsheep.engine.registry.CardDefinitionMissingException
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.PendingDecisionKind
+import com.wingedsheep.gym.contract.PaymentCostKind
+import com.wingedsheep.gym.contract.PaymentCostUnitDomain
+import com.wingedsheep.gym.contract.PaymentDomainV1
+import com.wingedsheep.gym.contract.PaymentPoolDomain
+import com.wingedsheep.gym.contract.PaymentSourceActivationDomain
+import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
@@ -34,6 +42,10 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.put
 import java.nio.file.Path
 import java.security.MessageDigest
 import java.util.TreeMap
@@ -75,10 +87,135 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             "ActionRegistry",
             "EpisodeDiagnostics",
             "GameEnvironment",
+            "ManaSolver",
+            "AutomaticPaymentSelection",
+            "AutoPay",
+            "autoPaySuggestion",
+            "autoTapSuggestion",
         ).forEach { forbidden ->
             check(forbidden !in source) {
                 "Observation-only acceptance policy contains forbidden symbol: $forbidden"
             }
+        }
+    }
+
+    test("the external policy turns the public payment domain into an explicit PaymentPlanV1") {
+        val player = EntityId("player-0")
+        val blackSource = EntityId("source-black")
+        val anySource = EntityId("source-any")
+        val paymentDomain = PaymentDomainV1(
+            requiredCost = "{1}{B}",
+            costUnits = listOf(
+                PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, amount = 1),
+                PaymentCostUnitDomain(
+                    symbolIndex = 1,
+                    kind = PaymentCostKind.COLORED,
+                    amount = 1,
+                    allowedColors = setOf(PaymentManaColor.BLACK),
+                ),
+            ),
+            currentPool = PaymentPoolDomain(),
+            sourceActivations = listOf(
+                PaymentSourceActivationDomain(
+                    sourceId = blackSource,
+                    sourceName = "Black Source",
+                    manaAbilityKey = "black-ability",
+                    productionChoices = listOf(ProductionChoice(PaymentManaColor.BLACK)),
+                ),
+                PaymentSourceActivationDomain(
+                    sourceId = anySource,
+                    sourceName = "Any Source",
+                    manaAbilityKey = "any-ability",
+                    productionChoices = listOf(
+                        ProductionChoice(PaymentManaColor.BLACK),
+                        ProductionChoice(PaymentManaColor.GREEN),
+                    ),
+                ),
+            ),
+        )
+        val action = LegalActionView(
+            actionId = 7,
+            kind = "ActivateAbility",
+            description = "Activate public payment-domain source",
+            affordable = true,
+            manaCost = "{1}{B}",
+            paymentDomain = paymentDomain,
+            requiresStructuredAction = true,
+            actionSemantics = buildJsonObject {
+                put("type", "ActivateAbility")
+                put("abilityKey", "ability-1")
+            },
+        )
+        val observation = TrainingObservation(
+            schemaHash = "test-schema",
+            perspectivePlayerId = player,
+            agentToAct = player,
+            turnNumber = 1,
+            phase = com.wingedsheep.sdk.core.Phase.PRECOMBAT_MAIN,
+            step = com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN,
+            activePlayerId = player,
+            priorityPlayerId = player,
+            players = emptyList(),
+            zones = emptyList(),
+            stack = emptyList(),
+            pendingDecision = null,
+            legalActions = listOf(action),
+            terminated = false,
+            truncated = false,
+            winnerId = null,
+            stateDigest = "digest",
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            observation,
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        check(choice is SemanticChoice.Action) { "Expected an action choice, got $choice" }
+        val payload = choice.payload ?: error("Payment action did not publish a payload")
+        val strategy = Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }.decodeFromJsonElement(
+            PaymentStrategy.serializer(),
+            payload["paymentStrategy"] ?: error("Payment payload omitted paymentStrategy"),
+        )
+        check(strategy is PaymentStrategy.Explicit) { "Expected Explicit payment strategy: $strategy" }
+        check(strategy.manaAbilitiesToActivate.isEmpty()) {
+            "Payment policy must not emit legacy source handles"
+        }
+        val plan = strategy.paymentPlan ?: error("Payment policy omitted PaymentPlanV1")
+        plan.sourceActivations.map { it.sourceId }.toSet() shouldBe setOf(blackSource, anySource)
+        plan.spendAllocation.costUnits.map { it.symbolIndex } shouldBe listOf(0, 1)
+        plan.spendAllocation.costUnits.sumOf { it.spends.sumOf { spend -> spend.amount } } shouldBe 2
+    }
+
+    test("seed zero original reproducer clears the old step-163 payment gap") {
+        val service = MultiEnvService(exactPairRegistry())
+        try {
+            val result = runEpisode(
+                service = service,
+                policy = DeterministicExternalPolicy(),
+                episode = EpisodeConfig(
+                    seed = 0L,
+                    startingPlayerIndex = 0,
+                    seat0 = "Akiri",
+                    seat1 = "Chevill",
+                    rosterLabel = "Akiri-vs-Chevill",
+                ),
+            )
+            println("ENVIRONMENT_V1_SEED_ZERO_REPRODUCER\n$result")
+            result.failure?.let { failure ->
+                val oldPaymentGap = failure.step == 163 &&
+                    failure.decisionFamily == "PAYMENT" &&
+                    failure.reason.contains("manaCost={1}{B}")
+                check(!oldPaymentGap) {
+                    "The old seed-0 step-163 {1}{B} payment gap remains: $failure"
+                }
+                error("Seed-zero reproducer stopped at the first new finding: $failure")
+            }
+        } finally {
+            service.dispose(service.listEnvs())
         }
     }
 
@@ -140,10 +277,16 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 classification: String,
                 code: String,
                 reason: String,
+                diagnostic: String = code,
+                publicDomain: String = "not captured",
+                proposedFollowUp: String = "No follow-up recorded",
             ): AcceptanceFailure = AcceptanceFailure(
                 classification = classification,
                 code = code,
                 reason = reason,
+                diagnostic = diagnostic,
+                publicDomain = publicDomain,
+                proposedFollowUp = proposedFollowUp,
                 seed = episode.seed,
                 policySeed = policyState.policySeed,
                 roster = episode.rosterLabel,
@@ -180,6 +323,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     classification = classification,
                     code = signal.semanticCode,
                     reason = "Authoritative trusted-episode diagnostic was recorded",
+                    diagnostic = signal.semanticCode,
+                    publicDomain = "authoritative diagnostic event; public domain not captured",
+                    proposedFollowUp = "Classify and repair the owning production path outside #73",
                 )
             }
 
@@ -311,10 +457,14 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     when (choice) {
                         is SemanticChoice.Gap -> {
                             lastFamily = choice.family
+                            lastActionKind = choice.actionKind ?: "DECISION"
                             val failure = currentFailure(
-                                classification = choice.code,
+                                classification = choice.classification,
                                 code = choice.code,
                                 reason = choice.reason,
+                                diagnostic = choice.diagnostic,
+                                publicDomain = choice.publicDomain,
+                                proposedFollowUp = choice.proposedFollowUp,
                             )
                             return EpisodeResult(
                                 episode = episode,
@@ -476,13 +626,6 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 decisionId = decisionId,
                 edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
             )
-            is SemanticDecision.Mana -> ManaSourcesSelectedResponse(
-                decisionId = decisionId,
-                selectedSources = selection.selectedSources,
-                autoPay = false,
-                waterbendPermanents = selection.waterbendPermanents.toSet(),
-                declined = selection.declined,
-            )
         }
 
         fun corpusCases(): List<EpisodeConfig> {
@@ -602,6 +745,9 @@ private data class AcceptanceFailure(
     val classification: String,
     val code: String,
     val reason: String,
+    val diagnostic: String,
+    val publicDomain: String,
+    val proposedFollowUp: String,
     val seed: Long,
     val policySeed: Long,
     val roster: String,
@@ -612,21 +758,22 @@ private data class AcceptanceFailure(
     val decisionFamily: String,
     val actionKind: String,
 ) {
-    override fun toString(): String =
-        listOf(
-            "classification=" + classification,
-            "code=" + code,
-            "seed=" + seed,
-            "policySeed=" + policySeed,
-            "roster=" + roster,
-            "startingPlayerIndex=" + startingPlayerIndex,
-            "step=" + step,
-            "actor=" + (actor ?: "null"),
-            "stateDigest=" + (stateDigest ?: "null"),
-            "decisionFamily=" + decisionFamily,
-            "actionKind=" + actionKind,
-            "reason=" + reason,
-        ).joinToString(" ")
+    override fun toString(): String = listOf(
+        "CLASSIFICATION: $classification",
+        "SEED: $seed",
+        "POLICY_SEED: $policySeed",
+        "ROSTER: $roster",
+        "STARTING_PLAYER: $startingPlayerIndex",
+        "EXTERNAL_STEP: $step",
+        "ACTOR: ${actor ?: "null"}",
+        "STATE_DIGEST: ${stateDigest ?: "null"}",
+        "ACTION_KIND: $actionKind",
+        "DECISION_FAMILY: $decisionFamily",
+        "DIAGNOSTIC: $diagnostic (code=$code)",
+        "PUBLIC_DOMAIN: $publicDomain",
+        "ROOT_CAUSE: $reason",
+        "PROPOSED_FOLLOW_UP: $proposedFollowUp",
+    ).joinToString("\n")
 }
 
 private data class EpisodeResult(
@@ -717,6 +864,8 @@ private class CorpusEvidence {
                 (diagnosticCodes["CHAIN_COPY_COST_UNSUPPORTED"] ?: 0),
             "ANY_PLAYER_MAY_PAY_COST_UNSUPPORTED" to
                 (diagnosticCodes["ANY_PLAYER_MAY_PAY_COST_UNSUPPORTED"] ?: 0),
+            "PAYMENT_DOMAIN_UNSUPPORTED" to
+                (diagnosticCodes["PAYMENT_DOMAIN_UNSUPPORTED"] ?: 0),
             "SACRIFICE_AND_PAY_COST_UNSUPPORTED" to
                 (diagnosticCodes["SACRIFICE_AND_PAY_COST_UNSUPPORTED"] ?: 0),
             "PREVENT_DAMAGE_CONFIGURATION_UNSUPPORTED" to
