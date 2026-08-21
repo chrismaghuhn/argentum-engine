@@ -206,37 +206,37 @@ class PaymentPlanV1Test : FunSpec({
         val (driver, player) = game()
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.BLACK)
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.GREEN)
-        val validator = PaymentPlanValidator(ManaSolver(driver.cardRegistry))
+        driver.giveMana(player, com.wingedsheep.sdk.core.Color.RED)
+        val spellId = driver.putCardInHand(player, ordinarySpell.name)
 
-        val spendBlack = validator.validate(
-            state = driver.state,
-            playerId = player,
-            cost = ManaCost.parse("{1}"),
-            plan = plan(
-                poolSpend = PoolSpend(black = 1),
-                allocations = listOf(
-                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK))),
+        val result = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        poolSpend = PoolSpend(black = 1, green = 1),
+                        allocations = listOf(
+                            CostUnitAllocation(
+                                0,
+                                listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN)),
+                            ),
+                            CostUnitAllocation(
+                                1,
+                                listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK)),
+                            ),
+                        ),
+                    ),
                 ),
             ),
-        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+        )
 
-        spendBlack.poolAfterSpend.black shouldBe 0
-        spendBlack.poolAfterSpend.green shouldBe 1
-
-        val spendGreen = validator.validate(
-            state = driver.state,
-            playerId = player,
-            cost = ManaCost.parse("{1}"),
-            plan = plan(
-                poolSpend = PoolSpend(green = 1),
-                allocations = listOf(
-                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN))),
-                ),
-            ),
-        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
-
-        spendGreen.poolAfterSpend.black shouldBe 1
-        spendGreen.poolAfterSpend.green shouldBe 0
+        result.isSuccess shouldBe true
+        val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing player mana pool")
+        remainingPool.black shouldBe 0
+        remainingPool.green shouldBe 0
+        remainingPool.red shouldBe 1
     }
 
     test("colorless pool spend is distinct from generic spend") {

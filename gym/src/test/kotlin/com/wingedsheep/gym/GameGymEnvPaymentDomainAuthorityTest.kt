@@ -1,6 +1,8 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
@@ -84,6 +86,22 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }
     }
 
+    val unsupportedXSpell = card("Gym Unsupported X Spell") {
+        manaCost = "{X}{B}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    val ordinarySpell = card("Gym Ordinary Fixed Spell") {
+        manaCost = "{1}{B}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun registry() = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
@@ -91,6 +109,8 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(sourceWithTrackedMana)
         register(equipmentWithTarget)
         register(staticManaGrant)
+        register(unsupportedXSpell)
+        register(ordinarySpell)
     }
 
     fun prepared(cardName: String): Triple<GameEnvironment, EntityId, EntityId> {
@@ -198,6 +218,65 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
 
         view.paymentDomain shouldNotBe null
         view.paymentDomain!!.sourceActivations.any { it.sourceId == sourceId } shouldBe false
+    }
+
+    test("unsupported CastSpell payment shapes emit PAYMENT_DOMAIN_UNSUPPORTED") {
+        val (environment, player, cardId) = prepared(unsupportedXSpell.name)
+        val state = environment.state.moveToZone(
+            cardId,
+            ZoneKey(player, Zone.BATTLEFIELD),
+            ZoneKey(player, Zone.HAND),
+        )
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        val legalAction = LegalAction(
+            action = CastSpell(player, cardId),
+            actionType = "CastSpell",
+            description = "Cast the unsupported X spell",
+            manaCostString = "{X}{B}",
+            hasXCost = true,
+        )
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("inert alternative-payment flags do not hide a fixed CastSpell cost") {
+        val (environment, player, cardId) = prepared(ordinarySpell.name)
+        val state = environment.state.moveToZone(
+            cardId,
+            ZoneKey(player, Zone.BATTLEFIELD),
+            ZoneKey(player, Zone.HAND),
+        )
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        val legalAction = LegalAction(
+            action = CastSpell(player, cardId),
+            actionType = "CastSpell",
+            description = "Cast the ordinary fixed spell",
+            manaCostString = "{1}{B}",
+            hasConvoke = true,
+            convokeCreatures = emptyList(),
+            hasDelve = true,
+            delveCards = emptyList(),
+            hasTapForGeneric = true,
+            tapForGenericPermanents = emptyList(),
+            hasHarmonize = true,
+            harmonizeCreatures = emptyList(),
+        )
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldNotBe null
+        view.paymentDomain!!.requiredCost shouldBe "{1}{B}"
     }
 
     test("target-dependent equip payment does not publish an optimistic domain") {
