@@ -158,6 +158,7 @@ internal object ObservationCanonicalizer {
         "filterDescription",
         "iconKey",
         "imageUri",
+        "pileLabels",
         "remainderLabel",
         "selectedLabel",
         "text",

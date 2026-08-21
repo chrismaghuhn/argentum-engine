@@ -549,7 +549,8 @@ class StructuredDecisionDomainTest : FunSpec({
 
     test("Rules rejects responses that violate projected cardinality") {
         val owner = environment().playerIds.first()
-        val candidate = EntityId("target-cardinality")
+        val firstCandidate = EntityId("target-cardinality-a")
+        val secondCandidate = EntityId("target-cardinality-b")
         val gym = gameWithPendingDecision(
             ChooseTargetsDecision(
                 id = "targets-reject-cardinality",
@@ -557,7 +558,7 @@ class StructuredDecisionDomainTest : FunSpec({
                 prompt = "Choose one target",
                 context = DecisionContext(phase = DecisionPhase.RESOLUTION),
                 targetRequirements = listOf(TargetRequirementInfo(0, "one target", 1, 1)),
-                legalTargets = mapOf(0 to listOf(candidate))
+                legalTargets = mapOf(0 to listOf(firstCandidate, secondCandidate))
             )
         )
         val view = pendingView(gym)
@@ -568,7 +569,7 @@ class StructuredDecisionDomainTest : FunSpec({
             gym.submitDecision(
                 TargetsResponse(
                     decisionId(view),
-                    mapOf(requirement.index to listOf(requirement.candidates.single(), requirement.candidates.single()))
+                    mapOf(requirement.index to requirement.candidates.take(2))
                 )
             )
         }

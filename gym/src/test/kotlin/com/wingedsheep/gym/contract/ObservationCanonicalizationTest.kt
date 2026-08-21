@@ -269,6 +269,32 @@ class ObservationCanonicalizationTest : FunSpec({
             StateDigest.compute(withDomain(listOf(first), 2))
     }
 
+    test("split-pile labels are presentation-only in the semantic digest") {
+        val base = observation(environment())
+        val card = EntityId("split-pile-card")
+
+        fun withLabels(labels: List<String>): TrainingObservation = base.copy(
+            pendingDecision = PendingDecisionView(
+                decisionId = "routing-id",
+                kind = PendingDecisionKind.SPLIT_PILES,
+                playerId = base.perspectivePlayerId,
+                prompt = "presentation prompt",
+                structuredDomain = SplitPilesDomain(
+                    cards = listOf(card),
+                    numberOfPiles = 2,
+                    pileLabels = labels
+                )
+            )
+        )
+
+        val first = withLabels(listOf("Keep", "Discard"))
+        val presentationVariant = withLabels(listOf("Top", "Bottom"))
+
+        ObservationCanonicalizer.wireJson(first) shouldNotBe
+            ObservationCanonicalizer.wireJson(presentationVariant)
+        StateDigest.compute(first) shouldBe StateDigest.compute(presentationVariant)
+    }
+
     test("rules-significant stack order remains observable") {
         val base = observation(environment())
         val lower = StackItemView(
