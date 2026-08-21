@@ -106,6 +106,18 @@ class ReplayDurabilityTest : ScenarioTestBase() {
             overlaid.requireCard("Forest").name shouldBe "Forest"
         }
 
+        test("pinning a combined DFC deck entry regenerates its alias on replay overlay") {
+            val combined = "Outland Liberator // Frenzied Trapbreaker"
+            val pinned = ReplayCardPin.capture(cardRegistry, setupWithDeck(mapOf(combined to 1)))
+            pinned.shouldNotBeEmpty()
+
+            val overlaid = ReplayCardPin.overlay(cardRegistry, pinned)
+            val restoredFront = overlaid.requireCard("Outland Liberator")
+
+            (overlaid.requireCard(combined) === restoredFront) shouldBe true
+            overlaid.requireCard("Frenzied Trapbreaker").name shouldBe "Frenzied Trapbreaker"
+        }
+
         test("pinning preserves ability ids, which recorded yields are matched by") {
             val recording = CardRegistry(parent = cardRegistry).apply { register(bear(2, 2)) }
             // Grizzly Bears has no abilities; use a real printed card with one instead.
