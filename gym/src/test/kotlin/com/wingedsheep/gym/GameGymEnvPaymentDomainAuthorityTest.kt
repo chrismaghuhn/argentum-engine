@@ -5,6 +5,8 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -17,8 +19,14 @@ import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
+import com.wingedsheep.sdk.scripting.GrantActivatedAbility
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -58,12 +66,31 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         equipAbility("{1}")
     }
 
+    val grantedAnyColorManaAbility = ActivatedAbility(
+        id = AbilityId("test-granted-any-color-mana"),
+        cost = Costs.Tap,
+        effect = Effects.AddManaOfChoice(),
+        isManaAbility = true,
+        timing = TimingRule.ManaAbility,
+    )
+
+    val staticManaGrant = card("Gym Static Mana Grant") {
+        typeLine = "Enchantment"
+        staticAbility {
+            ability = GrantActivatedAbility(
+                ability = grantedAnyColorManaAbility,
+                filter = GroupFilter(GameObjectFilter.Land.youControl()),
+            )
+        }
+    }
+
     fun registry() = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
         register(sourceWithTapPayment)
         register(sourceWithTrackedMana)
         register(equipmentWithTarget)
+        register(staticManaGrant)
     }
 
     fun prepared(cardName: String): Triple<GameEnvironment, EntityId, EntityId> {
@@ -98,6 +125,55 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         state = state.moveToZone(sourceId, sourceZone, ZoneKey(player, Zone.BATTLEFIELD))
         environment.restore(state, environment.playerIds, environment.stepCount)
         return Triple(environment, player, sourceId)
+    }
+
+    fun preparedWithForestAndStaticManaGrant(): Pair<Triple<GameEnvironment, EntityId, EntityId>, EntityId> {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            sourceWithTapPayment.name to 1,
+                            "Forest" to 1,
+                            staticManaGrant.name to 1,
+                            "Mountain" to 8,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 91174L,
+            ),
+        )
+
+        val player = environment.playerIds.first()
+        var state = environment.state
+        while (state.step != Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+
+        fun moveNamed(name: String): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            state = state.moveToZone(id, from, ZoneKey(player, Zone.BATTLEFIELD))
+            return id
+        }
+
+        val actionSourceId = moveNamed(sourceWithTapPayment.name)
+        val forestId = moveNamed("Forest")
+        moveNamed(staticManaGrant.name)
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        return Triple(environment, player, actionSourceId) to forestId
     }
 
     test("PaymentDomainV1 excludes the ability source when the action also pays its tap cost") {
@@ -195,6 +271,46 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             actionType = "ActivateAbility",
             description = "Pay through a tracking-restricted source",
             manaCostString = "{G}",
+        )
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldBe null
+    }
+
+    test("intrinsic and statically granted mana on one land never publishes only the granted ability") {
+        val (prepared, forestId) = preparedWithForestAndStaticManaGrant()
+        val environment = prepared.first
+        val player = prepared.second
+        val sourceId = prepared.third
+
+        val forestActions = environment.legalActions().filter { legalAction ->
+            val action = legalAction.action as? ActivateAbility
+            legalAction.isManaAbility && action?.sourceId == forestId
+        }
+        forestActions.map { (it.action as ActivateAbility).abilityId }.toSet() shouldBe setOf(
+            AbilityId.intrinsicMana('G'),
+            grantedAnyColorManaAbility.id,
+        )
+        ManaSolver(registry())
+            .findAvailableManaSources(environment.state, player)
+            .single { it.entityId == forestId }
+            .supportsPaymentPlanV1() shouldBe false
+
+        val action = ActivateAbility(
+            playerId = player,
+            sourceId = sourceId,
+            abilityId = sourceWithTapPayment.activatedAbilities[1].id,
+        )
+        val legalAction = LegalAction(
+            action = action,
+            actionType = "ActivateAbility",
+            description = "Pay through a source with an intrinsic/granted land combination",
+            manaCostString = "{1}{R}",
         )
 
         val view = ObservationBuilder(cardRegistry = registry())

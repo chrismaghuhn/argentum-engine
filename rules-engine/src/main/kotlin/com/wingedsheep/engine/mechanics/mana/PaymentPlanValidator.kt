@@ -44,7 +44,20 @@ fun ManaSource.supportsPaymentPlanV1(): Boolean =
         colorPainCost.isEmpty() &&
         colorlessPainCost == 0 &&
         colorsRequiringSacrifice.isEmpty() &&
+        !hasUnrepresentedIntrinsicManaChoice() &&
         ordinaryTapManaAbilitiesOnly()
+
+/**
+ * A land with a basic subtype can have an intrinsic mana ability in addition to a granted/static
+ * mana ability. The aggregate source currently carries the intrinsic production as seeded colors,
+ * but its explicit ability lists cannot identify both choices. PaymentPlanV1 must therefore fail
+ * closed instead of publishing or accepting only the granted ability.
+ */
+private fun ManaSource.hasUnrepresentedIntrinsicManaChoice(): Boolean =
+    intrinsicManaColors.isNotEmpty() &&
+        producesColors.flatMap(::manaAbilityOptionsFor)
+            .plus(manaAbilityOptionsFor(null))
+            .isNotEmpty()
 
 private fun ManaSource.ordinaryTapManaAbilitiesOnly(): Boolean {
     val abilities = producesColors

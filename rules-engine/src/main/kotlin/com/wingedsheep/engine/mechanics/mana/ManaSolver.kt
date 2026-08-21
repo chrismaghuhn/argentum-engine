@@ -74,6 +74,13 @@ data class ManaSource(
     val isBasicLand: Boolean = false,
     /** Whether this source is a land (any land type) */
     val isLand: Boolean = false,
+    /**
+     * Colors supplied by an intrinsic basic-land-subtype mana ability before explicit or granted
+     * abilities are aggregated. A non-empty value combined with explicit mana abilities means the
+     * source currently has two distinct ability identities that ManaSource does not yet expose as
+     * a complete public choice set.
+     */
+    val intrinsicManaColors: Set<Color> = emptySet(),
     /** Whether this source is a creature */
     val isCreature: Boolean = false,
     /** Whether this source has non-mana activated abilities (utility land/creature) */
@@ -1239,6 +1246,7 @@ class ManaSolver(
                             producesColorless = false,
                             isBasicLand = isBasicLand,
                             isLand = true,
+                            intrinsicManaColors = effectiveColors,
                             isCreature = isCreature,
                             hasNonManaAbilities = hasNonManaAbilities,
                             hasPainCost = false,
@@ -1682,6 +1690,7 @@ class ManaSolver(
                     producesColorless = producesColorless,
                     isBasicLand = isBasicLand,
                     isLand = card.typeLine.isLand,
+                    intrinsicManaColors = landSubtypeSeedColors.orEmpty(),
                     isCreature = isCreature,
                     hasNonManaAbilities = hasNonManaAbilities,
                     hasPainCost = hasPainCost,
