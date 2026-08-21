@@ -305,7 +305,13 @@ data class PendingDecisionView(
     /** True when no LegalActionView options were generated; structured response required. */
     val requiresStructuredResponse: Boolean = false,
     /** Extra hints about the decision shape (min/max selections, numeric range, etc.). */
-    val shape: DecisionShape = DecisionShape()
+    val shape: DecisionShape = DecisionShape(),
+    /**
+     * Complete actor-authorized domain for decisions that cannot be represented by one flat
+     * action. This is null for simple folded decisions and for perspectives that do not own the
+     * decision.
+     */
+    val structuredDomain: StructuredDecisionDomain? = null
 )
 
 @Serializable

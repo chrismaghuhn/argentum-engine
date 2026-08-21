@@ -24,6 +24,8 @@ class WebConfig : WebMvcConfigurer {
         // later if payload size becomes a concern.
         encodeDefaults = true
         explicitNulls = false
+        // Structured decision domains carry card/target metadata keyed by public EntityId.
+        allowStructuredMapKeys = true
     }
 
     // Spring deprecated extendMessageConverters in favour of the builder-based configureMessageConverters,

@@ -248,8 +248,9 @@ class EnvController(
         description = """
             For pending decisions the folded action-ID space can't express —
             ChooseTargets, Distribute, Order, SplitPiles, Search, Reorder,
-            AssignDamage, SelectManaSources, multi-select SelectCards,
-            multi-mode ChooseMode, BudgetModal.
+            SelectManaSources, multi-select SelectCards, multi-mode ChooseMode,
+            ChooseReplacement, BudgetModal. The obsolete AssignDamage shape is
+            retained only for replay decoding and is not a modern projected domain.
             Returns 409 if the env is not currently paused on a decision.
         """
     )

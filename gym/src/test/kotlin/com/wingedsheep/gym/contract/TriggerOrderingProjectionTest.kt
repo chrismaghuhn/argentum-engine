@@ -54,9 +54,14 @@ class TriggerOrderingProjectionTest : FunSpec({
         ownerView.pendingDecision?.kind shouldBe PendingDecisionKind.ORDER_OBJECTS
         ownerView.pendingDecision?.requiresStructuredResponse shouldBe true
         ownerView.pendingDecision?.decisionId shouldBe pending.id
+        val orderingDomain = ownerView.pendingDecision?.structuredDomain
+            .shouldBeInstanceOf<OrderingDomain>()
+        orderingDomain.objects shouldBe listOf(first, second)
+        orderingDomain.objectLabels shouldBe mapOf(first to "first trigger", second to "second trigger")
         opponentView.pendingDecision?.kind shouldBe PendingDecisionKind.GENERIC
         opponentView.pendingDecision?.decisionId shouldBe null
         opponentView.pendingDecision?.sourceName shouldBe null
+        opponentView.pendingDecision?.structuredDomain shouldBe null
         opponentView.pendingDecision?.shape shouldBe DecisionShape()
         opponentView.legalActions shouldBe emptyList()
     }
