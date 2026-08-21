@@ -326,9 +326,16 @@ internal fun processPreTargetedEffectQueue(
     ctx: PreTargetedEffectContext,
     effectExecutor: (GameState, Effect, EffectContext) -> EffectResult,
     targetValidator: TargetValidator,
-    accumulatedEvents: List<GameEvent>
+    accumulatedEvents: List<GameEvent>,
+    accumulatedDiagnostics: List<DiagnosticSignal> = emptyList(),
 ): EffectResult {
-    if (entries.isEmpty()) return EffectResult.success(state, accumulatedEvents)
+    if (entries.isEmpty()) {
+        return EffectResult.success(
+            state,
+            accumulatedEvents,
+            diagnostics = accumulatedDiagnostics,
+        )
+    }
 
     val head = entries.first()
     val tail = entries.drop(1)
@@ -429,9 +436,30 @@ internal fun processPreTargetedEffectQueue(
 
     val result = effectExecutor(stateForExecution, head.effect, effectContext)
     val nextEvents = accumulatedEvents + result.events
+    val nextDiagnostics = accumulatedDiagnostics + result.diagnostics
+
+    if (result.diagnostics.isNotEmpty()) {
+        val cleanState = if (tail.isNotEmpty()) {
+            val (_, afterPop) = result.state.popContinuation()
+            afterPop
+        } else {
+            result.state
+        }
+        return EffectResult(
+            state = cleanState,
+            events = nextEvents,
+            error = result.error ?: "Unsupported path during modal resolution",
+            diagnostics = nextDiagnostics,
+        )
+    }
 
     if (result.isPaused) {
-        return EffectResult.paused(result.state, result.pendingDecision!!, nextEvents)
+        return EffectResult.paused(
+            result.state,
+            result.pendingDecision!!,
+            nextEvents,
+            diagnostics = nextDiagnostics,
+        )
     }
     if (result.error != null) {
         if (hasIllegalTargetPortion) {
@@ -447,10 +475,16 @@ internal fun processPreTargetedEffectQueue(
                 ctx,
                 effectExecutor,
                 targetValidator,
-                nextEvents
+                nextEvents,
+                nextDiagnostics,
             )
         }
-        return EffectResult(state = result.state, events = nextEvents, error = result.error)
+        return EffectResult(
+            state = result.state,
+            events = nextEvents,
+            error = result.error,
+            diagnostics = result.diagnostics,
+        )
     }
 
     // Success — pop the pre-pushed tail continuation and drain the rest synchronously.
@@ -459,5 +493,13 @@ internal fun processPreTargetedEffectQueue(
         afterPop
     } else result.state
 
-    return processPreTargetedEffectQueue(nextState, tail, ctx, effectExecutor, targetValidator, nextEvents)
+    return processPreTargetedEffectQueue(
+        nextState,
+        tail,
+        ctx,
+        effectExecutor,
+        targetValidator,
+        nextEvents,
+        nextDiagnostics,
+    )
 }

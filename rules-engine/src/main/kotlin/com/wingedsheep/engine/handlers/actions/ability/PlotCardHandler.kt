@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.handlers.actions.ability
 
 import com.wingedsheep.engine.core.CardPlottedEvent
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
@@ -264,6 +265,7 @@ class PlotCardHandler(
         events.add(CardPlottedEvent(action.playerId, action.cardId, cardComponent.name))
 
         currentState = currentState.tick()
+        var diagnostics = emptyList<DiagnosticSignal>()
 
         // Fire any "when this card becomes plotted" triggers (CR 718, e.g. Aloe Alchemist). The
         // ActionProcessor does not run trigger detection centrally — each handler detects and
@@ -276,15 +278,17 @@ class PlotCardHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
             currentState = triggerResult.newState
             events.addAll(triggerResult.events)
+            diagnostics = triggerResult.diagnostics
         }
 
         // Plot is a special action — does not change priority and does not use the stack.
-        return ExecutionResult.success(currentState, events)
+        return ExecutionResult.success(currentState, events, diagnostics)
     }
 
     companion object {

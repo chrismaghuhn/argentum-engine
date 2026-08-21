@@ -48,6 +48,18 @@ class AnyPlayerMayPayExecutor(
         effect: AnyPlayerMayPayEffect,
         context: EffectContext
     ): EffectResult {
+        val supportedAtom = (effect.cost as? PayCost.Atom)?.atom
+        if (supportedAtom !is CostAtom.Sacrifice && supportedAtom !is CostAtom.PayLife) {
+            return EffectResult.error(
+                state,
+                "Unsupported cost type for AnyPlayerMayPay",
+                diagnostics = listOf(
+                    DiagnosticSignal(
+                        code = DiagnosticCode.ANY_PLAYER_MAY_PAY_COST_UNSUPPORTED,
+                    )
+                )
+            )
+        }
         val sourceId = context.sourceId
             ?: return EffectResult.error(state, "No source for any player may pay effect")
 
@@ -121,7 +133,15 @@ class AnyPlayerMayPayExecutor(
                 state, effect, context, atom, sourceId, sourceName,
                 playerId, playerOrder, index
             )
-            else -> EffectResult.error(state, "Unsupported cost type for AnyPlayerMayPay: ${effect.cost::class.simpleName}")
+            else -> EffectResult.error(
+                state,
+                "Unsupported cost type for AnyPlayerMayPay",
+                diagnostics = listOf(
+                    DiagnosticSignal(
+                        code = DiagnosticCode.ANY_PLAYER_MAY_PAY_COST_UNSUPPORTED,
+                    )
+                )
+            )
         }
     }
 

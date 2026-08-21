@@ -59,7 +59,8 @@ class DeclareBlockersHandler(
                 return ExecutionResult.paused(
                     stateWithTriggers,
                     result.pendingDecision!!,
-                    result.events
+                    result.events,
+                    diagnostics = result.diagnostics,
                 )
             }
             return result
@@ -78,13 +79,15 @@ class DeclareBlockersHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    result.events + triggerResult.events
+                    result.events + triggerResult.events,
+                    diagnostics = result.diagnostics + triggerResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 triggerResult.newState,
-                result.events + triggerResult.events
+                result.events + triggerResult.events,
+                result.diagnostics + triggerResult.diagnostics,
             )
         }
 

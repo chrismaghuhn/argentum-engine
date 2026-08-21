@@ -27,7 +27,8 @@ object StepActionHelper {
             return ExecutionResult.paused(
                 sbaResult.state,
                 sbaResult.pendingDecision!!,
-                priorEvents + sbaResult.events
+                priorEvents + sbaResult.events,
+                diagnostics = sbaResult.diagnostics,
             )
         }
         var newState = sbaResult.newState
@@ -37,6 +38,6 @@ object StepActionHelper {
             newState = newState.copy(priorityPlayerId = null)
         }
 
-        return ExecutionResult.success(newState, priorEvents)
+        return ExecutionResult.success(newState, priorEvents, sbaResult.diagnostics)
     }
 }

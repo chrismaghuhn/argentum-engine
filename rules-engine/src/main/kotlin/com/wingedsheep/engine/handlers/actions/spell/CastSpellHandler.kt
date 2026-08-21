@@ -2453,7 +2453,10 @@ class CastSpellHandler(
                 return zoneResult.toExecutionResult()
             }
             val resumed = execute(zoneResult.state, preResolvedAction)
-            return resumed.copy(events = zoneResult.events + resumed.events)
+            return resumed.copy(
+                events = zoneResult.events + resumed.events,
+                diagnostics = zoneResult.diagnostics + resumed.diagnostics,
+            )
         }
 
         // Modal DFC back face (CR 712.11b) — resolved pre-cast, while the card is still in hand.
@@ -4250,14 +4253,16 @@ class CastSpellHandler(
                 return ExecutionResult.paused(
                     triggerResult.state.withPriority(action.playerId),
                     triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events
+                    allEvents + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 ).copy(triggersAlreadyProcessed = true)
             }
 
             allEvents = allEvents + triggerResult.events
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(action.playerId),
-                allEvents
+                allEvents,
+                triggerResult.diagnostics,
             ).copy(triggersAlreadyProcessed = true)
         }
 

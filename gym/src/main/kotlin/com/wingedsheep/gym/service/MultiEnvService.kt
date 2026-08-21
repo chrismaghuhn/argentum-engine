@@ -5,8 +5,10 @@ import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.gym.GameEnvironment
+import com.wingedsheep.gym.GameEnvironmentMode
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.GymEnv
+import com.wingedsheep.gym.EpisodeDiagnostics
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.deckbuild.DeckbuildEnvironment
@@ -56,7 +58,10 @@ class MultiEnvService(
      */
     fun create(config: EnvConfig): CreatedEnv {
         val gameConfig = config.toGameConfig()
-        val env = GameEnvironment.create(cardRegistry)
+        val env = GameEnvironment.create(
+            cardRegistry,
+            executionMode = GameEnvironmentMode.TRUSTED,
+        )
         env.reset(gameConfig, maxSteps = config.maxSteps)
         val gymEnv = GameGymEnv(
             environment = env,
@@ -98,6 +103,9 @@ class MultiEnvService(
     }
 
     fun listEnvs(): Set<EnvId> = envs.keys.toSet()
+
+    /** Authoritative episode diagnostics for the JVM-side A9 harness. */
+    fun diagnostics(envId: EnvId): EpisodeDiagnostics = requireGameEnv(envId).diagnostics
 
     // =========================================================================
     // Observations / stepping

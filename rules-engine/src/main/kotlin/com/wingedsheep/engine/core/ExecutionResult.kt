@@ -2,6 +2,7 @@ package com.wingedsheep.engine.core
 
 import com.wingedsheep.engine.state.GameState
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * Result of executing a game action or engine step.
@@ -27,7 +28,10 @@ data class ExecutionResult(
      * Paths would be duplicated on the stack — once by the handler, once by the
      * resumer running on the same `SpellCastEvent`.
      */
-    val triggersAlreadyProcessed: Boolean = false
+    val triggersAlreadyProcessed: Boolean = false,
+    /** Internal rules diagnostics; deliberately excluded from every wire serialization. */
+    @Transient
+    val diagnostics: List<DiagnosticSignal> = emptyList()
 ) {
     val isSuccess: Boolean get() = error == null && pendingDecision == null
     val isPaused: Boolean get() = pendingDecision != null
@@ -39,25 +43,32 @@ data class ExecutionResult(
         /**
          * Create a successful result with no events.
          */
-        fun success(state: GameState): ExecutionResult =
-            ExecutionResult(state)
-
-        /**
-         * Create a successful result with events.
-         */
-        fun success(state: GameState, events: List<GameEvent>): ExecutionResult =
-            ExecutionResult(state, events)
+        fun success(
+            state: GameState,
+            events: List<GameEvent> = emptyList(),
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): ExecutionResult =
+            ExecutionResult(state, events, diagnostics = diagnostics)
 
         /**
          * Create an error result.
          */
-        fun error(state: GameState, message: String): ExecutionResult =
-            ExecutionResult(state, error = message)
+        fun error(
+            state: GameState,
+            message: String,
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): ExecutionResult =
+            ExecutionResult(state, error = message, diagnostics = diagnostics)
 
         /**
          * Create a paused result awaiting player input.
          */
-        fun paused(state: GameState, decision: PendingDecision, events: List<GameEvent> = emptyList()): ExecutionResult =
-            ExecutionResult(state, events, pendingDecision = decision)
+        fun paused(
+            state: GameState,
+            decision: PendingDecision,
+            events: List<GameEvent> = emptyList(),
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): ExecutionResult =
+            ExecutionResult(state, events, pendingDecision = decision, diagnostics = diagnostics)
     }
 }

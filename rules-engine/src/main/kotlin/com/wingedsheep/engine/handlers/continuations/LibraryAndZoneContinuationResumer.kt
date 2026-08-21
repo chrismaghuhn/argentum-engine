@@ -83,9 +83,11 @@ class LibraryAndZoneContinuationResumer(
                     result.state,
                     result.pendingDecision!!,
                     events + result.events,
+                    diagnostics = result.diagnostics,
                 )
             } else {
                 checkForMore(result.state, events + result.events)
+                    .withDiagnosticsFrom(result.diagnostics)
             }
         }
     )
@@ -119,11 +121,20 @@ class LibraryAndZoneContinuationResumer(
         val destZone = when (continuation.destination) {
             SearchDestination.HAND -> Zone.HAND
             SearchDestination.BATTLEFIELD -> Zone.BATTLEFIELD
-            else -> return ExecutionResult.error(state, "Unsupported destination: ${continuation.destination}")
+            else -> return ExecutionResult.error(
+                state,
+                "Unsupported graveyard return destination",
+                diagnostics = listOf(
+                    DiagnosticSignal(
+                        code = DiagnosticCode.LIBRARY_DESTINATION_UNSUPPORTED,
+                    )
+                )
+            )
         }
 
         // Hand entry is a CR 903.9b replacement boundary. Battlefield entry remains a plain
         // transition because Commander replacement does not apply to it.
+        var transitionDiagnostics = emptyList<DiagnosticSignal>()
         val transitionResult = if (destZone == Zone.HAND) {
             ZoneTransitionService.moveToZoneWithReplacements(
                 state = state,
@@ -136,6 +147,7 @@ class LibraryAndZoneContinuationResumer(
                     .PlainZoneChangeCompletion,
             ).let { result ->
                 if (result.isPaused) return result.toExecutionResult()
+                transitionDiagnostics = result.diagnostics
                 com.wingedsheep.engine.handlers.effects.ZoneTransitionResult(
                     state = result.state,
                     events = result.events,
@@ -152,6 +164,7 @@ class LibraryAndZoneContinuationResumer(
         }
 
         return checkForMore(transitionResult.state, transitionResult.events)
+            .withDiagnosticsFrom(transitionDiagnostics)
     }
 
     /**
@@ -243,7 +256,7 @@ class LibraryAndZoneContinuationResumer(
         return checkForMore(
             stateWithCollections,
             completed.events,
-        )
+        ).withDiagnosticsFrom(completed.diagnostics)
     }
 
     /**
@@ -720,13 +733,19 @@ class LibraryAndZoneContinuationResumer(
         )
 
         if (result.isPaused) {
-            return ExecutionResult.paused(result.state, result.pendingDecision!!, result.events)
+            return ExecutionResult.paused(
+                result.state,
+                result.pendingDecision!!,
+                result.events,
+                diagnostics = result.diagnostics,
+            )
         }
 
         // Republish the pipeline's collections alongside the picks so the consumer frame sees both
         // the original pool and the kept set.
         val merged = continuation.storedCollections + result.updatedCollections
         return checkForMore(exposeCollectionsToNextFrame(result.state, merged), result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     /**
@@ -875,6 +894,7 @@ class LibraryAndZoneContinuationResumer(
         }
 
         return checkForMore(finalState, transitionResult.events)
+            .withDiagnosticsFrom(transitionResult.diagnostics)
     }
 
     /**
@@ -915,6 +935,7 @@ class LibraryAndZoneContinuationResumer(
             .markRevealed(transitionResult.state, listOf(spellId), transitionResult.state.turnOrder.toSet())
         val events = listOf(SpellCounteredEvent(spellId, spellName)) + transitionResult.events
         return checkForMore(newState, events)
+            .withDiagnosticsFrom(transitionResult.diagnostics)
     }
 
     /**
@@ -956,10 +977,16 @@ class LibraryAndZoneContinuationResumer(
                 cardRegistry = services.cardRegistry,
             )
             if (result.isPaused) {
-                return ExecutionResult.paused(result.state, result.pendingDecision!!, result.events)
+                return ExecutionResult.paused(
+                    result.state,
+                    result.pendingDecision!!,
+                    result.events,
+                    diagnostics = result.diagnostics,
+                )
             }
             if (!result.isSuccess) return result.toExecutionResult()
             return checkForMore(result.state, result.events)
+                .withDiagnosticsFrom(result.diagnostics)
         }
 
         // Yes — bottom the other exiled cards now, then attempt the free cast.
@@ -991,6 +1018,7 @@ class LibraryAndZoneContinuationResumer(
                 bottomResult.state,
                 bottomResult.pendingDecision!!,
                 bottomResult.events,
+                diagnostics = bottomResult.diagnostics,
             )
         }
         if (!bottomResult.isSuccess) return bottomResult.toExecutionResult()
@@ -1002,7 +1030,7 @@ class LibraryAndZoneContinuationResumer(
             continuation = afterBottomContinuation,
             events = bottomResult.events,
             checkForMore = checkForMore,
-        )
+        ).withDiagnosticsFrom(bottomResult.diagnostics)
     }
 
     /** Continue the cascade YES branch once all non-hit cards have reached their bottom boundary. */
@@ -1031,10 +1059,16 @@ class LibraryAndZoneContinuationResumer(
                 cardRegistry = services.cardRegistry,
             )
             if (tail.isPaused) {
-                return ExecutionResult.paused(tail.state, tail.pendingDecision!!, events + tail.events)
+                return ExecutionResult.paused(
+                    tail.state,
+                    tail.pendingDecision!!,
+                    events + tail.events,
+                    diagnostics = tail.diagnostics,
+                )
             }
             if (!tail.isSuccess) return tail.toExecutionResult()
             return checkForMore(tail.state, events + tail.events)
+                .withDiagnosticsFrom(tail.diagnostics)
         }
 
         // Grant free-cast permission so the synthesized cast pays nothing.
@@ -1080,10 +1114,16 @@ class LibraryAndZoneContinuationResumer(
                 cardRegistry = services.cardRegistry,
             )
             if (tail.isPaused) {
-                return ExecutionResult.paused(tail.state, tail.pendingDecision!!, events + tail.events)
+                return ExecutionResult.paused(
+                    tail.state,
+                    tail.pendingDecision!!,
+                    events + tail.events,
+                    diagnostics = tail.diagnostics,
+                )
             }
             if (!tail.isSuccess) return tail.toExecutionResult()
             return checkForMore(tail.state, events + tail.events)
+                .withDiagnosticsFrom(castResult.diagnostics + tail.diagnostics)
         }
 
         // CastSpellHandler already detected + stacked this cast's triggers; propagate the flag
@@ -1095,11 +1135,13 @@ class LibraryAndZoneContinuationResumer(
             return ExecutionResult.paused(
                 castResult.state,
                 castResult.pendingDecision,
-                events + castResult.events
+                events + castResult.events,
+                diagnostics = castResult.diagnostics,
             ).copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         }
 
         return checkForMore(castResult.state, events + castResult.events)
+            .withDiagnosticsFrom(castResult.diagnostics)
             .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
     }
 
@@ -1158,6 +1200,7 @@ class LibraryAndZoneContinuationResumer(
                 bottomResult.state,
                 bottomResult.pendingDecision!!,
                 bottomResult.events,
+                diagnostics = bottomResult.diagnostics,
             )
         }
         if (!bottomResult.isSuccess) return bottomResult.toExecutionResult()
@@ -1169,7 +1212,7 @@ class LibraryAndZoneContinuationResumer(
             continuation = afterBottomContinuation,
             events = bottomResult.events,
             checkForMore = checkForMore,
-        )
+        ).withDiagnosticsFrom(bottomResult.diagnostics)
     }
 
     /** Continue discover once all non-discovered exiled cards have crossed their bottom boundary. */
@@ -1273,7 +1316,12 @@ class LibraryAndZoneContinuationResumer(
 
         if (castResult.pendingDecision != null) {
             // The cast paused (targets / X); the pre-pushed follow-up runs when it resumes.
-            return ExecutionResult.paused(castResult.state, castResult.pendingDecision, events + castResult.events)
+            return ExecutionResult.paused(
+                castResult.state,
+                castResult.pendingDecision,
+                events + castResult.events,
+                diagnostics = castResult.diagnostics,
+            )
                 .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         }
 
@@ -1286,6 +1334,7 @@ class LibraryAndZoneContinuationResumer(
         // "whenever you discover" triggers here.
         return scanDiscoveredEventTriggers(
             checkForMore(castResult.state, events + castResult.events)
+                .withDiagnosticsFrom(castResult.diagnostics)
                 .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         )
     }
@@ -1326,9 +1375,11 @@ class LibraryAndZoneContinuationResumer(
                 result.state,
                 result.pendingDecision!!,
                 events + result.events,
+                diagnostics = result.diagnostics,
             )
         }
         return checkForMore(result.state, events + result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     /**
@@ -1349,10 +1400,14 @@ class LibraryAndZoneContinuationResumer(
         val processed = services.triggerProcessor.processTriggers(result.state, triggers)
         val events = result.events + processed.events
         return if (processed.isPaused) {
-            ExecutionResult.paused(processed.state, processed.pendingDecision!!, events)
-                .copy(triggersAlreadyProcessed = true)
+            ExecutionResult.paused(
+                processed.state,
+                processed.pendingDecision!!,
+                events,
+                diagnostics = processed.diagnostics,
+            ).copy(triggersAlreadyProcessed = true)
         } else {
-            ExecutionResult.success(processed.newState, events)
+            ExecutionResult.success(processed.newState, events, processed.diagnostics)
                 .copy(triggersAlreadyProcessed = true)
         }
     }
@@ -1408,6 +1463,7 @@ class LibraryAndZoneContinuationResumer(
         }
         if (!moveResult.isSuccess) return moveResult.toExecutionResult()
         return checkForMore(moveResult.state, leadingEvents + moveResult.events)
+            .withDiagnosticsFrom(moveResult.diagnostics)
     }
 
     /** Run a discover [DiscoverMayCastContinuation.thenEffect] (if any) with the discovered card published. */
@@ -1427,9 +1483,15 @@ class LibraryAndZoneContinuationResumer(
         )
         val result = effectRunner.executeRemainingEffects(state, listOf(thenEffect), ctx)
         if (result.isPaused) {
-            return ExecutionResult.paused(result.state, result.pendingDecision!!, leadingEvents + result.events)
+            return ExecutionResult.paused(
+                result.state,
+                result.pendingDecision!!,
+                leadingEvents + result.events,
+                diagnostics = result.diagnostics,
+            )
         }
         return checkForMore(result.state, leadingEvents + result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
 
@@ -1475,6 +1537,7 @@ class LibraryAndZoneContinuationResumer(
                 state, continuation.cardId, continuation.grantedPermissionId
             )
             val fallbackEvents = mutableListOf<GameEvent>()
+            val fallbackDiagnostics = castResult.diagnostics.toMutableList()
             when (continuation.onCastFailure) {
                 FreeCastFallback.LEAVE -> {}
                 FreeCastFallback.HAND -> {
@@ -1493,11 +1556,12 @@ class LibraryAndZoneContinuationResumer(
                     if (moveResult.isPaused) {
                         return moveResult.toExecutionResult().copy(
                             events = fallbackEvents + moveResult.events,
-                        )
+                        ).withDiagnosticsFrom(fallbackDiagnostics)
                     }
                     if (moveResult.isSuccess) {
                         cleaned = moveResult.state
                         fallbackEvents.addAll(moveResult.events)
+                        fallbackDiagnostics.addAll(moveResult.diagnostics)
                     }
                 }
                 FreeCastFallback.BOTTOM_OF_LIBRARY -> {
@@ -1516,14 +1580,17 @@ class LibraryAndZoneContinuationResumer(
                             bottomResult.state,
                             bottomResult.pendingDecision!!,
                             fallbackEvents + bottomResult.events,
+                            diagnostics = bottomResult.diagnostics,
                         )
                     }
                     if (!bottomResult.isSuccess) return bottomResult.toExecutionResult()
                     cleaned = bottomResult.state
                     fallbackEvents.addAll(bottomResult.events)
+                    fallbackDiagnostics.addAll(bottomResult.diagnostics)
                 }
             }
             return checkForMore(cleaned, fallbackEvents)
+                .withDiagnosticsFrom(fallbackDiagnostics)
         }
 
         // The cast initiated. Publish the cast card so an enclosing IfYouDoEffect frame beneath
@@ -1540,6 +1607,7 @@ class LibraryAndZoneContinuationResumer(
                 exposed,
                 castResult.pendingDecision,
                 castResult.events,
+                diagnostics = castResult.diagnostics,
             ).copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         }
 
@@ -1550,6 +1618,7 @@ class LibraryAndZoneContinuationResumer(
         // for the non-discover callers, which emit no DiscoveredEvent).
         return scanDiscoveredEventTriggers(
             checkForMore(exposed, castResult.events)
+                .withDiagnosticsFrom(castResult.diagnostics)
                 .copy(triggersAlreadyProcessed = castResult.triggersAlreadyProcessed)
         )
     }
@@ -1612,5 +1681,6 @@ class LibraryAndZoneContinuationResumer(
         val result = effectRunner.executeRemainingEffects(state, effects, loopContext)
         if (result.isPaused) return result.toExecutionResult()
         return checkForMore(result.state, result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 }

@@ -76,12 +76,18 @@ import com.wingedsheep.sdk.model.EntityId
  * }
  * ```
  */
+enum class GameEnvironmentMode {
+    LEGACY,
+    TRUSTED,
+}
+
 class GameEnvironment private constructor(
     private val cardRegistry: CardRegistry,
     private val processor: ActionProcessor,
     private val enumerator: LegalActionEnumerator,
     private val evaluator: BoardEvaluator,
-    private val simulator: GameSimulator
+    private val simulator: GameSimulator,
+    private val executionMode: GameEnvironmentMode,
 ) {
     // =========================================================================
     // State
@@ -109,6 +115,14 @@ class GameEnvironment private constructor(
 
     /** Optional episode horizon configured by the Gym adapter. */
     var maxSteps: Int? = null
+        private set
+
+    /** Authoritative, episode-scoped unsupported-path evidence. */
+    var diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY
+        private set
+
+    /** Monotonic state generation used to deduplicate observation diagnostics. */
+    internal var projectionGeneration: Long = 0L
         private set
 
     // =========================================================================
@@ -156,6 +170,8 @@ class GameEnvironment private constructor(
         lastStepEvents = initResult.events
         stepCount = 0
         this.maxSteps = maxSteps
+        diagnostics = EpisodeDiagnostics.EMPTY
+        projectionGeneration = 0L
         return buildStepResult(initResult.events)
     }
 
@@ -184,6 +200,7 @@ class GameEnvironment private constructor(
         // it intentionally does not know which candidate list this environment exposed.  Keep
         // stale/non-owner actions fail-closed here before simulation can advance the horizon.
         validateActionMembership(action)
+        rejectNativePolicyFallback()
         return simulateAndCommit(action)
     }
 
@@ -225,6 +242,7 @@ class GameEnvironment private constructor(
             "Structured action does not belong to the selected current legal candidate: $submitted"
         }
 
+        rejectNativePolicyFallback()
         return simulateAndCommit(submitted)
     }
 
@@ -284,6 +302,7 @@ class GameEnvironment private constructor(
         events = events + simResult.events
         lastStepEvents = simResult.events
         stepCount++
+        projectionGeneration++
 
         return buildStepResult(simResult.events)
     }
@@ -291,6 +310,10 @@ class GameEnvironment private constructor(
     /** Commit one direct ActionProcessor transition without legacy quiet-state simulation. */
     private fun processAndCommit(action: GameAction): StepResult {
         val result = processor.process(state, action).result
+        if (result.diagnostics.isNotEmpty()) {
+            recordExecutionDiagnostics(result.diagnostics)
+            throw UnsupportedPathFailure(result.diagnostics)
+        }
         if (result.error != null) {
             throw IllegalArgumentException(result.error)
         }
@@ -299,6 +322,7 @@ class GameEnvironment private constructor(
         events = events + result.events
         lastStepEvents = result.events
         stepCount++
+        projectionGeneration++
 
         return buildStepResult(result.events)
     }
@@ -444,13 +468,15 @@ class GameEnvironment private constructor(
      * This is the primary mechanism for MCTS tree expansion.
      */
     fun fork(): GameEnvironment {
-        val forked = GameEnvironment(cardRegistry, processor, enumerator, evaluator, simulator)
+        val forked = GameEnvironment(cardRegistry, processor, enumerator, evaluator, simulator, executionMode)
         forked.state = state
         forked.playerIds = playerIds
         forked.events = emptyList() // forked environments start with clean event history
         forked.lastStepEvents = emptyList()
         forked.stepCount = stepCount
         forked.maxSteps = maxSteps
+        forked.diagnostics = diagnostics
+        forked.projectionGeneration = projectionGeneration
         return forked
     }
 
@@ -469,16 +495,21 @@ class GameEnvironment private constructor(
         state: GameState,
         playerIds: List<EntityId>,
         stepCount: Int = 0,
-        maxSteps: Int? = this.maxSteps
+        maxSteps: Int? = this.maxSteps,
+        diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
+        projectionGeneration: Long = stepCount.toLong()
     ) {
         require(stepCount >= 0) { "stepCount must not be negative" }
         require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
+        require(projectionGeneration >= 0) { "projectionGeneration must not be negative" }
         this.state = state
         this.playerIds = playerIds
         this.events = emptyList()
         this.lastStepEvents = emptyList()
         this.stepCount = stepCount
         this.maxSteps = maxSteps
+        this.diagnostics = diagnostics
+        this.projectionGeneration = projectionGeneration
     }
 
     /**
@@ -520,6 +551,7 @@ class GameEnvironment private constructor(
         agents: Map<EntityId, ActionSelector> = emptyMap(),
         maxSteps: Int = 2000
     ): StepResult {
+        rejectNativePolicyFallback()
         reset(config, maxSteps = maxSteps)
 
         while (!isTerminal && !isTruncated) {
@@ -557,6 +589,34 @@ class GameEnvironment private constructor(
         DecisionResponder(simulator, evaluator)
     }
 
+    internal fun projectionCursor(perspectivePlayerId: EntityId): ProjectionCursor =
+        ProjectionCursor(projectionGeneration, perspectivePlayerId)
+
+    internal fun recordObservationDiagnostics(
+        cursor: ProjectionCursor,
+        signals: List<DiagnosticSignal>,
+    ): Boolean {
+        val next = diagnostics.recordObservation(cursor, signals)
+        if (next == diagnostics) return false
+        diagnostics = next
+        return true
+    }
+
+    private fun recordExecutionDiagnostics(signals: List<DiagnosticSignal>) {
+        diagnostics = diagnostics.record(signals)
+    }
+
+    private fun rejectNativePolicyFallback() {
+        if (executionMode != GameEnvironmentMode.TRUSTED) return
+        val signals = listOf(
+            DiagnosticSignal(
+                code = DiagnosticCode.TRUSTED_NATIVE_POLICY_FALLBACK,
+            )
+        )
+        recordExecutionDiagnostics(signals)
+        throw UnsupportedPathFailure(signals)
+    }
+
     private fun buildStepResult(stepEvents: List<GameEvent>): StepResult {
         return StepResult(
             state = state,
@@ -586,13 +646,14 @@ class GameEnvironment private constructor(
          */
         fun create(
             cardRegistry: CardRegistry,
-            evaluator: BoardEvaluator = defaultEvaluator()
+            evaluator: BoardEvaluator = defaultEvaluator(),
+            executionMode: GameEnvironmentMode = GameEnvironmentMode.LEGACY,
         ): GameEnvironment {
             val services = EngineServices(cardRegistry)
             val processor = ActionProcessor(services, computeUndo = false)
             val enumerator = LegalActionEnumerator.create(cardRegistry)
             val simulator = GameSimulator(cardRegistry, processor, enumerator)
-            return GameEnvironment(cardRegistry, processor, enumerator, evaluator, simulator)
+            return GameEnvironment(cardRegistry, processor, enumerator, evaluator, simulator, executionMode)
         }
 
         /**

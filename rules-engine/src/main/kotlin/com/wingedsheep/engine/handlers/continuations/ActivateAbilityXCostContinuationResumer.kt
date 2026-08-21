@@ -368,5 +368,5 @@ class ActivateAbilityXCostContinuationResumer(
      */
     private fun reenter(result: ExecutionResult, checkForMore: CheckForMore): ExecutionResult =
         if (result.isPaused || result.error != null) result
-        else checkForMore(result.newState, result.events)
+        else checkForMore(result.newState, result.events).withDiagnosticsFrom(result.diagnostics)
 }

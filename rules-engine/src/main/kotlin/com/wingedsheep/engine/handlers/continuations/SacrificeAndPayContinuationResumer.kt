@@ -101,9 +101,14 @@ class SacrificeAndPayContinuationResumer(
             val allEvents = events + result.events
             return if (result.isPaused) {
                 // Another player needs a decision — return paused with combined events
-                ExecutionResult.paused(resultStateWithSnaps, result.pendingDecision!!, allEvents)
+                ExecutionResult.paused(
+                    resultStateWithSnaps,
+                    result.pendingDecision!!,
+                    allEvents,
+                    diagnostics = result.diagnostics,
+                )
             } else {
-                checkForMore(resultStateWithSnaps, allEvents)
+                checkForMore(resultStateWithSnaps, allEvents).withDiagnosticsFrom(result.diagnostics)
             }
         }
 
@@ -150,6 +155,7 @@ class SacrificeAndPayContinuationResumer(
         )
 
         return checkForMore(result.state, result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     fun resumePayOrSuffer(
@@ -207,7 +213,8 @@ class SacrificeAndPayContinuationResumer(
                 triggeringPlayerId = continuation.triggeringPlayerId
             )
             val result = services.effectExecutorRegistry.execute(state, continuation.sufferEffect, context).toExecutionResult()
-            return if (result.isPaused) result else checkForMore(result.state, result.events.toList())
+            return if (result.isPaused) result
+            else checkForMore(result.state, result.events.toList()).withDiagnosticsFrom(result.diagnostics)
         }
 
         // Player chose a cost option — create a single-cost PayOrSufferEffect and execute it
@@ -225,7 +232,8 @@ class SacrificeAndPayContinuationResumer(
             triggeringPlayerId = continuation.triggeringPlayerId
         )
         val result = services.effectExecutorRegistry.execute(state, singleCostEffect, context).toExecutionResult()
-        return if (result.isPaused) result else checkForMore(result.state, result.events.toList())
+        return if (result.isPaused) result
+        else checkForMore(result.state, result.events.toList()).withDiagnosticsFrom(result.diagnostics)
     }
 
     /**
@@ -625,7 +633,7 @@ class SacrificeAndPayContinuationResumer(
         return if (result.isPaused) {
             result
         } else {
-            checkForMore(result.state, result.events.toList())
+            checkForMore(result.state, result.events.toList()).withDiagnosticsFrom(result.diagnostics)
         }
     }
 
@@ -688,7 +696,12 @@ class SacrificeAndPayContinuationResumer(
 
             else -> return ExecutionResult.error(
                 state,
-                "Unsupported cost type for AnyPlayerMayPay resume: ${continuation.cost::class.simpleName}"
+                "Unsupported cost type for AnyPlayerMayPay resume",
+                diagnostics = listOf(
+                    DiagnosticSignal(
+                        code = DiagnosticCode.SACRIFICE_AND_PAY_COST_UNSUPPORTED,
+                    )
+                )
             )
         }
     }
@@ -714,7 +727,8 @@ class SacrificeAndPayContinuationResumer(
         )
         val result = services.effectExecutorRegistry.execute(state, consequence, context).toExecutionResult()
         val allEvents = priorEvents + result.events
-        return if (result.isPaused) result else checkForMore(result.state, allEvents)
+        return if (result.isPaused) result
+        else checkForMore(result.state, allEvents).withDiagnosticsFrom(result.diagnostics)
     }
 
     /**

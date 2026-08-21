@@ -144,5 +144,5 @@ class ModalTriggerContinuationResumer(
      * continuation chain drain — sibling triggers queued behind this one still need placing.
      */
     private fun ExecutionResult.thenCheckForMore(checkForMore: CheckForMore): ExecutionResult =
-        if (isSuccess) checkForMore(state, events) else this
+        if (isSuccess) checkForMore(state, events).withDiagnosticsFrom(diagnostics) else this
 }

@@ -289,6 +289,7 @@ class CostPaymentContinuationResumer(
             state = result.state,
             completion = completion,
             priorEvents = result.events,
+            priorDiagnostics = result.diagnostics,
             checkForMore = checkForMore,
         )
     }
@@ -298,6 +299,7 @@ class CostPaymentContinuationResumer(
         state: GameState,
         completion: PendingGameEvent.CostPaymentZoneChangeCompletion,
         priorEvents: List<GameEvent>,
+        priorDiagnostics: List<com.wingedsheep.engine.core.DiagnosticSignal> = emptyList(),
         checkForMore: CheckForMore,
     ): ExecutionResult {
         val nextCommander = completion.remainingCommanderIds.firstOrNull()
@@ -319,13 +321,16 @@ class CostPaymentContinuationResumer(
                 completion = remaining,
             )
             if (result.isPaused) {
-                return result.toExecutionResult().copy(events = priorEvents + result.events)
+                return result.toExecutionResult()
+                    .copy(events = priorEvents + result.events)
+                    .withDiagnosticsFrom(priorDiagnostics)
             }
-            if (!result.isSuccess) return result.toExecutionResult()
+            if (!result.isSuccess) return result.toExecutionResult().withDiagnosticsFrom(priorDiagnostics)
             return resumeAfterCommanderZoneChange(
                 state = result.state,
                 completion = remaining,
                 priorEvents = priorEvents + result.events,
+                priorDiagnostics = priorDiagnostics + result.diagnostics,
                 checkForMore = checkForMore,
             )
         }
@@ -345,9 +350,9 @@ class CostPaymentContinuationResumer(
                 priorEvents = priorEvents + execution.events,
                 continuation = paymentContinuation,
                 checkForMore = checkForMore,
-            )
+            ).withDiagnosticsFrom(priorDiagnostics)
         } else {
-            declined(state, paymentContinuation, checkForMore)
+            declined(state, paymentContinuation, checkForMore).withDiagnosticsFrom(priorDiagnostics)
         }
     }
 
@@ -403,9 +408,14 @@ class CostPaymentContinuationResumer(
             .toExecutionResult()
         val allEvents = priorEvents + result.events
         return if (result.isPaused) {
-            ExecutionResult.paused(result.state, result.pendingDecision!!, allEvents)
+            ExecutionResult.paused(
+                result.state,
+                result.pendingDecision!!,
+                allEvents,
+                diagnostics = result.diagnostics,
+            )
         } else {
-            checkForMore(result.state, allEvents)
+            checkForMore(result.state, allEvents).withDiagnosticsFrom(result.diagnostics)
         }
     }
 

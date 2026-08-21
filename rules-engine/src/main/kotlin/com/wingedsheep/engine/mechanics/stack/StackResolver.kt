@@ -1308,7 +1308,8 @@ class StackResolver(
                 return ExecutionResult.paused(
                     permanentResult.state,
                     permanentResult.pendingDecision!!,
-                    events + permanentResult.events
+                    events + permanentResult.events,
+                    diagnostics = permanentResult.diagnostics,
                 )
             }
             newState = permanentResult.state
@@ -1325,6 +1326,7 @@ class StackResolver(
                     xValue = spellComponent.xValue
                 )
             )
+            return ExecutionResult.success(newState, events, permanentResult.diagnostics)
         } else {
             // Execute effects and put in graveyard
             val effectResult = resolveNonPermanentSpell(
@@ -1340,15 +1342,15 @@ class StackResolver(
                 return ExecutionResult.paused(
                     effectResult.state,
                     effectResult.pendingDecision!!,
-                    allEvents
+                    allEvents,
+                    diagnostics = effectResult.diagnostics,
                 )
             }
             newState = effectResult.newState
             events.addAll(effectResult.events)
             events.add(ResolvedEvent(spellId, cardComponent?.name ?: "Unknown"))
+            return ExecutionResult.success(newState, events, effectResult.diagnostics)
         }
-
-        return ExecutionResult.success(newState, events)
     }
 
     /**
@@ -2388,6 +2390,7 @@ class StackResolver(
             0
         }
 
+        var effectDiagnostics = emptyList<DiagnosticSignal>()
         if (spellEffect != null) {
             val allTargetRequirements = state.getEntity(spellId)?.get<TargetsComponent>()?.targetRequirements ?: emptyList()
             // Requirements are never filtered, so the tail comes straight off the end.
@@ -2489,7 +2492,17 @@ class StackResolver(
                     targetValidator = spliceTargetValidator,
                     accumulatedEvents = effectResult.events
                 )
-                effectResult = tail
+                effectResult = tail.copy(diagnostics = effectResult.diagnostics + tail.diagnostics)
+            }
+
+            effectDiagnostics = effectResult.diagnostics
+            if (effectDiagnostics.isNotEmpty()) {
+                return ExecutionResult(
+                    state = effectResult.state,
+                    events = events + effectResult.events,
+                    error = effectResult.error ?: "Unsupported path during spell resolution",
+                    diagnostics = effectDiagnostics,
+                )
             }
 
             // If effect is paused awaiting a decision, we still need to move the spell
@@ -2503,7 +2516,8 @@ class StackResolver(
                     return ExecutionResult.paused(
                         pausedState,
                         effectResult.pendingDecision!!,
-                        events + effectResult.events
+                        events + effectResult.events,
+                        diagnostics = effectDiagnostics,
                     )
                 }
 
@@ -2527,7 +2541,8 @@ class StackResolver(
                         return ExecutionResult.paused(
                             transformed,
                             effectResult.pendingDecision!!,
-                            events + effectResult.events + transformEvents
+                            events + effectResult.events + transformEvents,
+                            diagnostics = effectDiagnostics,
                         )
                     }
                 }
@@ -2580,13 +2595,19 @@ class StackResolver(
                             pendingMove.state,
                             pendingMove.pendingDecision!!,
                             events + effectResult.events + pendingMove.events,
+                            diagnostics = effectDiagnostics + pendingMove.diagnostics,
                         )
                     }
-                    if (pendingMove.error != null) return pendingMove.toExecutionResult()
+                    if (pendingMove.error != null) {
+                        return pendingMove.toExecutionResult().copy(
+                            diagnostics = effectDiagnostics + pendingMove.diagnostics,
+                        )
+                    }
                     return ExecutionResult.paused(
                         pendingMove.state,
                         effectResult.pendingDecision,
                         events + effectResult.events + pendingMove.events,
+                        diagnostics = effectDiagnostics + pendingMove.diagnostics,
                     )
                 }
 
@@ -2621,13 +2642,19 @@ class StackResolver(
                             pendingMove.state,
                             pendingMove.pendingDecision!!,
                             events + effectResult.events + pendingMove.events,
+                            diagnostics = effectDiagnostics + pendingMove.diagnostics,
                         )
                     }
-                    if (pendingMove.error != null) return pendingMove.toExecutionResult()
+                    if (pendingMove.error != null) {
+                        return pendingMove.toExecutionResult().copy(
+                            diagnostics = effectDiagnostics + pendingMove.diagnostics,
+                        )
+                    }
                     return ExecutionResult.paused(
                         pendingMove.state,
                         effectResult.pendingDecision,
                         events + effectResult.events + pendingMove.events,
+                        diagnostics = effectDiagnostics + pendingMove.diagnostics,
                     )
                 }
 
@@ -2703,7 +2730,8 @@ class StackResolver(
                 return ExecutionResult.paused(
                     pausedState,
                     effectResult.pendingDecision!!,
-                    allEvents
+                    allEvents,
+                    diagnostics = effectDiagnostics,
                 )
             }
 
@@ -2720,7 +2748,7 @@ class StackResolver(
         val isCopy = newState.getEntity(spellId)?.has<CopyOfComponent>() == true
         if (isCopy) {
             newState = newState.removeEntity(spellId)
-            return ExecutionResult.success(newState, events)
+            return ExecutionResult.success(newState, events, effectDiagnostics)
         }
 
         // Move to graveyard (or exile if selfExileOnResolve, flashback, or ExileAfterResolveComponent)
@@ -2740,7 +2768,7 @@ class StackResolver(
                 newState, spellId, returnTransformedSpec.counters, events
             )
             if (transformed != null) {
-                return ExecutionResult.success(transformed, events)
+                return ExecutionResult.success(transformed, events, effectDiagnostics)
             }
         }
 
@@ -2795,10 +2823,19 @@ class StackResolver(
                     pendingMove.state,
                     pendingMove.pendingDecision!!,
                     events + pendingMove.events,
+                    diagnostics = effectDiagnostics + pendingMove.diagnostics,
                 )
             }
-            if (pendingMove.error != null) return pendingMove.toExecutionResult()
-            return ExecutionResult.success(pendingMove.state, events + pendingMove.events)
+            if (pendingMove.error != null) {
+                return pendingMove.toExecutionResult().copy(
+                    diagnostics = effectDiagnostics + pendingMove.diagnostics,
+                )
+            }
+            return ExecutionResult.success(
+                pendingMove.state,
+                events + pendingMove.events,
+                effectDiagnostics + pendingMove.diagnostics,
+            )
         }
 
         // Apply RedirectZoneChange replacement effects (e.g., Festival of Embers
@@ -2828,10 +2865,19 @@ class StackResolver(
                     pendingMove.state,
                     pendingMove.pendingDecision!!,
                     events + pendingMove.events,
+                    diagnostics = effectDiagnostics + pendingMove.diagnostics,
                 )
             }
-            if (pendingMove.error != null) return pendingMove.toExecutionResult()
-            return ExecutionResult.success(pendingMove.state, events + pendingMove.events)
+            if (pendingMove.error != null) {
+                return pendingMove.toExecutionResult().copy(
+                    diagnostics = effectDiagnostics + pendingMove.diagnostics,
+                )
+            }
+            return ExecutionResult.success(
+                pendingMove.state,
+                events + pendingMove.events,
+                effectDiagnostics + pendingMove.diagnostics,
+            )
         }
 
         val destinationZone = redirect.destinationZone
@@ -2938,7 +2984,7 @@ class StackResolver(
             )
         )
 
-        return ExecutionResult.success(newState, events)
+        return ExecutionResult.success(newState, events, effectDiagnostics)
     }
 
     /**
@@ -3119,6 +3165,7 @@ class StackResolver(
                     pendingMove.state,
                     pendingMove.pendingDecision!!,
                     pendingMove.events,
+                    diagnostics = pendingMove.diagnostics,
                 )
             }
             if (pendingMove.error != null) return pendingMove.toExecutionResult()
@@ -3126,6 +3173,7 @@ class StackResolver(
                 pendingMove.state,
                 listOf(SpellFizzledEvent(spellId, cardComponent?.name ?: "Unknown", "All targets are invalid")) +
                     pendingMove.events,
+                pendingMove.diagnostics,
             )
         }
 
@@ -3266,7 +3314,8 @@ class StackResolver(
             return ExecutionResult.paused(
                 pausedState,
                 effectResult.pendingDecision!!,
-                effectResult.events
+                effectResult.events,
+                diagnostics = effectResult.diagnostics,
             )
         }
 
@@ -3294,7 +3343,8 @@ class StackResolver(
             effectResult.events + AbilityResolvedEvent(
                 abilityComponent.sourceId,
                 abilityComponent.description
-            ) + sagaEvents
+            ) + sagaEvents,
+            effectResult.diagnostics,
         )
     }
 
@@ -3386,7 +3436,8 @@ class StackResolver(
             return ExecutionResult.paused(
                 pausedState,
                 effectResult.pendingDecision!!,
-                effectResult.events
+                effectResult.events,
+                diagnostics = effectResult.diagnostics,
             )
         }
 
@@ -3400,7 +3451,8 @@ class StackResolver(
             effectResult.events + AbilityResolvedEvent(
                 abilityComponent.sourceId,
                 abilityComponent.sourceName
-            )
+            ),
+            effectResult.diagnostics,
         )
     }
 
@@ -3529,6 +3581,7 @@ class StackResolver(
                     pendingMove.state,
                     pendingMove.pendingDecision!!,
                     pendingMove.events,
+                    diagnostics = pendingMove.diagnostics,
                 )
             }
             if (pendingMove.error != null) return pendingMove.toExecutionResult()
@@ -3536,6 +3589,7 @@ class StackResolver(
                 pendingMove.state,
                 listOf(SpellCounteredEvent(spellId, cardComponent?.name ?: "Unknown")) +
                     pendingMove.events,
+                pendingMove.diagnostics,
             )
         }
 

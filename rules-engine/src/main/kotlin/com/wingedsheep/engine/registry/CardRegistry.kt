@@ -92,11 +92,11 @@ class CardRegistry(private val parent: CardRegistry? = null) {
      *
      * @param name The card name or name#collectorNumber (case-sensitive)
      * @return The card definition
-     * @throws IllegalArgumentException if the card is not found
+     * @throws CardDefinitionMissingException if the card is not found
      */
     fun requireCard(name: String): CardDefinition {
         return getCard(name)
-            ?: throw IllegalArgumentException("Card not found in registry: $name")
+            ?: throw CardDefinitionMissingException(name)
     }
 
     /**

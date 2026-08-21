@@ -4,6 +4,9 @@ import com.wingedsheep.engine.state.components.battlefield.chosenColor
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.DiagnosticKind
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.LoyaltyChangedEvent
 import com.wingedsheep.engine.core.ManaAddedEvent
@@ -563,7 +566,7 @@ class ActivateAbilityHandler(
         val result = executeActivation(ManaPaymentWindow.suspend(state, window), action)
 
         // A failed activation must not eat the window — roll all the way back.
-        result.error?.let { return ExecutionResult.error(state, it) }
+        result.error?.let { return ExecutionResult.error(state, it, result.diagnostics) }
 
         val restored = if (result.state.priorityPlayerId == state.priorityPlayerId) result.state
         else result.state.copy(
@@ -571,10 +574,16 @@ class ActivateAbilityHandler(
             priorityPassedBy = state.priorityPassedBy
         )
         if (result.isPaused) {
-            return ExecutionResult.paused(restored, result.pendingDecision!!, result.events)
+            return ExecutionResult.paused(
+                restored,
+                result.pendingDecision!!,
+                result.events,
+                diagnostics = result.diagnostics,
+            )
         }
-        return ManaPaymentWindow.resumeIfPending(restored, result.events, cardRegistry)
-            ?: ExecutionResult.success(restored, result.events)
+        val resumed = ManaPaymentWindow.resumeIfPending(restored, result.events, cardRegistry)
+        return resumed?.copy(diagnostics = result.diagnostics + resumed.diagnostics)
+            ?: ExecutionResult.success(restored, result.events, result.diagnostics)
     }
 
     private fun executeActivation(state: GameState, action: ActivateAbility): ExecutionResult {
@@ -1131,7 +1140,10 @@ class ActivateAbilityHandler(
             if (zoneResult.isPaused) return zoneResult.toExecutionResult()
             if (!zoneResult.isSuccess) return zoneResult.toExecutionResult()
             val resumed = executeActivation(zoneResult.state, resumedAction)
-            return resumed.copy(events = zoneResult.events + resumed.events)
+            return resumed.copy(
+                events = zoneResult.events + resumed.events,
+                diagnostics = zoneResult.diagnostics + resumed.diagnostics,
+            )
         }
 
         val executeAbilityContext = buildAbilityPaymentContext(cardComponent, state.projectedState, action.sourceId, ability)
@@ -1631,7 +1643,8 @@ class ActivateAbilityHandler(
                     return ExecutionResult.paused(
                         effectResult.state.copy(continuationStack = newStack),
                         effectResult.pendingDecision!!,
-                        events + effectResult.events
+                        events + effectResult.events,
+                        diagnostics = effectResult.diagnostics,
                     )
                 }
                 return effectResult
@@ -1800,6 +1813,8 @@ class ActivateAbilityHandler(
                 currentState, action.sourceId, action.playerId, manaEvent, additionalManaResult.events
             )
             currentState = onSourceTapResult.state
+            val manaDiagnostics = effectResult.diagnostics + additionalManaResult.diagnostics +
+                onSourceTapResult.diagnostics
             var allManaEvents = onSourceTapResult.events
 
             // Emit a "land tapped for mana" event so triggers like Overabundance / Mana Flare
@@ -1818,7 +1833,9 @@ class ActivateAbilityHandler(
             // color decision (resuming via ChooseAnyColorTapBonusContinuation).
             val anyColorBonuses = tappedForManaBonusResolver.collect(currentState, action.sourceId, action.playerId)
             val bonusResult = tappedForManaBonusResolver.drive(currentState, anyColorBonuses, allManaEvents)
-            if (bonusResult.isPaused) return bonusResult
+            if (bonusResult.isPaused) {
+                return bonusResult.copy(diagnostics = manaDiagnostics + bonusResult.diagnostics)
+            }
 
             // A mana ability whose cost lacks {T} (e.g. Ashnod's Altar's "Sacrifice a creature: Add
             // {C}{C}") still satisfies the Antiquities "activates an ability without {T} in its
@@ -1858,16 +1875,26 @@ class ActivateAbilityHandler(
                     return ExecutionResult.paused(
                         triggerResult.state.withPriority(action.playerId),
                         triggerResult.pendingDecision!!,
-                        resultEvents + triggerResult.events
+                        resultEvents + triggerResult.events,
+                        diagnostics = manaDiagnostics + bonusResult.diagnostics +
+                            triggerResult.diagnostics,
                     )
                 }
                 return ExecutionResult.success(
                     triggerResult.newState.withPriority(action.playerId),
-                    resultEvents + triggerResult.events
+                    resultEvents + triggerResult.events,
+                    manaDiagnostics + bonusResult.diagnostics + triggerResult.diagnostics,
                 )
             }
-            return if (manaAbilityActivatedEvents.isEmpty()) bonusResult
-            else ExecutionResult.success(bonusResult.newState, resultEvents)
+            return if (manaAbilityActivatedEvents.isEmpty()) {
+                bonusResult.copy(diagnostics = manaDiagnostics + bonusResult.diagnostics)
+            } else {
+                ExecutionResult.success(
+                    bonusResult.newState,
+                    resultEvents,
+                    manaDiagnostics + bonusResult.diagnostics,
+                )
+            }
         }
 
         // Non-mana abilities go on the stack
@@ -2034,13 +2061,15 @@ class ActivateAbilityHandler(
                 return ExecutionResult.paused(
                     triggerResult.state.withPriority(action.playerId),
                     triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events
+                    allEvents + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(action.playerId),
-                allEvents + triggerResult.events
+                allEvents + triggerResult.events,
+                triggerResult.diagnostics,
             )
         }
 
@@ -2073,7 +2102,12 @@ class ActivateAbilityHandler(
         if (fullTargetReqs.any { it.minCount != it.count || it.optional || it.unlimited }) {
             return ExecutionResult.error(
                 state,
-                "Opponent-chosen targets are only supported with fixed-count requirements"
+                "Opponent-chosen targets are only supported with fixed-count requirements",
+                diagnostics = listOf(
+                    DiagnosticSignal(
+                        code = DiagnosticCode.ACTIVATED_ABILITY_SHAPE_UNSUPPORTED,
+                    )
+                )
             )
         }
 
@@ -2590,7 +2624,8 @@ class ActivateAbilityHandler(
      */
     private data class AdditionalManaResult(
         val state: GameState,
-        val events: List<GameEvent>
+        val events: List<GameEvent>,
+        val diagnostics: List<com.wingedsheep.engine.core.DiagnosticSignal> = emptyList(),
     )
 
     private val dynamicAmountEvaluator = DynamicAmountEvaluator()
@@ -2883,6 +2918,7 @@ class ActivateAbilityHandler(
 
         var currentState = state
         val events = existingEvents.toMutableList()
+        val diagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
 
         for (entityId in currentState.getBattlefield()) {
             val container = currentState.getEntity(entityId) ?: continue
@@ -2953,12 +2989,13 @@ class ActivateAbilityHandler(
                         val riderResult = effectExecutorRegistry.execute(currentState, rider, effectContext)
                         currentState = riderResult.state
                         events.addAll(riderResult.events)
+                        diagnostics.addAll(riderResult.diagnostics)
                     }
                 }
             }
         }
 
-        return AdditionalManaResult(currentState, events)
+        return AdditionalManaResult(currentState, events, diagnostics)
     }
 
     /**

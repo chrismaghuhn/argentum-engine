@@ -101,9 +101,14 @@ class ChainSpellContinuationResumer(
                 )
             }
             else -> {
-                // Unsupported cost type — skip
-                presentTargetSelection(
-                    state, emptyList(), controllerId, effect, continuation.sourceId, checkForMore
+                return ExecutionResult.error(
+                    state,
+                    "Unsupported cost type for chain copy",
+                    diagnostics = listOf(
+                        DiagnosticSignal(
+                            code = DiagnosticCode.CHAIN_COPY_COST_UNSUPPORTED,
+                        )
+                    )
                 )
             }
         }
@@ -222,6 +227,7 @@ class ChainSpellContinuationResumer(
         }
 
         return checkForMore(putResult.state, putResult.events.toList())
+            .withDiagnosticsFrom(putResult.diagnostics)
     }
 
     // =========================================================================
@@ -455,7 +461,17 @@ class ChainSpellContinuationResumer(
                 newState = discardResult.state
                 events.addAll(discardResult.events)
             }
-            else -> { /* Unsupported cost type — no-op */ }
+            else -> {
+                return ExecutionResult.error(
+                    state,
+                    "Unsupported cost type for chain copy",
+                    diagnostics = listOf(
+                        DiagnosticSignal(
+                            code = DiagnosticCode.CHAIN_COPY_COST_UNSUPPORTED,
+                        )
+                    )
+                )
+            }
         }
 
         return presentTargetSelection(

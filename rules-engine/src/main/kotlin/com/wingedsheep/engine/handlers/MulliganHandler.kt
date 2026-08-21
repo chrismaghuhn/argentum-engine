@@ -413,7 +413,8 @@ class MulliganHandler(
         val advanceResult = turnManager.advanceStep(stateWithLeylineScan)
         return ExecutionResult.success(
             advanceResult.newState,
-            events + advanceResult.events
+            events + advanceResult.events,
+            advanceResult.diagnostics,
         )
     }
 

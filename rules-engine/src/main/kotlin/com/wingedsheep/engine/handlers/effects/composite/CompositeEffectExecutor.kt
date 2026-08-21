@@ -32,6 +32,7 @@ class CompositeEffectExecutor(
         var currentState = state
         var currentContext = context
         val allEvents = mutableListOf<com.wingedsheep.engine.core.GameEvent>()
+        val allDiagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
 
         for ((index, subEffect) in effect.effects.withIndex()) {
             // Calculate remaining effects (everything after current one)
@@ -54,6 +55,22 @@ class CompositeEffectExecutor(
             }
 
             val result = effectExecutor(stateForExecution, subEffect, currentContext)
+            allDiagnostics.addAll(result.diagnostics)
+
+            if (result.diagnostics.isNotEmpty()) {
+                val cleanState = if (remainingEffects.isNotEmpty()) {
+                    val (_, stateWithoutCont) = result.state.popContinuation()
+                    stateWithoutCont
+                } else {
+                    result.state
+                }
+                return EffectResult(
+                    state = cleanState,
+                    events = allEvents + result.events,
+                    error = result.error ?: "Unsupported path during composite execution",
+                    diagnostics = allDiagnostics,
+                )
+            }
 
             if (!result.isSuccess && !result.isPaused) {
                 if (effect.stopOnError) {
@@ -66,7 +83,11 @@ class CompositeEffectExecutor(
                     } else {
                         result.state
                     }
-                    return EffectResult.success(cleanState, allEvents + result.events)
+                    return EffectResult.success(
+                        cleanState,
+                        allEvents + result.events,
+                        diagnostics = allDiagnostics,
+                    )
                 }
                 // Sub-effect failed - skip it and continue with remaining effects.
                 // Per MTG rules, when a spell or ability resolves, you do as much as
@@ -90,7 +111,8 @@ class CompositeEffectExecutor(
                 return EffectResult.paused(
                     result.state,
                     result.pendingDecision!!,
-                    allEvents + result.events
+                    allEvents + result.events,
+                    diagnostics = allDiagnostics,
                 )
             }
 
@@ -142,7 +164,8 @@ class CompositeEffectExecutor(
             updatedSubtypeGroups = accumulatedSubtypeGroups,
             updatedStoredNumbers = accumulatedStoredNumbers,
             updatedChosenValues = accumulatedChosenValues,
-            updatedSacrificedPermanents = accumulatedSacrificed
+            updatedSacrificedPermanents = accumulatedSacrificed,
+            diagnostics = allDiagnostics,
         )
     }
 }

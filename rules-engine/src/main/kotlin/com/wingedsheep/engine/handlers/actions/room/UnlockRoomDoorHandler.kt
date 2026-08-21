@@ -294,12 +294,14 @@ class UnlockRoomDoorHandler(
                 return ExecutionResult.paused(
                     triggerResult.state.withPriority(action.playerId),
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(action.playerId),
-                events + triggerResult.events
+                events + triggerResult.events,
+                triggerResult.diagnostics,
             )
         }
 

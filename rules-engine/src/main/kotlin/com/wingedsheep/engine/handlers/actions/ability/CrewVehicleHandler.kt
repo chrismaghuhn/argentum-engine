@@ -224,19 +224,22 @@ class CrewVehicleHandler(
                 return ExecutionResult.paused(
                     triggerResult.state.withPriority(action.playerId),
                     triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events
+                    allEvents + triggerResult.events,
+                    diagnostics = stackResult.diagnostics + triggerResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(action.playerId),
-                allEvents + triggerResult.events
+                allEvents + triggerResult.events,
+                stackResult.diagnostics + triggerResult.diagnostics,
             )
         }
 
         return ExecutionResult.success(
             currentState.withPriority(action.playerId),
-            allEvents
+            allEvents,
+            stackResult.diagnostics,
         )
     }
 

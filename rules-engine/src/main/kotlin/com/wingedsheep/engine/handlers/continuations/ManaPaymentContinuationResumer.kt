@@ -90,6 +90,7 @@ class ManaPaymentContinuationResumer(
             numbers = mapOf(continuation.storeCountAs to times)
         )
         return checkForMore(published, paid.events.toList())
+            .withDiagnosticsFrom(paid.diagnostics)
     }
 
     fun resumeCounterUnlessPays(
@@ -339,8 +340,9 @@ class ManaPaymentContinuationResumer(
             continuation.remainingWardParts, continuation.spellEntityId,
             continuation.payingPlayerId, continuation.wardSourceId, continuation.controllerId,
             checkForMore
-        )?.let { return it }
+        )?.let { return it.withDiagnosticsFrom(discardResult.diagnostics) }
         return checkForMore(discardResult.newState, discardResult.events.toList())
+            .withDiagnosticsFrom(discardResult.diagnostics)
     }
 
     /**
@@ -446,6 +448,7 @@ class ManaPaymentContinuationResumer(
                 services.stackResolver.counterSpellOrAbility(state, continuation.spellEntityId)
             }
             return checkForMore(counterResult.newState, counterResult.events)
+                .withDiagnosticsFrom(counterResult.diagnostics)
         }
 
         val collected = CollectEvidenceResolver.collect(
@@ -537,8 +540,9 @@ class ManaPaymentContinuationResumer(
             continuation.remainingWardParts, continuation.spellEntityId,
             continuation.payingPlayerId, continuation.wardSourceId, continuation.controllerId,
             checkForMore
-        )?.let { return it }
+        )?.let { return it.withDiagnosticsFrom(countersResult.diagnostics) }
         return checkForMore(countersResult.newState, countersResult.events.toList())
+            .withDiagnosticsFrom(countersResult.diagnostics)
     }
 
     /**
@@ -605,6 +609,7 @@ class ManaPaymentContinuationResumer(
             services.stackResolver.counterSpellOrAbility(state, spellEntityId)
         }
         return checkForMore(result.newState, precedingEvents + result.events)
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     /**
@@ -817,9 +822,14 @@ class ManaPaymentContinuationResumer(
 
         if (next.error != null) return next
         return if (next.isPaused) {
-            ExecutionResult.paused(next.state, next.pendingDecision!!, priorEvents + next.events)
+            ExecutionResult.paused(
+                next.state,
+                next.pendingDecision!!,
+                priorEvents + next.events,
+                diagnostics = next.diagnostics,
+            )
         } else {
-            checkForMore(next.state, priorEvents + next.events)
+            checkForMore(next.state, priorEvents + next.events).withDiagnosticsFrom(next.diagnostics)
         }
     }
 
@@ -855,10 +865,12 @@ class ManaPaymentContinuationResumer(
             return ExecutionResult.paused(
                 riderResult.state,
                 riderResult.pendingDecision!!,
-                priorEvents + riderResult.events
+                priorEvents + riderResult.events,
+                diagnostics = riderResult.diagnostics,
             )
         }
         return checkForMore(riderResult.state, priorEvents + riderResult.events)
+            .withDiagnosticsFrom(riderResult.diagnostics)
     }
 
     /**
@@ -949,6 +961,7 @@ class ManaPaymentContinuationResumer(
             if (effectResult.error != null) return effectResult
             if (effectResult.isPaused) return effectResult
             return checkForMore(effectResult.state, effectResult.events)
+                .withDiagnosticsFrom(effectResult.diagnostics)
         }
 
         // Need to tap sources — show mana source selection UI
@@ -1039,6 +1052,7 @@ class ManaPaymentContinuationResumer(
                 .execute(state, otherwise, continuation.effectContext).toExecutionResult()
             if (otherwiseResult.error != null || otherwiseResult.isPaused) return otherwiseResult
             return checkForMore(otherwiseResult.state, otherwiseResult.events)
+                .withDiagnosticsFrom(otherwiseResult.diagnostics)
         }
 
         var currentState = state
@@ -1131,6 +1145,7 @@ class ManaPaymentContinuationResumer(
 
         val allEvents = events + effectResult.events
         return checkForMore(effectResult.state, allEvents)
+            .withDiagnosticsFrom(effectResult.diagnostics)
     }
 
     /**
@@ -1317,6 +1332,7 @@ class ManaPaymentContinuationResumer(
 
         val allEvents = events + effectResult.events
         return checkForMore(effectResult.state, allEvents)
+            .withDiagnosticsFrom(effectResult.diagnostics)
     }
 
     /**
@@ -1428,7 +1444,8 @@ class ManaPaymentContinuationResumer(
             return ExecutionResult.paused(
                 result.state,
                 result.pendingDecision!!,
-                events + result.events
+                events + result.events,
+                diagnostics = result.diagnostics,
             )
         }
 
@@ -1438,6 +1455,7 @@ class ManaPaymentContinuationResumer(
 
         // Target was auto-selected - check for more continuations
         return checkForMore(result.newState, events + result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     /**

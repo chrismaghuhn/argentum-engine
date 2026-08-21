@@ -63,7 +63,12 @@ class EffectAndTriggerContinuationResumer(
             continuation.effectContext.pipeline.storedNumbers + effectResult.updatedStoredNumbers,
             continuation.effectContext.pipeline.chosenValues + effectResult.updatedChosenValues,
         )
-        return checkForMore(stateWithCollections, effectResult.events.toList())
+        return continueWithDiagnostics(
+            effectResult,
+            checkForMore,
+            state = stateWithCollections,
+            events = effectResult.events.toList(),
+        )
     }
 
     private fun resumeTriggeredAbility(
@@ -158,7 +163,7 @@ class EffectAndTriggerContinuationResumer(
             )
             val stackResult = services.stackResolver.putTriggeredAbility(state, elseComponent, emptyList())
             if (!stackResult.isSuccess) return stackResult
-            return checkForMore(stackResult.newState, stackResult.events.toList())
+            return continueWithDiagnostics(stackResult, checkForMore)
         }
 
         // Check if this is a DividedDamageEffect with multiple targets — need distribution.
@@ -235,7 +240,7 @@ class EffectAndTriggerContinuationResumer(
             return stackResult
         }
 
-        return checkForMore(stackResult.newState, stackResult.events.toList())
+        return continueWithDiagnostics(stackResult, checkForMore)
     }
 
     /**
@@ -382,7 +387,7 @@ class EffectAndTriggerContinuationResumer(
             return stackResult
         }
 
-        return checkForMore(stackResult.newState, stackResult.events.toList())
+        return continueWithDiagnostics(stackResult, checkForMore)
     }
 
     private fun resumeMayTrigger(
@@ -416,7 +421,7 @@ class EffectAndTriggerContinuationResumer(
             return result
         }
 
-        return checkForMore(result.newState, result.events.toList())
+        return continueWithDiagnostics(result, checkForMore)
     }
 
     private fun resumeDelayedTriggerOccurrenceChoice(
@@ -440,7 +445,7 @@ class EffectAndTriggerContinuationResumer(
             preorderedTriggerCount = continuation.preorderedTriggerCount
         )
         if (result.isPaused || !result.isSuccess) return result
-        return checkForMore(result.newState, result.events.toList())
+        return continueWithDiagnostics(result, checkForMore)
     }
 
     private fun resumeTriggerOrdering(
@@ -470,7 +475,7 @@ class EffectAndTriggerContinuationResumer(
             preorderedTriggerCount = orderedTriggers.size
         )
         return if (result.isPaused || !result.isSuccess) result
-        else checkForMore(result.newState, result.events.toList())
+        else continueWithDiagnostics(result, checkForMore)
     }
 
     /**
@@ -511,7 +516,7 @@ class EffectAndTriggerContinuationResumer(
                 preorderedTriggerCount = unwrapped.size
             )
             if (result.isPaused || !result.isSuccess) return result
-            return checkForMore(result.newState, result.events.toList())
+            return continueWithDiagnostics(result, checkForMore)
         }
 
         // Peel one instance off; queue the rest so they re-batch/ask after it resolves.
@@ -541,7 +546,7 @@ class EffectAndTriggerContinuationResumer(
             preorderedTriggerCount = 1
         )
         if (result.isPaused || !result.isSuccess) return result
-        return checkForMore(result.newState, result.events.toList())
+        return continueWithDiagnostics(result, checkForMore)
     }
 
     /**
@@ -583,7 +588,7 @@ class EffectAndTriggerContinuationResumer(
             return result
         }
 
-        return checkForMore(result.state, result.events.toList())
+        return continueWithDiagnostics(result, checkForMore)
     }
 
     /**
@@ -652,8 +657,12 @@ class EffectAndTriggerContinuationResumer(
         // Preserve `triggersAlreadyProcessed` across the continuation drain: if the gated effect ran
         // a nested cast that already stacked its cast-triggers (Vaan casting an opponent's card via
         // MayEffect), SubmitDecisionHandler must not re-detect the same SpellCastEvent.
-        return checkForMore(stateWithCollections, result.events.toList())
-            .copy(triggersAlreadyProcessed = result.triggersAlreadyProcessed)
+        return continueWithDiagnostics(
+            result,
+            checkForMore,
+            state = stateWithCollections,
+            events = result.events.toList(),
+        ).copy(triggersAlreadyProcessed = result.triggersAlreadyProcessed)
     }
 
     private fun resumeMayRevealCardFromHand(
@@ -676,7 +685,7 @@ class EffectAndTriggerContinuationResumer(
                 .execute(state, otherwise, continuation.effectContext)
                 .toExecutionResult()
             return if (result.isPaused) result
-            else checkForMore(result.state, result.events.toList())
+            else continueWithDiagnostics(result, checkForMore)
         }
 
         // Player picked a card — emit the public reveal. The reveal itself is the
@@ -724,7 +733,7 @@ class EffectAndTriggerContinuationResumer(
             .execute(currentState, ifBeheld, continuation.effectContext)
             .toExecutionResult()
         if (result.isPaused) return result
-        return checkForMore(result.state, events + result.events.toList())
+        return continueWithDiagnostics(result, checkForMore, events = events + result.events.toList())
     }
 
 }

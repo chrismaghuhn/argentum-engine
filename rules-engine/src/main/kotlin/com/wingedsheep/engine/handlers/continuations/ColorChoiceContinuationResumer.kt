@@ -53,6 +53,7 @@ class ColorChoiceContinuationResumer(
 
         if (effectResult.isPaused) return effectResult.toExecutionResult()
         return checkForMore(effectResult.state, effectResult.events.toList())
+            .withDiagnosticsFrom(effectResult.diagnostics)
     }
 
     fun resumeChooseNumberThen(
@@ -75,6 +76,7 @@ class ColorChoiceContinuationResumer(
 
         if (effectResult.isPaused) return effectResult.toExecutionResult()
         return checkForMore(effectResult.state, effectResult.events.toList())
+            .withDiagnosticsFrom(effectResult.diagnostics)
     }
 
     fun resumeChooseNumberForSource(
@@ -171,6 +173,7 @@ class ColorChoiceContinuationResumer(
         // stored so the composite's remaining steps still see it.
         val published = exposeCollectionsToNextFrame(effectResult.state, effectResult.updatedCollections)
         return checkForMore(published, effectResult.events.toList())
+            .withDiagnosticsFrom(effectResult.diagnostics)
     }
 
     fun resumeChooseManaColor(
@@ -204,6 +207,7 @@ class ColorChoiceContinuationResumer(
         )
         if (mirrored.isPaused) return mirrored
         return checkForMore(mirrored.newState, effectResult.events.toList() + mirrored.events)
+            .withDiagnosticsFrom(effectResult.diagnostics + mirrored.diagnostics)
     }
 
     fun resumeChooseColorForTarget(

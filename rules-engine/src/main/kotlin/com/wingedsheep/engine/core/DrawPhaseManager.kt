@@ -94,6 +94,7 @@ class DrawPhaseManager(
         // (CR 808.4) — there are no shared-turn teammates and this loop is a no-op.
         var s = state
         val teammateEvents = mutableListOf<GameEvent>()
+        val teammateDiagnostics = mutableListOf<DiagnosticSignal>()
         for (teammate in state.sharedTurnTeam(activePlayer)) {
             if (teammate == activePlayer) continue
             if (s.getEntity(teammate)?.has<SkipDrawStepComponent>() == true) {
@@ -101,8 +102,14 @@ class DrawPhaseManager(
                 continue
             }
             val r = drawCards(s, teammate, 1)
+            teammateDiagnostics.addAll(r.diagnostics)
             if (r.isPaused) {
-                return ExecutionResult.paused(r.newState, r.pendingDecision!!, teammateEvents + r.events)
+                return ExecutionResult.paused(
+                    r.newState,
+                    r.pendingDecision!!,
+                    teammateEvents + r.events,
+                    diagnostics = teammateDiagnostics,
+                )
             }
             s = r.newState
             teammateEvents.addAll(r.events)
@@ -114,17 +121,22 @@ class DrawPhaseManager(
             val consumed = s.updateEntity(activePlayer) { it.without<SkipDrawStepComponent>() }
             return ExecutionResult.success(
                 consumed.withPriority(activePlayer),
-                teammateEvents + StepChangedEvent(Step.DRAW)
+                teammateEvents + StepChangedEvent(Step.DRAW),
+                teammateDiagnostics,
             )
         }
 
         val drawResult = drawCards(s, activePlayer, 1)
         if (!drawResult.isSuccess) {
-            return drawResult
+            return drawResult.copy(diagnostics = teammateDiagnostics + drawResult.diagnostics)
         }
 
         val newState = drawResult.newState.withPriority(activePlayer)
-        return ExecutionResult.success(newState, teammateEvents + drawResult.events + StepChangedEvent(Step.DRAW))
+        return ExecutionResult.success(
+            newState,
+            teammateEvents + drawResult.events + StepChangedEvent(Step.DRAW),
+            teammateDiagnostics + drawResult.diagnostics,
+        )
     }
 
     /**

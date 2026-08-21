@@ -139,14 +139,16 @@ class SubmitDecisionHandler(
                     return ExecutionResult.paused(
                         pausedState,
                         sbaResult.pendingDecision!!,
-                        listOf(submittedEvent) + result.events + sbaResult.events
+                        listOf(submittedEvent) + result.events + sbaResult.events,
+                        diagnostics = result.diagnostics + sbaResult.diagnostics,
                     )
                 }
 
                 var combinedEvents = listOf(submittedEvent) + result.events + sbaResult.events
+                val resolutionDiagnostics = result.diagnostics + sbaResult.diagnostics
 
                 if (sbaResult.newState.gameOver) {
-                    return ExecutionResult.success(sbaResult.newState, combinedEvents)
+                    return ExecutionResult.success(sbaResult.newState, combinedEvents, resolutionDiagnostics)
                 }
 
                 // Detect the remaining triggers on the post-SBA state: the submitted decision and
@@ -169,20 +171,23 @@ class SubmitDecisionHandler(
                         return ExecutionResult.paused(
                             triggerResult.state,
                             triggerResult.pendingDecision!!,
-                            combinedEvents + triggerResult.events
+                            combinedEvents + triggerResult.events,
+                            diagnostics = resolutionDiagnostics + triggerResult.diagnostics,
                         )
                     }
 
                     combinedEvents = combinedEvents + triggerResult.events
                     return ExecutionResult.success(
                         triggerResult.newState.withPriority(action.playerId),
-                        combinedEvents
+                        combinedEvents,
+                        resolutionDiagnostics + triggerResult.diagnostics,
                     )
                 }
 
                 return ExecutionResult.success(
                     sbaResult.newState.withPriority(action.playerId),
-                    combinedEvents
+                    combinedEvents,
+                    resolutionDiagnostics,
                 )
             }
 
@@ -219,7 +224,8 @@ class SubmitDecisionHandler(
                     return ExecutionResult.paused(
                         result.state.copy(continuationStack = newStack),
                         result.pendingDecision!!,
-                        listOf(submittedEvent) + result.events
+                        listOf(submittedEvent) + result.events,
+                        diagnostics = result.diagnostics,
                     )
                 }
             }
@@ -230,7 +236,8 @@ class SubmitDecisionHandler(
                     state = result.state,
                     events = listOf(submittedEvent) + result.events,
                     error = result.error,
-                    pendingDecision = result.pendingDecision
+                    pendingDecision = result.pendingDecision,
+                    diagnostics = result.diagnostics,
                 )
             } else {
                 result
@@ -260,7 +267,8 @@ class SubmitDecisionHandler(
                 state = advanceResult.state,
                 events = precedingEvents + advanceResult.events,
                 error = advanceResult.error,
-                pendingDecision = advanceResult.pendingDecision
+                pendingDecision = advanceResult.pendingDecision,
+                diagnostics = advanceResult.diagnostics,
             )
         }
 
@@ -296,19 +304,21 @@ class SubmitDecisionHandler(
         if (triggers.isNotEmpty()) {
             val triggerResult = triggerProcessor.processTriggers(currentState, triggers)
             if (triggerResult.isPaused) {
-                return ExecutionResult.paused(
-                    triggerResult.state,
-                    triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events
+                    return ExecutionResult.paused(
+                        triggerResult.state,
+                        triggerResult.pendingDecision!!,
+                        allEvents + triggerResult.events,
+                        diagnostics = advanceResult.diagnostics + triggerResult.diagnostics,
+                    )
+                }
+                return ExecutionResult.success(
+                    triggerResult.newState.withPriority(currentState.activePlayerId),
+                    allEvents + triggerResult.events,
+                    advanceResult.diagnostics + triggerResult.diagnostics,
                 )
             }
-            return ExecutionResult.success(
-                triggerResult.newState.withPriority(currentState.activePlayerId),
-                allEvents + triggerResult.events
-            )
-        }
 
-        return ExecutionResult.success(currentState, allEvents)
+        return ExecutionResult.success(currentState, allEvents, advanceResult.diagnostics)
     }
 
     /**

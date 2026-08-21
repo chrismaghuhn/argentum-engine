@@ -2,6 +2,9 @@ package com.wingedsheep.engine.handlers.effects.combat
 import com.wingedsheep.engine.state.components.battlefield.chosenCreatureType
 
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.DiagnosticKind
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.DeflectDamageSourceChoiceContinuation
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.PreventDamageFromChosenSourceContinuation
@@ -290,7 +293,15 @@ class PreventDamageExecutor(
             }
 
             else -> {
-                return EffectResult.error(state, "Unsupported PreventDamageEffect configuration")
+                return EffectResult.error(
+                    state,
+                    "Unsupported PreventDamageEffect configuration",
+                    diagnostics = listOf(
+                        DiagnosticSignal(
+                            code = DiagnosticCode.PREVENT_DAMAGE_CONFIGURATION_UNSUPPORTED,
+                        )
+                    )
+                )
             }
         }
 

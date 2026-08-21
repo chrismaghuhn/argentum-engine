@@ -408,6 +408,9 @@ class TurnFaceUpHandler(
                 controllerId = action.playerId,
             )
             val effectResult = effectExecutorRegistry.execute(currentState, faceUpEffect, effectContext)
+            if (effectResult.diagnostics.isNotEmpty()) {
+                return effectResult.toExecutionResult()
+            }
             if (effectResult.error == null) {
                 currentState = effectResult.state
                 events.addAll(effectResult.events)
@@ -439,13 +442,15 @@ class TurnFaceUpHandler(
                 return ExecutionResult.paused(
                     triggerResult.state.withPriority(action.playerId),
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(action.playerId),
-                events + triggerResult.events
+                events + triggerResult.events,
+                triggerResult.diagnostics,
             )
         }
 

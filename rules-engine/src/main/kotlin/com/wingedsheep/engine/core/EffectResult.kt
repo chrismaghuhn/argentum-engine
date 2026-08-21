@@ -41,32 +41,54 @@ data class EffectResult(
      * "whenever you cast a spell" trigger fires twice (Vaan, Street Thief casting an opponent's card).
      * Mirrors [ExecutionResult.triggersAlreadyProcessed].
      */
-    val triggersAlreadyProcessed: Boolean = false
+    val triggersAlreadyProcessed: Boolean = false,
+    /** Internal rules diagnostics carried through effect and continuation composition. */
+    val diagnostics: List<DiagnosticSignal> = emptyList()
 ) {
     val isSuccess: Boolean get() = error == null && pendingDecision == null
     val isPaused: Boolean get() = pendingDecision != null
     val newState: GameState get() = state
 
-    fun toExecutionResult() =
-        ExecutionResult(state, events, error, pendingDecision, triggersAlreadyProcessed = triggersAlreadyProcessed)
+    fun toExecutionResult() = ExecutionResult(
+        state = state,
+        events = events,
+        error = error,
+        pendingDecision = pendingDecision,
+        triggersAlreadyProcessed = triggersAlreadyProcessed,
+        diagnostics = diagnostics,
+    )
 
     companion object {
         /** Wrap an [ExecutionResult] from a non-effect subsystem (e.g., StackResolver). */
         fun from(result: ExecutionResult) = EffectResult(
-            result.state, result.events, result.error, result.pendingDecision,
-            triggersAlreadyProcessed = result.triggersAlreadyProcessed
+            state = result.state,
+            events = result.events,
+            error = result.error,
+            pendingDecision = result.pendingDecision,
+            triggersAlreadyProcessed = result.triggersAlreadyProcessed,
+            diagnostics = result.diagnostics,
         )
 
-        fun success(state: GameState): EffectResult =
-            EffectResult(state)
+        fun success(
+            state: GameState,
+            events: List<GameEvent> = emptyList(),
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): EffectResult =
+            EffectResult(state, events, diagnostics = diagnostics)
 
-        fun success(state: GameState, events: List<GameEvent>): EffectResult =
-            EffectResult(state, events)
+        fun error(
+            state: GameState,
+            message: String,
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): EffectResult =
+            EffectResult(state, error = message, diagnostics = diagnostics)
 
-        fun error(state: GameState, message: String): EffectResult =
-            EffectResult(state, error = message)
-
-        fun paused(state: GameState, decision: PendingDecision, events: List<GameEvent> = emptyList()): EffectResult =
-            EffectResult(state, events, pendingDecision = decision)
+        fun paused(
+            state: GameState,
+            decision: PendingDecision,
+            events: List<GameEvent> = emptyList(),
+            diagnostics: List<DiagnosticSignal> = emptyList(),
+        ): EffectResult =
+            EffectResult(state, events, pendingDecision = decision, diagnostics = diagnostics)
     }
 }

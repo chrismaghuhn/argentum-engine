@@ -311,6 +311,7 @@ class PlayLandHandler(
                         effectResult.state,
                         effectResult.pendingDecision!!,
                         onEnterEvents + effectResult.events,
+                        diagnostics = effectResult.diagnostics,
                     )
                 }
                 newState = effectResult.state
@@ -322,11 +323,20 @@ class PlayLandHandler(
                     val triggerResult = triggerProcessor.processTriggers(newState, triggers)
                     val allEvents = onEnterEvents + triggerResult.events
                     if (triggerResult.isPaused) {
-                        return ExecutionResult.paused(triggerResult.state, triggerResult.pendingDecision!!, allEvents)
+                        return ExecutionResult.paused(
+                            triggerResult.state,
+                            triggerResult.pendingDecision!!,
+                            allEvents,
+                            diagnostics = effectResult.diagnostics + triggerResult.diagnostics,
+                        )
                     }
-                    return ExecutionResult.success(triggerResult.newState, allEvents)
+                    return ExecutionResult.success(
+                        triggerResult.newState,
+                        allEvents,
+                        effectResult.diagnostics + triggerResult.diagnostics,
+                    )
                 }
-                return ExecutionResult.success(newState, onEnterEvents)
+                return ExecutionResult.success(newState, onEnterEvents, effectResult.diagnostics)
             }
         }
 
@@ -543,13 +553,15 @@ class PlayLandHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 triggerResult.newState,
-                events + triggerResult.events
+                events + triggerResult.events,
+                triggerResult.diagnostics,
             )
         }
 

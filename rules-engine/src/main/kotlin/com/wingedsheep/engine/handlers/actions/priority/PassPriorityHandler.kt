@@ -128,15 +128,17 @@ class PassPriorityHandler(
                         return ExecutionResult.paused(
                             triggerResult.state,
                             triggerResult.pendingDecision!!,
-                            advanceResult.events + triggerResult.events
+                            advanceResult.events + triggerResult.events,
+                            diagnostics = advanceResult.diagnostics + triggerResult.diagnostics,
                         )
                     }
                     return ExecutionResult.success(
                         triggerResult.newState.withPriority(state.activePlayerId),
-                        advanceResult.events + triggerResult.events
+                        advanceResult.events + triggerResult.events,
+                        advanceResult.diagnostics + triggerResult.diagnostics,
                     )
                 }
-                ExecutionResult.success(currentState, advanceResult.events)
+                ExecutionResult.success(currentState, advanceResult.events, advanceResult.diagnostics)
             }
         }
 
@@ -185,7 +187,8 @@ class PassPriorityHandler(
                 return ExecutionResult.paused(
                     result.newState.copy(continuationStack = newStack),
                     result.pendingDecision!!,
-                    result.events
+                    result.events,
+                    diagnostics = result.diagnostics,
                 )
             }
             return result
@@ -203,7 +206,7 @@ class PassPriorityHandler(
         if (endTheTurnPlayer != null &&
             result.newState.getEntity(endTheTurnPlayer)?.has<EndTheTurnRequestedComponent>() == true
         ) {
-            return endTheTurn(result.newState, result.events)
+            return endTheTurn(result.newState, result.events, result.diagnostics)
         }
 
         // Track nontoken creature deaths from resolution events
@@ -237,14 +240,16 @@ class PassPriorityHandler(
             return ExecutionResult.paused(
                 pausedState,
                 sbaResult.pendingDecision!!,
-                result.events + sbaResult.events
+                result.events + sbaResult.events,
+                diagnostics = result.diagnostics + sbaResult.diagnostics,
             )
         }
 
         var combinedEvents = result.events + sbaResult.events
+        val resolutionDiagnostics = result.diagnostics + sbaResult.diagnostics
 
         if (sbaResult.newState.gameOver) {
-            return ExecutionResult.success(sbaResult.newState, combinedEvents)
+            return ExecutionResult.success(sbaResult.newState, combinedEvents, resolutionDiagnostics)
         }
 
         // Track nontoken creature deaths from SBA events
@@ -267,20 +272,23 @@ class PassPriorityHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    combinedEvents + triggerResult.events
+                    combinedEvents + triggerResult.events,
+                    diagnostics = resolutionDiagnostics + triggerResult.diagnostics,
                 )
             }
 
             combinedEvents = combinedEvents + triggerResult.events
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(stackItemController),
-                combinedEvents
+                combinedEvents,
+                resolutionDiagnostics + triggerResult.diagnostics,
             )
         }
 
         return ExecutionResult.success(
             postPollState.withPriority(stackItemController),
-            combinedEvents
+            combinedEvents,
+            resolutionDiagnostics,
         )
     }
 
@@ -292,22 +300,37 @@ class PassPriorityHandler(
      * beginning of your upkeep"). Battlefield event triggers from the end-the-turn actions and the
      * preceding resolution are intentionally NOT processed (CR 720.1c).
      */
-    private fun endTheTurn(state: GameState, resolutionEvents: List<GameEvent>): ExecutionResult {
+    private fun endTheTurn(
+        state: GameState,
+        resolutionEvents: List<GameEvent>,
+        resolutionDiagnostics: List<com.wingedsheep.engine.core.DiagnosticSignal> = emptyList(),
+    ): ExecutionResult {
         val endResult = turnManager.performEndTheTurn(state)
         val priorEvents = resolutionEvents + endResult.events
+        val allDiagnostics = resolutionDiagnostics + endResult.diagnostics
 
         if (endResult.isPaused) {
-            return ExecutionResult.paused(endResult.newState, endResult.pendingDecision!!, priorEvents)
+            return ExecutionResult.paused(
+                endResult.newState,
+                endResult.pendingDecision!!,
+                priorEvents,
+                diagnostics = allDiagnostics,
+            )
         }
         if (!endResult.isSuccess || endResult.newState.gameOver) {
-            return ExecutionResult.success(endResult.newState, priorEvents)
+            return if (endResult.error != null) {
+                endResult.copy(events = priorEvents, diagnostics = allDiagnostics)
+            } else {
+                ExecutionResult.success(endResult.newState, priorEvents, allDiagnostics)
+            }
         }
 
         var currentState = endResult.newState
         val stepChangedEvent = priorEvents.filterIsInstance<StepChangedEvent>().lastOrNull()
             ?: return ExecutionResult.success(
                 currentState.withPriority(currentState.activePlayerId),
-                priorEvents
+                priorEvents,
+                allDiagnostics,
             )
 
         val (delayedTriggers, consumedIds) = triggerDetector.detectDelayedTriggers(currentState, stepChangedEvent.newStep)
@@ -331,18 +354,21 @@ class PassPriorityHandler(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    priorEvents + triggerResult.events
+                    priorEvents + triggerResult.events,
+                    diagnostics = allDiagnostics + triggerResult.diagnostics,
                 )
             }
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(currentState.activePlayerId),
-                priorEvents + triggerResult.events
+                priorEvents + triggerResult.events,
+                allDiagnostics + triggerResult.diagnostics,
             )
         }
 
         return ExecutionResult.success(
             currentState.withPriority(currentState.activePlayerId),
-            priorEvents
+            priorEvents,
+            allDiagnostics,
         )
     }
 

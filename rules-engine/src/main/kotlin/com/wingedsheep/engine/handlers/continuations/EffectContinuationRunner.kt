@@ -25,6 +25,7 @@ class EffectContinuationRunner(
         var currentContext = initialContext
         var currentState = initialState
         val allEvents = mutableListOf<com.wingedsheep.engine.core.GameEvent>()
+        val allDiagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
 
         for ((index, effect) in effects.withIndex()) {
             val stillRemaining = effects.drop(index + 1)
@@ -41,6 +42,22 @@ class EffectContinuationRunner(
             }
 
             val result = effectExecutorRegistry.execute(stateForExecution, effect, currentContext)
+            allDiagnostics.addAll(result.diagnostics)
+
+            if (result.diagnostics.isNotEmpty()) {
+                val cleanState = if (stillRemaining.isNotEmpty()) {
+                    val (_, stateWithoutCont) = result.state.popContinuation()
+                    stateWithoutCont
+                } else {
+                    result.state
+                }
+                return EffectResult(
+                    state = cleanState,
+                    events = allEvents + result.events,
+                    error = result.error ?: "Unsupported path during continuation execution",
+                    diagnostics = allDiagnostics,
+                )
+            }
 
             if (!result.isSuccess && !result.isPaused) {
                 currentState = if (stillRemaining.isNotEmpty()) {
@@ -57,7 +74,8 @@ class EffectContinuationRunner(
                 return EffectResult.paused(
                     result.state,
                     result.pendingDecision!!,
-                    allEvents + result.events
+                    allEvents + result.events,
+                    diagnostics = allDiagnostics,
                 )
             }
 
@@ -108,7 +126,8 @@ class EffectContinuationRunner(
             updatedSubtypeGroups = accumulatedSubtypeGroups,
             updatedStoredNumbers = accumulatedStoredNumbers,
             updatedChosenValues = accumulatedChosenValues,
-            updatedSacrificedPermanents = accumulatedSacrificed
+            updatedSacrificedPermanents = accumulatedSacrificed,
+            diagnostics = allDiagnostics,
         )
     }
 }

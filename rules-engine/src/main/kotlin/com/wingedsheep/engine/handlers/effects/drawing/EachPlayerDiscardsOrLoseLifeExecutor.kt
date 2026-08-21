@@ -100,11 +100,21 @@ class EachPlayerDiscardsOrLoseLifeExecutor(
                     discardedCreature = newDiscardedCreature,
                     lifeLoss = lifeLoss
                 )
-                EffectResult(nextResult.state, events + nextResult.events, nextResult.error)
+                EffectResult(
+                    nextResult.state,
+                    events + nextResult.events,
+                    nextResult.error,
+                    diagnostics = nextResult.diagnostics,
+                )
             } else {
                 // All done, apply life loss
                 val lifeLossResult = applyLifeLoss(newState, newDiscardedCreature, lifeLoss)
-                EffectResult(lifeLossResult.state, events + lifeLossResult.events, lifeLossResult.error)
+                EffectResult(
+                    lifeLossResult.state,
+                    events + lifeLossResult.events,
+                    lifeLossResult.error,
+                    diagnostics = lifeLossResult.diagnostics,
+                )
             }
         }
 

@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers.effects.mana
 import com.wingedsheep.engine.core.AnyColorTapBonus
 import com.wingedsheep.engine.core.ChooseAnyColorTapBonusContinuation
 import com.wingedsheep.engine.core.ColorChosenResponse
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.ExecutionResult
@@ -73,22 +74,32 @@ class TappedForManaBonusResolver(
         state: GameState,
         items: List<AnyColorTapBonus>,
         accumulatedEvents: List<GameEvent>,
+        accumulatedDiagnostics: List<DiagnosticSignal> = emptyList(),
     ): ExecutionResult {
-        if (items.isEmpty()) return ExecutionResult.success(state, accumulatedEvents)
+        if (items.isEmpty()) {
+            return ExecutionResult.success(state, accumulatedEvents, accumulatedDiagnostics)
+        }
 
         val item = items.first()
         val remaining = items.drop(1)
         val available = ManaColorSetResolver.resolve(
             ManaColorSet.AnyColor, state, state.projectedState, item.auraId, item.controllerId, cardRegistry
         )
-        if (available.isEmpty()) return drive(state, remaining, accumulatedEvents)
+        if (available.isEmpty()) {
+            return drive(state, remaining, accumulatedEvents, accumulatedDiagnostics)
+        }
 
         // A single legal color needs no choice; add it directly. (Plain any-color always offers
         // five, so this only short-circuits if a future colorSet narrowing is introduced.)
         val singleColor = available.singleOrNull()
         if (singleColor != null) {
             val added = manaExecutor.addManaToPool(state, bonusEffect(item.amount), contextFor(state, item.auraId, item.controllerId), singleColor, available)
-            return drive(added.state, remaining, accumulatedEvents + added.events)
+            return drive(
+                added.state,
+                remaining,
+                accumulatedEvents + added.events,
+                accumulatedDiagnostics + added.diagnostics,
+            )
         }
 
         val sourceName = state.getEntity(item.auraId)?.get<CardComponent>()?.name
@@ -110,6 +121,7 @@ class TappedForManaBonusResolver(
             decision.state.pushContinuation(continuation),
             decision.pendingDecision,
             accumulatedEvents + decision.events,
+            diagnostics = accumulatedDiagnostics,
         )
     }
 
@@ -128,9 +140,15 @@ class TappedForManaBonusResolver(
             ManaColorSet.AnyColor, state, state.projectedState, item.auraId, item.controllerId, cardRegistry
         )
         val added = manaExecutor.addManaToPool(state, bonusEffect(item.amount), contextFor(state, item.auraId, item.controllerId), response.color, available)
-        val driveResult = drive(added.state, continuation.remaining, added.events.toList())
+        val driveResult = drive(
+            added.state,
+            continuation.remaining,
+            added.events.toList(),
+            accumulatedDiagnostics = added.diagnostics,
+        )
         if (driveResult.isPaused) return driveResult
-        return checkForMore(driveResult.state, driveResult.events)
+        val next = checkForMore(driveResult.state, driveResult.events)
+        return next.copy(diagnostics = driveResult.diagnostics + next.diagnostics)
     }
 
     private fun bonusEffect(amount: Int): AddManaOfChoiceEffect =

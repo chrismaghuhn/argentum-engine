@@ -40,6 +40,7 @@ class DrawReplacementContinuationResumer(
         val playerId = continuation.drawingPlayerId
         var newState = state
         val events = mutableListOf<GameEvent>()
+        val diagnostics = mutableListOf<com.wingedsheep.engine.core.DiagnosticSignal>()
 
         if (response.choice) {
             // Player chose to replace the draw - execute the replacement effect
@@ -51,11 +52,13 @@ class DrawReplacementContinuationResumer(
             val effectResult = services.effectExecutorRegistry.execute(
                 newState, continuation.replacementEffect, effectContext
             ).toExecutionResult()
+            diagnostics.addAll(effectResult.diagnostics)
             if (effectResult.isPaused) {
                 return ExecutionResult.paused(
                     effectResult.state,
                     effectResult.pendingDecision!!,
-                    events + effectResult.events
+                    events + effectResult.events,
+                    diagnostics = diagnostics,
                 )
             }
             if (effectResult.isSuccess) {
@@ -82,11 +85,13 @@ class DrawReplacementContinuationResumer(
             val singleDrawResult = singleDrawExecutor.executeDraws(
                 stateWithDeclined, playerId, 1, announce = false
             ).toExecutionResult()
+            diagnostics.addAll(singleDrawResult.diagnostics)
             if (singleDrawResult.isPaused) {
                 return ExecutionResult.paused(
                     singleDrawResult.state,
                     singleDrawResult.pendingDecision!!,
-                    events + singleDrawResult.events
+                    events + singleDrawResult.events,
+                    diagnostics = diagnostics,
                 )
             }
             // Clear the chain so remaining draws start clean
@@ -112,11 +117,13 @@ class DrawReplacementContinuationResumer(
             } else {
                 drawExecutor.executeDraws(newState, playerId, remainingDraws, announce = false).toExecutionResult()
             }
+            diagnostics.addAll(drawResult.diagnostics)
             if (drawResult.isPaused) {
                 return ExecutionResult.paused(
                     drawResult.state,
                     drawResult.pendingDecision!!,
-                    events + drawResult.events
+                    events + drawResult.events,
+                    diagnostics = diagnostics,
                 )
             }
             newState = drawResult.newState
@@ -130,6 +137,6 @@ class DrawReplacementContinuationResumer(
             newState = newState.withPriority(playerId)
         }
 
-        return checkForMore(newState, events)
+        return checkForMore(newState, events).withDiagnosticsFrom(diagnostics)
     }
 }

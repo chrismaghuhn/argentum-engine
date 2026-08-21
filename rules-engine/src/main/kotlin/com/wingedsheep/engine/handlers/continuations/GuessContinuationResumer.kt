@@ -155,8 +155,14 @@ class GuessContinuationResumer(
         )
 
         if (result.isPaused) {
-            return ExecutionResult.paused(result.state, result.pendingDecision!!, events + result.events)
+            return ExecutionResult.paused(
+                result.state,
+                result.pendingDecision!!,
+                events + result.events,
+                diagnostics = result.diagnostics,
+            )
         }
         return checkForMore(result.state, events + result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 }

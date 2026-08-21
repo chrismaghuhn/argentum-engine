@@ -116,7 +116,12 @@ class CoreAutoResumerModule(
         autoResumer(EffectContinuation::class, canResume = { it.remainingEffects.isNotEmpty() }) { state, continuation, events, checkForMore ->
             val runResult = effectRunner.executeRemainingEffects(state, continuation.remainingEffects, continuation.effectContext)
             if (runResult.isPaused) {
-                return@autoResumer ExecutionResult.paused(runResult.state, runResult.pendingDecision!!, events + runResult.events)
+                return@autoResumer ExecutionResult.paused(
+                    runResult.state,
+                    runResult.pendingDecision!!,
+                    events + runResult.events,
+                    diagnostics = runResult.diagnostics,
+                )
             }
             // A drained composite hands its pipeline storage to the frame beneath — e.g. a DoAction
             // gate scoring SuccessCriterion.CollectionNonEmpty, or a reflexive "when you do" reading
@@ -130,7 +135,12 @@ class CoreAutoResumerModule(
                 continuation.effectContext.pipeline.storedNumbers + runResult.updatedStoredNumbers,
                 continuation.effectContext.pipeline.chosenValues + runResult.updatedChosenValues,
             )
-            checkForMore(stateWithCollections, events + runResult.events)
+            continueWithDiagnostics(
+                runResult.toExecutionResult(),
+                checkForMore,
+                state = stateWithCollections,
+                events = events + runResult.events,
+            )
         },
 
         autoResumer(RepeatWhileContinuation::class, canResume = { it.phase == RepeatWhilePhase.AFTER_BODY }) { state, continuation, events, checkForMore ->

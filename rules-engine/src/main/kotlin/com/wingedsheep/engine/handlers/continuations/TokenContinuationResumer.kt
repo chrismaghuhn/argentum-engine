@@ -47,6 +47,7 @@ class TokenContinuationResumer(
             )
             if (result.isPaused) return result.toExecutionResult()
             return checkForMore(result.state, result.events)
+                .withDiagnosticsFrom(result.diagnostics)
         } else {
             // Player declined: execute original token creation effect
             // The source is already marked as "offered this turn" so the replacement
@@ -58,6 +59,7 @@ class TokenContinuationResumer(
             )
             if (effectResult.isPaused) return effectResult.toExecutionResult()
             return checkForMore(effectResult.state, effectResult.events)
+                .withDiagnosticsFrom(effectResult.diagnostics)
         }
     }
 }

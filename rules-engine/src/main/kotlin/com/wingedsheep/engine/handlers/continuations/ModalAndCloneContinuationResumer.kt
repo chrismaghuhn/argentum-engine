@@ -529,10 +529,12 @@ class ModalAndCloneContinuationResumer(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    outEvents + zoneChangeEvent + triggerResult.events
+                    outEvents + zoneChangeEvent + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
             return checkForMore(triggerResult.newState, outEvents + zoneChangeEvent + triggerResult.events)
+                .withDiagnosticsFrom(triggerResult.diagnostics)
         }
 
         return checkForMore(newState, outEvents + zoneChangeEvent)
@@ -658,7 +660,10 @@ class ModalAndCloneContinuationResumer(
                     )
                     if (repause != null && repause.isPaused) {
                         return ExecutionResult.paused(
-                            repause.state, repause.pendingDecision!!, syntheticRiotEvents + repause.events
+                            repause.state,
+                            repause.pendingDecision!!,
+                            syntheticRiotEvents + repause.events,
+                            diagnostics = repause.diagnostics,
                         )
                     }
                 }
@@ -870,10 +875,12 @@ class ModalAndCloneContinuationResumer(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    syntheticRiotEvents + triggerResult.events
+                    syntheticRiotEvents + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
             return checkForMore(triggerResult.newState, syntheticRiotEvents + triggerResult.events)
+                .withDiagnosticsFrom(triggerResult.diagnostics)
         }
 
         return checkForMore(newState, syntheticRiotEvents)
@@ -931,13 +938,15 @@ class ModalAndCloneContinuationResumer(
                 return ExecutionResult.paused(
                     triggerResult.state,
                     triggerResult.pendingDecision!!,
-                    events + triggerResult.events
+                    events + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
 
             return ExecutionResult.success(
                 triggerResult.newState,
-                events + triggerResult.events
+                events + triggerResult.events,
+                triggerResult.diagnostics,
             )
         }
 
@@ -1054,14 +1063,16 @@ class ModalAndCloneContinuationResumer(
                 return ExecutionResult.paused(
                     triggerResult.state.withPriority(continuation.casterId),
                     triggerResult.pendingDecision!!,
-                    allEvents + triggerResult.events
+                    allEvents + triggerResult.events,
+                    diagnostics = triggerResult.diagnostics,
                 )
             }
 
             allEvents = allEvents + triggerResult.events
             return ExecutionResult.success(
                 triggerResult.newState.withPriority(continuation.casterId),
-                allEvents
+                allEvents,
+                triggerResult.diagnostics,
             )
         }
 
@@ -1395,7 +1406,8 @@ class ModalAndCloneContinuationResumer(
 
         val result = services.effectExecutorRegistry.execute(state, CompositeEffect(effects), context).toExecutionResult()
         if (result.isPaused) return result
-        return checkForMore(result.state, result.events.toList())
+            return checkForMore(result.state, result.events.toList())
+                .withDiagnosticsFrom(result.diagnostics)
     }
 
     /**
@@ -1423,6 +1435,7 @@ class ModalAndCloneContinuationResumer(
         ).toExecutionResult()
         if (result.isPaused) return result
         return checkForMore(result.state, result.events.toList())
+            .withDiagnosticsFrom(result.diagnostics)
     }
 
     /**
@@ -1474,6 +1487,7 @@ class ModalAndCloneContinuationResumer(
         val remaining = continuation.remaining - 1
         if (remaining <= 0) {
             return checkForMore(created.state, created.events.toList())
+                .withDiagnosticsFrom(created.diagnostics)
         }
 
         // More Aura copies owed — each gets its own host choice.
@@ -1490,7 +1504,13 @@ class ModalAndCloneContinuationResumer(
         )
         val nextDecision = next.pendingDecision
             ?: return checkForMore(next.state, created.events.toList() + next.events.toList())
-        return ExecutionResult.paused(next.state, nextDecision, created.events.toList())
+                .withDiagnosticsFrom(created.diagnostics + next.diagnostics)
+        return ExecutionResult.paused(
+            next.state,
+            nextDecision,
+            created.events.toList(),
+            diagnostics = created.diagnostics + next.diagnostics,
+        )
     }
 
     /**
@@ -1584,6 +1604,7 @@ class ModalAndCloneContinuationResumer(
             result
         } else {
             checkForMore(result.state, result.events.toList())
+                .withDiagnosticsFrom(result.diagnostics)
         }
     }
 
@@ -1806,7 +1827,12 @@ private fun executeChosenModeWithTail(
     val events = accumulatedEvents + result.events
 
     if (result.isPaused) {
-        return ExecutionResult.paused(result.state, result.pendingDecision!!, events)
+        return ExecutionResult.paused(
+            result.state,
+            result.pendingDecision!!,
+            events,
+            diagnostics = result.diagnostics,
+        )
     }
     if (result.error != null) {
         return result.copy(events = events)
@@ -1818,5 +1844,5 @@ private fun executeChosenModeWithTail(
         services, nextState, tail, controllerId, sourceId, sourceName, xValue,
         triggeringEntityId, allowCancelBackToModesList = null,
         outerTargets, outerAlignedTargets, outerNamedTargets, events, checkForMore
-    )
+    ).withDiagnosticsFrom(result.diagnostics)
 }
