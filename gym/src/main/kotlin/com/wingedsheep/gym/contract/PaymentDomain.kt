@@ -4,12 +4,14 @@ import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
+import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
+import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 
 const val PAYMENT_DOMAIN_VERSION: Int = 1
@@ -65,16 +67,20 @@ data class PaymentDomainV1(
 )
 
 /**
- * Builds the public action-level domain from the existing engine mana-source discovery. This class
- * never solves or suggests a payment; it only publishes exact source/ability/color candidates.
+ * Builds the public action-level domain from the existing engine mana-source discovery. The caller
+ * must pass the same ability payment context and source exclusion that the authoritative ability
+ * handler will use. This class never solves or suggests a payment; it only publishes exact
+ * source/ability/color candidates and fails closed for unsupported pool/source shapes.
  */
 class PaymentDomainBuilder(
     private val manaSolver: ManaSolver,
 ) {
     fun build(
         state: GameState,
-        playerId: com.wingedsheep.sdk.model.EntityId,
+        playerId: EntityId,
         requiredCost: String,
+        spellContext: SpellPaymentContext,
+        excludeSources: Set<EntityId> = emptySet(),
     ): PaymentDomainV1? {
         val cost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
         val costUnits = cost.symbols.mapIndexed { index, symbol -> symbol.toDomain(index) ?: return null }
@@ -82,10 +88,16 @@ class PaymentDomainBuilder(
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         // Restricted mana has no stable public bucket identity in V1. Do not publish a partial
         // domain that would force the engine to choose a restricted bucket during submission.
-        if (pool.restrictedMana.isNotEmpty()) return null
+        if (pool.restrictedMana.isNotEmpty() ||
+            pool.manaBySubtype.isNotEmpty() ||
+            pool.manaBySource.isNotEmpty()
+        ) return null
 
         val sourceActivations = buildList {
-            for (source in manaSolver.findAvailableManaSources(state, playerId).sortedBy { it.entityId.value }) {
+            for (source in manaSolver.findAvailableManaSources(state, playerId, spellContext)
+                .filter { it.entityId !in excludeSources }
+                .sortedBy { it.entityId.value }
+            ) {
                 if (!source.supportsPaymentPlanV1()) return null
                 addAll(source.toDomain() ?: return null)
             }

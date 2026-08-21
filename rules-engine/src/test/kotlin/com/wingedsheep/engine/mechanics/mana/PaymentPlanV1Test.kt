@@ -10,13 +10,16 @@ import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.AbilityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -42,9 +45,19 @@ class PaymentPlanV1Test : FunSpec({
         }
     }
 
+    val trackingRestrictedSource = card("Payment Plan Tracking Restricted Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddManaOfChoice()
+            manaAbility = true
+            restrictions = listOf(ActivationRestriction.OncePerTurn)
+        }
+    }
+
     fun game(): Pair<GameTestDriver, EntityId> {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + anyColorSource + payableAbilitySource)
+        driver.registerCards(TestCards.all + anyColorSource + payableAbilitySource + trackingRestrictedSource)
         driver.initMirrorMatch(Deck.of("Forest" to 20), startingPlayer = 0)
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return driver to driver.activePlayer!!
@@ -233,6 +246,82 @@ class PaymentPlanV1Test : FunSpec({
                         manaAbilityKey = "generated-runtime-handle",
                         productionChoice = ProductionChoice(PaymentManaColor.GREEN),
                     )
+                ),
+                allocations = listOf(
+                    CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = source))),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+    }
+
+    test("floating mana provenance is fail-closed for PaymentPlanV1") {
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                red = 1,
+                manaBySource = mapOf(EntityId("floating-source") to 1),
+            ),
+        )
+
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{R}"),
+            plan = plan(
+                poolSpend = PoolSpend(red = 1),
+                allocations = listOf(
+                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.RED))),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+    }
+
+    test("floating mana subtype provenance is fail-closed for PaymentPlanV1") {
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                red = 1,
+                manaBySubtype = mapOf(Subtype.CAVE to 1),
+            ),
+        )
+
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{R}"),
+            plan = plan(
+                poolSpend = PoolSpend(red = 1),
+                allocations = listOf(
+                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.RED))),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+    }
+
+    test("mana abilities with activation tracking are fail-closed for PaymentPlanV1") {
+        val (driver, player) = game()
+        val source = driver.putPermanentOnBattlefield(player, trackingRestrictedSource.name)
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}"),
+            plan = plan(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = source,
+                        manaAbilityKey = key(driver, player, source, PaymentManaColor.GREEN),
+                        productionChoice = ProductionChoice(PaymentManaColor.GREEN),
+                    ),
                 ),
                 allocations = listOf(
                     CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = source))),

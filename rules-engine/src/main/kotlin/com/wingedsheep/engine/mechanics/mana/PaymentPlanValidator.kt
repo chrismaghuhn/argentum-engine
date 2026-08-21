@@ -51,7 +51,9 @@ private fun ManaSource.ordinaryTapManaAbilitiesOnly(): Boolean {
         .flatMap(::manaAbilityOptionsFor)
         .plus(manaAbilityOptionsFor(null))
         .distinctBy { it.id.value }
-    return abilities.isEmpty() || abilities.all { it.cost is AbilityCost.Tap }
+    return abilities.isEmpty() || abilities.all {
+        it.cost is AbilityCost.Tap && it.restrictions.isEmpty()
+    }
 }
 
 /**
@@ -89,6 +91,11 @@ class PaymentPlanValidator(
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         if (poolComponent.restrictedMana.isNotEmpty()) {
             return PaymentPlanValidation.Rejected("PaymentPlanV1 cannot spend a restricted mana pool")
+        }
+        if (poolComponent.manaBySubtype.isNotEmpty() || poolComponent.manaBySource.isNotEmpty()) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV1 cannot spend floating mana with hidden provenance"
+            )
         }
         val currentPool = poolComponent.asManaPool()
 

@@ -24,6 +24,9 @@ import com.wingedsheep.gym.contract.PaymentDomainV1
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
+import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
@@ -49,10 +52,19 @@ import kotlinx.serialization.json.jsonObject
  */
 class GameGymEnvActionContractTest : FunSpec({
 
+    val payableActionSource = card("Gym Contract Payable Action Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Mana("{1}{R}")
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun registry() = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
         register(StrongholdSet.cards)
+        register(payableActionSource)
     }
 
     fun config() = GameConfig(
@@ -145,26 +157,50 @@ class GameGymEnvActionContractTest : FunSpec({
     test("payable structured ActivateAbility publishes an externally usable payment domain") {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
-        environment.reset(config())
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of(payableActionSource.name to 1, "Mountain" to 1)),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 2)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+            ),
+        )
+        var state = environment.state
+        while (state.step != com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is com.wingedsheep.engine.core.PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
         val player = environment.playerIds.first()
-        val sourceId = environment.state.entities.entries
+        val sourceId = state.entities.entries
             .first { (id, container) ->
-                id in environment.state.getZone(player, Zone.HAND) + environment.state.getZone(player, Zone.LIBRARY) &&
-                    container.get<CardComponent>()?.name == "Mountain"
+                id in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == payableActionSource.name
             }
             .key
-        val sourceZone = environment.state.zones.entries.first { (_, ids) -> sourceId in ids }.key
-        val sourceState = environment.state.moveToZone(
+        val sourceZone = state.zones.entries.first { (_, ids) -> sourceId in ids }.key
+        state = state.moveToZone(
             sourceId,
             sourceZone,
             ZoneKey(player, Zone.BATTLEFIELD),
         )
-        environment.restore(sourceState, environment.playerIds, environment.stepCount)
+        val mountainId = state.entities.entries
+            .first { (id, container) ->
+                id in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == "Mountain"
+            }
+            .key
+        val mountainZone = state.zones.entries.first { (_, ids) -> mountainId in ids }.key
+        state = state.moveToZone(mountainId, mountainZone, ZoneKey(player, Zone.BATTLEFIELD))
+        environment.restore(state, environment.playerIds, environment.stepCount)
         val legalAction = LegalAction(
             action = ActivateAbility(
                 playerId = player,
                 sourceId = sourceId,
-                abilityId = AbilityId("payment-ability"),
+                abilityId = payableActionSource.activatedAbilities.single().id,
             ),
             actionType = "ActivateAbility",
             description = "Activate payable test ability",
@@ -180,7 +216,7 @@ class GameGymEnvActionContractTest : FunSpec({
         view.manaCost shouldBe "{1}{R}"
         view.requiresStructuredAction shouldBe true
         val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV1")
-        paymentDomain.sourceActivations.single().sourceId shouldBe sourceId
+        paymentDomain.sourceActivations.single().sourceId shouldBe mountainId
         paymentDomain.sourceActivations.single().productionChoices
             .map { it.producedColor } shouldContain PaymentManaColor.RED
         paymentDomain.sourceActivations.single().manaAbilityKey shouldBe "intrinsic:R"

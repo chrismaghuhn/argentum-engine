@@ -61,6 +61,7 @@ import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -550,7 +551,78 @@ class ObservationBuilder(
     private fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV1? {
         val action = legalAction.action as? ActivateAbility ?: return null
         val requiredCost = legalAction.manaCostString ?: return null
-        return paymentDomainBuilder.build(state, action.playerId, requiredCost)
+        val ability = resolveActivatedAbility(state, action) ?: return null
+        if (legalAction.hasXCost ||
+            legalAction.hasConvoke ||
+            legalAction.hasTapForGeneric ||
+            action.alternativePayment != null ||
+            ability.hasConvoke ||
+            ability.hasWaterbend ||
+            legalAction.additionalCostInfo != null ||
+            ability.isEquipAbility ||
+            (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
+        ) {
+            // The action payload does not yet carry the non-mana/target choices that determine
+            // these costs. Publishing the enumerator's optimistic cost would make the payment
+            // domain describe a different action than the handler later validates.
+            return null
+        }
+
+        val source = state.getEntity(action.sourceId)?.get<CardComponent>() ?: return null
+        val spellContext = buildAbilityPaymentContext(
+            cardComponent = source,
+            projected = state.projectedState,
+            sourceId = action.sourceId,
+            ability = ability,
+        )
+        val excludeSources = if (hasTapCost(ability.cost)) setOf(action.sourceId) else emptySet()
+        return paymentDomainBuilder.build(
+            state = state,
+            playerId = action.playerId,
+            requiredCost = requiredCost,
+            spellContext = spellContext,
+            excludeSources = excludeSources,
+        )
+    }
+
+    /** Resolve the same printed/granted/intrinsic ability provenance used by [stableAbilityKey]. */
+    private fun resolveActivatedAbility(state: GameState, action: ActivateAbility): ActivatedAbility? {
+        val source = state.getEntity(action.sourceId)
+        val card = source?.get<CardComponent>()
+        val cardDefinition = card?.cardDefinitionId?.let(cardRegistry::getCard)
+        val classLevel = source?.get<ClassLevelComponent>()?.currentLevel
+        val printedAbility = cardDefinition?.script
+            ?.effectiveActivatedAbilities(classLevel)
+            ?.firstOrNull { it.id == action.abilityId }
+        if (printedAbility != null) return printedAbility
+
+        val classLevelUp = classLevelUpAbility(cardDefinition, source, action.abilityId)
+        if (classLevelUp != null) return classLevelUp
+
+        val grantedAbility = state.grantedActivatedAbilities
+            .firstOrNull { it.entityId == action.sourceId && it.ability.id == action.abilityId }
+            ?.ability
+        if (grantedAbility != null) return grantedAbility
+
+        val staticAbility = castPermissionUtils
+            .getStaticGrantedAbilitiesWithGranter(action.sourceId, state)
+            .firstOrNull { it.ability.id == action.abilityId }
+            ?.ability
+        if (staticAbility != null) return staticAbility
+
+        val emblemAbility = activeEmblemAbilities(state, action.sourceId)
+            .firstOrNull { it.id == action.abilityId }
+        if (emblemAbility != null) return emblemAbility
+
+        return IntrinsicManaAbilities.forEntity(state, state.projectedState, action.sourceId)
+            .firstOrNull { it.id == action.abilityId }
+    }
+
+    /** Match ActivateAbilityHandler's outer-source exclusion for a tap-bearing ability cost. */
+    private fun hasTapCost(cost: AbilityCost): Boolean = when (cost) {
+        is AbilityCost.Tap -> true
+        is AbilityCost.Composite -> cost.costs.any(::hasTapCost)
+        else -> false
     }
 
     private fun actionSemantic(state: GameState, action: GameAction): JsonObject {

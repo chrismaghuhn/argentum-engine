@@ -780,7 +780,7 @@ The controller submits the choices inside `PaymentStrategy.Explicit.paymentPlan`
 ```json
 {
   "paymentStrategy": {
-    "type": "explicit",
+    "type": "Explicit",
     "manaAbilitiesToActivate": [],
     "paymentPlan": {
       "sourceActivations": [
