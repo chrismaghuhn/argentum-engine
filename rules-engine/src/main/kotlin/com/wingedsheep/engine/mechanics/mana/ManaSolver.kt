@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -166,6 +167,12 @@ data class ManaSource(
     val manaAbilityOptionsForColor: Map<Color, List<ActivatedAbility>> = emptyMap(),
     /** Every currently usable explicit mana ability for colorless production. */
     val manaAbilityOptionsForColorless: List<ActivatedAbility> = emptyList(),
+    /**
+     * Rules-owned PaymentPlanV1 production profile for each stable mana-ability identity. The
+     * profile is resolved after the current source discovery pass and is invalidated by any
+     * production-transforming runtime modifier.
+     */
+    val paymentManaProductionProfiles: Map<String, PaymentManaProductionProfile> = emptyMap(),
     /**
      * Tapping this source also requires sacrificing it (e.g. Treasure tokens —
      * "{T}, Sacrifice this artifact: Add one mana of any color"). The auto-pay
@@ -1218,6 +1225,20 @@ class ManaSolver(
             // to seed the combined-ability loop below so the granted ability's colors (and any
             // restrictions/riders/activation costs) fold in correctly.
             var landSubtypeSeedColors: Set<Color>? = null
+            var landProductionTransformReason: String? = null
+            var landHasManaColorReplacement = false
+            var landOverrideColor: Color? = null
+            if (card.typeLine.isLand) {
+                landHasManaColorReplacement = landMatchesManaColorReplacement(state, entityId, manaStatics)
+                landOverrideColor = manaStatics.landColorOverrideByTarget[entityId]
+                landProductionTransformReason = when {
+                    landHasManaColorReplacement ->
+                        "A runtime land mana-color replacement changes intrinsic production"
+                    landOverrideColor != null ->
+                        "A runtime land color override changes intrinsic production"
+                    else -> null
+                }
+            }
             if (card.typeLine.isLand) {
                 val projectedSubtypes = projected.getSubtypes(entityId)
                 val subtypeColors = mutableSetOf<Color>()
@@ -1232,13 +1253,21 @@ class ManaSolver(
                     // (e.g., Shimmerwilds Growth on a Mountain with Blue chosen → produces {U}).
                     // A filter-based replacement (Pulse of Llanowar) makes a matched land produce
                     // one mana of a color of its controller's choice — i.e. any of the five.
-                    val overrideColor = manaStatics.landColorOverrideByTarget[entityId]
+                    val overrideColor = landOverrideColor
+                    val hasReplacement = landHasManaColorReplacement
                     val effectiveColors = when {
-                        landMatchesManaColorReplacement(state, entityId, manaStatics) -> Color.entries.toSet()
+                        hasReplacement -> Color.entries.toSet()
                         overrideColor != null -> setOf(overrideColor)
                         else -> subtypeColors
                     }
                     if (staticGrantedManaAbilities.isEmpty()) {
+                        val productionProfiles = effectiveColors.associate { color ->
+                            ManaAbilityIdentity.intrinsic(color) to
+                                (landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
+                                    ?: PaymentManaProductionProfile.SelectableSingleOutput(
+                                        setOf(PaymentManaColor.fromEngine(color))
+                                    ))
+                        }
                         return@mapNotNull ManaSource(
                             entityId = entityId,
                             name = card.name,
@@ -1251,7 +1280,8 @@ class ManaSolver(
                             hasNonManaAbilities = hasNonManaAbilities,
                             hasPainCost = false,
                             painAmount = 0,
-                            canAttack = canAttack
+                            canAttack = canAttack,
+                            paymentManaProductionProfiles = productionProfiles,
                         )
                     }
                     landSubtypeSeedColors = effectiveColors
@@ -1316,6 +1346,7 @@ class ManaSolver(
             // MakesSpellUncounterable on every color it can produce, while its
             // plain `{T}: Add {C}` ability contributes nothing).
             val perColorRiders = mutableMapOf<Color, MutableSet<ManaSpellRider>>()
+            val paymentProductionProfiles = linkedMapOf<String, PaymentManaProductionProfile>()
 
             // Seed the accumulators with a basic land's intrinsic subtype mana (Rule 305.7) when a
             // static grant kept us out of the short-circuit above. The intrinsic ability is
@@ -1327,6 +1358,11 @@ class ManaSolver(
                 for (color in seed) {
                     perColorRestrictions[color] = null
                     perColorPainCost[color] = 0
+                    paymentProductionProfiles[ManaAbilityIdentity.intrinsic(color)] =
+                        landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
+                            ?: PaymentManaProductionProfile.SelectableSingleOutput(
+                                setOf(PaymentManaColor.fromEngine(color))
+                            )
                 }
                 hasUnrestrictedAbility = true
             }
@@ -1550,6 +1586,10 @@ class ManaSolver(
                     else -> null
                 }
 
+                paymentProductionProfiles[ManaAbilityIdentity.key(ability)] =
+                    landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
+                        ?: PaymentManaProductionProfileResolver.resolve(ability.effect, effectColors)
+
                 // Record the cheapest activation mana cost per color this ability produces.
                 for (color in effectColors) {
                     perColorManaAbilities.getOrPut(color) { mutableListOf() }.add(ability)
@@ -1714,6 +1754,7 @@ class ManaSolver(
                         abilities.distinctBy { it.id.value }
                     },
                     manaAbilityOptionsForColorless = colorlessManaAbilities.distinctBy { it.id.value },
+                    paymentManaProductionProfiles = paymentProductionProfiles,
                     requiresSacrifice = requiresSacrifice,
                     colorsRequiringSacrifice = colorsRequiringSacrifice,
                     hasContextSensitiveAbilities = hasMixedRestrictions,
@@ -1740,7 +1781,13 @@ class ManaSolver(
                 hasNonManaAbilities = hasNonManaAbilities,
                 hasPainCost = false,
                 painAmount = 0,
-                canAttack = false
+                canAttack = false,
+                paymentManaProductionProfiles = mapOf(
+                    ManaAbilityIdentity.intrinsic(null) to
+                        PaymentManaProductionProfile.SelectableSingleOutput(
+                            setOf(PaymentManaColor.COLORLESS)
+                        )
+                )
             )
         }.map { source -> augmentWithAuraBonusMana(state, source, playerId, manaStatics) }
             .map { source -> augmentWithSourceTapBonusMana(state, source, playerId, manaStatics) }
@@ -1751,6 +1798,7 @@ class ManaSolver(
             .let { sources ->
                 if (hasDampLandManaProduction(state)) applyLandManaDampening(sources) else sources
             }
+            .map(ManaSource::authorizePaymentManaProductionProfiles)
     }
 
     /**
@@ -1994,7 +2042,13 @@ class ManaSolver(
         }
 
         return if (totalBonus > 0) {
-            source.copy(bonusManaPerTap = totalBonus, bonusManaColor = bonusColor, bonusManaIsAnyColor = anyColorBonus)
+            source.copy(
+                bonusManaPerTap = totalBonus,
+                bonusManaColor = bonusColor,
+                bonusManaIsAnyColor = anyColorBonus
+            ).invalidatePaymentManaProductionProfiles(
+                "AdditionalManaOnTap changes the selected source production"
+            )
         } else {
             source
         }
@@ -2080,6 +2134,8 @@ class ManaSolver(
                 bonusManaPerTap = source.bonusManaPerTap + totalBonus,
                 bonusManaColor = source.bonusManaColor ?: bonusColor,
                 bonusManaColorlessPerTap = source.bonusManaColorlessPerTap + totalColorlessBonus
+            ).invalidatePaymentManaProductionProfiles(
+                "AdditionalManaOnSourceTap changes the selected source production"
             )
         } else {
             source
@@ -2126,7 +2182,12 @@ class ManaSolver(
             multiplier *= entry.static.multiplier
         }
 
-        return if (multiplier > 1) source.copy(manaAmount = source.manaAmount * multiplier) else source
+        return if (multiplier > 1) {
+            source.copy(manaAmount = source.manaAmount * multiplier)
+                .invalidatePaymentManaProductionProfiles(
+                    "MultiplyManaOnSourceTap changes the selected source production"
+                )
+        } else source
     }
 
     /**
@@ -2218,13 +2279,26 @@ class ManaSolver(
         return sources.map { source ->
             // Only dampen lands; non-land mana sources (mana dorks, mana rocks) are unaffected
             val totalMana = source.manaAmount + source.bonusManaPerTap
-            if (source.isLand && totalMana >= 2) {
-                source.copy(
-                    producesColors = emptySet(),
-                    producesColorless = true,
-                    manaAmount = 1,
-                    bonusManaPerTap = 0,
-                    bonusManaColor = null
+            val fixedBundleProfile = source.paymentManaProductionProfiles.values.any {
+                it is PaymentManaProductionProfile.FixedOutputBundle
+            }
+            if (source.isLand && (totalMana >= 2 || fixedBundleProfile)) {
+                val dampedSource = if (totalMana >= 2) {
+                    source.copy(
+                        producesColors = emptySet(),
+                        producesColorless = true,
+                        manaAmount = 1,
+                        bonusManaPerTap = 0,
+                        bonusManaColor = null
+                    )
+                } else {
+                    // The legacy aggregate currently keeps colorless composite leaves in a
+                    // separate bonus field that this total does not include. Do not refactor that
+                    // auto-pay path here; conservatively keep the public plan boundary closed.
+                    source
+                }
+                dampedSource.invalidatePaymentManaProductionProfiles(
+                    "DampLandManaProduction changes the selected source production"
                 )
             } else {
                 source

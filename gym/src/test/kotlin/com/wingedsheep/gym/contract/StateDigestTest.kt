@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
@@ -127,6 +128,70 @@ class StateDigestTest : FunSpec({
         )
 
         StateDigest.compute(withDomain) shouldNotBe StateDigest.compute(withoutDomain)
+    }
+
+    test("fixed output order is digest-relevant") {
+        val base = observation(environment())
+        val candidate = LegalActionView(
+            actionId = 9002,
+            kind = "CastSpell",
+            description = "Cast bundle spell",
+            affordable = true,
+            manaCost = "{B}",
+            requiresStructuredAction = true,
+        )
+        val domain = PaymentDomainV1(
+            requiredCost = "{B}",
+            costUnits = listOf(
+                PaymentCostUnitDomain(
+                    symbolIndex = 0,
+                    kind = PaymentCostKind.COLORED,
+                    amount = 1,
+                    allowedColors = setOf(PaymentManaColor.BLACK),
+                ),
+            ),
+            currentPool = PaymentPoolDomain(),
+            sourceActivations = listOf(
+                PaymentSourceActivationDomain(
+                    sourceId = com.wingedsheep.sdk.model.EntityId("bundle-source"),
+                    sourceName = "Bundle Source",
+                    manaAbilityKey = "bundle-ability",
+                    productionChoices = listOf(
+                        com.wingedsheep.engine.core.ProductionChoice(
+                            producedColor = PaymentManaColor.BLACK,
+                            fixedOutputs = listOf(
+                                FixedManaOutput(0, PaymentManaColor.BLACK),
+                                FixedManaOutput(1, PaymentManaColor.GREEN),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val ordered = base.copy(
+            legalActions = base.legalActions + candidate.copy(paymentDomain = domain),
+        )
+        val reversed = base.copy(
+            legalActions = base.legalActions + candidate.copy(
+                paymentDomain = domain.copy(
+                    sourceActivations = listOf(
+                        domain.sourceActivations.single().copy(
+                            productionChoices = listOf(
+                                com.wingedsheep.engine.core.ProductionChoice(
+                                    producedColor = PaymentManaColor.GREEN,
+                                    fixedOutputs = listOf(
+                                        FixedManaOutput(0, PaymentManaColor.GREEN),
+                                        FixedManaOutput(1, PaymentManaColor.BLACK),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        StateDigest.compute(ordered) shouldNotBe StateDigest.compute(reversed)
     }
 
     test("perspective is part of the information-set digest") {
