@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -13,11 +14,13 @@ import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.TypeLine
@@ -1017,6 +1020,131 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             action = action,
             actionType = "ActivateAbility",
             description = "Tap and pay for the test ability",
+            manaCostString = "{1}{R}",
+        )
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldBe null
+    }
+
+    test("PaymentDomainV1 publishes a certified single-unit floating candidate") {
+        val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
+        val stateWithProvenance = environment.state.updateEntity(player) { container ->
+            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            container.with(
+                pool.copy(
+                    green = 1,
+                    manaBySource = mapOf(sourceId to 1),
+                    manaBySubtype = mapOf(Subtype.FOREST to 1),
+                ),
+            )
+        }
+        environment.restore(stateWithProvenance, environment.playerIds, environment.stepCount)
+
+        val action = ActivateAbility(
+            playerId = player,
+            sourceId = sourceId,
+            abilityId = sourceWithTapPayment.activatedAbilities[1].id,
+        )
+        val legalAction = LegalAction(
+            action = action,
+            actionType = "ActivateAbility",
+            description = "Pay with certified floating mana",
+            manaCostString = "{1}{R}",
+        )
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+        val domain = view.paymentDomain ?: error("expected a certified payment domain")
+        val candidate = domain.currentPool.certifiedFloatingMana
+            ?: error("expected a certified floating-mana candidate")
+
+        candidate.poolColor shouldBe PaymentManaColor.GREEN
+        candidate.sourceId shouldBe sourceId
+        candidate.sourceSubtypes shouldBe listOf("Forest")
+    }
+
+    test("PaymentDomainV1 does not publish a candidate for an invisible source reference") {
+        val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
+        val hiddenSourceId = EntityId("hidden-source-reference")
+        val stateWithProvenance = environment.state.updateEntity(player) { container ->
+            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            container.with(
+                pool.copy(
+                    green = 1,
+                    manaBySource = mapOf(hiddenSourceId to 1),
+                    manaBySubtype = mapOf(Subtype.FOREST to 1),
+                ),
+            )
+        }
+        environment.restore(stateWithProvenance, environment.playerIds, environment.stepCount)
+
+        val action = ActivateAbility(
+            playerId = player,
+            sourceId = sourceId,
+            abilityId = sourceWithTapPayment.activatedAbilities[1].id,
+        )
+        val legalAction = LegalAction(
+            action = action,
+            actionType = "ActivateAbility",
+            description = "Do not expose hidden provenance",
+            manaCostString = "{1}{R}",
+        )
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldBe null
+    }
+
+    test("PaymentDomainV1 does not publish a face-down public source identity") {
+        val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
+        val opponent = environment.playerIds.single { it != player }
+        val opponentMountain = environment.state.entities.entries.first { (id, container) ->
+            id in environment.state.getZone(opponent, Zone.HAND) + environment.state.getZone(opponent, Zone.LIBRARY) &&
+                container.get<CardComponent>()?.name == "Mountain"
+        }.key
+        val opponentMountainZone = environment.state.zones.entries.first { (_, ids) ->
+            opponentMountain in ids
+        }.key
+        var state = environment.state.moveToZone(
+            opponentMountain,
+            opponentMountainZone,
+            ZoneKey(opponent, Zone.BATTLEFIELD),
+        )
+        state = state.updateEntity(opponentMountain) { it.with(FaceDownComponent) }
+        state = state.updateEntity(player) { container ->
+            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            container.with(
+                pool.copy(
+                    green = 1,
+                    manaBySource = mapOf(opponentMountain to 1),
+                    manaBySubtype = mapOf(Subtype.FOREST to 1),
+                ),
+            )
+        }
+        environment.restore(state, environment.playerIds, environment.stepCount)
+
+        val action = ActivateAbility(
+            playerId = player,
+            sourceId = sourceId,
+            abilityId = sourceWithTapPayment.activatedAbilities[1].id,
+        )
+        val legalAction = LegalAction(
+            action = action,
+            actionType = "ActivateAbility",
+            description = "Do not expose face-down source provenance",
             manaCostString = "{1}{R}",
         )
 

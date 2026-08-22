@@ -1026,6 +1026,15 @@ data class ManaPool(
 }
 ```
 
+The authoritative `ManaPoolComponent` also retains aggregate `manaBySource` and
+`manaBySubtype` counters for the floating pool. Those maps do not identify a source/subtype for
+each colored unit. Consequently, the public `PaymentDomainV1` exposes provenance only through a
+Rules-owned certified-single-unit classification: one unrestricted unit, one recorded source,
+and subtype tags that are necessarily attributable to that unit. The existing aggregate
+`consumeProvenance()` operation remains a legacy greedy adapter and is not used to choose
+provenance across the external explicit-payment boundary. Tracked states that are not certified
+remain fail-closed until the authoritative state model can represent the missing association.
+
 **Cost reductions and increases.** Before payment, the `CostCalculator` applies all active
 modifiers — static abilities that reduce costs (Goblin Electromancer's "instant and sorcery spells
 cost {1} less"), affinity ("costs {1} less for each artifact you control"), and cost increases

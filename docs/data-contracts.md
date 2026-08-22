@@ -679,7 +679,7 @@ if it diverged, serve the archived frames instead, flagged `degraded`. `ReplayFi
 `UNVERIFIED` / `DIVERGED`) and `stateReproducible` ride in the endpoint metadata, and the viewer
 shows a **From archive** badge and hides the scenario buttons when the position can't be rebuilt.
 
-`CompactReplay.version` is 2. All v2 fields default to empty and `persistenceJson` ignores unknown
+`CompactReplay.version` is 3. All v2 fields default to empty and `persistenceJson` ignores unknown
 keys, so records round-trip in both directions across a rolling deploy. `engineVersion` (the git sha,
 passed to the backend image as `COMMIT_HASH`) is stamped on every record so a replay that stops
 re-simulating can be traced to the build that recorded it.
@@ -849,3 +849,35 @@ Secondary mana-ability choices, sacrifice or other secondary sub-costs, bonus/re
 riders, hybrid/X shapes, and other exotic payment forms fail closed until their choices have a
 corresponding public V1 field. Such a reachable shape is an unsupported Gym diagnostic, not a
 partial domain.
+
+#### Certified single-unit floating provenance
+
+`PaymentPoolDomain` may additionally contain one nullable
+`certifiedFloatingMana` value. This is a deliberately singular exception, not a list of
+provenance-bearing mana units:
+
+```json
+{
+  "poolColor": "GREEN",
+  "sourceId": "ent-forest",
+  "sourceSubtypes": ["Forest"]
+}
+```
+
+The public payment domain includes this value only when the Rules-owned classifier proves from the
+authoritative aggregate pool that exactly one
+unrestricted mana unit exists, its color is known, exactly one producing source is recorded, and
+all recorded subtype tags necessarily belong to that same unit. `sourceSubtypes` is semantically
+unordered and is serialized in canonical sorted order. The Rules classifier reports an empty
+provenance map as `NoTrackedProvenance`; that describes missing metadata, not the absence of a
+source identity under the Comprehensive Rules. Any tracked state that cannot be certified is
+unsupported and the action-level payment domain fails closed. Source visibility is checked
+separately by the perspective-safe observation builder.
+
+`PaymentPlanV1` remains unchanged. For a certified candidate, the existing pool-color spend is
+semantically unique. If it is spent, Rules removes the color count and exact recorded source and
+subtype provenance together. If it is not spent, both the mana and provenance are preserved.
+The materialized payment carries the exact provenance into existing spell-cast provenance and keeps
+the activated-ability pool state exact; no separate greedy allocation is performed at that boundary.
+Compact replay remains version 3; the additive public domain change is reflected in the Gym
+`SchemaHash`.

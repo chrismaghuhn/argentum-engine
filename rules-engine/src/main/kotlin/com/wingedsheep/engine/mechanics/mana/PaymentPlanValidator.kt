@@ -163,11 +163,14 @@ class PaymentPlanValidator(
         if (poolComponent.restrictedMana.isNotEmpty()) {
             return PaymentPlanValidation.Rejected("PaymentPlanV1 cannot spend a restricted mana pool")
         }
-        if (poolComponent.manaBySubtype.isNotEmpty() || poolComponent.manaBySource.isNotEmpty()) {
+        val provenanceClassification = FloatingManaProvenanceClassification.classify(poolComponent)
+        if (provenanceClassification is FloatingManaProvenanceClassification.Ambiguous) {
             return PaymentPlanValidation.Rejected(
                 "PaymentPlanV1 cannot spend floating mana with hidden provenance"
             )
         }
+        val certifiedFloatingMana = (provenanceClassification as?
+            FloatingManaProvenanceClassification.CertifiedSingleUnit)?.candidate
         val currentPool = poolComponent.asManaPool()
 
         val availableSources = manaSolver.findAvailableManaSources(state, playerId, spellContext)
@@ -374,15 +377,29 @@ class PaymentPlanValidator(
             }
         }
 
-        var poolAfterSpend = currentPool
-        for (color in PaymentManaColor.entries) {
-            val amount = plan.poolSpend.amount(color)
-            poolAfterSpend = if (color == PaymentManaColor.COLORLESS) {
-                poolAfterSpend.spendColorless(amount) ?:
-                    return PaymentPlanValidation.Rejected("Floating colorless mana is unavailable")
-            } else {
-                poolAfterSpend.spend(color.asEngineColor()!!, amount) ?:
-                    return PaymentPlanValidation.Rejected("Floating mana is unavailable")
+        val certifiedPoolPayment = if (certifiedFloatingMana != null && plan.poolSpend.total() > 0) {
+            if (plan.poolSpend.total() != 1 || plan.poolSpend.amount(certifiedFloatingMana.poolColor) != 1) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV1 certified pool spend does not identify the single floating unit"
+                )
+            }
+            currentPool.consumeCertifiedSingleUnit(certifiedFloatingMana)
+                ?: return PaymentPlanValidation.Rejected("Certified floating mana is unavailable")
+        } else {
+            null
+        }
+
+        var poolAfterSpend = certifiedPoolPayment?.first ?: currentPool
+        if (certifiedPoolPayment == null) {
+            for (color in PaymentManaColor.entries) {
+                val amount = plan.poolSpend.amount(color)
+                poolAfterSpend = if (color == PaymentManaColor.COLORLESS) {
+                    poolAfterSpend.spendColorless(amount) ?:
+                        return PaymentPlanValidation.Rejected("Floating colorless mana is unavailable")
+                } else {
+                    poolAfterSpend.spend(color.asEngineColor()!!, amount) ?:
+                        return PaymentPlanValidation.Rejected("Floating mana is unavailable")
+                }
             }
         }
 
@@ -394,6 +411,10 @@ class PaymentPlanValidator(
         var colorlessSpent = plan.poolSpend.colorless
         val spentSubtypes = mutableMapOf<Subtype, Int>()
         val spentSourceIds = mutableSetOf<EntityId>()
+        certifiedPoolPayment?.second?.let { provenance ->
+            provenance.bySubtype.forEach { (subtype, amount) -> spentSubtypes[subtype] = amount }
+            spentSourceIds += provenance.sourceIds
+        }
 
         // Materialize every unspent fixed output into the pool with the same source/subtype
         // provenance that the normal mana effect executors record. No output is silently dropped.

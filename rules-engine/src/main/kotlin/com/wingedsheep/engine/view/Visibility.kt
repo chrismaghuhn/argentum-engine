@@ -7,6 +7,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -59,6 +60,45 @@ class Visibility(
     ): Boolean = state.getEntity(entityId)
         ?.get<RevealedToComponent>()
         ?.isRevealedTo(viewingPlayerId) == true
+
+    /**
+     * Whether [viewingPlayerId] may see an entity's identity at its current location.
+     *
+     * This is the identity-level companion to [isZoneVisibleTo]. Public zones can still contain
+     * face-down objects, and a library's ordered entity ids are not the same thing as visible card
+     * identities. Consumers that publish an entity reference must use this method rather than
+     * treating a public zone as sufficient proof of identity visibility.
+     */
+    fun isEntityIdentityVisibleTo(
+        state: GameState,
+        entityId: EntityId,
+        viewingPlayerId: EntityId,
+        isSpectator: Boolean = false,
+    ): Boolean {
+        val (zoneKey, _) = state.zones.entries.firstOrNull { (_, entityIds) -> entityId in entityIds }
+            ?: return false
+
+        if (zoneKey.zoneType == Zone.LIBRARY) {
+            if (isCardRevealedTo(state, entityId, viewingPlayerId)) return true
+            val isTopCard = state.getLibrary(zoneKey.ownerId).firstOrNull() == entityId
+            return isTopCard && (
+                revealsTopOfLibraryPublicly(state, zoneKey.ownerId) ||
+                    (!isSpectator && zoneKey.ownerId == viewingPlayerId &&
+                        hasLookAtTopOfLibrary(state, viewingPlayerId))
+                )
+        }
+
+        if (!isZoneVisibleTo(state, zoneKey, viewingPlayerId, isSpectator)) return false
+        val entity = state.getEntity(entityId) ?: return false
+        if (!entity.has<FaceDownComponent>()) return true
+        if (isCardRevealedTo(state, entityId, viewingPlayerId)) return true
+
+        val controllerId = state.projectedState.getController(entityId)
+            ?: entity.get<ControllerComponent>()?.playerId
+        return zoneKey.zoneType == Zone.BATTLEFIELD &&
+            !isSpectator &&
+            (controllerId == viewingPlayerId || hasLookAtFaceDownCreatures(state, viewingPlayerId))
+    }
 
     fun hasLookAtFaceDownCreatures(state: GameState, playerId: EntityId): Boolean =
         hasActiveStaticAbility(state, playerId) { it is LookAtFaceDownCreatures }

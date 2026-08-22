@@ -194,6 +194,54 @@ class StateDigestTest : FunSpec({
         StateDigest.compute(ordered) shouldNotBe StateDigest.compute(reversed)
     }
 
+    test("certified floating subtype order is not digest-relevant") {
+        val base = observation(environment())
+        val candidate = LegalActionView(
+            actionId = 9003,
+            kind = "CastSpell",
+            description = "Cast certified floating spell",
+            affordable = true,
+            manaCost = "{G}",
+            requiresStructuredAction = true,
+        )
+        val domain = PaymentDomainV1(
+            requiredCost = "{G}",
+            costUnits = listOf(
+                PaymentCostUnitDomain(
+                    symbolIndex = 0,
+                    kind = PaymentCostKind.COLORED,
+                    amount = 1,
+                    allowedColors = setOf(PaymentManaColor.GREEN),
+                ),
+            ),
+            currentPool = PaymentPoolDomain(
+                green = 1,
+                certifiedFloatingMana = CertifiedFloatingManaCandidateV1(
+                    poolColor = PaymentManaColor.GREEN,
+                    sourceId = com.wingedsheep.sdk.model.EntityId("forest-source"),
+                    sourceSubtypes = listOf("Forest", "Cave"),
+                ),
+            ),
+            sourceActivations = emptyList(),
+        )
+        val first = base.copy(legalActions = base.legalActions + candidate.copy(paymentDomain = domain))
+        val second = first.copy(
+            legalActions = first.legalActions.map { action ->
+                if (action.actionId != candidate.actionId) action else action.copy(
+                    paymentDomain = domain.copy(
+                        currentPool = domain.currentPool.copy(
+                            certifiedFloatingMana = domain.currentPool.certifiedFloatingMana!!.copy(
+                                sourceSubtypes = listOf("Cave", "Forest"),
+                            ),
+                        ),
+                    ),
+                )
+            },
+        )
+
+        StateDigest.compute(first) shouldBe StateDigest.compute(second)
+    }
+
     test("perspective is part of the information-set digest") {
         val env = environment()
         val firstPerspective = observation(env, perspectiveIndex = 0)
