@@ -1,9 +1,12 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
@@ -55,9 +58,17 @@ class PaymentPlanV1Test : FunSpec({
         }
     }
 
+    val ordinarySpell = card("Payment Plan Ordinary Spell") {
+        manaCost = "{1}{B}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun game(): Pair<GameTestDriver, EntityId> {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + anyColorSource + payableAbilitySource + trackingRestrictedSource)
+        driver.registerCards(TestCards.all + anyColorSource + payableAbilitySource + trackingRestrictedSource + ordinarySpell)
         driver.initMirrorMatch(Deck.of("Forest" to 20), startingPlayer = 0)
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return driver to driver.activePlayer!!
@@ -152,41 +163,80 @@ class PaymentPlanV1Test : FunSpec({
         driver.isTapped(genericSource) shouldBe true
     }
 
+    test("CastSpell explicit PaymentPlanV1 is the submitted payment") {
+        val (driver, player) = game()
+        val spellId = driver.putCardInHand(player, ordinarySpell.name)
+        val blackSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val genericSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+
+        val result = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                blackSource,
+                                key(driver, player, blackSource, PaymentManaColor.BLACK),
+                                ProductionChoice(PaymentManaColor.BLACK),
+                            ),
+                            SourceActivation(
+                                genericSource,
+                                key(driver, player, genericSource, PaymentManaColor.GREEN),
+                                ProductionChoice(PaymentManaColor.GREEN),
+                            ),
+                        ),
+                        allocations = listOf(
+                            CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = genericSource))),
+                            CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = blackSource))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        result.events.filterIsInstance<ManaSpentEvent>().single().black shouldBe 1
+        driver.isTapped(blackSource) shouldBe true
+        driver.isTapped(genericSource) shouldBe true
+    }
+
     test("floating mana generic spend preserves the controller-selected remainder") {
         val (driver, player) = game()
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.BLACK)
         driver.giveMana(player, com.wingedsheep.sdk.core.Color.GREEN)
-        val validator = PaymentPlanValidator(ManaSolver(driver.cardRegistry))
+        driver.giveMana(player, com.wingedsheep.sdk.core.Color.RED)
+        val spellId = driver.putCardInHand(player, ordinarySpell.name)
 
-        val spendBlack = validator.validate(
-            state = driver.state,
-            playerId = player,
-            cost = ManaCost.parse("{1}"),
-            plan = plan(
-                poolSpend = PoolSpend(black = 1),
-                allocations = listOf(
-                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK))),
+        val result = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        poolSpend = PoolSpend(black = 1, green = 1),
+                        allocations = listOf(
+                            CostUnitAllocation(
+                                0,
+                                listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN)),
+                            ),
+                            CostUnitAllocation(
+                                1,
+                                listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK)),
+                            ),
+                        ),
+                    ),
                 ),
             ),
-        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+        )
 
-        spendBlack.poolAfterSpend.black shouldBe 0
-        spendBlack.poolAfterSpend.green shouldBe 1
-
-        val spendGreen = validator.validate(
-            state = driver.state,
-            playerId = player,
-            cost = ManaCost.parse("{1}"),
-            plan = plan(
-                poolSpend = PoolSpend(green = 1),
-                allocations = listOf(
-                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN))),
-                ),
-            ),
-        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
-
-        spendGreen.poolAfterSpend.black shouldBe 1
-        spendGreen.poolAfterSpend.green shouldBe 0
+        result.isSuccess shouldBe true
+        val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing player mana pool")
+        remainingPool.black shouldBe 0
+        remainingPool.green shouldBe 0
+        remainingPool.red shouldBe 1
     }
 
     test("colorless pool spend is distinct from generic spend") {

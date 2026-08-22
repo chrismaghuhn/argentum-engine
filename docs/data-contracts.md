@@ -747,7 +747,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.10-payment-plan-v1-semantic-domain`.
+The Gym contract is currently `argentum-gym-contract@v1.11-castspell-payment-domain`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -767,11 +767,17 @@ configuration are used by the JVM service and HTTP server.
 
 ### Action-level mana payment (PaymentPlanV1)
 
-An affordable structured `ActivateAbility` whose action-level mana cost is published in
-`LegalActionView.manaCost` also publishes `LegalActionView.paymentDomain`. This domain is complete
-for the supported V1 slice: ordinary fixed colored/colorless/generic costs, unrestricted floating
-mana, ordinary tap sources, explicit multicolor production, and multiple source combinations.
+An affordable structured `ActivateAbility` or ordinary fixed-cost `CastSpell` whose action-level
+mana cost is published in `LegalActionView.manaCost` also publishes
+`LegalActionView.paymentDomain`. This domain is complete for the supported V1 slice: ordinary
+fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
+multicolor production, and multiple source combinations. A payable action whose complete V1 domain
+cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
+engine-selected payment policy at the trusted Gym boundary.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
+Non-mana structured cast choices may be submitted alongside the plan when they do not alter the
+effective mana cost or the published source set; cost-changing or source-affecting choices remain
+fail-closed.
 The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
 while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
 

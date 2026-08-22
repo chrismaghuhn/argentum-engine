@@ -1,10 +1,20 @@
 package com.wingedsheep.gym.server.controller
 
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.DecisionResponse
+import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PoolSpend
+import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.CardSelectionDomain
+import com.wingedsheep.gym.contract.LegalActionView
+import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.SearchLibraryDomain
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
@@ -28,6 +38,9 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import org.springframework.boot.test.context.SpringBootTest
 import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.beans.factory.annotation.Autowired
@@ -245,6 +258,55 @@ class EnvControllerTest : FunSpec() {
                 .first { it.ownerId == observation.perspectivePlayerId && it.zoneType == Zone.HAND }
                 .cards
 
+            fun paymentPayload(action: LegalActionView): JsonObject? {
+                val semantics = action.actionSemantics ?: return null
+                val domain = action.paymentDomain ?: return semantics
+                val usedSourceIds = mutableSetOf<com.wingedsheep.sdk.model.EntityId>()
+                val sourceActivations = mutableListOf<SourceActivation>()
+                val allocations = domain.costUnits.map { unit ->
+                    val requiredColor = when (unit.kind) {
+                        PaymentCostKind.COLORED -> unit.allowedColors.single()
+                        PaymentCostKind.COLORLESS -> PaymentManaColor.COLORLESS
+                        PaymentCostKind.GENERIC -> null
+                    }
+                    val spends = buildList {
+                        repeat(unit.amount) {
+                            val source = domain.sourceActivations.firstOrNull { candidate ->
+                                candidate.sourceId !in usedSourceIds &&
+                                    candidate.productionChoices.any { choice ->
+                                        requiredColor == null || choice.producedColor == requiredColor
+                                    }
+                            } ?: error("No explicit source in the HTTP payment domain for $unit")
+                            val production = source.productionChoices.first {
+                                requiredColor == null || it.producedColor == requiredColor
+                            }
+                            usedSourceIds += source.sourceId
+                            sourceActivations += SourceActivation(
+                                sourceId = source.sourceId,
+                                manaAbilityKey = source.manaAbilityKey,
+                                productionChoice = production,
+                            )
+                            add(ManaSpendReference(sourceId = source.sourceId))
+                        }
+                    }
+                    CostUnitAllocation(unit.symbolIndex, spends)
+                }
+                val strategy = json.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.Explicit(
+                        paymentPlan = PaymentPlanV1(
+                            sourceActivations = sourceActivations,
+                            poolSpend = PoolSpend(),
+                            spendAllocation = SpendAllocation(costUnits = allocations),
+                        ),
+                    ),
+                )
+                return buildJsonObject {
+                    semantics.forEach { (key, value) -> put(key, value) }
+                    put("paymentStrategy", strategy)
+                }
+            }
+
             var selected: CreateEnvResponse? = null
             var selectedObservation: TrainingObservation? = null
             var envToDispose: EnvId? = null
@@ -292,7 +354,7 @@ class EnvControllerTest : FunSpec() {
                     }
                     val step = postJson(
                         "/envs/${created.envId.value}/step",
-                        json.encodeToString(StepBody(action.actionId, action.actionSemantics))
+                        json.encodeToString(StepBody(action.actionId, paymentPayload(action)))
                     )
                     step.statusCode() shouldBe 200
                     observation = json.decodeFromString<TrainingObservation>(step.body())

@@ -2,6 +2,7 @@ package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.registry.CardRegistry
@@ -91,6 +92,41 @@ class StateDigestTest : FunSpec({
         )
 
         StateDigest.compute(base) shouldNotBe StateDigest.compute(changed)
+    }
+
+    test("CastSpell payment domains are digest-relevant") {
+        val base = observation(environment())
+        val candidate = LegalActionView(
+            actionId = 9001,
+            kind = "CastSpell",
+            description = "Cast ordinary spell",
+            affordable = true,
+            manaCost = "{1}{B}",
+            requiresStructuredAction = true,
+        )
+        val withoutDomain = base.copy(legalActions = base.legalActions + candidate)
+        val withDomain = withoutDomain.copy(
+            legalActions = withoutDomain.legalActions.map { action ->
+                if (action.actionId != candidate.actionId) action else action.copy(
+                    paymentDomain = PaymentDomainV1(
+                        requiredCost = "{1}{B}",
+                        costUnits = listOf(
+                            PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, 1),
+                            PaymentCostUnitDomain(
+                                symbolIndex = 1,
+                                kind = PaymentCostKind.COLORED,
+                                amount = 1,
+                                allowedColors = setOf(PaymentManaColor.BLACK),
+                            ),
+                        ),
+                        currentPool = PaymentPoolDomain(),
+                        sourceActivations = emptyList(),
+                    ),
+                )
+            },
+        )
+
+        StateDigest.compute(withDomain) shouldNotBe StateDigest.compute(withoutDomain)
     }
 
     test("perspective is part of the information-set digest") {

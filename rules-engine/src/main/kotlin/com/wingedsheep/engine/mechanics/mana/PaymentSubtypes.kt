@@ -32,7 +32,7 @@ internal fun paymentSubtypesOf(cardComponent: CardComponent): Set<String> {
  * (CR 202.3), so a {3}{R}{R} spell convoked down to one real mana is still MV 5 for
  * [com.wingedsheep.sdk.scripting.effects.ManaRestriction.SpellsWithManaValueAtLeast] (Ashling, Rimebound).
  */
-internal fun spellPaymentContextFor(
+fun spellPaymentContextFor(
     cardComponent: CardComponent,
     isKicked: Boolean = false,
     isFromExile: Boolean = false,
