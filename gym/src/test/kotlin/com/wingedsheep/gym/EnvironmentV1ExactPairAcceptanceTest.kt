@@ -190,7 +190,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         plan.spendAllocation.costUnits.sumOf { it.spends.sumOf { spend -> spend.amount } } shouldBe 2
     }
 
-    test("seed zero original reproducer clears the old step-163 payment gap") {
+    test("seed zero original reproducer stops at the first current finding") {
         val service = MultiEnvService(exactPairRegistry())
         try {
             val result = runEpisode(
@@ -206,13 +206,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             )
             println("ENVIRONMENT_V1_SEED_ZERO_REPRODUCER\n$result")
             result.failure?.let { failure ->
-                val oldPaymentGap = failure.step == 163 &&
-                    failure.decisionFamily == "PAYMENT" &&
-                    failure.reason.contains("manaCost={1}{B}")
-                check(!oldPaymentGap) {
-                    "The old seed-0 step-163 {1}{B} payment gap remains: $failure"
-                }
-                error("Seed-zero reproducer stopped at the first new finding: $failure")
+                error("Seed-zero reproducer stopped at the first current finding: $failure")
             }
         } finally {
             service.dispose(service.listEnvs())
