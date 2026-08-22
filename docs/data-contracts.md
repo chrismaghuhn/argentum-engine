@@ -771,7 +771,8 @@ An affordable structured `ActivateAbility` or ordinary fixed-cost `CastSpell` wh
 mana cost is published in `LegalActionView.manaCost` also publishes
 `LegalActionView.paymentDomain`. This domain is complete for the supported V1 slice: ordinary
 fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
-multicolor production, and multiple source combinations. A payable action whose complete V1 domain
+single-output color selection, deterministic fixed multi-mana bundles, and multiple source
+combinations. A payable action whose complete V1 domain
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
@@ -809,6 +810,33 @@ The controller submits the choices inside `PaymentStrategy.Explicit.paymentPlan`
   }
 }
 ```
+
+For a deterministic multi-output mana ability, `productionChoice.fixedOutputs` is the only
+canonical representation. It is an ordered list with indexes exactly `0..n-1`, at least two
+entries, and `amount: 1` on every entry; `producedColor` must equal the first output's color. Each
+source spend must then carry the matching `sourceOutputIndex`. A bundle-capable source is never
+accepted in the legacy single-output form (`fixedOutputs: null`), and legacy single-output spends
+must not carry `sourceOutputIndex`.
+
+For example, a source whose one tap deterministically produces `{B}{G}` publishes:
+
+```json
+{
+  "producedColor": "BLACK",
+  "amount": 1,
+  "fixedOutputs": [
+    { "index": 0, "color": "BLACK", "amount": 1 },
+    { "index": 1, "color": "GREEN", "amount": 1 }
+  ]
+}
+```
+
+The submitted allocation chooses each consumed output explicitly. Any unconsumed fixed output is
+materialized into the floating pool with its source and subtype provenance; it is not discarded or
+reallocated by Rules. Single-output selectable-color abilities remain represented by the legacy
+`fixedOutputs: null` form. Unresolved color choices inside a multi-output ability, runtime
+production modifiers, dynamic amounts, restrictions, riders, and secondary costs remain
+fail-closed.
 
 `manaAbilityKey` is a stable public identity derived from the current ability structure; a
 runtime-generated `AbilityId` is not accepted as a substitute. The plan must explicitly choose the

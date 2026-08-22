@@ -3,6 +3,7 @@ package com.wingedsheep.gameserver.replay
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PaymentManaColor
@@ -20,9 +21,12 @@ import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.sdk.core.Phase
+import com.wingedsheep.sdk.core.AttackMode
+import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -103,6 +107,61 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
     }
 
     init {
+        test("fixed-output PaymentPlanV1 remains a v3 CompactReplay additive field") {
+            val sourceId = EntityId("bundle-source")
+            val playerId = EntityId("bundle-player")
+            val plan = PaymentPlanV1(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = sourceId,
+                        manaAbilityKey = "bundle-ability",
+                        productionChoice = ProductionChoice(
+                            producedColor = PaymentManaColor.BLACK,
+                            fixedOutputs = listOf(
+                                FixedManaOutput(0, PaymentManaColor.BLACK),
+                                FixedManaOutput(1, PaymentManaColor.GREEN),
+                            ),
+                        ),
+                    ),
+                ),
+                spendAllocation = SpendAllocation(
+                    costUnits = listOf(
+                        CostUnitAllocation(
+                            symbolIndex = 0,
+                            spends = listOf(
+                                ManaSpendReference(sourceId = sourceId, sourceOutputIndex = 0),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            val action = CastSpell(
+                playerId = playerId,
+                cardId = EntityId("bundle-spell"),
+                paymentStrategy = PaymentStrategy.Explicit(paymentPlan = plan),
+            )
+            val replay = CompactReplay(
+                gameId = "bundle-replay",
+                players = listOf(ReplayPlayerInfo(playerId.value, "Alice")),
+                startedAt = "2026-08-22T00:00:00Z",
+                endedAt = "2026-08-22T00:01:00Z",
+                winnerName = null,
+                setup = ReplaySetup(
+                    seed = 1L,
+                    format = Format.Standard,
+                    attackMode = AttackMode.MULTIPLE,
+                    players = listOf(
+                        ReplayPlayerSetup(playerId.value, "Alice", Deck(cards = listOf("bundle-spell"))),
+                    ),
+                    seatRoster = emptyList(),
+                ),
+                actions = listOf(action),
+            )
+
+            replay.version shouldBe CompactReplay.CURRENT_VERSION
+            ReplayCodec.decode(ReplayCodec.encode(replay)) shouldBe replay
+        }
+
         test("PaymentPlanV1 survives CompactReplay encode/decode and reconstruction") {
             cardRegistry.register(paymentPermanent)
             cardRegistry.register(paymentSpell)

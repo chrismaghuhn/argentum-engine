@@ -192,8 +192,8 @@ class CastPaymentProcessor(
         }
         val events = mutableListOf<GameEvent>()
 
-        val spentProvenance = tappedSourceProvenance(state, accepted.solution.manaProduced)
-        if (accepted.solution.sources.isNotEmpty()) {
+        val spentProvenance = accepted.materialization.spentManaProvenance
+        if (accepted.materialization.sourcePayments.isNotEmpty()) {
             val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
                 state = currentState,
                 solution = accepted.solution,
@@ -206,33 +206,18 @@ class CastPaymentProcessor(
             events.addAll(sideEffectResult.events)
         }
 
-        var whiteSpent = plan.poolSpend.white
-        var blueSpent = plan.poolSpend.blue
-        var blackSpent = plan.poolSpend.black
-        var redSpent = plan.poolSpend.red
-        var greenSpent = plan.poolSpend.green
-        var colorlessSpent = plan.poolSpend.colorless
-        for (production in accepted.solution.manaProduced.values) {
-            when (production.color) {
-                Color.WHITE -> whiteSpent += production.amount
-                Color.BLUE -> blueSpent += production.amount
-                Color.BLACK -> blackSpent += production.amount
-                Color.RED -> redSpent += production.amount
-                Color.GREEN -> greenSpent += production.amount
-                null -> colorlessSpent += production.colorless
-            }
-        }
+        val spent = accepted.materialization.manaSpent
 
         events.add(
             ManaSpentEvent(
                 playerId = playerId,
                 reason = "Cast $cardName",
-                white = whiteSpent,
-                blue = blueSpent,
-                black = blackSpent,
-                red = redSpent,
-                green = greenSpent,
-                colorless = colorlessSpent,
+                white = spent.white,
+                blue = spent.blue,
+                black = spent.black,
+                red = spent.red,
+                green = spent.green,
+                colorless = spent.colorless,
             )
         )
         return PaymentResult(
