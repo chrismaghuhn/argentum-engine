@@ -183,6 +183,7 @@ internal object ObservationCanonicalizer {
         "availableSources",
         "waterbendPermanents",
         "producesColors",
+        "sourceSubtypes",
         "blockedByIds",
         "blockedAttackerIds"
     )

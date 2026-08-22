@@ -3,6 +3,7 @@ package com.wingedsheep.gym.contract
 import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.mechanics.mana.FloatingManaProvenanceClassification
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
@@ -11,6 +12,7 @@ import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
@@ -42,6 +44,14 @@ data class PaymentPoolDomain(
     val red: Int = 0,
     val green: Int = 0,
     val colorless: Int = 0,
+    val certifiedFloatingMana: CertifiedFloatingManaCandidateV1? = null,
+)
+
+@Serializable
+data class CertifiedFloatingManaCandidateV1(
+    val poolColor: PaymentManaColor,
+    val sourceId: EntityId,
+    val sourceSubtypes: List<String>,
 )
 
 /** One exact mana-ability identity and its explicit production choices. */
@@ -77,6 +87,7 @@ data class PaymentDomainV1(
  */
 class PaymentDomainBuilder(
     private val manaSolver: ManaSolver,
+    private val visibility: Visibility,
 ) {
     fun build(
         state: GameState,
@@ -91,10 +102,22 @@ class PaymentDomainBuilder(
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         // Restricted mana has no stable public bucket identity in V1. Do not publish a partial
         // domain that would force the engine to choose a restricted bucket during submission.
-        if (pool.restrictedMana.isNotEmpty() ||
-            pool.manaBySubtype.isNotEmpty() ||
-            pool.manaBySource.isNotEmpty()
-        ) return null
+        if (pool.restrictedMana.isNotEmpty()) return null
+        val certifiedFloatingMana = when (val classification =
+            FloatingManaProvenanceClassification.classify(pool)) {
+            FloatingManaProvenanceClassification.NoTrackedProvenance -> null
+            is FloatingManaProvenanceClassification.Ambiguous -> return null
+            is FloatingManaProvenanceClassification.CertifiedSingleUnit -> {
+                if (!isPerspectiveSafeSource(state, playerId, classification.candidate.sourceId)) return null
+                CertifiedFloatingManaCandidateV1(
+                    poolColor = classification.candidate.poolColor,
+                    sourceId = classification.candidate.sourceId,
+                    sourceSubtypes = classification.candidate.sourceSubtypes
+                        .map { it.value }
+                        .sorted(),
+                )
+            }
+        }
 
         val sourceActivations = buildList {
             for (source in manaSolver.findAvailableManaSources(state, playerId, spellContext)
@@ -116,10 +139,17 @@ class PaymentDomainBuilder(
                 red = pool.red,
                 green = pool.green,
                 colorless = pool.colorless,
+                certifiedFloatingMana = certifiedFloatingMana,
             ),
             sourceActivations = sourceActivations,
         )
     }
+
+    private fun isPerspectiveSafeSource(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+    ): Boolean = visibility.isEntityIdentityVisibleTo(state, sourceId, playerId)
 
     private fun ManaSymbol.toDomain(index: Int): PaymentCostUnitDomain? = when (this) {
         is ManaSymbol.Colored -> PaymentCostUnitDomain(

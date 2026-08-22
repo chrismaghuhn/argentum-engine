@@ -79,6 +79,23 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
         }
     }
 
+    private val forestReplaySource = card("Replay Forest Source") {
+        typeLine = "Land — Forest"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.GREEN)
+            manaAbility = true
+        }
+    }
+
+    private val forestReplaySpell = card("Replay Forest Payment Spell") {
+        manaCost = "{G}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     private val paymentModalSpell = card("Replay Payment Modal Spell") {
         manaCost = "{R}"
         typeLine = "Instant"
@@ -504,6 +521,125 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
                 .shouldNotBeNull()
             val reconstructedPool = reconstructedFinal.getEntity(player)?.get<ManaPoolComponent>()
                 ?: error("Expected the reconstructed player's mana pool")
+            reconstructedPool shouldBe livePool
+            ReplayFingerprint.of(reconstructedFinal, decoded.version) shouldBe
+                ReplayFingerprint.of(liveFinal, decoded.version)
+            reconstructor.reconstruct(decoded).fidelity shouldBe ReplayFidelity.EXACT
+        }
+
+        test("executed certified floating mana survives CompactReplay reconstruction") {
+            cardRegistry.register(forestReplaySource)
+            cardRegistry.register(forestReplaySpell)
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val playerOne = EntityId.of("forest-replay-player-one")
+            val playerTwo = EntityId.of("forest-replay-player-two")
+            val deck = mapOf(forestReplaySource.name to 1, forestReplaySpell.name to 1, "Mountain" to 5)
+            session.addPlayer(PlayerSession(mockWs("forest-replay-ws-1"), playerOne, "Alice"), deck)
+            session.addPlayer(PlayerSession(mockWs("forest-replay-ws-2"), playerTwo, "Bob"), deck)
+            session.startGame()
+            session.keepHand(playerOne)
+            session.keepHand(playerTwo)
+
+            val player = session.getStateForTesting().shouldNotBeNull().activePlayerId
+                ?: error("Expected an active player after forest replay mulligans")
+            val enumerator = LegalActionEnumerator.create(cardRegistry)
+            advanceToPriority(session, player)
+            val firstState = session.getStateForTesting().shouldNotBeNull()
+            val playLand = enumerator.enumerate(firstState, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? PlayLand ?: return@firstOrNull false
+                    firstState.getEntity(action.cardId)
+                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                        ?.name == forestReplaySource.name
+                }
+                ?: error("Expected the forest replay land action: ${enumerator.enumerate(firstState, player)}")
+            submitAndResolve(session, player, playLand.action)
+
+            val afterLand = session.getStateForTesting().shouldNotBeNull()
+            val sourceId = afterLand.getBattlefield(player).firstOrNull { id ->
+                afterLand.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == forestReplaySource.name
+            } ?: error("Expected the forest replay source")
+            val manaAbilityId = forestReplaySource.activatedAbilities.single().id
+            submitAndResolve(session, player, ActivateAbility(player, sourceId, manaAbilityId))
+
+            val afterMana = session.getStateForTesting().shouldNotBeNull()
+            val floating = afterMana.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the player's floating mana pool")
+            floating.green shouldBe 1
+            floating.manaBySource shouldBe mapOf(sourceId to 1)
+            floating.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+
+            val spellId = afterMana.getHand(player).firstOrNull { id ->
+                afterMana.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == forestReplaySpell.name
+            } ?: error("Expected the forest replay spell in hand")
+            val legalCast = enumerator.enumerate(afterMana, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? CastSpell ?: return@firstOrNull false
+                    action.cardId == spellId
+                }
+                ?: error("Expected the forest replay CastSpell action: ${enumerator.enumerate(afterMana, player)}")
+            val explicitCast = (legalCast.action as CastSpell).copy(
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = PaymentPlanV1(
+                        poolSpend = PoolSpend(green = 1),
+                        spendAllocation = SpendAllocation(
+                            costUnits = listOf(
+                                CostUnitAllocation(
+                                    symbolIndex = 0,
+                                    spends = listOf(
+                                        ManaSpendReference(poolColor = PaymentManaColor.GREEN),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            submitAndResolve(session, player, explicitCast)
+
+            val liveFinal = session.getStateForTesting().shouldNotBeNull()
+            val livePool = liveFinal.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the player's final forest replay mana pool")
+            livePool.green shouldBe 0
+            livePool.manaBySource shouldBe emptyMap()
+            livePool.manaBySubtype shouldBe emptyMap()
+
+            val actions = session.getRecordedActions()
+            val recordedCast = actions.filterIsInstance<CastSpell>()
+                .firstOrNull { it.cardId == spellId }
+                ?: error("Expected the recorded certified-pool CastSpell: $actions")
+            recordedCast.paymentStrategy shouldBe explicitCast.paymentStrategy
+
+            val setup = session.getReplaySetup().shouldNotBeNull()
+            val replay = CompactReplay(
+                gameId = session.sessionId,
+                players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
+                startedAt = "2026-08-22T00:00:00Z",
+                endedAt = "2026-08-22T00:01:00Z",
+                winnerName = null,
+                setup = setup,
+                actions = actions,
+                checkpoints = listOf(
+                    ReplayCheckpoint(
+                        afterActionCount = actions.size,
+                        fingerprint = ReplayFingerprint.of(liveFinal, CompactReplay.CURRENT_VERSION),
+                    ),
+                ),
+            )
+
+            val decoded = ReplayCodec.decode(ReplayCodec.encode(replay))
+            decoded shouldBe replay
+            decoded.version shouldBe CompactReplay.CURRENT_VERSION
+
+            val reconstructor = ReplayReconstructor(cardRegistry, null)
+            val reconstructedFinal = reconstructor.reconstructStateAt(decoded, decoded.actions.size)
+                .shouldNotBeNull()
+            val reconstructedPool = reconstructedFinal.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the reconstructed forest replay mana pool")
             reconstructedPool shouldBe livePool
             ReplayFingerprint.of(reconstructedFinal, decoded.version) shouldBe
                 ReplayFingerprint.of(liveFinal, decoded.version)

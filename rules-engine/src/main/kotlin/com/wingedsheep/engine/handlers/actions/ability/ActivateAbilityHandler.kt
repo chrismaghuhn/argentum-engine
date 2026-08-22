@@ -1247,6 +1247,7 @@ class ActivateAbilityHandler(
         // If the outer ability's cost includes Tap, the source itself cannot also be used
         // as a mana source — the single "tap" it has is already consumed by the outer cost.
         val selfExcludedSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet()
+        var exactExplicitPoolAfterSpend: ManaPool? = null
         if (manaCost != null) {
             when (action.paymentStrategy) {
                 is PaymentStrategy.Explicit -> {
@@ -1270,6 +1271,10 @@ class ActivateAbilityHandler(
                         // selected floating pool remainder is carried into the later cost path;
                         // adding fresh source mana here would leave paid units floating.
                         manaPool = accepted.poolAfterSpend
+                        // Keep the exact validator materialization through the rest of the
+                        // activation. The later cost path strips mana for an explicit plan, so it
+                        // must not re-allocate the same pool spend with consumeProvenance().
+                        exactExplicitPoolAfterSpend = accepted.poolAfterSpend
                         if (accepted.solution.sources.isNotEmpty()) {
                             val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
                                 state = currentState,
@@ -1542,7 +1547,14 @@ class ActivateAbilityHandler(
             poolComponent.red + poolComponent.green + poolComponent.colorless
         val finalUnrestricted = manaPool.white + manaPool.blue + manaPool.black +
             manaPool.red + manaPool.green + manaPool.colorless
-        val (poolAfterProvenance, _) = manaPool.consumeProvenance(maxOf(0, originalUnrestricted - finalUnrestricted))
+        val poolAfterProvenance = exactExplicitPoolAfterSpend?.let { exactPool ->
+            // PaymentPlanValidator already consumed the certified unit exactly. Preserve those
+            // maps while retaining any non-mana-cost changes represented by the current counts.
+            manaPool.copy(
+                manaBySubtype = exactPool.manaBySubtype,
+                manaBySource = exactPool.manaBySource,
+            )
+        } ?: manaPool.consumeProvenance(maxOf(0, originalUnrestricted - finalUnrestricted)).first
         currentState = currentState.updateEntity(action.playerId) { c ->
             c.with(ManaPoolComponent(
                 white = manaPool.white,

@@ -10,6 +10,7 @@ import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.handlers.ConditionEvaluator
@@ -678,6 +679,103 @@ class PaymentPlanV1Test : FunSpec({
         driver.isTapped(genericSource) shouldBe true
     }
 
+    test("CastSpell materializes certified floating provenance through the stack") {
+        val (driver, player) = game()
+        val forestId = driver.putPermanentOnBattlefield(player, "Forest")
+        val blackSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val spellId = driver.putCardInHand(player, ordinarySpell.name)
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 1,
+                manaBySource = mapOf(forestId to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+            ),
+        )
+
+        val result = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                blackSource,
+                                key(driver, player, blackSource, PaymentManaColor.BLACK),
+                                ProductionChoice(PaymentManaColor.BLACK),
+                            ),
+                        ),
+                        poolSpend = PoolSpend(green = 1),
+                        allocations = listOf(
+                            CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN))),
+                            CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = blackSource))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        val cast = result.events.filterIsInstance<SpellCastEvent>().single()
+        cast.spentManaSubtypes shouldBe setOf(Subtype.FOREST)
+        cast.spentManaSourceIds shouldBe setOf(forestId, blackSource)
+        val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing player mana pool")
+        remainingPool.green shouldBe 0
+        remainingPool.manaBySource shouldBe emptyMap()
+        remainingPool.manaBySubtype shouldBe emptyMap()
+    }
+
+    test("ActivateAbility uses certified floating provenance through shared materialization") {
+        val (driver, player) = game()
+        val forestId = driver.putPermanentOnBattlefield(player, "Forest")
+        val abilitySource = driver.putPermanentOnBattlefield(player, payableAbilitySource.name)
+        val blackSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 1,
+                manaBySource = mapOf(forestId to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+            ),
+        )
+        val ability = payableAbilitySource.activatedAbilities.single()
+
+        val result = driver.submit(
+            com.wingedsheep.engine.core.ActivateAbility(
+                playerId = player,
+                sourceId = abilitySource,
+                abilityId = ability.id,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                blackSource,
+                                key(driver, player, blackSource, PaymentManaColor.BLACK),
+                                ProductionChoice(PaymentManaColor.BLACK),
+                            ),
+                        ),
+                        poolSpend = PoolSpend(green = 1),
+                        allocations = listOf(
+                            CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN))),
+                            CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = blackSource))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing player mana pool")
+        remainingPool.green shouldBe 0
+        remainingPool.manaBySource shouldBe emptyMap()
+        remainingPool.manaBySubtype shouldBe emptyMap()
+    }
+
     test("CastSpellMode materializes Boros Charm's exact PaymentPlanV1 and preserves the mode") {
         val (driver, player) = game()
         val spellId = driver.putCardInHand(player, BorosCharm.name)
@@ -898,7 +996,77 @@ class PaymentPlanV1Test : FunSpec({
             ),
         )
 
-        result.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+        val rejected = result.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+        rejected.reason shouldBe "PaymentPlanV1 cannot spend floating mana with hidden provenance"
+    }
+
+    test("certified single-unit floating mana is consumed with exact provenance") {
+        val (driver, player) = game()
+        val forestId = driver.putPermanentOnBattlefield(player, "Forest")
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 1,
+                manaBySource = mapOf(forestId to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+            ),
+        )
+
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}"),
+            plan = plan(
+                poolSpend = PoolSpend(green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(0, listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN))),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        result.poolAfterSpend.green shouldBe 0
+        result.poolAfterSpend.manaBySource shouldBe emptyMap()
+        result.poolAfterSpend.manaBySubtype shouldBe emptyMap()
+        result.materialization.spentManaProvenance.bySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        result.materialization.spentManaProvenance.sourceIds shouldBe setOf(forestId)
+    }
+
+    test("certified single-unit floating mana remains unchanged when not spent") {
+        val (driver, player) = game()
+        val forestId = driver.putPermanentOnBattlefield(player, "Forest")
+        val sourceId = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 1,
+                manaBySource = mapOf(forestId to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+            ),
+        )
+
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{B}"),
+            plan = plan(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = sourceId,
+                        manaAbilityKey = key(driver, player, sourceId, PaymentManaColor.BLACK),
+                        productionChoice = ProductionChoice(PaymentManaColor.BLACK),
+                    ),
+                ),
+                allocations = listOf(
+                    CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = sourceId))),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        result.poolAfterSpend.green shouldBe 1
+        result.poolAfterSpend.manaBySource shouldBe mapOf(forestId to 1)
+        result.poolAfterSpend.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
     }
 
     test("mana abilities with activation tracking are fail-closed for PaymentPlanV1") {
