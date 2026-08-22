@@ -57,6 +57,20 @@ data class ProductionChoice(
     val amount: Int = 1,
     /** Reserved for an explicit bonus/any-color choice; unsupported in the first slice. */
     val bonusChoice: PaymentManaColor? = null,
+    /**
+     * Canonical ordered output bundle for a deterministic multi-mana ability. A null value is
+     * exclusively the legacy single-output representation; bundle sources must provide at least
+     * two indexed outputs.
+     */
+    val fixedOutputs: List<FixedManaOutput>? = null,
+)
+
+/** One unit in a canonical fixed output bundle. List order and [index] are both authoritative. */
+@Serializable
+data class FixedManaOutput(
+    val index: Int,
+    val color: PaymentManaColor,
+    val amount: Int = 1,
 )
 
 /**
@@ -123,6 +137,8 @@ data class ManaSpendReference(
     val poolColor: PaymentManaColor? = null,
     val amount: Int = 1,
     val restrictedBucketKey: String? = null,
+    /** Required for fixed output bundles and forbidden for legacy single-output sources. */
+    val sourceOutputIndex: Int? = null,
 )
 
 /**

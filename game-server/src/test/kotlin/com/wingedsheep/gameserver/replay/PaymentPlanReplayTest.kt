@@ -3,6 +3,7 @@ package com.wingedsheep.gameserver.replay
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PaymentManaColor
@@ -15,14 +16,20 @@ import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.legalactions.LegalActionEnumerator
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.sdk.core.Phase
+import com.wingedsheep.sdk.core.AttackMode
+import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -49,6 +56,23 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
 
     private val paymentSpell = card("Replay Payment Spell") {
         manaCost = "{R}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    private val fixedBundleReplaySource = card("Replay Fixed Bundle Source") {
+        typeLine = "Land — Cave"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.BLACK).then(Effects.AddMana(Color.GREEN))
+            manaAbility = true
+        }
+    }
+
+    private val fixedBundleReplaySpell = card("Replay Fixed Bundle Spell") {
+        manaCost = "{B}"
         typeLine = "Sorcery"
         spell {
             effect = Effects.GainLife(1)
@@ -103,6 +127,61 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
     }
 
     init {
+        test("fixed-output PaymentPlanV1 remains a v3 CompactReplay additive field") {
+            val sourceId = EntityId("bundle-source")
+            val playerId = EntityId("bundle-player")
+            val plan = PaymentPlanV1(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = sourceId,
+                        manaAbilityKey = "bundle-ability",
+                        productionChoice = ProductionChoice(
+                            producedColor = PaymentManaColor.BLACK,
+                            fixedOutputs = listOf(
+                                FixedManaOutput(0, PaymentManaColor.BLACK),
+                                FixedManaOutput(1, PaymentManaColor.GREEN),
+                            ),
+                        ),
+                    ),
+                ),
+                spendAllocation = SpendAllocation(
+                    costUnits = listOf(
+                        CostUnitAllocation(
+                            symbolIndex = 0,
+                            spends = listOf(
+                                ManaSpendReference(sourceId = sourceId, sourceOutputIndex = 0),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            val action = CastSpell(
+                playerId = playerId,
+                cardId = EntityId("bundle-spell"),
+                paymentStrategy = PaymentStrategy.Explicit(paymentPlan = plan),
+            )
+            val replay = CompactReplay(
+                gameId = "bundle-replay",
+                players = listOf(ReplayPlayerInfo(playerId.value, "Alice")),
+                startedAt = "2026-08-22T00:00:00Z",
+                endedAt = "2026-08-22T00:01:00Z",
+                winnerName = null,
+                setup = ReplaySetup(
+                    seed = 1L,
+                    format = Format.Standard,
+                    attackMode = AttackMode.MULTIPLE,
+                    players = listOf(
+                        ReplayPlayerSetup(playerId.value, "Alice", Deck(cards = listOf("bundle-spell"))),
+                    ),
+                    seatRoster = emptyList(),
+                ),
+                actions = listOf(action),
+            )
+
+            replay.version shouldBe CompactReplay.CURRENT_VERSION
+            ReplayCodec.decode(ReplayCodec.encode(replay)) shouldBe replay
+        }
+
         test("PaymentPlanV1 survives CompactReplay encode/decode and reconstruction") {
             cardRegistry.register(paymentPermanent)
             cardRegistry.register(paymentSpell)
@@ -302,6 +381,133 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
             ReplayReconstructor(cardRegistry, null)
                 .reconstructStateAt(decoded, decoded.actions.size)
                 .shouldNotBeNull()
+        }
+
+        test("executed fixed bundle CastSpell replay preserves floating output provenance") {
+            cardRegistry.register(fixedBundleReplaySource)
+            cardRegistry.register(fixedBundleReplaySpell)
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val playerOne = EntityId.of("bundle-replay-player-one")
+            val playerTwo = EntityId.of("bundle-replay-player-two")
+            val deck = mapOf(fixedBundleReplaySource.name to 1, fixedBundleReplaySpell.name to 1, "Mountain" to 5)
+            session.addPlayer(PlayerSession(mockWs("bundle-replay-ws-1"), playerOne, "Alice"), deck)
+            session.addPlayer(PlayerSession(mockWs("bundle-replay-ws-2"), playerTwo, "Bob"), deck)
+            session.startGame()
+            session.keepHand(playerOne)
+            session.keepHand(playerTwo)
+
+            val player = session.getStateForTesting().shouldNotBeNull().activePlayerId
+                ?: error("Expected an active player after bundle replay mulligans")
+            val enumerator = LegalActionEnumerator.create(cardRegistry)
+            advanceToPriority(session, player)
+            val firstState = session.getStateForTesting().shouldNotBeNull()
+            val playLand = enumerator.enumerate(firstState, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? PlayLand ?: return@firstOrNull false
+                    firstState.getEntity(action.cardId)
+                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                        ?.name == fixedBundleReplaySource.name
+                }
+                ?: error("Expected the fixed bundle replay land action: ${enumerator.enumerate(firstState, player)}")
+            submitAndResolve(session, player, playLand.action)
+
+            val state = session.getStateForTesting().shouldNotBeNull()
+            val sourceId = state.getBattlefield(player).firstOrNull { id ->
+                state.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == fixedBundleReplaySource.name
+            } ?: error("Expected fixed bundle replay source")
+            val spellId = state.getHand(player).firstOrNull { id ->
+                state.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == fixedBundleReplaySpell.name
+            } ?: error("Expected fixed bundle replay spell in hand: ${state.getHand(player)}")
+            val manaAbilityKey = ManaAbilityIdentity.key(fixedBundleReplaySource.activatedAbilities.single())
+            val legalCast = enumerator.enumerate(state, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? CastSpell ?: return@firstOrNull false
+                    action.cardId == spellId
+                }
+                ?: error("Expected fixed bundle replay CastSpell action: ${enumerator.enumerate(state, player)}")
+            val bundle = listOf(
+                FixedManaOutput(0, PaymentManaColor.BLACK),
+                FixedManaOutput(1, PaymentManaColor.GREEN),
+            )
+            val explicitCast = (legalCast.action as CastSpell).copy(
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = PaymentPlanV1(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                sourceId = sourceId,
+                                manaAbilityKey = manaAbilityKey,
+                                productionChoice = ProductionChoice(
+                                    producedColor = PaymentManaColor.BLACK,
+                                    fixedOutputs = bundle,
+                                ),
+                            ),
+                        ),
+                        poolSpend = PoolSpend(),
+                        spendAllocation = SpendAllocation(
+                            costUnits = listOf(
+                                CostUnitAllocation(
+                                    symbolIndex = 0,
+                                    spends = listOf(
+                                        ManaSpendReference(sourceId = sourceId, sourceOutputIndex = 0),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            submitAndResolve(session, player, explicitCast)
+
+            val liveFinal = session.getStateForTesting().shouldNotBeNull()
+            val livePool = liveFinal.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the player's final mana pool")
+            livePool.green shouldBe 1
+            livePool.manaBySource shouldBe mapOf(sourceId to 1)
+            livePool.manaBySubtype shouldBe mapOf(Subtype.CAVE to 1)
+
+            val actions = session.getRecordedActions()
+            val recordedCast = actions.filterIsInstance<CastSpell>()
+                .firstOrNull { it.cardId == spellId }
+                ?: error("Expected the actual recorded fixed bundle CastSpell: $actions")
+            recordedCast.paymentStrategy shouldBe explicitCast.paymentStrategy
+
+            val setup = session.getReplaySetup().shouldNotBeNull()
+            val replay = CompactReplay(
+                gameId = session.sessionId,
+                players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
+                startedAt = "2026-08-22T00:00:00Z",
+                endedAt = "2026-08-22T00:01:00Z",
+                winnerName = null,
+                setup = setup,
+                actions = actions,
+                checkpoints = listOf(
+                    ReplayCheckpoint(
+                        afterActionCount = actions.size,
+                        fingerprint = ReplayFingerprint.of(liveFinal, CompactReplay.CURRENT_VERSION),
+                    ),
+                ),
+            )
+
+            val decoded = ReplayCodec.decode(ReplayCodec.encode(replay))
+            decoded shouldBe replay
+            val decodedCast = decoded.actions.filterIsInstance<CastSpell>()
+                .firstOrNull { it.cardId == spellId }
+                ?: error("Expected the decoded fixed bundle CastSpell: ${decoded.actions}")
+            decodedCast.paymentStrategy shouldBe explicitCast.paymentStrategy
+
+            val reconstructor = ReplayReconstructor(cardRegistry, null)
+            val reconstructedFinal = reconstructor.reconstructStateAt(decoded, decoded.actions.size)
+                .shouldNotBeNull()
+            val reconstructedPool = reconstructedFinal.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the reconstructed player's mana pool")
+            reconstructedPool shouldBe livePool
+            ReplayFingerprint.of(reconstructedFinal, decoded.version) shouldBe
+                ReplayFingerprint.of(liveFinal, decoded.version)
+            reconstructor.reconstruct(decoded).fidelity shouldBe ReplayFidelity.EXACT
         }
 
         test("CastSpellMode PaymentPlanV1 preserves chosen mode, targets, and replay reconstruction") {

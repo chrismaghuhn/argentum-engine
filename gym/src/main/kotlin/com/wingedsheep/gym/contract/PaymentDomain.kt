@@ -1,9 +1,12 @@
 package com.wingedsheep.gym.contract
 
+import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
+import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.state.GameState
@@ -141,8 +144,59 @@ class PaymentDomainBuilder(
     }
 
     private fun ManaSource.toDomain(): List<PaymentSourceActivationDomain>? {
+        if (!supportsPaymentPlanV1()) return null
+
+        if (paymentManaProductionProfiles.isNotEmpty()) {
+            if (paymentManaProductionProfiles.values.any { profile ->
+                    when (profile) {
+                        is PaymentManaProductionProfile.Unsupported -> true
+                        is PaymentManaProductionProfile.SelectableSingleOutput -> profile.allowedColors.isEmpty()
+                        is PaymentManaProductionProfile.FixedOutputBundle -> profile.outputs.size < 2
+                    }
+                }) return null
+
+            val domains = paymentManaProductionProfiles.entries
+                .sortedBy { it.key }
+                .map { (manaAbilityKey, profile) ->
+                    val productionChoices = when (profile) {
+                        is PaymentManaProductionProfile.SelectableSingleOutput ->
+                            profile.allowedColors.sortedBy(PaymentManaColor::ordinal).map {
+                                ProductionChoice(producedColor = it)
+                            }
+
+                        is PaymentManaProductionProfile.FixedOutputBundle -> {
+                            val outputs = profile.outputs.mapIndexed { index, output ->
+                                FixedManaOutput(
+                                    index = index,
+                                    color = output.color,
+                                    amount = 1,
+                                )
+                            }
+                            listOf(
+                                ProductionChoice(
+                                    producedColor = outputs.first().color,
+                                    fixedOutputs = outputs,
+                                )
+                            )
+                        }
+
+                        is PaymentManaProductionProfile.Unsupported ->
+                            emptyList()
+                    }
+                    PaymentSourceActivationDomain(
+                        sourceId = entityId,
+                        sourceName = name,
+                        manaAbilityKey = manaAbilityKey,
+                        productionChoices = productionChoices,
+                    )
+                }
+                .filter { it.productionChoices.isNotEmpty() }
+            return domains.takeIf { it.isNotEmpty() }
+        }
+
+        // Compatibility fallback for ManaSource instances constructed outside the current source
+        // discovery path. Discovered sources always carry a Rules-owned profile above.
         if (
-            !supportsPaymentPlanV1() ||
             requiresSacrifice ||
             tapPermanentsSubCost != null ||
             manaAmount != 1 ||
@@ -194,7 +248,7 @@ class PaymentDomainBuilder(
                 sourceName = name,
                 manaAbilityKey = manaAbilityKey,
                 productionChoices = colors.sortedBy(PaymentManaColor::ordinal).map {
-                    com.wingedsheep.engine.core.ProductionChoice(producedColor = it)
+                    ProductionChoice(producedColor = it)
                 },
             )
         }
