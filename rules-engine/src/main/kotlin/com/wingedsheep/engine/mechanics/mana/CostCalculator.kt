@@ -169,6 +169,80 @@ class CostCalculator(
     }
 
     /**
+     * Whether the advertised cost of a targeted cast can differ after the controller chooses
+     * the spell's targets.
+     *
+     * [CastSpellEnumerator] deliberately uses [calculateMinPossibleCost] before targets are
+     * chosen. That is correct for affordability, but the result is not authoritative enough for
+     * PaymentPlanV1 when different legal targets produce different final costs. Compare every
+     * legal single-target choice against the advertised cost; multi-target actions are rejected
+     * conservatively whenever an applicable target-dependent modifier is present because their
+     * target combinations are not represented by one flat target list.
+     */
+    fun hasTargetDependentCastCost(
+        state: GameState,
+        cardDef: CardDefinition,
+        casterId: EntityId,
+        advertisedCost: ManaCost,
+        legalTargets: List<EntityId>,
+        targetCount: Int = 1,
+        fromZone: Zone? = null,
+        declaredCostSlot: ChoiceSlot? = null,
+    ): Boolean {
+        val distinctTargets = legalTargets.distinct()
+        if (distinctTargets.isEmpty()) return false
+
+        val hasApplicableTargetDependentModifier =
+            cardDef.script.staticAbilities.any { ability ->
+                ability is ModifySpellCost &&
+                    ability.target == SpellCostTarget.SelfCast &&
+                    gatingApplies(state, casterId, cardDef, ability, declaredCostSlot) &&
+                    modificationDependsOnChosenTargets(ability.modification)
+            } || scanBattlefieldModifySpellCost(state).any { (sourceId, ability) ->
+                gatingApplies(state, casterId, cardDef, ability, declaredCostSlot) &&
+                    targetDependsOnChosenTargets(ability) &&
+                    targetMatchesSpell(
+                        ability.target,
+                        cardDef,
+                        casterId,
+                        sourceId,
+                        state,
+                        chosenTargets = distinctTargets,
+                        fromZone = fromZone,
+                    )
+            }
+
+        if (!hasApplicableTargetDependentModifier) return false
+        if (targetCount > 1) return true
+
+        val finalCosts = distinctTargets.map { targetId ->
+            calculateEffectiveCost(
+                state = state,
+                cardDef = cardDef,
+                casterId = casterId,
+                chosenTargets = listOf(targetId),
+                fromZone = fromZone,
+                declaredCostSlot = declaredCostSlot,
+            )
+        }
+        return finalCosts.distinct().size > 1 || finalCosts.any { it != advertisedCost }
+    }
+
+    private fun targetDependsOnChosenTargets(ability: ModifySpellCost): Boolean =
+        ability.target is SpellCostTarget.OpponentsCastTargeting ||
+            modificationDependsOnChosenTargets(ability.modification)
+
+    private fun modificationDependsOnChosenTargets(modification: CostModification): Boolean = when (modification) {
+        is CostModification.ReduceGenericBy ->
+            modification.source is CostReductionSource.FixedIfAnyTargetMatches
+        is CostModification.ReduceColoredPerUnit ->
+            modification.countSource is CostReductionSource.FixedIfAnyTargetMatches
+        is CostModification.ReduceColoredIfAnyTargetMatches,
+        is CostModification.IncreaseGenericIfAnyTargetMatches -> true
+        else -> false
+    }
+
+    /**
      * Compute commander tax for [cardDef] when cast from [fromZone].
      *
      * Returns 0 unless [fromZone] is `Zone.COMMAND` and the corresponding entity carries a

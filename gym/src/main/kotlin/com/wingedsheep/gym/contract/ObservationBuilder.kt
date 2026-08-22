@@ -61,6 +61,7 @@ import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
@@ -139,6 +140,7 @@ class ObservationBuilder(
     private val paymentDomainBuilder by lazy {
         PaymentDomainBuilder(ManaSolver(cardRegistry))
     }
+    private val costCalculator by lazy { CostCalculator(cardRegistry) }
     private val manaSolver by lazy { ManaSolver(cardRegistry) }
     private val actionSerialization = Json {
         encodeDefaults = true
@@ -598,10 +600,28 @@ class ObservationBuilder(
             is CastSpell -> {
                 if (!isSupportedCastSpellPayment(legalAction, action, state)) return null
                 val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return null
+                val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return null
                 val parsedCost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
                 if (parsedCost.symbols.any {
                         it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
                     }) return null
+                val targetCandidates = legalAction.validTargets.orEmpty() +
+                    legalAction.targetRequirements.orEmpty().flatMap { it.validTargets }
+                val targetCount = maxOf(
+                    legalAction.targetCount,
+                    legalAction.targetRequirements.orEmpty().sumOf { it.maxTargets },
+                )
+                if (costCalculator.hasTargetDependentCastCost(
+                        state = state,
+                        cardDef = cardDef,
+                        casterId = action.playerId,
+                        advertisedCost = parsedCost,
+                        legalTargets = targetCandidates,
+                        targetCount = targetCount,
+                        fromZone = cardZone(state, action.cardId),
+                        declaredCostSlot = action.declaredCostSlot,
+                    )
+                ) return null
                 val effectivePaymentCost = castPermissionUtils.relaxSpellCostColorsIfAny(
                     state = state,
                     playerId = action.playerId,
@@ -696,6 +716,9 @@ class ObservationBuilder(
 
     private fun isInZone(state: GameState, cardId: EntityId, zone: Zone): Boolean =
         state.turnOrder.any { ownerId -> cardId in state.getZone(ZoneKey(ownerId, zone)) }
+
+    private fun cardZone(state: GameState, cardId: EntityId): Zone? =
+        state.zones.entries.firstOrNull { (_, ids) -> cardId in ids }?.key?.zoneType
 
     private fun containsSecondaryManaCost(cost: AdditionalCost): Boolean = when (cost) {
         is AdditionalCost.Atom -> cost.atom is CostAtom.Mana
