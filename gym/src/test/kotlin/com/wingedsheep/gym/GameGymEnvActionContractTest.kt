@@ -5,14 +5,21 @@ import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
+import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.SaddleMount
+import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.registry.CardRegistry
@@ -77,6 +84,43 @@ class GameGymEnvActionContractTest : FunSpec({
         startingPlayerIndex = 0,
     )
 
+    val actionJson = Json {
+        encodeDefaults = true
+        explicitNulls = false
+        classDiscriminator = "type"
+    }
+
+    fun paymentStrategyPayload(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV1")
+        val source = domain.sourceActivations.first()
+        return PaymentStrategy.Explicit(
+            paymentPlan = PaymentPlanV1(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = source.sourceId,
+                        manaAbilityKey = source.manaAbilityKey,
+                        productionChoice = ProductionChoice(
+                            source.productionChoices.first().producedColor,
+                        ),
+                    ),
+                ),
+                poolSpend = PoolSpend(),
+                spendAllocation = SpendAllocation(
+                    costUnits = listOf(
+                        CostUnitAllocation(
+                            symbolIndex = domain.costUnits.first().symbolIndex,
+                            spends = listOf(
+                                ManaSpendReference(
+                                    sourceId = source.sourceId,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
     test("targeted action IDs require an explicit structured action payload") {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
@@ -124,6 +168,13 @@ class GameGymEnvActionContractTest : FunSpec({
         val opponent = environment.playerIds[1]
         val payload = buildJsonObject {
             targeted.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    paymentStrategyPayload(targeted),
+                ),
+            )
             put(
                 "targets",
                 buildJsonArray {

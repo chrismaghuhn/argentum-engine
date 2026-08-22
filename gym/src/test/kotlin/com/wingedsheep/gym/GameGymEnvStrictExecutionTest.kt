@@ -2,7 +2,15 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PoolSpend
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
+import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
@@ -24,6 +32,9 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.put
 
 class GameGymEnvStrictExecutionTest : FunSpec({
@@ -68,6 +79,62 @@ class GameGymEnvStrictExecutionTest : FunSpec({
 
     fun cardName(environment: GameEnvironment, entityId: EntityId): String? =
         environment.state.getEntity(entityId)?.get<CardComponent>()?.name
+
+    fun paymentPayload(view: LegalActionView): JsonObject {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV1 for ${view.description}")
+        val source = domain.sourceActivations.firstOrNull()
+            ?: error("Expected a mana source for ${view.description}")
+        val costUnit = domain.costUnits.firstOrNull()
+            ?: error("Expected a mana cost unit for ${view.description}")
+        val production = source.productionChoices.firstOrNull { choice ->
+            choice.producedColor in costUnit.allowedColors
+        } ?: source.productionChoices.first()
+        val plan = PaymentPlanV1(
+            sourceActivations = listOf(
+                SourceActivation(
+                    sourceId = source.sourceId,
+                    manaAbilityKey = source.manaAbilityKey,
+                    productionChoice = ProductionChoice(production.producedColor),
+                ),
+            ),
+            poolSpend = PoolSpend(),
+            spendAllocation = SpendAllocation(
+                costUnits = listOf(
+                    CostUnitAllocation(
+                        symbolIndex = costUnit.symbolIndex,
+                        spends = listOf(ManaSpendReference(sourceId = source.sourceId)),
+                    ),
+                ),
+            ),
+        )
+        val json = Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }
+        return buildJsonObject {
+            view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+            put(
+                "paymentStrategy",
+                json.encodeToJsonElement(PaymentStrategy.serializer(), PaymentStrategy.Explicit(paymentPlan = plan)),
+            )
+        }
+    }
+
+    fun targetedPaymentPayload(view: LegalActionView, targetType: String, targetId: EntityId): JsonObject =
+        buildJsonObject {
+            paymentPayload(view).forEach { (key, value) -> put(key, value) }
+            val targetField = if (targetType == "Player") "playerId" else "entityId"
+            put(
+                "targets",
+                buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", targetType)
+                        put(targetField, targetId.value)
+                    })
+                },
+            )
+        }
 
     fun moveCardsIntoHand(environment: GameEnvironment, playerId: EntityId, names: List<String>) {
         var state = environment.state
@@ -162,18 +229,7 @@ class GameGymEnvStrictExecutionTest : FunSpec({
                     "actions=${afterLand.observation.legalActions}"
             )
         val opponent = environment.playerIds[1]
-        val payload = buildJsonObject {
-            shock.actionSemantics!!.forEach { (key, value) -> put(key, value) }
-            put(
-                "targets",
-                buildJsonArray {
-                    add(buildJsonObject {
-                        put("type", "Player")
-                        put("playerId", opponent.value)
-                    })
-                }
-            )
-        }
+        val payload = targetedPaymentPayload(shock, "Player", opponent)
 
         gym.step(shock.actionId, payload)
 
@@ -237,7 +293,7 @@ class GameGymEnvStrictExecutionTest : FunSpec({
         val bearCast = findAction(gym, environment, alice, "CastSpell") {
             it.description.contains("Strict Warded Bear")
         }
-        gym.step(bearCast.actionId, bearCast.actionSemantics!!)
+        gym.step(bearCast.actionId, paymentPayload(bearCast))
 
         // Resolve the creature, one explicit priority pass at a time.
         passCurrent(gym)
@@ -252,18 +308,7 @@ class GameGymEnvStrictExecutionTest : FunSpec({
         val shock = findAction(gym, environment, bob, "CastSpell") {
             it.description.contains("Shock")
         }
-        val payload = buildJsonObject {
-            shock.actionSemantics!!.forEach { (key, value) -> put(key, value) }
-            put(
-                "targets",
-                buildJsonArray {
-                    add(buildJsonObject {
-                        put("type", "Permanent")
-                        put("entityId", bearId.value)
-                    })
-                }
-            )
-        }
+        val payload = targetedPaymentPayload(shock, "Permanent", bearId)
         gym.step(shock.actionId, payload)
 
         // The two passes resolve the Ward trigger, but Strict must expose the source menu even

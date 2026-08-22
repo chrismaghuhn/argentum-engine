@@ -1,7 +1,10 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DecisionResponse
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.GameAction
@@ -77,6 +80,9 @@ class GameGymEnv(
 
     override fun step(actionId: Int): ObservationResult {
         val resolved = registry.resolve(actionId)
+        if (resolved is ResolvedAction.Legal) {
+            requireActionPaymentPlan(resolved, resolved.action)
+        }
         if (resolved is ResolvedAction.Legal &&
             ActionPayloadRequirements.requiresStructuredAction(resolved.legalAction)
         ) {
@@ -240,7 +246,10 @@ class GameGymEnv(
 
     private fun executeResolved(resolved: ResolvedAction, actionId: Int) {
         when (resolved) {
-            is ResolvedAction.Legal -> environment.stepStrict(resolved.action)
+            is ResolvedAction.Legal -> {
+                requireActionPaymentPlan(resolved, resolved.action)
+                environment.stepStrict(resolved.action)
+            }
             is ResolvedAction.Decision -> {
                 val pending = environment.state.pendingDecision
                     ?: throw IllegalStateException("Registry has a decision response but env is not paused")
@@ -279,15 +288,25 @@ class GameGymEnv(
      * callers, but none of those forms is a valid policy contract here.
      */
     private fun requireActionPaymentPlan(resolved: ResolvedAction.Legal, submitted: GameAction) {
-        if (resolved.legalAction.action !is ActivateAbility || resolved.legalAction.manaCostString == null) return
-        val activate = submitted as? ActivateAbility
-            ?: throw IllegalArgumentException("Structured action changed its action type")
-        val explicit = activate.paymentStrategy as? PaymentStrategy.Explicit
+        if (resolved.legalAction.manaCostString == null) return
+
+        if (observationBuilder.paymentDomainFor(environment.state, resolved.legalAction) == null) {
+            throw UnsupportedPathFailure(
+                listOf(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
+            )
+        }
+
+        val strategy = when (submitted) {
+            is ActivateAbility -> submitted.paymentStrategy
+            is CastSpell -> submitted.paymentStrategy
+            else -> throw IllegalArgumentException("Structured action changed its action type")
+        }
+        val explicit = strategy as? PaymentStrategy.Explicit
             ?: throw IllegalArgumentException(
-                "ActivateAbility payment must submit a complete PaymentPlanV1; automatic payment is not allowed"
+                "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1; automatic payment is not allowed"
             )
         require(explicit.paymentPlan != null) {
-            "ActivateAbility payment must submit a complete PaymentPlanV1; source IDs alone are not sufficient"
+            "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1; source IDs alone are not sufficient"
         }
         require(explicit.manaAbilitiesToActivate.isEmpty()) {
             "PaymentPlanV1 must not include legacy runtime mana source handles"

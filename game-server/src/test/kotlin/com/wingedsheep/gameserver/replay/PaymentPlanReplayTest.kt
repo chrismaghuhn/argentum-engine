@@ -1,11 +1,13 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayLand
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
@@ -43,6 +45,14 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
         }
     }
 
+    private val paymentSpell = card("Replay Payment Spell") {
+        manaCost = "{R}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     private fun mockWs(id: String): WebSocketSession =
         mockk(relaxed = true) { every { this@mockk.id } returns id }
 
@@ -67,17 +77,23 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
     }
 
     private fun submitAndResolve(session: GameSession, playerId: EntityId, action: GameAction) {
-        requireApplied(session.executeAction(playerId, action))
+        val result = session.executeAction(playerId, action)
+        check(result !is GameSession.ActionResult.Failure) {
+            "action=$action; reason=${(result as GameSession.ActionResult.Failure).reason}"
+        }
         advanceToPriority(session, playerId)
     }
 
     init {
         test("PaymentPlanV1 survives CompactReplay encode/decode and reconstruction") {
             cardRegistry.register(paymentPermanent)
+            cardRegistry.register(paymentSpell)
             val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
             val playerOne = EntityId.of("payment-replay-player-one")
             val playerTwo = EntityId.of("payment-replay-player-two")
-            val deck = mapOf(paymentPermanent.name to 3, "Mountain" to 4)
+            // Seven cards exactly keeps the spell and the payment permanent in the opening hand,
+            // while still leaving a second copy of the permanent in the library.
+            val deck = mapOf(paymentPermanent.name to 2, paymentSpell.name to 1, "Mountain" to 4)
             session.addPlayer(PlayerSession(mockWs("payment-ws-1"), playerOne, "Alice"), deck)
             session.addPlayer(PlayerSession(mockWs("payment-ws-2"), playerTwo, "Bob"), deck)
             session.startGame()
@@ -120,6 +136,7 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
             val manaSource = abilitySource
             val paymentAbility = paymentPermanent.activatedAbilities[1]
             val manaAbilityKey = ManaAbilityIdentity.key(paymentPermanent.activatedAbilities[0])
+
             val legalActivation = enumerator.enumerate(session.getStateForTesting().shouldNotBeNull(), player)
                 .firstOrNull { legal ->
                     val action = legal.action as? ActivateAbility ?: return@firstOrNull false
@@ -127,7 +144,7 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
                 }
                 ?: error("Expected payment ability: ${enumerator.enumerate(session.getStateForTesting().shouldNotBeNull(), player)}")
             val explicitAction = (legalActivation.action as ActivateAbility).copy(
-                paymentStrategy = com.wingedsheep.engine.core.PaymentStrategy.Explicit(
+                paymentStrategy = PaymentStrategy.Explicit(
                     paymentPlan = PaymentPlanV1(
                         sourceActivations = listOf(
                             SourceActivation(
@@ -167,6 +184,100 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
                 .firstOrNull { it.sourceId == abilitySource }
                 ?: error("Expected a recorded explicit ActivateAbility: ${decoded.actions}")
             recordedPaymentAction.paymentStrategy shouldBe explicitAction.paymentStrategy
+            val reconstructed = ReplayReconstructor(cardRegistry, null).reconstruct(decoded)
+            reconstructed.frameCount shouldBe decoded.frameCount
+            ReplayReconstructor(cardRegistry, null)
+                .reconstructStateAt(decoded, decoded.actions.size)
+                .shouldNotBeNull()
+        }
+
+        test("CastSpell PaymentPlanV1 survives CompactReplay encode/decode and reconstruction") {
+            cardRegistry.register(paymentPermanent)
+            cardRegistry.register(paymentSpell)
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val playerOne = EntityId.of("cast-replay-player-one")
+            val playerTwo = EntityId.of("cast-replay-player-two")
+            val deck = mapOf(paymentPermanent.name to 1, paymentSpell.name to 1, "Mountain" to 5)
+            session.addPlayer(PlayerSession(mockWs("cast-replay-ws-1"), playerOne, "Alice"), deck)
+            session.addPlayer(PlayerSession(mockWs("cast-replay-ws-2"), playerTwo, "Bob"), deck)
+            session.startGame()
+            session.keepHand(playerOne)
+            session.keepHand(playerTwo)
+
+            val player = session.getStateForTesting().shouldNotBeNull().activePlayerId
+                ?: error("Expected an active player after mulligans")
+            val enumerator = LegalActionEnumerator.create(cardRegistry)
+            advanceToPriority(session, player)
+            val firstState = session.getStateForTesting().shouldNotBeNull()
+            val playLand = enumerator.enumerate(firstState, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? PlayLand ?: return@firstOrNull false
+                    firstState.getEntity(action.cardId)
+                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                        ?.name == paymentPermanent.name
+                }
+                ?: error("Expected the CastSpell replay payment land: ${enumerator.enumerate(firstState, player)}")
+            submitAndResolve(session, player, playLand.action)
+
+            val state = session.getStateForTesting().shouldNotBeNull()
+            val sourceId = state.getBattlefield(player).firstOrNull { id ->
+                state.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == paymentPermanent.name
+            } ?: error("Expected CastSpell replay payment source")
+            val spellId = state.getHand(player).firstOrNull { id ->
+                state.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == paymentSpell.name
+            } ?: error("Expected CastSpell replay spell in hand: ${state.getHand(player)}")
+            val manaAbilityKey = ManaAbilityIdentity.key(paymentPermanent.activatedAbilities[0])
+            val legalCast = enumerator.enumerate(state, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? CastSpell ?: return@firstOrNull false
+                    action.cardId == spellId
+                }
+                ?: error("Expected CastSpell replay action: ${enumerator.enumerate(state, player)}")
+            val explicitCast = (legalCast.action as CastSpell).copy(
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = PaymentPlanV1(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                sourceId = sourceId,
+                                manaAbilityKey = manaAbilityKey,
+                                productionChoice = ProductionChoice(PaymentManaColor.RED),
+                            ),
+                        ),
+                        poolSpend = PoolSpend(),
+                        spendAllocation = SpendAllocation(
+                            costUnits = listOf(
+                                CostUnitAllocation(
+                                    symbolIndex = 0,
+                                    spends = listOf(ManaSpendReference(sourceId = sourceId)),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            submitAndResolve(session, player, explicitCast)
+
+            val setup = session.getReplaySetup().shouldNotBeNull()
+            val replay = CompactReplay(
+                gameId = session.sessionId,
+                players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
+                startedAt = "2026-08-21T00:00:00Z",
+                endedAt = "2026-08-21T00:01:00Z",
+                winnerName = null,
+                setup = setup,
+                actions = session.getRecordedActions(),
+            )
+
+            val decoded = ReplayCodec.decode(ReplayCodec.encode(replay))
+            decoded shouldBe replay
+            val recordedCast = decoded.actions.filterIsInstance<CastSpell>()
+                .firstOrNull { it.cardId == spellId }
+                ?: error("Expected a recorded explicit CastSpell: ${decoded.actions}")
+            recordedCast.paymentStrategy shouldBe explicitCast.paymentStrategy
 
             val reconstructed = ReplayReconstructor(cardRegistry, null).reconstruct(decoded)
             reconstructed.frameCount shouldBe decoded.frameCount
