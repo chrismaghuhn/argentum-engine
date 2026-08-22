@@ -1798,6 +1798,7 @@ class ManaSolver(
             .let { sources ->
                 if (hasDampLandManaProduction(state)) applyLandManaDampening(sources) else sources
             }
+            .map(ManaSource::authorizePaymentManaProductionProfiles)
     }
 
     /**
@@ -2278,14 +2279,25 @@ class ManaSolver(
         return sources.map { source ->
             // Only dampen lands; non-land mana sources (mana dorks, mana rocks) are unaffected
             val totalMana = source.manaAmount + source.bonusManaPerTap
-            if (source.isLand && totalMana >= 2) {
-                source.copy(
-                    producesColors = emptySet(),
-                    producesColorless = true,
-                    manaAmount = 1,
-                    bonusManaPerTap = 0,
-                    bonusManaColor = null
-                ).invalidatePaymentManaProductionProfiles(
+            val fixedBundleProfile = source.paymentManaProductionProfiles.values.any {
+                it is PaymentManaProductionProfile.FixedOutputBundle
+            }
+            if (source.isLand && (totalMana >= 2 || fixedBundleProfile)) {
+                val dampedSource = if (totalMana >= 2) {
+                    source.copy(
+                        producesColors = emptySet(),
+                        producesColorless = true,
+                        manaAmount = 1,
+                        bonusManaPerTap = 0,
+                        bonusManaColor = null
+                    )
+                } else {
+                    // The legacy aggregate currently keeps colorless composite leaves in a
+                    // separate bonus field that this total does not include. Do not refactor that
+                    // auto-pay path here; conservatively keep the public plan boundary closed.
+                    source
+                }
+                dampedSource.invalidatePaymentManaProductionProfiles(
                     "DampLandManaProduction changes the selected source production"
                 )
             } else {

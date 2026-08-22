@@ -38,6 +38,64 @@ data class PaymentManaOutput(
 )
 
 /**
+ * Reconciles raw ability profiles with the final aggregate [ManaSource] semantics.
+ *
+ * Source discovery intentionally keeps its existing aggregate representation for auto-pay. A
+ * profile may therefore only cross the PaymentPlanV1 boundary when that representation can spell
+ * out the same output units. In particular, a raw composite effect must not manufacture a tail
+ * output that source discovery dropped before it reached [ManaSource].
+ */
+internal fun ManaSource.authorizePaymentManaProductionProfiles(): ManaSource = copy(
+    paymentManaProductionProfiles = paymentManaProductionProfiles.mapValues { (_, profile) ->
+        when (profile) {
+            is PaymentManaProductionProfile.Unsupported -> profile
+            is PaymentManaProductionProfile.SelectableSingleOutput ->
+                if (profile.allowedColors.all(::representsSingleOutput)) {
+                    profile
+                } else {
+                    PaymentManaProductionProfile.Unsupported(
+                        "Current ManaSource semantics do not represent every selectable output"
+                    )
+                }
+
+            is PaymentManaProductionProfile.FixedOutputBundle ->
+                if (paymentManaProductionProfiles.size == 1 && representsFixedBundle(profile)) {
+                    profile
+                } else {
+                    PaymentManaProductionProfile.Unsupported(
+                        "Current ManaSource semantics do not represent the fixed output bundle"
+                    )
+                }
+        }
+    }
+)
+
+private fun ManaSource.representsSingleOutput(color: PaymentManaColor): Boolean = when (color) {
+    PaymentManaColor.COLORLESS -> producesColorless
+    else -> color.asEngineColor() in producesColors
+}
+
+private fun ManaSource.representsFixedBundle(
+    profile: PaymentManaProductionProfile.FixedOutputBundle,
+): Boolean {
+    val outputs = profile.outputs.map(PaymentManaOutput::color)
+    if (outputs.size < 2 || manaAmount <= 0) return false
+
+    val primary = outputs.first()
+    if (!representsSingleOutput(primary)) return false
+    if (bonusManaIsAnyColor || (bonusManaPerTap > 0 && bonusManaColor == null)) return false
+
+    val currentOutputs = buildList {
+        repeat(manaAmount) { add(primary) }
+        if (bonusManaPerTap > 0) {
+            repeat(bonusManaPerTap) { add(PaymentManaColor.fromEngine(bonusManaColor!!)) }
+        }
+        repeat(bonusManaColorlessPerTap) { add(PaymentManaColor.COLORLESS) }
+    }
+    return currentOutputs == outputs
+}
+
+/**
  * Resolves only unconditional fixed leaves of the selected ability. The caller supplies the
  * colors already resolved by source discovery for a single-output color-choice effect; this keeps
  * this helper on the same Rules-owned resolution path as [ManaSolver].

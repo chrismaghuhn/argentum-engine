@@ -32,6 +32,7 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.DampLandManaProduction
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
@@ -60,6 +61,31 @@ class PaymentPlanV1Test : FunSpec({
             cost = Costs.Tap
             effect = Effects.AddMana(Color.BLACK).then(Effects.AddMana(Color.GREEN))
             manaAbility = true
+        }
+    }
+
+    val colorlessPrimaryBundleSource = card("Payment Plan Colorless Primary Bundle Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddColorlessMana(1).then(Effects.AddMana(Color.GREEN))
+            manaAbility = true
+        }
+    }
+
+    val dampableMixedBundleLand = card("Payment Plan Dampable Mixed Bundle Land") {
+        typeLine = "Land"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.BLACK).then(Effects.AddColorlessMana(1))
+            manaAbility = true
+        }
+    }
+
+    val paymentDampingSphere = card("Payment Plan Damping Sphere") {
+        typeLine = "Artifact"
+        staticAbility {
+            ability = DampLandManaProduction
         }
     }
 
@@ -169,6 +195,9 @@ class PaymentPlanV1Test : FunSpec({
             TestCards.all + listOf(
                 anyColorSource,
                 fixedBundleSource,
+                colorlessPrimaryBundleSource,
+                dampableMixedBundleLand,
+                paymentDampingSphere,
                 fixedBundleSpell,
                 fixedBundleAbilitySource,
                 payableAbilitySource,
@@ -241,6 +270,75 @@ class PaymentPlanV1Test : FunSpec({
             .single { it.entityId == sourceId }
 
         source.supportsPaymentPlanV1() shouldBe true
+    }
+
+    test("a colorless-primary bundle cannot manufacture a green output omitted by ManaSource") {
+        val (driver, player) = game()
+        val sourceId = driver.putPermanentOnBattlefield(player, colorlessPrimaryBundleSource.name)
+        val source = ManaSolver(driver.cardRegistry)
+            .findAvailableManaSources(driver.state, player)
+            .single { it.entityId == sourceId }
+        val rawProfile = PaymentManaProductionProfileResolver.resolve(
+            colorlessPrimaryBundleSource.activatedAbilities.single().effect,
+            emptySet(),
+        ).shouldBeInstanceOf<PaymentManaProductionProfile.FixedOutputBundle>()
+
+        // The raw profile sees both effect leaves, while the authoritative aggregate source model
+        // only exposes the primary colorless output. The shared authorization step must close the
+        // PaymentPlanV1 boundary rather than manufacturing the omitted green unit.
+        rawProfile.outputs.map { it.color } shouldBe listOf(PaymentManaColor.COLORLESS, PaymentManaColor.GREEN)
+        source.producesColorless shouldBe true
+        source.producesColors shouldBe emptySet()
+        source.paymentManaProductionProfiles.values.single() shouldBe
+            PaymentManaProductionProfile.Unsupported("Current ManaSource semantics do not represent the fixed output bundle")
+
+        val manaAbilityKey = source.manaAbilityOptionsFor(null).single().let(ManaAbilityIdentity::key)
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}"),
+            plan = plan(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = sourceId,
+                        manaAbilityKey = manaAbilityKey,
+                        productionChoice = ProductionChoice(
+                            producedColor = PaymentManaColor.COLORLESS,
+                            fixedOutputs = listOf(
+                                FixedManaOutput(0, PaymentManaColor.COLORLESS),
+                                FixedManaOutput(1, PaymentManaColor.GREEN),
+                            ),
+                        ),
+                    ),
+                ),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(ManaSpendReference(sourceId = sourceId, sourceOutputIndex = 1)),
+                    ),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+    }
+
+    test("DampLandManaProduction rejects a fixed bundle when colorless bonus is omitted from dampening totals") {
+        val (driver, player) = game()
+        driver.putPermanentOnBattlefield(player, paymentDampingSphere.name)
+        val sourceId = driver.putPermanentOnBattlefield(player, dampableMixedBundleLand.name)
+        val source = ManaSolver(driver.cardRegistry)
+            .findAvailableManaSources(driver.state, player)
+            .single { it.entityId == sourceId }
+        val profile = source.paymentManaProductionProfiles.values.single()
+            .shouldBeInstanceOf<PaymentManaProductionProfile.Unsupported>()
+
+        // The legacy dampening total ignores this source's colorless bonus; the shared authority
+        // must still close the fixed-output profile while the modifier is active.
+        source.manaAmount shouldBe 1
+        source.bonusManaColorlessPerTap shouldBe 1
+        profile.reason shouldBe "DampLandManaProduction changes the selected source production"
+        source.supportsPaymentPlanV1() shouldBe false
     }
 
     test("fixed output bundle plans account for every output and preserve unavoidable leftovers") {
