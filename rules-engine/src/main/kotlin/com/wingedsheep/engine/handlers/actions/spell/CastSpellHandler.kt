@@ -65,6 +65,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.registry.CardRegistry
@@ -1315,8 +1316,13 @@ class CastSpellHandler(
                     "convoke, delve, harmonize, and tap-for-generic choices are not representable"
                 action.wasWaterbendPaid -> "waterbend choices are not representable"
                 action.splicedCardIds.isNotEmpty() -> "splice adds an unresolved secondary payment choice"
-                action.chosenModes.isNotEmpty() || action.modeTargetsOrdered.isNotEmpty() ->
-                    "modal payment choices are not representable"
+                (action.chosenModes.isNotEmpty() || action.modeTargetsOrdered.isNotEmpty()) &&
+                    (cardDef == null || !ModalPaymentPlanSupport.supportsFixedChooseOne(
+                        state = state,
+                        cardDef = cardDef,
+                        action = action,
+                        conditionEvaluator = conditionEvaluator,
+                    )) -> "modal payment choices are not representable"
                 action.useWithoutPayingManaCost -> "free-cast payment choices are not representable"
                 cardDef?.script?.additionalCosts?.any(::containsSecondaryManaCost) == true ->
                     "secondary mana costs are not representable"

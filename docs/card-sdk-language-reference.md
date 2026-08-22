@@ -9669,6 +9669,14 @@ mode-selection pause; choose-1 modal spells remain client-local `CastSpellMode` 
 change is needed to author a Spree card — it is a plain `ModalEffect` with per-mode
 `additionalManaCost` (see Trash the Town).
 
+For the public Gym contract, an already-bound choose-one `CastSpellMode` is now eligible for the
+existing `PaymentDomainV1` / `PaymentPlanV1` path when its final cost is ordinary fixed colored,
+colorless, or generic mana. The submitted plan still determines every source activation,
+production choice, pool spend, and cost allocation; the engine does not fall back to AutoPay or
+another hidden source-selection policy. Choose-N/dynamic modal selections, X or alternative
+payments, target-dependent final costs, and mode-specific additional mana or non-mana costs remain
+fail-closed as `PAYMENT_DOMAIN_UNSUPPORTED` until the complete shape is representable.
+
 **Escalate (CR 702.120a).** Set `additionalManaCostPerExtraMode` on `ModalEffect`, or pass it to the `modal(...)`
 builder, for “Pay this cost for each mode chosen beyond the first.” Unlike Spree's per-mode
 `additionalManaCost`, no printed mode carries the cost: selecting one mode adds nothing, selecting two

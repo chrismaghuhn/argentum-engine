@@ -11,19 +11,28 @@ import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.core.SpendAllocation
+import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.effects.Mode
+import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
@@ -66,9 +75,78 @@ class PaymentPlanV1Test : FunSpec({
         }
     }
 
+    val extraManaModal = CardDefinition(
+        name = "Payment Plan Extra Mana Modal",
+        manaCost = ManaCost.parse("{R}"),
+        typeLine = TypeLine.sorcery(),
+        oracleText = "Choose one — Pay {1}: Gain 1 life.",
+        script = CardScript.spell(
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode.noTarget(Effects.GainLife(1), "Pay {1}: Gain 1 life")
+                        .copy(additionalManaCost = "{1}"),
+                ),
+                chooseCount = 1,
+                minChooseCount = 1,
+            ),
+        ),
+    )
+
+    val extraCostModal = CardDefinition(
+        name = "Payment Plan Extra Cost Modal",
+        manaCost = ManaCost.parse("{R}"),
+        typeLine = TypeLine.sorcery(),
+        oracleText = "Choose one — Sacrifice a creature: Gain 1 life.",
+        script = CardScript.spell(
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode.noTarget(Effects.GainLife(1), "Sacrifice a creature: Gain 1 life")
+                        .copy(
+                            additionalCosts = listOf(
+                                Costs.additional.SacrificePermanent(
+                                    filter = GameObjectFilter.Creature,
+                                    count = 1,
+                                ),
+                            ),
+                        ),
+                ),
+                chooseCount = 1,
+                minChooseCount = 1,
+            ),
+        ),
+    )
+
+    val unresolvedChooseNModal = CardDefinition(
+        name = "Payment Plan Unresolved Choose N Modal",
+        manaCost = ManaCost.parse("{R}"),
+        typeLine = TypeLine.sorcery(),
+        oracleText = "Choose one or more — Gain 1 life or draw a card.",
+        script = CardScript.spell(
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode.noTarget(Effects.GainLife(1), "Gain 1 life"),
+                    Mode.noTarget(Effects.DrawCards(1), "Draw a card"),
+                ),
+                chooseCount = 2,
+                minChooseCount = 1,
+            ),
+        ),
+    )
+
     fun game(): Pair<GameTestDriver, EntityId> {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + anyColorSource + payableAbilitySource + trackingRestrictedSource + ordinarySpell)
+        driver.registerCards(
+            TestCards.all + listOf(
+                anyColorSource,
+                payableAbilitySource,
+                trackingRestrictedSource,
+                ordinarySpell,
+                BorosCharm,
+                extraManaModal,
+                extraCostModal,
+                unresolvedChooseNModal,
+            ),
+        )
         driver.initMirrorMatch(Deck.of("Forest" to 20), startingPlayer = 0)
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         return driver to driver.activePlayer!!
@@ -200,6 +278,73 @@ class PaymentPlanV1Test : FunSpec({
         result.events.filterIsInstance<ManaSpentEvent>().single().black shouldBe 1
         driver.isTapped(blackSource) shouldBe true
         driver.isTapped(genericSource) shouldBe true
+    }
+
+    test("CastSpellMode materializes Boros Charm's exact PaymentPlanV1 and preserves the mode") {
+        val (driver, player) = game()
+        val spellId = driver.putCardInHand(player, BorosCharm.name)
+        val redSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val whiteSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+
+        val result = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                chosenModes = listOf(1),
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                redSource,
+                                key(driver, player, redSource, PaymentManaColor.RED),
+                                ProductionChoice(PaymentManaColor.RED),
+                            ),
+                            SourceActivation(
+                                whiteSource,
+                                key(driver, player, whiteSource, PaymentManaColor.WHITE),
+                                ProductionChoice(PaymentManaColor.WHITE),
+                            ),
+                        ),
+                        allocations = listOf(
+                            CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = redSource))),
+                            CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = whiteSource))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        val spent = result.events.filterIsInstance<ManaSpentEvent>().single()
+        spent.red shouldBe 1
+        spent.white shouldBe 1
+        driver.isTapped(redSource) shouldBe true
+        driver.isTapped(whiteSource) shouldBe true
+
+        val stackSpell = driver.state.getEntity(driver.state.stack.single())
+            ?.get<SpellOnStackComponent>()
+            ?: error("Expected Boros Charm on the stack")
+        stackSpell.chosenModes shouldBe listOf(1)
+        stackSpell.modeTargetsOrdered shouldBe emptyList()
+    }
+
+    test("fixed choose-one modal eligibility rejects unresolved or mode-specific payment shapes") {
+        val (driver, player) = game()
+
+        fun supports(card: CardDefinition): Boolean {
+            val cardId = driver.putCardInHand(player, card.name)
+            return ModalPaymentPlanSupport.supportsFixedChooseOne(
+                state = driver.state,
+                cardDef = card,
+                action = CastSpell(playerId = player, cardId = cardId, chosenModes = listOf(0)),
+                conditionEvaluator = ConditionEvaluator(),
+            )
+        }
+
+        supports(BorosCharm) shouldBe true
+        supports(extraManaModal) shouldBe false
+        supports(extraCostModal) shouldBe false
+        supports(unresolvedChooseNModal) shouldBe false
     }
 
     test("floating mana generic spend preserves the controller-selected remainder") {

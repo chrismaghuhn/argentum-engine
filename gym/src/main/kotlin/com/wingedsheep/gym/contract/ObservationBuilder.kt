@@ -62,6 +62,7 @@ import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
+import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
@@ -660,7 +661,8 @@ class ObservationBuilder(
         action: CastSpell,
         state: GameState,
     ): Boolean {
-        if (legalAction.actionType != "CastSpell" ||
+        val isCastSpellMode = legalAction.actionType == "CastSpellMode"
+        if ((legalAction.actionType != "CastSpell" && !isCastSpellMode) ||
             legalAction.hasXCost ||
             (legalAction.hasConvoke && !legalAction.convokeCreatures.isNullOrEmpty()) ||
             (legalAction.hasDelve && !legalAction.delveCards.isNullOrEmpty()) ||
@@ -668,19 +670,30 @@ class ObservationBuilder(
             (legalAction.hasHarmonize && !legalAction.harmonizeCreatures.isNullOrEmpty()) ||
             legalAction.modalEnumeration != null
         ) return false
+
+        val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return false
+        val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return false
+        if (isCastSpellMode) {
+            if (!ModalPaymentPlanSupport.supportsFixedChooseOne(
+                    state = state,
+                    cardDef = cardDef,
+                    action = action,
+                    conditionEvaluator = conditionEvaluator,
+                )
+            ) return false
+        } else if (action.chosenModes.isNotEmpty() || action.modeTargetsOrdered.isNotEmpty()) {
+            return false
+        }
+
         if (action.castFaceDown ||
             action.xValue != null ||
             action.alternativePayment?.hasResourcePayment == true ||
             action.wasWaterbendPaid ||
             action.splicedCardIds.isNotEmpty() ||
-            action.chosenModes.isNotEmpty() ||
-            action.modeTargetsOrdered.isNotEmpty() ||
             action.useAlternativeCost ||
             action.useWithoutPayingManaCost ||
             action.faceIndex != null
         ) return false
-        val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return false
-        val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return false
         return cardDef.script.additionalCosts.none(::containsSecondaryManaCost)
     }
 
