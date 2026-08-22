@@ -702,11 +702,17 @@ data class ManaPool(
     /**
      * Consume the one ordinary floating unit certified by [candidate]. This operation is exact;
      * unlike [consumeProvenance], it never chooses a provenance association from aggregate maps.
+     *
+     * This is an internal materialization helper, not a second certification API. Callers must
+     * obtain [candidate] from [FloatingManaProvenanceClassification] before invoking it.
      */
-    fun consumeCertifiedSingleUnit(
+    internal fun consumeCertifiedSingleUnit(
         candidate: CertifiedFloatingManaUnit,
     ): Pair<ManaPool, SpentManaProvenance>? {
-        if (restrictedMana.isNotEmpty() || total != 1 || manaBySource != mapOf(candidate.sourceId to 1)) {
+        if (white < 0 || blue < 0 || black < 0 || red < 0 || green < 0 || colorless < 0 ||
+            restrictedMana.isNotEmpty() || total != 1 ||
+            manaBySource != mapOf(candidate.sourceId to 1)
+        ) {
             return null
         }
         if (manaBySubtype.isEmpty() || manaBySubtype.values.any { it != 1 } ||

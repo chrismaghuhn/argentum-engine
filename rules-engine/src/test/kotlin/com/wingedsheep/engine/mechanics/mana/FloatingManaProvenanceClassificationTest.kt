@@ -119,6 +119,24 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
         result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
     }
 
+    test("direct certified consumer rejects a malformed aggregate even with a forged matching candidate") {
+        val sourceId = EntityId("forged-source")
+
+        ManaPool(
+            blue = -1,
+            red = 1,
+            green = 1,
+            manaBySource = mapOf(sourceId to 1),
+            manaBySubtype = mapOf(Subtype.FOREST to 1),
+        ).consumeCertifiedSingleUnit(
+            CertifiedFloatingManaUnit(
+                poolColor = PaymentManaColor.GREEN,
+                sourceId = sourceId,
+                sourceSubtypes = setOf(Subtype.FOREST),
+            ),
+        ) shouldBe null
+    }
+
     test("does not certify a pool that also contains restricted mana") {
         val result = FloatingManaProvenanceClassification.classify(
             ManaPoolComponent(
