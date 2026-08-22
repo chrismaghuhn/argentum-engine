@@ -700,51 +700,77 @@ data class ManaPool(
     }
 
     /**
-     * Consume the one ordinary floating unit certified by [candidate]. This operation is exact;
-     * unlike [consumeProvenance], it never chooses a provenance association from aggregate maps.
-     *
-     * This is an internal materialization helper, not a second certification API. Callers must
-     * obtain [candidate] from [FloatingManaProvenanceClassification] before invoking it.
+     * Consume a fully selected subset of a Rules-certified homogeneous pool. This operation is
+     * exact; unlike [consumeProvenance], it never chooses a provenance association from aggregate
+     * maps. Callers must obtain [candidate] from [FloatingManaProvenanceClassification] and must
+     * validate the complete submitted source-to-amount map before invoking it.
      */
-    internal fun consumeCertifiedSingleUnit(
-        candidate: CertifiedFloatingManaUnit,
+    internal fun consumeCertifiedHomogeneous(
+        candidate: CertifiedHomogeneousFloatingMana,
+        spentBySource: Map<com.wingedsheep.sdk.model.EntityId, Int>,
     ): Pair<ManaPool, SpentManaProvenance>? {
         if (white < 0 || blue < 0 || black < 0 || red < 0 || green < 0 || colorless < 0 ||
-            restrictedMana.isNotEmpty() || total != 1 ||
-            manaBySource != mapOf(candidate.sourceId to 1)
-        ) {
-            return null
+            restrictedMana.isNotEmpty() || candidate.sourceSubtypes.isEmpty() ||
+            candidate.sourceBuckets.isEmpty()
+        ) return null
+
+        val expectedSources = candidate.sourceBuckets.associate { bucket ->
+            bucket.sourceId to bucket.amount
         }
-        if (manaBySubtype.isEmpty() || manaBySubtype.values.any { it != 1 } ||
-            manaBySubtype.keys != candidate.sourceSubtypes
-        ) {
-            return null
-        }
-        val candidateAmount = when (candidate.poolColor) {
-            PaymentManaColor.WHITE -> white
-            PaymentManaColor.BLUE -> blue
-            PaymentManaColor.BLACK -> black
-            PaymentManaColor.RED -> red
-            PaymentManaColor.GREEN -> green
-            PaymentManaColor.COLORLESS -> colorless
-        }
-        if (candidateAmount != 1) return null
+        if (expectedSources.size != candidate.sourceBuckets.size ||
+            expectedSources.values.any { it <= 0 } ||
+            candidate.total != total ||
+            manaBySource != expectedSources ||
+            manaBySubtype.keys != candidate.sourceSubtypes ||
+            manaBySubtype.values.any { it != candidate.total }
+        ) return null
+
+        val colorAmounts = mapOf(
+            PaymentManaColor.WHITE to white,
+            PaymentManaColor.BLUE to blue,
+            PaymentManaColor.BLACK to black,
+            PaymentManaColor.RED to red,
+            PaymentManaColor.GREEN to green,
+            PaymentManaColor.COLORLESS to colorless,
+        )
+        if (colorAmounts[candidate.poolColor] != candidate.total ||
+            colorAmounts.any { (color, amount) -> color != candidate.poolColor && amount != 0 }
+        ) return null
+
+        if (spentBySource.isEmpty() || spentBySource.values.any { it <= 0 } ||
+            spentBySource.keys.any { it !in expectedSources } ||
+            spentBySource.any { (sourceId, amount) -> amount > (expectedSources[sourceId] ?: 0) }
+        ) return null
+        val spent = spentBySource.values.sum()
+        if (spent > candidate.total) return null
 
         val afterSpend = when (candidate.poolColor) {
-            PaymentManaColor.WHITE -> spend(Color.WHITE)
-            PaymentManaColor.BLUE -> spend(Color.BLUE)
-            PaymentManaColor.BLACK -> spend(Color.BLACK)
-            PaymentManaColor.RED -> spend(Color.RED)
-            PaymentManaColor.GREEN -> spend(Color.GREEN)
-            PaymentManaColor.COLORLESS -> spendColorless()
+            PaymentManaColor.WHITE -> spend(Color.WHITE, spent)
+            PaymentManaColor.BLUE -> spend(Color.BLUE, spent)
+            PaymentManaColor.BLACK -> spend(Color.BLACK, spent)
+            PaymentManaColor.RED -> spend(Color.RED, spent)
+            PaymentManaColor.GREEN -> spend(Color.GREEN, spent)
+            PaymentManaColor.COLORLESS -> spendColorless(spent)
         } ?: return null
 
+        val remainingSources = expectedSources.mapNotNull { (sourceId, amount) ->
+            val remaining = amount - (spentBySource[sourceId] ?: 0)
+            if (remaining > 0) sourceId to remaining else null
+        }.toMap()
+        val remainingSubtypes = if (spent == candidate.total) {
+            emptyMap()
+        } else {
+            candidate.sourceSubtypes.associateWith { candidate.total - spent }
+        }
+
         return afterSpend.copy(
-            manaBySource = emptyMap(),
-            manaBySubtype = emptyMap(),
+            manaBySource = remainingSources,
+            manaBySubtype = remainingSubtypes,
         ) to SpentManaProvenance(
-            bySubtype = candidate.sourceSubtypes.sortedBy { it.value }.associateWith { 1 },
-            sourceIds = setOf(candidate.sourceId),
+            bySubtype = candidate.sourceSubtypes
+                .sortedBy { it.value }
+                .associateWith { spent },
+            sourceIds = spentBySource.keys,
         )
     }
 

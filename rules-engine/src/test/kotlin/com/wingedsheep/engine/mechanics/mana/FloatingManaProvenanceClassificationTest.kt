@@ -24,9 +24,9 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
             ),
         )
 
-        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedSingleUnit>()
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
         certified.candidate.poolColor shouldBe PaymentManaColor.GREEN
-        certified.candidate.sourceId shouldBe sourceId
+        certified.candidate.sourceBuckets shouldBe listOf(CertifiedFloatingManaSourceBucket(sourceId, 1))
         certified.candidate.sourceSubtypes shouldBe setOf(Subtype.FOREST)
     }
 
@@ -41,9 +41,9 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
             ),
         )
 
-        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedSingleUnit>()
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
         certified.candidate.poolColor shouldBe PaymentManaColor.COLORLESS
-        certified.candidate.sourceId shouldBe sourceId
+        certified.candidate.sourceBuckets shouldBe listOf(CertifiedFloatingManaSourceBucket(sourceId, 1))
         certified.candidate.sourceSubtypes shouldBe setOf(Subtype.CAVE)
     }
 
@@ -80,12 +80,99 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
         result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
     }
 
-    test("rejects two source identities in the same colored pool") {
+    test("certifies two source identities when every unit shares the same color and subtype") {
+        val sourceA = EntityId("source-a")
+        val sourceB = EntityId("source-b")
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 2,
+                manaBySource = mapOf(sourceA to 1, sourceB to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
+            .candidate.sourceBuckets shouldBe listOf(
+            CertifiedFloatingManaSourceBucket(sourceA, 1),
+            CertifiedFloatingManaSourceBucket(sourceB, 1),
+        )
+    }
+
+    test("rejects homogeneous-looking sources when their colors are mixed") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 1,
+                red = 1,
+                manaBySource = mapOf(EntityId("source-a") to 1, EntityId("source-b") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("rejects multiple sources when subtype coverage is incomplete") {
         val result = FloatingManaProvenanceClassification.classify(
             ManaPoolComponent(
                 green = 2,
                 manaBySource = mapOf(EntityId("source-a") to 1, EntityId("source-b") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("certifies a multi-unit bucket from one source") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 2,
+                manaBySource = mapOf(EntityId("source") to 2),
                 manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
+            .candidate.sourceBuckets shouldBe listOf(
+            CertifiedFloatingManaSourceBucket(EntityId("source"), 2),
+        )
+    }
+
+    test("certifies multiple sources when every unit shares multiple subtypes") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 3,
+                manaBySource = mapOf(EntityId("source-a") to 2, EntityId("source-b") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 3, Subtype.CAVE to 3),
+            ),
+        )
+
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
+        certified.candidate.sourceBuckets shouldBe listOf(
+            CertifiedFloatingManaSourceBucket(EntityId("source-a"), 2),
+            CertifiedFloatingManaSourceBucket(EntityId("source-b"), 1),
+        )
+        certified.candidate.sourceSubtypes shouldBe setOf(Subtype.FOREST, Subtype.CAVE)
+    }
+
+    test("rejects incomplete source provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 2,
+                manaBySource = mapOf(EntityId("source") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("rejects incomplete subtype homogeneity from one source") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 2,
+                manaBySource = mapOf(EntityId("source") to 2),
+                manaBySubtype = mapOf(Subtype.FOREST to 1, Subtype.CAVE to 1),
             ),
         )
 
@@ -103,7 +190,7 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
             ),
         )
 
-        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedSingleUnit>()
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
         certified.candidate.sourceSubtypes shouldBe setOf(Subtype.FOREST, Subtype.CAVE)
     }
 
@@ -128,12 +215,13 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
             green = 1,
             manaBySource = mapOf(sourceId to 1),
             manaBySubtype = mapOf(Subtype.FOREST to 1),
-        ).consumeCertifiedSingleUnit(
-            CertifiedFloatingManaUnit(
+        ).consumeCertifiedHomogeneous(
+            CertifiedHomogeneousFloatingMana(
                 poolColor = PaymentManaColor.GREEN,
-                sourceId = sourceId,
                 sourceSubtypes = setOf(Subtype.FOREST),
+                sourceBuckets = listOf(CertifiedFloatingManaSourceBucket(sourceId, 1)),
             ),
+            spentBySource = mapOf(sourceId to 1),
         ) shouldBe null
     }
 

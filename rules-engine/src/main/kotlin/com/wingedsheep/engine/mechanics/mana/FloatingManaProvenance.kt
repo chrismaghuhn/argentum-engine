@@ -5,12 +5,25 @@ import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 
-/** A provenance fact that is exact because the aggregate state contains only one unit. */
-data class CertifiedFloatingManaUnit(
-    val poolColor: PaymentManaColor,
+/** One source partition of a certified homogeneous floating-mana pool. */
+data class CertifiedFloatingManaSourceBucket(
     val sourceId: EntityId,
-    val sourceSubtypes: Set<Subtype>,
+    val amount: Int,
 )
+
+/**
+ * A complete homogeneous proof derived only from the aggregate pool counters.
+ *
+ * Every bucket has [poolColor] and [sourceSubtypes]. The buckets partition all current unrestricted
+ * floating units by producing source; no per-unit ordering or source/subtype matrix is implied.
+ */
+data class CertifiedHomogeneousFloatingMana(
+    val poolColor: PaymentManaColor,
+    val sourceSubtypes: Set<Subtype>,
+    val sourceBuckets: List<CertifiedFloatingManaSourceBucket>,
+) {
+    val total: Int get() = sourceBuckets.sumOf { it.amount }
+}
 
 /**
  * Rules-owned classification of the provenance metadata currently present in an ordinary pool.
@@ -22,8 +35,8 @@ data class CertifiedFloatingManaUnit(
 sealed interface FloatingManaProvenanceClassification {
     data object NoTrackedProvenance : FloatingManaProvenanceClassification
 
-    data class CertifiedSingleUnit(
-        val candidate: CertifiedFloatingManaUnit,
+    data class CertifiedHomogeneous(
+        val candidate: CertifiedHomogeneousFloatingMana,
     ) : FloatingManaProvenanceClassification
 
     data class Ambiguous(val reason: String) : FloatingManaProvenanceClassification
@@ -38,7 +51,7 @@ sealed interface FloatingManaProvenanceClassification {
             }
 
             if (pool.manaBySource.isEmpty() || pool.manaBySubtype.isEmpty()) {
-                return Ambiguous("source and subtype provenance must both identify the unit")
+                return Ambiguous("source and subtype provenance must both identify the pool")
             }
 
             val colorCounts = mapOf(
@@ -57,30 +70,32 @@ sealed interface FloatingManaProvenanceClassification {
             }
 
             val total = colorCounts.values.sum()
-            if (total != 1) {
-                return Ambiguous("certification supports exactly one unrestricted mana unit")
+            if (total < 1) {
+                return Ambiguous("certification requires at least one unrestricted mana unit")
             }
 
-            val color = colorCounts.entries.singleOrNull { it.value == 1 }?.key
-                ?: return Ambiguous("exactly one unrestricted color must be present")
-            if (colorCounts.values.count { it != 0 } != 1) {
-                return Ambiguous("the single unit must have exactly one mana color")
+            val nonZeroColors = colorCounts.filterValues { it != 0 }
+            if (nonZeroColors.size != 1 || nonZeroColors.values.single() != total) {
+                return Ambiguous("all certified units must share one unrestricted color")
+            }
+            val poolColor = nonZeroColors.keys.single()
+
+            if (pool.manaBySource.values.sum() != total) {
+                return Ambiguous("source provenance must partition every unrestricted unit")
+            }
+            if (pool.manaBySubtype.values.any { it != total }) {
+                return Ambiguous("every recorded subtype must be carried by every unit")
             }
 
-            val source = pool.manaBySource.entries.singleOrNull { it.value == 1 }
-                ?: return Ambiguous("exactly one producing source must be present")
-            if (pool.manaBySource.size != 1) {
-                return Ambiguous("multiple producing sources are not unit-identifiable")
-            }
-            if (pool.manaBySubtype.values.any { it != 1 }) {
-                return Ambiguous("each subtype tag must belong to the single unit")
-            }
-
-            return CertifiedSingleUnit(
-                candidate = CertifiedFloatingManaUnit(
-                    poolColor = color,
-                    sourceId = source.key,
+            return CertifiedHomogeneous(
+                candidate = CertifiedHomogeneousFloatingMana(
+                    poolColor = poolColor,
                     sourceSubtypes = pool.manaBySubtype.keys,
+                    sourceBuckets = pool.manaBySource.entries
+                        .sortedBy { it.key.value }
+                        .map { (sourceId, amount) ->
+                            CertifiedFloatingManaSourceBucket(sourceId, amount)
+                        },
                 ),
             )
         }

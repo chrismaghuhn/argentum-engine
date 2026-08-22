@@ -170,7 +170,7 @@ class PaymentPlanValidator(
             )
         }
         val certifiedFloatingMana = (provenanceClassification as?
-            FloatingManaProvenanceClassification.CertifiedSingleUnit)?.candidate
+            FloatingManaProvenanceClassification.CertifiedHomogeneous)?.candidate
         val currentPool = poolComponent.asManaPool()
 
         val availableSources = manaSolver.findAvailableManaSources(state, playerId, spellContext)
@@ -273,6 +273,7 @@ class PaymentPlanValidator(
         }
 
         val poolAmounts = mutableMapOf<PaymentManaColor, Int>()
+        val floatingSourceAmounts = mutableMapOf<EntityId, Int>()
         val sourceAmounts = mutableMapOf<EntityId, Int>()
         val sourceOutputAmounts = mutableMapOf<EntityId, MutableMap<Int, Int>>()
         for ((index, symbol) in cost.symbols.withIndex()) {
@@ -295,8 +296,14 @@ class PaymentPlanValidator(
                 if (spend.amount <= 0 || spend.restrictedBucketKey != null) {
                     return PaymentPlanValidation.Rejected("PaymentPlanV1 spend references must be unrestricted and positive")
                 }
+                if (spend.sourceId != null && (spend.poolColor != null || spend.floatingSourceId != null)) {
+                    return PaymentPlanValidation.Rejected("A fresh source spend cannot carry floating provenance")
+                }
+                if (spend.floatingSourceId != null && spend.poolColor == null) {
+                    return PaymentPlanValidation.Rejected("A floating provenance spend requires poolColor")
+                }
                 val color = when {
-                    spend.sourceId != null && spend.poolColor == null -> {
+                    spend.sourceId != null && spend.poolColor == null && spend.floatingSourceId == null -> {
                         val selected = resolved[spend.sourceId]
                             ?: return PaymentPlanValidation.Rejected("Spend references an unselected source")
                         if (spend.amount != 1) {
@@ -331,6 +338,17 @@ class PaymentPlanValidator(
                         byOutput[selectedColor] = used
                         sourceAmounts[spend.sourceId] = (sourceAmounts[spend.sourceId] ?: 0) + spend.amount
                         outputColor
+                    }
+                    spend.sourceId == null && spend.floatingSourceId != null && spend.poolColor != null -> {
+                        if (spend.sourceOutputIndex != null) {
+                            return PaymentPlanValidation.Rejected(
+                                "Floating provenance spends cannot carry sourceOutputIndex"
+                            )
+                        }
+                        floatingSourceAmounts[spend.floatingSourceId] =
+                            (floatingSourceAmounts[spend.floatingSourceId] ?: 0) + spend.amount
+                        poolAmounts[spend.poolColor] = (poolAmounts[spend.poolColor] ?: 0) + spend.amount
+                        spend.poolColor
                     }
                     spend.sourceId == null && spend.poolColor != null -> {
                         if (spend.sourceOutputIndex != null) {
@@ -377,14 +395,30 @@ class PaymentPlanValidator(
             }
         }
 
+        if (floatingSourceAmounts.isNotEmpty() && certifiedFloatingMana == null) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV1 floatingSourceId requires certified floating provenance"
+            )
+        }
+
         val certifiedPoolPayment = if (certifiedFloatingMana != null && plan.poolSpend.total() > 0) {
-            if (plan.poolSpend.total() != 1 || plan.poolSpend.amount(certifiedFloatingMana.poolColor) != 1) {
+            val poolColorAmount = plan.poolSpend.amount(certifiedFloatingMana.poolColor)
+            val explicitFloatingAmount = floatingSourceAmounts.values.sum()
+            val unassignedAmount = poolColorAmount - explicitFloatingAmount
+            if (unassignedAmount < 0) {
+                return PaymentPlanValidation.Rejected("PaymentPlanV1 spends more floating mana than is available")
+            }
+            if (certifiedFloatingMana.sourceBuckets.size == 1) {
+                val onlySource = certifiedFloatingMana.sourceBuckets.single().sourceId
+                floatingSourceAmounts[onlySource] =
+                    (floatingSourceAmounts[onlySource] ?: 0) + unassignedAmount
+            } else if (unassignedAmount != 0) {
                 return PaymentPlanValidation.Rejected(
-                    "PaymentPlanV1 certified pool spend does not identify the single floating unit"
+                    "PaymentPlanV1 certified multi-unit pool spend must identify every floating source"
                 )
             }
-            currentPool.consumeCertifiedSingleUnit(certifiedFloatingMana)
-                ?: return PaymentPlanValidation.Rejected("Certified floating mana is unavailable")
+            currentPool.consumeCertifiedHomogeneous(certifiedFloatingMana, floatingSourceAmounts)
+                ?: return PaymentPlanValidation.Rejected("PaymentPlanV1 spends more floating mana than is available")
         } else {
             null
         }

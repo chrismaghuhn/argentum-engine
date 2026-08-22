@@ -46,6 +46,10 @@ import org.springframework.boot.test.web.server.LocalServerPort
 import org.springframework.beans.factory.annotation.Autowired
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
 import java.net.URI
 import java.net.http.HttpClient
 import java.net.http.HttpRequest
@@ -78,6 +82,33 @@ class EnvControllerTest : FunSpec() {
     }
 
     private val client: HttpClient = HttpClient.newBuilder().build()
+
+    private val httpForestSource = card("A5 HTTP Forest Source") {
+        typeLine = "Land — Forest"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.GREEN)
+            manaAbility = true
+        }
+    }
+
+    private val httpZeroForestSource = card("A5 HTTP Zero Forest Source") {
+        manaCost = "{0}"
+        typeLine = "Artifact — Forest"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.GREEN)
+            manaAbility = true
+        }
+    }
+
+    private val httpHomogeneousSpell = card("A5 HTTP Homogeneous Floating Spell") {
+        manaCost = "{1}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
 
     init {
         extension(SpringExtension())
@@ -383,6 +414,176 @@ class EnvControllerTest : FunSpec() {
                 envToDispose?.let {
                     deleteJson("/envs", json.encodeToString(DisposeBody(listOf(it))))
                 }
+            }
+        }
+
+        test("HTTP round-trips PaymentDomain V2 buckets and PaymentPlan V1 floatingSourceId") {
+            multiEnvService.cardRegistry.register(
+                listOf(httpForestSource, httpZeroForestSource, httpHomogeneousSpell)
+            )
+            val config = EnvConfig(
+                players = listOf(
+                    PlayerSpec(
+                        "Alice",
+                        DeckSpec.Explicit(
+                            mapOf(
+                                httpForestSource.name to 1,
+                                httpZeroForestSource.name to 1,
+                                httpHomogeneousSpell.name to 1,
+                                "Mountain" to 4,
+                            ),
+                        ),
+                    ),
+                    PlayerSpec("Bob", DeckSpec.Explicit(mapOf("Mountain" to 7))),
+                ),
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 0L,
+                perspectivePlayerIndex = 0,
+            )
+            val created = json.decodeFromString<CreateEnvResponse>(
+                postJson("/envs", json.encodeToString(config)).body()
+            )
+            created.observation.terminated shouldBe false
+            val envId = created.envId
+
+            fun cardName(observation: TrainingObservation, entityId: com.wingedsheep.sdk.model.EntityId?): String? =
+                entityId?.let { id ->
+                    observation.zones.asSequence()
+                        .flatMap { it.cards.asSequence() }
+                        .firstOrNull { it.entityId == id }
+                        ?.name
+                }
+
+            fun step(observation: TrainingObservation, action: LegalActionView): TrainingObservation {
+                val response = postJson(
+                    "/envs/${envId.value}/step",
+                    json.encodeToString(StepBody(action.actionId, action.actionSemantics)),
+                )
+                check(response.statusCode() == 200) {
+                    "HTTP step rejected action ${action.kind}: ${response.statusCode()} ${response.body()}"
+                }
+                return json.decodeFromString(response.body())
+            }
+
+            fun findAction(
+                observation: TrainingObservation,
+                predicate: (LegalActionView) -> Boolean,
+            ): LegalActionView {
+                var current = observation
+                repeat(80) {
+                    current.legalActions.firstOrNull(predicate)?.let { return it }
+                    val pass = current.legalActions.firstOrNull { it.kind == "PassPriority" }
+                        ?: error("No desired action or pass action in HTTP observation: ${current.legalActions}")
+                    current = step(current, pass)
+                }
+                error("Could not find the desired HTTP action")
+            }
+
+            try {
+                var observation = created.observation as TrainingObservation
+                val landAction = findAction(observation) {
+                    it.kind == "PlayLand" && cardName(observation, it.sourceEntityId) == httpForestSource.name
+                }
+                val landId = checkNotNull(landAction.sourceEntityId)
+                observation = step(observation, landAction)
+
+                val landActivation = findAction(observation) {
+                    it.kind == "ActivateAbility" && it.isManaAbility && it.sourceEntityId == landId
+                }
+                observation = step(observation, landActivation)
+
+                val zeroSourceCardId = observation.zones
+                    .flatMap { it.cards }
+                    .first { it.name == httpZeroForestSource.name }
+                    .entityId
+                val zeroSourceCast = findAction(observation) {
+                    it.kind == "CastSpell" && it.sourceEntityId == zeroSourceCardId
+                }
+                val zeroCostStrategy = json.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.Explicit(
+                        paymentPlan = PaymentPlanV1(
+                            spendAllocation = SpendAllocation(
+                                costUnits = listOf(
+                                    CostUnitAllocation(symbolIndex = 0, spends = emptyList())
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                val zeroCostAction = zeroSourceCast.copy(
+                    actionSemantics = buildJsonObject {
+                        zeroSourceCast.actionSemantics?.forEach { (key, value) -> put(key, value) }
+                        put("paymentStrategy", zeroCostStrategy)
+                    },
+                )
+                observation = step(observation, zeroCostAction)
+
+                val zeroSourceId = zeroSourceCardId
+                val zeroActivation = findAction(observation) {
+                    it.kind == "ActivateAbility" && it.isManaAbility && it.sourceEntityId == zeroSourceId
+                }
+                observation = step(observation, zeroActivation)
+
+                val spellCardId = observation.zones
+                    .flatMap { it.cards }
+                    .first { it.name == httpHomogeneousSpell.name }
+                    .entityId
+                val spellAction = findAction(observation) {
+                    it.kind == "CastSpell" && it.sourceEntityId == spellCardId
+                }
+                val domain = spellAction.paymentDomain ?: error("Expected the V2 HTTP payment domain")
+                domain.version shouldBe 2
+                val certified = domain.currentPool.certifiedFloatingMana
+                    ?: error("Expected certified homogeneous floating buckets")
+                certified.poolColor shouldBe PaymentManaColor.GREEN
+                certified.sourceSubtypes shouldBe listOf("Forest")
+                certified.sourceBuckets.map { it.sourceId }.toSet() shouldBe setOf(landId, zeroSourceId)
+                certified.sourceBuckets.map { it.amount } shouldBe listOf(1, 1)
+
+                val observedWire = get("/envs/${envId.value}")
+                observedWire.statusCode() shouldBe 200
+                observedWire.body() shouldContain "\"version\":2"
+                observedWire.body() shouldContain "\"sourceBuckets\""
+                observedWire.body() shouldContain landId.value
+                observedWire.body() shouldContain zeroSourceId.value
+
+                val selectedSource = certified.sourceBuckets.first().sourceId
+                val strategy = json.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.Explicit(
+                        paymentPlan = PaymentPlanV1(
+                            poolSpend = PoolSpend(green = 1),
+                            spendAllocation = SpendAllocation(
+                                costUnits = listOf(
+                                    CostUnitAllocation(
+                                        symbolIndex = 0,
+                                        spends = listOf(
+                                            ManaSpendReference(
+                                                poolColor = PaymentManaColor.GREEN,
+                                                floatingSourceId = selectedSource,
+                                            ),
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+                val paymentAction = buildJsonObject {
+                    spellAction.actionSemantics?.forEach { (key, value) -> put(key, value) }
+                    put("paymentStrategy", strategy)
+                }
+                val paymentResponse = postJson(
+                    "/envs/${envId.value}/step",
+                    json.encodeToString(StepBody(spellAction.actionId, paymentAction)),
+                )
+                paymentResponse.statusCode() shouldBe 200
+                val afterPayment = json.decodeFromString<TrainingObservation>(paymentResponse.body())
+                afterPayment.players.first { it.isPerspective }.manaPool.green shouldBe 1
+            } finally {
+                deleteJson("/envs", json.encodeToString(DisposeBody(listOf(envId))))
             }
         }
 

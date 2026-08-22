@@ -728,6 +728,63 @@ class PaymentPlanV1Test : FunSpec({
         remainingPool.manaBySubtype shouldBe emptyMap()
     }
 
+    test("CastSpell materializes the controller-selected bucket and preserves the other source") {
+        val (driver, player) = game()
+        val firstForest = driver.putPermanentOnBattlefield(player, "Forest")
+        val secondForest = driver.putPermanentOnBattlefield(player, "Forest")
+        val blackSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val spellId = driver.putCardInHand(player, ordinarySpell.name)
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 2,
+                manaBySource = mapOf(firstForest to 1, secondForest to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        val result = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                blackSource,
+                                key(driver, player, blackSource, PaymentManaColor.BLACK),
+                                ProductionChoice(PaymentManaColor.BLACK),
+                            ),
+                        ),
+                        poolSpend = PoolSpend(green = 1),
+                        allocations = listOf(
+                            CostUnitAllocation(
+                                0,
+                                listOf(
+                                    ManaSpendReference(
+                                        poolColor = PaymentManaColor.GREEN,
+                                        floatingSourceId = firstForest,
+                                    ),
+                                ),
+                            ),
+                            CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = blackSource))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        result.events.filterIsInstance<SpellCastEvent>().single().spentManaSourceIds shouldBe
+            setOf(firstForest, blackSource)
+        val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing player mana pool")
+        remainingPool.green shouldBe 1
+        remainingPool.manaBySource shouldBe mapOf(secondForest to 1)
+        remainingPool.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+    }
+
     test("ActivateAbility uses certified floating provenance through shared materialization") {
         val (driver, player) = game()
         val forestId = driver.putPermanentOnBattlefield(player, "Forest")
@@ -774,6 +831,63 @@ class PaymentPlanV1Test : FunSpec({
         remainingPool.green shouldBe 0
         remainingPool.manaBySource shouldBe emptyMap()
         remainingPool.manaBySubtype shouldBe emptyMap()
+    }
+
+    test("ActivateAbility materializes the controller-selected homogeneous bucket") {
+        val (driver, player) = game()
+        val firstForest = driver.putPermanentOnBattlefield(player, "Forest")
+        val secondForest = driver.putPermanentOnBattlefield(player, "Forest")
+        val abilitySource = driver.putPermanentOnBattlefield(player, payableAbilitySource.name)
+        val redSource = driver.putPermanentOnBattlefield(player, anyColorSource.name)
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 2,
+                manaBySource = mapOf(firstForest to 1, secondForest to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+        val ability = payableAbilitySource.activatedAbilities.single()
+
+        val result = driver.submit(
+            com.wingedsheep.engine.core.ActivateAbility(
+                playerId = player,
+                sourceId = abilitySource,
+                abilityId = ability.id,
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = plan(
+                        sourceActivations = listOf(
+                            SourceActivation(
+                                redSource,
+                                key(driver, player, redSource, PaymentManaColor.BLACK),
+                                ProductionChoice(PaymentManaColor.BLACK),
+                            ),
+                        ),
+                        poolSpend = PoolSpend(green = 1),
+                        allocations = listOf(
+                            CostUnitAllocation(
+                                0,
+                                listOf(
+                                    ManaSpendReference(
+                                        poolColor = PaymentManaColor.GREEN,
+                                        floatingSourceId = secondForest,
+                                    ),
+                                ),
+                            ),
+                            CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = redSource))),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        val remainingPool = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing player mana pool")
+        remainingPool.green shouldBe 1
+        remainingPool.manaBySource shouldBe mapOf(firstForest to 1)
+        remainingPool.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
     }
 
     test("CastSpellMode materializes Boros Charm's exact PaymentPlanV1 and preserves the mode") {
@@ -1067,6 +1181,307 @@ class PaymentPlanV1Test : FunSpec({
         result.poolAfterSpend.green shouldBe 1
         result.poolAfterSpend.manaBySource shouldBe mapOf(forestId to 1)
         result.poolAfterSpend.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+    }
+
+    test("certified homogeneous floating mana selects the requested source bucket") {
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 2,
+                manaBySource = mapOf(EntityId("e108") to 1, EntityId("e117") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+        val json = Json {
+            encodeDefaults = true
+            explicitNulls = false
+        }
+        val submittedPlan = json.decodeFromString<PaymentPlanV1>(
+            """
+            {
+              "sourceActivations": [],
+              "poolSpend": {"green": 1},
+              "spendAllocation": {
+                "costUnits": [
+                  {"symbolIndex": 0, "spends": [
+                    {"poolColor": "GREEN", "floatingSourceId": "e108", "amount": 1}
+                  ]}
+                ]
+              }
+            }
+            """.trimIndent(),
+        )
+
+        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{1}"),
+            plan = submittedPlan,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        accepted.poolAfterSpend.green shouldBe 1
+        accepted.poolAfterSpend.manaBySource shouldBe mapOf(EntityId("e117") to 1)
+        accepted.poolAfterSpend.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        accepted.materialization.spentManaProvenance.sourceIds shouldBe setOf(EntityId("e108"))
+        accepted.materialization.spentManaProvenance.bySubtype shouldBe mapOf(Subtype.FOREST to 1)
+    }
+
+    test("certified homogeneous floating mana preserves the other bucket when e117 is selected") {
+        val (driver, player) = game()
+        val e108 = EntityId("e108")
+        val e117 = EntityId("e117")
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 2,
+                manaBySource = mapOf(e108 to 1, e117 to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{1}"),
+            plan = plan(
+                poolSpend = PoolSpend(green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceId = e117,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        accepted.poolAfterSpend.manaBySource shouldBe mapOf(e108 to 1)
+        accepted.poolAfterSpend.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        accepted.materialization.spentManaProvenance.sourceIds shouldBe setOf(e117)
+    }
+
+    test("a certified source bucket with amount two decrements one unit or all selected units exactly") {
+        val e108 = EntityId("e108")
+
+        fun driverWithTwoUnits(): Pair<GameTestDriver, EntityId> {
+            val (driver, player) = game()
+            val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player pool")
+            driver.addComponent(
+                player,
+                pool.copy(
+                    green = 2,
+                    manaBySource = mapOf(e108 to 2),
+                    manaBySubtype = mapOf(Subtype.FOREST to 2),
+                ),
+            )
+            return driver to player
+        }
+
+        val (oneDriver, onePlayer) = driverWithTwoUnits()
+        val oneUnit = PaymentPlanValidator(ManaSolver(oneDriver.cardRegistry)).validate(
+            state = oneDriver.state,
+            playerId = onePlayer,
+            cost = ManaCost.parse("{G}"),
+            plan = plan(
+                poolSpend = PoolSpend(green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceId = e108,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+        oneUnit.poolAfterSpend.manaBySource shouldBe mapOf(e108 to 1)
+        oneUnit.poolAfterSpend.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        oneUnit.materialization.spentManaProvenance.sourceIds shouldBe setOf(e108)
+
+        val (allDriver, allPlayer) = driverWithTwoUnits()
+        val allUnits = PaymentPlanValidator(ManaSolver(allDriver.cardRegistry)).validate(
+            state = allDriver.state,
+            playerId = allPlayer,
+            cost = ManaCost.parse("{G}{G}"),
+            plan = plan(
+                poolSpend = PoolSpend(green = 2),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceId = e108,
+                            ),
+                        ),
+                    ),
+                    CostUnitAllocation(
+                        1,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceId = e108,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+        allUnits.poolAfterSpend.manaBySource shouldBe emptyMap()
+        allUnits.poolAfterSpend.manaBySubtype shouldBe emptyMap()
+        allUnits.materialization.spentManaProvenance.bySubtype shouldBe mapOf(Subtype.FOREST to 2)
+    }
+
+    test("floating provenance references reject capacity, aggregate, color, and origin violations") {
+        val e108 = EntityId("e108")
+        val e117 = EntityId("e117")
+        val (driver, player) = game()
+        val originalPool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player pool")
+        driver.addComponent(
+            player,
+            originalPool.copy(
+                green = 2,
+                manaBySource = mapOf(e108 to 1, e117 to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        fun rejected(reference: ManaSpendReference, poolSpend: PoolSpend = PoolSpend(green = 1)) =
+            PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+                state = driver.state,
+                playerId = player,
+                cost = ManaCost.parse("{G}"),
+                plan = plan(
+                    poolSpend = poolSpend,
+                    allocations = listOf(CostUnitAllocation(0, listOf(reference))),
+                ),
+            ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        rejected(
+            ManaSpendReference(
+                poolColor = PaymentManaColor.GREEN,
+                floatingSourceId = e108,
+                amount = 2,
+            ),
+        )
+        rejected(
+            ManaSpendReference(
+                poolColor = PaymentManaColor.GREEN,
+                floatingSourceId = e108,
+            ),
+            poolSpend = PoolSpend(red = 1),
+        )
+        rejected(
+            ManaSpendReference(
+                poolColor = PaymentManaColor.RED,
+                floatingSourceId = e108,
+            ),
+            poolSpend = PoolSpend(red = 1),
+        )
+        rejected(
+            ManaSpendReference(
+                sourceId = e117,
+                poolColor = PaymentManaColor.GREEN,
+                floatingSourceId = e108,
+            ),
+        )
+        rejected(
+            ManaSpendReference(
+                poolColor = PaymentManaColor.GREEN,
+                floatingSourceId = e108,
+                sourceOutputIndex = 0,
+            ),
+        )
+        driver.state.getEntity(player)?.get<ManaPoolComponent>() shouldBe
+            originalPool.copy(
+                green = 2,
+                manaBySource = mapOf(e108 to 1, e117 to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            )
+    }
+
+    test("a multi-bucket certified pool rejects a source-less legacy pool spend") {
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 2,
+                manaBySource = mapOf(EntityId("e108") to 1, EntityId("e117") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+
+        val rejected = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}"),
+            plan = plan(
+                poolSpend = PoolSpend(green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN)),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        rejected.reason shouldBe "PaymentPlanV1 certified multi-unit pool spend must identify every floating source"
+    }
+
+    test("a floating source bucket cannot be over-consumed across cost units") {
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player mana pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                green = 2,
+                manaBySource = mapOf(EntityId("e108") to 1, EntityId("e117") to 1),
+                manaBySubtype = mapOf(Subtype.FOREST to 2),
+            ),
+        )
+        val json = Json {
+            encodeDefaults = true
+            explicitNulls = false
+        }
+        val submittedPlan = json.decodeFromString<PaymentPlanV1>(
+            """
+            {
+              "sourceActivations": [],
+              "poolSpend": {"green": 2},
+              "spendAllocation": {
+                "costUnits": [
+                  {"symbolIndex": 0, "spends": [
+                    {"poolColor": "GREEN", "floatingSourceId": "e108", "amount": 1}
+                  ]},
+                  {"symbolIndex": 1, "spends": [
+                    {"poolColor": "GREEN", "floatingSourceId": "e108", "amount": 1}
+                  ]}
+                ]
+              }
+            }
+            """.trimIndent(),
+        )
+
+        val rejected = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}{G}"),
+            plan = submittedPlan,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        rejected.reason shouldBe "PaymentPlanV1 spends more floating mana than is available"
     }
 
     test("mana abilities with activation tracking are fail-closed for PaymentPlanV1") {
