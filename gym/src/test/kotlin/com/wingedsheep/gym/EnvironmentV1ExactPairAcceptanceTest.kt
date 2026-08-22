@@ -322,10 +322,22 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 return currentFailure(
                     classification = classification,
                     code = signal.semanticCode,
-                    reason = "Authoritative trusted-episode diagnostic was recorded",
+                    reason = when (signal.semanticCode) {
+                        "PAYMENT_DOMAIN_UNSUPPORTED" ->
+                            "Trusted transition reached a payable legal action without a published PaymentDomainV1"
+                        else -> "Authoritative trusted-episode diagnostic was recorded"
+                    },
                     diagnostic = signal.semanticCode,
-                    publicDomain = "authoritative diagnostic event; public domain not captured",
-                    proposedFollowUp = "Classify and repair the owning production path outside #73",
+                    publicDomain = when (signal.semanticCode) {
+                        "PAYMENT_DOMAIN_UNSUPPORTED" ->
+                            "LegalActionView.paymentDomain=null; post-transition observation was not published"
+                        else -> "authoritative diagnostic event; public domain not captured"
+                    },
+                    proposedFollowUp = when (signal.semanticCode) {
+                        "PAYMENT_DOMAIN_UNSUPPORTED" ->
+                            "Publish a complete PaymentDomainV1 for every reachable payable legal action outside #73"
+                        else -> "Classify and repair the owning production path outside #73"
+                    },
                 )
             }
 
@@ -833,6 +845,14 @@ private class CorpusEvidence {
         result.failure?.let { failure ->
             if (firstFailure == null) firstFailure = failure
             diagnosticCodes[failure.code] = (diagnosticCodes[failure.code] ?: 0) + 1
+            val kind = when (failure.classification) {
+                "A9_UNSUPPORTED_CARD" -> "UNSUPPORTED_CARD"
+                "A9_UNSUPPORTED_DECISION" -> "UNSUPPORTED_DECISION"
+                "A9_UNSUPPORTED_RULE_OR_MECHANIC" -> "UNSUPPORTED_RULE_OR_MECHANIC"
+                "A5_NATIVE_POLICY_FALLBACK" -> "NATIVE_POLICY_FALLBACK"
+                else -> null
+            }
+            kind?.let { diagnosticKinds[it] = (diagnosticKinds[it] ?: 0) + 1 }
         }
     }
 
