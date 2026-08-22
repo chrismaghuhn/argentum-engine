@@ -42,6 +42,7 @@ import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
@@ -144,6 +145,27 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }
         spell {
             target = Targets.Creature
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    val optionalTargetDependentSpell = card("Gym Optional Target Dependent Spell") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Instant"
+        staticAbility {
+            ability = ModifySpellCost(
+                target = SpellCostTarget.SelfCast,
+                modification = CostModification.ReduceGenericBy(
+                    CostReductionSource.FixedIfAnyTargetMatches(
+                        amount = 1,
+                        filter = GameObjectFilter.Creature.withKeyword(Keyword.FLYING),
+                    ),
+                ),
+            )
+        }
+        spell {
+            target = TargetCreature(optional = true)
             effect = Effects.GainLife(1)
         }
     }
@@ -284,6 +306,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(ordinarySpell)
         register(ordinaryTargetedSpell)
         register(targetDependentSpell)
+        register(optionalTargetDependentSpell)
         register(targetIndependentModalSpell)
         register(targetDependentModalSpell)
         register(targetDependentAutoModalSpell)
@@ -480,6 +503,59 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         environment.restore(state, environment.playerIds, environment.stepCount)
         return Triple(environment, player, flyingId to groundId).also {
             check(modalId in environment.state.getZone(player, Zone.HAND))
+        }
+    }
+
+    fun preparedOptionalTargetDependentCast(): Triple<GameEnvironment, EntityId, Pair<EntityId, EntityId>> {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            optionalTargetDependentSpell.name to 1,
+                            flyingTarget.name to 1,
+                            groundTarget.name to 1,
+                            "Island" to 8,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 91181L,
+            ),
+        )
+
+        val player = environment.playerIds.first()
+        var state = environment.state
+        while (state.step != Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+
+        fun moveNamed(name: String, destination: Zone): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            val targetZone = ZoneKey(player, destination)
+            if (from != targetZone) state = state.moveToZone(id, from, targetZone)
+            return id
+        }
+
+        val cardId = moveNamed(optionalTargetDependentSpell.name, Zone.HAND)
+        val flyingId = moveNamed(flyingTarget.name, Zone.BATTLEFIELD)
+        val groundId = moveNamed(groundTarget.name, Zone.BATTLEFIELD)
+        repeat(2) { moveNamed("Island", Zone.BATTLEFIELD) }
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        return Triple(environment, player, flyingId to groundId).also {
+            check(cardId in environment.state.getZone(player, Zone.HAND))
         }
     }
 
@@ -697,6 +773,63 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         )
 
         result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("no-target target-dependent CastSpellMode does not publish an optimistic payment domain") {
+        val (environment, player, _) = preparedTargetDependentModalCast()
+        val modalId = environment.state.getZone(player, Zone.HAND).single { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == targetDependentModalSpell.name
+        }
+        val legalAction = environment.legalActions().first {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == modalId &&
+                (it.action as? CastSpell)?.chosenModes == listOf(1)
+        }
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        legalAction.actionType shouldBe "CastSpellMode"
+        environment.state.getEntity(action.cardId)?.get<CardComponent>()?.name shouldBe
+            targetDependentModalSpell.name
+        action.chosenModes shouldBe listOf(1)
+        action.targets shouldBe emptyList()
+        legalAction.manaCostString shouldBe "{U}"
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.any { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("optional zero-target CastSpell checks the actual empty-target cost branch") {
+        val (environment, player, targets) = preparedOptionalTargetDependentCast()
+        val cardId = environment.state.getZone(player, Zone.HAND).single { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == optionalTargetDependentSpell.name
+        }
+        val legalAction = environment.legalActions().first {
+            it.actionType == "CastSpell" &&
+                (it.action as? CastSpell)?.cardId == cardId
+        }
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        legalAction.minTargets shouldBe 0
+        legalAction.targetCount shouldBe 1
+        legalAction.requiresTargets shouldBe true
+        action.targets shouldBe emptyList()
+        legalAction.validTargets!!.toSet() shouldBe setOf(targets.first, targets.second)
+        legalAction.manaCostString shouldBe "{U}"
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.any { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
         result.observation.legalActions.single().paymentDomain shouldBe null
     }
 

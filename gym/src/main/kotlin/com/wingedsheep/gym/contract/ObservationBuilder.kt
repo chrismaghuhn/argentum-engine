@@ -616,6 +616,16 @@ class ObservationBuilder(
                     legalAction.targetCount,
                     legalAction.targetRequirements.orEmpty().sumOf { it.maxTargets },
                 )
+                val targetRequirements = legalAction.targetRequirements
+                val minimumTargetCount = if (targetRequirements.isNullOrEmpty()) {
+                    if (!legalAction.requiresTargets && targetCandidates.isEmpty()) {
+                        0
+                    } else {
+                        legalAction.minTargets
+                    }
+                } else {
+                    targetRequirements.sumOf { it.minTargets }
+                }
                 if (costCalculator.hasTargetDependentCastCost(
                         state = state,
                         cardDef = cardDef,
@@ -623,6 +633,7 @@ class ObservationBuilder(
                         advertisedCost = parsedCost,
                         legalTargets = targetCandidates,
                         targetCount = targetCount,
+                        minimumTargetCount = minimumTargetCount,
                         fromZone = cardZone(state, action.cardId),
                         declaredCostSlot = action.declaredCostSlot,
                     )
