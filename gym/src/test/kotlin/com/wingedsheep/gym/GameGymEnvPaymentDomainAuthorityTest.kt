@@ -15,14 +15,18 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
@@ -35,10 +39,15 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifySpellCost
 import com.wingedsheep.sdk.scripting.SpellCostTarget
 import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.effects.Mode
+import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.types.shouldBeInstanceOf
 
 /** Focused coverage for action-authoritative PaymentDomainV1 inputs. */
 class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
@@ -140,6 +149,139 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }
     }
 
+    val optionalTargetDependentSpell = card("Gym Optional Target Dependent Spell") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Instant"
+        staticAbility {
+            ability = ModifySpellCost(
+                target = SpellCostTarget.SelfCast,
+                modification = CostModification.ReduceGenericBy(
+                    CostReductionSource.FixedIfAnyTargetMatches(
+                        amount = 1,
+                        filter = GameObjectFilter.Creature.withKeyword(Keyword.FLYING),
+                    ),
+                ),
+            )
+        }
+        spell {
+            target = TargetCreature(optional = true)
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    val targetIndependentModalSpell = card("Gym Target Independent Modal Spell") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Instant"
+        spell {
+            modal(chooseCount = 1) {
+                mode("Target creature gains 1 life") {
+                    target("target creature", Targets.Creature)
+                    effect = Effects.GainLife(1)
+                }
+                mode("Gain 1 life") {
+                    effect = Effects.GainLife(1)
+                }
+            }
+        }
+    }
+
+    val targetDependentModalSpell = card("Gym Target Dependent Modal Spell") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Instant"
+        staticAbility {
+            ability = ModifySpellCost(
+                target = SpellCostTarget.SelfCast,
+                modification = CostModification.ReduceGenericBy(
+                    CostReductionSource.FixedIfAnyTargetMatches(
+                        amount = 1,
+                        filter = GameObjectFilter.Creature.withKeyword(Keyword.FLYING),
+                    ),
+                ),
+            )
+        }
+        spell {
+            modal(chooseCount = 1) {
+                mode("Target creature gains 1 life") {
+                    target("target creature", Targets.Creature)
+                    effect = Effects.GainLife(1)
+                }
+                mode("Gain 1 life") {
+                    effect = Effects.GainLife(1)
+                }
+            }
+        }
+    }
+
+    val targetDependentAutoModalSpell = card("Gym Target Dependent Auto Modal Spell") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Instant"
+        staticAbility {
+            ability = ModifySpellCost(
+                target = SpellCostTarget.SelfCast,
+                modification = CostModification.IncreaseGenericIfAnyTargetMatches(
+                    amount = 1,
+                    filter = GameObjectFilter.Any,
+                ),
+            )
+        }
+        spell {
+            modal(chooseCount = 1) {
+                mode("Target opponent gains 1 life") {
+                    target("target opponent", Targets.Opponent)
+                    effect = Effects.GainLife(1)
+                }
+                mode("Gain 1 life") {
+                    effect = Effects.GainLife(1)
+                }
+            }
+        }
+    }
+
+    val modeExtraManaSpell = CardDefinition(
+        name = "Gym Mode Extra Mana Spell",
+        manaCost = com.wingedsheep.sdk.core.ManaCost.parse("{U}"),
+        typeLine = TypeLine.instant(),
+        oracleText = "Choose one — Pay {1}: Gain 1 life.",
+        script = CardScript.spell(
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode.noTarget(Effects.GainLife(1), "Pay {1}: Gain 1 life")
+                        .copy(additionalManaCost = "{1}"),
+                ),
+                chooseCount = 1,
+                minChooseCount = 1,
+            ),
+        ),
+    )
+
+    val modeExtraCostSpell = CardDefinition(
+        name = "Gym Mode Extra Cost Spell",
+        manaCost = com.wingedsheep.sdk.core.ManaCost.parse("{U}"),
+        typeLine = TypeLine.instant(),
+        oracleText = "Choose one — Sacrifice a creature: Gain 1 life.",
+        script = CardScript.spell(
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode.noTarget(Effects.GainLife(1), "Sacrifice a creature: Gain 1 life")
+                        .copy(
+                            additionalCosts = listOf(
+                                Costs.additional.SacrificePermanent(
+                                    filter = GameObjectFilter.Creature,
+                                    count = 1,
+                                ),
+                            ),
+                        ),
+                ),
+                chooseCount = 1,
+                minChooseCount = 1,
+            ),
+        ),
+    )
+
     val flyingTarget = card("Gym Flying Target") {
         typeLine = "Creature — Bird"
         power = 1
@@ -164,8 +306,15 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(ordinarySpell)
         register(ordinaryTargetedSpell)
         register(targetDependentSpell)
+        register(optionalTargetDependentSpell)
+        register(targetIndependentModalSpell)
+        register(targetDependentModalSpell)
+        register(targetDependentAutoModalSpell)
+        register(modeExtraManaSpell)
+        register(modeExtraCostSpell)
         register(flyingTarget)
         register(groundTarget)
+        register(BorosCharm)
     }
 
     fun prepared(cardName: String): Triple<GameEnvironment, EntityId, EntityId> {
@@ -304,6 +453,213 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         return Triple(environment, player, flyingId to groundId)
     }
 
+    fun preparedTargetDependentModalCast(): Triple<GameEnvironment, EntityId, Pair<EntityId, EntityId>> {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            targetDependentModalSpell.name to 1,
+                            flyingTarget.name to 1,
+                            groundTarget.name to 1,
+                            "Island" to 8,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 91177L,
+            ),
+        )
+
+        val player = environment.playerIds.first()
+        var state = environment.state
+        while (state.step != Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+
+        fun moveNamed(name: String, destination: Zone): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            val targetZone = ZoneKey(player, destination)
+            if (from != targetZone) state = state.moveToZone(id, from, targetZone)
+            return id
+        }
+
+        val modalId = moveNamed(targetDependentModalSpell.name, Zone.HAND)
+        val flyingId = moveNamed(flyingTarget.name, Zone.BATTLEFIELD)
+        val groundId = moveNamed(groundTarget.name, Zone.BATTLEFIELD)
+        repeat(2) { moveNamed("Island", Zone.BATTLEFIELD) }
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        return Triple(environment, player, flyingId to groundId).also {
+            check(modalId in environment.state.getZone(player, Zone.HAND))
+        }
+    }
+
+    fun preparedOptionalTargetDependentCast(): Triple<GameEnvironment, EntityId, Pair<EntityId, EntityId>> {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            optionalTargetDependentSpell.name to 1,
+                            flyingTarget.name to 1,
+                            groundTarget.name to 1,
+                            "Island" to 8,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 91181L,
+            ),
+        )
+
+        val player = environment.playerIds.first()
+        var state = environment.state
+        while (state.step != Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+
+        fun moveNamed(name: String, destination: Zone): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            val targetZone = ZoneKey(player, destination)
+            if (from != targetZone) state = state.moveToZone(id, from, targetZone)
+            return id
+        }
+
+        val cardId = moveNamed(optionalTargetDependentSpell.name, Zone.HAND)
+        val flyingId = moveNamed(flyingTarget.name, Zone.BATTLEFIELD)
+        val groundId = moveNamed(groundTarget.name, Zone.BATTLEFIELD)
+        repeat(2) { moveNamed("Island", Zone.BATTLEFIELD) }
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        return Triple(environment, player, flyingId to groundId).also {
+            check(cardId in environment.state.getZone(player, Zone.HAND))
+        }
+    }
+
+    fun preparedBorosCharmCast(): Triple<GameEnvironment, EntityId, EntityId> {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            BorosCharm.name to 1,
+                            "Mountain" to 1,
+                            "Plains" to 1,
+                            "Island" to 8,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 91176L,
+            ),
+        )
+
+        val player = environment.playerIds.first()
+        var state = environment.state
+        while (state.step != Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+
+        fun moveNamed(name: String, destination: Zone): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            val targetZone = ZoneKey(player, destination)
+            if (from != targetZone) state = state.moveToZone(id, from, targetZone)
+            return id
+        }
+
+        val cardId = moveNamed(BorosCharm.name, Zone.HAND)
+        moveNamed("Mountain", Zone.BATTLEFIELD)
+        moveNamed("Plains", Zone.BATTLEFIELD)
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        return Triple(environment, player, cardId)
+    }
+
+    fun preparedModalCard(cardName: String, seed: Long): Triple<GameEnvironment, EntityId, EntityId> {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            cardName to 1,
+                            "Mountain" to 1,
+                            "Plains" to 1,
+                            "Island" to 8,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = seed,
+            ),
+        )
+
+        val player = environment.playerIds.first()
+        var state = environment.state
+        while (state.step != Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+
+        fun moveNamed(name: String, destination: Zone): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            val targetZone = ZoneKey(player, destination)
+            if (from != targetZone) state = state.moveToZone(id, from, targetZone)
+            return id
+        }
+
+        val cardId = moveNamed(cardName, Zone.HAND)
+        moveNamed("Mountain", Zone.BATTLEFIELD)
+        moveNamed("Plains", Zone.BATTLEFIELD)
+        repeat(2) { moveNamed("Island", Zone.BATTLEFIELD) }
+        environment.restore(state, environment.playerIds, environment.stepCount)
+        return Triple(environment, player, cardId)
+    }
+
     test("PaymentDomainV1 excludes the ability source when the action also pays its tap cost") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val action = ActivateAbility(
@@ -352,6 +708,176 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
 
         result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
         result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("Boros Charm choose-one CastSpellMode publishes a fixed PaymentDomainV1") {
+        val (environment, player, cardId) = preparedBorosCharmCast()
+        val legalAction = environment.legalActions().first {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == cardId
+        }
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        action.chosenModes shouldHaveSize 1
+        legalAction.manaCostString shouldBe "{R}{W}"
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldNotBe null
+    }
+
+    test("targeted fixed-cost CastSpellMode remains supported when its cost is target-independent") {
+        val (environment, player, cardId) = preparedBorosCharmCast()
+        val legalAction = environment.legalActions().first {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == cardId &&
+                (it.action as? CastSpell)?.chosenModes == listOf(0)
+        }
+
+        legalAction.requiresTargets shouldBe true
+        legalAction.validTargets shouldNotBe null
+        legalAction.manaCostString shouldBe "{R}{W}"
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldNotBe null
+        view.paymentDomain!!.requiredCost shouldBe "{R}{W}"
+    }
+
+    test("target-dependent CastSpellMode does not publish an optimistic payment domain") {
+        val (environment, player, targets) = preparedTargetDependentModalCast()
+        val modalId = environment.state.getZone(player, Zone.HAND).single { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == targetDependentModalSpell.name
+        }
+        val action = environment.legalActions().first {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == modalId &&
+                (it.action as? CastSpell)?.chosenModes == listOf(0)
+        }
+
+        action.manaCostString shouldBe "{U}"
+        action.validTargets!!.toSet() shouldBe setOf(targets.first, targets.second)
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(action),
+        )
+
+        result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("no-target target-dependent CastSpellMode does not publish an optimistic payment domain") {
+        val (environment, player, _) = preparedTargetDependentModalCast()
+        val modalId = environment.state.getZone(player, Zone.HAND).single { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == targetDependentModalSpell.name
+        }
+        val legalAction = environment.legalActions().first {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == modalId &&
+                (it.action as? CastSpell)?.chosenModes == listOf(1)
+        }
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        legalAction.actionType shouldBe "CastSpellMode"
+        environment.state.getEntity(action.cardId)?.get<CardComponent>()?.name shouldBe
+            targetDependentModalSpell.name
+        action.chosenModes shouldBe listOf(1)
+        action.targets shouldBe emptyList()
+        legalAction.manaCostString shouldBe "{U}"
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.any { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("optional zero-target CastSpell checks the actual empty-target cost branch") {
+        val (environment, player, targets) = preparedOptionalTargetDependentCast()
+        val cardId = environment.state.getZone(player, Zone.HAND).single { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == optionalTargetDependentSpell.name
+        }
+        val legalAction = environment.legalActions().first {
+            it.actionType == "CastSpell" &&
+                (it.action as? CastSpell)?.cardId == cardId
+        }
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        legalAction.minTargets shouldBe 0
+        legalAction.targetCount shouldBe 1
+        legalAction.requiresTargets shouldBe true
+        action.targets shouldBe emptyList()
+        legalAction.validTargets!!.toSet() shouldBe setOf(targets.first, targets.second)
+        legalAction.manaCostString shouldBe "{U}"
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.any { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("auto-selected CastSpellMode targets participate in target-cost finality") {
+        val (environment, player, cardId) = preparedModalCard(targetDependentAutoModalSpell.name, 91180L)
+        val legalAction = environment.legalActions().firstOrNull {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == cardId &&
+                (it.action as? CastSpell)?.chosenModes == listOf(0)
+        } ?: error("Expected auto-selected modal action: ${environment.legalActions()}")
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        legalAction.validTargets shouldBe null
+        action.targets shouldHaveSize 1
+        action.modeTargetsOrdered shouldBe listOf(action.targets)
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("mode-specific additional mana and additional costs remain fail-closed") {
+        fun assertUnsupported(cardName: String, manaCost: String, seed: Long) {
+            val (environment, player, cardId) = preparedModalCard(cardName, seed)
+            val legalAction = LegalAction(
+                action = CastSpell(player, cardId, chosenModes = listOf(0)),
+                actionType = "CastSpellMode",
+                description = "Cast the unsupported modal shape",
+                manaCostString = manaCost,
+            )
+
+            val result = ObservationBuilder(cardRegistry = registry()).build(
+                environment.state,
+                player,
+                listOf(legalAction),
+            )
+
+            result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+            result.observation.legalActions.single().paymentDomain shouldBe null
+        }
+
+        assertUnsupported(modeExtraManaSpell.name, "{1}{U}", 91178L)
+        assertUnsupported(modeExtraCostSpell.name, "{U}", 91179L)
     }
 
     test("inert alternative-payment flags do not hide a fixed CastSpell cost") {

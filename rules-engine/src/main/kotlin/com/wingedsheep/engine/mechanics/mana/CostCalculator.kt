@@ -175,9 +175,10 @@ class CostCalculator(
      * [CastSpellEnumerator] deliberately uses [calculateMinPossibleCost] before targets are
      * chosen. That is correct for affordability, but the result is not authoritative enough for
      * PaymentPlanV1 when different legal targets produce different final costs. Compare every
-     * legal single-target choice against the advertised cost; multi-target actions are rejected
-     * conservatively whenever an applicable target-dependent modifier is present because their
-     * target combinations are not represented by one flat target list.
+     * legal single-target choice against the advertised cost. When zero targets are legal, also
+     * compare the empty-target final cost; multi-target actions are rejected conservatively
+     * whenever an applicable target-dependent modifier is present because their target
+     * combinations are not represented by one flat target list.
      */
     fun hasTargetDependentCastCost(
         state: GameState,
@@ -186,10 +187,24 @@ class CostCalculator(
         advertisedCost: ManaCost,
         legalTargets: List<EntityId>,
         targetCount: Int = 1,
+        minimumTargetCount: Int = 1,
         fromZone: Zone? = null,
         declaredCostSlot: ChoiceSlot? = null,
     ): Boolean {
         val distinctTargets = legalTargets.distinct()
+
+        if (minimumTargetCount == 0) {
+            val emptyTargetCost = calculateEffectiveCost(
+                state = state,
+                cardDef = cardDef,
+                casterId = casterId,
+                chosenTargets = emptyList(),
+                fromZone = fromZone,
+                declaredCostSlot = declaredCostSlot,
+            )
+            if (emptyTargetCost != advertisedCost) return true
+        }
+
         if (distinctTargets.isEmpty()) return false
 
         val hasApplicableTargetDependentModifier =
