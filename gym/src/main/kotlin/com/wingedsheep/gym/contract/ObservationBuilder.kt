@@ -606,8 +606,12 @@ class ObservationBuilder(
                 if (parsedCost.symbols.any {
                         it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
                     }) return null
+                val boundTargetCandidates = action.targets
+                    .plus(action.modeTargetsOrdered.flatten())
+                    .map(::entityIdForChosenTarget)
                 val targetCandidates = legalAction.validTargets.orEmpty() +
-                    legalAction.targetRequirements.orEmpty().flatMap { it.validTargets }
+                    legalAction.targetRequirements.orEmpty().flatMap { it.validTargets } +
+                    boundTargetCandidates
                 val targetCount = maxOf(
                     legalAction.targetCount,
                     legalAction.targetRequirements.orEmpty().sumOf { it.maxTargets },
@@ -732,6 +736,13 @@ class ObservationBuilder(
 
     private fun cardZone(state: GameState, cardId: EntityId): Zone? =
         state.zones.entries.firstOrNull { (_, ids) -> cardId in ids }?.key?.zoneType
+
+    private fun entityIdForChosenTarget(target: ChosenTarget): EntityId = when (target) {
+        is ChosenTarget.Player -> target.playerId
+        is ChosenTarget.Permanent -> target.entityId
+        is ChosenTarget.Card -> target.cardId
+        is ChosenTarget.Spell -> target.spellEntityId
+    }
 
     private fun containsSecondaryManaCost(cost: AdditionalCost): Boolean = when (cost) {
         is AdditionalCost.Atom -> cost.atom is CostAtom.Mana

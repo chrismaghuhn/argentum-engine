@@ -193,6 +193,32 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }
     }
 
+    val targetDependentAutoModalSpell = card("Gym Target Dependent Auto Modal Spell") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Instant"
+        staticAbility {
+            ability = ModifySpellCost(
+                target = SpellCostTarget.SelfCast,
+                modification = CostModification.IncreaseGenericIfAnyTargetMatches(
+                    amount = 1,
+                    filter = GameObjectFilter.Any,
+                ),
+            )
+        }
+        spell {
+            modal(chooseCount = 1) {
+                mode("Target opponent gains 1 life") {
+                    target("target opponent", Targets.Opponent)
+                    effect = Effects.GainLife(1)
+                }
+                mode("Gain 1 life") {
+                    effect = Effects.GainLife(1)
+                }
+            }
+        }
+    }
+
     val modeExtraManaSpell = CardDefinition(
         name = "Gym Mode Extra Mana Spell",
         manaCost = com.wingedsheep.sdk.core.ManaCost.parse("{U}"),
@@ -260,6 +286,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(targetDependentSpell)
         register(targetIndependentModalSpell)
         register(targetDependentModalSpell)
+        register(targetDependentAutoModalSpell)
         register(modeExtraManaSpell)
         register(modeExtraCostSpell)
         register(flyingTarget)
@@ -552,6 +579,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         val cardId = moveNamed(cardName, Zone.HAND)
         moveNamed("Mountain", Zone.BATTLEFIELD)
         moveNamed("Plains", Zone.BATTLEFIELD)
+        repeat(2) { moveNamed("Island", Zone.BATTLEFIELD) }
         environment.restore(state, environment.playerIds, environment.stepCount)
         return Triple(environment, player, cardId)
     }
@@ -666,6 +694,29 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             environment.state,
             player,
             listOf(action),
+        )
+
+        result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("auto-selected CastSpellMode targets participate in target-cost finality") {
+        val (environment, player, cardId) = preparedModalCard(targetDependentAutoModalSpell.name, 91180L)
+        val legalAction = environment.legalActions().firstOrNull {
+            it.actionType == "CastSpellMode" &&
+                (it.action as? CastSpell)?.cardId == cardId &&
+                (it.action as? CastSpell)?.chosenModes == listOf(0)
+        } ?: error("Expected auto-selected modal action: ${environment.legalActions()}")
+        val action = legalAction.action.shouldBeInstanceOf<CastSpell>()
+
+        legalAction.validTargets shouldBe null
+        action.targets shouldHaveSize 1
+        action.modeTargetsOrdered shouldBe listOf(action.targets)
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
         )
 
         result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
