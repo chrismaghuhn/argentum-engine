@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.mechanics.mana
 
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
@@ -696,6 +697,49 @@ data class ManaPool(
         }.toMap()
         return copy(manaBySubtype = newSubtype, manaBySource = newSource) to
             SpentManaProvenance(consumedSubtypes, consumedSources)
+    }
+
+    /**
+     * Consume the one ordinary floating unit certified by [candidate]. This operation is exact;
+     * unlike [consumeProvenance], it never chooses a provenance association from aggregate maps.
+     */
+    fun consumeCertifiedSingleUnit(
+        candidate: CertifiedFloatingManaUnit,
+    ): Pair<ManaPool, SpentManaProvenance>? {
+        if (restrictedMana.isNotEmpty() || total != 1 || manaBySource != mapOf(candidate.sourceId to 1)) {
+            return null
+        }
+        if (manaBySubtype.isEmpty() || manaBySubtype.values.any { it != 1 } ||
+            manaBySubtype.keys != candidate.sourceSubtypes
+        ) {
+            return null
+        }
+        val candidateAmount = when (candidate.poolColor) {
+            PaymentManaColor.WHITE -> white
+            PaymentManaColor.BLUE -> blue
+            PaymentManaColor.BLACK -> black
+            PaymentManaColor.RED -> red
+            PaymentManaColor.GREEN -> green
+            PaymentManaColor.COLORLESS -> colorless
+        }
+        if (candidateAmount != 1) return null
+
+        val afterSpend = when (candidate.poolColor) {
+            PaymentManaColor.WHITE -> spend(Color.WHITE)
+            PaymentManaColor.BLUE -> spend(Color.BLUE)
+            PaymentManaColor.BLACK -> spend(Color.BLACK)
+            PaymentManaColor.RED -> spend(Color.RED)
+            PaymentManaColor.GREEN -> spend(Color.GREEN)
+            PaymentManaColor.COLORLESS -> spendColorless()
+        } ?: return null
+
+        return afterSpend.copy(
+            manaBySource = emptyMap(),
+            manaBySubtype = emptyMap(),
+        ) to SpentManaProvenance(
+            bySubtype = candidate.sourceSubtypes.sortedBy { it.value }.associateWith { 1 },
+            sourceIds = setOf(candidate.sourceId),
+        )
     }
 
     /**

@@ -139,7 +139,7 @@ class ObservationBuilder(
         CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
     }
     private val paymentDomainBuilder by lazy {
-        PaymentDomainBuilder(ManaSolver(cardRegistry))
+        PaymentDomainBuilder(ManaSolver(cardRegistry), visibility)
     }
     private val costCalculator by lazy { CostCalculator(cardRegistry) }
     private val manaSolver by lazy { ManaSolver(cardRegistry) }
