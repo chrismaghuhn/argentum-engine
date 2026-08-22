@@ -774,7 +774,7 @@ private data class AcceptanceFailure(
         "ACTOR: ${actor ?: "null"}",
         "STATE_DIGEST: ${stateDigest ?: "null"}",
         "ACTION_KIND: $actionKind",
-        "DECISION_FAMILY: $decisionFamily",
+        "LAST_DECISION_FAMILY: $decisionFamily",
         "DIAGNOSTIC: $diagnostic (code=$code)",
         "PUBLIC_DOMAIN: $publicDomain",
         "ROOT_CAUSE: $reason",
