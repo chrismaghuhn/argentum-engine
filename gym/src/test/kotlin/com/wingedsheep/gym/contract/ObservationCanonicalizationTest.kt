@@ -9,9 +9,12 @@ import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.string.shouldContain
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -42,6 +45,60 @@ class ObservationCanonicalizationTest : FunSpec({
     fun observation(env: GameEnvironment): TrainingObservation =
         ObservationBuilder(cardRegistry = registry()).build(env.state, env.playerIds.first(), env.legalActions())
             .observation as TrainingObservation
+
+    fun targetRequirement(
+        index: Int,
+        description: String = "requirement-$index",
+        minTargets: Int = 1,
+        maxTargets: Int = 1,
+        candidates: List<EntityId> = listOf(EntityId("candidate-$index")),
+        targetZone: String? = "BATTLEFIELD",
+        mustDifferFromEarlier: Boolean = false,
+        sameController: Boolean = false,
+        sameOwner: Boolean = false,
+        sameCreatureType: Boolean = false,
+        sameCardType: Boolean = false,
+        totalManaValueAtMost: Int? = null,
+        differentNames: Boolean = false,
+        xConstrainsManaValue: Boolean = false,
+        xConstrainsManaValueExactly: Boolean = false,
+        xConstrainsPower: Boolean = false,
+        xConstrainsCount: Boolean = false,
+    ) = TargetRequirementDomain(
+        index = index,
+        description = description,
+        minTargets = minTargets,
+        maxTargets = maxTargets,
+        candidates = candidates,
+        targetZone = targetZone,
+        mustDifferFromEarlier = mustDifferFromEarlier,
+        sameController = sameController,
+        sameOwner = sameOwner,
+        sameCreatureType = sameCreatureType,
+        sameCardType = sameCardType,
+        totalManaValueAtMost = totalManaValueAtMost,
+        differentNames = differentNames,
+        xConstrainsManaValue = xConstrainsManaValue,
+        xConstrainsManaValueExactly = xConstrainsManaValueExactly,
+        xConstrainsPower = xConstrainsPower,
+        xConstrainsCount = xConstrainsCount,
+    )
+
+    fun withActionTargetDomain(
+        base: TrainingObservation,
+        domain: ActionTargetDomainV1?,
+    ): TrainingObservation = base.copy(
+        legalActions = listOf(
+            base.legalActions.first().copy(
+                actionId = 9000,
+                description = "action target presentation",
+                targetEntityIds = emptyList(),
+                targetDomain = domain,
+                minTargets = 0,
+                maxTargets = 0,
+            )
+        )
+    )
 
     test("wire JSON retains transport IDs while semantic JSON excludes them") {
         val base = observation(environment())
@@ -76,6 +133,121 @@ class ObservationCanonicalizationTest : FunSpec({
         ObservationCanonicalizer.semanticJson(base) shouldNotBe
             ObservationCanonicalizer.semanticJson(structuredVariant)
         StateDigest.compute(base) shouldNotBe StateDigest.compute(structuredVariant)
+    }
+
+    test("action target domains are present on the wire and candidates canonicalize by EntityId") {
+        val base = observation(environment())
+        val first = withActionTargetDomain(
+            base,
+            ActionTargetDomainV1(
+                requirements = listOf(
+                    targetRequirement(
+                        index = 0,
+                        candidates = listOf(EntityId("zeta"), EntityId("alpha")),
+                    )
+                )
+            )
+        )
+        val equivalentIterationOrder = withActionTargetDomain(
+            base,
+            ActionTargetDomainV1(
+                requirements = listOf(
+                    targetRequirement(
+                        index = 0,
+                        candidates = listOf(EntityId("alpha"), EntityId("zeta")),
+                    )
+                )
+            )
+        )
+
+        ObservationCanonicalizer.wireJson(first) shouldBe
+            ObservationCanonicalizer.wireJson(equivalentIterationOrder)
+        ObservationCanonicalizer.semanticJson(first) shouldBe
+            ObservationCanonicalizer.semanticJson(equivalentIterationOrder)
+        StateDigest.compute(first) shouldBe StateDigest.compute(equivalentIterationOrder)
+
+        val wire = ObservationCanonicalizer.wireJson(first)
+        wire shouldContain "\"targetDomain\""
+        wire shouldContain "\"composition\":\"FIXED\""
+        wire shouldContain "\"version\":1"
+    }
+
+    test("action target semantic identity excludes descriptions but binds every legal-domain field") {
+        val base = observation(environment())
+        val requirement = targetRequirement(index = 0)
+        val domain = ActionTargetDomainV1(requirements = listOf(requirement))
+        val withDomain = withActionTargetDomain(base, domain)
+        val withPresentationVariant = withActionTargetDomain(
+            base,
+            ActionTargetDomainV1(
+                requirements = listOf(requirement.copy(description = "different presentation text"))
+            )
+        )
+
+        ObservationCanonicalizer.wireJson(withDomain) shouldNotBe
+            ObservationCanonicalizer.wireJson(withPresentationVariant)
+        ObservationCanonicalizer.semanticJson(withDomain) shouldBe
+            ObservationCanonicalizer.semanticJson(withPresentationVariant)
+        StateDigest.compute(withDomain) shouldBe StateDigest.compute(withPresentationVariant)
+
+        val baselineDigest = StateDigest.compute(withDomain)
+        val variants = listOf(
+            requirement.copy(minTargets = 0),
+            requirement.copy(maxTargets = 2),
+            requirement.copy(candidates = listOf(EntityId("different-candidate"))),
+            requirement.copy(targetZone = "STACK"),
+            requirement.copy(mustDifferFromEarlier = true),
+            requirement.copy(sameController = true),
+            requirement.copy(sameOwner = true),
+            requirement.copy(sameCreatureType = true),
+            requirement.copy(sameCardType = true),
+            requirement.copy(totalManaValueAtMost = 4),
+            requirement.copy(differentNames = true),
+            requirement.copy(xConstrainsManaValue = true),
+            requirement.copy(xConstrainsManaValueExactly = true),
+            requirement.copy(xConstrainsPower = true),
+            requirement.copy(xConstrainsCount = true),
+        )
+
+        variants.forEach { variant ->
+            StateDigest.compute(
+                withActionTargetDomain(base, ActionTargetDomainV1(requirements = listOf(variant)))
+            ) shouldNotBe baselineDigest
+        }
+
+        val reorderedRequirements = withActionTargetDomain(
+            base,
+            ActionTargetDomainV1(
+                requirements = listOf(
+                    requirement.copy(index = 0),
+                    requirement.copy(index = 1, candidates = listOf(EntityId("second"))),
+                )
+            )
+        )
+        val reversedRequirements = reorderedRequirements.copy(
+            legalActions = reorderedRequirements.legalActions.map { action ->
+                action.copy(
+                    targetDomain = ActionTargetDomainV1(
+                        requirements = action.targetDomain!!.requirements.reversed()
+                    )
+                )
+            }
+        )
+        StateDigest.compute(reorderedRequirements) shouldNotBe StateDigest.compute(reversedRequirements)
+
+        val missingDomain = withActionTargetDomain(base, null)
+        StateDigest.compute(withDomain) shouldNotBe StateDigest.compute(missingDomain)
+    }
+
+    test("unknown future action target versions fail before canonicalization") {
+        val json = Json { encodeDefaults = true; explicitNulls = false }
+        val encoded = json.encodeToString(ActionTargetDomainV1.serializer(), ActionTargetDomainV1())
+        val unknownVersion = encoded.replace("\"version\":1", "\"version\":99")
+        unknownVersion shouldNotBe encoded
+
+        shouldThrow<IllegalArgumentException> {
+            json.decodeFromString<ActionTargetDomainV1>(unknownVersion)
+        }
     }
 
     test("set and map insertion order does not change canonical wire JSON") {

@@ -35,6 +35,7 @@ import io.kotest.matchers.collections.shouldNotBeEmpty
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.string.shouldContain
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -170,7 +171,8 @@ class EnvControllerTest : FunSpec() {
             val response = get("/schema-hash")
             response.statusCode() shouldBe 200
             val parsed = json.decodeFromString<SchemaHashResponse>(response.body())
-            parsed.schemaHash.shouldNotBe("")
+            parsed.schemaHash shouldBe "argentum-gym-contract@v1.16-action-target-domain"
+            parsed.schemaHash shouldBe SchemaHash.CURRENT
         }
 
         test("GET /health returns ok") {
@@ -711,6 +713,11 @@ class EnvControllerTest : FunSpec() {
             httpObservation shouldBe directObservation
             httpObservation.schemaHash shouldBe SchemaHash.CURRENT
             httpObservation.stateDigest shouldBe directObservation.stateDigest
+            httpObservation.legalActions.forEach { action ->
+                val targetDomain = action.targetDomain.shouldNotBeNull()
+                targetDomain.version shouldBe 1
+                targetDomain.composition.name shouldBe "FIXED"
+            }
 
             val opponentId = httpObservation.players.first { !it.isPerspective }.id
             val opponentHand = httpObservation.zones.first {
