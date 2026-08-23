@@ -9670,7 +9670,7 @@ change is needed to author a Spree card — it is a plain `ModalEffect` with per
 `additionalManaCost` (see Trash the Town).
 
 For the public Gym contract, an already-bound choose-one `CastSpellMode` is now eligible for the
-existing `PaymentDomainV1` / `PaymentPlanV1` path when its final cost is ordinary fixed colored,
+existing `PaymentDomainV2` / `PaymentPlanV1` path when its final cost is ordinary fixed colored,
 colorless, or generic mana. The submitted plan still determines every source activation,
 production choice, pool spend, and cost allocation; the engine does not fall back to AutoPay or
 another hidden source-selection policy. Choose-N/dynamic modal selections, X or alternative

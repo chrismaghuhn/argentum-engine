@@ -1028,12 +1028,19 @@ data class ManaPool(
 
 The authoritative `ManaPoolComponent` also retains aggregate `manaBySource` and
 `manaBySubtype` counters for the floating pool. Those maps do not identify a source/subtype for
-each colored unit. Consequently, the public `PaymentDomainV1` exposes provenance only through a
-Rules-owned certified-single-unit classification: one unrestricted unit, one recorded source,
-and subtype tags that are necessarily attributable to that unit. The existing aggregate
+each colored unit in general. A narrow Rules-owned classifier can nevertheless certify a
+homogeneous aggregate when one unrestricted color contains the entire positive pool, positive
+source counters partition that total, every recorded subtype counter equals that total, and no
+restricted mana participates. The public `PaymentDomainV2` then publishes the common color and
+stored subtype set once plus a deterministic `sourceBuckets` partition. This proves that every unit
+has the same stored subtype set while preserving the controller's exact source-bucket choice.
+`ManaSpendReference.floatingSourceId` carries that choice; `sourceId` remains reserved for a newly
+activated source output. `PoolSpend` stays an aggregate checksum, and the validator aggregates and
+checks every bucket reference before exact materialization. The existing aggregate
 `consumeProvenance()` operation remains a legacy greedy adapter and is not used to choose
-provenance across the external explicit-payment boundary. Tracked states that are not certified
-remain fail-closed until the authoritative state model can represent the missing association.
+provenance across the external explicit-payment boundary. Heterogeneous or otherwise uncertified
+tracked states remain fail-closed until authoritative per-unit state can represent the missing
+association.
 
 **Cost reductions and increases.** Before payment, the `CostCalculator` applies all active
 modifiers — static abilities that reduce costs (Goblin Electromancer's "instant and sorcery spells

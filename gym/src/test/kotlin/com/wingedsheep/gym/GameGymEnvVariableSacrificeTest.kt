@@ -136,7 +136,7 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
 
     fun payload(view: LegalActionView, selected: List<EntityId>) = buildJsonObject {
         view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV1 for ${view.description}")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV2 for ${view.description}")
         val source = domain.sourceActivations.firstOrNull()
             ?: error("Expected the Mountain payment source")
         val costUnit = domain.costUnits.single()
