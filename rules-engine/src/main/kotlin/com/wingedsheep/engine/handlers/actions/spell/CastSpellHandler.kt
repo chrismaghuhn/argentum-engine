@@ -4852,7 +4852,7 @@ class CastSpellHandler(
 
             val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
                 val snapshot = modeSnapshots[modeIndex][index]
-                val maxTargets = snapshot.resolvedMaxTargets ?: if (
+                val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
                     req.unlimited && !req.hasUnresolvedDynamicMaxCount()
                 ) {
                     legalTargetsMap[index]?.size
@@ -4868,7 +4868,8 @@ class CastSpellHandler(
                             requirement = req,
                             semanticSource = snapshot.semanticSource,
                             minTargets = req.effectiveMinCount,
-                            maxTargets = maxTargets
+                            maxTargets = maxTargets,
+                            resolvedMaxTargets = snapshot.resolvedMaxTargets,
                         )
                 }
                 result.orReturnUnsupported { return it.toExecutionError(state) }

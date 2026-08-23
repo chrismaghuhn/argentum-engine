@@ -42,11 +42,11 @@ internal data class TargetRequirementSemantics(
     companion object {
         fun inspect(
             requirement: TargetRequirement,
-            resolvedTotalManaValueAtMost: Int? = null,
+            resolvedTotalManaValueAtMost: ResolvedTotalManaValueAtMost? = null,
         ): TargetRequirementSemanticsResult {
             val targetObject = requirement.targetObjectOrNull()
             val totalManaValueAtMost = targetObject?.totalManaValueAtMost?.let { dynamicAmount ->
-                resolvedTotalManaValueAtMost ?: when (dynamicAmount) {
+                resolvedTotalManaValueAtMost?.value ?: when (dynamicAmount) {
                     is DynamicAmount.Fixed -> dynamicAmount.amount
                     else -> return TargetRequirementSemanticsResult.Unsupported(
                         TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE

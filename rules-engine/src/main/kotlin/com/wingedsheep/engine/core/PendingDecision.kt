@@ -172,12 +172,15 @@ data class TargetRequirementInfo(
             description: String = requirement.description,
             minTargets: Int = requirement.effectiveMinCount,
             /**
-             * An explicit maximum is permitted only when the producer has already resolved a
-             * dynamic cap or has an authoritative finite candidate bound (for `unlimited`).
-             * Fixed requirements derive their static count when this is omitted.
+             * A plain explicit maximum is reserved for an authoritative finite candidate bound
+             * (for `unlimited`). Dynamic cardinality must use [resolvedMaxTargets], so a static
+             * override cannot be mistaken for a source-boundary resolution.
              */
             maxTargets: Int? = null,
-            resolvedTotalManaValueAtMost: Int? = null,
+            /** A typed witness that a dynamic target maximum was resolved at the source boundary. */
+            resolvedMaxTargets: ResolvedTargetCount? = null,
+            /** A typed witness that a dynamic aggregate mana-value cap was resolved at the source boundary. */
+            resolvedTotalManaValueAtMost: ResolvedTotalManaValueAtMost? = null,
         ): TargetRequirementInfoResult {
             val semantics = when (val result = TargetRequirementSemantics.inspect(
                 requirement = semanticSource,
@@ -188,7 +191,15 @@ data class TargetRequirementInfo(
                     return TargetRequirementInfoResult.Unsupported(result.reason)
                 }
             }
-            val resolvedMaxTargets = maxTargets ?: if (requirement.hasUnresolvedDynamicMaxCount() || requirement.unlimited) {
+            val maxTargetValue = resolvedMaxTargets?.value ?: if (
+                semanticSource.hasUnresolvedDynamicMaxCount() || requirement.hasUnresolvedDynamicMaxCount()
+            ) {
+                return TargetRequirementInfoResult.Unsupported(
+                    TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
+                )
+            } else if (maxTargets != null) {
+                maxTargets
+            } else if (requirement.unlimited) {
                 return TargetRequirementInfoResult.Unsupported(
                     TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
                 )
@@ -199,7 +210,7 @@ data class TargetRequirementInfo(
                 index = index,
                 description = description,
                 minTargets = minTargets,
-                maxTargets = resolvedMaxTargets,
+                maxTargets = maxTargetValue,
                 targetZone = semantics.targetZone,
                 mustDifferFromEarlier = semantics.mustDifferFromEarlier,
                 sameController = semantics.sameController,
@@ -216,6 +227,12 @@ data class TargetRequirementInfo(
         }
     }
 }
+
+/** An authoritative source-boundary witness for a resolved dynamic target maximum. */
+data class ResolvedTargetCount(val value: Int)
+
+/** An authoritative source-boundary witness for a resolved dynamic aggregate mana-value cap. */
+data class ResolvedTotalManaValueAtMost(val value: Int)
 
 /** The reason a pending target requirement cannot be published as a complete structured domain. */
 enum class TargetRequirementUnsupportedReason {
@@ -243,12 +260,12 @@ sealed interface TargetRequirementInfoResult {
 internal sealed interface PendingTargetRequirementSnapshot {
     val requirement: TargetRequirement
     val semanticSource: TargetRequirement
-    val resolvedMaxTargets: Int?
+    val resolvedMaxTargets: ResolvedTargetCount?
 
     data class Resolved(
         override val requirement: TargetRequirement,
         override val semanticSource: TargetRequirement,
-        override val resolvedMaxTargets: Int?,
+        override val resolvedMaxTargets: ResolvedTargetCount?,
     ) : PendingTargetRequirementSnapshot
 
     data class Unsupported(
@@ -256,7 +273,7 @@ internal sealed interface PendingTargetRequirementSnapshot {
         override val semanticSource: TargetRequirement,
         val reason: TargetRequirementUnsupportedReason,
     ) : PendingTargetRequirementSnapshot {
-        override val resolvedMaxTargets: Int? = null
+        override val resolvedMaxTargets: ResolvedTargetCount? = null
     }
 }
 

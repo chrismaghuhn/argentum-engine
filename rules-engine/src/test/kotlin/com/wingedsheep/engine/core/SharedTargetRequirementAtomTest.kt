@@ -43,7 +43,7 @@ class SharedTargetRequirementAtomTest : FunSpec({
             index = 3,
             requirement = requirement,
             minTargets = requirement.effectiveMinCount,
-            maxTargets = requirement.count,
+            resolvedMaxTargets = ResolvedTargetCount(requirement.count),
         ).shouldBeInstanceOf<TargetRequirementInfoResult.Supported>().info
 
         info.index shouldBe 3
@@ -92,5 +92,22 @@ class SharedTargetRequirementAtomTest : FunSpec({
             result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
                 TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
         }
+    }
+
+    test("a raw maximum does not resolve an unresolved dynamic target cardinality") {
+        val requirement = TargetObject(
+            count = 2,
+            filter = TargetFilter(GameObjectFilter.Creature),
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+
+        val result = TargetRequirementInfo.fromRequirement(
+            index = 0,
+            requirement = requirement,
+            maxTargets = requirement.count,
+        )
+
+        result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
+            TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
     }
 })

@@ -11,6 +11,7 @@ import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
+import com.wingedsheep.engine.core.ResolvedTargetCount
 import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -209,13 +210,8 @@ class TargetValidator {
                     semanticSource = requirement,
                     resolvedMaxTargets = null,
                 )
-            val resolved = if (dynamicCountContextUnavailable(state, expression, context)) {
-                null
-            } else {
-                runCatching {
-                    DynamicAmountEvaluator().evaluate(state, expression, context).coerceAtLeast(0)
-                }.getOrNull()
-            }
+            val resolved = evaluateDynamicAmountForPending(state, expression, context)
+                ?.coerceAtLeast(0)
             if (resolved == null) {
                 PendingTargetRequirementSnapshot.Unsupported(
                     requirement = requirement,
@@ -231,7 +227,7 @@ class TargetValidator {
                         dynamicMaxCount = null,
                     ),
                     semanticSource = requirement,
-                    resolvedMaxTargets = resolved,
+                    resolvedMaxTargets = ResolvedTargetCount(resolved),
                 )
             }
         }
@@ -263,10 +259,20 @@ class TargetValidator {
     }
 
     /**
-     * The generic dynamic evaluator intentionally treats absent X, cast, and pipeline values as
-     * zero for legacy resolution. Pending metadata cannot use those defaults as an authoritative
-     * target maximum, so detect those missing sources before evaluating.
+     * Evaluate a dynamic source only when all pending-boundary context facts are available. The
+     * generic evaluator intentionally treats absent X, cast, and pipeline values as zero for
+     * legacy resolution; pending metadata cannot use those defaults as an authoritative fact.
      */
+    internal fun evaluateDynamicAmountForPending(
+        state: GameState,
+        amount: DynamicAmount,
+        context: EffectContext,
+    ): Int? = if (dynamicCountContextUnavailable(state, amount, context)) {
+        null
+    } else {
+        runCatching { DynamicAmountEvaluator().evaluate(state, amount, context) }.getOrNull()
+    }
+
     private fun dynamicCountContextUnavailable(
         state: GameState,
         amount: DynamicAmount,

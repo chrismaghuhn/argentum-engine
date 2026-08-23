@@ -14,6 +14,8 @@ import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.TriggerProcessor
+import com.wingedsheep.engine.event.PendingTrigger
+import com.wingedsheep.engine.event.TriggerContext
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
@@ -50,8 +52,12 @@ import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
+import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.values.ContextPropertyKey
@@ -1451,6 +1457,97 @@ class PartialIllegalTargets608Test : FunSpec({
                 resolvedModeTargets = emptyList(),
                 currentOrdinal = 0,
             )
+
+        result.pendingDecision shouldBe null
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("processTargetedTrigger publishes fixed target cardinality") {
+        val driver = dynamicDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature(count = 2, minCount = 1)
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic fixed non-modal trigger",
+        ).copy(id = AbilityId("synthetic-fixed-non-modal-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic fixed non-modal trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().minTargets shouldBe 1
+        decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("processTargetedTrigger with missing X withholds dynamic count metadata") {
+        val driver = dynamicDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic unresolved non-modal trigger",
+        ).copy(id = AbilityId("synthetic-unresolved-non-modal-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic unresolved non-modal trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        result.pendingDecision shouldBe null
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("processTargetedTrigger with missing X withholds aggregate cap metadata") {
+        val driver = dynamicDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter.Creature,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic unresolved aggregate trigger",
+        ).copy(id = AbilityId("synthetic-unresolved-aggregate-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic unresolved aggregate trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
 
         result.pendingDecision shouldBe null
         result.error shouldNotBe null
