@@ -5,11 +5,14 @@ import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.CardEntityFactory
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.event.GrantedStaticAbility
 import com.wingedsheep.engine.state.GameState
@@ -171,6 +174,39 @@ class ObservationPrivacyTest : FunSpec({
     ): ObservationResult =
         ObservationBuilder(cardRegistry = cardRegistry).build(state, perspective, emptyList())
 
+    fun targetedAction(
+        state: GameState,
+        playerId: EntityId,
+        targetId: EntityId,
+    ): LegalAction = LegalAction(
+        action = CastSpell(playerId, state.getHand(playerId).first()),
+        actionType = "CAST_SPELL",
+        description = "Targeted privacy probe",
+        requiresTargets = true,
+        targetRequirements = listOf(
+            TargetInfo(
+                index = 0,
+                description = "target",
+                minTargets = 1,
+                maxTargets = 1,
+                validTargets = listOf(targetId),
+                targetZone = "Battlefield",
+            )
+        ),
+        targetDomainSupport = TargetDomainSupport.SUPPORTED,
+    )
+
+    fun targetedResult(
+        state: GameState,
+        perspective: EntityId,
+        targetId: EntityId,
+        cardRegistry: CardRegistry = registry(),
+    ): ObservationResult = ObservationBuilder(cardRegistry = cardRegistry).build(
+        state = state,
+        perspectivePlayerId = perspective,
+        legalActions = listOf(targetedAction(state, perspective, targetId)),
+    )
+
     fun moveFirstOpponentHandCardFaceDownToBattlefield(
         state: GameState,
         opponent: EntityId
@@ -287,6 +323,29 @@ class ObservationPrivacyTest : FunSpec({
         mountainCard.power shouldBe goblinCard.power
         mountainCard.toughness shouldBe goblinCard.toughness
         mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
+    }
+
+    test("face-down battlefield target remains addressable without identity leakage") {
+        val base = environment()
+        val viewer = base.playerIds[0]
+        val opponent = base.playerIds[1]
+        val (state, faceDownId) =
+            moveFirstOpponentHandCardFaceDownToBattlefield(base.state, opponent)
+
+        val result = targetedResult(state, viewer, faceDownId)
+        result.diagnostics.shouldBeEmpty()
+
+        val observation = result.observation as TrainingObservation
+        val targetDomain = observation.legalActions.single().targetDomain
+            .shouldNotBeNull()
+        targetDomain.requirements.single().candidates shouldBe listOf(faceDownId)
+
+        val card = observation.zones.single {
+            it.ownerId == opponent && it.zoneType == Zone.BATTLEFIELD
+        }.cards.single { it.entityId == faceDownId }
+        card.cardDefinitionId.shouldBeNull()
+        card.name shouldNotBe "Mountain"
+        card.name shouldNotBe "Raging Goblin"
     }
 
     test("own controlled face-down battlefield identity remains visible") {
@@ -482,9 +541,18 @@ class ObservationPrivacyTest : FunSpec({
             action = CastSpell(actor, sourceId),
             actionType = "CAST_SPELL",
             description = "Cast Mountain",
-            validTargets = listOf(env.playerIds[1]),
-            targetCount = 1,
-            minTargets = 0,
+            requiresTargets = true,
+            targetRequirements = listOf(
+                TargetInfo(
+                    index = 0,
+                    description = "target player",
+                    minTargets = 0,
+                    maxTargets = 1,
+                    validTargets = listOf(env.playerIds[1]),
+                    targetZone = "Player",
+                )
+            ),
+            targetDomainSupport = TargetDomainSupport.SUPPORTED,
             manaCostString = "{1}"
         )
 
@@ -818,6 +886,59 @@ class ObservationPrivacyTest : FunSpec({
         hidden.observation.pendingDecision!!.prompt shouldBe ""
         hidden.observation.legalActions.shouldBeEmpty()
         hidden.registry shouldBe ActionRegistry.EMPTY
+    }
+
+    test("hidden-zone target references fail closed without authoritative addressability") {
+        val base = environment()
+        val viewer = base.playerIds[0]
+        val opponent = base.playerIds[1]
+        val hiddenHandId = base.state.getHand(opponent).first()
+        val hiddenLibraryId = base.state.getLibrary(opponent).first()
+        val faceDownExileId = base.state.getHand(opponent)[1]
+        val handKey = ZoneKey(opponent, Zone.HAND)
+        val exileKey = ZoneKey(opponent, Zone.EXILE)
+        val faceDownExileState = base.state.copy(
+            entities = base.state.entities + (
+                faceDownExileId to checkNotNull(base.state.getEntity(faceDownExileId))
+                    .with(FaceDownComponent)
+                ),
+            zones = base.state.zones +
+                (handKey to base.state.getHand(opponent).filterNot { it == faceDownExileId }) +
+                (exileKey to base.state.getExile(opponent) + faceDownExileId),
+        )
+
+        listOf(
+            base.state to hiddenHandId,
+            base.state to hiddenLibraryId,
+            faceDownExileState to faceDownExileId,
+            base.state to EntityId("missing-target-without-visibility-metadata"),
+        ).forEach { (state, targetId) ->
+            val result = targetedResult(state, viewer, targetId)
+            result.diagnostics.map { it.code } shouldBe
+                listOf(DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED)
+            result.observation.legalActions.shouldBeEmpty()
+        }
+    }
+
+    test("an explicitly revealed hidden-zone object may be addressed without identity in the domain") {
+        val base = environment()
+        val viewer = base.playerIds[0]
+        val opponent = base.playerIds[1]
+        val revealedId = base.state.getHand(opponent).first()
+        val revealedState = base.state.updateEntity(revealedId) {
+            it.with(RevealedToComponent.to(viewer))
+        }
+
+        val result = targetedResult(revealedState, viewer, revealedId)
+        result.diagnostics.shouldBeEmpty()
+        val targetDomain = (result.observation as TrainingObservation)
+            .legalActions.single()
+            .targetDomain
+            .shouldNotBeNull()
+        targetDomain.requirements.single().candidates shouldBe listOf(revealedId)
+        (result.observation as TrainingObservation).zones.single {
+            it.ownerId == opponent && it.zoneType == Zone.HAND
+        }.cards.shouldBeEmpty()
     }
 
     test("face-down exile omits unauthorized card objects but keeps total size") {

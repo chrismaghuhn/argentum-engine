@@ -62,6 +62,53 @@ class Visibility(
         ?.isRevealedTo(viewingPlayerId) == true
 
     /**
+     * Whether [viewingPlayerId] may address the public game object identified by [entityId].
+     *
+     * This is intentionally weaker than [isEntityIdentityVisibleTo]. A face-down permanent on
+     * the public battlefield is still a targetable object, so its public handle may be shared
+     * while its card identity remains masked. Conversely, a hidden hand/library object or an
+     * unrevealed face-down exile object has no publishable reference merely because the rules
+     * engine happens to retain an [EntityId] for it.
+     *
+     * The predicate only uses the existing authoritative zone, player, stack, and reveal
+     * metadata. Missing location or entity metadata is not guessed; it returns false so the Gym
+     * projection can fail closed.
+     */
+    fun isEntityReferenceAddressableTo(
+        state: GameState,
+        entityId: EntityId,
+        viewingPlayerId: EntityId,
+        isSpectator: Boolean = false,
+    ): Boolean {
+        if (!state.hasEntity(entityId)) return false
+
+        // Player references are public non-card objects, not hidden card identities.
+        if (entityId in state.turnOrder) return true
+
+        // The stack is maintained separately from GameState.zones, but its objects are public
+        // references. Face-down stack identities are masked by the observation builder.
+        if (entityId in state.stack) return true
+
+        val zoneKey = state.zones.entries
+            .filter { (_, entityIds) -> entityId in entityIds }
+            .singleOrNull()
+            ?.key
+            ?: return false
+
+        // A per-object reveal is authoritative even when the containing hand is not visible.
+        if (isCardRevealedTo(state, entityId, viewingPlayerId)) return true
+        if (!isZoneVisibleTo(state, zoneKey, viewingPlayerId, isSpectator)) return false
+
+        val entity = state.getEntity(entityId) ?: return false
+        if (!entity.has<FaceDownComponent>()) return true
+
+        // Battlefield objects are public addressable objects independent of their hidden card
+        // identity. Other face-down zones require an explicit identity/reveal authorization.
+        return zoneKey.zoneType == Zone.BATTLEFIELD ||
+            isEntityIdentityVisibleTo(state, entityId, viewingPlayerId, isSpectator)
+    }
+
+    /**
      * Whether [viewingPlayerId] may see an entity's identity at its current location.
      *
      * This is the identity-level companion to [isZoneVisibleTo]. Public zones can still contain

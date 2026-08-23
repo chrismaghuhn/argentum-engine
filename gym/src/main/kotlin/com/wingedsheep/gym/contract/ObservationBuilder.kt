@@ -173,7 +173,16 @@ class ObservationBuilder(
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
         val actionDomainMappings = if (mayReceiveActions && state.pendingDecision == null) {
             legalActions.map { action ->
-                ActionDomainMapping(action, ActionTargetDomainMapper.map(action))
+                ActionDomainMapping(
+                    action,
+                    ActionTargetDomainMapper.map(action) { entityId ->
+                        visibility.isEntityReferenceAddressableTo(
+                            state = state,
+                            entityId = entityId,
+                            viewingPlayerId = perspectivePlayerId,
+                        )
+                    },
+                )
             }
         } else {
             emptyList()

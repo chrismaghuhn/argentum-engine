@@ -5,14 +5,16 @@ import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
 
 /**
  * Projects the complete Rules-owned action target seam into the bounded Gym V1 contract.
  *
- * This mapper is deliberately pure and perspective-neutral. It reads only the authoritative
- * [LegalAction.targetRequirements], its [LegalAction.targetDomainSupport], and the structural
- * [TargetPayloadPartition] certificate. It never consults GameState, CardDefinition, Oracle text,
+ * This mapper is deliberately pure and does not know about perspectives or the game state. It reads
+ * only the authoritative [LegalAction.targetRequirements], its [LegalAction.targetDomainSupport],
+ * the structural [TargetPayloadPartition] certificate, and the engine-owned reference-addressability
+ * predicate supplied by [ObservationBuilder]. It never consults CardDefinition, Oracle text,
  * hidden components, or a trainer-side legality algorithm.
  */
 object ActionTargetDomainMapper {
@@ -28,7 +30,10 @@ object ActionTargetDomainMapper {
         }
     }
 
-    fun map(action: LegalAction): Result {
+    fun map(
+        action: LegalAction,
+        isEntityReferenceAddressable: (EntityId) -> Boolean,
+    ): Result {
         if (action.targetDomainSupport !is TargetDomainSupport.SUPPORTED) {
             return Result.Unsupported
         }
@@ -48,7 +53,8 @@ object ActionTargetDomainMapper {
                     requirement.maxTargets < requirement.minTargets ||
                     requirement.validTargets.size != requirement.validTargets.toSet().size ||
                     (requirement.minTargets > 0 && requirement.validTargets.isEmpty()) ||
-                    requirement.targetChooser != TargetChooser.Controller
+                    requirement.targetChooser != TargetChooser.Controller ||
+                    requirement.validTargets.any { !isEntityReferenceAddressable(it) }
             }) {
             return Result.Unsupported
         }

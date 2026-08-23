@@ -58,6 +58,8 @@ class ActionTargetDomainContractTest : FunSpec({
         targetDomainSupport = support,
     )
 
+    fun allCandidatesAreAddressable(@Suppress("UNUSED_PARAMETER") entityId: EntityId): Boolean = true
+
     test("targetless fixed domain accepts only an empty payload") {
         val certification = TargetPayloadPartition.certify(emptyList())
             .shouldBeInstanceOf<TargetPayloadPartition.Certification.Supported>()
@@ -146,6 +148,7 @@ class ActionTargetDomainContractTest : FunSpec({
                     ),
                 ),
             ),
+            ::allCandidatesAreAddressable,
         ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Supported>()
 
         result.domain.version shouldBe ACTION_TARGET_DOMAIN_VERSION
@@ -153,6 +156,27 @@ class ActionTargetDomainContractTest : FunSpec({
         result.domain.requirements.map { it.index } shouldBe listOf(0, 1)
         result.domain.requirements[0].candidates shouldBe listOf(EntityId("alpha"), EntityId("zeta"))
         result.domain.requirements[1].candidates shouldBe listOf(EntityId("beta"), EntityId("delta"))
+
+        val reordered = ActionTargetDomainMapper.map(
+            action(
+                requirements = listOf(
+                    requirement(
+                        index = 0,
+                        minTargets = 1,
+                        maxTargets = 1,
+                        candidates = listOf(EntityId("alpha"), EntityId("zeta")),
+                    ),
+                    requirement(
+                        index = 1,
+                        minTargets = 1,
+                        maxTargets = 1,
+                        candidates = listOf(EntityId("beta"), EntityId("delta")),
+                    ),
+                ),
+            ),
+            ::allCandidatesAreAddressable,
+        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Supported>()
+        reordered.domain shouldBe result.domain
     }
 
     test("unsupported action projection maps to one stable target-domain diagnostic") {
@@ -163,10 +187,20 @@ class ActionTargetDomainContractTest : FunSpec({
                     com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS,
                 ),
             ),
+            ::allCandidatesAreAddressable,
         ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Unsupported>()
 
         result.diagnostic.code shouldBe DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED
         result.diagnostic.semanticCode shouldBe "ACTION_TARGET_DOMAIN_UNSUPPORTED"
+    }
+
+    test("unaddressable candidates are withheld instead of filtered into a lossy domain") {
+        val result = ActionTargetDomainMapper.map(
+            action(requirements = listOf(requirement(0, 1, 1))),
+            { false },
+        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Unsupported>()
+
+        result.diagnostic.code shouldBe DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED
     }
 
     test("invalid V1 version is rejected instead of becoming a legacy flat domain") {
@@ -341,7 +375,7 @@ class ActionTargetDomainContractTest : FunSpec({
                     index = 0,
                     minTargets = 1,
                     maxTargets = 1,
-                    candidates = listOf(EntityId("zeta"), EntityId("alpha")),
+                    candidates = listOf(environment.playerIds[1]),
                 ),
             ),
         )
@@ -366,7 +400,7 @@ class ActionTargetDomainContractTest : FunSpec({
         observation.legalActions[0].targetEntityIds.shouldBeEmpty()
         observation.legalActions[0].minTargets shouldBe 0
         observation.legalActions[0].maxTargets shouldBe 0
-        observation.legalActions[1].targetEntityIds shouldBe listOf(EntityId("alpha"), EntityId("zeta"))
+        observation.legalActions[1].targetEntityIds shouldBe listOf(environment.playerIds[1])
         observation.legalActions[1].minTargets shouldBe 1
         observation.legalActions[1].maxTargets shouldBe 1
         result.registry.legalActions.map { it.first } shouldBe listOf(0, 1)
