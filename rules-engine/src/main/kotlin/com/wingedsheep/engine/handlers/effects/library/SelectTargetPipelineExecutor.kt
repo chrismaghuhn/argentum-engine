@@ -50,18 +50,6 @@ class SelectTargetPipelineExecutor(
             requireAuthoritativeContext = true,
         )
 
-        // Metadata is part of the authoritative pending decision, even when no candidate was
-        // found. In particular, an empty candidate list must not turn an unresolved X/count or
-        // aggregate cap into a successful empty collection. Optional empty selections remain
-        // valid only after this source-boundary conversion succeeds.
-        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
-            state = state,
-            index = 0,
-            requirement = effect.requirement,
-            context = context,
-            legalTargetCount = legalTargets.size,
-        ).orReturnUnsupported { return it.toEffectError(state) }
-
         if (legalTargets.isEmpty()) {
             // No legal targets — store empty collection, pipeline continues gracefully
             return EffectResult.success(state).copy(
@@ -75,6 +63,17 @@ class SelectTargetPipelineExecutor(
                 updatedCollections = mapOf(effect.storeAs to legalTargets)
             )
         }
+
+        // Metadata is required only when a pending decision will be emitted. An automatic choice
+        // or an established empty-target no-op does not publish a target domain, so unresolved
+        // target metadata must not change those existing execution paths.
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = effect.requirement,
+            context = context,
+            legalTargetCount = legalTargets.size,
+        ).orReturnUnsupported { return it.toEffectError(state) }
 
         // Multiple legal targets — pause for player decision
         return createDecision(state, context, effect, legalTargets, requirementInfo)

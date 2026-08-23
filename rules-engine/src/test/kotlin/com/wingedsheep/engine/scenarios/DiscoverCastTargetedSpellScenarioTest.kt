@@ -164,6 +164,10 @@ class DiscoverCastTargetedSpellScenarioTest : ScenarioTestBase() {
                     chose.error shouldBe null
                 }
 
+                withClue("The unresolved target metadata must not create an executable pending decision") {
+                    game.getPendingDecision() shouldBe null
+                }
+
                 withClue("The unresolved-cap spell should return to hand") {
                     game.isInHand(1, unresolvedAggregateTargetSpell.name) shouldBe true
                 }

@@ -293,17 +293,9 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 )
                 legalTargetsMap[index] = legal
             }
-            val requirementInfos = targetRequirements.mapIndexed { index, requirement ->
-                targetValidator.pendingTargetRequirementInfo(
-                    state = state,
-                    index = index,
-                    requirement = requirement,
-                    context = EffectContext(sourceId = cardId, controllerId = casterId),
-                    legalTargetCount = legalTargetsMap[index].orEmpty().size,
-                ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
-            }
-
-            // An unresolved semantic fact is rejected above even when a slot has no candidate.
+            // A required slot with no candidate makes the synthesized cast unable to initiate. This
+            // no-op is decided before target metadata conversion: no pending decision/domain will be
+            // emitted, so an unresolved field must not replace the established no-target fallback.
             val mandatoryRequirementHasNoTargets = targetRequirements.withIndex().any { (index, requirement) ->
                 requirement.effectiveMinCount > 0 && legalTargetsMap[index].isNullOrEmpty()
             }
@@ -319,7 +311,20 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 return TargetPrep.NotNeeded
             }
 
-            val selectableRequirementInfos = selectableIndices.map { index -> requirementInfos[index] }
+            // Only requirements that will actually be published in the pending decision need a
+            // representable metadata projection. Unsupported metadata therefore remains fail-closed
+            // for executable target choices without affecting a legitimate empty no-op.
+            val requirementInfos = selectableIndices.map { index ->
+                targetValidator.pendingTargetRequirementInfo(
+                    state = state,
+                    index = index,
+                    requirement = targetRequirements[index],
+                    context = EffectContext(sourceId = cardId, controllerId = casterId),
+                    legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
+            }
+
+            val selectableRequirementInfos = requirementInfos
 
             // Name the face being cast — a transformed cast prompts for "Deluge of the Dead",
             // not for the front face the player exiled.

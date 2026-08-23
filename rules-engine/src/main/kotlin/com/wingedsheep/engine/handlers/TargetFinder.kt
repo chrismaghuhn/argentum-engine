@@ -4,6 +4,8 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
+import com.wingedsheep.engine.state.components.battlefield.CastChoicesComponent
+import com.wingedsheep.engine.state.components.battlefield.ChoiceValue
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -16,6 +18,7 @@ import com.wingedsheep.engine.mechanics.targeting.StackObjectTargeting
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.ChoiceSlot
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
@@ -65,6 +68,8 @@ class TargetFinder(
         val xValue: Boolean = false,
         val pipeline: Boolean = false,
         val chosenColor: Boolean = false,
+        val sourceTextChoiceSlots: Set<ChoiceSlot> = emptySet(),
+        val sourceColorChoiceSlots: Set<ChoiceSlot> = emptySet(),
         val chosenValues: Set<String> = emptySet(),
         val storedStringLists: Set<String> = emptySet(),
         val storedSubtypeGroups: Set<String> = emptySet(),
@@ -90,6 +95,8 @@ class TargetFinder(
                 xValue = xValue || other.xValue,
                 pipeline = pipeline || other.pipeline,
                 chosenColor = chosenColor || other.chosenColor,
+                sourceTextChoiceSlots = sourceTextChoiceSlots + other.sourceTextChoiceSlots,
+                sourceColorChoiceSlots = sourceColorChoiceSlots + other.sourceColorChoiceSlots,
                 chosenValues = chosenValues + other.chosenValues,
                 storedStringLists = storedStringLists + other.storedStringLists,
                 storedSubtypeGroups = storedSubtypeGroups + other.storedSubtypeGroups,
@@ -136,6 +143,14 @@ class TargetFinder(
             if (damageRecipientId && context.damageRecipientId == null) return false
             if (xValue && context.xValue == null) return false
             if (chosenColor && context.chosenColor == null) return false
+            val sourceChoices = context.sourceId
+                ?.let { state.getEntity(it)?.get<CastChoicesComponent>()?.chosen }
+            if (sourceTextChoiceSlots.any { slot ->
+                    sourceChoices?.get(slot) !is ChoiceValue.TextChoice
+                }) return false
+            if (sourceColorChoiceSlots.any { slot ->
+                    sourceChoices?.get(slot) !is ChoiceValue.ColorChoice
+                }) return false
             if (chosenValues.any { it !in context.chosenValues }) return false
             if (storedStringLists.any { it !in context.storedStringLists }) return false
             if (storedSubtypeGroups.any { it !in context.storedSubtypeGroups }) return false
@@ -450,9 +465,13 @@ class TargetFinder(
             pipeline = true,
             chosenValues = setOf(variableName),
         )
-        is CardPredicate.NameEqualsChosenComponent,
+        is CardPredicate.NameEqualsChosenComponent -> RequiredPredicateContext(
+            sourceId = true,
+            sourceTextChoiceSlots = setOf(slot),
+        )
         is CardPredicate.CardTypeEqualsChosenComponent -> RequiredPredicateContext(
             sourceId = true,
+            sourceTextChoiceSlots = setOf(slot),
         )
         is CardPredicate.HasSubtypeFromVariable -> RequiredPredicateContext(
             pipeline = true,
@@ -471,9 +490,15 @@ class TargetFinder(
             chosenColor = true,
         )
         CardPredicate.NotOfSourceChosenType,
-        CardPredicate.SharesCreatureTypeWithSource,
-        CardPredicate.HasChosenSubtype,
-        CardPredicate.SharesChosenColorWithSource -> RequiredPredicateContext(sourceId = true)
+        CardPredicate.HasChosenSubtype -> RequiredPredicateContext(
+            sourceId = true,
+            sourceTextChoiceSlots = setOf(ChoiceSlot.CREATURE_TYPE),
+        )
+        CardPredicate.SharesCreatureTypeWithSource -> RequiredPredicateContext(sourceId = true)
+        CardPredicate.SharesChosenColorWithSource -> RequiredPredicateContext(
+            sourceId = true,
+            sourceColorChoiceSlots = setOf(ChoiceSlot.COLOR),
+        )
         CardPredicate.SharesCreatureTypeWithTriggeringEntity -> RequiredPredicateContext(
             triggeringEntityId = true,
         )

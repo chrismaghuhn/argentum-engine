@@ -33,6 +33,8 @@ import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.CastChoicesComponent
+import com.wingedsheep.engine.state.components.battlefield.ChoiceValue
 import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -48,6 +50,7 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.dsl.Costs
@@ -57,6 +60,7 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.dsl.splice
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.conditions.Condition
+import com.wingedsheep.sdk.scripting.ChoiceSlot
 import com.wingedsheep.sdk.scripting.conditions.CreatureDiedThisTurnCondition
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -1101,6 +1105,80 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
             requireAuthoritativeContext = true,
         ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder fails closed for missing source-derived chosen facts") {
+        val driver = driver()
+        val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val finder = TargetFinder()
+        val predicates = listOf(
+            CardPredicate.Not(CardPredicate.NameEqualsChosenComponent()),
+            CardPredicate.Not(CardPredicate.CardTypeEqualsChosenComponent()),
+            CardPredicate.Not(CardPredicate.HasChosenSubtype),
+            CardPredicate.Not(CardPredicate.SharesChosenColorWithSource),
+        )
+
+        predicates.forEach { predicate ->
+            val requirement = TargetObject(
+                filter = TargetFilter(
+                    baseFilter = GameObjectFilter(cardPredicates = listOf(predicate)),
+                    excludeSelf = true,
+                ),
+            )
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                sourceId = source,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            ) shouldBe emptyList()
+        }
+    }
+
+    test("pending target finder evaluates source-derived chosen facts when present") {
+        val driver = driver()
+        val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.replaceState(
+            driver.state.updateEntity(source) {
+                it.with(
+                    CastChoicesComponent(
+                        chosen = mapOf(
+                            ChoiceSlot.CARD_NAME to ChoiceValue.TextChoice("Grizzly Bears"),
+                            ChoiceSlot.CARD_TYPE to ChoiceValue.TextChoice("Creature"),
+                            ChoiceSlot.CREATURE_TYPE to ChoiceValue.TextChoice("Bear"),
+                            ChoiceSlot.COLOR to ChoiceValue.ColorChoice(Color.GREEN),
+                        ),
+                    ),
+                )
+            },
+        )
+        val finder = TargetFinder()
+        val predicates = listOf(
+            CardPredicate.NameEqualsChosenComponent(),
+            CardPredicate.CardTypeEqualsChosenComponent(),
+            CardPredicate.HasChosenSubtype,
+            CardPredicate.SharesChosenColorWithSource,
+        )
+
+        predicates.forEach { predicate ->
+            val requirement = TargetObject(
+                filter = TargetFilter(
+                    baseFilter = GameObjectFilter(cardPredicates = listOf(predicate)),
+                    excludeSelf = true,
+                ),
+            )
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                sourceId = source,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            ) shouldBe listOf(candidate)
+        }
     }
 
     test("pending target finder fails closed for missing trigger and referenced-player context") {
