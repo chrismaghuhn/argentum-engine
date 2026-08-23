@@ -1,11 +1,24 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
+import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.gym.GameEnvironment
+import com.wingedsheep.gym.GameGymEnv
+import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -21,13 +34,28 @@ class ActionTargetDomainContractTest : FunSpec({
         minTargets: Int,
         maxTargets: Int,
         xConstrainsCount: Boolean = false,
+        candidates: List<EntityId> = listOf(EntityId("candidate-$index")),
     ) = TargetInfo(
         index = index,
         description = "requirement $index",
         minTargets = minTargets,
         maxTargets = maxTargets,
-        validTargets = listOf(EntityId("candidate-$index")),
+        validTargets = candidates,
         xConstrainsCount = xConstrainsCount,
+    )
+
+    fun action(
+        player: EntityId = EntityId("player"),
+        requirements: List<TargetInfo> = emptyList(),
+        requiresTargets: Boolean = requirements.isNotEmpty(),
+        support: TargetDomainSupport = TargetDomainSupport.SUPPORTED,
+    ) = LegalAction(
+        action = CastSpell(player, EntityId("spell")),
+        actionType = "CastSpell",
+        description = "test action",
+        requiresTargets = requiresTargets,
+        targetRequirements = requirements,
+        targetDomainSupport = support,
     )
 
     test("targetless fixed domain accepts only an empty payload") {
@@ -98,6 +126,53 @@ class ActionTargetDomainContractTest : FunSpec({
             TargetPayloadPartition.Certification.Unsupported(
                 TargetPayloadPartition.UnsupportedReason.INVALID_CARDINALITY,
             )
+    }
+
+    test("maps the fixed action domain in semantic requirement order with canonical candidates") {
+        val result = ActionTargetDomainMapper.map(
+            action(
+                requirements = listOf(
+                    requirement(
+                        index = 0,
+                        minTargets = 1,
+                        maxTargets = 1,
+                        candidates = listOf(EntityId("zeta"), EntityId("alpha")),
+                    ),
+                    requirement(
+                        index = 1,
+                        minTargets = 1,
+                        maxTargets = 1,
+                        candidates = listOf(EntityId("delta"), EntityId("beta")),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Supported>()
+
+        result.domain.version shouldBe ACTION_TARGET_DOMAIN_VERSION
+        result.domain.composition shouldBe ActionTargetComposition.FIXED
+        result.domain.requirements.map { it.index } shouldBe listOf(0, 1)
+        result.domain.requirements[0].candidates shouldBe listOf(EntityId("alpha"), EntityId("zeta"))
+        result.domain.requirements[1].candidates shouldBe listOf(EntityId("beta"), EntityId("delta"))
+    }
+
+    test("unsupported action projection maps to one stable target-domain diagnostic") {
+        val result = ActionTargetDomainMapper.map(
+            action(
+                requirements = listOf(requirement(0, 1, 1)),
+                support = TargetDomainSupport.UNSUPPORTED(
+                    com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS,
+                ),
+            ),
+        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Unsupported>()
+
+        result.diagnostic.code shouldBe DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED
+        result.diagnostic.semanticCode shouldBe "ACTION_TARGET_DOMAIN_UNSUPPORTED"
+    }
+
+    test("invalid V1 version is rejected instead of becoming a legacy flat domain") {
+        shouldThrow<IllegalArgumentException> {
+            ActionTargetDomainV1(version = ACTION_TARGET_DOMAIN_VERSION + 1)
+        }
     }
 
     test("a target-bearing action without canonical requirements cannot use legacy flat fields") {
@@ -172,5 +247,129 @@ class ActionTargetDomainContractTest : FunSpec({
         shouldThrow<IllegalArgumentException> {
             ActionPayloadRequirements.requireTargetPayloadPartition(fixedMultiTarget, submitted)
         }.message shouldContain "PAYLOAD_LENGTH_OUT_OF_RANGE"
+    }
+
+    test("strict registry execution rejects an unsupported target-domain action before processing") {
+        val unsupported = action(
+            requirements = listOf(requirement(0, 1, 1)),
+            support = TargetDomainSupport.UNSUPPORTED(
+                com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS,
+            ),
+        )
+        val resolved = ActionRegistry.ofLegalActions(listOf(unsupported))
+            .resolve(0)
+            .shouldBeInstanceOf<ResolvedAction.Legal>()
+
+        shouldThrow<IllegalArgumentException> {
+            ActionPayloadRequirements.requireTargetDomainSupported(resolved.legalAction)
+        }
+    }
+
+    test("GameGymEnv fails the whole observation when one enumerated target shape is unsupported") {
+        val ambiguousTargetSpell = card("Gym Ambiguous Target Spell") {
+            manaCost = "{R}"
+            typeLine = "Instant"
+            spell {
+                val first = target("up to one target creature", TargetCreature(optional = true))
+                val second = target("up to one other target creature", TargetCreature(optional = true))
+                effect = Effects.Tap(first).then(Effects.Tap(second))
+            }
+        }
+        val cardRegistry = CardRegistry().apply {
+            register(PortalSet.cards)
+            register(PortalSet.basicLands)
+            register(ambiguousTargetSpell)
+        }
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of("Mountain" to 1, ambiguousTargetSpell.name to 1),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 1)),
+                ),
+                startingHandSize = 2,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+            ),
+        )
+        var land = environment.legalActions().firstOrNull { it.actionType == "PlayLand" }
+        var setupSteps = 0
+        while (land == null && setupSteps++ < 20) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            land = environment.legalActions().firstOrNull { it.actionType == "PlayLand" }
+        }
+        environment.step(checkNotNull(land).action)
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
+
+        val failure = shouldThrow<UnsupportedPathFailure> { gym.observe() }
+        failure.diagnostics.map { it.code } shouldBe listOf(DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED)
+        environment.diagnostics.events.map { it.code } shouldBe
+            listOf(DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED)
+    }
+
+    test("builder uses one supported sequence for views and registry while normalizing flat fields") {
+        val cardRegistry = CardRegistry().apply {
+            register(PortalSet.cards)
+            register(PortalSet.basicLands)
+        }
+        val environment = com.wingedsheep.gym.GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of("Mountain" to 1)),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 1)),
+                ),
+                startingHandSize = 0,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+            ),
+        )
+        val player = environment.playerIds.first()
+        val targetless = action(player = player, requirements = emptyList(), requiresTargets = false)
+        val supportedSingle = action(
+            player = player,
+            requirements = listOf(
+                requirement(
+                    index = 0,
+                    minTargets = 1,
+                    maxTargets = 1,
+                    candidates = listOf(EntityId("zeta"), EntityId("alpha")),
+                ),
+            ),
+        )
+        val unsupported = action(
+            player = player,
+            requirements = listOf(requirement(0, 1, 1)),
+            support = TargetDomainSupport.UNSUPPORTED(
+                com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS,
+            ),
+        )
+
+        val result = ObservationBuilder(cardRegistry = cardRegistry).build(
+            environment.state,
+            player,
+            listOf(targetless, unsupported, supportedSingle),
+        )
+        val observation = result.observation as TrainingObservation
+
+        result.diagnostics.map { it.code } shouldBe listOf(DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED)
+        observation.legalActions.map { it.actionId } shouldBe listOf(0, 1)
+        observation.legalActions[0].targetDomain?.requirements.shouldBeEmpty()
+        observation.legalActions[0].targetEntityIds.shouldBeEmpty()
+        observation.legalActions[0].minTargets shouldBe 0
+        observation.legalActions[0].maxTargets shouldBe 0
+        observation.legalActions[1].targetEntityIds shouldBe listOf(EntityId("alpha"), EntityId("zeta"))
+        observation.legalActions[1].minTargets shouldBe 1
+        observation.legalActions[1].maxTargets shouldBe 1
+        result.registry.legalActions.map { it.first } shouldBe listOf(0, 1)
+        result.registry.legalActions.map { it.second } shouldBe listOf(targetless, supportedSingle)
     }
 })

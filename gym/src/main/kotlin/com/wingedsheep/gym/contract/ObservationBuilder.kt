@@ -171,6 +171,22 @@ class ObservationBuilder(
             ?.let { buildPendingDecision(state, it, mayReceiveActions) }
         val pendingDecisionView = pendingDecisionAndRegistry?.first
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
+        val actionDomainMappings = if (mayReceiveActions && state.pendingDecision == null) {
+            legalActions.map { action ->
+                ActionDomainMapping(action, ActionTargetDomainMapper.map(action))
+            }
+        } else {
+            emptyList()
+        }
+        val supportedActionMappings = actionDomainMappings.mapNotNull { mapping ->
+            val supported = mapping.result as? ActionTargetDomainMapper.Result.Supported
+            supported?.let { SupportedActionDomain(mapping.action, it.domain) }
+        }
+        val targetDomainDiagnostics = actionDomainMappings
+            .mapNotNull { mapping ->
+                (mapping.result as? ActionTargetDomainMapper.Result.Unsupported)?.diagnostic
+            }
+            .distinct()
         val diagnostics = buildList {
             if (
                 mayReceiveActions &&
@@ -185,6 +201,10 @@ class ObservationBuilder(
                 }) {
                 add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             }
+            // Keep payment diagnostics and their existing order intact. Target-domain failures
+            // are appended as a separate trusted-path signal; GameGymEnv treats any diagnostic
+            // as whole-observation fatal and never exposes a silently reduced action list.
+            addAll(targetDomainDiagnostics)
         }
 
         // Build legal-action views and their registry. When mid-decision the
@@ -199,8 +219,10 @@ class ObservationBuilder(
             legalActionViews = buildDecisionOptionViews(state, state.pendingDecision!!, responses)
             actionRegistry = decisionRegistry
         } else {
-            legalActionViews = legalActions.mapIndexed { idx, la -> legalActionToView(state, idx, la) }
-            actionRegistry = ActionRegistry.ofLegalActions(legalActions)
+            legalActionViews = supportedActionMappings.mapIndexed { idx, mapped ->
+                legalActionToView(state, idx, mapped.action, mapped.domain)
+            }
+            actionRegistry = ActionRegistry.ofLegalActions(supportedActionMappings.map { it.action })
         }
 
         val obs = TrainingObservation(
@@ -521,22 +543,29 @@ class ObservationBuilder(
     // Legal actions
     // =========================================================================
 
-    private fun legalActionToView(state: GameState, actionId: Int, la: LegalAction): LegalActionView {
+    private fun legalActionToView(
+        state: GameState,
+        actionId: Int,
+        la: LegalAction,
+        targetDomain: ActionTargetDomainV1,
+    ): LegalActionView {
         val sacrificeInfo = la.additionalCostInfo
             ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
+        val singleRequirement = targetDomain.requirements.singleOrNull()
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
             description = la.description,
             affordable = la.affordable,
             sourceEntityId = actionSourceEntityId(la),
-            targetEntityIds = (la.validTargets ?: emptyList()).sortedBy { it.value },
+            targetEntityIds = singleRequirement?.candidates ?: emptyList(),
+            targetDomain = targetDomain,
             manaCost = la.manaCostString,
             paymentDomain = paymentDomainFor(state, la),
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
-            minTargets = la.minTargets,
-            maxTargets = la.targetCount,
+            minTargets = singleRequirement?.minTargets ?: 0,
+            maxTargets = singleRequirement?.maxTargets ?: 0,
             validSacrificeTargets = sacrificeInfo?.validSacrificeTargets
                 ?.sortedBy { it.value }
                 ?: emptyList(),
@@ -1557,4 +1586,14 @@ data class ObservationResult(
     val registry: ActionRegistry,
     /** Internal non-wire diagnostics; the observation DTO itself remains unchanged. */
     val diagnostics: List<DiagnosticSignal> = emptyList(),
+)
+
+private data class ActionDomainMapping(
+    val action: LegalAction,
+    val result: ActionTargetDomainMapper.Result,
+)
+
+private data class SupportedActionDomain(
+    val action: LegalAction,
+    val domain: ActionTargetDomainV1,
 )
