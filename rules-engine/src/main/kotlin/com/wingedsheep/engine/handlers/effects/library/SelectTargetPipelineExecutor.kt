@@ -50,8 +50,23 @@ class SelectTargetPipelineExecutor(
             requireAuthoritativeContext = true,
         )
 
+        // This executor is the pending-decision seam: even an empty candidate list must first pass
+        // the authoritative metadata conversion. Otherwise an unresolved X/count or aggregate
+        // constraint can silently become a successful empty collection instead of a fail-closed
+        // unsupported result. Synthesized Discover/Cascade casts use a separate executor and keep
+        // their required-no-target fallback before metadata conversion.
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = effect.requirement,
+            context = context,
+            legalTargetCount = legalTargets.size,
+        ).orReturnUnsupported { return it.toEffectError(state) }
+
         if (legalTargets.isEmpty()) {
-            // No legal targets — store empty collection, pipeline continues gracefully
+            // No legal targets — store empty collection, pipeline continues gracefully.
+            // The metadata gate above has already established that no unsupported domain was
+            // hidden by this no-op.
             return EffectResult.success(state).copy(
                 updatedCollections = mapOf(effect.storeAs to emptyList())
             )
@@ -63,17 +78,6 @@ class SelectTargetPipelineExecutor(
                 updatedCollections = mapOf(effect.storeAs to legalTargets)
             )
         }
-
-        // Metadata is required only when a pending decision will be emitted. An automatic choice
-        // or an established empty-target no-op does not publish a target domain, so unresolved
-        // target metadata must not change those existing execution paths.
-        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
-            state = state,
-            index = 0,
-            requirement = effect.requirement,
-            context = context,
-            legalTargetCount = legalTargets.size,
-        ).orReturnUnsupported { return it.toEffectError(state) }
 
         // Multiple legal targets — pause for player decision
         return createDecision(state, context, effect, legalTargets, requirementInfo)
