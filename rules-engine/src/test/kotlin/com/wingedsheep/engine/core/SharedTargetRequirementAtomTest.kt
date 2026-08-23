@@ -7,9 +7,9 @@ import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
-import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 
 /** Proves that pending metadata and the public target domain share one source-derived atom. */
 class SharedTargetRequirementAtomTest : FunSpec({
@@ -44,7 +44,7 @@ class SharedTargetRequirementAtomTest : FunSpec({
             requirement = requirement,
             minTargets = requirement.effectiveMinCount,
             maxTargets = requirement.count,
-        )
+        ).shouldBeInstanceOf<TargetRequirementInfoResult.Supported>().info
 
         info.index shouldBe 3
         info.minTargets shouldBe 1
@@ -63,14 +63,15 @@ class SharedTargetRequirementAtomTest : FunSpec({
         info.xConstrainsCount shouldBe true
     }
 
-    test("unresolved aggregate target semantics cannot become an authoritative null cap") {
+    test("unresolved aggregate target semantics return typed unsupported metadata") {
         val requirement = TargetObject(
             filter = TargetFilter(GameObjectFilter.Creature),
             totalManaValueAtMost = DynamicAmount.XValue,
         )
 
-        shouldThrow<IllegalStateException> {
-            TargetRequirementInfo.fromRequirement(index = 0, requirement = requirement)
-        }
+        val result = TargetRequirementInfo.fromRequirement(index = 0, requirement = requirement)
+
+        result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
+            TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE
     }
 })

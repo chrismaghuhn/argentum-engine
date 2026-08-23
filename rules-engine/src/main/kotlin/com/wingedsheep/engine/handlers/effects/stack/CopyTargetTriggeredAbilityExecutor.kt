@@ -94,6 +94,7 @@ class CopyTargetTriggeredAbilityExecutor(
 
         val targetReqInfos = targetRequirements.mapIndexed { index, req ->
             TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                .orReturnUnsupported { return it.toEffectError(state) }
         }
 
         val decision = ChooseTargetsDecision(

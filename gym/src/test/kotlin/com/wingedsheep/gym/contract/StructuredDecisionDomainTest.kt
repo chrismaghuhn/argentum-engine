@@ -31,18 +31,31 @@ import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetRequirementInfoResult
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.handlers.effects.library.SelectTargetPipelineExecutor
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.effects.SelectTargetEffect
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetOther
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.targets.TargetPlayer
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
@@ -445,8 +458,10 @@ class StructuredDecisionDomainTest : FunSpec({
                 prompt = "Choose targets",
                 context = DecisionContext(phase = DecisionPhase.RESOLUTION),
                 targetRequirements = listOf(
-                    TargetRequirementInfo.fromRequirement(index = 2, requirement = TargetPlayer()),
-                    TargetRequirementInfo.fromRequirement(index = 1, requirement = TargetPlayer()),
+                    TargetRequirementInfo.fromRequirement(index = 2, requirement = TargetPlayer())
+                        .shouldBeInstanceOf<TargetRequirementInfoResult.Supported>().info,
+                    TargetRequirementInfo.fromRequirement(index = 1, requirement = TargetPlayer())
+                        .shouldBeInstanceOf<TargetRequirementInfoResult.Supported>().info,
                 ),
                 legalTargets = mapOf(
                     2 to listOf(EntityId("z"), EntityId("a")),
@@ -460,6 +475,100 @@ class StructuredDecisionDomainTest : FunSpec({
             listOf(EntityId("b"), EntityId("m")),
             listOf(EntityId("a"), EntityId("z")),
         )
+    }
+
+    test("real SelectTarget producer carries the shared atom to TargetsDomain and withholds unresolved metadata") {
+        val producerEnvironment = GameEnvironment.create(registry())
+        producerEnvironment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of("Mountain" to 20)),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20))
+                ),
+                skipMulligans = true,
+                startingPlayerIndex = 0
+            )
+        )
+        val owner = producerEnvironment.playerIds.first()
+        val library = ZoneKey(owner, Zone.LIBRARY)
+        val graveyard = ZoneKey(owner, Zone.GRAVEYARD)
+        var state = producerEnvironment.state
+        val candidates = state.getLibrary(owner)
+            .filter { id -> state.getEntity(id)?.get<CardComponent>()?.name == "Mountain" }
+            .take(2)
+        candidates.size shouldBe 2
+        candidates.forEach { id -> state = state.moveToZone(id, library, graveyard) }
+
+        val xAwareTarget = CardPredicate.Or(
+            listOf(
+                CardPredicate.ManaValueAtMostX,
+                CardPredicate.ManaValueEqualsX,
+                CardPredicate.PowerEqualsX,
+                CardPredicate.IsLand,
+            )
+        )
+        val resolvedRequirement = TargetOther(
+            baseRequirement = TargetObject(
+                count = 2,
+                minCount = 1,
+                filter = TargetFilter(
+                    baseFilter = GameObjectFilter(cardPredicates = listOf(xAwareTarget)),
+                    zone = Zone.GRAVEYARD,
+                ),
+                dynamicMaxCount = DynamicAmount.XValue,
+                sameController = true,
+                sameOwner = true,
+                sameCreatureType = true,
+                sameCardType = true,
+                totalManaValueAtMost = DynamicAmount.Fixed(7),
+                differentNames = true,
+            )
+        )
+        val executor = SelectTargetPipelineExecutor()
+        val context = EffectContext(sourceId = null, controllerId = owner)
+        val produced = executor.execute(
+            state = state,
+            effect = SelectTargetEffect(requirement = resolvedRequirement, storeAs = "chosen"),
+            context = context,
+        )
+        val pending = produced.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        val view = ObservationBuilder(cardRegistry = registry()).build(
+            produced.state,
+            owner,
+            emptyList(),
+        ).observation as TrainingObservation
+        val domain = view.pendingDecision!!.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+        val requirement = domain.requirements.single()
+
+        domain.version shouldBe TARGETS_DOMAIN_VERSION
+        requirement.targetZone shouldBe "Graveyard"
+        requirement.mustDifferFromEarlier shouldBe true
+        requirement.sameController shouldBe true
+        requirement.sameOwner shouldBe true
+        requirement.sameCreatureType shouldBe true
+        requirement.sameCardType shouldBe true
+        requirement.totalManaValueAtMost shouldBe 7
+        requirement.differentNames shouldBe true
+        requirement.xConstrainsManaValue shouldBe true
+        requirement.xConstrainsManaValueExactly shouldBe true
+        requirement.xConstrainsPower shouldBe true
+        requirement.xConstrainsCount shouldBe true
+        requirement.candidates shouldBe pending.legalTargets[0]!!.sortedBy { it.value }
+
+        val unresolvedRequirement = resolvedRequirement.copy(
+            baseRequirement = (resolvedRequirement.baseRequirement as TargetObject).copy(
+                totalManaValueAtMost = DynamicAmount.XValue,
+            )
+        )
+        val unsupported = executor.execute(
+            state = state,
+            effect = SelectTargetEffect(requirement = unresolvedRequirement, storeAs = "chosen"),
+            context = context,
+        )
+        unsupported.pendingDecision shouldBe null
+        unsupported.error shouldNotBe null
+        unsupported.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
     }
 
     test("pending target domain round-trips and rejects an unknown version") {

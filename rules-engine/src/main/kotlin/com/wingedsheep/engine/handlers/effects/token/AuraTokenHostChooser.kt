@@ -6,6 +6,10 @@ import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.DiagnosticSignal
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
@@ -60,7 +64,11 @@ internal object AuraTokenHostChooser {
 
         val decisionId = UUID.randomUUID().toString()
         val auraTarget = cardRegistry?.getCard(auraDefinitionId)?.script?.auraTarget
-            ?: error("Cannot publish pending Aura-token target metadata without auraTarget")
+            ?: return EffectResult.error(
+                state,
+                "Target requirement semantics are unavailable for structured publication",
+                diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
+            )
         val decision = ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,
@@ -77,7 +85,7 @@ internal object AuraTokenHostChooser {
                     description = "permanent for the $auraName token to enchant",
                     minTargets = 1,
                     maxTargets = 1,
-                )
+                ).orReturnUnsupported { return it.toEffectError(state) }
             ),
             legalTargets = mapOf(0 to hosts),
         )

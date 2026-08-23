@@ -1045,7 +1045,7 @@ class TriggerProcessor(
                 minTargets = req.effectiveMinCount,
                 maxTargets = maxTargets,
                 resolvedTotalManaValueAtMost = resolveTotalManaValueAtMost(state, trigger, req),
-            )
+            ).orReturnUnsupported { return it.toExecutionError(state) }
         }
 
         // Create the target selection decision. The effect description becomes the
@@ -1499,7 +1499,7 @@ class TriggerProcessor(
                     requirement = req,
                     minTargets = req.effectiveMinCount,
                     maxTargets = req.count
-                )
+                ).orReturnUnsupported { return it.toExecutionError(state) }
             }
             // Auto-select the lone legal player target instead of prompting (mirrors
             // processTargetedTrigger's single-player-target shortcut).

@@ -4,6 +4,8 @@ import com.wingedsheep.engine.state.components.battlefield.chosenColor
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toExecutionError
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DiagnosticSignal
@@ -1107,7 +1109,7 @@ class ActivateAbilityHandler(
                         requirement = req,
                         minTargets = req.effectiveMinCount,
                         maxTargets = req.count
-                    )
+                    ).orReturnUnsupported { return it.toExecutionError(state) }
                 }
                 val decisionId = java.util.UUID.randomUUID().toString()
                 val prompt = "Choose ${controllerTargetReqsExec.joinToString(" and ") { it.description }} for ${cardComponent.name}"
@@ -2275,7 +2277,7 @@ class ActivateAbilityHandler(
                 requirement = req,
                 minTargets = req.effectiveMinCount,
                 maxTargets = req.count
-            )
+            ).orReturnUnsupported { return it.toExecutionError(state) }
         }
 
         val decisionId = java.util.UUID.randomUUID().toString()

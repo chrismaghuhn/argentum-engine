@@ -4,9 +4,18 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.targets.AnyTarget
+import com.wingedsheep.sdk.scripting.targets.TargetCreatureOrPlaneswalker
+import com.wingedsheep.sdk.scripting.targets.TargetCreatureOrPlayer
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetOther
+import com.wingedsheep.sdk.scripting.targets.TargetOpponent
+import com.wingedsheep.sdk.scripting.targets.TargetOpponentOrPlaneswalker
+import com.wingedsheep.sdk.scripting.targets.TargetPermanentOrPlayer
+import com.wingedsheep.sdk.scripting.targets.TargetPlayer
+import com.wingedsheep.sdk.scripting.targets.TargetPlayerOrPlaneswalker
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
+import com.wingedsheep.sdk.scripting.targets.TargetSpellOrPermanent
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
@@ -34,22 +43,23 @@ internal data class TargetRequirementSemantics(
         fun inspect(
             requirement: TargetRequirement,
             resolvedTotalManaValueAtMost: Int? = null,
-        ): TargetRequirementSemantics {
+        ): TargetRequirementSemanticsResult {
             val targetObject = requirement.targetObjectOrNull()
             val totalManaValueAtMost = targetObject?.totalManaValueAtMost?.let { dynamicAmount ->
                 resolvedTotalManaValueAtMost ?: when (dynamicAmount) {
                     is DynamicAmount.Fixed -> dynamicAmount.amount
-                    else -> error(
-                        "Cannot publish pending target metadata: total mana value cap " +
-                            "${dynamicAmount.description} has not been resolved"
+                    else -> return TargetRequirementSemanticsResult.Unsupported(
+                        TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE
                     )
                 }
             }
-            require(totalManaValueAtMost == null || totalManaValueAtMost >= 0) {
-                "Pending target metadata requires a non-negative total mana value cap"
+            if (totalManaValueAtMost != null && totalManaValueAtMost < 0) {
+                return TargetRequirementSemanticsResult.Unsupported(
+                    TargetRequirementUnsupportedReason.INVALID_TOTAL_MANA_VALUE
+                )
             }
 
-            return TargetRequirementSemantics(
+            return TargetRequirementSemanticsResult.Supported(TargetRequirementSemantics(
                 targetZone = targetObject?.filter?.publicTargetZone(),
                 mustDifferFromEarlier = requirement.containsTargetOther(),
                 sameController = targetObject?.sameController == true,
@@ -68,15 +78,29 @@ internal data class TargetRequirementSemantics(
                     it == CardPredicate.PowerEqualsX
                 } == true,
                 xConstrainsCount = targetObject?.dynamicMaxCount == DynamicAmount.XValue,
-            )
+            ))
         }
     }
+}
+
+internal sealed interface TargetRequirementSemanticsResult {
+    data class Supported(val semantics: TargetRequirementSemantics) : TargetRequirementSemanticsResult
+
+    data class Unsupported(val reason: TargetRequirementUnsupportedReason) : TargetRequirementSemanticsResult
 }
 
 private fun TargetRequirement.targetObjectOrNull(): TargetObject? = when (this) {
     is TargetObject -> this
     is TargetOther -> baseRequirement.targetObjectOrNull()
-    else -> null
+    is TargetPlayer,
+    is TargetOpponent,
+    is AnyTarget,
+    is TargetCreatureOrPlayer,
+    is TargetPermanentOrPlayer,
+    is TargetOpponentOrPlaneswalker,
+    is TargetPlayerOrPlaneswalker,
+    is TargetCreatureOrPlaneswalker,
+    is TargetSpellOrPermanent -> null
 }
 
 private fun TargetRequirement.containsTargetOther(): Boolean = when (this) {

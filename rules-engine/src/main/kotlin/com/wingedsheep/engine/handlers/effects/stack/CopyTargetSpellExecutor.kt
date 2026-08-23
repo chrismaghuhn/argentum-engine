@@ -245,7 +245,7 @@ class CopyTargetSpellExecutor(
             TargetRequirementInfo.fromRequirement(
                 index = index,
                 requirement = req,
-            )
+            ).orReturnUnsupported { return it.toEffectError(state) }
         }
 
         // Matches the Storm path's labelling so a multi-copy prompt says which copy it is for.

@@ -82,7 +82,7 @@ class SelectTargetPipelineExecutor(
             requirement = effect.requirement,
             minTargets = 1,
             maxTargets = 1
-        )
+        ).orReturnUnsupported { return it.toEffectError(state) }
 
         val decision = ChooseTargetsDecision(
             id = decisionId,

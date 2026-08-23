@@ -7,6 +7,8 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuation
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
@@ -229,7 +231,15 @@ class MoveToZoneEffectExecutor(
 
         val cardName = cardComponent.name
         val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
-            ?: error("Cannot publish pending Aura target metadata without auraTarget")
+            ?: return EffectResult.error(
+                state,
+                "Target requirement semantics are unavailable for structured publication",
+                diagnostics = listOf(
+                    com.wingedsheep.engine.core.DiagnosticSignal(
+                        com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+                    )
+                )
+            )
         val decisionId = UUID.randomUUID().toString()
         val decision = ChooseTargetsDecision(
             id = decisionId,
@@ -247,7 +257,7 @@ class MoveToZoneEffectExecutor(
                     description = "what $cardName attaches to",
                     minTargets = 1,
                     maxTargets = 1
-                )
+                ).orReturnUnsupported { return it.toEffectError(state) }
             ),
             legalTargets = mapOf(0 to legalHosts)
         )

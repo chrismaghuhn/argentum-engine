@@ -483,7 +483,7 @@ class MiscContinuationResumer(
             TargetRequirementInfo.fromRequirement(
                 index = index,
                 requirement = req,
-            )
+            ).orReturnUnsupported { return it.toExecutionError(currentState) }
         }
 
         val totalCopies = continuation.totalCopies

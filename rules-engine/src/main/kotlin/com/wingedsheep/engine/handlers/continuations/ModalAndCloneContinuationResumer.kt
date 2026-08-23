@@ -1685,7 +1685,7 @@ internal fun processChosenModeQueue(
             requirement = req,
             minTargets = req.effectiveMinCount,
             maxTargets = req.count
-        )
+        ).orReturnUnsupported { return it.toExecutionError(state) }
     }
 
     val allSatisfied = requirementInfos.all { info ->

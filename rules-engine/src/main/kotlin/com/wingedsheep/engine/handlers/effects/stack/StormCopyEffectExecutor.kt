@@ -179,6 +179,7 @@ class StormCopyEffectExecutor(
             )
             val targetReqInfos = effect.spellTargetRequirements.mapIndexed { index, req ->
                 TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                    .orReturnUnsupported { return it.toEffectError(currentState) }
             }
 
             val copyLabel = if (effect.copyCount > 1)
@@ -294,6 +295,7 @@ class StormCopyEffectExecutor(
                         ),
                         targetRequirements = reqs.mapIndexed { index, req ->
                             TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                                .orReturnUnsupported { return it.toExecutionError(currentState) }
                         },
                         legalTargets = legalTargetsMap
                     )

@@ -443,7 +443,7 @@ class LibraryAndZoneContinuationResumer(
                         requirement = nextAuraTarget,
                         minTargets = 1,
                         maxTargets = 1
-                    )
+                    ).orReturnUnsupported { return it.toExecutionError(nextState) }
                 ),
                 legalTargets = mapOf(0 to legalTargets)
             )

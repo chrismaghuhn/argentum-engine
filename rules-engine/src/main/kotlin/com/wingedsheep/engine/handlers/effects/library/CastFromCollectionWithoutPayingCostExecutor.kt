@@ -8,6 +8,10 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetRequirementInfoResult
+import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
@@ -90,6 +94,9 @@ class CastFromCollectionWithoutPayingCostExecutor(
             // initiate; the chosen card simply stays where it is.
             return EffectResult.success(state)
         }
+        if (prep is TargetPrep.Unsupported) {
+            return TargetRequirementInfoResult.Unsupported(prep.reason).toEffectError(state)
+        }
 
         // payManaCost casts route through the normal cost (Kaervek, the Punisher — "you may cast
         // the copy"); only the free-cast path stamps PlayWithoutPayingCostComponent. Both grant a
@@ -171,6 +178,11 @@ class CastFromCollectionWithoutPayingCostExecutor(
 
         /** A required target slot has no legal targets — the cast can't initiate (CR 601.2c). */
         data object NoLegalTargets : TargetPrep
+
+        /** The authoritative target metadata cannot be represented for Gym publication. */
+        data class Unsupported(
+            val reason: TargetRequirementUnsupportedReason,
+        ) : TargetPrep
 
         /** Pause with [decision] and push [continuation]; the resumer performs the cast with the picks. */
         data class NeedsTargets(
@@ -281,7 +293,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     requirement = requirement,
                     minTargets = requirement.effectiveMinCount,
                     maxTargets = requirement.count,
-                )
+                ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
             }
             val mandatoryRequirementHasNoTargets = requirementInfos.any { info ->
                 info.minTargets > 0 && legalTargetsMap[info.index].isNullOrEmpty()

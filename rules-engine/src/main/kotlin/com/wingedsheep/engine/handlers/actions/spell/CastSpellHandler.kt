@@ -15,6 +15,8 @@ import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toExecutionError
 import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.LifeChangeReason
 import com.wingedsheep.engine.core.CardsDiscardedEvent
@@ -4840,7 +4842,7 @@ class CastSpellHandler(
                     requirement = req,
                     minTargets = req.effectiveMinCount,
                     maxTargets = req.count
-                )
+                ).orReturnUnsupported { return it.toExecutionError(state) }
             }
             val allSatisfied = requirementInfos.all { info ->
                 (legalTargetsMap[info.index]?.isNotEmpty() == true) || info.minTargets == 0

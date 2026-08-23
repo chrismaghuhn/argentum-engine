@@ -157,6 +157,7 @@ class CopyEachTargetSpellExecutor(
                     ),
                     targetRequirements = targetReqs.mapIndexed { index, req ->
                         TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                            .orReturnUnsupported { return it.toExecutionError(currentState) }
                     },
                     legalTargets = legalTargetsMap
                 )

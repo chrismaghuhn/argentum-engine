@@ -172,12 +172,17 @@ data class TargetRequirementInfo(
             minTargets: Int = requirement.effectiveMinCount,
             maxTargets: Int = requirement.count,
             resolvedTotalManaValueAtMost: Int? = null,
-        ): TargetRequirementInfo {
-            val semantics = TargetRequirementSemantics.inspect(
+        ): TargetRequirementInfoResult {
+            val semantics = when (val result = TargetRequirementSemantics.inspect(
                 requirement = requirement,
                 resolvedTotalManaValueAtMost = resolvedTotalManaValueAtMost,
-            )
-            return TargetRequirementInfo(
+            )) {
+                is TargetRequirementSemanticsResult.Supported -> result.semantics
+                is TargetRequirementSemanticsResult.Unsupported -> {
+                    return TargetRequirementInfoResult.Unsupported(result.reason)
+                }
+            }
+            return TargetRequirementInfoResult.Supported(TargetRequirementInfo(
                 index = index,
                 description = description,
                 minTargets = minTargets,
@@ -194,9 +199,46 @@ data class TargetRequirementInfo(
                 xConstrainsManaValueExactly = semantics.xConstrainsManaValueExactly,
                 xConstrainsPower = semantics.xConstrainsPower,
                 xConstrainsCount = semantics.xConstrainsCount,
-            )
+            ))
         }
     }
+}
+
+/** The reason a pending target requirement cannot be published as a complete structured domain. */
+enum class TargetRequirementUnsupportedReason {
+    UNRESOLVED_TOTAL_MANA_VALUE,
+    INVALID_TOTAL_MANA_VALUE,
+}
+
+/** Typed result at the Rules-to-pending target metadata boundary. */
+sealed interface TargetRequirementInfoResult {
+    data class Supported(val info: TargetRequirementInfo) : TargetRequirementInfoResult
+
+    data class Unsupported(val reason: TargetRequirementUnsupportedReason) : TargetRequirementInfoResult
+}
+
+internal fun TargetRequirementInfoResult.Unsupported.toExecutionError(
+    state: com.wingedsheep.engine.state.GameState
+): ExecutionResult = ExecutionResult.error(
+    state = state,
+    message = "Target requirement semantics are unavailable for structured publication",
+    diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING)),
+)
+
+internal fun TargetRequirementInfoResult.Unsupported.toEffectError(
+    state: com.wingedsheep.engine.state.GameState
+): EffectResult = EffectResult.error(
+    state = state,
+    message = "Target requirement semantics are unavailable for structured publication",
+    diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING)),
+)
+
+/** Consume supported metadata while forcing every producer to handle unsupported semantics. */
+internal inline fun TargetRequirementInfoResult.orReturnUnsupported(
+    onUnsupported: (TargetRequirementInfoResult.Unsupported) -> Nothing,
+): TargetRequirementInfo = when (this) {
+    is TargetRequirementInfoResult.Supported -> info
+    is TargetRequirementInfoResult.Unsupported -> onUnsupported(this)
 }
 
 /**
