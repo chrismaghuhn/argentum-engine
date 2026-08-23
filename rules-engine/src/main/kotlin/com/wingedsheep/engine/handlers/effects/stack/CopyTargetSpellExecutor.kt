@@ -242,9 +242,9 @@ class CopyTargetSpellExecutor(
             resolvingSpellCopyPayload = resolvingSpellCopyPayload
         )
         val targetReqInfos = targetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo(
+            TargetRequirementInfo.fromRequirement(
                 index = index,
-                description = req.description
+                requirement = req,
             )
         }
 

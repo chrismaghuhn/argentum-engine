@@ -156,7 +156,7 @@ class CopyEachTargetSpellExecutor(
                         effectHint = "Copy of $spellName"
                     ),
                     targetRequirements = targetReqs.mapIndexed { index, req ->
-                        TargetRequirementInfo(index = index, description = req.description)
+                        TargetRequirementInfo.fromRequirement(index = index, requirement = req)
                     },
                     legalTargets = legalTargetsMap
                 )

@@ -276,9 +276,9 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     sourceId = cardId,
                 )
                 legalTargetsMap[index] = legal
-                TargetRequirementInfo(
+                TargetRequirementInfo.fromRequirement(
                     index = index,
-                    description = requirement.description,
+                    requirement = requirement,
                     minTargets = requirement.effectiveMinCount,
                     maxTargets = requirement.count,
                 )

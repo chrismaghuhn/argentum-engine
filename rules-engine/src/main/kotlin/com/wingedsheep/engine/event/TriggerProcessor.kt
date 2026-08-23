@@ -1039,14 +1039,12 @@ class TriggerProcessor(
             // mirroring the cast-time path (TargetEnumerationUtils). Using req.count (always 1
             // for an unlimited requirement) would wrongly clamp the decision to a single target.
             val maxTargets = if (req.unlimited) (allLegalTargets[index]?.size ?: 0) else req.count
-            TargetRequirementInfo(
+            TargetRequirementInfo.fromRequirement(
                 index = index,
-                description = req.description,
+                requirement = req,
                 minTargets = req.effectiveMinCount,
                 maxTargets = maxTargets,
-                sameOwner = (req as? com.wingedsheep.sdk.scripting.targets.TargetObject)?.sameOwner == true,
-                totalManaValueAtMost = resolveTotalManaValueAtMost(state, trigger, req),
-                differentNames = (req as? com.wingedsheep.sdk.scripting.targets.TargetObject)?.differentNames == true
+                resolvedTotalManaValueAtMost = resolveTotalManaValueAtMost(state, trigger, req),
             )
         }
 
@@ -1496,9 +1494,9 @@ class TriggerProcessor(
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
                 legalTargetsMap[index] = findModeLegalTargets(state, ability, req)
-                TargetRequirementInfo(
+                TargetRequirementInfo.fromRequirement(
                     index = index,
-                    description = req.description,
+                    requirement = req,
                     minTargets = req.effectiveMinCount,
                     maxTargets = req.count
                 )
@@ -1914,7 +1912,7 @@ class TriggerProcessor(
         trigger: PendingTrigger,
         requirement: TargetRequirement
     ): Int? {
-        val dyn = (requirement as? TargetObject)?.totalManaValueAtMost ?: return null
+        val dyn = requirement.targetObjectOrNull()?.totalManaValueAtMost ?: return null
         return try {
             val context = EffectContext(
                 sourceId = trigger.sourceId,
@@ -1955,6 +1953,13 @@ class TriggerProcessor(
         } catch (_: Exception) {
             null
         }
+    }
+
+    /** Read aggregate target metadata through a TargetOther wrapper without changing validation. */
+    private fun TargetRequirement.targetObjectOrNull(): TargetObject? = when (this) {
+        is TargetObject -> this
+        is TargetOther -> baseRequirement.targetObjectOrNull()
+        else -> null
     }
 
     /**

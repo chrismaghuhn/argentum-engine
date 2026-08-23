@@ -732,8 +732,9 @@ class MoveCollectionExecutor(
 
         val decisionId = UUID.randomUUID().toString()
         val auraName = cardComponent.name
-        val requirementInfo = TargetRequirementInfo(
+        val requirementInfo = TargetRequirementInfo.fromRequirement(
             index = 0,
+            requirement = auraTarget,
             description = auraTarget.description,
             minTargets = 1,
             maxTargets = 1

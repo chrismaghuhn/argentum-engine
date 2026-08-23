@@ -76,8 +76,42 @@ class DecisionCompletenessValidatorTest : FunSpec({
             prompt = "Choose both",
             context = context,
             targetRequirements = listOf(
-                TargetRequirementInfo(0, "first"),
-                TargetRequirementInfo(1, "second")
+                TargetRequirementInfo(
+                    index = 0,
+                    description = "first",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = false,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                ),
+                TargetRequirementInfo(
+                    index = 1,
+                    description = "second",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = false,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                )
             ),
             legalTargets = mapOf(0 to listOf(first), 1 to listOf(second))
         )
@@ -95,21 +129,54 @@ class DecisionCompletenessValidatorTest : FunSpec({
                 description = "same graveyard",
                 minTargets = 2,
                 maxTargets = 2,
-                sameOwner = true
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = true,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false
             ),
             TargetRequirementInfo(
                 index = 0,
                 description = "mana value cap",
                 minTargets = 2,
                 maxTargets = 2,
-                totalManaValueAtMost = 1
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = 1,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false
             ),
             TargetRequirementInfo(
                 index = 0,
                 description = "different names",
                 minTargets = 2,
                 maxTargets = 2,
-                differentNames = true
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = true,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false
             )
         )
 

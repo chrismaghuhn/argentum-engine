@@ -77,9 +77,9 @@ class SelectTargetPipelineExecutor(
         val controllerId = context.controllerId
         val sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
 
-        val requirementInfo = TargetRequirementInfo(
+        val requirementInfo = TargetRequirementInfo.fromRequirement(
             index = 0,
-            description = effect.requirement.description,
+            requirement = effect.requirement,
             minTargets = 1,
             maxTargets = 1
         )

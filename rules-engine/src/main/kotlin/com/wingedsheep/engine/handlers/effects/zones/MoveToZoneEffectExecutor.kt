@@ -228,6 +228,8 @@ class MoveToZoneEffectExecutor(
         }
 
         val cardName = cardComponent.name
+        val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
+            ?: error("Cannot publish pending Aura target metadata without auraTarget")
         val decisionId = UUID.randomUUID().toString()
         val decision = ChooseTargetsDecision(
             id = decisionId,
@@ -239,8 +241,9 @@ class MoveToZoneEffectExecutor(
                 phase = DecisionPhase.RESOLUTION
             ),
             targetRequirements = listOf(
-                TargetRequirementInfo(
+                TargetRequirementInfo.fromRequirement(
                     index = 0,
+                    requirement = auraTarget,
                     description = "what $cardName attaches to",
                     minTargets = 1,
                     maxTargets = 1

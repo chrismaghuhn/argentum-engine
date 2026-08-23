@@ -1340,9 +1340,18 @@ class ObservationBuilder(
         minTargets = requirement.minTargets,
         maxTargets = requirement.maxTargets,
         candidates = unorderedEntityIds(candidates),
+        targetZone = requirement.targetZone,
+        mustDifferFromEarlier = requirement.mustDifferFromEarlier,
+        sameController = requirement.sameController,
         sameOwner = requirement.sameOwner,
+        sameCreatureType = requirement.sameCreatureType,
+        sameCardType = requirement.sameCardType,
         totalManaValueAtMost = requirement.totalManaValueAtMost,
-        differentNames = requirement.differentNames
+        differentNames = requirement.differentNames,
+        xConstrainsManaValue = requirement.xConstrainsManaValue,
+        xConstrainsManaValueExactly = requirement.xConstrainsManaValueExactly,
+        xConstrainsPower = requirement.xConstrainsPower,
+        xConstrainsCount = requirement.xConstrainsCount,
     )
 
     private fun SelectCardsDecision.cardSelectionDomain(): CardSelectionDomain = CardSelectionDomain(

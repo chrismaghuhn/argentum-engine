@@ -480,9 +480,9 @@ class MiscContinuationResumer(
             resolvingSpellCopyPayload = continuation.resolvingSpellCopyPayload
         )
         val targetReqInfos = continuation.spellTargetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo(
+            TargetRequirementInfo.fromRequirement(
                 index = index,
-                description = req.description
+                requirement = req,
             )
         }
 

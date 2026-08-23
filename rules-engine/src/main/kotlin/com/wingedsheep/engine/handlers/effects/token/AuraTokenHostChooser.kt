@@ -59,6 +59,8 @@ internal object AuraTokenHostChooser {
         }
 
         val decisionId = UUID.randomUUID().toString()
+        val auraTarget = cardRegistry?.getCard(auraDefinitionId)?.script?.auraTarget
+            ?: error("Cannot publish pending Aura-token target metadata without auraTarget")
         val decision = ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,
@@ -69,8 +71,9 @@ internal object AuraTokenHostChooser {
                 phase = DecisionPhase.RESOLUTION,
             ),
             targetRequirements = listOf(
-                TargetRequirementInfo(
+                TargetRequirementInfo.fromRequirement(
                     index = 0,
+                    requirement = auraTarget,
                     description = "permanent for the $auraName token to enchant",
                     minTargets = 1,
                     maxTargets = 1,

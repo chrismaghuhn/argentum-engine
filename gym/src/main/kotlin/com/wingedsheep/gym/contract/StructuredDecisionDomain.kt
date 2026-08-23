@@ -9,6 +9,8 @@ import kotlinx.serialization.Serializable
 const val STRUCTURED_DECISION_DOMAIN_VERSION: Int = 1
 /** Version of the mana-source pending-decision payload after replacing runtime ability handles. */
 const val MANA_SOURCES_DOMAIN_VERSION: Int = 2
+/** Version of the pending target-domain payload carrying the shared target-requirement atom. */
+const val TARGETS_DOMAIN_VERSION: Int = 2
 
 /**
  * Perspective-safe, typed descriptions of decisions that cannot be represented by one flat
@@ -27,18 +29,33 @@ data class TargetRequirementDomain(
     val minTargets: Int,
     val maxTargets: Int,
     val candidates: List<EntityId>,
+    val targetZone: String?,
+    val mustDifferFromEarlier: Boolean,
+    val sameController: Boolean,
     val sameOwner: Boolean,
+    val sameCreatureType: Boolean,
+    val sameCardType: Boolean,
     val totalManaValueAtMost: Int?,
-    val differentNames: Boolean
+    val differentNames: Boolean,
+    val xConstrainsManaValue: Boolean,
+    val xConstrainsManaValueExactly: Boolean,
+    val xConstrainsPower: Boolean,
+    val xConstrainsCount: Boolean
 )
 
 @Serializable
 @SerialName("targets")
 data class TargetsDomain(
-    override val version: Int = STRUCTURED_DECISION_DOMAIN_VERSION,
+    override val version: Int = TARGETS_DOMAIN_VERSION,
     val requirements: List<TargetRequirementDomain>,
     val canCancel: Boolean
-) : StructuredDecisionDomain
+) : StructuredDecisionDomain {
+    init {
+        require(version == TARGETS_DOMAIN_VERSION) {
+            "Unsupported targets domain version: $version"
+        }
+    }
+}
 
 @Serializable
 data class StructuredCardInfo(

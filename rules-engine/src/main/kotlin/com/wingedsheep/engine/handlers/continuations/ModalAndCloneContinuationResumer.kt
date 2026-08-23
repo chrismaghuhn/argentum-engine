@@ -1680,9 +1680,9 @@ internal fun processChosenModeQueue(
             sourceId = sourceId
         )
         legalTargetsMap[index] = legalTargets
-        TargetRequirementInfo(
+        TargetRequirementInfo.fromRequirement(
             index = index,
-            description = req.description,
+            requirement = req,
             minTargets = req.effectiveMinCount,
             maxTargets = req.count
         )

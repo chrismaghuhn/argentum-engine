@@ -4835,9 +4835,9 @@ class CastSpellHandler(
             val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
                 val legal = targetFinder.findLegalTargets(state, req, casterId, cardId)
                 legalTargetsMap[index] = legal
-                com.wingedsheep.engine.core.TargetRequirementInfo(
+                com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
                     index = index,
-                    description = req.description,
+                    requirement = req,
                     minTargets = req.effectiveMinCount,
                     maxTargets = req.count
                 )

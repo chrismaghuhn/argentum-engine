@@ -1102,9 +1102,9 @@ class ActivateAbilityHandler(
                         return ExecutionResult.error(state, "No legal target for ${cardComponent.name}")
                     }
                     legalTargets[index] = legal
-                    com.wingedsheep.engine.core.TargetRequirementInfo(
+                    com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
                         index = index,
-                        description = req.description,
+                        requirement = req,
                         minTargets = req.effectiveMinCount,
                         maxTargets = req.count
                     )
@@ -2270,9 +2270,9 @@ class ActivateAbilityHandler(
                 return ExecutionResult.error(state, "No legal target for opponent's choice")
             }
             legalTargets[index] = legal
-            com.wingedsheep.engine.core.TargetRequirementInfo(
+            com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
                 index = index,
-                description = req.description,
+                requirement = req,
                 minTargets = req.effectiveMinCount,
                 maxTargets = req.count
             )

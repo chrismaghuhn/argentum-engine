@@ -93,7 +93,7 @@ class CopyTargetTriggeredAbilityExecutor(
         )
 
         val targetReqInfos = targetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo(index = index, description = req.description)
+            TargetRequirementInfo.fromRequirement(index = index, requirement = req)
         }
 
         val decision = ChooseTargetsDecision(

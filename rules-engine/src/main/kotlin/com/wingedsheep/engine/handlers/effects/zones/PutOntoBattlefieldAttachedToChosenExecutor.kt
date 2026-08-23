@@ -119,8 +119,9 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
         // Pause for the controller to choose a host.
         val decisionId = UUID.randomUUID().toString()
         val cardName = cardComponent.name
-        val requirementInfo = TargetRequirementInfo(
+        val requirementInfo = TargetRequirementInfo.fromRequirement(
             index = 0,
+            requirement = hostRequirement,
             description = effect.hostFilter.description,
             minTargets = 1,
             maxTargets = 1

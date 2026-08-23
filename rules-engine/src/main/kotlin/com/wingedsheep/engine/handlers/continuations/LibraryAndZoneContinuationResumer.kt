@@ -438,9 +438,9 @@ class LibraryAndZoneContinuationResumer(
                     phase = DecisionPhase.RESOLUTION
                 ),
                 targetRequirements = listOf(
-                    TargetRequirementInfo(
+                    TargetRequirementInfo.fromRequirement(
                         index = 0,
-                        description = nextAuraTarget.description,
+                        requirement = nextAuraTarget,
                         minTargets = 1,
                         maxTargets = 1
                     )

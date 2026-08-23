@@ -178,10 +178,7 @@ class StormCopyEffectExecutor(
                 resolvingSpellCopyPayload = resolvingSpellCopyPayload
             )
             val targetReqInfos = effect.spellTargetRequirements.mapIndexed { index, req ->
-                TargetRequirementInfo(
-                    index = index,
-                    description = req.description
-                )
+                TargetRequirementInfo.fromRequirement(index = index, requirement = req)
             }
 
             val copyLabel = if (effect.copyCount > 1)
@@ -296,10 +293,7 @@ class StormCopyEffectExecutor(
                             effectHint = "Copy of $spellName$modeLabel"
                         ),
                         targetRequirements = reqs.mapIndexed { index, req ->
-                            TargetRequirementInfo(
-                                index = index,
-                                description = req.description
-                            )
+                            TargetRequirementInfo.fromRequirement(index = index, requirement = req)
                         },
                         legalTargets = legalTargetsMap
                     )

@@ -2,6 +2,7 @@ package com.wingedsheep.engine.core
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -129,14 +130,19 @@ data class ChooseTargetsDecision(
 data class TargetRequirementInfo(
     val index: Int,
     val description: String,
-    val minTargets: Int = 1,
-    val maxTargets: Int = 1,
+    val minTargets: Int,
+    val maxTargets: Int,
+    val targetZone: String?,
+    val mustDifferFromEarlier: Boolean,
+    val sameController: Boolean,
     /**
      * When true, every chosen card target for this requirement must be owned by the same
      * player — "from a single graveyard" (Arashin Sunshield). Enforced against each
      * selected card's owner in [DecisionValidators.validateTargets].
      */
-    val sameOwner: Boolean = false,
+    val sameOwner: Boolean,
+    val sameCreatureType: Boolean,
+    val sameCardType: Boolean,
     /**
      * When non-null, the combined mana value of the chosen card targets for this requirement may
      * not exceed this cap — "any number of target creature cards with total mana value X or less"
@@ -145,14 +151,53 @@ data class TargetRequirementInfo(
      * [DecisionValidators.validateTargets] rejects a selection whose summed `manaValue` exceeds it.
      * `null` imposes no aggregate cap.
      */
-    val totalManaValueAtMost: Int? = null,
+    val totalManaValueAtMost: Int?,
     /**
      * When true, no two chosen targets for this requirement may share a name — "target creature
      * cards with different names" (Behold the Sinister Six!). Enforced against each selected
      * target's name in [DecisionValidators.validateTargets].
      */
-    val differentNames: Boolean = false
-)
+    val differentNames: Boolean,
+    val xConstrainsManaValue: Boolean,
+    val xConstrainsManaValueExactly: Boolean,
+    val xConstrainsPower: Boolean,
+    val xConstrainsCount: Boolean
+) {
+    companion object {
+        /** Build pending metadata from the authoritative target-requirement source. */
+        fun fromRequirement(
+            index: Int,
+            requirement: TargetRequirement,
+            description: String = requirement.description,
+            minTargets: Int = requirement.effectiveMinCount,
+            maxTargets: Int = requirement.count,
+            resolvedTotalManaValueAtMost: Int? = null,
+        ): TargetRequirementInfo {
+            val semantics = TargetRequirementSemantics.inspect(
+                requirement = requirement,
+                resolvedTotalManaValueAtMost = resolvedTotalManaValueAtMost,
+            )
+            return TargetRequirementInfo(
+                index = index,
+                description = description,
+                minTargets = minTargets,
+                maxTargets = maxTargets,
+                targetZone = semantics.targetZone,
+                mustDifferFromEarlier = semantics.mustDifferFromEarlier,
+                sameController = semantics.sameController,
+                sameOwner = semantics.sameOwner,
+                sameCreatureType = semantics.sameCreatureType,
+                sameCardType = semantics.sameCardType,
+                totalManaValueAtMost = semantics.totalManaValueAtMost,
+                differentNames = semantics.differentNames,
+                xConstrainsManaValue = semantics.xConstrainsManaValue,
+                xConstrainsManaValueExactly = semantics.xConstrainsManaValueExactly,
+                xConstrainsPower = semantics.xConstrainsPower,
+                xConstrainsCount = semantics.xConstrainsCount,
+            )
+        }
+    }
+}
 
 /**
  * Player must select cards from a set (e.g., discard, sacrifice, search library).
