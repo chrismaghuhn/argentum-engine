@@ -5,6 +5,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -33,6 +35,8 @@ class CopyTargetTriggeredAbilityExecutor(
 
     override val effectType: KClass<CopyTargetTriggeredAbilityEffect> =
         CopyTargetTriggeredAbilityEffect::class
+
+    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -97,6 +101,25 @@ class CopyTargetTriggeredAbilityExecutor(
             legalTargetsMap[index] = legalTargets
         }
 
+        val sourceAbility = state.getEntity(abilityEntityId)
+            ?.get<TriggeredAbilityOnStackComponent>()
+        val pendingTargetContext = context.copy(
+            sourceId = abilityEntityId,
+            xValue = sourceAbility?.xValue ?: context.xValue,
+            triggeringEntityId = sourceAbility?.triggeringEntityId ?: context.triggeringEntityId,
+            triggeringPlayerId = sourceAbility?.triggeringPlayerId ?: context.triggeringPlayerId,
+            pipeline = sourceAbility?.carriedPipeline ?: context.pipeline,
+        )
+        val targetReqInfos = targetRequirements.mapIndexed { index, requirement ->
+            targetValidator.pendingTargetRequirementInfo(
+                state = state,
+                index = index,
+                requirement = requirement,
+                context = pendingTargetContext,
+                legalTargetCount = legalTargetsMap[index].orEmpty().size,
+            ).orReturnUnsupported { return it.toEffectError(state) }
+        }
+
         // If no legal targets for any requirement, skip copy (no-op).
         if (legalTargetsMap.any { (_, targets) -> targets.isEmpty() }) {
             return EffectResult.success(state)
@@ -112,19 +135,6 @@ class CopyTargetTriggeredAbilityExecutor(
             controllerId = context.controllerId,
             targetRequirements = targetRequirements
         )
-
-        val targetReqInfos = targetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo.fromRequirement(
-                index = index,
-                requirement = req,
-                maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
-                    legalTargetsMap[index]?.size
-                } else {
-                    null
-                },
-            )
-                .orReturnUnsupported { return it.toEffectError(state) }
-        }
 
         val decision = ChooseTargetsDecision(
             id = decisionId,

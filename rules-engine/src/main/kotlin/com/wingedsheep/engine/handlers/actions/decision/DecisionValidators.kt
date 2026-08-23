@@ -186,8 +186,9 @@ object DecisionValidators {
                 // response that only the rules engine could have checked with current state.
                 if (req.sameOwner && selectedIds.size > 1) {
                     if (state == null) return "Current game state is required to validate target ownership"
-                    val owners = selectedIds.mapNotNull { id ->
+                    val owners = selectedIds.map { id ->
                         state.getEntity(id)?.get<OwnerComponent>()?.playerId
+                            ?: return "Cannot validate owner for target $id"
                     }
                     if (owners.toSet().size > 1) {
                         return "Targets for requirement $reqIndex must be from a single graveyard"
@@ -200,7 +201,8 @@ object DecisionValidators {
                 if (manaCap != null && selectedIds.isNotEmpty()) {
                     if (state == null) return "Current game state is required to validate target mana value"
                     val totalManaValue = selectedIds.sumOf { id ->
-                        state.getEntity(id)?.get<CardComponent>()?.manaValue ?: 0
+                        state.getEntity(id)?.get<CardComponent>()?.manaValue
+                            ?: return "Cannot validate mana value for target $id"
                     }
                     if (totalManaValue > manaCap) {
                         return "Targets for requirement $reqIndex exceed total mana value $manaCap"
@@ -212,6 +214,7 @@ object DecisionValidators {
                     if (state == null) return "Current game state is required to validate target names"
                     val names = selectedIds.map { id ->
                         state.projectedState.getName(id) ?: state.getEntity(id)?.get<CardComponent>()?.name
+                            ?: return "Cannot validate name for target $id"
                     }
                     if (names.size != names.toSet().size) {
                         return "Targets for requirement $reqIndex must have different names"
@@ -220,10 +223,10 @@ object DecisionValidators {
 
                 if (req.sameController && selectedIds.size > 1) {
                     if (state == null) return "Current game state is required to validate target controllers"
-                    val controllers = selectedIds.mapNotNull { id ->
-                        if (id !in state.getBattlefield()) return@mapNotNull null
+                    val controllers = selectedIds.map { id ->
                         state.projectedState.getController(id)
                             ?: state.getEntity(id)?.get<ControllerComponent>()?.playerId
+                            ?: return "Cannot validate controller for target $id"
                     }
                     if (controllers.toSet().size > 1) {
                         return "Targets for requirement $reqIndex must be controlled by the same player"
@@ -233,8 +236,10 @@ object DecisionValidators {
                 if (req.sameCreatureType && selectedIds.size > 1) {
                     if (state == null) return "Current game state is required to validate target creature types"
                     val subtypeSets = selectedIds.map { id ->
-                        if (id !in state.getBattlefield()) emptySet()
-                        else state.projectedState.getSubtypes(id)
+                        val card = state.getEntity(id)?.get<CardComponent>()
+                            ?: return "Cannot validate creature type for target $id"
+                        if (id in state.getBattlefield()) state.projectedState.getSubtypes(id)
+                        else card.typeLine.subtypes.map { it.value }.toSet()
                     }
                     val sharedSubtypes = subtypeSets.drop(1).fold(subtypeSets.firstOrNull().orEmpty()) { shared, next ->
                         shared intersect next
@@ -247,8 +252,13 @@ object DecisionValidators {
                 if (req.sameCardType && selectedIds.size > 1) {
                     if (state == null) return "Current game state is required to validate target card types"
                     val typeSets = selectedIds.map { id ->
-                        if (id !in state.getBattlefield()) emptySet()
-                        else state.projectedState.getTypes(id).filter { it in CARD_TYPE_NAMES }.toSet()
+                        val card = state.getEntity(id)?.get<CardComponent>()
+                            ?: return "Cannot validate card type for target $id"
+                        if (id in state.getBattlefield()) {
+                            state.projectedState.getTypes(id).filter { it in CARD_TYPE_NAMES }.toSet()
+                        } else {
+                            card.typeLine.cardTypes.map { it.name }.filter { it in CARD_TYPE_NAMES }.toSet()
+                        }
                     }
                     val sharedTypes = typeSets.drop(1).fold(typeSets.firstOrNull().orEmpty()) { shared, next ->
                         shared intersect next

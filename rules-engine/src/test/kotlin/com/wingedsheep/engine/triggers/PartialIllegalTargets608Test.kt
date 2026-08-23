@@ -1067,6 +1067,45 @@ class PartialIllegalTargets608Test : FunSpec({
         ) shouldBe listOf(candidate)
     }
 
+    test("pending target finder preserves X context through hand and spell-or-permanent paths") {
+        val driver = driver()
+        val handCandidate = driver.putCardInHand(driver.player1, "Grizzly Bears")
+        val permanentCandidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val finder = TargetFinder()
+        val context = PredicateContext(controllerId = driver.player1, xValue = 2)
+
+        val handRequirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.And(listOf(CardPredicate.ManaValueEqualsX)),
+                    ),
+                ),
+                zone = Zone.HAND,
+            ),
+        )
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = handRequirement,
+            controllerId = driver.player1,
+            pipelineContext = context,
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(handCandidate)
+
+        val spellOrPermanentRequirement = com.wingedsheep.sdk.scripting.targets.TargetSpellOrPermanent(
+            permanentFilter = GameObjectFilter(
+                cardPredicates = listOf(CardPredicate.And(listOf(CardPredicate.ManaValueEqualsX))),
+            ),
+        )
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = spellOrPermanentRequirement,
+            controllerId = driver.player1,
+            pipelineContext = context,
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(permanentCandidate)
+    }
+
     test("608-15: a card that leaves and returns is an illegal target") {
         val driver = driver()
         val card = driver.putCardInHand(driver.player2, "Forest")

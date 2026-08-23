@@ -21,7 +21,11 @@ import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.state.ComponentContainer
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -245,6 +249,90 @@ class DecisionCompletenessValidatorTest : FunSpec({
             DecisionValidators.validate(
                 decision,
                 TargetsResponse(decision.id, mapOf(0 to listOf(first, second)))
+            ).shouldNotBeNull()
+        }
+    }
+
+    test("target relation validation fails closed when authoritative entity metadata is missing") {
+        val relationCases = listOf(
+            "same owner" to TargetRequirementInfo(
+                index = 0,
+                description = "same owner",
+                minTargets = 2,
+                maxTargets = 2,
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = true,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            ),
+            "same controller" to TargetRequirementInfo(
+                index = 0,
+                description = "same controller",
+                minTargets = 2,
+                maxTargets = 2,
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = true,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            ),
+            "total mana value" to TargetRequirementInfo(
+                index = 0,
+                description = "total mana value",
+                minTargets = 2,
+                maxTargets = 2,
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = 5,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            ),
+        )
+
+        relationCases.forEach { (label, requirement) ->
+            var state = GameState()
+                .withEntity(first, ComponentContainer())
+                .withEntity(second, ComponentContainer())
+            if (requirement.sameController) {
+                state = state
+                    .addToZone(ZoneKey(chooser, Zone.BATTLEFIELD), first)
+                    .addToZone(ZoneKey(chooser, Zone.BATTLEFIELD), second)
+            }
+            val decision = ChooseTargetsDecision(
+                id = "missing-$label",
+                playerId = chooser,
+                prompt = label,
+                context = context,
+                targetRequirements = listOf(requirement),
+                legalTargets = mapOf(0 to listOf(first, second)),
+            )
+
+            DecisionValidators.validate(
+                decision,
+                TargetsResponse(decision.id, mapOf(0 to listOf(first, second))),
+                state,
             ).shouldNotBeNull()
         }
     }

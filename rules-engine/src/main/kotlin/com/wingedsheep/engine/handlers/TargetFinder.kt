@@ -141,6 +141,7 @@ class TargetFinder(
                 sourceId,
                 ignoreTargetingRestrictions,
                 targetingSourceType,
+                triggeringEntityId,
                 pipelineContext
             )
             is TargetOpponentOrPlaneswalker -> findOpponentOrPlaneswalkerTargets(
@@ -171,7 +172,9 @@ class TargetFinder(
                 controllerId,
                 sourceId,
                 ignoreTargetingRestrictions,
-                targetingSourceType
+                targetingSourceType,
+                triggeringEntityId,
+                pipelineContext,
             )
             is TargetOther -> {
                 // For TargetOther, find targets for the base requirement but exclude the source
@@ -551,6 +554,7 @@ class TargetFinder(
         sourceId: EntityId?,
         ignoreTargetingRestrictions: Boolean = false,
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        triggeringEntityId: EntityId? = null,
         pipelineContext: PredicateContext? = null
     ): List<EntityId> {
         val targets = mutableListOf<EntityId>()
@@ -569,6 +573,7 @@ class TargetFinder(
                 sourceId,
                 ignoreTargetingRestrictions = ignoreTargetingRestrictions,
                 targetingSourceType = targetingSourceType,
+                triggeringEntityId = triggeringEntityId,
                 pipelineContext = pipelineContext
             )
         )
@@ -649,10 +654,12 @@ class TargetFinder(
     private fun findSpellTargets(
         state: GameState,
         requirement: TargetObject,
-        controllerId: EntityId
+        controllerId: EntityId,
+        sourceId: EntityId? = null,
+        triggeringEntityId: EntityId? = null,
+        pipelineContext: PredicateContext? = null,
     ): List<EntityId> {
         val filter = requirement.filter
-        val predicateContext = PredicateContext(controllerId = controllerId)
         // Whether this requirement is allowed to target *abilities* on the stack, not just spells.
         // "Target spell" (the common case, base filter `Any`) must never reach an ability — a spell
         // is a card on the stack (CR 112.1) while an ability on the stack is a separate object kind
@@ -664,6 +671,12 @@ class TargetFinder(
         return state.stack.filter { stackId ->
             val isAbility = !state.isSpellOnStack(stackId)
             if (isAbility && !abilitiesAllowed) return@filter false
+            val predicateContext = targetingContext(
+                controllerId = controllerId,
+                sourceId = sourceId,
+                triggeringEntityId = triggeringEntityId,
+                pipelineContext = pipelineContext,
+            )
             predicateEvaluator.matches(state, state.projectedState, stackId, filter.baseFilter, predicateContext)
         }
     }
@@ -694,8 +707,22 @@ class TargetFinder(
         return when (filter.zone) {
             Zone.BATTLEFIELD -> findPermanentTargets(state, requirement, controllerId, sourceId, ignoreTargetingRestrictions, targetingSourceType, triggeringEntityId, pipelineContext)
             Zone.GRAVEYARD -> findGraveyardTargets(state, filter, controllerId, sourceId, pipelineContext)
-            Zone.STACK -> findSpellTargets(state, requirement, controllerId)
-            else -> findCardTargetsInZone(state, filter, controllerId)
+            Zone.STACK -> findSpellTargets(
+                state = state,
+                requirement = requirement,
+                controllerId = controllerId,
+                sourceId = sourceId,
+                triggeringEntityId = triggeringEntityId,
+                pipelineContext = pipelineContext,
+            )
+            else -> findCardTargetsInZone(
+                state = state,
+                filter = filter,
+                controllerId = controllerId,
+                sourceId = sourceId,
+                triggeringEntityId = triggeringEntityId,
+                pipelineContext = pipelineContext,
+            )
         }
     }
 
@@ -709,11 +736,12 @@ class TargetFinder(
         controllerId: EntityId,
         sourceId: EntityId?,
         ignoreTargetingRestrictions: Boolean = false,
-        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY
+        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        triggeringEntityId: EntityId? = null,
+        pipelineContext: PredicateContext? = null,
     ): List<EntityId> {
         val projected = state.projectedState
         val targets = mutableListOf<EntityId>()
-        val predicateContext = PredicateContext(controllerId = controllerId, sourceId = sourceId)
         val permanentFilter = requirement.permanentFilter
 
         // Add all permanents on the battlefield matching the optional filter
@@ -731,7 +759,18 @@ class TargetFinder(
             }
 
             if (permanentFilter != null &&
-                !predicateEvaluator.matches(state, projected, entityId, permanentFilter, predicateContext)
+                !predicateEvaluator.matches(
+                    state,
+                    projected,
+                    entityId,
+                    permanentFilter,
+                    targetingContext(
+                        controllerId = controllerId,
+                        sourceId = sourceId,
+                        triggeringEntityId = triggeringEntityId,
+                        pipelineContext = pipelineContext,
+                    ),
+                )
             ) continue
 
             targets.add(entityId)
@@ -811,7 +850,10 @@ class TargetFinder(
     private fun findCardTargetsInZone(
         state: GameState,
         filter: TargetFilter,
-        controllerId: EntityId
+        controllerId: EntityId,
+        sourceId: EntityId? = null,
+        triggeringEntityId: EntityId? = null,
+        pipelineContext: PredicateContext? = null,
     ): List<EntityId> {
         val zoneType = filter.zone
         val targets = mutableListOf<EntityId>()
@@ -821,7 +863,13 @@ class TargetFinder(
             val zone = state.getZone(zoneKey)
 
             for (cardId in zone) {
-                val predicateContext = PredicateContext(controllerId = controllerId, ownerId = playerId)
+                val predicateContext = targetingContext(
+                    controllerId = controllerId,
+                    sourceId = sourceId,
+                    ownerId = playerId,
+                    triggeringEntityId = triggeringEntityId,
+                    pipelineContext = pipelineContext,
+                )
                 if (predicateEvaluator.matches(state, state.projectedState, cardId, filter.baseFilter, predicateContext)) {
                     targets.add(cardId)
                 }

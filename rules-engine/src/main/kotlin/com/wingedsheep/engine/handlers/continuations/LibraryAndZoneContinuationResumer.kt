@@ -14,6 +14,7 @@ import com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithout
 import com.wingedsheep.engine.handlers.effects.library.ExileFromTopRepeatingExecutor
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -424,6 +425,13 @@ class LibraryAndZoneContinuationResumer(
                 auraId = nextAuraId,
                 hostControllerId = nextControllerId,
             )
+            val requirementInfo = services.targetValidator.pendingTargetRequirementInfo(
+                state = nextState,
+                index = 0,
+                requirement = nextAuraTarget,
+                context = EffectContext(sourceId = nextAuraId, controllerId = nextControllerId),
+                legalTargetCount = legalTargets.size,
+            ).orReturnUnsupported { return it.toExecutionError(nextState) }
             if (legalTargets.isEmpty()) continue
 
             val decisionId = java.util.UUID.randomUUID().toString()
@@ -437,20 +445,7 @@ class LibraryAndZoneContinuationResumer(
                     sourceName = auraName,
                     phase = DecisionPhase.RESOLUTION
                 ),
-                targetRequirements = listOf(
-                    TargetRequirementInfo.fromRequirement(
-                        index = 0,
-                        requirement = nextAuraTarget,
-                        minTargets = nextAuraTarget.effectiveMinCount,
-                        maxTargets = if (nextAuraTarget.unlimited &&
-                            !nextAuraTarget.hasUnresolvedDynamicMaxCount()
-                        ) {
-                            legalTargets.size
-                        } else {
-                            null
-                        }
-                    ).orReturnUnsupported { return it.toExecutionError(nextState) }
-                ),
+                targetRequirements = listOf(requirementInfo),
                 legalTargets = mapOf(0 to legalTargets)
             )
             val nextContinuation = MoveCollectionAuraTargetContinuation(

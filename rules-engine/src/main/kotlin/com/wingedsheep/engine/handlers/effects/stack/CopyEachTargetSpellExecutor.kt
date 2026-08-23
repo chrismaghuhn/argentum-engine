@@ -5,6 +5,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -81,6 +83,7 @@ class CopyEachTargetSpellExecutor(
             var currentState = state
             val allEvents = priorEvents.toMutableList()
             var queue = remainingSpellIds
+            val targetValidator = TargetValidator()
 
             while (queue.isNotEmpty()) {
                 val spellId = queue.first()
@@ -130,6 +133,20 @@ class CopyEachTargetSpellExecutor(
                     )
                 }
 
+                val targetReqInfos = targetReqs.mapIndexed { index, requirement ->
+                    targetValidator.pendingTargetRequirementInfo(
+                        state = currentState,
+                        index = index,
+                        requirement = requirement,
+                        context = com.wingedsheep.engine.handlers.EffectContext(
+                            sourceId = spellId,
+                            controllerId = controllerId,
+                            xValue = container.get<SpellOnStackComponent>()?.xValue,
+                        ),
+                        legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                    ).orReturnUnsupported { return it.toExecutionError(currentState) }
+                }
+
                 // 707.10c: no legal replacement — copy inherits the source's (now-illegal)
                 // targets and fizzles on resolution per 608.2b / 112.3b.
                 if (legalTargetsMap.any { (_, t) -> t.isEmpty() }) {
@@ -166,18 +183,7 @@ class CopyEachTargetSpellExecutor(
                         sourceName = spellName,
                         effectHint = "Copy of $spellName"
                     ),
-                    targetRequirements = targetReqs.mapIndexed { index, req ->
-                        TargetRequirementInfo.fromRequirement(
-                            index = index,
-                            requirement = req,
-                            maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
-                                legalTargetsMap[index]?.size
-                            } else {
-                                null
-                            },
-                        )
-                            .orReturnUnsupported { return it.toExecutionError(currentState) }
-                    },
+                    targetRequirements = targetReqInfos,
                     legalTargets = legalTargetsMap
                 )
 

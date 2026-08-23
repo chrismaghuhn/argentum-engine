@@ -21,6 +21,8 @@ import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.destroyPermanen
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionResult
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -48,6 +50,7 @@ class MoveToZoneEffectExecutor(
 ) : EffectExecutor<MoveToZoneEffect> {
 
     private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
+    private val targetValidator = TargetValidator()
 
     override val effectType: KClass<MoveToZoneEffect> = MoveToZoneEffect::class
 
@@ -219,17 +222,6 @@ class MoveToZoneEffectExecutor(
         controllerId: EntityId,
         context: EffectContext
     ): EffectResult {
-        val legalHosts = auraHostLegality.findLegalHosts(
-            state = state,
-            auraId = cardId,
-            hostControllerId = controllerId,
-        )
-
-        // No legal host — the Aura can't enter and stays in its current zone (CR 303.4g).
-        if (legalHosts.isEmpty()) {
-            return EffectResult.success(state)
-        }
-
         val cardName = cardComponent.name
         val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
             ?: return EffectResult.error(
@@ -241,6 +233,26 @@ class MoveToZoneEffectExecutor(
                     )
                 )
             )
+        val legalHosts = auraHostLegality.findLegalHosts(
+            state = state,
+            auraId = cardId,
+            hostControllerId = controllerId,
+        )
+
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = auraTarget,
+            context = context.copy(sourceId = cardId, controllerId = controllerId),
+            legalTargetCount = legalHosts.size,
+            description = "what $cardName attaches to",
+        ).orReturnUnsupported { return it.toEffectError(state) }
+
+        // No legal host — the Aura can't enter and stays in its current zone (CR 303.4g).
+        if (legalHosts.isEmpty()) {
+            return EffectResult.success(state)
+        }
+
         val decisionId = UUID.randomUUID().toString()
         val decision = ChooseTargetsDecision(
             id = decisionId,
@@ -251,19 +263,7 @@ class MoveToZoneEffectExecutor(
                 sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name },
                 phase = DecisionPhase.RESOLUTION
             ),
-            targetRequirements = listOf(
-                TargetRequirementInfo.fromRequirement(
-                    index = 0,
-                    requirement = auraTarget,
-                    description = "what $cardName attaches to",
-                    minTargets = auraTarget.effectiveMinCount,
-                    maxTargets = if (auraTarget.unlimited && !auraTarget.hasUnresolvedDynamicMaxCount()) {
-                        legalHosts.size
-                    } else {
-                        null
-                    }
-                ).orReturnUnsupported { return it.toEffectError(state) }
-            ),
+            targetRequirements = listOf(requirementInfo),
             legalTargets = mapOf(0 to legalHosts)
         )
         val continuation = PutOntoBattlefieldAttachedToChosenContinuation(

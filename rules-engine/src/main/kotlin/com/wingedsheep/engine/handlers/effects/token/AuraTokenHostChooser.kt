@@ -14,6 +14,8 @@ import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.mechanics.targeting.PlayerProtectionRules
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -39,6 +41,8 @@ import java.util.UUID
  */
 internal object AuraTokenHostChooser {
 
+    private val targetValidator = TargetValidator()
+
     /**
      * Pause for the controller to pick a host for the next Aura token, or return an unchanged
      * state when there is nothing the Aura could legally enchant (no token is created).
@@ -56,7 +60,21 @@ internal object AuraTokenHostChooser {
     ): EffectResult {
         if (remaining <= 0) return EffectResult.success(state)
 
+        val auraTarget = cardRegistry?.getCard(auraDefinitionId)?.script?.auraTarget
+            ?: return EffectResult.error(
+                state,
+                "Target requirement semantics are unavailable for structured publication",
+                diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
+            )
         val hosts = legalHosts(state, auraDefinitionId, controllerId, cardRegistry, effectiveSource)
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = auraTarget,
+            context = context.copy(controllerId = controllerId),
+            legalTargetCount = hosts.size,
+            description = "permanent for the $auraName token to enchant",
+        ).orReturnUnsupported { return it.toEffectError(state) }
         if (hosts.isEmpty()) {
             // Nothing legal to enchant — the Aura token can't enter (CR 303.4g), and neither can
             // any of the ones still owed, since they would all copy the same Aura.
@@ -64,12 +82,6 @@ internal object AuraTokenHostChooser {
         }
 
         val decisionId = UUID.randomUUID().toString()
-        val auraTarget = cardRegistry?.getCard(auraDefinitionId)?.script?.auraTarget
-            ?: return EffectResult.error(
-                state,
-                "Target requirement semantics are unavailable for structured publication",
-                diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
-            )
         val decision = ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,
@@ -79,19 +91,7 @@ internal object AuraTokenHostChooser {
                 sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name },
                 phase = DecisionPhase.RESOLUTION,
             ),
-            targetRequirements = listOf(
-                TargetRequirementInfo.fromRequirement(
-                    index = 0,
-                    requirement = auraTarget,
-                    description = "permanent for the $auraName token to enchant",
-                    minTargets = auraTarget.effectiveMinCount,
-                    maxTargets = if (auraTarget.unlimited && !auraTarget.hasUnresolvedDynamicMaxCount()) {
-                        hosts.size
-                    } else {
-                        null
-                    },
-                ).orReturnUnsupported { return it.toEffectError(state) }
-            ),
+            targetRequirements = listOf(requirementInfo),
             legalTargets = mapOf(0 to hosts),
         )
 

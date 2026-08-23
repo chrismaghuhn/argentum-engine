@@ -4,6 +4,8 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.model.EntityId
@@ -21,7 +23,8 @@ import kotlin.reflect.KClass
  *   [SelectTargetPipelineContinuation], returns paused
  */
 class SelectTargetPipelineExecutor(
-    private val targetFinder: TargetFinder = TargetFinder()
+    private val targetFinder: TargetFinder = TargetFinder(),
+    private val targetValidator: TargetValidator = TargetValidator(),
 ) : EffectExecutor<SelectTargetEffect> {
 
     override val effectType: KClass<SelectTargetEffect> = SelectTargetEffect::class
@@ -47,6 +50,18 @@ class SelectTargetPipelineExecutor(
             requireAuthoritativeContext = true,
         )
 
+        // Metadata is part of the authoritative pending decision, even when no candidate was
+        // found. In particular, an empty candidate list must not turn an unresolved X/count or
+        // aggregate cap into a successful empty collection. Optional empty selections remain
+        // valid only after this source-boundary conversion succeeds.
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = effect.requirement,
+            context = context,
+            legalTargetCount = legalTargets.size,
+        ).orReturnUnsupported { return it.toEffectError(state) }
+
         if (legalTargets.isEmpty()) {
             // No legal targets — store empty collection, pipeline continues gracefully
             return EffectResult.success(state).copy(
@@ -62,31 +77,19 @@ class SelectTargetPipelineExecutor(
         }
 
         // Multiple legal targets — pause for player decision
-        return createDecision(state, context, effect, legalTargets)
+        return createDecision(state, context, effect, legalTargets, requirementInfo)
     }
 
     private fun createDecision(
         state: GameState,
         context: EffectContext,
         effect: SelectTargetEffect,
-        legalTargets: List<EntityId>
+        legalTargets: List<EntityId>,
+        requirementInfo: TargetRequirementInfo,
     ): EffectResult {
         val decisionId = UUID.randomUUID().toString()
         val controllerId = context.controllerId
         val sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name }
-
-        val requirementInfo = TargetRequirementInfo.fromRequirement(
-            index = 0,
-            requirement = effect.requirement,
-            minTargets = effect.requirement.effectiveMinCount,
-            maxTargets = if (effect.requirement.unlimited &&
-                !effect.requirement.hasUnresolvedDynamicMaxCount()
-            ) {
-                legalTargets.size
-            } else {
-                null
-            }
-        ).orReturnUnsupported { return it.toEffectError(state) }
 
         val decision = ChooseTargetsDecision(
             id = decisionId,

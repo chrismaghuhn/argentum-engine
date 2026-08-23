@@ -16,6 +16,8 @@ import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -58,6 +60,7 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
 ) : EffectExecutor<PutOntoBattlefieldAttachedToChosenEffect> {
 
     private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
+    private val targetValidator = TargetValidator()
 
     override val effectType: KClass<PutOntoBattlefieldAttachedToChosenEffect> =
         PutOntoBattlefieldAttachedToChosenEffect::class
@@ -105,6 +108,15 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             legalHosts = legalHosts.filter { it in auraLegal }
         }
 
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = hostRequirement,
+            context = context.copy(sourceId = cardId, controllerId = controllerId),
+            legalTargetCount = legalHosts.size,
+            description = effect.hostFilter.description,
+        ).orReturnUnsupported { return it.toEffectError(state) }
+
         if (legalHosts.isEmpty()) {
             // No legal host. Equipment still enters the battlefield (unattached, Rule 301.5c);
             // an Aura can't enter and stays in its current zone (Rule 303.4g).
@@ -125,17 +137,6 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
         // Pause for the controller to choose a host.
         val decisionId = UUID.randomUUID().toString()
         val cardName = cardComponent.name
-        val requirementInfo = TargetRequirementInfo.fromRequirement(
-            index = 0,
-            requirement = hostRequirement,
-            description = effect.hostFilter.description,
-            minTargets = hostRequirement.effectiveMinCount,
-            maxTargets = if (hostRequirement.unlimited && !hostRequirement.hasUnresolvedDynamicMaxCount()) {
-                legalHosts.size
-            } else {
-                null
-            }
-        ).orReturnUnsupported { return it.toEffectError(state) }
         val decision = ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,

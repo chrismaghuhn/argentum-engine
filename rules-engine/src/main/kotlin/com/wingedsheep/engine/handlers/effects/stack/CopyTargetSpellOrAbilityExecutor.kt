@@ -6,6 +6,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -127,6 +129,7 @@ class CopyTargetSpellOrAbilityExecutor(
             var currentState = state
             val allEvents = priorEvents.toMutableList()
             var copiesLeft = remainingCopies
+            val targetValidator = TargetValidator()
 
             while (copiesLeft > 0) {
                 val container = currentState.getEntity(abilityEntityId)
@@ -155,6 +158,34 @@ class CopyTargetSpellOrAbilityExecutor(
                     controllerId = controllerId,
                     sourceId = copierSourceId,
                 )
+
+                val pendingTargetContext = currentState.getEntity(abilityEntityId)?.let { container ->
+                    container.get<TriggeredAbilityOnStackComponent>()?.let { source ->
+                        EffectContext(
+                            sourceId = abilityEntityId,
+                            controllerId = controllerId,
+                            triggeringEntityId = source.triggeringEntityId,
+                            triggeringPlayerId = source.triggeringPlayerId,
+                            xValue = source.xValue,
+                            pipeline = source.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+                        )
+                    } ?: container.get<ActivatedAbilityOnStackComponent>()?.let { source ->
+                        EffectContext(
+                            sourceId = abilityEntityId,
+                            controllerId = controllerId,
+                            xValue = source.xValue,
+                        )
+                    }
+                } ?: EffectContext(sourceId = abilityEntityId, controllerId = controllerId)
+                val targetReqInfos = targetRequirements.mapIndexed { index, requirement ->
+                    targetValidator.pendingTargetRequirementInfo(
+                        state = currentState,
+                        index = index,
+                        requirement = requirement,
+                        context = pendingTargetContext,
+                        legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                    ).orReturnUnsupported { return it.toExecutionError(currentState) }
+                }
 
                 // CR 707.10c: no legal replacement for some requirement — the copy is still made,
                 // inheriting the source's targets (which may be illegal, so it's removed on
@@ -189,18 +220,7 @@ class CopyTargetSpellOrAbilityExecutor(
                         sourceName = sourceName,
                         effectHint = "Copy of $sourceName's ability"
                     ),
-                    targetRequirements = targetRequirements.mapIndexed { index, req ->
-                        TargetRequirementInfo.fromRequirement(
-                            index = index,
-                            requirement = req,
-                            maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
-                                legalTargetsMap[index]?.size
-                            } else {
-                                null
-                            },
-                        )
-                            .orReturnUnsupported { return it.toExecutionError(currentState) }
-                    },
+                    targetRequirements = targetReqInfos,
                     legalTargets = legalTargetsMap
                 )
                 val continuation = CopyAbilityTargetContinuation(

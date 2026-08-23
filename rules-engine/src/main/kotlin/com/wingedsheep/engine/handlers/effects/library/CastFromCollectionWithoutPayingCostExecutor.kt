@@ -17,6 +17,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -62,7 +64,6 @@ class CastFromCollectionWithoutPayingCostExecutor(
     private val cardRegistry: CardRegistry,
     private val targetFinder: TargetFinder = TargetFinder(),
 ) : EffectExecutor<CastFromCollectionWithoutPayingCostEffect> {
-
     override val effectType: KClass<CastFromCollectionWithoutPayingCostEffect> =
         CastFromCollectionWithoutPayingCostEffect::class
 
@@ -280,6 +281,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 return TargetPrep.NotNeeded
             }
 
+            val targetValidator = TargetValidator()
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             targetRequirements.forEachIndexed { index, requirement ->
                 val legal = targetFinder.findLegalTargets(
@@ -291,8 +293,17 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 )
                 legalTargetsMap[index] = legal
             }
-            // Preserve the existing synthesized-cast no-op before converting metadata: an
-            // unresolved semantic fact cannot matter when a required slot has no candidate at all.
+            val requirementInfos = targetRequirements.mapIndexed { index, requirement ->
+                targetValidator.pendingTargetRequirementInfo(
+                    state = state,
+                    index = index,
+                    requirement = requirement,
+                    context = EffectContext(sourceId = cardId, controllerId = casterId),
+                    legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
+            }
+
+            // An unresolved semantic fact is rejected above even when a slot has no candidate.
             val mandatoryRequirementHasNoTargets = targetRequirements.withIndex().any { (index, requirement) ->
                 requirement.effectiveMinCount > 0 && legalTargetsMap[index].isNullOrEmpty()
             }
@@ -308,21 +319,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 return TargetPrep.NotNeeded
             }
 
-            val requirementInfos = selectableIndices.map { index ->
-                val requirement = targetRequirements[index]
-                TargetRequirementInfo.fromRequirement(
-                    index = index,
-                    requirement = requirement,
-                    minTargets = requirement.effectiveMinCount,
-                    maxTargets = if (requirement.unlimited &&
-                        !requirement.hasUnresolvedDynamicMaxCount()
-                    ) {
-                        legalTargetsMap[index]?.size
-                    } else {
-                        null
-                    },
-                ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
-            }
+            val selectableRequirementInfos = selectableIndices.map { index -> requirementInfos[index] }
 
             // Name the face being cast — a transformed cast prompts for "Deluge of the Dead",
             // not for the front face the player exiled.
@@ -337,7 +334,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     sourceName = cardName,
                     phase = DecisionPhase.CASTING,
                 ),
-                targetRequirements = requirementInfos,
+                targetRequirements = selectableRequirementInfos,
                 legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
                 canCancel = false,
             )

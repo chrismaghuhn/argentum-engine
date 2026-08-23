@@ -13,7 +13,10 @@ import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
 import com.wingedsheep.engine.core.ResolvedTargetCount
 import com.wingedsheep.engine.core.ResolvedTotalManaValueAtMost
+import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetRequirementInfoResult
 import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.totalManaValueAtMostOrNull
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -2013,5 +2016,54 @@ class TargetValidator {
 
     private fun playerHasHexproofAgainst(state: GameState, playerId: EntityId, casterId: EntityId): Boolean {
         return playerId != casterId && playerHasHexproof(state, playerId)
+    }
+}
+
+/**
+ * Build one pending target requirement from the authoritative source context.
+ *
+ * Pending producers must not duplicate the dynamic-count and aggregate-cap protocol: a plain
+ * maximum or a null aggregate result is not evidence that a dynamic source was resolved. This
+ * helper keeps the source snapshot, typed witnesses, and unlimited candidate bound together while
+ * leaving the legacy direct [TargetValidator] payload path unchanged.
+ */
+internal fun TargetValidator.pendingTargetRequirementInfo(
+    state: GameState,
+    index: Int,
+    requirement: TargetRequirement,
+    context: EffectContext,
+    legalTargetCount: Int? = null,
+    description: String = requirement.description,
+): TargetRequirementInfoResult {
+    val snapshot = snapshotDynamicCountsForPending(
+        state = state,
+        requirements = listOf(requirement),
+        context = context,
+    ).single()
+    return when (snapshot) {
+        is PendingTargetRequirementSnapshot.Unsupported ->
+            TargetRequirementInfoResult.Unsupported(snapshot.reason)
+        is PendingTargetRequirementSnapshot.Resolved ->
+            TargetRequirementInfo.fromRequirement(
+                index = index,
+                requirement = snapshot.requirement,
+                semanticSource = snapshot.semanticSource,
+                description = description,
+                minTargets = snapshot.requirement.effectiveMinCount,
+                maxTargets = if (snapshot.resolvedMaxTargets == null &&
+                    snapshot.requirement.unlimited &&
+                    !snapshot.requirement.hasUnresolvedDynamicMaxCount()
+                ) {
+                    legalTargetCount
+                } else {
+                    null
+                },
+                resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                resolvedTotalManaValueAtMost = resolveTotalManaValueAtMostForPending(
+                    state = state,
+                    requirement = snapshot.semanticSource,
+                    context = context,
+                ),
+            )
     }
 }

@@ -524,7 +524,7 @@ class StructuredDecisionDomainTest : FunSpec({
             )
         )
         val executor = SelectTargetPipelineExecutor()
-        val context = EffectContext(sourceId = null, controllerId = owner)
+        val context = EffectContext(sourceId = null, controllerId = owner, xValue = 0)
         val produced = executor.execute(
             state = state,
             effect = SelectTargetEffect(requirement = resolvedRequirement, storeAs = "chosen"),
@@ -567,7 +567,7 @@ class StructuredDecisionDomainTest : FunSpec({
                 requirement = unresolvedDynamicCountRequirement,
                 storeAs = "chosen",
             ),
-            context = context,
+            context = context.copy(xValue = null),
         )
         unsupported.pendingDecision shouldBe null
         unsupported.error shouldNotBe null
