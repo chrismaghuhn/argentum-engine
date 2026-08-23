@@ -1535,6 +1535,50 @@ class PartialIllegalTargets608Test : FunSpec({
         decision.targetRequirements.single().totalManaValueAtMost shouldBe 2
     }
 
+    test("trigger modal fizzles an unsupported mandatory empty slot before metadata diagnostics") {
+        val driver = dynamicDriver()
+        val requirement = TargetObject(
+            filter = TargetFilter.CardInGraveyard,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Choose a graveyard card within X mana value",
+                )
+            ),
+            chooseCount = 1,
+        )
+        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+
+        val result = processor.presentTriggerModalTargetDecision(
+            state = driver.state,
+            ability = TriggeredAbilityOnStackComponent(
+                sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-modal-empty-unsupported"),
+                sourceName = "Synthetic trigger modal empty unsupported",
+                controllerId = driver.player1,
+                effect = modal,
+                description = "Synthetic trigger modal empty unsupported",
+            ),
+            outerTargets = emptyList(),
+            outerTargetRequirements = emptyList(),
+            modes = modal.modes,
+            chosenModeIndices = listOf(0),
+            resolvedModeTargets = emptyList(),
+            currentOrdinal = 0,
+            causedByAttack = false,
+            recordChosenModesOnSource = false,
+            recordChosenModesThisTurn = false,
+        )
+
+        result.error shouldBe null
+        result.diagnostics shouldBe emptyList()
+        result.events.filterIsInstance<AbilityFizzledEvent>().size shouldBe 1
+        result.newState.stack.size shouldBe 0
+    }
+
     test("resolution-time modal metadata preserves the continuation X witnesses") {
         val driver = dynamicDriver()
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")

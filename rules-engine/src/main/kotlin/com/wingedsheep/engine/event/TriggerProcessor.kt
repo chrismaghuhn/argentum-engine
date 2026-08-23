@@ -1505,8 +1505,38 @@ class TriggerProcessor(
             }
 
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
+            mode.targetRequirements.forEachIndexed { index, req ->
                 legalTargetsMap[index] = findModeLegalTargets(state, ability, req)
+            }
+
+            // A continuation may re-enter this method without passing through the mode-offer
+            // filter. Preserve trigger-time fizzle/skip semantics before any unsupported target
+            // metadata is converted into a structured-domain diagnostic.
+            val hasMandatoryEmptySlot = mode.targetRequirements.withIndex().any { (index, req) ->
+                req.effectiveMinCount > 0 && legalTargetsMap[index].orEmpty().isEmpty()
+            }
+            if (hasMandatoryEmptySlot) {
+                val remainingModeIndices = chosenModeIndices.filterIndexed { index, _ -> index != ordinal }
+                if (remainingModeIndices.isEmpty()) {
+                    return modalTriggerRemovedFromStack(state, ability, "No legal mode could be chosen")
+                }
+                return presentTriggerModalTargetDecision(
+                    state = state,
+                    ability = ability,
+                    outerTargets = outerTargets,
+                    outerTargetRequirements = outerTargetRequirements,
+                    modes = modes,
+                    chosenModeIndices = remainingModeIndices,
+                    resolvedModeTargets = targetsAccum,
+                    currentOrdinal = ordinal,
+                    resolvedModeTargetRequirements = requirementsAccum,
+                    causedByAttack = causedByAttack,
+                    recordChosenModesOnSource = recordChosenModesOnSource,
+                    recordChosenModesThisTurn = recordChosenModesThisTurn,
+                )
+            }
+
+            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
                 val snapshot = modeSnapshots[chosenModeIndices[ordinal]][index]
                 val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
                     req.unlimited && !req.hasUnresolvedDynamicMaxCount()
