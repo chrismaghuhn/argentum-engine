@@ -1672,7 +1672,7 @@ internal fun processChosenModeQueue(
 
     // Targets required — find legal targets, auto-select / skip / pause as needed.
     val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-    val requirementInfos = head.targetRequirements.mapIndexed { index, req ->
+    head.targetRequirements.forEachIndexed { index, req ->
         val legalTargets = services.targetFinder.findLegalTargets(
             state = state,
             requirement = req,
@@ -1680,16 +1680,12 @@ internal fun processChosenModeQueue(
             sourceId = sourceId
         )
         legalTargetsMap[index] = legalTargets
-        TargetRequirementInfo.fromRequirement(
-            index = index,
-            requirement = req,
-            minTargets = req.effectiveMinCount,
-            maxTargets = req.count
-        ).orReturnUnsupported { return it.toExecutionError(state) }
     }
 
-    val allSatisfied = requirementInfos.all { info ->
-        (legalTargetsMap[info.index]?.isNotEmpty() == true) || info.minTargets == 0
+    // Preserve the established fizzle before converting metadata: an unresolved semantic fact
+    // cannot matter when a mandatory slot has no legal candidate at all.
+    val allSatisfied = head.targetRequirements.withIndex().all { (index, req) ->
+        (legalTargetsMap[index]?.isNotEmpty() == true) || req.effectiveMinCount == 0
     }
     if (!allSatisfied) {
         // Fizzle just this mode; continue with the rest.
@@ -1698,6 +1694,15 @@ internal fun processChosenModeQueue(
             triggeringEntityId, allowCancelBackToModesList, outerTargets, outerAlignedTargets, outerNamedTargets,
             accumulatedEvents, checkForMore
         )
+    }
+
+    val requirementInfos = head.targetRequirements.mapIndexed { index, req ->
+        TargetRequirementInfo.fromRequirement(
+            index = index,
+            requirement = req,
+            minTargets = req.effectiveMinCount,
+            maxTargets = req.count
+        ).orReturnUnsupported { return it.toExecutionError(state) }
     }
 
     // Auto-select single player target.

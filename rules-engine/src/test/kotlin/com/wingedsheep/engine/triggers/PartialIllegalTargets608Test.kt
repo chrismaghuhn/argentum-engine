@@ -68,8 +68,32 @@ class PartialIllegalTargets608Test : FunSpec({
 
     val targetCount = DynamicAmount.ContextProperty(ContextPropertyKey.TARGET_COUNT)
 
+    // The existing negative-cap marker represents an unsupported aggregate fact and matches no
+    // candidate, which makes this a mandatory-empty resolution-time target slot.
+    val unsupportedResolutionModalRequirement = com.wingedsheep.sdk.scripting.targets.TargetObject(
+        filter = TargetFilter.CardInGraveyard,
+        totalManaValueAtMost = DynamicAmount.Fixed(-1)
+    )
+    val resolutionTimeModalSource = card("Synthetic 608 Resolution-Time Modal Source") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode(
+                        effect = Effects.GainLife(1),
+                        targetRequirements = listOf(unsupportedResolutionModalRequirement),
+                        description = "Gain life for a graveyard target"
+                    )
+                ),
+                chooseCount = 1
+            )
+        }
+    }
+
     fun driver(): GameTestDriver = GameTestDriver().also {
-        it.registerCards(TestCards.all)
+        it.registerCards(TestCards.all + resolutionTimeModalSource)
         it.initMirrorMatch(deck = Deck.of("Forest" to 40))
     }
 
@@ -731,6 +755,33 @@ class PartialIllegalTargets608Test : FunSpec({
 
         driver.getLifeTotal(driver.player1) shouldBe lifeBefore + 1
         driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(driver.player2, com.wingedsheep.sdk.core.Zone.BATTLEFIELD)) shouldContain second
+    }
+
+    test("608-12a: a modal fizzle precedes unsupported target metadata") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val source = driver.putPermanentOnBattlefield(driver.player1, resolutionTimeModalSource.name)
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+        val abilityId = resolutionTimeModalSource.activatedAbilities.single().id
+
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId
+            )
+        )
+
+        driver.bothPass()
+        val modeDecision = driver.pendingDecision as ChooseOptionDecision
+        val result = driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(modeDecision.id, optionIndex = 0)
+        )
+
+        result.error shouldBe null
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
     }
 
     test("608-13: modal target slots use the cast-time partial counts") {
