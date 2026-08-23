@@ -80,8 +80,14 @@ class SelectTargetPipelineExecutor(
         val requirementInfo = TargetRequirementInfo.fromRequirement(
             index = 0,
             requirement = effect.requirement,
-            minTargets = 1,
-            maxTargets = 1
+            minTargets = effect.requirement.effectiveMinCount,
+            maxTargets = if (effect.requirement.unlimited &&
+                !effect.requirement.hasUnresolvedDynamicMaxCount()
+            ) {
+                legalTargets.size
+            } else {
+                null
+            }
         ).orReturnUnsupported { return it.toEffectError(state) }
 
         val decision = ChooseTargetsDecision(

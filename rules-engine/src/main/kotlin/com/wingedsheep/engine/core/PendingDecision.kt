@@ -170,7 +170,12 @@ data class TargetRequirementInfo(
             requirement: TargetRequirement,
             description: String = requirement.description,
             minTargets: Int = requirement.effectiveMinCount,
-            maxTargets: Int = requirement.count,
+            /**
+             * An explicit maximum is permitted only when the producer has already resolved a
+             * dynamic cap or has an authoritative finite candidate bound (for `unlimited`).
+             * Fixed requirements derive their static count when this is omitted.
+             */
+            maxTargets: Int? = null,
             resolvedTotalManaValueAtMost: Int? = null,
         ): TargetRequirementInfoResult {
             val semantics = when (val result = TargetRequirementSemantics.inspect(
@@ -182,11 +187,18 @@ data class TargetRequirementInfo(
                     return TargetRequirementInfoResult.Unsupported(result.reason)
                 }
             }
+            val resolvedMaxTargets = maxTargets ?: if (requirement.hasUnresolvedDynamicMaxCount() || requirement.unlimited) {
+                return TargetRequirementInfoResult.Unsupported(
+                    TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
+                )
+            } else {
+                requirement.count
+            }
             return TargetRequirementInfoResult.Supported(TargetRequirementInfo(
                 index = index,
                 description = description,
                 minTargets = minTargets,
-                maxTargets = maxTargets,
+                maxTargets = resolvedMaxTargets,
                 targetZone = semantics.targetZone,
                 mustDifferFromEarlier = semantics.mustDifferFromEarlier,
                 sameController = semantics.sameController,
@@ -206,6 +218,7 @@ data class TargetRequirementInfo(
 
 /** The reason a pending target requirement cannot be published as a complete structured domain. */
 enum class TargetRequirementUnsupportedReason {
+    UNRESOLVED_TARGET_COUNT,
     UNRESOLVED_TOTAL_MANA_VALUE,
     INVALID_TOTAL_MANA_VALUE,
 }

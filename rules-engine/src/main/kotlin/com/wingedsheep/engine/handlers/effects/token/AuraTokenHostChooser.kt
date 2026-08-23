@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.orReturnUnsupported
@@ -83,8 +84,12 @@ internal object AuraTokenHostChooser {
                     index = 0,
                     requirement = auraTarget,
                     description = "permanent for the $auraName token to enchant",
-                    minTargets = 1,
-                    maxTargets = 1,
+                    minTargets = auraTarget.effectiveMinCount,
+                    maxTargets = if (auraTarget.unlimited && !auraTarget.hasUnresolvedDynamicMaxCount()) {
+                        hosts.size
+                    } else {
+                        null
+                    },
                 ).orReturnUnsupported { return it.toEffectError(state) }
             ),
             legalTargets = mapOf(0 to hosts),

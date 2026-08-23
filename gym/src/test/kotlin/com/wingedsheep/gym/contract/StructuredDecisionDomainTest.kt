@@ -515,7 +515,6 @@ class StructuredDecisionDomainTest : FunSpec({
                     baseFilter = GameObjectFilter(cardPredicates = listOf(xAwareTarget)),
                     zone = Zone.GRAVEYARD,
                 ),
-                dynamicMaxCount = DynamicAmount.XValue,
                 sameController = true,
                 sameOwner = true,
                 sameCreatureType = true,
@@ -541,6 +540,8 @@ class StructuredDecisionDomainTest : FunSpec({
         val requirement = domain.requirements.single()
 
         domain.version shouldBe TARGETS_DOMAIN_VERSION
+        requirement.minTargets shouldBe 1
+        requirement.maxTargets shouldBe 2
         requirement.targetZone shouldBe "Graveyard"
         requirement.mustDifferFromEarlier shouldBe true
         requirement.sameController shouldBe true
@@ -552,17 +553,20 @@ class StructuredDecisionDomainTest : FunSpec({
         requirement.xConstrainsManaValue shouldBe true
         requirement.xConstrainsManaValueExactly shouldBe true
         requirement.xConstrainsPower shouldBe true
-        requirement.xConstrainsCount shouldBe true
+        requirement.xConstrainsCount shouldBe false
         requirement.candidates shouldBe pending.legalTargets[0]!!.sortedBy { it.value }
 
-        val unresolvedRequirement = resolvedRequirement.copy(
+        val unresolvedDynamicCountRequirement = resolvedRequirement.copy(
             baseRequirement = (resolvedRequirement.baseRequirement as TargetObject).copy(
-                totalManaValueAtMost = DynamicAmount.XValue,
+                dynamicMaxCount = DynamicAmount.XValue,
             )
         )
         val unsupported = executor.execute(
             state = state,
-            effect = SelectTargetEffect(requirement = unresolvedRequirement, storeAs = "chosen"),
+            effect = SelectTargetEffect(
+                requirement = unresolvedDynamicCountRequirement,
+                storeAs = "chosen",
+            ),
             context = context,
         )
         unsupported.pendingDecision shouldBe null

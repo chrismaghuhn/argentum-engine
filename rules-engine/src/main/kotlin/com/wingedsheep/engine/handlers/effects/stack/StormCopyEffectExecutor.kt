@@ -178,7 +178,15 @@ class StormCopyEffectExecutor(
                 resolvingSpellCopyPayload = resolvingSpellCopyPayload
             )
             val targetReqInfos = effect.spellTargetRequirements.mapIndexed { index, req ->
-                TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                TargetRequirementInfo.fromRequirement(
+                    index = index,
+                    requirement = req,
+                    maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                        legalTargetsMap[index]?.size
+                    } else {
+                        null
+                    },
+                )
                     .orReturnUnsupported { return it.toEffectError(currentState) }
             }
 
@@ -294,7 +302,15 @@ class StormCopyEffectExecutor(
                             effectHint = "Copy of $spellName$modeLabel"
                         ),
                         targetRequirements = reqs.mapIndexed { index, req ->
-                            TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                            TargetRequirementInfo.fromRequirement(
+                                index = index,
+                                requirement = req,
+                                maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                                    legalTargetsMap[index]?.size
+                                } else {
+                                    null
+                                },
+                            )
                                 .orReturnUnsupported { return it.toExecutionError(currentState) }
                         },
                         legalTargets = legalTargetsMap

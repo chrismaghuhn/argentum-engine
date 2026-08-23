@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toExecutionError
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DiagnosticSignal
@@ -1108,7 +1109,11 @@ class ActivateAbilityHandler(
                         index = index,
                         requirement = req,
                         minTargets = req.effectiveMinCount,
-                        maxTargets = req.count
+                        maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                            legal.size
+                        } else {
+                            null
+                        }
                     ).orReturnUnsupported { return it.toExecutionError(state) }
                 }
                 val decisionId = java.util.UUID.randomUUID().toString()
@@ -2276,7 +2281,11 @@ class ActivateAbilityHandler(
                 index = index,
                 requirement = req,
                 minTargets = req.effectiveMinCount,
-                maxTargets = req.count
+                maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                    legal.size
+                } else {
+                    null
+                }
             ).orReturnUnsupported { return it.toExecutionError(state) }
         }
 

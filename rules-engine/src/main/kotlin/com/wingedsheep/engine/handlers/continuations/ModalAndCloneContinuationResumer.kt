@@ -1701,7 +1701,11 @@ internal fun processChosenModeQueue(
             index = index,
             requirement = req,
             minTargets = req.effectiveMinCount,
-            maxTargets = req.count
+            maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                legalTargetsMap[index]?.size
+            } else {
+                null
+            }
         ).orReturnUnsupported { return it.toExecutionError(state) }
     }
 

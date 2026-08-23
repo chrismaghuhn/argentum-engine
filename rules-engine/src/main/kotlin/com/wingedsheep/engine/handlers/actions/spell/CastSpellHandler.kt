@@ -15,6 +15,7 @@ import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toExecutionError
 import com.wingedsheep.engine.core.LifeChangedEvent
@@ -4834,21 +4835,28 @@ class CastSpellHandler(
             // Find legal targets per requirement. If any required slot has no legal
             // targets (and is mandatory), this mode can't resolve — surface an error.
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
+            mode.targetRequirements.forEachIndexed { index, req ->
                 val legal = targetFinder.findLegalTargets(state, req, casterId, cardId)
                 legalTargetsMap[index] = legal
+            }
+            val allSatisfied = mode.targetRequirements.withIndex().all { (index, req) ->
+                legalTargetsMap[index].orEmpty().isNotEmpty() || req.effectiveMinCount == 0
+            }
+            if (!allSatisfied) {
+                return ExecutionResult.error(state, "No legal targets for mode: ${mode.description}")
+            }
+
+            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
                 com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
                     index = index,
                     requirement = req,
                     minTargets = req.effectiveMinCount,
-                    maxTargets = req.count
+                    maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                        legalTargetsMap[index]?.size
+                    } else {
+                        null
+                    }
                 ).orReturnUnsupported { return it.toExecutionError(state) }
-            }
-            val allSatisfied = requirementInfos.all { info ->
-                (legalTargetsMap[info.index]?.isNotEmpty() == true) || info.minTargets == 0
-            }
-            if (!allSatisfied) {
-                return ExecutionResult.error(state, "No legal targets for mode: ${mode.description}")
             }
 
             val decisionId = java.util.UUID.randomUUID().toString()

@@ -937,7 +937,10 @@ class TriggerProcessor(
         // the stack) so the resolved cap is what the player sees and the validator
         // enforces. CR 603.3c: X / target counts on triggered abilities are locked when
         // the ability triggers. Only TargetObject carries dynamicMaxCount today.
-        val allRequirements = ability.allTargetRequirements.map { snapshotDynamicCount(state, trigger, it) }
+        val targetRequirementSnapshots = ability.allTargetRequirements.map {
+            snapshotDynamicCount(state, trigger, it)
+        }
+        val allRequirements = targetRequirementSnapshots.map { it.requirement }
 
         // Find legal targets for each requirement
         val allLegalTargets = mutableMapOf<Int, List<EntityId>>()
@@ -1038,7 +1041,13 @@ class TriggerProcessor(
             // "Any number of target ..." (unlimited) caps at however many legal targets exist,
             // mirroring the cast-time path (TargetEnumerationUtils). Using req.count (always 1
             // for an unlimited requirement) would wrongly clamp the decision to a single target.
-            val maxTargets = if (req.unlimited) (allLegalTargets[index]?.size ?: 0) else req.count
+            val maxTargets = targetRequirementSnapshots[index].resolvedMaxTargets ?: if (
+                req.unlimited && !req.hasUnresolvedDynamicMaxCount()
+            ) {
+                allLegalTargets[index]?.size
+            } else {
+                null
+            }
             TargetRequirementInfo.fromRequirement(
                 index = index,
                 requirement = req,
@@ -1498,7 +1507,11 @@ class TriggerProcessor(
                     index = index,
                     requirement = req,
                     minTargets = req.effectiveMinCount,
-                    maxTargets = req.count
+                    maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                        legalTargetsMap[index]?.size
+                    } else {
+                        null
+                    }
                 ).orReturnUnsupported { return it.toExecutionError(state) }
             }
             // Auto-select the lone legal player target instead of prompting (mirrors
@@ -1823,23 +1836,28 @@ class TriggerProcessor(
         else -> LibraryPatterns.expandMacro(effect)?.let { findStoreNumberAmount(it, name) }
     }
 
+    private data class TargetRequirementSnapshot(
+        val requirement: TargetRequirement,
+        val resolvedMaxTargets: Int? = null,
+    )
+
     /**
      * If the requirement carries a [TargetObject.dynamicMaxCount], evaluate it against
      * the trigger's controller/source and return a copy with `count` rewritten to the
-     * resolved value (and `minCount` clamped to the new cap). When `dynamicMaxCount`
-     * is set, the resolved value is authoritative — the SDK's static `count` is only
-     * the no-dynamic-cap default. [TargetOther] is unwrapped, snapshotted, and
-     * re-wrapped so "another target" wording stays intact.
+     * resolved value (and `minCount` clamped to the new cap). When [dynamicMaxCount]
+     * cannot be resolved, retain the marker and leave [resolvedMaxTargets] null so the
+     * pending metadata boundary fails closed instead of using the static count. [TargetOther]
+     * is unwrapped, snapshotted, and re-wrapped so "another target" wording stays intact.
      */
     private fun snapshotDynamicCount(
         state: GameState,
         trigger: PendingTrigger,
         requirement: TargetRequirement
-    ): TargetRequirement = when (requirement) {
+    ): TargetRequirementSnapshot = when (requirement) {
         is TargetObject -> {
             val dyn = requirement.dynamicMaxCount
             if (dyn == null) {
-                requirement
+                TargetRequirementSnapshot(requirement)
             } else {
                 val resolved = try {
                     val context = EffectContext(
@@ -1885,20 +1903,34 @@ class TriggerProcessor(
                     )
                     DynamicAmountEvaluator().evaluate(state, dyn, context)
                 } catch (_: Exception) {
-                    requirement.count
+                    null
                 }
-                val newMax = resolved.coerceAtLeast(0)
-                requirement.copy(
-                    count = newMax,
-                    minCount = requirement.minCount.coerceAtMost(newMax)
-                )
+                if (resolved == null) {
+                    TargetRequirementSnapshot(requirement)
+                } else {
+                    val newMax = resolved.coerceAtLeast(0)
+                    TargetRequirementSnapshot(
+                        requirement = requirement.copy(
+                            count = newMax,
+                            minCount = requirement.minCount.coerceAtMost(newMax)
+                        ),
+                        resolvedMaxTargets = newMax,
+                    )
+                }
             }
         }
         is TargetOther -> {
-            val newBase = snapshotDynamicCount(state, trigger, requirement.baseRequirement)
-            if (newBase !== requirement.baseRequirement) requirement.copy(baseRequirement = newBase) else requirement
+            val baseSnapshot = snapshotDynamicCount(state, trigger, requirement.baseRequirement)
+            TargetRequirementSnapshot(
+                requirement = if (baseSnapshot.requirement !== requirement.baseRequirement) {
+                    requirement.copy(baseRequirement = baseSnapshot.requirement)
+                } else {
+                    requirement
+                },
+                resolvedMaxTargets = baseSnapshot.resolvedMaxTargets,
+            )
         }
-        else -> requirement
+        else -> TargetRequirementSnapshot(requirement)
     }
 
     /**

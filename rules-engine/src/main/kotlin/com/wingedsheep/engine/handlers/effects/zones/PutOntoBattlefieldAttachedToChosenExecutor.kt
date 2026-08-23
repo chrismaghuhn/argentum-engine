@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuation
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
@@ -125,8 +126,12 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             index = 0,
             requirement = hostRequirement,
             description = effect.hostFilter.description,
-            minTargets = 1,
-            maxTargets = 1
+            minTargets = hostRequirement.effectiveMinCount,
+            maxTargets = if (hostRequirement.unlimited && !hostRequirement.hasUnresolvedDynamicMaxCount()) {
+                legalHosts.size
+            } else {
+                null
+            }
         ).orReturnUnsupported { return it.toEffectError(state) }
         val decision = ChooseTargetsDecision(
             id = decisionId,

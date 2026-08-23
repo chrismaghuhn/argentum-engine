@@ -7,6 +7,7 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuation
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
@@ -255,8 +256,12 @@ class MoveToZoneEffectExecutor(
                     index = 0,
                     requirement = auraTarget,
                     description = "what $cardName attaches to",
-                    minTargets = 1,
-                    maxTargets = 1
+                    minTargets = auraTarget.effectiveMinCount,
+                    maxTargets = if (auraTarget.unlimited && !auraTarget.hasUnresolvedDynamicMaxCount()) {
+                        legalHosts.size
+                    } else {
+                        null
+                    }
                 ).orReturnUnsupported { return it.toEffectError(state) }
             ),
             legalTargets = mapOf(0 to legalHosts)

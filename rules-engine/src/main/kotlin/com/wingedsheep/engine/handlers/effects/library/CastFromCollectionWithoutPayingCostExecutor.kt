@@ -10,6 +10,7 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetRequirementInfoResult
 import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
@@ -303,7 +304,13 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     index = index,
                     requirement = requirement,
                     minTargets = requirement.effectiveMinCount,
-                    maxTargets = requirement.count,
+                    maxTargets = if (requirement.unlimited &&
+                        !requirement.hasUnresolvedDynamicMaxCount()
+                    ) {
+                        legalTargetsMap[index]?.size
+                    } else {
+                        null
+                    },
                 ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
             }
 

@@ -74,4 +74,23 @@ class SharedTargetRequirementAtomTest : FunSpec({
         result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
             TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE
     }
+
+    test("unresolved target cardinality returns typed unsupported metadata") {
+        val unlimited = TargetObject(
+            filter = TargetFilter(GameObjectFilter.Creature),
+            unlimited = true,
+        )
+        val unresolvedDynamicCount = TargetObject(
+            count = 2,
+            filter = TargetFilter(GameObjectFilter.Creature),
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+
+        listOf(unlimited, unresolvedDynamicCount).forEach { requirement ->
+            val result = TargetRequirementInfo.fromRequirement(index = 0, requirement = requirement)
+
+            result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
+                TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
+        }
+    }
 })

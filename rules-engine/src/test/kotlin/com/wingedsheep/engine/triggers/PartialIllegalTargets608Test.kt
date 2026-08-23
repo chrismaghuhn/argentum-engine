@@ -2,6 +2,7 @@ package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.ModalTargetContinuation
 import com.wingedsheep.engine.core.ModalPreChosenContinuation
@@ -92,8 +93,25 @@ class PartialIllegalTargets608Test : FunSpec({
         }
     }
 
+    val castTimeModalSource = card("Synthetic 608 Cast-Time Modal Source") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        spell {
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode(
+                        effect = Effects.GainLife(1),
+                        targetRequirements = listOf(unsupportedResolutionModalRequirement),
+                        description = "Gain life for a graveyard target"
+                    )
+                ),
+                chooseCount = 1
+            )
+        }
+    }
+
     fun driver(): GameTestDriver = GameTestDriver().also {
-        it.registerCards(TestCards.all + resolutionTimeModalSource)
+        it.registerCards(TestCards.all + resolutionTimeModalSource + castTimeModalSource)
         it.initMirrorMatch(deck = Deck.of("Forest" to 40))
     }
 
@@ -781,6 +799,24 @@ class PartialIllegalTargets608Test : FunSpec({
 
         result.error shouldBe null
         driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
+    }
+
+    test("608-12b: a cast-time modal fizzle precedes unsupported target metadata") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val spellId = driver.putCardInHand(driver.player1, castTimeModalSource.name)
+
+        val result = driver.submit(
+            CastSpell(
+                playerId = driver.player1,
+                cardId = spellId,
+                chosenModes = listOf(0)
+            )
+        )
+
+        result.error shouldBe "No legal targets for mode: Gain life for a graveyard target"
+        result.diagnostics shouldBe emptyList()
         driver.stackSize shouldBe 0
     }
 

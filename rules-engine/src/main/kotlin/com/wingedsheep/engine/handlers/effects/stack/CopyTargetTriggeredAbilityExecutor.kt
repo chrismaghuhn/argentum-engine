@@ -93,7 +93,15 @@ class CopyTargetTriggeredAbilityExecutor(
         )
 
         val targetReqInfos = targetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+            TargetRequirementInfo.fromRequirement(
+                index = index,
+                requirement = req,
+                maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                    legalTargetsMap[index]?.size
+                } else {
+                    null
+                },
+            )
                 .orReturnUnsupported { return it.toEffectError(state) }
         }
 

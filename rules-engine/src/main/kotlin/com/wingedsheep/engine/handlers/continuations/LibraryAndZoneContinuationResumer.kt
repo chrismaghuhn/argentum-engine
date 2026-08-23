@@ -441,8 +441,14 @@ class LibraryAndZoneContinuationResumer(
                     TargetRequirementInfo.fromRequirement(
                         index = 0,
                         requirement = nextAuraTarget,
-                        minTargets = 1,
-                        maxTargets = 1
+                        minTargets = nextAuraTarget.effectiveMinCount,
+                        maxTargets = if (nextAuraTarget.unlimited &&
+                            !nextAuraTarget.hasUnresolvedDynamicMaxCount()
+                        ) {
+                            legalTargets.size
+                        } else {
+                            null
+                        }
                     ).orReturnUnsupported { return it.toExecutionError(nextState) }
                 ),
                 legalTargets = mapOf(0 to legalTargets)

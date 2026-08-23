@@ -736,8 +736,12 @@ class MoveCollectionExecutor(
             index = 0,
             requirement = auraTarget,
             description = auraTarget.description,
-            minTargets = 1,
-            maxTargets = 1
+            minTargets = auraTarget.effectiveMinCount,
+            maxTargets = if (auraTarget.unlimited && !auraTarget.hasUnresolvedDynamicMaxCount()) {
+                legalTargets.size
+            } else {
+                null
+            }
         ).orReturnUnsupported { return it.toEffectError(state) }
         val decision = ChooseTargetsDecision(
             id = decisionId,

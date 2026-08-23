@@ -103,6 +103,10 @@ private fun TargetRequirement.targetObjectOrNull(): TargetObject? = when (this) 
     is TargetSpellOrPermanent -> null
 }
 
+/** True when the requirement still carries a dynamic cap that has not been snapshotted. */
+internal fun TargetRequirement.hasUnresolvedDynamicMaxCount(): Boolean =
+    targetObjectOrNull()?.dynamicMaxCount != null
+
 private fun TargetRequirement.containsTargetOther(): Boolean = when (this) {
     is TargetOther -> true
     else -> false

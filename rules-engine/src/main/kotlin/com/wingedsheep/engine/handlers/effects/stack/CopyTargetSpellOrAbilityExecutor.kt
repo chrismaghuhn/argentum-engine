@@ -185,7 +185,15 @@ class CopyTargetSpellOrAbilityExecutor(
                         effectHint = "Copy of $sourceName's ability"
                     ),
                     targetRequirements = targetRequirements.mapIndexed { index, req ->
-                        TargetRequirementInfo.fromRequirement(index = index, requirement = req)
+                        TargetRequirementInfo.fromRequirement(
+                            index = index,
+                            requirement = req,
+                            maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                                legalTargetsMap[index]?.size
+                            } else {
+                                null
+                            },
+                        )
                             .orReturnUnsupported { return it.toExecutionError(currentState) }
                     },
                     legalTargets = legalTargetsMap

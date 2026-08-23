@@ -245,6 +245,11 @@ class CopyTargetSpellExecutor(
             TargetRequirementInfo.fromRequirement(
                 index = index,
                 requirement = req,
+                maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
+                    legalTargetsMap[index]?.size
+                } else {
+                    null
+                },
             ).orReturnUnsupported { return it.toEffectError(state) }
         }
 
