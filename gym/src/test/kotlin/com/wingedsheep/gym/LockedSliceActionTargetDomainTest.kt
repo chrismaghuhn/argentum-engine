@@ -29,10 +29,10 @@ import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.gym.contract.ACTION_TARGET_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.ActionTargetComposition
-import com.wingedsheep.gym.contract.ActionTargetDomainMapper
 import com.wingedsheep.gym.contract.ActionTargetDomainV1
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.TargetPayloadPartition
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.MtgSetCatalog
@@ -151,13 +151,14 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             ),
         )
         val beholdId = behold.cardIdsIn(Zone.HAND).single()
-        val beholdAction = behold.environment.legalActions().single { legal ->
+        val beholdLegalActions = behold.environment.legalActions()
+        val beholdAction = beholdLegalActions.single { legal ->
             val action = legal.action
             action is CastSpell && action.cardId == beholdId
         }
         beholdAction.targetRequirements.single().differentNames shouldBe true
         beholdAction.targetRequirements.single().validTargets shouldHaveSize 6
-        val beholdView = publicActionView(behold.environment, beholdAction, registry)
+        val beholdView = publicActionView(behold.environment, beholdLegalActions, beholdAction, registry)
         beholdView.targetDomain.shouldNotBeNull().requirements.single().let { requirement ->
             requirement.minTargets shouldBe 0
             requirement.maxTargets shouldBe 6
@@ -171,7 +172,8 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             firstBattlefield = listOf("Llanowar Elves", "Elvish Mystic"),
         )
         val tunnelId = tunnel.cardIdsIn(Zone.BATTLEFIELD).single()
-        val tunnelAction = tunnel.environment.legalActions().single { legal ->
+        val tunnelLegalActions = tunnel.environment.legalActions()
+        val tunnelAction = tunnelLegalActions.single { legal ->
             val action = legal.action
             action is ActivateAbility &&
                 action.sourceId == tunnelId &&
@@ -179,7 +181,7 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         }
         tunnelAction.targetRequirements.single().sameCreatureType shouldBe true
         tunnelAction.targetRequirements.single().validTargets shouldHaveSize 2
-        val tunnelView = publicActionView(tunnel.environment, tunnelAction, registry)
+        val tunnelView = publicActionView(tunnel.environment, tunnelLegalActions, tunnelAction, registry)
         tunnelView.targetDomain.shouldNotBeNull().requirements.single().let { requirement ->
             requirement.minTargets shouldBe 2
             requirement.maxTargets shouldBe 2
@@ -226,7 +228,8 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             secondBattlefield = listOf("Elvish Mystic", "Bonesplitter"),
         )
         val giantfallId = giantfall.cardIdsIn(Zone.HAND).single()
-        val giantfallActions = giantfall.environment.legalActions()
+        val giantfallLegalActions = giantfall.environment.legalActions()
+        val giantfallActions = giantfallLegalActions
             .filter { legal ->
                 val action = legal.action
                 action is CastSpell && action.cardId == giantfallId
@@ -235,7 +238,9 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         giantfallActions.map { (it.action as CastSpell).chosenModes } shouldBe
             listOf(listOf(0), listOf(1))
         giantfallActions.map { it.targetRequirements.size } shouldBe listOf(2, 1)
-        val giantfallViews = giantfallActions.map { publicActionView(giantfall.environment, it, registry) }
+        val giantfallViews = giantfallActions.map {
+            publicActionView(giantfall.environment, giantfallLegalActions, it, registry)
+        }
         giantfallViews.map { it.actionSemantics?.get("chosenModes").toString() } shouldBe
             listOf("[0]", "[1]")
         giantfallViews.map { it.targetDomain.shouldNotBeNull().requirements.size } shouldBe listOf(2, 1)
@@ -290,54 +295,70 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             listOf(ChosenTarget.Permanent(slot0), ChosenTarget.Permanent(slot1))
     }
 
-    test("locked Brass Squire route is characterized when the trusted observation is payment-blocked") {
+    test("locked Brass Squire publishes its target domain before the payment blocker is isolated") {
         val prepared = prepareLockedGame(
             firstDeck = readLockedDeck("akiri-v0.1.txt"),
             secondDeck = readLockedDeck("chevill-v0.1.txt"),
             firstBattlefield = listOf("Brass Squire", "Bonesplitter", "Sram, Senior Edificer"),
             seed = 8_002L,
         )
+
+        val legalActions = prepared.environment.legalActions()
+        val brassAction = legalActions.single { legal ->
+            val action = legal.action as? ActivateAbility
+            action != null && stateCardName(prepared.environment, action.sourceId) == "Brass Squire"
+        }
+        val brassGameAction = brassAction.action.shouldBeInstanceOf<ActivateAbility>()
+        val brassRequirements = brassAction.targetRequirements
+        brassRequirements.map { it.index } shouldBe listOf(0, 1)
+        brassRequirements.map { it.minTargets to it.maxTargets } shouldBe
+            listOf(1 to 1, 1 to 1)
+        brassRequirements.map { it.targetChooser } shouldBe
+            listOf(TargetChooser.Controller, TargetChooser.Controller)
+        brassRequirements.map { it.description } shouldBe
+            listOf("target Equipment you control", "target creature you control")
+        brassRequirements[0].validTargets shouldBe listOf(prepared.firstEquipment)
+        brassRequirements[1].validTargets.toSet() shouldBe
+            setOf(brassGameAction.sourceId, prepared.firstCreature)
+        brassRequirements.flatMap { it.validTargets }.forEach { targetId ->
+            prepared.environment.state.projectedState.getController(targetId) shouldBe
+                prepared.environment.playerIds.first()
+        }
+
+        // The real Rules action is passed unchanged to ObservationBuilder. This proves the
+        // public domain before GameGymEnv applies its whole-observation payment guard.
+        val observed = ObservationBuilder(cardRegistry = registry).build(
+            state = prepared.environment.state,
+            perspectivePlayerId = prepared.environment.playerIds.first(),
+            legalActions = legalActions,
+        )
+        observed.diagnostics.map { it.code } shouldBe
+            listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
+        val squire = publicActionViewForLegalAction(observed, brassAction)
+            ?: error("Brass Squire legal action was not publicly published")
+        squire.kind shouldBe "ActivateAbility"
+        squire.sourceEntityId shouldBe brassGameAction.sourceId
         val gym = GameGymEnv(
             environment = prepared.environment,
             perspectivePlayerIndex = 0,
             observationBuilder = ObservationBuilder(cardRegistry = registry),
         )
 
-        val observedResult = runCatching { gym.observe() }
-        if (observedResult.isFailure) {
-            val failure = observedResult.exceptionOrNull()
-                .shouldBeInstanceOf<UnsupportedPathFailure>()
-            failure.diagnostics.map { it.code } shouldBe
-                listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
-            return@test
-        }
-        val observed = observedResult.getOrThrow()
-        val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
-        observed.diagnostics.shouldBeEmpty()
-        val squire = observation.legalActions.single {
-            it.kind == "ActivateAbility" && it.description.contains("Brass Squire")
-        }
+        // This is deliberately a separate bounded characterization. The target domain is
+        // published by the raw builder, but trusted Gym execution remains blocked by payment.
+        val failure = shouldThrow<UnsupportedPathFailure> { gym.observe() }
+        failure.diagnostics.map { it.code } shouldBe
+            listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
         val domain = squire.targetDomain.shouldNotBeNull()
 
         domain.requirements.map { it.index } shouldBe listOf(0, 1)
         domain.requirements.map { it.minTargets to it.maxTargets } shouldBe
             listOf(1 to 1, 1 to 1)
+        domain.requirements.map { it.description } shouldBe
+            listOf("target Equipment you control", "target creature you control")
         domain.requirements[0].candidates shouldBe listOf(prepared.firstEquipment)
-        domain.requirements[1].candidates shouldBe listOf(prepared.firstCreature)
-
-        // The flat payload is deliberately built by reading the ordered public requirements.
-        val slot0 = domain.requirements[0].candidates.single()
-        val slot1 = domain.requirements[1].candidates.single()
-        val payload = bitePayload(squire, null, listOf(slot0, slot1))
-        val before = prepared.environment.stepCount
-
-        val after = gym.step(squire.actionId, payload)
-
-        after.diagnostics.shouldBeEmpty()
-        prepared.environment.stepCount shouldBe before + 1
-        val stackId = prepared.environment.state.stack.last()
-        prepared.environment.state.getEntity(stackId)?.get<TargetsComponent>()?.targets shouldBe
-            listOf(ChosenTarget.Permanent(slot0), ChosenTarget.Permanent(slot1))
+        domain.requirements[1].candidates.toSet() shouldBe
+            setOf(brassGameAction.sourceId, prepared.firstCreature)
     }
 
     test("repository optional, modal, chooser, cross-slot, and X probes fail closed without lossy domains") {
@@ -357,6 +378,35 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         val player = environment.playerIds.first()
         val projection = TargetEnumerationUtils(PredicateEvaluator())
 
+        // Real repository probe: Arm the Cathars must come from GameEnvironment.legalActions(),
+        // and the public observation must reject its ambiguous flat target partition. The
+        // synthetic checks below exercise the partition contract independently of that probe.
+        val armProbe = prepareRepositoryProbeGame(
+            cardName = "Arm the Cathars",
+            firstHand = true,
+            firstBattlefield = listOf("Llanowar Elves", "Elvish Mystic", "Sram, Senior Edificer"),
+        )
+        val armId = armProbe.cardIdsIn(Zone.HAND).single()
+        val armLegalActions = armProbe.environment.legalActions()
+        val armAction = armLegalActions.single { legal ->
+            val action = legal.action
+            action is CastSpell && action.cardId == armId
+        }
+        armAction.targetRequirements.map { it.index } shouldBe listOf(0, 1, 2)
+        armAction.targetRequirements.map { it.minTargets to it.maxTargets } shouldBe
+            listOf(1 to 1, 0 to 1, 0 to 1)
+        val armObserved = ObservationBuilder(cardRegistry = registry).build(
+            state = armProbe.environment.state,
+            perspectivePlayerId = armProbe.playerId,
+            legalActions = armLegalActions,
+        )
+        armObserved.diagnostics.map { it.code } shouldContain
+            DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED
+        armObserved.registry.legalActions.none { (_, registeredAction) ->
+            registeredAction === armAction
+        } shouldBe true
+        publicActionViewForLegalAction(armObserved, armAction) shouldBe null
+
         val armProjection = projection.buildTargetInfos(
             state = environment.state,
             playerId = player,
@@ -372,18 +422,6 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             TargetPayloadPartition.Certification.Unsupported(
                 TargetPayloadPartition.UnsupportedReason.AMBIGUOUS_FLAT_PARTITION,
             )
-        val armMapping = ActionTargetDomainMapper.map(
-            LegalAction(
-                action = CastSpell(player, EntityId("arm-the-cathars")),
-                actionType = "CastSpell",
-                description = "Cast Arm the Cathars",
-                requiresTargets = true,
-                targetRequirements = armProjection.infos,
-                targetDomainSupport = armProjection.support,
-            ),
-            isEntityReferenceAddressable = { true },
-        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Unsupported>()
-        armMapping.diagnostic.code.name shouldBe "ACTION_TARGET_DOMAIN_UNSUPPORTED"
 
         TargetPayloadPartition.certify(listOf(armProjection.infos[1]))
             .shouldBeInstanceOf<TargetPayloadPartition.Certification.Supported>()
@@ -660,7 +698,8 @@ private fun enumerateLockedCardActions(
 ): List<LockedActionCensusRow> {
     registry.requireCard(cardName)
     val prepared = prepareLockedCensusGame(cardName, registry, seed)
-    val legalActions = prepared.environment.legalActions().filter { legal ->
+    val allLegalActions = prepared.environment.legalActions()
+    val legalActions = allLegalActions.filter { legal ->
         when (val action = legal.action) {
             is CastSpell -> action.cardId in prepared.selectedIds
             is ActivateAbility -> action.sourceId in prepared.selectedIds
@@ -686,21 +725,14 @@ private fun enumerateLockedCardActions(
     val observed = observationBuilder.build(
         state = prepared.environment.state,
         perspectivePlayerId = prepared.playerId,
-        legalActions = prepared.environment.legalActions(),
+        legalActions = allLegalActions,
     )
-    val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
 
     return legalActions.map { legal ->
-        val sourceId = when (val action = legal.action) {
-            is CastSpell -> action.cardId
-            is ActivateAbility -> action.sourceId
-            else -> error("Census action filter admitted ${legal.action::class.simpleName}")
-        }
-        val publicView = observation.legalActions.firstOrNull { view ->
-            view.kind == legal.actionType &&
-                view.description == legal.description &&
-                view.sourceEntityId == sourceId
-        }
+        // The same LegalAction instance is retained by the ObservationBuilder registry. Resolve
+        // its canonical ordered public action ID instead of matching presentation fields, because
+        // mode/target/payment variants may share kind, description, and source.
+        val publicView = publicActionViewForLegalAction(observed, legal)
         LockedActionCensusRow(
             cardName = cardName,
             artifactMembership = artifactMembership,
@@ -912,23 +944,32 @@ private fun prepareRepositoryProbeGame(
 
 private fun publicActionView(
     environment: GameEnvironment,
+    legalActions: List<LegalAction>,
     legalAction: LegalAction,
     registry: CardRegistry,
 ): LegalActionView {
-    val sourceId = when (val action = legalAction.action) {
-        is CastSpell -> action.cardId
-        is ActivateAbility -> action.sourceId
-        else -> error("Expected a CastSpell or ActivateAbility probe")
-    }
     val result = ObservationBuilder(cardRegistry = registry).build(
         state = environment.state,
         perspectivePlayerId = environment.playerIds.first(),
-        legalActions = environment.legalActions(),
+        legalActions = legalActions,
     )
-    return result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single {
-        it.kind == legalAction.actionType &&
-            it.description == legalAction.description &&
-            it.sourceEntityId == sourceId
+    return publicActionViewForLegalAction(result, legalAction)
+        ?: error("Legal action was not published: ${legalAction.description}")
+}
+
+private fun publicActionViewForLegalAction(
+    observed: ObservationResult,
+    legalAction: LegalAction,
+): LegalActionView? {
+    val registryMatches = observed.registry.legalActions.filter { (_, registeredAction) ->
+        registeredAction === legalAction
+    }
+    check(registryMatches.size <= 1) {
+        "One LegalAction instance mapped to multiple public action IDs: ${legalAction.description}"
+    }
+    val actionId = registryMatches.singleOrNull()?.first ?: return null
+    return observed.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single {
+        it.actionId == actionId
     }
 }
 
