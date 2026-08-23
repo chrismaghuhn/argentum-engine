@@ -35,8 +35,6 @@ import com.wingedsheep.sdk.scripting.effects.SelectionMode
 import com.wingedsheep.sdk.scripting.effects.StoreNumberEffect
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
-import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
@@ -1483,11 +1481,12 @@ class TriggerProcessor(
         recordChosenModesOnSource: Boolean,
         recordChosenModesThisTurn: Boolean
     ): ExecutionResult {
+        val pendingContext = pendingTargetRequirementContext(ability)
         val modeSnapshots = modes.map { mode ->
             targetValidator.snapshotDynamicCountsForPending(
                 state = state,
                 requirements = mode.targetRequirements,
-                context = pendingTargetRequirementContext(ability),
+                context = pendingContext,
             )
         }
         val effectiveModes = modes.mapIndexed { modeIndex, mode ->
@@ -1527,6 +1526,12 @@ class TriggerProcessor(
                             minTargets = req.effectiveMinCount,
                             maxTargets = maxTargets,
                             resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                            resolvedTotalManaValueAtMost = targetValidator
+                                .resolveTotalManaValueAtMostForPending(
+                                    state = state,
+                                    requirement = snapshot.semanticSource,
+                                    context = pendingContext,
+                                ),
                         )
                 }
                 result.orReturnUnsupported { return it.toExecutionError(state) }
@@ -1956,21 +1961,12 @@ class TriggerProcessor(
         state: GameState,
         trigger: PendingTrigger,
         requirement: TargetRequirement
-    ): ResolvedTotalManaValueAtMost? {
-        val dyn = requirement.targetObjectOrNull()?.totalManaValueAtMost ?: return null
-        return targetValidator.evaluateDynamicAmountForPending(
-            state = state,
-            amount = dyn,
-            context = pendingTargetRequirementContext(trigger),
-        )?.let(::ResolvedTotalManaValueAtMost)
-    }
+    ): ResolvedTotalManaValueAtMost? = targetValidator.resolveTotalManaValueAtMostForPending(
+        state = state,
+        requirement = requirement,
+        context = pendingTargetRequirementContext(trigger),
+    )
 
-    /** Read aggregate target metadata through a TargetOther wrapper without changing validation. */
-    private fun TargetRequirement.targetObjectOrNull(): TargetObject? = when (this) {
-        is TargetObject -> this
-        is TargetOther -> baseRequirement.targetObjectOrNull()
-        else -> null
-    }
 
     /**
      * Has this source's controller already taken [abilityId]'s "Do this only once each turn" action

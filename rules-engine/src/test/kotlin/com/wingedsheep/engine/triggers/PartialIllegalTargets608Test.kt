@@ -3,6 +3,7 @@ package com.wingedsheep.engine.triggers
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.EngineServices
@@ -10,6 +11,7 @@ import com.wingedsheep.engine.core.ModalTargetContinuation
 import com.wingedsheep.engine.core.ModalPreChosenContinuation
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.PreTargetedEffectEntry
+import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
@@ -121,8 +123,27 @@ class PartialIllegalTargets608Test : FunSpec({
         }
     }
 
+    val variableCostAggregateTarget = card("Synthetic 608 Variable Cost Aggregate Target") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.ExilePermanents(
+                filter = GameObjectFilter.Artifact,
+                minCount = 1,
+                excludeSelf = true,
+            )
+            target = TargetObject(
+                filter = TargetFilter.CardInGraveyard,
+                totalManaValueAtMost = DynamicAmount.XValue,
+            )
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun driver(): GameTestDriver = GameTestDriver().also {
-        it.registerCards(TestCards.all + resolutionTimeModalSource + castTimeModalSource)
+        it.registerCards(
+            TestCards.all + resolutionTimeModalSource + castTimeModalSource + variableCostAggregateTarget
+        )
         it.initMirrorMatch(deck = Deck.of("Forest" to 40))
     }
 
@@ -1381,6 +1402,41 @@ class PartialIllegalTargets608Test : FunSpec({
         decision.targetRequirements.single().maxTargets shouldBe 2
     }
 
+    test("pending cast-modal metadata preserves a resolved aggregate cap") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter.Creature,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose a creature within X mana value",
+        )
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry))
+            .presentCastModalTargetDecision(
+                state = driver.state,
+                cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-aggregate-modal"),
+                casterId = driver.player1,
+                cardName = "Synthetic cast aggregate modal",
+                baseCastAction = CastSpell(
+                    playerId = driver.player1,
+                    cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-aggregate-modal"),
+                    xValue = 2,
+                ),
+                modes = listOf(mode),
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().totalManaValueAtMost shouldBe 2
+    }
+
     test("pending trigger-modal metadata preserves an X-constrained target count") {
         val driver = dynamicDriver()
         driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
@@ -1426,6 +1482,79 @@ class PartialIllegalTargets608Test : FunSpec({
         val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         decision.targetRequirements.single().xConstrainsCount shouldBe true
         decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("pending trigger-modal metadata preserves a resolved aggregate cap") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter.Creature,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Choose a creature within X mana value",
+                )
+            ),
+            chooseCount = 1,
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .presentTriggerModalTargetDecision(
+                state = driver.state,
+                ability = TriggeredAbilityOnStackComponent(
+                    sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-aggregate-modal"),
+                    sourceName = "Synthetic trigger aggregate modal",
+                    controllerId = driver.player1,
+                    effect = modal,
+                    description = "Synthetic trigger aggregate modal",
+                    xValue = 2,
+                ),
+                outerTargets = emptyList(),
+                outerTargetRequirements = emptyList(),
+                modes = modal.modes,
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+                causedByAttack = false,
+                recordChosenModesOnSource = false,
+                recordChosenModesThisTurn = false,
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().totalManaValueAtMost shouldBe 2
+    }
+
+    test("pending activation metadata preserves a resolved aggregate cap after variable cost selection") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val source = driver.putPermanentOnBattlefield(driver.player1, variableCostAggregateTarget.name)
+        val paymentOne = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val paymentTwo = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCardInGraveyard(driver.player1, "Sol Ring")
+        val abilityId = driver.cardRegistry.requireCard(variableCostAggregateTarget.name)
+            .script.activatedAbilities.single().id
+
+        val activationResult = driver.submit(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId,
+            )
+        )
+        activationResult.error shouldBe null
+        val costDecision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
+        driver.submitDecision(
+            driver.player1,
+            CardsSelectedResponse(costDecision.id, listOf(paymentOne, paymentTwo)),
+        )
+
+        val targetDecision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        targetDecision.targetRequirements.single().totalManaValueAtMost shouldBe 2
     }
 
     test("pending cast-modal metadata is withheld when dynamic count is unresolved") {

@@ -4808,15 +4808,16 @@ class CastSpellHandler(
         currentOrdinal: Int,
         resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
+        val pendingContext = EffectContext(
+            sourceId = cardId,
+            controllerId = casterId,
+            xValue = baseCastAction.xValue,
+        )
         val modeSnapshots = modes.map { mode ->
             targetValidator.snapshotDynamicCountsForPending(
                 state = state,
                 requirements = mode.targetRequirements,
-                context = EffectContext(
-                    sourceId = cardId,
-                    controllerId = casterId,
-                    xValue = baseCastAction.xValue,
-                ),
+                context = pendingContext,
             )
         }
         val effectiveModes = modes.mapIndexed { modeIndex, mode ->
@@ -4870,6 +4871,12 @@ class CastSpellHandler(
                             minTargets = req.effectiveMinCount,
                             maxTargets = maxTargets,
                             resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                            resolvedTotalManaValueAtMost = targetValidator
+                                .resolveTotalManaValueAtMostForPending(
+                                    state = state,
+                                    requirement = snapshot.semanticSource,
+                                    context = pendingContext,
+                                ),
                         )
                 }
                 result.orReturnUnsupported { return it.toExecutionError(state) }

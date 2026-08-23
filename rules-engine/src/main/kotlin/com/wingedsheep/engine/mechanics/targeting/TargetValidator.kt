@@ -12,7 +12,9 @@ import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
 import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
 import com.wingedsheep.engine.core.ResolvedTargetCount
+import com.wingedsheep.engine.core.ResolvedTotalManaValueAtMost
 import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
+import com.wingedsheep.engine.core.totalManaValueAtMostOrNull
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
@@ -272,6 +274,20 @@ class TargetValidator {
     } else {
         runCatching { DynamicAmountEvaluator().evaluate(state, amount, context) }.getOrNull()
     }
+
+    /**
+     * Resolve a source aggregate target cap for pending metadata. The nullable result is
+     * intentional: no cap is represented by null, and a dynamic cap with unavailable context also
+     * returns null so [TargetRequirementInfo] can reject publication rather than accept a fabricated
+     * value. The typed wrapper prevents callers from confusing this witness with a plain override.
+     */
+    internal fun resolveTotalManaValueAtMostForPending(
+        state: GameState,
+        requirement: TargetRequirement,
+        context: EffectContext,
+    ): ResolvedTotalManaValueAtMost? = requirement.totalManaValueAtMostOrNull()
+        ?.let { amount -> evaluateDynamicAmountForPending(state, amount, context) }
+        ?.let(::ResolvedTotalManaValueAtMost)
 
     private fun dynamicCountContextUnavailable(
         state: GameState,

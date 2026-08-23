@@ -103,6 +103,10 @@ private fun TargetRequirement.targetObjectOrNull(): TargetObject? = when (this) 
     is TargetSpellOrPermanent -> null
 }
 
+/** Read the source aggregate cap without losing a TargetObject wrapped by TargetOther. */
+internal fun TargetRequirement.totalManaValueAtMostOrNull(): DynamicAmount? =
+    targetObjectOrNull()?.totalManaValueAtMost
+
 /** True when the requirement still carries a dynamic cap that has not been snapshotted. */
 internal fun TargetRequirement.hasUnresolvedDynamicMaxCount(): Boolean =
     targetObjectOrNull()?.dynamicMaxCount != null
