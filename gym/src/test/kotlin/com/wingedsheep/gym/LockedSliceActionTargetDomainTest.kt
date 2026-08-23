@@ -326,7 +326,7 @@ class LockedSliceActionTargetDomainTest : FunSpec({
                 it.kind == "CastSpell" && it.description == "Cast Gold Rush"
             }
             goldRush.minTargets shouldBe 0
-            goldRush.targetCount shouldBe 1
+            goldRush.maxTargets shouldBe 1
             val domain = goldRush.targetDomain.shouldNotBeNull()
             domain.composition shouldBe ActionTargetComposition.FIXED
             domain.requirements.map { it.index } shouldBe listOf(0)
