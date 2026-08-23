@@ -61,6 +61,8 @@ import com.wingedsheep.sdk.scripting.conditions.CreatureDiedThisTurnCondition
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
+import com.wingedsheep.sdk.scripting.predicates.StatePredicate
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -1063,6 +1065,127 @@ class PartialIllegalTargets608Test : FunSpec({
             requirement = requirement,
             controllerId = driver.player1,
             pipelineContext = PredicateContext(controllerId = driver.player1, xValue = 2),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder fails closed for negated chosen-value predicates") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.Not(CardPredicate.NameEqualsChosen("chosenName")),
+                    ),
+                ),
+            ),
+        )
+        val finder = TargetFinder()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                chosenValues = mapOf("chosenName" to "Other Name"),
+            ),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder fails closed for missing trigger and referenced-player context") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val triggerRequirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByTriggeringPlayer,
+                ),
+            ),
+        )
+        val referencedRequirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.ContextTarget(0),
+                    ),
+                ),
+            ),
+        )
+        val finder = TargetFinder()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = triggerRequirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = referencedRequirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = triggerRequirement,
+            controllerId = driver.player1,
+            triggeringEntityId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = referencedRequirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targets = listOf(ChosenTarget.Player(driver.player1)),
+            ),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder fails closed for missing same-named-source context") {
+        val driver = driver()
+        val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    statePredicates = listOf(StatePredicate.NotTargetedByAbilityFromSameNamedSource),
+                ),
+            ),
+        )
+        val finder = TargetFinder()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement.copy(filter = requirement.filter.copy(excludeSelf = true)),
+            controllerId = driver.player1,
+            sourceId = source,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
             requireAuthoritativeContext = true,
         ) shouldBe listOf(candidate)
     }

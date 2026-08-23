@@ -6,6 +6,7 @@ import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.mechanics.targeting.ControllerHexproof
@@ -18,6 +19,9 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
+import com.wingedsheep.sdk.scripting.predicates.StatePredicate
+import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.*
 import com.wingedsheep.sdk.scripting.values.EntityReference
 
@@ -46,14 +50,107 @@ class TargetFinder(
     private val predicateEvaluator = PredicateEvaluator()
 
     private data class RequiredPredicateContext(
+        val controllerId: Boolean = false,
+        val sourceId: Boolean = false,
+        val triggeringEntityId: Boolean = false,
+        val triggeringPlayerId: Boolean = false,
+        val defendingPlayerId: Boolean = false,
+        val targetPlayerId: Boolean = false,
+        val targetOpponentId: Boolean = false,
+        val granterId: Boolean = false,
+        val affectedEntityId: Boolean = false,
+        val recipientId: Boolean = false,
+        val damageSourceId: Boolean = false,
+        val damageRecipientId: Boolean = false,
         val xValue: Boolean = false,
         val pipeline: Boolean = false,
+        val chosenColor: Boolean = false,
+        val chosenValues: Set<String> = emptySet(),
+        val storedStringLists: Set<String> = emptySet(),
+        val storedSubtypeGroups: Set<String> = emptySet(),
+        val storedCollections: Map<String, Set<Int>> = emptyMap(),
+        val targetIndexes: Set<Int> = emptySet(),
+        val namedTargets: Set<String> = emptySet(),
+        val unsupported: Boolean = false,
     ) {
         operator fun plus(other: RequiredPredicateContext): RequiredPredicateContext =
             RequiredPredicateContext(
+                controllerId = controllerId || other.controllerId,
+                sourceId = sourceId || other.sourceId,
+                triggeringEntityId = triggeringEntityId || other.triggeringEntityId,
+                triggeringPlayerId = triggeringPlayerId || other.triggeringPlayerId,
+                defendingPlayerId = defendingPlayerId || other.defendingPlayerId,
+                targetPlayerId = targetPlayerId || other.targetPlayerId,
+                targetOpponentId = targetOpponentId || other.targetOpponentId,
+                granterId = granterId || other.granterId,
+                affectedEntityId = affectedEntityId || other.affectedEntityId,
+                recipientId = recipientId || other.recipientId,
+                damageSourceId = damageSourceId || other.damageSourceId,
+                damageRecipientId = damageRecipientId || other.damageRecipientId,
                 xValue = xValue || other.xValue,
                 pipeline = pipeline || other.pipeline,
+                chosenColor = chosenColor || other.chosenColor,
+                chosenValues = chosenValues + other.chosenValues,
+                storedStringLists = storedStringLists + other.storedStringLists,
+                storedSubtypeGroups = storedSubtypeGroups + other.storedSubtypeGroups,
+                storedCollections = mergeRequirements(storedCollections, other.storedCollections),
+                targetIndexes = targetIndexes + other.targetIndexes,
+                namedTargets = namedTargets + other.namedTargets,
+                unsupported = unsupported || other.unsupported,
             )
+
+        private fun mergeRequirements(
+            left: Map<String, Set<Int>>,
+            right: Map<String, Set<Int>>,
+        ): Map<String, Set<Int>> = buildMap {
+            left.forEach { (key, indices) -> put(key, indices) }
+            right.forEach { (key, indices) -> put(key, (get(key) ?: emptySet()) + indices) }
+        }
+
+        fun isAvailable(
+            state: GameState,
+            controllerId: EntityId,
+            sourceId: EntityId?,
+            triggeringEntityId: EntityId?,
+            pipelineContext: PredicateContext?,
+        ): Boolean {
+            if (unsupported) return false
+            if (pipeline && pipelineContext == null) return false
+
+            val context = (pipelineContext ?: PredicateContext(controllerId = controllerId)).copy(
+                controllerId = controllerId,
+                sourceId = sourceId ?: pipelineContext?.sourceId,
+                triggeringEntityId = triggeringEntityId ?: pipelineContext?.triggeringEntityId,
+            )
+            if (this.controllerId && context.controllerId != controllerId) return false
+            if (this.sourceId && (context.sourceId == null || state.getEntity(context.sourceId) == null)) return false
+            if (this.triggeringEntityId && (context.triggeringEntityId == null || state.getEntity(context.triggeringEntityId) == null)) return false
+            if (triggeringPlayerId && context.triggeringPlayerId == null && context.triggeringEntityId == null) return false
+            if (defendingPlayerId && context.defendingPlayerId == null) return false
+            if (targetPlayerId && context.targetPlayerId == null) return false
+            if (targetOpponentId && context.targetOpponentId == null) return false
+            if (granterId && context.granterId == null) return false
+            if (affectedEntityId && context.affectedEntityId == null) return false
+            if (recipientId && context.recipientId == null) return false
+            if (damageSourceId && context.damageSourceId == null) return false
+            if (damageRecipientId && context.damageRecipientId == null) return false
+            if (xValue && context.xValue == null) return false
+            if (chosenColor && context.chosenColor == null) return false
+            if (chosenValues.any { it !in context.chosenValues }) return false
+            if (storedStringLists.any { it !in context.storedStringLists }) return false
+            if (storedSubtypeGroups.any { it !in context.storedSubtypeGroups }) return false
+            if (targetIndexes.any { index ->
+                    (context.targets.getOrNull(index) as? ChosenTarget.Player) == null
+                }) return false
+            if (namedTargets.any { name ->
+                    (context.namedTargets[name] as? ChosenTarget.Player) == null
+                }) return false
+            if (storedCollections.any { (name, indices) ->
+                    val collection = context.storedCollections[name] ?: return@any true
+                    indices.any { index -> collection.getOrNull(index) == null }
+                }) return false
+            return true
+        }
     }
 
     /**
@@ -72,7 +169,7 @@ class TargetFinder(
     ): PredicateContext =
         (pipelineContext ?: PredicateContext(controllerId = controllerId)).copy(
             controllerId = controllerId,
-            sourceId = sourceId,
+            sourceId = sourceId ?: pipelineContext?.sourceId,
             ownerId = ownerId,
             // Carry the trigger's associated entity so a target filter can scope to "that player"
             // (ControllerPredicate.ControlledByTriggeringPlayer / OwnedByTriggeringPlayer) — e.g.
@@ -112,15 +209,20 @@ class TargetFinder(
         pipelineContext: PredicateContext? = null,
         /**
          * Pending target decisions must not use the legacy permissive behavior for an unbound X or
-         * unavailable pipeline relation. When enabled, the candidate set is empty until every
-         * context fact required by the target filter is present in [pipelineContext].
+         * unavailable predicate relation. When enabled, the target requirement is structurally
+         * inspected before enumeration and the candidate set is empty until every required fact is
+         * available from the explicit source/trigger arguments or the supplied [pipelineContext].
+         * This gate is deliberately stricter than the legacy evaluator: a predicate that would
+         * otherwise default to false (and become true when negated) is never allowed to publish an
+         * unknown candidate set.
          */
         requireAuthoritativeContext: Boolean = false,
     ): List<EntityId> {
         if (requireAuthoritativeContext) {
             val requiredContext = requirement.requiredPredicateContext()
-            if (requiredContext.xValue && pipelineContext?.xValue == null) return emptyList()
-            if (requiredContext.pipeline && pipelineContext == null) return emptyList()
+            if (!requiredContext.isAvailable(state, controllerId, sourceId, triggeringEntityId, pipelineContext)) {
+                return emptyList()
+            }
         }
         return when (requirement) {
             is TargetPlayer -> findPlayerTargets(state, requirement, controllerId, sourceId, ignoreTargetingRestrictions)
@@ -214,42 +316,183 @@ class TargetFinder(
     }
 
     private fun GameObjectFilter.requiredPredicateContext(): RequiredPredicateContext =
-        cardPredicates.fold(RequiredPredicateContext()) { required, predicate ->
+        (controllerPredicate?.requiredPredicateContext() ?: RequiredPredicateContext()) +
+            statePredicates.fold(RequiredPredicateContext()) { required, predicate ->
+                required + predicate.requiredPredicateContext()
+            } +
+            cardPredicates.fold(RequiredPredicateContext()) { required, predicate ->
+                required + predicate.requiredPredicateContext()
+            } +
+            anyOf.fold(RequiredPredicateContext()) { required, nested ->
+                required + nested.requiredPredicateContext()
+            }
+
+    private fun ControllerPredicate.requiredPredicateContext(): RequiredPredicateContext = when (this) {
+        ControllerPredicate.ControlledByYou,
+        ControllerPredicate.ControlledByOpponent,
+        ControllerPredicate.ControlledByAny,
+        ControllerPredicate.ControlledByActivePlayer,
+        ControllerPredicate.OwnedByYou,
+        ControllerPredicate.OwnedByOpponent -> RequiredPredicateContext(controllerId = true)
+        ControllerPredicate.ControlledByTargetOpponent -> RequiredPredicateContext(
+            controllerId = true,
+            targetOpponentId = true,
+            pipeline = true,
+        )
+        ControllerPredicate.ControlledByTargetPlayer,
+        ControllerPredicate.OwnedByTargetPlayer -> RequiredPredicateContext(
+            controllerId = true,
+            targetPlayerId = true,
+            pipeline = true,
+        )
+        ControllerPredicate.ControlledByTriggeringPlayer,
+        ControllerPredicate.OwnedByTriggeringPlayer -> RequiredPredicateContext(
+            controllerId = true,
+            triggeringPlayerId = true,
+            pipeline = true,
+        )
+        is ControllerPredicate.ControlledByReferencedPlayer ->
+            RequiredPredicateContext(controllerId = true, pipeline = true) +
+                targetReferenceContext(target)
+        is ControllerPredicate.And -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
             required + predicate.requiredPredicateContext()
-        } + anyOf.fold(RequiredPredicateContext()) { required, nested ->
-            required + nested.requiredPredicateContext()
         }
+        is ControllerPredicate.Or -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
+            required + predicate.requiredPredicateContext()
+        }
+        is ControllerPredicate.Not -> predicate.requiredPredicateContext()
+    }
+
+    private fun targetReferenceContext(target: EffectTarget): RequiredPredicateContext = when (target) {
+        EffectTarget.Controller -> RequiredPredicateContext(controllerId = true)
+        is EffectTarget.ContextTarget -> RequiredPredicateContext(
+            pipeline = true,
+            targetIndexes = setOf(target.index),
+        )
+        is EffectTarget.BoundVariable -> RequiredPredicateContext(
+            pipeline = true,
+            namedTargets = setOf(target.name),
+        )
+        EffectTarget.ControllerOfTriggeringEntity -> RequiredPredicateContext(
+            pipeline = true,
+            triggeringEntityId = true,
+        )
+        EffectTarget.TargetController -> RequiredPredicateContext(
+            pipeline = true,
+            targetIndexes = setOf(0),
+        )
+        is EffectTarget.PipelineTarget -> RequiredPredicateContext(
+            pipeline = true,
+            storedCollections = mapOf(target.collectionName to setOf(target.index)),
+        )
+        is EffectTarget.ControllerOfPipelineTarget -> RequiredPredicateContext(
+            pipeline = true,
+            storedCollections = mapOf(target.collectionName to setOf(target.index)),
+        )
+        is EffectTarget.PlayerRef -> when (target.player) {
+            Player.You -> RequiredPredicateContext(controllerId = true)
+            Player.TargetPlayer -> RequiredPredicateContext(targetPlayerId = true, pipeline = true)
+            Player.TargetOpponent -> RequiredPredicateContext(targetOpponentId = true, pipeline = true)
+            Player.TriggeringPlayer -> RequiredPredicateContext(triggeringPlayerId = true, pipeline = true)
+            Player.DefendingPlayer -> RequiredPredicateContext(defendingPlayerId = true, pipeline = true)
+            else -> RequiredPredicateContext(unsupported = true, pipeline = true)
+        }
+        else -> RequiredPredicateContext(unsupported = true, pipeline = true)
+    }
+
+    private fun StatePredicate.requiredPredicateContext(): RequiredPredicateContext = when (this) {
+        StatePredicate.IsAttackingAnOpponent -> RequiredPredicateContext(controllerId = true)
+        StatePredicate.InSameBandAsSource,
+        StatePredicate.IsBlockingSource,
+        StatePredicate.CreatedBySource,
+        StatePredicate.NotTargetedByAbilityFromSameNamedSource,
+        StatePredicate.CrewedOrSaddledSourceThisTurn,
+        StatePredicate.CrewedOrSaddledBySourceThisTurn,
+        StatePredicate.DealtCombatDamageToSourceControllerThisTurn,
+        StatePredicate.ControllerDealtCombatDamageBySourceThisTurn,
+        StatePredicate.IsSource,
+        StatePredicate.IsAttachedToBySource,
+        StatePredicate.IsAttachedToSource,
+        StatePredicate.ExiledWithSource -> RequiredPredicateContext(sourceId = true)
+        StatePredicate.IsGrantingPermanent -> RequiredPredicateContext(granterId = true)
+        is StatePredicate.IsEnchantedByAura -> auraController.requiredPredicateContext()
+        is StatePredicate.AttachedTo -> filter.requiredPredicateContext()
+        is StatePredicate.Or -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
+            required + predicate.requiredPredicateContext()
+        }
+        is StatePredicate.And -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
+            required + predicate.requiredPredicateContext()
+        }
+        is StatePredicate.Not -> predicate.requiredPredicateContext()
+        else -> RequiredPredicateContext()
+    }
 
     private fun CardPredicate.requiredPredicateContext(): RequiredPredicateContext = when (this) {
         CardPredicate.ManaValueEqualsX,
         CardPredicate.ManaValueAtMostX,
         CardPredicate.PowerEqualsX,
         CardPredicate.PowerAtLeastX,
-        CardPredicate.ToughnessAtMostX -> RequiredPredicateContext(xValue = true)
-        is CardPredicate.ManaValueAtMostEntity,
-        is CardPredicate.ManaValueAtMostEntityManaSpent,
-        is CardPredicate.ManaValueAtMostColorsSpent,
-        is CardPredicate.PowerGreaterThanEntity,
-        is CardPredicate.PowerAtMostEntity,
-        is CardPredicate.PowerLessThanEntity,
-        is CardPredicate.NameEqualsChosen,
+        CardPredicate.ToughnessAtMostX -> RequiredPredicateContext(
+            xValue = true,
+            pipeline = true,
+        )
+        is CardPredicate.ManaValueAtMostEntity -> reference.requiredPredicateContext()
+        is CardPredicate.ManaValueAtMostEntityManaSpent -> reference.requiredPredicateContext()
+        is CardPredicate.ManaValueAtMostColorsSpent -> reference.requiredPredicateContext()
+        is CardPredicate.PowerGreaterThanEntity -> reference.requiredPredicateContext()
+        is CardPredicate.PowerAtMostEntity -> reference.requiredPredicateContext()
+        is CardPredicate.PowerLessThanEntity -> reference.requiredPredicateContext()
+        is CardPredicate.ManaValueAtMostDynamic,
+        is CardPredicate.ManaValueEqualsDynamic,
+        is CardPredicate.PowerEqualsDynamic,
+        is CardPredicate.ToughnessEqualsDynamic -> RequiredPredicateContext(pipeline = true)
+        is CardPredicate.NameEqualsChosen -> RequiredPredicateContext(
+            pipeline = true,
+            chosenValues = setOf(variableName),
+        )
         is CardPredicate.NameEqualsChosenComponent,
-        is CardPredicate.CardTypeEqualsChosenComponent,
-        is CardPredicate.HasSubtypeFromVariable,
-        is CardPredicate.HasSubtypeInStoredList,
-        is CardPredicate.HasSubtypeInEachStoredGroup,
-        CardPredicate.HasChosenColor,
+        is CardPredicate.CardTypeEqualsChosenComponent -> RequiredPredicateContext(
+            sourceId = true,
+        )
+        is CardPredicate.HasSubtypeFromVariable -> RequiredPredicateContext(
+            pipeline = true,
+            chosenValues = setOf(variableName),
+        )
+        is CardPredicate.HasSubtypeInStoredList -> RequiredPredicateContext(
+            pipeline = true,
+            storedStringLists = setOf(listName),
+        )
+        is CardPredicate.HasSubtypeInEachStoredGroup -> RequiredPredicateContext(
+            pipeline = true,
+            storedSubtypeGroups = setOf(groupName),
+        )
+        CardPredicate.HasChosenColor -> RequiredPredicateContext(
+            pipeline = true,
+            chosenColor = true,
+        )
+        CardPredicate.NotOfSourceChosenType,
         CardPredicate.SharesCreatureTypeWithSource,
-        CardPredicate.SharesCreatureTypeWithTriggeringEntity,
         CardPredicate.HasChosenSubtype,
-        CardPredicate.SharesChosenColorWithSource,
-        CardPredicate.SharesColorWithRecipient,
-        is CardPredicate.SharesCreatureTypeWith,
-        is CardPredicate.SharesColorWith,
-        is CardPredicate.SharesColorWithPermanentYouControl,
-        is CardPredicate.SharesNameWithPermanentYouControl,
-        is CardPredicate.DoesNotShareCreatureTypeWithPermanentYouControl,
-        is CardPredicate.DoesNotShareLandTypeWithPermanentYouControl -> RequiredPredicateContext(pipeline = true)
+        CardPredicate.SharesChosenColorWithSource -> RequiredPredicateContext(sourceId = true)
+        CardPredicate.SharesCreatureTypeWithTriggeringEntity -> RequiredPredicateContext(
+            triggeringEntityId = true,
+        )
+        CardPredicate.SharesColorWithRecipient -> RequiredPredicateContext(
+            pipeline = true,
+            recipientId = true,
+        )
+        is CardPredicate.SharesCreatureTypeWith -> entity.requiredPredicateContext()
+        is CardPredicate.SharesColorWith -> entity.requiredPredicateContext()
+        is CardPredicate.SharesColorWithPermanentYouControl ->
+            RequiredPredicateContext(controllerId = true) + filter.requiredPredicateContext()
+        is CardPredicate.SharesNameWithPermanentYouControl ->
+            RequiredPredicateContext(controllerId = true) + filter.requiredPredicateContext()
+        is CardPredicate.DoesNotShareCreatureTypeWithPermanentYouControl ->
+            RequiredPredicateContext(controllerId = true) + filter.requiredPredicateContext()
+        is CardPredicate.DoesNotShareLandTypeWithPermanentYouControl ->
+            RequiredPredicateContext(controllerId = true) + filter.requiredPredicateContext()
+        is CardPredicate.TargetsMatching -> subfilter.requiredPredicateContext()
+        is CardPredicate.AbilitySourceMatches -> subfilter.requiredPredicateContext()
         is CardPredicate.And -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
             required + predicate.requiredPredicateContext()
         }
@@ -258,6 +501,32 @@ class TargetFinder(
         }
         is CardPredicate.Not -> predicate.requiredPredicateContext()
         else -> RequiredPredicateContext()
+    }
+
+    private fun EntityReference.requiredPredicateContext(): RequiredPredicateContext = when (this) {
+        EntityReference.Source -> RequiredPredicateContext(sourceId = true)
+        EntityReference.Triggering -> RequiredPredicateContext(triggeringEntityId = true)
+        EntityReference.DamageSource -> RequiredPredicateContext(
+            pipeline = true,
+            damageSourceId = true,
+        )
+        EntityReference.DamageRecipient -> RequiredPredicateContext(
+            pipeline = true,
+            damageRecipientId = true,
+        )
+        EntityReference.AffectedEntity -> RequiredPredicateContext(
+            pipeline = true,
+            affectedEntityId = true,
+        )
+        is EntityReference.FromCostStorage -> RequiredPredicateContext(
+            pipeline = true,
+            storedCollections = mapOf(collectionName to setOf(index)),
+        )
+        EntityReference.AmassedArmy -> RequiredPredicateContext(
+            pipeline = true,
+            storedCollections = mapOf(EntityReference.AmassedArmy.STORAGE_KEY to setOf(0)),
+        )
+        else -> RequiredPredicateContext(unsupported = true, pipeline = true)
     }
 
     private fun findPlayerTargets(
