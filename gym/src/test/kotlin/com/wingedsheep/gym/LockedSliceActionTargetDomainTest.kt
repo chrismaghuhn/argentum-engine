@@ -43,6 +43,7 @@ import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetObject
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.collections.shouldContain
@@ -305,6 +306,106 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         giantfall.modes.map { mode -> mode.targetRequirements.map { it.description } }
             .toSet().size shouldBe 2
     }
+
+    test("ATD-04 existing Gold Rush exposes one optional 0/1 slot and executes empty and one-target payloads") {
+        // Gold Rush is an existing production card, but it is not part of either locked curriculum
+        // artifact. This is architectural evidence for the single optional-slot contract only; it
+        // deliberately does not change or extend the persisted Akiri/Chevill decks.
+        fun execute(targetCount: Int) {
+            val prepared = prepareGoldRushGame()
+            val gym = GameGymEnv(
+                environment = prepared.environment,
+                perspectivePlayerIndex = 0,
+                observationBuilder = ObservationBuilder(cardRegistry = registry),
+            )
+
+            val observed = gym.observe()
+            val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
+            observed.diagnostics.shouldBeEmpty()
+            val goldRush = observation.legalActions.single {
+                it.kind == "CastSpell" && it.description == "Cast Gold Rush"
+            }
+            goldRush.minTargets shouldBe 0
+            goldRush.targetCount shouldBe 1
+            val domain = goldRush.targetDomain.shouldNotBeNull()
+            domain.composition shouldBe ActionTargetComposition.FIXED
+            domain.requirements.map { it.index } shouldBe listOf(0)
+            domain.requirements.map { it.minTargets to it.maxTargets } shouldBe listOf(0 to 1)
+            domain.requirements.single().candidates shouldBe listOf(prepared.targetCreature)
+
+            // The one-target choice is read from the public domain. The empty case intentionally
+            // carries no target object at all; neither branch invents an ID outside the view.
+            val publicTarget = domain.requirements.single().candidates.single()
+            val targets = when (targetCount) {
+                0 -> emptyList()
+                1 -> listOf(publicTarget)
+                else -> error("Unexpected ATD-04 target count: $targetCount")
+            }
+            val payload = bitePayload(goldRush, paymentPayload(goldRush), targets)
+            val before = prepared.environment.stepCount
+
+            val after = gym.step(goldRush.actionId, payload)
+
+            after.diagnostics.shouldBeEmpty()
+            prepared.environment.stepCount shouldBe before + 1
+            val stackId = prepared.environment.state.stack.last()
+            prepared.environment.state.getEntity(stackId)?.get<CardComponent>()?.name shouldBe "Gold Rush"
+            prepared.environment.state.getEntity(stackId)?.get<TargetsComponent>()?.targets.orEmpty() shouldBe
+                targets.map { ChosenTarget.Permanent(it) }
+        }
+
+        execute(targetCount = 0)
+        execute(targetCount = 1)
+    }
+
+    test("ATD-06 locked Putrefy with no artifact or creature is absent from Rules and Gym candidates") {
+        val prepared = prepareLockedGame(
+            firstDeck = readLockedDeck("chevill-v0.1.txt"),
+            secondDeck = readLockedDeck("akiri-v0.1.txt"),
+            firstBattlefield = listOf("Forest", "Forest", "Swamp"),
+            firstHand = listOf("Putrefy"),
+            seed = 8_005L,
+        )
+        val environment = prepared.environment
+        val player = environment.playerIds.first()
+        val putrefyId = environment.state.getZone(player, Zone.HAND).single { id ->
+            stateCardName(environment, id) == "Putrefy"
+        }
+        val putrefyRequirement = registry.requireCard("Putrefy").script.targetRequirements.single()
+
+        // This is the real card shape, not a fabricated TargetRequirement: Putrefy requires one
+        // artifact-or-creature target, while the fixture provides only three lands and enough
+        // mana for {1}{B}{G}.
+        putrefyRequirement.effectiveMinCount shouldBe 1
+        putrefyRequirement.count shouldBe 1
+        environment.state.getBattlefield(player)
+            .mapNotNull { stateCardName(environment, it) }
+            .sorted() shouldBe listOf("Forest", "Forest", "Swamp")
+
+        val enumeratedPutrefy = environment.legalActions().filter { legalAction ->
+            (legalAction.action as? CastSpell)?.cardId == putrefyId
+        }
+        enumeratedPutrefy shouldBe emptyList()
+
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry),
+        )
+        val observed = gym.observe()
+        val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
+        observed.diagnostics.shouldBeEmpty()
+        observation.legalActions.any {
+            it.kind == "CastSpell" && it.description.contains("Putrefy")
+        } shouldBe false
+
+        // Gym only accepts the current published action registry; a fabricated next ID cannot
+        // rescue an action that Rules enumeration did not produce.
+        val before = environment.stepCount
+        val unavailableActionId = (observation.legalActions.maxOfOrNull { it.actionId } ?: -1) + 1
+        shouldThrow<IllegalArgumentException> { gym.step(unavailableActionId) }
+        environment.stepCount shouldBe before
+    }
 })
 
 private data class LockedPreparedGame(
@@ -367,7 +468,7 @@ private fun prepareLockedGame(
     val firstSource = firstIds.firstOrNull { id ->
         stateCardName(environment, id) == "Llanowar Elves"
     } ?: firstIds.firstOrNull { id -> stateCardName(environment, id) == "Brass Squire" }
-        ?: error("Locked fixture did not place an action source")
+        ?: EntityId("unused-source")
     val secondRecipient = secondIds.firstOrNull { id -> stateCardName(environment, id) == "Brass Squire" }
     val firstEquipment = firstIds.firstOrNull { id -> stateCardName(environment, id) == "Bonesplitter" }
         ?: EntityId("unused-equipment")
@@ -433,6 +534,58 @@ private fun paymentPayload(view: LegalActionView): JsonObject {
             ),
         )
     }
+}
+
+private data class GoldRushPreparedGame(
+    val environment: GameEnvironment,
+    val targetCreature: EntityId,
+)
+
+private fun prepareGoldRushGame(): GoldRushPreparedGame {
+    val environment = GameEnvironment.create(lockedCatalogRegistry())
+    environment.reset(
+        GameConfig(
+            players = listOf(
+                PlayerConfig(
+                    "First",
+                    Deck.of("Gold Rush" to 1, "Forest" to 4, "Llanowar Elves" to 1),
+                ),
+                PlayerConfig("Second", Deck.of("Forest" to 2)),
+            ),
+            startingHandSize = 0,
+            skipMulligans = true,
+            startingPlayerIndex = 0,
+            seed = 8_004L,
+        ),
+    )
+
+    val player = environment.playerIds.first()
+    var state = environment.state
+
+    fun moveNamed(name: String, destination: Zone): EntityId {
+        val library = ZoneKey(player, Zone.LIBRARY)
+        val id = state.getZone(library).firstOrNull { candidate ->
+            stateCardName(environment, candidate) == name
+        } ?: error("Repository fixture has no '$name' for $player")
+        state = state.moveToZone(id, library, ZoneKey(player, destination))
+        return id
+    }
+
+    moveNamed("Gold Rush", Zone.HAND)
+    moveNamed("Forest", Zone.BATTLEFIELD)
+    moveNamed("Forest", Zone.BATTLEFIELD)
+    val targetCreature = moveNamed("Llanowar Elves", Zone.BATTLEFIELD)
+    environment.restore(state, environment.playerIds, environment.stepCount)
+
+    var advances = 0
+    while (environment.state.step != Step.PRECOMBAT_MAIN) {
+        val pass = environment.legalActions().firstOrNull { it.action is PassPriority }
+            ?: error("Expected PassPriority while preparing Gold Rush fixture: ${environment.state.step}")
+        environment.step(pass.action)
+        check(++advances < 20) { "Gold Rush fixture did not reach precombat main" }
+    }
+
+    return GoldRushPreparedGame(environment, targetCreature)
 }
 
 private fun stateCardName(environment: GameEnvironment, id: EntityId): String? =
