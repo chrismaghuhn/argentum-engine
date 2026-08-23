@@ -97,6 +97,16 @@ class Visibility(
 
         // A per-object reveal is authoritative even when the containing hand is not visible.
         if (isCardRevealedTo(state, entityId, viewingPlayerId)) return true
+
+        // The library itself is never zone-visible. A specific library object may still be
+        // addressable when the existing identity-level visibility rules authorize that object
+        // (for example, the top card under RevealTopOfLibrary, PlayFromTopOfLibrary, or
+        // LookAtTopOfLibrary). Do not broaden this to the whole library or infer visibility from
+        // the hidden GameState.
+        if (zoneKey.zoneType == Zone.LIBRARY) {
+            return isEntityIdentityVisibleTo(state, entityId, viewingPlayerId, isSpectator)
+        }
+
         if (!isZoneVisibleTo(state, zoneKey, viewingPlayerId, isSpectator)) return false
 
         val entity = state.getEntity(entityId) ?: return false

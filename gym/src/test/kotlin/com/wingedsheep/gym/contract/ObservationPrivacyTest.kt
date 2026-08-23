@@ -920,6 +920,39 @@ class ObservationPrivacyTest : FunSpec({
         }
     }
 
+    test("ordinary hidden library target reference remains withheld") {
+        val base = environment()
+        val viewer = base.playerIds[0]
+        val hiddenLibraryId = base.state.getLibrary(base.playerIds[1]).first()
+
+        val result = targetedResult(base.state, viewer, hiddenLibraryId)
+
+        result.diagnostics.map { it.code } shouldBe
+            listOf(DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED)
+        result.observation.legalActions.shouldBeEmpty()
+    }
+
+    test("visibility-authorized top library target reference is published") {
+        val base = environment()
+        val owner = base.playerIds[1]
+        val viewer = base.playerIds[0]
+        val topLibraryId = base.state.getLibrary(owner).first()
+        val state = grantStaticAbilityToBattlefieldCard(
+            base.state,
+            owner,
+            RevealTopOfLibrary
+        )
+
+        val result = targetedResult(state, viewer, topLibraryId)
+
+        result.diagnostics.shouldBeEmpty()
+        val targetDomain = (result.observation as TrainingObservation)
+            .legalActions.single()
+            .targetDomain
+            .shouldNotBeNull()
+        targetDomain.requirements.single().candidates shouldBe listOf(topLibraryId)
+    }
+
     test("an explicitly revealed hidden-zone object may be addressed without identity in the domain") {
         val base = environment()
         val viewer = base.playerIds[0]
