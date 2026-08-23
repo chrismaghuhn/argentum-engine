@@ -500,8 +500,10 @@ class AIPlayerTest : FunSpec({
     }
 
     // Regression: a spell that targets "a spell on the stack" (Reprieve, a counterspell, …) is a
-    // SINGLE-requirement targeted spell, so the enumerator surfaces it with `targetRequirements =
-    // null` and only a flat `validTargets` list — i.e. with no target zone. The strategist's
+    // SINGLE-requirement targeted spell, so the enumerator surfaces one ordered
+    // `targetRequirements` entry with the stack target's zone. Targetless actions use `emptyList()`;
+    // the legacy flat fields remain compatibility projections, not the target-domain authority.
+    // The strategist's
     // single-target path then defaulted every entity to a `ChosenTarget.Permanent`, so the cast
     // was submitted with a Permanent target, rejected by the engine ("Target must be a spell on
     // the stack"), and re-picked forever. The fix consults `state.isSpellOnStack` and wraps a

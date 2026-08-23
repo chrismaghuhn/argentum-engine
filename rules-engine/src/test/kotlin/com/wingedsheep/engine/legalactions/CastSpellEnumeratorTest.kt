@@ -187,9 +187,9 @@ class CastSpellEnumeratorTest : FunSpec({
 
     test("'any number of target creatures' caps at the legal-target count, not the static count of 1") {
         // Morningtide's Light declares TargetCreature(unlimited = true), whose static `count`
-        // is the default 1. The enumerated cap must be "every legal target" — a single-
-        // requirement action ships no targetRequirements, so `targetCount` is the only max
-        // the client and the AI ever see.
+        // is the default 1. The enumerated cap must be "every legal target" — this
+        // single-requirement action still exposes one ordered `targetRequirements` entry;
+        // `targetCount` remains only as a compatibility projection for legacy consumers.
         val driver = setupP1(
             hand = listOf("Morningtide's Light"),
             battlefield = listOf(

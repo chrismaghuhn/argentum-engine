@@ -27,8 +27,9 @@ data class LegalAction(
      * requirement's static `count`. `count` is only a placeholder for "any number of
      * target ..." (`unlimited`, where the real cap is how many legal targets exist) and for a
      * board-state `dynamicMaxCount`; reading it here silently clamped such spells to a single
-     * target, because [targetRequirements] is populated only for multi-requirement actions, so
-     * neither the client nor the AI could recover the real maximum.
+     * target, because [targetRequirements] is the canonical ordered domain for every
+     * target-bearing action, including single-requirement actions. The flat fields remain
+     * compatibility projections and are not the target-domain source of truth.
      *
      * The one exception is an X-driven cap ([xConstrainsTargetCount]): X is unbound at
      * enumeration time, so this stays a placeholder the client replaces with the chosen X.
