@@ -67,11 +67,20 @@ class GameGymEnvActionContractTest : FunSpec({
         }
     }
 
+    val targetlessSpell = card("Gym Contract Targetless Spell") {
+        manaCost = "{R}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun registry() = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
         register(StrongholdSet.cards)
         register(payableActionSource)
+        register(targetlessSpell)
     }
 
     fun config() = GameConfig(
@@ -203,6 +212,70 @@ class GameGymEnvActionContractTest : FunSpec({
             gym.step(staleActionId)
         }
         environment.stepCount shouldBe stepCountBefore + 1
+    }
+
+    test("targetless CastSpell rejects extra targets before strict execution") {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
+        gym.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of("Mountain" to 1, targetlessSpell.name to 1)),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 1, "Shock" to 1)),
+                ),
+                startingHandSize = 2,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+            ),
+        )
+
+        var observed = gym.observe()
+        var land = observed.observation.legalActions.firstOrNull { it.kind == "PlayLand" }
+        var setupSteps = 0
+        while (land == null && setupSteps++ < 20) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            observed = gym.observe()
+            land = observed.observation.legalActions.firstOrNull { it.kind == "PlayLand" }
+        }
+        val selectedLand = land ?: error("Expected a PlayLand action during setup")
+        gym.step(selectedLand.actionId)
+
+        val targetless = gym.observe().observation.legalActions.firstOrNull {
+            it.kind == "CastSpell" &&
+                it.description.contains(targetlessSpell.name) &&
+                it.actionSemantics != null
+        } ?: error("Expected targetless CastSpell action")
+        val payload = buildJsonObject {
+            targetless.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    paymentStrategyPayload(targetless),
+                ),
+            )
+            put(
+                "targets",
+                buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "Player")
+                        put("playerId", environment.playerIds[1].value)
+                    })
+                },
+            )
+        }
+        val stepCountBefore = environment.stepCount
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(targetless.actionId, payload)
+        }
+        environment.stepCount shouldBe stepCountBefore
     }
 
     test("payable structured ActivateAbility publishes an externally usable payment domain") {

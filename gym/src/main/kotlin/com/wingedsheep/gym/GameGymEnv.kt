@@ -118,6 +118,7 @@ class GameGymEnv(
                 "copy actionSemantics and fill every required choice"
         }
         val submitted = materializeAction(legal.action, actionPayload)
+        ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
         requireActionPaymentPlan(legal, submitted)
         environment.stepFromCandidateStrict(legal.action, submitted)
         return build()

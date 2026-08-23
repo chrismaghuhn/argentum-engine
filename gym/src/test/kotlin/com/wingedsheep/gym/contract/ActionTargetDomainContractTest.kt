@@ -10,6 +10,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.buildJsonObject
 
@@ -129,5 +130,47 @@ class ActionTargetDomainContractTest : FunSpec({
         ActionPayloadRequirements.requiredPayloadFields(action).shouldBeEmpty()
         ActionPayloadRequirements.missingRequiredFields(action, buildJsonObject {}) shouldBe emptyList()
         ActionPayloadRequirements.requireTargetDomainSupported(action)
+    }
+
+    test("targetless submitted CastSpell rejects an extra target payload") {
+        val player = EntityId("player")
+        val targetless = LegalAction(
+            action = CastSpell(player, EntityId("spell")),
+            actionType = "CastSpell",
+            description = "targetless spell",
+            requiresTargets = false,
+            targetRequirements = emptyList(),
+            targetDomainSupport = TargetDomainSupport.SUPPORTED,
+        )
+        val submitted = CastSpell(
+            playerId = player,
+            cardId = EntityId("spell"),
+            targets = listOf(ChosenTarget.Player(EntityId("opponent"))),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            ActionPayloadRequirements.requireTargetPayloadPartition(targetless, submitted)
+        }.message shouldContain "PAYLOAD_LENGTH_OUT_OF_RANGE"
+    }
+
+    test("submitted fixed multi-target payload rejects a malformed length") {
+        val player = EntityId("player")
+        val fixedMultiTarget = LegalAction(
+            action = CastSpell(player, EntityId("spell")),
+            actionType = "CastSpell",
+            description = "fixed multi-target spell",
+            requiresTargets = true,
+            targetRequirements = listOf(requirement(0, 1, 1), requirement(1, 1, 1)),
+            targetDomainSupport = TargetDomainSupport.SUPPORTED,
+        )
+        val submitted = CastSpell(
+            playerId = player,
+            cardId = EntityId("spell"),
+            targets = listOf(ChosenTarget.Player(EntityId("opponent"))),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            ActionPayloadRequirements.requireTargetPayloadPartition(fixedMultiTarget, submitted)
+        }.message shouldContain "PAYLOAD_LENGTH_OUT_OF_RANGE"
     }
 })

@@ -105,6 +105,27 @@ object ActionPayloadRequirements {
         }
     }
 
+    /**
+     * Validate the target list carried by a caller-completed [GameAction] against the registered
+     * action's certified flat payload partition. This is structural validation only; final target
+     * identity and rules legality remain the responsibility of the engine.
+     */
+    fun requireTargetPayloadPartition(action: LegalAction, submitted: GameAction) {
+        val payloadLength = when (submitted) {
+            is CastSpell -> submitted.targets.size
+            is ActivateAbility -> submitted.targets.size
+            else -> 0
+        }
+        when (val partition = TargetPayloadPartition.partition(action.targetRequirements, payloadLength)) {
+            is TargetPayloadPartition.PayloadPartition.Accepted -> Unit
+            is TargetPayloadPartition.PayloadPartition.Rejected ->
+                throw IllegalArgumentException(
+                    "Submitted target payload does not match the certified action partition: " +
+                        partition.reason.name
+                )
+        }
+    }
+
     private fun additionalPaymentField(action: GameAction): String = when (action) {
         is ActivateAbility -> "costPayment"
         is CastSpell -> "additionalCostPayment"
