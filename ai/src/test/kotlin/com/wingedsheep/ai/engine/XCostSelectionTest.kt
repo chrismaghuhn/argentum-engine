@@ -59,7 +59,7 @@ class XCostSelectionTest : ScenarioTestBase() {
         xConstrainsTargetManaValueExactly: Boolean = false,
         xConstrainsTargetPower: Boolean = false,
         xConstrainsTargetCount: Boolean = false,
-        targetRequirements: List<TargetInfo>? = null,
+        targetRequirements: List<TargetInfo> = emptyList(),
     ) = LegalAction(
         action = CastSpell(playerId = EntityId.generate(), cardId = EntityId.generate()),
         actionType = "CastSpell",
@@ -357,8 +357,8 @@ class XCostSelectionTest : ScenarioTestBase() {
                     ),
                 )
                 val narrowed = XCostSelection.narrowToX(b.state, action, 2).shouldNotBeNull()
-                narrowed.targetRequirements!![0].validTargets shouldBe listOf(b.thopter, b.bears)
-                narrowed.targetRequirements!![1].validTargets shouldBe
+                narrowed.targetRequirements[0].validTargets shouldBe listOf(b.thopter, b.bears)
+                narrowed.targetRequirements[1].validTargets shouldBe
                     listOf(b.thopter, b.bears, b.giant)
             }
 
@@ -397,7 +397,7 @@ class XCostSelectionTest : ScenarioTestBase() {
                     ),
                 )
                 val narrowed = XCostSelection.narrowToX(b.state, action, 1).shouldNotBeNull()
-                narrowed.targetRequirements!![0].validTargets shouldBe emptyList()
+                narrowed.targetRequirements[0].validTargets shouldBe emptyList()
             }
 
             test("the flat view is re-derived from the narrowed requirement, not narrowed twice") {
@@ -428,7 +428,7 @@ class XCostSelectionTest : ScenarioTestBase() {
                     ),
                 )
                 val narrowed = XCostSelection.narrowToX(b.state, action, 2).shouldNotBeNull()
-                narrowed.validTargets shouldBe narrowed.targetRequirements!![0].validTargets
+                narrowed.validTargets shouldBe narrowed.targetRequirements[0].validTargets
                 narrowed.validTargets shouldBe listOf(b.thopter, b.bears)
             }
         }
