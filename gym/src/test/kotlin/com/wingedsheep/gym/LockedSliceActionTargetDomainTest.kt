@@ -1,6 +1,7 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
@@ -23,6 +24,7 @@ import com.wingedsheep.engine.legalactions.utils.TargetEnumerationUtils
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.gym.contract.ACTION_TARGET_DOMAIN_VERSION
@@ -40,6 +42,8 @@ import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
+import com.wingedsheep.sdk.scripting.effects.GatedEffect
+import com.wingedsheep.sdk.scripting.effects.ReflexiveTriggerEffect
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetObject
@@ -116,6 +120,125 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             .first { it.targetRequirements.isNotEmpty() }
         renew.targetRequirements.single().shouldBeInstanceOf<TargetObject>().dynamicMaxCount shouldBe
             com.wingedsheep.sdk.scripting.values.DynamicAmount.XValue
+    }
+
+    test("available repository architecture probes publish aggregate target relations") {
+        val repositoryCards = listOf(
+            "Behold the Sinister Six!" to
+                "mtg-sets/2025/src/main/kotlin/com/wingedsheep/mtg/sets/definitions/spm/cards/BeholdTheSinisterSix.kt",
+            "The Rise of Sozin" to
+                "mtg-sets/2025/src/main/kotlin/com/wingedsheep/mtg/sets/definitions/tla/cards/TheRiseOfSozin.kt",
+            "Secret Tunnel" to
+                "mtg-sets/2025/src/main/kotlin/com/wingedsheep/mtg/sets/definitions/tla/cards/SecretTunnel.kt",
+            "Giantfall" to
+                "mtg-sets/2026/src/main/kotlin/com/wingedsheep/mtg/sets/definitions/ecl/cards/Giantfall.kt",
+        )
+        repositoryCards.forEach { (name, relativePath) ->
+            registry.requireCard(name)
+            Files.exists(repositoryRoot().resolve(relativePath)) shouldBe true
+        }
+
+        val behold = prepareRepositoryProbeGame(
+            cardName = "Behold the Sinister Six!",
+            firstHand = true,
+            firstGraveyard = listOf(
+                "Llanowar Elves",
+                "Elvish Mystic",
+                "Sram, Senior Edificer",
+                "Brass Squire",
+                "Viscera Seer",
+                "Scavenging Ooze",
+            ),
+        )
+        val beholdId = behold.cardIdsIn(Zone.HAND).single()
+        val beholdAction = behold.environment.legalActions().single { legal ->
+            val action = legal.action
+            action is CastSpell && action.cardId == beholdId
+        }
+        beholdAction.targetRequirements.single().differentNames shouldBe true
+        beholdAction.targetRequirements.single().validTargets shouldHaveSize 6
+        val beholdView = publicActionView(behold.environment, beholdAction, registry)
+        beholdView.targetDomain.shouldNotBeNull().requirements.single().let { requirement ->
+            requirement.minTargets shouldBe 0
+            requirement.maxTargets shouldBe 6
+            requirement.differentNames shouldBe true
+            requirement.targetZone shouldBe "Graveyard"
+            requirement.candidates shouldHaveSize 6
+        }
+
+        val tunnel = prepareRepositoryProbeGame(
+            cardName = "Secret Tunnel",
+            firstBattlefield = listOf("Llanowar Elves", "Elvish Mystic"),
+        )
+        val tunnelId = tunnel.cardIdsIn(Zone.BATTLEFIELD).single()
+        val tunnelAction = tunnel.environment.legalActions().single { legal ->
+            val action = legal.action
+            action is ActivateAbility &&
+                action.sourceId == tunnelId &&
+                legal.targetRequirements.isNotEmpty()
+        }
+        tunnelAction.targetRequirements.single().sameCreatureType shouldBe true
+        tunnelAction.targetRequirements.single().validTargets shouldHaveSize 2
+        val tunnelView = publicActionView(tunnel.environment, tunnelAction, registry)
+        tunnelView.targetDomain.shouldNotBeNull().requirements.single().let { requirement ->
+            requirement.minTargets shouldBe 2
+            requirement.maxTargets shouldBe 2
+            requirement.sameCreatureType shouldBe true
+            requirement.candidates shouldHaveSize 2
+        }
+
+        val sozin = registry.requireCard("The Rise of Sozin")
+        val sozinProbe = prepareRepositoryProbeGame(cardName = "The Rise of Sozin", firstHand = true)
+        val player = sozinProbe.environment.playerIds.first()
+        val opponent = sozinProbe.environment.playerIds.last()
+        val projection = TargetEnumerationUtils(PredicateEvaluator())
+        val chapterTwo = sozin.sagaChapters.single { it.chapter == 2 }
+        val chapterProjection = projection.buildTargetInfos(
+            state = sozinProbe.environment.state,
+            playerId = player,
+            targetReqs = listOfNotNull(chapterTwo.targetRequirement) +
+                chapterTwo.additionalTargetRequirements,
+        )
+        chapterProjection.support shouldBe TargetDomainSupport.SUPPORTED
+        chapterProjection.infos.single().validTargets shouldBe listOf(opponent)
+
+        // Fire Lord Sozin's aggregate mana-value cap is bound only after X is paid. The public
+        // target seam therefore records the real unsupported state instead of inventing a cap.
+        val sozinBack = sozin.backFace.shouldNotBeNull()
+        val backGate = sozinBack.script.triggeredAbilities
+            .first { it.effect is GatedEffect }
+            .effect
+            .shouldBeInstanceOf<GatedEffect>()
+        val reflexive = backGate.then.shouldBeInstanceOf<ReflexiveTriggerEffect>()
+        val backProjection = projection.buildTargetInfos(
+            state = sozinProbe.environment.state,
+            playerId = player,
+            targetReqs = reflexive.reflexiveTargetRequirements,
+        )
+        backProjection.support shouldBe TargetDomainSupport.UNSUPPORTED(
+            TargetDomainUnsupportedReason.UNRESOLVED_X,
+        )
+
+        val giantfall = prepareRepositoryProbeGame(
+            cardName = "Giantfall",
+            firstHand = true,
+            firstBattlefield = listOf("Llanowar Elves"),
+            secondBattlefield = listOf("Elvish Mystic", "Bonesplitter"),
+        )
+        val giantfallId = giantfall.cardIdsIn(Zone.HAND).single()
+        val giantfallActions = giantfall.environment.legalActions()
+            .filter { legal ->
+                val action = legal.action
+                action is CastSpell && action.cardId == giantfallId
+            }
+        giantfallActions.map { it.actionType } shouldBe listOf("CastSpellMode", "CastSpellMode")
+        giantfallActions.map { (it.action as CastSpell).chosenModes } shouldBe
+            listOf(listOf(0), listOf(1))
+        giantfallActions.map { it.targetRequirements.size } shouldBe listOf(2, 1)
+        val giantfallViews = giantfallActions.map { publicActionView(giantfall.environment, it, registry) }
+        giantfallViews.map { it.actionSemantics?.get("chosenModes").toString() } shouldBe
+            listOf("[0]", "[1]")
+        giantfallViews.map { it.targetDomain.shouldNotBeNull().requirements.size } shouldBe listOf(2, 1)
     }
 
     test("real Bite Down consumes two public slots and is accepted by strict Gym execution") {
@@ -406,7 +529,418 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         shouldThrow<IllegalArgumentException> { gym.step(unavailableActionId) }
         environment.stepCount shouldBe before
     }
+
+    test("persisted locked-card set records reachable CastSpell and ActivateAbility shapes") {
+        val akiri = readLockedDeck("akiri-v0.1.txt")
+        val chevill = readLockedDeck("chevill-v0.1.txt")
+        val persistedNames = (akiri + chevill).toSortedSet()
+        val artifactMembership = persistedNames.associateWith { name ->
+            when {
+                name in akiri && name in chevill -> "AKIRI+CHEVILL"
+                name in akiri -> "AKIRI"
+                else -> "CHEVILL"
+            }
+        }
+
+        akiri shouldHaveSize 100
+        chevill shouldHaveSize 100
+        persistedNames shouldHaveSize 146
+        artifactMembership.values.count { it == "AKIRI+CHEVILL" } shouldBe 3
+
+        val rows = persistedNames.toList().flatMapIndexed { index, name ->
+            enumerateLockedCardActions(
+                cardName = name,
+                artifactMembership = artifactMembership.getValue(name),
+                registry = registry,
+                seed = 8_100L + index,
+            )
+        }
+        val orderedRows = rows.sortedWith(
+            compareBy<LockedActionCensusRow> { it.cardName }
+                .thenBy { it.actionKind }
+                .thenBy { it.actionType }
+                .thenBy { it.description }
+                .thenBy { it.targetShape },
+        )
+        orderedRows.map { it.cardName }.toSet() shouldBe persistedNames
+        orderedRows.groupBy { it.cardName }.values.all { it.isNotEmpty() } shouldBe true
+
+        // The artifact files provide the exact 146-card denominator. Each row below is then
+        // derived from real GameEnvironment.legalActions() for that card in a deterministic
+        // witness fixture (three selected copies plus bounded target witnesses), not from
+        // CardDefinition declarations. This is a controlled reachability census, not a full
+        // 100-card gameplay rollout or Environment-V1 acceptance run.
+        val table = orderedRows.joinToString("\n", prefix = "card|artifact|action|form|targets|public|payment\n") {
+            it.render()
+        }
+        table.lineSequence().count() shouldBe orderedRows.size + 1
+        println("LOCKED_DECK_ACTION_CENSUS\n$table")
+
+        // These are totals over executable Rules actions, not CardDefinition declarations. The
+        // no-action rows keep the persisted-deck denominator explicit; payment is intentionally
+        // a separate status and is never repaired or folded into target-domain support.
+        val rawShapeTotals = orderedRows.groupingBy { it.targetShape }.eachCount().toSortedMap()
+        val publicShapeTotals = orderedRows.groupingBy { it.publicDomain }.eachCount().toSortedMap()
+        orderedRows.size shouldBe 215
+        orderedRows.count { it.actionKind == "NO_REACHABLE_ACTION" } shouldBe 0
+        orderedRows.count { it.actionKind == "CastSpell" } shouldBe 134
+        orderedRows.count { it.actionKind == "ActivateAbility" } shouldBe 81
+        orderedRows.count {
+            it.targetShape != "TARGETLESS" && it.targetShape != "NO_REACHABLE_ACTION"
+        } shouldBe 55
+        orderedRows.count { it.publicDomain != "NOT_PUBLISHED" } shouldBe 215
+        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 26
+        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 134
+        orderedRows.count { it.paymentStatus == "NOT_APPLICABLE" } shouldBe 55
+        rawShapeTotals shouldBe mapOf(
+            "0:1-1@-[]#1" to 1,
+            "0:1-1@-[]#10" to 5,
+            "0:1-1@-[]#12" to 2,
+            "0:1-1@-[]#1;1:1-1@-[]#5" to 1,
+            "0:1-1@-[]#2" to 4,
+            "0:1-1@-[]#20" to 3,
+            "0:1-1@-[]#4" to 16,
+            "0:1-1@-[]#4;1:1-1@-[]#4" to 1,
+            "0:1-1@-[]#5" to 1,
+            "0:1-1@-[]#6" to 6,
+            "0:1-1@-[]#8" to 9,
+            "0:1-1@-[]#9" to 1,
+            "0:1-1@Graveyard[]#15" to 1,
+            "0:1-1@Graveyard[]#6" to 1,
+            "0:1-1@Graveyard[]#7" to 2,
+            "0:1-1@Graveyard[]#8" to 1,
+            "TARGETLESS" to 160,
+        )
+        publicShapeTotals shouldBe rawShapeTotals
+    }
 })
+
+private data class LockedActionCensusRow(
+    val cardName: String,
+    val artifactMembership: String,
+    val actionKind: String,
+    val actionType: String,
+    val description: String,
+    val targetShape: String,
+    val publicDomain: String,
+    val paymentStatus: String,
+) {
+    fun render(): String = listOf(
+        cardName,
+        artifactMembership,
+        actionKind,
+        actionType,
+        description,
+        targetShape,
+        publicDomain,
+        paymentStatus,
+    ).joinToString("|")
+}
+
+private data class LockedCensusPreparedGame(
+    val environment: GameEnvironment,
+    val playerId: EntityId,
+    val selectedIds: Set<EntityId>,
+)
+
+private data class RepositoryProbeGame(
+    val environment: GameEnvironment,
+    val playerId: EntityId,
+    val selectedId: EntityId,
+) {
+    fun cardIdsIn(zone: Zone): List<EntityId> = environment.state.getZone(playerId, zone)
+        .filter { id -> stateCardName(environment, id) == stateCardName(environment, selectedId) }
+}
+
+private fun enumerateLockedCardActions(
+    cardName: String,
+    artifactMembership: String,
+    registry: CardRegistry,
+    seed: Long,
+): List<LockedActionCensusRow> {
+    registry.requireCard(cardName)
+    val prepared = prepareLockedCensusGame(cardName, registry, seed)
+    val legalActions = prepared.environment.legalActions().filter { legal ->
+        when (val action = legal.action) {
+            is CastSpell -> action.cardId in prepared.selectedIds
+            is ActivateAbility -> action.sourceId in prepared.selectedIds
+            else -> false
+        }
+    }
+    if (legalActions.isEmpty()) {
+        return listOf(
+            LockedActionCensusRow(
+                cardName = cardName,
+                artifactMembership = artifactMembership,
+                actionKind = "NO_REACHABLE_ACTION",
+                actionType = "-",
+                description = "-",
+                targetShape = "NO_REACHABLE_ACTION",
+                publicDomain = "NOT_PUBLISHED",
+                paymentStatus = "NOT_APPLICABLE",
+            ),
+        )
+    }
+
+    val observationBuilder = ObservationBuilder(cardRegistry = registry)
+    val observed = observationBuilder.build(
+        state = prepared.environment.state,
+        perspectivePlayerId = prepared.playerId,
+        legalActions = prepared.environment.legalActions(),
+    )
+    val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
+
+    return legalActions.map { legal ->
+        val sourceId = when (val action = legal.action) {
+            is CastSpell -> action.cardId
+            is ActivateAbility -> action.sourceId
+            else -> error("Census action filter admitted ${legal.action::class.simpleName}")
+        }
+        val publicView = observation.legalActions.firstOrNull { view ->
+            view.kind == legal.actionType &&
+                view.description == legal.description &&
+                view.sourceEntityId == sourceId
+        }
+        LockedActionCensusRow(
+            cardName = cardName,
+            artifactMembership = artifactMembership,
+            actionKind = when (legal.action) {
+                is CastSpell -> "CastSpell"
+                is ActivateAbility -> "ActivateAbility"
+                else -> error("Unreachable census action kind")
+            },
+            actionType = legal.actionType,
+            description = legal.description,
+            targetShape = renderTargetShape(legal.targetRequirements),
+            publicDomain = publicView?.targetDomain?.let(::renderTargetShape)
+                ?: "NOT_PUBLISHED",
+            paymentStatus = when {
+                legal.manaCostString == null -> "NOT_APPLICABLE"
+                observationBuilder.paymentDomainFor(prepared.environment.state, legal) == null ->
+                    "PAYMENT_DOMAIN_UNSUPPORTED"
+                else -> "SUPPORTED"
+            },
+        )
+    }
+}
+
+private fun renderTargetShape(requirements: List<com.wingedsheep.engine.legalactions.TargetInfo>): String {
+    if (requirements.isEmpty()) return "TARGETLESS"
+    return requirements.joinToString(";") { requirement ->
+        val flags = buildList {
+            if (requirement.mustDifferFromEarlier) add("different")
+            if (requirement.sameController) add("sameController")
+            if (requirement.sameOwner) add("sameOwner")
+            if (requirement.sameCreatureType) add("sameCreatureType")
+            if (requirement.sameCardType) add("sameCardType")
+            if (requirement.differentNames) add("differentNames")
+            requirement.totalManaValueAtMost?.let { add("totalMV<=$it") }
+            if (requirement.xConstrainsManaValue) add("xManaValue")
+            if (requirement.xConstrainsManaValueExactly) add("xManaValueExactly")
+            if (requirement.xConstrainsPower) add("xPower")
+            if (requirement.xConstrainsCount) add("xCount")
+        }.joinToString(",", prefix = "[", postfix = "]")
+        "${requirement.index}:${requirement.minTargets}-${requirement.maxTargets}" +
+            "@${requirement.targetZone ?: "-"}$flags#${requirement.validTargets.size}"
+    }
+}
+
+private fun renderTargetShape(domain: ActionTargetDomainV1): String {
+    if (domain.requirements.isEmpty()) return "TARGETLESS"
+    return domain.requirements.joinToString(";") { requirement ->
+        val flags = buildList {
+            if (requirement.mustDifferFromEarlier) add("different")
+            if (requirement.sameController) add("sameController")
+            if (requirement.sameOwner) add("sameOwner")
+            if (requirement.sameCreatureType) add("sameCreatureType")
+            if (requirement.sameCardType) add("sameCardType")
+            if (requirement.differentNames) add("differentNames")
+            requirement.totalManaValueAtMost?.let { add("totalMV<=$it") }
+            if (requirement.xConstrainsManaValue) add("xManaValue")
+            if (requirement.xConstrainsManaValueExactly) add("xManaValueExactly")
+            if (requirement.xConstrainsPower) add("xPower")
+            if (requirement.xConstrainsCount) add("xCount")
+        }.joinToString(",", prefix = "[", postfix = "]")
+        "${requirement.index}:${requirement.minTargets}-${requirement.maxTargets}" +
+            "@${requirement.targetZone ?: "-"}$flags#${requirement.candidates.size}"
+    }
+}
+
+private fun prepareLockedCensusGame(
+    cardName: String,
+    registry: CardRegistry,
+    seed: Long,
+): LockedCensusPreparedGame {
+    val witnessDeck = CENSUS_BATTLEFIELD_WITNESSES + CENSUS_GRAVEYARD_WITNESSES
+    val environment = GameEnvironment.create(registry)
+    environment.reset(
+        GameConfig(
+            players = listOf(
+                PlayerConfig("Census", Deck(listOf(cardName, cardName, cardName) + witnessDeck)),
+                PlayerConfig("Opponent", Deck(witnessDeck)),
+            ),
+            startingHandSize = 0,
+            skipMulligans = true,
+            startingPlayerIndex = 0,
+            seed = seed,
+        ),
+    )
+
+    // Enter the priority window before moving fixture cards. This keeps cards with upkeep/ETB
+    // triggers from creating an unrelated pending decision while the census state is assembled.
+    advanceToPrecombatMain(environment, "locked census baseline")
+    val player = environment.playerIds.first()
+    val opponent = environment.playerIds.last()
+    var state = environment.state
+    val selectedIds = linkedSetOf<EntityId>()
+
+    fun moveNamed(owner: EntityId, name: String, destination: Zone): EntityId {
+        val library = ZoneKey(owner, Zone.LIBRARY)
+        val definitionId = cardDefinitionId(registry.requireCard(name))
+        val id = state.getZone(library).firstOrNull { candidate ->
+            state.getEntity(candidate)?.get<CardComponent>()?.cardDefinitionId == definitionId
+        } ?: error("Census fixture has no '$name' for $owner")
+        state = state.moveToZone(id, library, ZoneKey(owner, destination))
+        return id
+    }
+
+    selectedIds += moveNamed(player, cardName, Zone.HAND)
+    selectedIds += moveNamed(player, cardName, Zone.BATTLEFIELD)
+    selectedIds += moveNamed(player, cardName, Zone.GRAVEYARD)
+    CENSUS_BATTLEFIELD_WITNESSES.forEach { name -> moveNamed(player, name, Zone.BATTLEFIELD) }
+    CENSUS_GRAVEYARD_WITNESSES.forEach { name -> moveNamed(player, name, Zone.GRAVEYARD) }
+    CENSUS_BATTLEFIELD_WITNESSES.forEach { name -> moveNamed(opponent, name, Zone.BATTLEFIELD) }
+    CENSUS_GRAVEYARD_WITNESSES.forEach { name -> moveNamed(opponent, name, Zone.GRAVEYARD) }
+
+    state = state.updateEntity(player) { container ->
+        container.withComponent(
+            ManaPoolComponent(
+                white = 20,
+                blue = 20,
+                black = 20,
+                red = 20,
+                green = 20,
+                colorless = 20,
+            ),
+        )
+    }
+    environment.restore(state, environment.playerIds, environment.stepCount)
+    return LockedCensusPreparedGame(environment, player, selectedIds)
+}
+
+private val CENSUS_BATTLEFIELD_WITNESSES = listOf(
+    "Forest",
+    "Swamp",
+    "Plains",
+    "Mountain",
+    "Llanowar Elves",
+    "Elvish Mystic",
+    "Sram, Senior Edificer",
+    "Brass Squire",
+    "Bonesplitter",
+    "Guardian Project",
+)
+
+private val CENSUS_GRAVEYARD_WITNESSES = listOf(
+    "Llanowar Elves",
+    "Elvish Mystic",
+    "Sram, Senior Edificer",
+    "Brass Squire",
+    "Viscera Seer",
+    "Scavenging Ooze",
+    "Bonesplitter",
+)
+
+private fun prepareRepositoryProbeGame(
+    cardName: String,
+    firstHand: Boolean = false,
+    firstBattlefield: List<String> = emptyList(),
+    firstGraveyard: List<String> = emptyList(),
+    secondBattlefield: List<String> = emptyList(),
+    secondGraveyard: List<String> = emptyList(),
+): RepositoryProbeGame {
+    val firstDeck = listOf(cardName) + firstBattlefield + firstGraveyard
+    val secondDeck = listOf("Forest") + secondBattlefield + secondGraveyard
+    val environment = GameEnvironment.create(lockedCatalogRegistry())
+    environment.reset(
+        GameConfig(
+            players = listOf(
+                PlayerConfig("Probe", Deck(firstDeck)),
+                PlayerConfig("Opponent", Deck(secondDeck)),
+            ),
+            startingHandSize = 0,
+            skipMulligans = true,
+            startingPlayerIndex = 0,
+            seed = 8_090L,
+        ),
+    )
+
+    advanceToPrecombatMain(environment, "repository probe baseline")
+    val player = environment.playerIds.first()
+    val opponent = environment.playerIds.last()
+    var state = environment.state
+
+    fun moveNamed(owner: EntityId, name: String, destination: Zone): EntityId {
+        val library = ZoneKey(owner, Zone.LIBRARY)
+        val id = state.getZone(library).firstOrNull { candidate ->
+            state.getEntity(candidate)?.get<CardComponent>()?.name == name
+        } ?: error("Repository probe fixture has no '$name' for $owner")
+        state = state.moveToZone(id, library, ZoneKey(owner, destination))
+        return id
+    }
+
+    val selectedId = moveNamed(player, cardName, if (firstHand) Zone.HAND else Zone.BATTLEFIELD)
+    firstBattlefield.forEach { name -> moveNamed(player, name, Zone.BATTLEFIELD) }
+    firstGraveyard.forEach { name -> moveNamed(player, name, Zone.GRAVEYARD) }
+    secondBattlefield.forEach { name -> moveNamed(opponent, name, Zone.BATTLEFIELD) }
+    secondGraveyard.forEach { name -> moveNamed(opponent, name, Zone.GRAVEYARD) }
+    state = state.updateEntity(player) { container ->
+        container.withComponent(
+            ManaPoolComponent(
+                white = 20,
+                blue = 20,
+                black = 20,
+                red = 20,
+                green = 20,
+                colorless = 20,
+            ),
+        )
+    }
+    environment.restore(state, environment.playerIds, environment.stepCount)
+    return RepositoryProbeGame(environment, player, selectedId)
+}
+
+private fun publicActionView(
+    environment: GameEnvironment,
+    legalAction: LegalAction,
+    registry: CardRegistry,
+): LegalActionView {
+    val sourceId = when (val action = legalAction.action) {
+        is CastSpell -> action.cardId
+        is ActivateAbility -> action.sourceId
+        else -> error("Expected a CastSpell or ActivateAbility probe")
+    }
+    val result = ObservationBuilder(cardRegistry = registry).build(
+        state = environment.state,
+        perspectivePlayerId = environment.playerIds.first(),
+        legalActions = environment.legalActions(),
+    )
+    return result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single {
+        it.kind == legalAction.actionType &&
+            it.description == legalAction.description &&
+            it.sourceEntityId == sourceId
+    }
+}
+
+private fun advanceToPrecombatMain(environment: GameEnvironment, fixtureName: String) {
+    var advances = 0
+    while (environment.state.step != Step.PRECOMBAT_MAIN) {
+        val pass = environment.legalActions().firstOrNull { it.action is PassPriority }
+            ?: error("Expected PassPriority while preparing $fixtureName fixture: ${environment.state.step}")
+        environment.step(pass.action)
+        check(++advances < 20) { "$fixtureName fixture did not reach precombat main" }
+    }
+}
 
 private data class LockedPreparedGame(
     val environment: GameEnvironment,
@@ -590,6 +1124,14 @@ private fun prepareGoldRushGame(): GoldRushPreparedGame {
 
 private fun stateCardName(environment: GameEnvironment, id: EntityId): String? =
     environment.state.getEntity(id)?.get<CardComponent>()?.name
+
+private fun cardDefinitionId(card: CardDefinition): String = card.metadata.collectorNumber?.let { collectorNumber ->
+    if (card.setCode != null) {
+        "${card.name}#${card.setCode}-$collectorNumber"
+    } else {
+        "${card.name}#$collectorNumber"
+    }
+} ?: card.name
 
 private fun lockedCatalogRegistry(): CardRegistry = CardRegistry().apply {
     MtgSetCatalog.all.forEach { set ->
