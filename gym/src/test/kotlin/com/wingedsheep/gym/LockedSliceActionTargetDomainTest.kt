@@ -1,0 +1,466 @@
+package com.wingedsheep.gym
+
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.PoolSpend
+import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.SpendAllocation
+import com.wingedsheep.engine.core.UnsupportedPathFailure
+import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason
+import com.wingedsheep.engine.legalactions.utils.TargetEnumerationUtils
+import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.TargetsComponent
+import com.wingedsheep.gym.contract.ACTION_TARGET_DOMAIN_VERSION
+import com.wingedsheep.gym.contract.ActionTargetComposition
+import com.wingedsheep.gym.contract.ActionTargetDomainMapper
+import com.wingedsheep.gym.contract.ActionTargetDomainV1
+import com.wingedsheep.gym.contract.LegalActionView
+import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.TargetPayloadPartition
+import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.mtg.sets.MtgSetCatalog
+import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.effects.ModalEffect
+import com.wingedsheep.sdk.scripting.targets.TargetChooser
+import com.wingedsheep.sdk.scripting.targets.TargetOther
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldBeEmpty
+import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.nulls.shouldNotBeNull
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
+import java.nio.file.Files
+import java.nio.file.Path
+import java.nio.file.Paths
+
+/**
+ * Task 8 evidence from the two locked curriculum artifacts.
+ *
+ * The action-selection portion of the real proofs consumes only the public target domain. State
+ * surgery is limited to deterministic fixture setup; it is never used to choose a target or to
+ * reconstruct a missing domain.
+ */
+class LockedSliceActionTargetDomainTest : FunSpec({
+
+    val registry = lockedCatalogRegistry()
+
+    test("the persisted locked decks resolve and expose the current target-shape census") {
+        val akiri = readLockedDeck("akiri-v0.1.txt")
+        val chevill = readLockedDeck("chevill-v0.1.txt")
+
+        akiri shouldHaveSize 100
+        chevill shouldHaveSize 100
+        akiri shouldContain "Brass Squire"
+        akiri shouldContain "Bonesplitter"
+        chevill shouldContain "Bite Down"
+
+        (akiri + chevill).toSet()
+            .filterNot(registry::hasCard)
+            .sorted() shouldBe emptyList()
+
+        // Targetless and single mandatory examples come from the locked artifacts themselves.
+        registry.requireCard("Fire Diamond").script.targetRequirements.shouldBeEmpty()
+        registry.requireCard("Putrefy").script.targetRequirements shouldHaveSize 1
+
+        val biteRequirements = registry.requireCard("Bite Down").script.targetRequirements
+        biteRequirements.map { it.effectiveMinCount to it.count } shouldBe
+            listOf(1 to 1, 1 to 1)
+
+        val brassAbility = registry.requireCard("Brass Squire").script.activatedAbilities.single()
+        brassAbility.targetRequirements.map { it.effectiveMinCount to it.count } shouldBe
+            listOf(1 to 1, 1 to 1)
+
+        val arm = registry.requireCard("Arm the Cathars")
+        arm.script.targetRequirements.map { it.effectiveMinCount to it.count } shouldBe
+            listOf(1 to 1, 0 to 1, 0 to 1)
+        arm.script.targetRequirements.drop(1).forEach { it.shouldBeInstanceOf<TargetOther>() }
+
+        val giantfall = registry.requireCard("Giantfall").script.spellEffect
+            .shouldBeInstanceOf<ModalEffect>()
+        giantfall.chooseCount shouldBe 1
+        giantfall.modes.map { it.targetRequirements.size } shouldBe listOf(2, 1)
+
+        val icyBlast = registry.requireCard("Icy Blast").script.targetRequirements.single()
+            .shouldBeInstanceOf<TargetObject>()
+        icyBlast.dynamicMaxCount shouldBe com.wingedsheep.sdk.scripting.values.DynamicAmount.XValue
+
+        val renew = registry.requireCard("Rot-Curse Rakshasa").script.activatedAbilities
+            .first { it.targetRequirements.isNotEmpty() }
+        renew.targetRequirements.single().shouldBeInstanceOf<TargetObject>().dynamicMaxCount shouldBe
+            com.wingedsheep.sdk.scripting.values.DynamicAmount.XValue
+    }
+
+    test("real Bite Down consumes two public slots and is accepted by strict Gym execution") {
+        val prepared = prepareLockedGame(
+            firstDeck = readLockedDeck("chevill-v0.1.txt"),
+            secondDeck = readLockedDeck("akiri-v0.1.txt"),
+            firstBattlefield = listOf("Forest", "Forest", "Llanowar Elves"),
+            firstHand = listOf("Bite Down"),
+            secondBattlefield = listOf("Brass Squire"),
+            seed = 8_001L,
+        )
+        val gym = GameGymEnv(
+            environment = prepared.environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry),
+        )
+
+        val observed = gym.observe()
+        val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
+        observed.diagnostics.shouldBeEmpty()
+        val bite = observation.legalActions.single {
+            it.kind == "CastSpell" && it.description == "Cast Bite Down"
+        }
+        val domain = bite.targetDomain.shouldNotBeNull()
+
+        domain.version shouldBe ACTION_TARGET_DOMAIN_VERSION
+        domain.composition shouldBe ActionTargetComposition.FIXED
+        domain.requirements.map { it.index } shouldBe listOf(0, 1)
+        domain.requirements.map { it.minTargets to it.maxTargets } shouldBe
+            listOf(1 to 1, 1 to 1)
+        domain.requirements[0].candidates shouldBe listOf(prepared.firstSource)
+        domain.requirements[1].candidates shouldBe listOf(requireNotNull(prepared.secondRecipient))
+        domain.requirements[0].candidates.intersect(domain.requirements[1].candidates.toSet())
+            .shouldBeEmpty()
+
+        // These IDs are selected from the public ActionTargetDomain only. The setup IDs are used
+        // below solely to prove that the resulting engine targets preserved the two slot roles.
+        val slot0 = domain.requirements[0].candidates.single()
+        val slot1 = domain.requirements[1].candidates.single()
+        val payload = bitePayload(bite, paymentPayload(bite), listOf(slot0, slot1))
+        val before = prepared.environment.stepCount
+
+        val after = gym.step(bite.actionId, payload)
+
+        after.diagnostics.shouldBeEmpty()
+        prepared.environment.stepCount shouldBe before + 1
+        val stackId = prepared.environment.state.stack.last()
+        prepared.environment.state.getEntity(stackId)?.get<TargetsComponent>()?.targets shouldBe
+            listOf(ChosenTarget.Permanent(slot0), ChosenTarget.Permanent(slot1))
+    }
+
+    test("locked Brass Squire route is characterized when the trusted observation is payment-blocked") {
+        val prepared = prepareLockedGame(
+            firstDeck = readLockedDeck("akiri-v0.1.txt"),
+            secondDeck = readLockedDeck("chevill-v0.1.txt"),
+            firstBattlefield = listOf("Brass Squire", "Bonesplitter", "Sram, Senior Edificer"),
+            seed = 8_002L,
+        )
+        val gym = GameGymEnv(
+            environment = prepared.environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry),
+        )
+
+        val observedResult = runCatching { gym.observe() }
+        if (observedResult.isFailure) {
+            val failure = observedResult.exceptionOrNull()
+                .shouldBeInstanceOf<UnsupportedPathFailure>()
+            failure.diagnostics.map { it.code } shouldBe
+                listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
+            return@test
+        }
+        val observed = observedResult.getOrThrow()
+        val observation = observed.observation.shouldBeInstanceOf<TrainingObservation>()
+        observed.diagnostics.shouldBeEmpty()
+        val squire = observation.legalActions.single {
+            it.kind == "ActivateAbility" && it.description.contains("Brass Squire")
+        }
+        val domain = squire.targetDomain.shouldNotBeNull()
+
+        domain.requirements.map { it.index } shouldBe listOf(0, 1)
+        domain.requirements.map { it.minTargets to it.maxTargets } shouldBe
+            listOf(1 to 1, 1 to 1)
+        domain.requirements[0].candidates shouldBe listOf(prepared.firstEquipment)
+        domain.requirements[1].candidates shouldBe listOf(prepared.firstCreature)
+
+        // The flat payload is deliberately built by reading the ordered public requirements.
+        val slot0 = domain.requirements[0].candidates.single()
+        val slot1 = domain.requirements[1].candidates.single()
+        val payload = bitePayload(squire, null, listOf(slot0, slot1))
+        val before = prepared.environment.stepCount
+
+        val after = gym.step(squire.actionId, payload)
+
+        after.diagnostics.shouldBeEmpty()
+        prepared.environment.stepCount shouldBe before + 1
+        val stackId = prepared.environment.state.stack.last()
+        prepared.environment.state.getEntity(stackId)?.get<TargetsComponent>()?.targets shouldBe
+            listOf(ChosenTarget.Permanent(slot0), ChosenTarget.Permanent(slot1))
+    }
+
+    test("repository optional, modal, chooser, cross-slot, and X probes fail closed without lossy domains") {
+        val environment = GameEnvironment.create(registry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of("Forest" to 2)),
+                    PlayerConfig("Bob", Deck.of("Forest" to 2)),
+                ),
+                startingHandSize = 0,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                seed = 8_003L,
+            ),
+        )
+        val player = environment.playerIds.first()
+        val projection = TargetEnumerationUtils(PredicateEvaluator())
+
+        val armProjection = projection.buildTargetInfos(
+            state = environment.state,
+            playerId = player,
+            targetReqs = registry.requireCard("Arm the Cathars").script.targetRequirements,
+        )
+        armProjection.support shouldBe TargetDomainSupport.SUPPORTED
+        armProjection.infos.drop(1).forEach { requirement ->
+            requirement.minTargets shouldBe 0
+            requirement.maxTargets shouldBe 1
+            requirement.mustDifferFromEarlier shouldBe true
+        }
+        TargetPayloadPartition.certify(armProjection.infos) shouldBe
+            TargetPayloadPartition.Certification.Unsupported(
+                TargetPayloadPartition.UnsupportedReason.AMBIGUOUS_FLAT_PARTITION,
+            )
+        val armMapping = ActionTargetDomainMapper.map(
+            LegalAction(
+                action = CastSpell(player, EntityId("arm-the-cathars")),
+                actionType = "CastSpell",
+                description = "Cast Arm the Cathars",
+                requiresTargets = true,
+                targetRequirements = armProjection.infos,
+                targetDomainSupport = armProjection.support,
+            ),
+            isEntityReferenceAddressable = { true },
+        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Unsupported>()
+        armMapping.diagnostic.code.name shouldBe "ACTION_TARGET_DOMAIN_UNSUPPORTED"
+
+        TargetPayloadPartition.certify(listOf(armProjection.infos[1]))
+            .shouldBeInstanceOf<TargetPayloadPartition.Certification.Supported>()
+
+        val icyProjection = projection.buildTargetInfos(
+            state = environment.state,
+            playerId = player,
+            targetReqs = registry.requireCard("Icy Blast").script.targetRequirements,
+        )
+        icyProjection.support shouldBe TargetDomainSupport.UNSUPPORTED(
+            TargetDomainUnsupportedReason.UNRESOLVED_X,
+        )
+
+        val renew = registry.requireCard("Rot-Curse Rakshasa").script.activatedAbilities
+            .first { it.targetRequirements.isNotEmpty() }
+        val renewProjection = projection.buildTargetInfos(
+            state = environment.state,
+            playerId = player,
+            targetReqs = renew.targetRequirements,
+        )
+        renewProjection.support shouldBe TargetDomainSupport.UNSUPPORTED(
+            TargetDomainUnsupportedReason.UNRESOLVED_X,
+        )
+
+        val chooserProjection = projection.buildTargetInfos(
+            state = environment.state,
+            playerId = player,
+            targetReqs = registry.requireCard("Cuombajj Witches")
+                .script.activatedAbilities.single().targetRequirements,
+        )
+        chooserProjection.support shouldBe TargetDomainSupport.UNSUPPORTED(
+            TargetDomainUnsupportedReason.NON_CONTROLLER_CHOOSER,
+        )
+        chooserProjection.infos[1].targetChooser shouldBe TargetChooser.Opponent
+
+        val giantfall = registry.requireCard("Giantfall").script.spellEffect
+            .shouldBeInstanceOf<ModalEffect>()
+        giantfall.chooseCount shouldBe 1
+        giantfall.modes.map { it.targetRequirements.size } shouldBe listOf(2, 1)
+        giantfall.modes.flatMap { it.targetRequirements }.size shouldBe 3
+        // The mode union is intentionally a census fact, not a V1 action domain. Each selected
+        // mode must be enumerated and published independently by the action-level route.
+        giantfall.modes.map { mode -> mode.targetRequirements.map { it.description } }
+            .toSet().size shouldBe 2
+    }
+})
+
+private data class LockedPreparedGame(
+    val environment: GameEnvironment,
+    val firstSource: EntityId,
+    val secondRecipient: EntityId?,
+    val firstEquipment: EntityId = EntityId("unused-equipment"),
+    val firstCreature: EntityId = EntityId("unused-creature"),
+)
+
+private fun prepareLockedGame(
+    firstDeck: List<String>,
+    secondDeck: List<String>,
+    firstBattlefield: List<String>,
+    firstHand: List<String> = emptyList(),
+    secondBattlefield: List<String> = emptyList(),
+    seed: Long,
+): LockedPreparedGame {
+    val cardRegistry = lockedCatalogRegistry()
+    val environment = GameEnvironment.create(cardRegistry)
+    environment.reset(
+        GameConfig(
+            players = listOf(
+                PlayerConfig("First", Deck(firstDeck)),
+                PlayerConfig("Second", Deck(secondDeck)),
+            ),
+            startingHandSize = 0,
+            skipMulligans = true,
+            startingPlayerIndex = 0,
+            seed = seed,
+        ),
+    )
+
+    val first = environment.playerIds[0]
+    val second = environment.playerIds[1]
+    var state = environment.state
+
+    fun moveNamed(player: EntityId, name: String, destination: Zone): EntityId {
+        val library = ZoneKey(player, Zone.LIBRARY)
+        val id = state.getZone(library).firstOrNull { candidate ->
+            state.getEntity(candidate)?.get<CardComponent>()?.name == name
+        } ?: error("Locked fixture has no '$name' for $player")
+        state = state.moveToZone(id, library, ZoneKey(player, destination))
+        return id
+    }
+
+    firstHand.forEach { moveNamed(first, it, Zone.HAND) }
+    val firstIds = firstBattlefield.map { moveNamed(first, it, Zone.BATTLEFIELD) }
+    val secondIds = secondBattlefield.map { moveNamed(second, it, Zone.BATTLEFIELD) }
+    environment.restore(state, environment.playerIds, environment.stepCount)
+
+    var advances = 0
+    while (environment.state.step != Step.PRECOMBAT_MAIN) {
+        val pass = environment.legalActions().firstOrNull { it.action is PassPriority }
+            ?: error("Expected PassPriority while preparing locked fixture: ${environment.state.step}")
+        environment.step(pass.action)
+        check(++advances < 20) { "Locked fixture did not reach precombat main" }
+    }
+
+    val firstSource = firstIds.firstOrNull { id ->
+        stateCardName(environment, id) == "Llanowar Elves"
+    } ?: firstIds.firstOrNull { id -> stateCardName(environment, id) == "Brass Squire" }
+        ?: error("Locked fixture did not place an action source")
+    val secondRecipient = secondIds.firstOrNull { id -> stateCardName(environment, id) == "Brass Squire" }
+    val firstEquipment = firstIds.firstOrNull { id -> stateCardName(environment, id) == "Bonesplitter" }
+        ?: EntityId("unused-equipment")
+    val firstCreature = firstIds.firstOrNull { id -> stateCardName(environment, id) == "Sram, Senior Edificer" }
+        ?: EntityId("unused-creature")
+    return LockedPreparedGame(environment, firstSource, secondRecipient, firstEquipment, firstCreature)
+}
+
+private fun bitePayload(
+    view: LegalActionView,
+    payment: JsonObject?,
+    targets: List<EntityId>,
+): JsonObject = buildJsonObject {
+    view.actionSemantics.shouldNotBeNull().forEach { (key, value) -> put(key, value) }
+    payment?.forEach { (key, value) -> put(key, value) }
+    put(
+        "targets",
+        buildJsonArray {
+            targets.forEach { target ->
+                add(buildJsonObject {
+                    put("type", "Permanent")
+                    put("entityId", target.value)
+                })
+            }
+        },
+    )
+}
+
+private fun paymentPayload(view: LegalActionView): JsonObject {
+    val domain = view.paymentDomain ?: error("Expected a public payment domain for ${view.description}")
+    domain.costUnits.map { it.symbolIndex } shouldBe listOf(0, 1)
+    val green = domain.sourceActivations.firstOrNull { activation ->
+        activation.productionChoices.any { it.producedColor == PaymentManaColor.GREEN }
+    } ?: error("Expected a green source in ${view.description}")
+    val generic = domain.sourceActivations.firstOrNull { it.sourceId != green.sourceId }
+        ?: error("Expected two distinct public mana sources in ${view.description}")
+    val greenChoice = green.productionChoices.first { it.producedColor == PaymentManaColor.GREEN }
+    val genericChoice = generic.productionChoices.first()
+    val plan = PaymentPlanV1(
+        sourceActivations = listOf(
+            SourceActivation(generic.sourceId, generic.manaAbilityKey, genericChoice),
+            SourceActivation(green.sourceId, green.manaAbilityKey, greenChoice),
+        ),
+        poolSpend = PoolSpend(),
+        spendAllocation = SpendAllocation(
+            costUnits = listOf(
+                CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = generic.sourceId))),
+                CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = green.sourceId))),
+            ),
+        ),
+    )
+    val json = Json {
+        encodeDefaults = true
+        explicitNulls = false
+        classDiscriminator = "type"
+    }
+    return buildJsonObject {
+        put(
+            "paymentStrategy",
+            json.encodeToJsonElement(
+                PaymentStrategy.serializer(),
+                PaymentStrategy.Explicit(paymentPlan = plan),
+            ),
+        )
+    }
+}
+
+private fun stateCardName(environment: GameEnvironment, id: EntityId): String? =
+    environment.state.getEntity(id)?.get<CardComponent>()?.name
+
+private fun lockedCatalogRegistry(): CardRegistry = CardRegistry().apply {
+    MtgSetCatalog.all.forEach { set ->
+        register(set.cards.map { it.withSetCodeIfMissing(set.code) })
+        register(set.basicLands.map { it.withSetCodeIfMissing(set.code) })
+    }
+}
+
+private fun CardDefinition.withSetCodeIfMissing(code: String): CardDefinition =
+    if (this.setCode == null) copy(setCode = code) else this
+
+private fun readLockedDeck(fileName: String): List<String> {
+    val path = repositoryRoot().resolve("docs/ml/curriculum").resolve(fileName)
+    return Files.readAllLines(path)
+        .asSequence()
+        .filter { it.length >= 4 && it[0].isDigit() && it[1].isDigit() && it[2].isDigit() && it[3] == '\t' }
+        .map { it.substringAfterLast('\t') }
+        .toList()
+}
+
+private fun repositoryRoot(): Path {
+    var candidate = Paths.get("").toAbsolutePath().normalize()
+    while (!Files.exists(candidate.resolve("docs/ml/curriculum/akiri-v0.1.txt"))) {
+        candidate = candidate.parent ?: error("Could not locate repository root from $candidate")
+    }
+    return candidate
+}
