@@ -3,7 +3,9 @@ package com.wingedsheep.engine.triggers
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ModalTargetContinuation
 import com.wingedsheep.engine.core.ModalPreChosenContinuation
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -12,6 +14,7 @@ import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.TriggerProcessor
+import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -55,7 +58,9 @@ import com.wingedsheep.sdk.scripting.values.ContextPropertyKey
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
 
 /**
@@ -1331,6 +1336,126 @@ class PartialIllegalTargets608Test : FunSpec({
         stackCard?.get<SpellOnStackComponent>()?.modeTargetRequirementsOrdered?.single()
             ?.map { it.count } shouldBe listOf(2, 1)
         stackCard?.get<TargetsComponent>()?.targetRequirements?.map { it.count } shouldBe listOf(2, 1)
+    }
+
+    test("pending cast-modal metadata preserves an X-constrained target count") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            optional = true,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose X creatures",
+        )
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry))
+            .presentCastModalTargetDecision(
+                state = driver.state,
+                cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-modal"),
+                casterId = driver.player1,
+                cardName = "Synthetic cast modal",
+                baseCastAction = CastSpell(
+                    playerId = driver.player1,
+                    cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-modal"),
+                    xValue = 2,
+                ),
+                modes = listOf(mode),
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().xConstrainsCount shouldBe true
+        decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("pending trigger-modal metadata preserves an X-constrained target count") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            optional = true,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Choose X creatures",
+                )
+            ),
+            chooseCount = 1,
+        )
+        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+
+        val result = processor.presentTriggerModalTargetDecision(
+            state = driver.state,
+            ability = TriggeredAbilityOnStackComponent(
+                sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-modal"),
+                sourceName = "Synthetic trigger modal",
+                controllerId = driver.player1,
+                effect = modal,
+                description = "Synthetic trigger modal",
+                xValue = 2,
+            ),
+            outerTargets = emptyList(),
+            outerTargetRequirements = emptyList(),
+            modes = modal.modes,
+            chosenModeIndices = listOf(0),
+            resolvedModeTargets = emptyList(),
+            currentOrdinal = 0,
+            causedByAttack = false,
+            recordChosenModesOnSource = false,
+            recordChosenModesThisTurn = false,
+        )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().xConstrainsCount shouldBe true
+        decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("pending cast-modal metadata is withheld when dynamic count is unresolved") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            optional = true,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose unresolved X creatures",
+        )
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry))
+            .presentCastModalTargetDecision(
+                state = driver.state,
+                cardId = com.wingedsheep.sdk.model.EntityId("synthetic-unresolved-cast-modal"),
+                casterId = driver.player1,
+                cardName = "Synthetic unresolved cast modal",
+                baseCastAction = CastSpell(
+                    playerId = driver.player1,
+                    cardId = com.wingedsheep.sdk.model.EntityId("synthetic-unresolved-cast-modal"),
+                ),
+                modes = listOf(mode),
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+            )
+
+        result.pendingDecision shouldBe null
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
     }
 
     test("608-19: splice dynamic slots and slices stay partitioned at announcement state") {

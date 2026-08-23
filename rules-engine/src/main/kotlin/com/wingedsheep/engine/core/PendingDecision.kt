@@ -168,6 +168,7 @@ data class TargetRequirementInfo(
         fun fromRequirement(
             index: Int,
             requirement: TargetRequirement,
+            semanticSource: TargetRequirement = requirement,
             description: String = requirement.description,
             minTargets: Int = requirement.effectiveMinCount,
             /**
@@ -179,7 +180,7 @@ data class TargetRequirementInfo(
             resolvedTotalManaValueAtMost: Int? = null,
         ): TargetRequirementInfoResult {
             val semantics = when (val result = TargetRequirementSemantics.inspect(
-                requirement = requirement,
+                requirement = semanticSource,
                 resolvedTotalManaValueAtMost = resolvedTotalManaValueAtMost,
             )) {
                 is TargetRequirementSemanticsResult.Supported -> result.semantics
@@ -228,6 +229,35 @@ sealed interface TargetRequirementInfoResult {
     data class Supported(val info: TargetRequirementInfo) : TargetRequirementInfoResult
 
     data class Unsupported(val reason: TargetRequirementUnsupportedReason) : TargetRequirementInfoResult
+}
+
+/**
+ * A dynamic-count snapshot used only while constructing a pending target decision.
+ *
+ * [requirement] is the normalized rule requirement. [semanticSource] retains the original
+ * TargetRequirement so source-level facts such as X-constrained cardinality remain available
+ * after normalization clears the dynamic expression. Unsupported snapshots retain the original
+ * requirement, so callers can perform their existing legal-target/fizzle checks before refusing
+ * to publish metadata.
+ */
+internal sealed interface PendingTargetRequirementSnapshot {
+    val requirement: TargetRequirement
+    val semanticSource: TargetRequirement
+    val resolvedMaxTargets: Int?
+
+    data class Resolved(
+        override val requirement: TargetRequirement,
+        override val semanticSource: TargetRequirement,
+        override val resolvedMaxTargets: Int?,
+    ) : PendingTargetRequirementSnapshot
+
+    data class Unsupported(
+        override val requirement: TargetRequirement,
+        override val semanticSource: TargetRequirement,
+        val reason: TargetRequirementUnsupportedReason,
+    ) : PendingTargetRequirementSnapshot {
+        override val resolvedMaxTargets: Int? = null
+    }
 }
 
 internal fun TargetRequirementInfoResult.Unsupported.toExecutionError(

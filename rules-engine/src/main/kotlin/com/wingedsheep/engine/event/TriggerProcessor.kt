@@ -1474,19 +1474,15 @@ class TriggerProcessor(
         recordChosenModesOnSource: Boolean,
         recordChosenModesThisTurn: Boolean
     ): ExecutionResult {
-        val effectiveModes = modes.map { mode ->
-            mode.copy(
-                targetRequirements = targetValidator.snapshotDynamicCounts(
-                    state = state,
-                    requirements = mode.targetRequirements,
-                    casterId = ability.controllerId,
-                    sourceId = ability.sourceId,
-                    xValue = ability.xValue,
-                    triggeringEntityId = ability.triggeringEntityId,
-                    triggeringPlayerId = ability.triggeringPlayerId,
-                    storedCollections = ability.carriedPipeline?.storedCollections ?: emptyMap()
-                )
+        val modeSnapshots = modes.map { mode ->
+            targetValidator.snapshotDynamicCountsForPending(
+                state = state,
+                requirements = mode.targetRequirements,
+                context = pendingTargetRequirementContext(ability),
             )
+        }
+        val effectiveModes = modes.mapIndexed { modeIndex, mode ->
+            mode.copy(targetRequirements = modeSnapshots[modeIndex].map { it.requirement })
         }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
@@ -1503,16 +1499,27 @@ class TriggerProcessor(
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
                 legalTargetsMap[index] = findModeLegalTargets(state, ability, req)
-                TargetRequirementInfo.fromRequirement(
-                    index = index,
-                    requirement = req,
-                    minTargets = req.effectiveMinCount,
-                    maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
-                        legalTargetsMap[index]?.size
-                    } else {
-                        null
-                    }
-                ).orReturnUnsupported { return it.toExecutionError(state) }
+                val snapshot = modeSnapshots[chosenModeIndices[ordinal]][index]
+                val maxTargets = snapshot.resolvedMaxTargets ?: if (
+                    req.unlimited && !req.hasUnresolvedDynamicMaxCount()
+                ) {
+                    legalTargetsMap[index]?.size
+                } else {
+                    null
+                }
+                val result = when (snapshot) {
+                    is PendingTargetRequirementSnapshot.Unsupported ->
+                        TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                    is PendingTargetRequirementSnapshot.Resolved ->
+                        TargetRequirementInfo.fromRequirement(
+                            index = index,
+                            requirement = req,
+                            semanticSource = snapshot.semanticSource,
+                            minTargets = req.effectiveMinCount,
+                            maxTargets = maxTargets
+                        )
+                }
+                result.orReturnUnsupported { return it.toExecutionError(state) }
             }
             // Auto-select the lone legal player target instead of prompting (mirrors
             // processTargetedTrigger's single-player-target shortcut).
@@ -1555,7 +1562,9 @@ class TriggerProcessor(
                 ability = ability,
                 outerTargets = outerTargets,
                 outerTargetRequirements = outerTargetRequirements,
-                modes = effectiveModes,
+                // Keep the semantic source requirements. Each re-entry snapshots them again,
+                // while the selected mode's resolved slot counts are carried separately.
+                modes = modes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
                 currentOrdinal = ordinal,
@@ -1581,7 +1590,7 @@ class TriggerProcessor(
 
         return finalizeModalTrigger(
             state, ability, outerTargets, outerTargetRequirements,
-            effectiveModes, chosenModeIndices, targetsAccum, causedByAttack,
+            modes, chosenModeIndices, targetsAccum, causedByAttack,
             recordChosenModesOnSource, recordChosenModesThisTurn, requirementsAccum
         )
     }
@@ -1669,6 +1678,49 @@ class TriggerProcessor(
             causedByAttack = causedByAttack
         )
     }
+
+    /** Carry the trigger's authoritative context into pending target-count snapshotting. */
+    private fun pendingTargetRequirementContext(
+        ability: TriggeredAbilityOnStackComponent,
+    ): EffectContext = EffectContext(
+        sourceId = ability.sourceId,
+        controllerId = ability.controllerId,
+        triggerDamageAmount = ability.triggerDamageAmount,
+        triggeringEntityId = ability.triggeringEntityId,
+        triggeringEntityEntryTimestamp = ability.triggeringEntityEntryTimestamp,
+        triggeringEntityName = ability.triggeringEntityName,
+        triggeringEntityNameKnown = ability.triggeringEntityNameKnown,
+        triggeringPlayerId = ability.triggeringPlayerId,
+        defendingPlayerId = ability.defendingPlayerId,
+        damageSourceEntityId = ability.damageSourceEntityId,
+        damageRecipientEntityId = ability.damageRecipientEntityId,
+        damageRecipientKind = ability.damageRecipientKind,
+        damageRecipientKinds = ability.damageRecipientKinds,
+        damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
+        damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
+        xValue = ability.xValue,
+        triggerCounterCount = ability.triggerCounterCount,
+        triggerTotalCounterCount = ability.triggerTotalCounterCount,
+        triggerLastKnownCounters = ability.triggerLastKnownCounters,
+        triggerLastKnownSubtypes = ability.triggerLastKnownSubtypes,
+        triggerLastKnownCardTypes = ability.triggerLastKnownCardTypes,
+        triggerLastKnownDamageDealtByPlayers = ability.triggerLastKnownDamageDealtByPlayers,
+        triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
+        triggerLastKnownPower = ability.lastKnownPower,
+        triggerLastKnownToughness = ability.lastKnownToughness,
+        triggerDiedBatchTotalPower = ability.diedBatchTotalPower,
+        triggerModesChosenCount = ability.triggerModesChosenCount,
+        triggerManaSpentOnTriggeringSpell = ability.triggerManaSpentOnTriggeringSpell,
+        triggerColorsSpentOnTriggeringSpell = ability.triggerColorsSpentOnTriggeringSpell,
+        triggerManaValueOfTriggeringSpell = ability.triggerManaValueOfTriggeringSpell,
+        triggerXValueOfTriggeringSpell = ability.triggerXValueOfTriggeringSpell,
+        triggerScryCount = ability.triggerScryCount,
+        triggerDiscardCount = ability.triggerDiscardCount,
+        triggerDiscoverValue = ability.triggerDiscoverValue,
+        triggerExcessDamageAmount = ability.triggerExcessDamageAmount,
+        triggerRecipientToughness = ability.triggerRecipientToughness,
+        pipeline = ability.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+    )
 
     /** Legal targets for one of a mode's requirements, in the trigger's own targeting context. */
     private fun findModeLegalTargets(

@@ -12,6 +12,7 @@ import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EngineServices
+import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.engine.core.ExecutionResult
@@ -4807,16 +4808,19 @@ class CastSpellHandler(
         currentOrdinal: Int,
         resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
-        val effectiveModes = modes.map { mode ->
-            mode.copy(
-                targetRequirements = targetValidator.snapshotDynamicCounts(
-                    state = state,
-                    requirements = mode.targetRequirements,
-                    casterId = casterId,
+        val modeSnapshots = modes.map { mode ->
+            targetValidator.snapshotDynamicCountsForPending(
+                state = state,
+                requirements = mode.targetRequirements,
+                context = EffectContext(
                     sourceId = cardId,
-                    xValue = baseCastAction.xValue
-                )
+                    controllerId = casterId,
+                    xValue = baseCastAction.xValue,
+                ),
             )
+        }
+        val effectiveModes = modes.mapIndexed { modeIndex, mode ->
+            mode.copy(targetRequirements = modeSnapshots[modeIndex].map { it.requirement })
         }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
@@ -4847,16 +4851,27 @@ class CastSpellHandler(
             }
 
             val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
-                com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
-                    index = index,
-                    requirement = req,
-                    minTargets = req.effectiveMinCount,
-                    maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
-                        legalTargetsMap[index]?.size
-                    } else {
-                        null
-                    }
-                ).orReturnUnsupported { return it.toExecutionError(state) }
+                val snapshot = modeSnapshots[modeIndex][index]
+                val maxTargets = snapshot.resolvedMaxTargets ?: if (
+                    req.unlimited && !req.hasUnresolvedDynamicMaxCount()
+                ) {
+                    legalTargetsMap[index]?.size
+                } else {
+                    null
+                }
+                val result = when (snapshot) {
+                    is PendingTargetRequirementSnapshot.Unsupported ->
+                        com.wingedsheep.engine.core.TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                    is PendingTargetRequirementSnapshot.Resolved ->
+                        com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
+                            index = index,
+                            requirement = req,
+                            semanticSource = snapshot.semanticSource,
+                            minTargets = req.effectiveMinCount,
+                            maxTargets = maxTargets
+                        )
+                }
+                result.orReturnUnsupported { return it.toExecutionError(state) }
             }
 
             val decisionId = java.util.UUID.randomUUID().toString()
@@ -4884,7 +4899,9 @@ class CastSpellHandler(
                 cardId = cardId,
                 casterId = casterId,
                 baseCastAction = baseCastAction,
-                modes = effectiveModes,
+                // Keep the semantic source requirements. Each re-entry snapshots them again,
+                // while the selected mode's resolved slot counts are carried separately.
+                modes = modes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
                 currentOrdinal = ordinal,
