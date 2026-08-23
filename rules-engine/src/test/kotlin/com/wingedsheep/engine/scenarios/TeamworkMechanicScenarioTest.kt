@@ -708,9 +708,10 @@ class TeamworkMechanicScenarioTest : ScenarioTestBase() {
 
             val casts = game.getLegalActions(1).filter { it.description.startsWith("Cast Teamwork Rally") }
 
-            // The plain cast has one requirement, so it rides the single-requirement fields.
+            // The plain cast has one canonical target requirement and retains the legacy
+            // single-target fields as its compatibility projection.
             val plainCast = casts.firstOrNull { it.additionalCostInfo == null }.shouldNotBeNull()
-            plainCast.targetRequirements shouldBe null
+            plainCast.targetRequirements.shouldNotBeNull().size shouldBe 1
             plainCast.targetCount shouldBe 1
 
             // The declared cast announces both — "target creature" and "target player".

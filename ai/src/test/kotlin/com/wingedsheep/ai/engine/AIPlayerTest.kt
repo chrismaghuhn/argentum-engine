@@ -549,14 +549,14 @@ class AIPlayerTest : FunSpec({
         val legalActions = simulator.getLegalActions(driver.state, aiId)
 
         // The single-target "target spell" cast must be offered (there IS a legal target on the
-        // stack) and must NOT carry the multi-requirement metadata — this is exactly the shape
-        // that produced the bug.
+        // stack) and must expose exactly one canonical target requirement — this is exactly the
+        // single-requirement shape that produced the bug.
         val cast = legalActions.find {
             it.actionType == "CastSpell" && it.requiresTargets &&
                 it.description.contains("Test Spell Bounce")
         }
         cast.shouldNotBeNull()
-        cast.targetRequirements shouldBe null
+        cast.targetRequirements.shouldNotBeNull().size shouldBe 1
         cast.validTargets.shouldNotBeNull()
 
         val ai = AIPlayer.create(driver.cardRegistry, aiId)
