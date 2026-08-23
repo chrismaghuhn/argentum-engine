@@ -6,6 +6,8 @@ import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetInfoProjection
 import com.wingedsheep.engine.mechanics.SneakWindow
 import com.wingedsheep.engine.state.components.identity.CardComponent
 
@@ -67,7 +69,7 @@ class SneakCastEnumerator : ActionEnumerator {
                 cardDef.script.auraTarget?.let { add(it) }
             }
             val targetReqInfos = if (targetReqs.isEmpty()) {
-                emptyList()
+                TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
             } else {
                 context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
             }
@@ -107,7 +109,8 @@ class SneakCastEnumerator : ActionEnumerator {
                     targetCount = firstReqInfo?.maxTargets ?: 1,
                     minTargets = firstReq?.effectiveMinCount ?: (firstReq?.count ?: 1),
                     targetDescription = firstReq?.description,
-                    targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                    targetRequirements = targetReqInfos,
+                                     targetDomainSupport = targetReqInfos.support,
                     manaCostString = sneakMana.toString(),
                     additionalCostInfo = bounceCostInfo,
                     autoTapPreview = autoTapPreview
@@ -142,7 +145,7 @@ class SneakCastEnumerator : ActionEnumerator {
                     cardDef.script.auraTarget?.let { add(it) }
                 }
                 val targetReqInfos = if (targetReqs.isEmpty()) {
-                    emptyList()
+                    TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
                 } else {
                     context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
                 }
@@ -176,7 +179,8 @@ class SneakCastEnumerator : ActionEnumerator {
                         targetCount = firstReqInfo?.maxTargets ?: 1,
                         minTargets = firstReq?.effectiveMinCount ?: (firstReq?.count ?: 1),
                         targetDescription = firstReq?.description,
-                        targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                        targetRequirements = targetReqInfos,
+                                     targetDomainSupport = targetReqInfos.support,
                         manaCostString = sneakMana.toString(),
                         additionalCostInfo = bounceCostInfo,
                         autoTapPreview = autoTapPreview

@@ -3,6 +3,7 @@ package com.wingedsheep.engine.legalactions
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.targets.TargetChooser
 
 /**
  * Engine-level representation of a legal action a player can take.
@@ -35,7 +36,18 @@ data class LegalAction(
     val targetCount: Int = 1,
     val minTargets: Int = targetCount,
     val targetDescription: String? = null,
-    val targetRequirements: List<TargetInfo>? = null,
+    /**
+     * The complete ordered target requirements for this action. Targetless actions use the
+     * canonical empty list. The compatibility default for direct legacy construction is
+     * fail-closed whenever the action is target-bearing; target enumerators pass the explicit
+     * projection result.
+     */
+    val targetRequirements: List<TargetInfo> = emptyList(),
+    val targetDomainSupport: TargetDomainSupport = if (requiresTargets || targetRequirements.isNotEmpty()) {
+        TargetDomainSupport.UNSUPPORTED(TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS)
+    } else {
+        TargetDomainSupport.SUPPORTED
+    },
     /**
      * True when the (single) target requirement filters by "mana value X or less"
      * (i.e. the requirement's filter contains [CardPredicate.ManaValueAtMostX]).
@@ -195,7 +207,7 @@ data class LegalAction(
     override val additionalCostType: String? get() = additionalCostInfo?.costType
 
     override val hasUnfillableTargetRequirement: Boolean
-        get() = targetRequirements?.any { it.minTargets > 0 && it.validTargets.isEmpty() } ?: false
+        get() = targetRequirements.any { it.minTargets > 0 && it.validTargets.isEmpty() }
 }
 
 /**
@@ -264,6 +276,20 @@ data class TargetInfo(
     val targetZone: String? = null,
     /** A target in this slot must differ from every target chosen for an earlier slot. */
     val mustDifferFromEarlier: Boolean = false,
+    /** True when all selected targets in this requirement must share a controller. */
+    val sameController: Boolean = false,
+    /** True when all selected card targets in this requirement must share an owner. */
+    val sameOwner: Boolean = false,
+    /** True when all selected permanent targets must share a creature type. */
+    val sameCreatureType: Boolean = false,
+    /** True when all selected permanent targets must share a card type. */
+    val sameCardType: Boolean = false,
+    /** Resolved aggregate mana-value cap, when the requirement has one. */
+    val totalManaValueAtMost: Int? = null,
+    /** True when selected targets in this requirement must have distinct names. */
+    val differentNames: Boolean = false,
+    /** Engine-side chooser provenance used to reject non-controller action requirements. */
+    val targetChooser: TargetChooser = TargetChooser.Controller,
     /**
      * True when this requirement's filter contains [CardPredicate.ManaValueAtMostX].
      * The client re-filters [validTargets] by the chosen X after X selection.

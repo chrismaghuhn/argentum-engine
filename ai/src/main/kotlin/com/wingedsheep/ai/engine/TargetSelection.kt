@@ -267,7 +267,7 @@ object TargetSelection {
 
     /** Normalize an action's target metadata into requirements (multi-target or single-target). */
     fun targetInfosFor(action: LegalAction): List<TargetInfo>? =
-        action.targetRequirements
+        action.targetRequirements.takeIf { it.isNotEmpty() }
             ?: action.validTargets?.let { targets ->
                 listOf(
                     TargetInfo(

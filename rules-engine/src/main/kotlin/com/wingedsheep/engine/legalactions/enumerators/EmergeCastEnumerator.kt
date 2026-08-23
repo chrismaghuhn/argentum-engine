@@ -6,6 +6,8 @@ import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetInfoProjection
 import com.wingedsheep.engine.mechanics.EmergeCasts
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.core.Keyword
@@ -91,7 +93,7 @@ class EmergeCastEnumerator : ActionEnumerator {
                 cardDef.script.auraTarget?.let { add(it) }
             }
             val targetReqInfos = if (targetReqs.isEmpty()) {
-                emptyList()
+                TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
             } else {
                 context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
             }
@@ -132,7 +134,8 @@ class EmergeCastEnumerator : ActionEnumerator {
                     targetCount = firstReqInfo?.maxTargets ?: 1,
                     minTargets = firstReq?.effectiveMinCount ?: (firstReq?.count ?: 1),
                     targetDescription = firstReq?.description,
-                    targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                    targetRequirements = targetReqInfos,
+                                     targetDomainSupport = targetReqInfos.support,
                     manaCostString = baseCost.toString(),
                     additionalCostInfo = AdditionalCostData(
                         description = "a creature to sacrifice (its mana value reduces the emerge cost)",

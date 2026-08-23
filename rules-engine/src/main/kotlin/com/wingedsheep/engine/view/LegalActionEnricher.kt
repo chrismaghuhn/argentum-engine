@@ -100,7 +100,7 @@ class LegalActionEnricher(
             targetCount = action.targetCount,
             minTargets = action.minTargets,
             targetDescription = action.targetDescription,
-            targetRequirements = action.targetRequirements?.map { it.toDto() },
+            targetRequirements = action.targetRequirements.takeIf { it.isNotEmpty() }?.map { it.toDto() },
             xConstrainsTargetManaValue = action.xConstrainsTargetManaValue,
             xConstrainsTargetManaValueExactly = action.xConstrainsTargetManaValueExactly,
             xConstrainsTargetPower = action.xConstrainsTargetPower,

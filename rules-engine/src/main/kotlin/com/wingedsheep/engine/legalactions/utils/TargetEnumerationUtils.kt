@@ -4,6 +4,11 @@ import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.core.TargetRequirementSemantics
+import com.wingedsheep.engine.core.TargetRequirementSemanticsResult
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason
+import com.wingedsheep.engine.legalactions.TargetInfoProjection
 import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.mechanics.targeting.ControllerHexproof
 import com.wingedsheep.engine.mechanics.targeting.ControllerShroud
@@ -304,9 +309,29 @@ class TargetEnumerationUtils(
         targetReqs: List<TargetRequirement>,
         sourceId: EntityId? = null,
         predicateContext: PredicateContext? = null,
-    ): List<TargetInfo> {
-        return targetReqs.mapIndexed { index, req ->
+    ): TargetInfoProjection {
+        var unsupportedReason: TargetDomainUnsupportedReason? = null
+        val infos = targetReqs.mapIndexed { index, req ->
             val validTargets = findValidTargets(state, playerId, req, sourceId, predicateContext)
+            val semantics = when (val result = TargetRequirementSemantics.inspect(req)) {
+                is TargetRequirementSemanticsResult.Supported -> result.semantics
+                is TargetRequirementSemanticsResult.Unsupported -> {
+                    unsupportedReason = unsupportedReason ?: result.reason.toTargetDomainReason(req)
+                    null
+                }
+            }
+            if (req.chooser != com.wingedsheep.sdk.scripting.targets.TargetChooser.Controller) {
+                unsupportedReason = unsupportedReason ?: TargetDomainUnsupportedReason.NON_CONTROLLER_CHOOSER
+            }
+            val maximum = resolveTargetMaximum(state, req, playerId, sourceId, validTargets.size)
+            if (maximum is ResolvedTargetMaximum.Unsupported) {
+                unsupportedReason = unsupportedReason ?: maximum.reason
+            }
+            val publicMaximum = (maximum as? ResolvedTargetMaximum.Resolved)?.value
+                ?: if (req.unlimited) validTargets.size else req.count
+            if (semantics?.hasAnyXConstraint == true) {
+                unsupportedReason = unsupportedReason ?: TargetDomainUnsupportedReason.UNRESOLVED_X
+            }
             TargetInfo(
                 index = index,
                 description = req.description,
@@ -322,49 +347,97 @@ class TargetEnumerationUtils(
                 // planeswalkers" — each target needs at least 1 damage, so at most 8). Without
                 // the cap the player could pick a ninth target and then be unable to produce a
                 // legal division.
-                maxTargets = when {
-                    req.unlimited ->
-                        minOf(
-                            validTargets.size,
-                            resolveStaticDynamicMax(state, req, playerId, sourceId) ?: validTargets.size
-                        )
-                    else -> resolveStaticDynamicMax(state, req, playerId, sourceId) ?: req.count
-                },
+                maxTargets = if (req.unlimited) minOf(validTargets.size, publicMaximum) else publicMaximum,
                 validTargets = validTargets,
-                targetZone = getTargetZone(req),
-                mustDifferFromEarlier = req is TargetOther,
-                xConstrainsManaValue = requirementUsesManaValueAtMostX(req),
-                xConstrainsManaValueExactly = requirementUsesManaValueEqualsX(req),
-                xConstrainsPower = requirementUsesPowerEqualsX(req),
-                xConstrainsCount = requirementXConstrainsCount(req)
+                targetZone = semantics?.targetZone ?: getTargetZone(req),
+                mustDifferFromEarlier = semantics?.mustDifferFromEarlier ?: (req is TargetOther),
+                sameController = semantics?.sameController ?: false,
+                sameOwner = semantics?.sameOwner ?: false,
+                sameCreatureType = semantics?.sameCreatureType ?: false,
+                sameCardType = semantics?.sameCardType ?: false,
+                totalManaValueAtMost = semantics?.totalManaValueAtMost,
+                differentNames = semantics?.differentNames ?: false,
+                targetChooser = req.chooser,
+                xConstrainsManaValue = semantics?.xConstrainsManaValue ?: requirementUsesManaValueAtMostX(req),
+                xConstrainsManaValueExactly = semantics?.xConstrainsManaValueExactly ?: requirementUsesManaValueEqualsX(req),
+                xConstrainsPower = semantics?.xConstrainsPower ?: requirementUsesPowerEqualsX(req),
+                xConstrainsCount = semantics?.xConstrainsCount ?: requirementXConstrainsCount(req)
             )
         }
+        return TargetInfoProjection(
+            infos = infos,
+            support = unsupportedReason?.let { TargetDomainSupport.UNSUPPORTED(it) }
+                ?: TargetDomainSupport.SUPPORTED,
+        )
+    }
+
+    private sealed interface ResolvedTargetMaximum {
+        data class Resolved(val value: Int) : ResolvedTargetMaximum
+        data class Unsupported(val reason: TargetDomainUnsupportedReason) : ResolvedTargetMaximum
     }
 
     /**
-     * Resolve a [TargetObject.dynamicMaxCount] that is knowable at enumeration time —
-     * i.e. any [DynamicAmount] except [DynamicAmount.XValue] (which depends on the X the
-     * player hasn't chosen yet and is instead clamped client-side via [requirementXConstrainsCount]).
-     * Returns null when there is no dynamic cap, so callers fall back to the static `count`.
+     * Resolve a dynamic maximum at the Rules boundary.  An unbound or unevaluable value is
+     * retained as an explicit unsupported projection; it is never silently turned into a static
+     * or permissive maximum for external publication.
      */
-    private fun resolveStaticDynamicMax(
+    private fun resolveTargetMaximum(
         state: GameState,
         req: TargetRequirement,
         playerId: EntityId,
-        sourceId: EntityId?
-    ): Int? {
-        val dyn = (req as? TargetObject)?.dynamicMaxCount ?: return null
-        if (dyn == DynamicAmount.XValue) return null
+        sourceId: EntityId?,
+        candidateCount: Int,
+    ): ResolvedTargetMaximum {
+        val dyn = req.dynamicMaxCountOrNull() ?: return ResolvedTargetMaximum.Resolved(
+            if (req.unlimited) candidateCount else req.count
+        )
+        if (dyn == DynamicAmount.XValue) {
+            return ResolvedTargetMaximum.Unsupported(TargetDomainUnsupportedReason.UNRESOLVED_X)
+        }
         return try {
             val context = EffectContext(
                 sourceId = sourceId,
                 controllerId = playerId,
             )
-            DynamicAmountEvaluator().evaluate(state, dyn, context).coerceAtLeast(0)
+            ResolvedTargetMaximum.Resolved(
+                DynamicAmountEvaluator().evaluate(state, dyn, context).coerceAtLeast(0)
+            )
         } catch (_: Exception) {
-            null
+            ResolvedTargetMaximum.Unsupported(TargetDomainUnsupportedReason.UNRESOLVED_CARDINALITY)
         }
     }
+
+    private fun TargetRequirement.dynamicMaxCountOrNull(): DynamicAmount? = when (this) {
+        is TargetObject -> dynamicMaxCount
+        is TargetOther -> baseRequirement.dynamicMaxCountOrNull()
+        else -> null
+    }
+
+    private val TargetRequirementSemantics.hasAnyXConstraint: Boolean
+        get() = xConstrainsManaValue || xConstrainsManaValueExactly || xConstrainsPower || xConstrainsCount
+
+    private fun com.wingedsheep.engine.core.TargetRequirementUnsupportedReason.toTargetDomainReason(
+        requirement: TargetRequirement,
+    ): TargetDomainUnsupportedReason = when (this) {
+        com.wingedsheep.engine.core.TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT ->
+            TargetDomainUnsupportedReason.UNRESOLVED_CARDINALITY
+        com.wingedsheep.engine.core.TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE ->
+            if (requirementUsesAnyX(requirement)) TargetDomainUnsupportedReason.UNRESOLVED_X
+            else TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS
+        com.wingedsheep.engine.core.TargetRequirementUnsupportedReason.INVALID_TOTAL_MANA_VALUE ->
+            TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS
+    }
+
+    private fun requirementUsesAnyX(requirement: TargetRequirement): Boolean =
+        requirementUsesManaValueAtMostX(requirement) ||
+            requirementUsesManaValueEqualsX(requirement) ||
+            requirementUsesPowerEqualsX(requirement) ||
+            requirementXConstrainsCount(requirement) ||
+            when (requirement) {
+                is TargetObject -> requirement.totalManaValueAtMost == DynamicAmount.XValue
+                is TargetOther -> requirement.baseRequirement.let(::requirementUsesAnyX)
+                else -> false
+            }
 
     /**
      * True when [requirement] is a [TargetObject] whose filter contains
