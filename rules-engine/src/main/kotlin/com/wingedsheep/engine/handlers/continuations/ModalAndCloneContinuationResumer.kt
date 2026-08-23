@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
@@ -1671,21 +1672,42 @@ internal fun processChosenModeQueue(
     }
 
     // Targets required — find legal targets, auto-select / skip / pause as needed.
+    val pendingTargetContext = EffectContext(
+        sourceId = sourceId,
+        controllerId = controllerId,
+        xValue = xValue,
+        targets = outerTargets,
+        alignedTargets = outerAlignedTargets,
+        pipeline = PipelineState(namedTargets = outerNamedTargets),
+        triggeringEntityId = triggeringEntityId,
+    )
+    val pendingPredicateContext = PredicateContext(
+        controllerId = controllerId,
+        sourceId = sourceId,
+        triggeringEntityId = triggeringEntityId,
+        xValue = xValue,
+    )
+    val targetSnapshots = services.targetValidator.snapshotDynamicCountsForPending(
+        state = state,
+        requirements = head.targetRequirements,
+        context = pendingTargetContext,
+    )
     val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-    head.targetRequirements.forEachIndexed { index, req ->
+    targetSnapshots.forEachIndexed { index, snapshot ->
         val legalTargets = services.targetFinder.findLegalTargets(
             state = state,
-            requirement = req,
+            requirement = snapshot.requirement,
             controllerId = controllerId,
-            sourceId = sourceId
+            sourceId = sourceId,
+            pipelineContext = pendingPredicateContext,
         )
         legalTargetsMap[index] = legalTargets
     }
 
     // Preserve the established fizzle before converting metadata: an unresolved semantic fact
     // cannot matter when a mandatory slot has no legal candidate at all.
-    val allSatisfied = head.targetRequirements.withIndex().all { (index, req) ->
-        (legalTargetsMap[index]?.isNotEmpty() == true) || req.effectiveMinCount == 0
+    val allSatisfied = targetSnapshots.withIndex().all { (index, snapshot) ->
+        (legalTargetsMap[index]?.isNotEmpty() == true) || snapshot.requirement.effectiveMinCount == 0
     }
     if (!allSatisfied) {
         // Fizzle just this mode; continue with the rest.
@@ -1696,17 +1718,33 @@ internal fun processChosenModeQueue(
         )
     }
 
-    val requirementInfos = head.targetRequirements.mapIndexed { index, req ->
-        TargetRequirementInfo.fromRequirement(
-            index = index,
-            requirement = req,
-            minTargets = req.effectiveMinCount,
-            maxTargets = if (req.unlimited && !req.hasUnresolvedDynamicMaxCount()) {
-                legalTargetsMap[index]?.size
-            } else {
-                null
-            }
-        ).orReturnUnsupported { return it.toExecutionError(state) }
+    val requirementInfos = targetSnapshots.mapIndexed { index, snapshot ->
+        val result = when (snapshot) {
+            is PendingTargetRequirementSnapshot.Unsupported ->
+                TargetRequirementInfoResult.Unsupported(snapshot.reason)
+            is PendingTargetRequirementSnapshot.Resolved ->
+                TargetRequirementInfo.fromRequirement(
+                    index = index,
+                    requirement = snapshot.requirement,
+                    semanticSource = snapshot.semanticSource,
+                    minTargets = snapshot.requirement.effectiveMinCount,
+                    maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                        snapshot.requirement.unlimited && !snapshot.requirement.hasUnresolvedDynamicMaxCount()
+                    ) {
+                        legalTargetsMap[index]?.size
+                    } else {
+                        null
+                    },
+                    resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                    resolvedTotalManaValueAtMost = services.targetValidator
+                        .resolveTotalManaValueAtMostForPending(
+                            state = state,
+                            requirement = snapshot.semanticSource,
+                            context = pendingTargetContext,
+                        ),
+                )
+        }
+        result.orReturnUnsupported { return it.toExecutionError(state) }
     }
 
     // Auto-select single player target.

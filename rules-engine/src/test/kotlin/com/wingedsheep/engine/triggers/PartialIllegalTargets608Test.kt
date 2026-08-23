@@ -7,6 +7,8 @@ import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.EngineServices
+import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.ModalContinuation
 import com.wingedsheep.engine.core.ModalTargetContinuation
 import com.wingedsheep.engine.core.ModalPreChosenContinuation
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -18,7 +20,9 @@ import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.event.TriggerContext
+import com.wingedsheep.engine.handlers.actions.ability.ActivateAbilityHandler
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
+import com.wingedsheep.engine.handlers.continuations.ModalAndCloneContinuationResumer
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -53,7 +57,9 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.AnyTarget
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
@@ -1529,6 +1535,46 @@ class PartialIllegalTargets608Test : FunSpec({
         decision.targetRequirements.single().totalManaValueAtMost shouldBe 2
     }
 
+    test("resolution-time modal metadata preserves the continuation X witnesses") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            minCount = 1,
+            unlimited = true,
+            filter = TargetFilter.Creature,
+            dynamicMaxCount = DynamicAmount.XValue,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose up to X creatures within X mana value",
+        )
+        val continuation = ModalContinuation(
+            decisionId = "synthetic-resolution-modal-witness",
+            controllerId = driver.player1,
+            sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-resolution-modal-source"),
+            sourceName = "Synthetic resolution modal",
+            modes = listOf(mode),
+            xValue = 2,
+        )
+
+        val result = ModalAndCloneContinuationResumer(EngineServices(driver.cardRegistry))
+            .resumeModal(
+                state = driver.state,
+                continuation = continuation,
+                response = OptionChosenResponse(continuation.decisionId, optionIndex = 0),
+                checkForMore = { state, events -> ExecutionResult.success(state, events) },
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        val info = decision.targetRequirements.single()
+        info.maxTargets shouldBe 2
+        info.totalManaValueAtMost shouldBe 2
+        info.xConstrainsCount shouldBe true
+    }
+
     test("pending activation metadata preserves a resolved aggregate cap after variable cost selection") {
         val driver = driver()
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
@@ -1555,6 +1601,52 @@ class PartialIllegalTargets608Test : FunSpec({
 
         val targetDecision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
         targetDecision.targetRequirements.single().totalManaValueAtMost shouldBe 2
+    }
+
+    test("opponent-decider activation producer preserves chooser authority and X witnesses") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val handler = ActivateAbilityHandler.create(EngineServices(driver.cardRegistry))
+        val action = ActivateAbility(
+            playerId = driver.player1,
+            sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-opponent-decider-source"),
+            abilityId = AbilityId("synthetic-opponent-decider-ability"),
+            xValue = 2,
+        )
+
+        val chooserRequirement = AnyTarget(chooser = TargetChooser.Opponent)
+        val chooserResult = handler.pauseForOpponentChosenTargetsForDecider(
+            state = driver.state,
+            action = action,
+            sourceName = "Synthetic opponent-decider activation",
+            fullTargetReqs = listOf(chooserRequirement),
+            opponentReqs = listOf(chooserRequirement),
+            deciderId = driver.player2,
+        )
+        chooserResult.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>().playerId shouldBe driver.player2
+
+        val witnessRequirement = TargetObject(
+            count = 1,
+            minCount = 1,
+            unlimited = true,
+            filter = TargetFilter.Creature,
+            dynamicMaxCount = DynamicAmount.XValue,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val witnessResult = handler.pauseForOpponentChosenTargetsForDecider(
+            state = driver.state,
+            action = action,
+            sourceName = "Synthetic opponent-decider activation",
+            fullTargetReqs = listOf(witnessRequirement),
+            opponentReqs = listOf(witnessRequirement),
+            deciderId = driver.player2,
+        )
+        val info = witnessResult.pendingDecision
+            .shouldBeInstanceOf<ChooseTargetsDecision>()
+            .targetRequirements.single()
+        info.maxTargets shouldBe 2
+        info.totalManaValueAtMost shouldBe 2
+        info.xConstrainsCount shouldBe true
     }
 
     test("pending cast-modal metadata is withheld when dynamic count is unresolved") {
