@@ -43,10 +43,8 @@ class SelectTargetPipelineExecutor(
             // StatePredicate.IsGrantingPermanent — e.g. Dire Blunderbuss's "an artifact other than
             // Dire Blunderbuss" (CR 201.5a). Only granterId is threaded; other context fields keep
             // their prior (null) defaults so no existing SelectTargetEffect changes behavior.
-            pipelineContext = com.wingedsheep.engine.handlers.PredicateContext(
-                controllerId = controllerId,
-                granterId = context.granterId
-            )
+            pipelineContext = com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context),
+            requireAuthoritativeContext = true,
         )
 
         if (legalTargets.isEmpty()) {

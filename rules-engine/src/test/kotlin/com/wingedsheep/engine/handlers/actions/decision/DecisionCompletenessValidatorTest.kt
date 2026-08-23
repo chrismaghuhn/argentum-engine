@@ -122,6 +122,59 @@ class DecisionCompletenessValidatorTest : FunSpec({
         ).shouldNotBeNull()
     }
 
+    test("target response rejects a target repeated across a must-differ slot") {
+        val decision = ChooseTargetsDecision(
+            id = "must-differ",
+            playerId = chooser,
+            prompt = "Choose different targets",
+            context = context,
+            targetRequirements = listOf(
+                TargetRequirementInfo(
+                    index = 0,
+                    description = "first",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = false,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                ),
+                TargetRequirementInfo(
+                    index = 1,
+                    description = "another",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = true,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                ),
+            ),
+            legalTargets = mapOf(0 to listOf(first), 1 to listOf(first, second)),
+        )
+
+        DecisionValidators.validate(
+            decision,
+            TargetsResponse(decision.id, mapOf(0 to listOf(first), 1 to listOf(first))),
+        ).shouldNotBeNull()
+    }
+
     test("state-dependent target restrictions fail closed without current state") {
         val cases = listOf(
             TargetRequirementInfo(

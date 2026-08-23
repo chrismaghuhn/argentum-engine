@@ -42,10 +42,23 @@ internal data class TargetRequirementSemantics(
     companion object {
         fun inspect(
             requirement: TargetRequirement,
+            semanticSource: TargetRequirement = requirement,
             resolvedTotalManaValueAtMost: ResolvedTotalManaValueAtMost? = null,
         ): TargetRequirementSemanticsResult {
-            val targetObject = requirement.targetObjectOrNull()
-            val totalManaValueAtMost = targetObject?.totalManaValueAtMost?.let { dynamicAmount ->
+            val targetObject = semanticSource.targetObjectOrNull()
+            val requirementAggregate = requirement.totalManaValueAtMostOrNull()
+            val semanticSourceAggregate = semanticSource.totalManaValueAtMostOrNull()
+            val hasUnresolvedAggregate = listOfNotNull(
+                requirementAggregate,
+                semanticSourceAggregate,
+            ).any { it !is DynamicAmount.Fixed }
+            if (hasUnresolvedAggregate && resolvedTotalManaValueAtMost == null) {
+                return TargetRequirementSemanticsResult.Unsupported(
+                    TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE
+                )
+            }
+            val aggregateSource = semanticSourceAggregate ?: requirementAggregate
+            val totalManaValueAtMost = aggregateSource?.let { dynamicAmount ->
                 resolvedTotalManaValueAtMost?.value ?: when (dynamicAmount) {
                     is DynamicAmount.Fixed -> dynamicAmount.amount
                     else -> return TargetRequirementSemanticsResult.Unsupported(
@@ -61,7 +74,7 @@ internal data class TargetRequirementSemantics(
 
             return TargetRequirementSemanticsResult.Supported(TargetRequirementSemantics(
                 targetZone = targetObject?.filter?.publicTargetZone(),
-                mustDifferFromEarlier = requirement.containsTargetOther(),
+                mustDifferFromEarlier = semanticSource.containsTargetOther(),
                 sameController = targetObject?.sameController == true,
                 sameOwner = targetObject?.sameOwner == true,
                 sameCreatureType = targetObject?.sameCreatureType == true,

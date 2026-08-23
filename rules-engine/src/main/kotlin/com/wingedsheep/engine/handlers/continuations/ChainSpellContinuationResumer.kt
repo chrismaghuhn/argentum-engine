@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.chain.ChainCopyExecutor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -248,8 +249,22 @@ class ChainSpellContinuationResumer(
         }
 
         // Check if there are valid targets for a potential copy
+        val sourcePredicateContext = sourceId?.let { id ->
+            state.getEntity(id)?.get<SpellOnStackComponent>()?.let { spell ->
+                PredicateContext(
+                    controllerId = recipientPlayerId,
+                    sourceId = id,
+                    xValue = spell.xValue,
+                )
+            }
+        }
         val legalTargets = services.targetFinder.findLegalTargets(
-            state, effect.copyTargetRequirement, recipientPlayerId, sourceId
+            state = state,
+            requirement = effect.copyTargetRequirement,
+            controllerId = recipientPlayerId,
+            sourceId = sourceId,
+            pipelineContext = sourcePredicateContext,
+            requireAuthoritativeContext = true,
         )
         if (legalTargets.isEmpty()) {
             return checkForMore(state, events)
@@ -363,8 +378,22 @@ class ChainSpellContinuationResumer(
         sourceId: EntityId?,
         checkForMore: CheckForMore
     ): ExecutionResult {
+        val sourcePredicateContext = sourceId?.let { id ->
+            state.getEntity(id)?.get<SpellOnStackComponent>()?.let { spell ->
+                PredicateContext(
+                    controllerId = controllerId,
+                    sourceId = id,
+                    xValue = spell.xValue,
+                )
+            }
+        }
         val legalTargets = services.targetFinder.findLegalTargets(
-            state, effect.copyTargetRequirement, controllerId, sourceId
+            state = state,
+            requirement = effect.copyTargetRequirement,
+            controllerId = controllerId,
+            sourceId = sourceId,
+            pipelineContext = sourcePredicateContext,
+            requireAuthoritativeContext = true,
         )
 
         if (legalTargets.isEmpty()) {

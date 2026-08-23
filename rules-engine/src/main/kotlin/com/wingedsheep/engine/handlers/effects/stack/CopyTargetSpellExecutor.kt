@@ -199,11 +199,25 @@ class CopyTargetSpellExecutor(
         resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
     ): EffectResult {
         val decisionId = targetDecisionId()
+        val copiedSpellXValue = resolvingSpellCopyPayload?.spell?.xValue
+            ?: state.getEntity(spellEntityId)?.get<SpellOnStackComponent>()?.xValue
+        val copiedSpellPredicateContext =
+            com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context).copy(
+                // X belongs to the copied spell, not to the effect that is creating the copy.
+                // If the source snapshot is unavailable, retain null so X-relative candidates
+                // fail closed in TargetFinder rather than inheriting the copier's X.
+                xValue = copiedSpellXValue,
+            )
 
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
         for ((index, requirement) in targetRequirements.withIndex()) {
             val legalTargets = targetFinder.findLegalTargets(
-                state, requirement, context.controllerId, context.sourceId
+                state = state,
+                requirement = requirement,
+                controllerId = context.controllerId,
+                sourceId = context.sourceId,
+                pipelineContext = copiedSpellPredicateContext,
+                requireAuthoritativeContext = true,
             )
             legalTargetsMap[index] = legalTargets
         }

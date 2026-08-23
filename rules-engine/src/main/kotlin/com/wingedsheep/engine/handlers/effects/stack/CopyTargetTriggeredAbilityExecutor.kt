@@ -69,9 +69,30 @@ class CopyTargetTriggeredAbilityExecutor(
         targetRequirements: List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>
     ): EffectResult {
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
+        val sourcePredicateContext = state.getEntity(abilityEntityId)
+            ?.get<TriggeredAbilityOnStackComponent>()
+            ?.let { source ->
+                com.wingedsheep.engine.handlers.PredicateContext(
+                    controllerId = context.controllerId,
+                    sourceId = abilityEntityId,
+                    triggeringEntityId = source.triggeringEntityId,
+                    triggeringPlayerId = source.triggeringPlayerId,
+                    xValue = source.xValue,
+                    storedCollections = source.carriedPipeline?.storedCollections ?: emptyMap(),
+                    chosenValues = source.carriedPipeline?.chosenValues ?: emptyMap(),
+                    storedStringLists = source.carriedPipeline?.storedStringLists ?: emptyMap(),
+                    storedSubtypeGroups = source.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
+                )
+            }
+            ?: com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context)
         for ((index, requirement) in targetRequirements.withIndex()) {
             val legalTargets = targetFinder.findLegalTargets(
-                state, requirement, context.controllerId, context.sourceId
+                state = state,
+                requirement = requirement,
+                controllerId = context.controllerId,
+                sourceId = context.sourceId,
+                pipelineContext = sourcePredicateContext,
+                requireAuthoritativeContext = true,
             )
             legalTargetsMap[index] = legalTargets
         }

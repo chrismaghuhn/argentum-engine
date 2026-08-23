@@ -45,6 +45,17 @@ class TargetFinder(
 ) {
     private val predicateEvaluator = PredicateEvaluator()
 
+    private data class RequiredPredicateContext(
+        val xValue: Boolean = false,
+        val pipeline: Boolean = false,
+    ) {
+        operator fun plus(other: RequiredPredicateContext): RequiredPredicateContext =
+            RequiredPredicateContext(
+                xValue = xValue || other.xValue,
+                pipeline = pipeline || other.pipeline,
+            )
+    }
+
     /**
      * Build the per-candidate [PredicateContext] for filter evaluation, folding in any
      * pipeline-derived fields (storedCollections, chosenValues, xValue, …) carried by
@@ -98,8 +109,19 @@ class TargetFinder(
          * [EntityReference.AmassedArmy] out of `pipelineContext.storedCollections`. Null for
          * cast-time targeting where no pipeline state exists yet.
          */
-        pipelineContext: PredicateContext? = null
+        pipelineContext: PredicateContext? = null,
+        /**
+         * Pending target decisions must not use the legacy permissive behavior for an unbound X or
+         * unavailable pipeline relation. When enabled, the candidate set is empty until every
+         * context fact required by the target filter is present in [pipelineContext].
+         */
+        requireAuthoritativeContext: Boolean = false,
     ): List<EntityId> {
+        if (requireAuthoritativeContext) {
+            val requiredContext = requirement.requiredPredicateContext()
+            if (requiredContext.xValue && pipelineContext?.xValue == null) return emptyList()
+            if (requiredContext.pipeline && pipelineContext == null) return emptyList()
+        }
         return when (requirement) {
             is TargetPlayer -> findPlayerTargets(state, requirement, controllerId, sourceId, ignoreTargetingRestrictions)
             is TargetOpponent -> findOpponentTargets(state, requirement, controllerId, sourceId, ignoreTargetingRestrictions)
@@ -154,7 +176,17 @@ class TargetFinder(
             is TargetOther -> {
                 // For TargetOther, find targets for the base requirement but exclude the source
                 // (or, for "enchanted creature deals damage to any other target", the attached creature).
-                val baseTargets = findLegalTargets(state, requirement.baseRequirement, controllerId, sourceId, ignoreTargetingRestrictions, targetingSourceType, triggeringEntityId, pipelineContext)
+                val baseTargets = findLegalTargets(
+                    state,
+                    requirement.baseRequirement,
+                    controllerId,
+                    sourceId,
+                    ignoreTargetingRestrictions,
+                    targetingSourceType,
+                    triggeringEntityId,
+                    pipelineContext,
+                    requireAuthoritativeContext,
+                )
                 val excludeId = requirement.excludeSourceId
                     ?: if (requirement.excludeAttachedCreature) {
                         sourceId?.let { state.getEntity(it)?.get<AttachedToComponent>()?.targetId }
@@ -164,6 +196,65 @@ class TargetFinder(
                 if (excludeId != null) baseTargets.filter { it != excludeId } else baseTargets
             }
         }
+    }
+
+    private fun TargetRequirement.requiredPredicateContext(): RequiredPredicateContext = when (this) {
+        is TargetObject -> filter.clauses().fold(RequiredPredicateContext()) { required, clause ->
+            required + clause.baseFilter.requiredPredicateContext()
+        }
+        is TargetPermanentOrPlayer -> permanentFilter.clauses().fold(RequiredPredicateContext()) { required, clause ->
+            required + clause.baseFilter.requiredPredicateContext()
+        }
+        is TargetSpellOrPermanent -> permanentFilter?.requiredPredicateContext() ?: RequiredPredicateContext()
+        is TargetOther -> baseRequirement.requiredPredicateContext()
+        else -> RequiredPredicateContext()
+    }
+
+    private fun GameObjectFilter.requiredPredicateContext(): RequiredPredicateContext =
+        cardPredicates.fold(RequiredPredicateContext()) { required, predicate ->
+            required + predicate.requiredPredicateContext()
+        } + anyOf.fold(RequiredPredicateContext()) { required, nested ->
+            required + nested.requiredPredicateContext()
+        }
+
+    private fun CardPredicate.requiredPredicateContext(): RequiredPredicateContext = when (this) {
+        CardPredicate.ManaValueEqualsX,
+        CardPredicate.ManaValueAtMostX,
+        CardPredicate.PowerEqualsX,
+        CardPredicate.PowerAtLeastX,
+        CardPredicate.ToughnessAtMostX -> RequiredPredicateContext(xValue = true)
+        is CardPredicate.ManaValueAtMostEntity,
+        is CardPredicate.ManaValueAtMostEntityManaSpent,
+        is CardPredicate.ManaValueAtMostColorsSpent,
+        is CardPredicate.PowerGreaterThanEntity,
+        is CardPredicate.PowerAtMostEntity,
+        is CardPredicate.PowerLessThanEntity,
+        is CardPredicate.NameEqualsChosen,
+        is CardPredicate.NameEqualsChosenComponent,
+        is CardPredicate.CardTypeEqualsChosenComponent,
+        is CardPredicate.HasSubtypeFromVariable,
+        is CardPredicate.HasSubtypeInStoredList,
+        is CardPredicate.HasSubtypeInEachStoredGroup,
+        CardPredicate.HasChosenColor,
+        CardPredicate.SharesCreatureTypeWithSource,
+        CardPredicate.SharesCreatureTypeWithTriggeringEntity,
+        CardPredicate.HasChosenSubtype,
+        CardPredicate.SharesChosenColorWithSource,
+        CardPredicate.SharesColorWithRecipient,
+        is CardPredicate.SharesCreatureTypeWith,
+        is CardPredicate.SharesColorWith,
+        is CardPredicate.SharesColorWithPermanentYouControl,
+        is CardPredicate.SharesNameWithPermanentYouControl,
+        is CardPredicate.DoesNotShareCreatureTypeWithPermanentYouControl,
+        is CardPredicate.DoesNotShareLandTypeWithPermanentYouControl -> RequiredPredicateContext(pipeline = true)
+        is CardPredicate.And -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
+            required + predicate.requiredPredicateContext()
+        }
+        is CardPredicate.Or -> predicates.fold(RequiredPredicateContext()) { required, predicate ->
+            required + predicate.requiredPredicateContext()
+        }
+        is CardPredicate.Not -> predicate.requiredPredicateContext()
+        else -> RequiredPredicateContext()
     }
 
     private fun findPlayerTargets(

@@ -132,6 +132,14 @@ class StormCopyEffectExecutor(
         var currentState = state
         val allEvents = mutableListOf<GameEvent>()
         var copiesLeft = remainingCopies
+        val copiedSpellXValue = resolvingSpellCopyPayload?.spell?.xValue
+            ?: currentState.getEntity(sourceId)?.get<SpellOnStackComponent>()?.xValue
+        val copiedSpellPredicateContext =
+            com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context).copy(
+                // The target requirement belongs to the copied source spell. Do not use the
+                // copier effect's X as a substitute when the source snapshot is unavailable.
+                xValue = copiedSpellXValue,
+            )
 
         // Walk copies one at a time. If the copy can be retargeted legally, pause
         // with a ChooseTargetsDecision; otherwise put it on the stack inheriting
@@ -141,7 +149,12 @@ class StormCopyEffectExecutor(
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             for ((index, requirement) in effect.spellTargetRequirements.withIndex()) {
                 val legalTargets = targetFinder.findLegalTargets(
-                    currentState, requirement, context.controllerId, sourceId
+                    state = currentState,
+                    requirement = requirement,
+                    controllerId = context.controllerId,
+                    sourceId = sourceId,
+                    pipelineContext = copiedSpellPredicateContext,
+                    requireAuthoritativeContext = true,
                 )
                 legalTargetsMap[index] = legalTargets
             }
@@ -257,6 +270,11 @@ class StormCopyEffectExecutor(
                 ?: currentState.getEntity(sourceId)?.get<SpellOnStackComponent>()
                 ?: return ExecutionResult.error(currentState, "Storm source spell not found: $sourceId")
             val sourceModeTargetsOrdered = sourceSpellComp.modeTargetsOrdered
+            val sourcePredicateContext = com.wingedsheep.engine.handlers.PredicateContext(
+                controllerId = controllerId,
+                sourceId = sourceId,
+                xValue = sourceSpellComp.xValue,
+            )
 
             while (copiesLeft > 0) {
                 while (ordinal < chosenModes.size) {
@@ -272,7 +290,12 @@ class StormCopyEffectExecutor(
                     val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
                     for ((reqIndex, requirement) in reqs.withIndex()) {
                         legalTargetsMap[reqIndex] = targetFinder.findLegalTargets(
-                            currentState, requirement, controllerId, sourceId
+                            state = currentState,
+                            requirement = requirement,
+                            controllerId = controllerId,
+                            sourceId = sourceId,
+                            pipelineContext = sourcePredicateContext,
+                            requireAuthoritativeContext = true,
                         )
                     }
 

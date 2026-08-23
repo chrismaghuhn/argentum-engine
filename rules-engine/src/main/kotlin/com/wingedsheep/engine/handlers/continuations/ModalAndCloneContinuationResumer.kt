@@ -1700,6 +1700,7 @@ internal fun processChosenModeQueue(
             controllerId = controllerId,
             sourceId = sourceId,
             pipelineContext = pendingPredicateContext,
+            requireAuthoritativeContext = true,
         )
         legalTargetsMap[index] = legalTargets
     }
@@ -1718,7 +1719,35 @@ internal fun processChosenModeQueue(
         )
     }
 
-    val requirementInfos = targetSnapshots.mapIndexed { index, snapshot ->
+    // An optional slot with no legal candidates is a valid empty selection. Keep the mode's
+    // target/requirement alignment, but do not convert unsupported metadata for a slot the player
+    // cannot and need not choose.
+    val selectableIndices = targetSnapshots.indices.filter { index ->
+        targetSnapshots[index].requirement.effectiveMinCount > 0 ||
+            legalTargetsMap[index].orEmpty().isNotEmpty()
+    }
+    if (selectableIndices.isEmpty()) {
+        val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            head.targetRequirements,
+            List(head.targetRequirements.size) { 0 },
+        )
+        val context = EffectContext(
+            sourceId = sourceId,
+            controllerId = controllerId,
+            xValue = xValue,
+            targets = emptyList(),
+            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, emptyList())),
+            triggeringEntityId = triggeringEntityId,
+        )
+        return executeChosenModeWithTail(
+            services, state, head.effect, context, tail,
+            controllerId, sourceId, sourceName, xValue, triggeringEntityId,
+            outerTargets, outerAlignedTargets, outerNamedTargets, accumulatedEvents, checkForMore,
+        )
+    }
+
+    val requirementInfos = selectableIndices.map { index ->
+        val snapshot = targetSnapshots[index]
         val result = when (snapshot) {
             is PendingTargetRequirementSnapshot.Unsupported ->
                 TargetRequirementInfoResult.Unsupported(snapshot.reason)
@@ -1790,7 +1819,7 @@ internal fun processChosenModeQueue(
             phase = DecisionPhase.RESOLUTION
         ),
         targetRequirements = requirementInfos,
-        legalTargets = legalTargetsMap,
+        legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
         canCancel = allowCancelBackToModesList != null && tail.isEmpty()
     )
 

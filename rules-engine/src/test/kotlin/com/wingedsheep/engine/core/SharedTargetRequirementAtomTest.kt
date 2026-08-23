@@ -110,4 +110,21 @@ class SharedTargetRequirementAtomTest : FunSpec({
         result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
             TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
     }
+
+    test("a normalized semantic source cannot hide an unresolved aggregate cap") {
+        val requirement = TargetObject(
+            filter = TargetFilter(GameObjectFilter.Creature),
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val normalizedSemanticSource = requirement.copy(totalManaValueAtMost = null)
+
+        val result = TargetRequirementInfo.fromRequirement(
+            index = 0,
+            requirement = requirement,
+            semanticSource = normalizedSemanticSource,
+        )
+
+        result.shouldBeInstanceOf<TargetRequirementInfoResult.Unsupported>().reason shouldBe
+            TargetRequirementUnsupportedReason.UNRESOLVED_TOTAL_MANA_VALUE
+    }
 })

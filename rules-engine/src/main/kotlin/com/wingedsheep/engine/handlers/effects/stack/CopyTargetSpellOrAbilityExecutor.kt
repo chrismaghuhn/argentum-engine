@@ -148,7 +148,12 @@ class CopyTargetSpellOrAbilityExecutor(
                 // Legal targets are found from the *copier's* perspective (its source), matching
                 // how new targets for a copy are validated — not from the copied ability's entity.
                 val legalTargetsMap = legalTargetsFor(
-                    currentState, targetFinder, targetRequirements, controllerId, copierSourceId
+                    state = currentState,
+                    targetFinder = targetFinder,
+                    targetRequirements = targetRequirements,
+                    abilityEntityId = abilityEntityId,
+                    controllerId = controllerId,
+                    sourceId = copierSourceId,
                 )
 
                 // CR 707.10c: no legal replacement for some requirement — the copy is still made,
@@ -252,12 +257,39 @@ class CopyTargetSpellOrAbilityExecutor(
             state: GameState,
             targetFinder: TargetFinder,
             targetRequirements: List<TargetRequirement>,
+            abilityEntityId: EntityId,
             controllerId: EntityId,
             sourceId: EntityId?
         ): Map<Int, List<EntityId>> {
             val map = mutableMapOf<Int, List<EntityId>>()
+            val sourcePredicateContext = state.getEntity(abilityEntityId)?.let { container ->
+                container.get<TriggeredAbilityOnStackComponent>()?.let { source ->
+                    com.wingedsheep.engine.handlers.PredicateContext(
+                        controllerId = controllerId,
+                        triggeringEntityId = source.triggeringEntityId,
+                        triggeringPlayerId = source.triggeringPlayerId,
+                        xValue = source.xValue,
+                        storedCollections = source.carriedPipeline?.storedCollections ?: emptyMap(),
+                        chosenValues = source.carriedPipeline?.chosenValues ?: emptyMap(),
+                        storedStringLists = source.carriedPipeline?.storedStringLists ?: emptyMap(),
+                        storedSubtypeGroups = source.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
+                    )
+                } ?: container.get<ActivatedAbilityOnStackComponent>()?.let { source ->
+                    com.wingedsheep.engine.handlers.PredicateContext(
+                        controllerId = controllerId,
+                        xValue = source.xValue,
+                    )
+                }
+            }
             for ((index, requirement) in targetRequirements.withIndex()) {
-                map[index] = targetFinder.findLegalTargets(state, requirement, controllerId, sourceId)
+                map[index] = targetFinder.findLegalTargets(
+                    state = state,
+                    requirement = requirement,
+                    controllerId = controllerId,
+                    sourceId = sourceId,
+                    pipelineContext = sourcePredicateContext,
+                    requireAuthoritativeContext = true,
+                )
             }
             return map
         }

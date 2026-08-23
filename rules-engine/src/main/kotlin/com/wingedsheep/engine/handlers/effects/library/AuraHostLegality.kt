@@ -128,6 +128,7 @@ class AuraHostLegality(
             controllerId = hostControllerId,
             sourceId = sourceId,
             ignoreTargetingRestrictions = true,
+            requireAuthoritativeContext = true,
         ).filter { hostId ->
             isLegalAttachmentHost(state, sourceId, hostId, hostControllerId, source)
         }

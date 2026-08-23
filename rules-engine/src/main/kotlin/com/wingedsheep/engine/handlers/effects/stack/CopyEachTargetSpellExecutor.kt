@@ -9,6 +9,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CopyEachTargetSpellEffect
@@ -113,9 +114,19 @@ class CopyEachTargetSpellExecutor(
 
                 // Targeted spell — offer new targets for the copy.
                 val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
+                val sourcePredicateContext = com.wingedsheep.engine.handlers.PredicateContext(
+                    controllerId = controllerId,
+                    sourceId = spellId,
+                    xValue = container.get<SpellOnStackComponent>()?.xValue,
+                )
                 for ((index, requirement) in targetReqs.withIndex()) {
                     legalTargetsMap[index] = targetFinder.findLegalTargets(
-                        currentState, requirement, controllerId, spellId
+                        state = currentState,
+                        requirement = requirement,
+                        controllerId = controllerId,
+                        sourceId = spellId,
+                        pipelineContext = sourcePredicateContext,
+                        requireAuthoritativeContext = true,
                     )
                 }
 

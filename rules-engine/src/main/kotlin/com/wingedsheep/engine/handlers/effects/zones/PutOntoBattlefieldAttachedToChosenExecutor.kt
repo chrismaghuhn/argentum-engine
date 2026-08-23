@@ -10,6 +10,7 @@ import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.orReturnUnsupported
 import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
@@ -89,7 +90,9 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             requirement = hostRequirement,
             controllerId = controllerId,
             sourceId = cardId,
-            ignoreTargetingRestrictions = true
+            ignoreTargetingRestrictions = true,
+            pipelineContext = PredicateContext.fromEffectContext(context),
+            requireAuthoritativeContext = true,
         )
 
         // For an Aura, narrow to hosts it can legally enchant (Rule 303.4f).

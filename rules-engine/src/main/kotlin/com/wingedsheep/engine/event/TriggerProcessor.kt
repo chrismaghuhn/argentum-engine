@@ -509,7 +509,8 @@ class TriggerProcessor(
                 chosenValues = trigger.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                 storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
-            )
+            ),
+            requireAuthoritativeContext = true,
         )
         if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) return null
         return BatchKey(trigger.controllerId, identity)
@@ -743,7 +744,8 @@ class TriggerProcessor(
                 chosenValues = trigger.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                 storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
-            )
+            ),
+            requireAuthoritativeContext = true,
         )
 
         if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) {
@@ -865,7 +867,8 @@ class TriggerProcessor(
                 chosenValues = trigger.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                 storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
-            )
+            ),
+            requireAuthoritativeContext = true,
         )
 
         if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) {
@@ -972,6 +975,7 @@ class TriggerProcessor(
                     storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                     storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
                 ),
+                requireAuthoritativeContext = true,
             )
             allLegalTargets[index] = legalTargets
         }
@@ -1026,6 +1030,18 @@ class TriggerProcessor(
             }
         }
 
+        // Optional slots with no legal candidates are valid empty selections. If every slot is
+        // such a slot, put the trigger on the stack targetless without converting unsupported
+        // metadata. Mixed requirements keep their original indices so the continuation can fill
+        // omitted optional slots with zero targets.
+        val selectableIndices = allRequirements.indices.filter { index ->
+            allRequirements[index].effectiveMinCount > 0 ||
+                allLegalTargets[index].orEmpty().isNotEmpty()
+        }
+        if (selectableIndices.isEmpty()) {
+            return putTriggerOnStack(state, trigger, emptyList())
+        }
+
         // Create target requirement infos for the decision.
         //
         // A slot's minimum is the *requirement's* — "up to one" allows zero, "target creature" does
@@ -1036,7 +1052,8 @@ class TriggerProcessor(
         // from the stack when there is no legal one (the loop above) rather than resolve targetless.
         // Consent is now a gate on the effect, answered on its own — either before this method runs
         // (`processMayThenTargetTrigger`) or as the ability resolves.
-        val requirementInfos = allRequirements.mapIndexed { index, req ->
+        val requirementInfos = selectableIndices.map { index ->
+            val req = allRequirements[index]
             // "Any number of target ..." (unlimited) caps at however many legal targets exist,
             // mirroring the cast-time path (TargetEnumerationUtils). Using req.count (always 1
             // for an unlimited requirement) would wrongly clamp the decision to a single target.
@@ -1122,7 +1139,7 @@ class TriggerProcessor(
             sourceId = trigger.sourceId,
             sourceName = trigger.sourceName,
             requirements = requirementInfos,
-            legalTargets = allLegalTargets,
+            legalTargets = selectableIndices.associateWith { allLegalTargets[it].orEmpty() },
             effectHint = effectHint
         )
 
@@ -1536,7 +1553,28 @@ class TriggerProcessor(
                 )
             }
 
-            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
+            // An optional slot with no legal candidates is a valid empty selection. Do not
+            // convert its unresolved metadata: the slot contributes no decision authority and
+            // the existing continuation still needs one empty target/requirement entry for mode
+            // alignment.
+            val selectableIndices = mode.targetRequirements.indices.filter { index ->
+                mode.targetRequirements[index].effectiveMinCount > 0 ||
+                    legalTargetsMap[index].orEmpty().isNotEmpty()
+            }
+            if (selectableIndices.isEmpty()) {
+                targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(
+                    targetValidator.lockRequirementsForSelectedCounts(
+                        mode.targetRequirements,
+                        List(mode.targetRequirements.size) { 0 },
+                    )
+                )
+                ordinal++
+                continue
+            }
+
+            val requirementInfos = selectableIndices.map { index ->
+                val req = mode.targetRequirements[index]
                 val snapshot = modeSnapshots[chosenModeIndices[ordinal]][index]
                 val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
                     req.unlimited && !req.hasUnresolvedDynamicMaxCount()
@@ -1600,7 +1638,7 @@ class TriggerProcessor(
                     effectHint = mode.description
                 ),
                 targetRequirements = requirementInfos,
-                legalTargets = legalTargetsMap
+                legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() }
             )
             val continuation = TriggerModalTargetSelectionContinuation(
                 decisionId = decisionId,
@@ -1842,6 +1880,7 @@ class TriggerProcessor(
             storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap(),
             storedSubtypeGroups = ability.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
         ),
+        requireAuthoritativeContext = true,
     )
 
     /** True when every mandatory target requirement of [mode] has at least one legal target. */

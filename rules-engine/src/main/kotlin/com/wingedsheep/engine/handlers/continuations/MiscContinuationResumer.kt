@@ -2,6 +2,7 @@ package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.ReplacementEffectUtils
 import com.wingedsheep.engine.handlers.effects.permanent.counters.ProliferateExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.counters.RemoveAnyNumberOfCountersFlow
@@ -428,9 +429,24 @@ class MiscContinuationResumer(
         // Prompt for next copy's targets
         val decisionId = "storm-copy-target-${java.util.UUID.randomUUID()}"
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
+        val sourcePredicateContext = continuation.sourceId.let { id ->
+            currentState.getEntity(id)?.get<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
+                ?.let { spell ->
+                    PredicateContext(
+                        controllerId = continuation.controllerId,
+                        sourceId = id,
+                        xValue = spell.xValue,
+                    )
+                }
+        }
         for ((index, requirement) in continuation.spellTargetRequirements.withIndex()) {
             val legalTargets = services.targetFinder.findLegalTargets(
-                currentState, requirement, continuation.controllerId, continuation.sourceId
+                state = currentState,
+                requirement = requirement,
+                controllerId = continuation.controllerId,
+                sourceId = continuation.sourceId,
+                pipelineContext = sourcePredicateContext,
+                requireAuthoritativeContext = true,
             )
             legalTargetsMap[index] = legalTargets
         }

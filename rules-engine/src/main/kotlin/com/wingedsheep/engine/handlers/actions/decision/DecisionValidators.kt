@@ -42,9 +42,13 @@ import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.mechanics.combat.CombatDamageAssignmentPlanValidator
+import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.model.EntityId
+
+private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()) { it.name }
 
 /**
  * Validators for different types of decision responses.
@@ -213,6 +217,61 @@ object DecisionValidators {
                         return "Targets for requirement $reqIndex must have different names"
                     }
                 }
+
+                if (req.sameController && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target controllers"
+                    val controllers = selectedIds.mapNotNull { id ->
+                        if (id !in state.getBattlefield()) return@mapNotNull null
+                        state.projectedState.getController(id)
+                            ?: state.getEntity(id)?.get<ControllerComponent>()?.playerId
+                    }
+                    if (controllers.toSet().size > 1) {
+                        return "Targets for requirement $reqIndex must be controlled by the same player"
+                    }
+                }
+
+                if (req.sameCreatureType && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target creature types"
+                    val subtypeSets = selectedIds.map { id ->
+                        if (id !in state.getBattlefield()) emptySet()
+                        else state.projectedState.getSubtypes(id)
+                    }
+                    val sharedSubtypes = subtypeSets.drop(1).fold(subtypeSets.firstOrNull().orEmpty()) { shared, next ->
+                        shared intersect next
+                    }
+                    if (sharedSubtypes.isEmpty()) {
+                        return "Targets for requirement $reqIndex must share a creature type"
+                    }
+                }
+
+                if (req.sameCardType && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target card types"
+                    val typeSets = selectedIds.map { id ->
+                        if (id !in state.getBattlefield()) emptySet()
+                        else state.projectedState.getTypes(id).filter { it in CARD_TYPE_NAMES }.toSet()
+                    }
+                    val sharedTypes = typeSets.drop(1).fold(typeSets.firstOrNull().orEmpty()) { shared, next ->
+                        shared intersect next
+                    }
+                    if (sharedTypes.isEmpty()) {
+                        return "Targets for requirement $reqIndex must share a card type"
+                    }
+                }
+            }
+        }
+
+        val selectedByRequirement = decision.targetRequirements
+            .sortedBy { it.index }
+            .map { requirement -> requirement to response.selectedTargets[requirement.index].orEmpty() }
+        for ((position, pair) in selectedByRequirement.withIndex()) {
+            val (requirement, selectedIds) = pair
+            if (!requirement.mustDifferFromEarlier || selectedIds.isEmpty()) continue
+            val priorSelectedIds = selectedByRequirement
+                .take(position)
+                .flatMap { (_, ids) -> ids }
+                .toSet()
+            if (selectedIds.any { it in priorSelectedIds }) {
+                return "Targets for requirement ${requirement.index} must differ from earlier targets"
             }
         }
         return null

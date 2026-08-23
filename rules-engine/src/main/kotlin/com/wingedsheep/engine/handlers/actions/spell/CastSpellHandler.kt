@@ -4441,7 +4441,9 @@ class CastSpellHandler(
         }
 
         val available = effectiveModalEffect.modes.withIndex()
-            .filter { (_, mode) -> modeHasSatisfiableTargets(currentState, action.playerId, action.cardId, mode) }
+            .filter { (_, mode) ->
+                modeHasSatisfiableTargets(currentState, action.playerId, action.cardId, action.xValue, mode)
+            }
             .map { it.index }
 
         if (available.size < effectiveModalEffect.minChooseCount) {
@@ -4469,12 +4471,24 @@ class CastSpellHandler(
         state: GameState,
         casterId: EntityId,
         sourceId: EntityId,
+        xValue: Int?,
         mode: com.wingedsheep.sdk.scripting.effects.Mode
     ): Boolean {
         if (mode.targetRequirements.isEmpty()) return true
         return mode.targetRequirements.all { req ->
             req.effectiveMinCount == 0 ||
-                targetFinder.findLegalTargets(state, req, casterId, sourceId).isNotEmpty()
+                targetFinder.findLegalTargets(
+                    state = state,
+                    requirement = req,
+                    controllerId = casterId,
+                    sourceId = sourceId,
+                    pipelineContext = PredicateContext(
+                        controllerId = casterId,
+                        sourceId = sourceId,
+                        xValue = xValue,
+                    ),
+                    requireAuthoritativeContext = true,
+                ).isNotEmpty()
         }
     }
 
@@ -4841,7 +4855,14 @@ class CastSpellHandler(
             // targets (and is mandatory), this mode can't resolve — surface an error.
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             mode.targetRequirements.forEachIndexed { index, req ->
-                val legal = targetFinder.findLegalTargets(state, req, casterId, cardId)
+                val legal = targetFinder.findLegalTargets(
+                    state = state,
+                    requirement = req,
+                    controllerId = casterId,
+                    sourceId = cardId,
+                    pipelineContext = PredicateContext.fromEffectContext(pendingContext),
+                    requireAuthoritativeContext = true,
+                )
                 legalTargetsMap[index] = legal
             }
             val allSatisfied = mode.targetRequirements.withIndex().all { (index, req) ->
@@ -4851,7 +4872,27 @@ class CastSpellHandler(
                 return ExecutionResult.error(state, "No legal targets for mode: ${mode.description}")
             }
 
-            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
+            // Optional target slots with no legal candidates are valid empty selections. They
+            // must be skipped before metadata conversion so an unresolved semantic fact on an
+            // unused slot cannot fail the whole cast decision.
+            val selectableIndices = mode.targetRequirements.indices.filter { index ->
+                mode.targetRequirements[index].effectiveMinCount > 0 ||
+                    legalTargetsMap[index].orEmpty().isNotEmpty()
+            }
+            if (selectableIndices.isEmpty()) {
+                targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(
+                    targetValidator.lockRequirementsForSelectedCounts(
+                        mode.targetRequirements,
+                        List(mode.targetRequirements.size) { 0 },
+                    )
+                )
+                ordinal++
+                continue
+            }
+
+            val requirementInfos = selectableIndices.map { index ->
+                val req = mode.targetRequirements[index]
                 val snapshot = modeSnapshots[modeIndex][index]
                 val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
                     req.unlimited && !req.hasUnresolvedDynamicMaxCount()
@@ -4896,7 +4937,7 @@ class CastSpellHandler(
                     effectHint = mode.description
                 ),
                 targetRequirements = requirementInfos,
-                legalTargets = legalTargetsMap,
+                legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
                 // Cast-time per-mode target selection must be cancellable (K2 in plan):
                 // the pause sits before cost payment, so aborting rolls back cleanly.
                 canCancel = true

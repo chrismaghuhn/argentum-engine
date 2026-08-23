@@ -287,6 +287,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     requirement = requirement,
                     controllerId = casterId,
                     sourceId = cardId,
+                    requireAuthoritativeContext = true,
                 )
                 legalTargetsMap[index] = legal
             }
@@ -299,7 +300,16 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 return TargetPrep.NoLegalTargets
             }
 
-            val requirementInfos = targetRequirements.mapIndexed { index, requirement ->
+            val selectableIndices = targetRequirements.indices.filter { index ->
+                targetRequirements[index].effectiveMinCount > 0 ||
+                    legalTargetsMap[index].orEmpty().isNotEmpty()
+            }
+            if (selectableIndices.isEmpty()) {
+                return TargetPrep.NotNeeded
+            }
+
+            val requirementInfos = selectableIndices.map { index ->
+                val requirement = targetRequirements[index]
                 TargetRequirementInfo.fromRequirement(
                     index = index,
                     requirement = requirement,
@@ -328,7 +338,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     phase = DecisionPhase.CASTING,
                 ),
                 targetRequirements = requirementInfos,
-                legalTargets = legalTargetsMap,
+                legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
                 canCancel = false,
             )
             val continuation = CastFromCollectionTargetsContinuation(

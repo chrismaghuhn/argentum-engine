@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.ModalContinuation
@@ -16,6 +17,8 @@ import com.wingedsheep.engine.core.PreTargetedEffectEntry
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
+import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.event.PendingTrigger
@@ -23,6 +26,9 @@ import com.wingedsheep.engine.event.TriggerContext
 import com.wingedsheep.engine.handlers.actions.ability.ActivateAbilityHandler
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.continuations.ModalAndCloneContinuationResumer
+import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.TargetFinder
+import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -54,6 +60,7 @@ import com.wingedsheep.sdk.scripting.conditions.Condition
 import com.wingedsheep.sdk.scripting.conditions.CreatureDiedThisTurnCondition
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -73,6 +80,7 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
@@ -944,6 +952,121 @@ class PartialIllegalTargets608Test : FunSpec({
         driver2.getLifeTotal(driver2.player1) shouldBe typeBefore
     }
 
+    test("pending target responses enforce published cross-target relations") {
+        fun requirementInfo(
+            sameController: Boolean = false,
+            sameCreatureType: Boolean = false,
+            sameCardType: Boolean = false,
+        ) = TargetRequirementInfo(
+            index = 0,
+            description = "relation-rich targets",
+            minTargets = 2,
+            maxTargets = 2,
+            targetZone = null,
+            mustDifferFromEarlier = false,
+            sameController = sameController,
+            sameOwner = false,
+            sameCreatureType = sameCreatureType,
+            sameCardType = sameCardType,
+            totalManaValueAtMost = null,
+            differentNames = false,
+            xConstrainsManaValue = false,
+            xConstrainsManaValueExactly = false,
+            xConstrainsPower = false,
+            xConstrainsCount = false,
+        )
+
+        fun validatePair(
+            driver: GameTestDriver,
+            info: TargetRequirementInfo,
+            first: com.wingedsheep.sdk.model.EntityId,
+            second: com.wingedsheep.sdk.model.EntityId,
+        ) {
+            val decision = ChooseTargetsDecision(
+                id = "relation-${info.description}",
+                playerId = driver.player1,
+                prompt = "Choose relation-rich targets",
+                context = DecisionContext(),
+                targetRequirements = listOf(info),
+                legalTargets = mapOf(0 to listOf(first, second)),
+            )
+            DecisionValidators.validate(
+                decision,
+                TargetsResponse(decision.id, mapOf(0 to listOf(first, second))),
+                driver.state,
+            ).shouldNotBeNull()
+        }
+
+        run {
+            val driver = driver()
+            val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            val second = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+            validatePair(driver, requirementInfo(sameController = true), first, second)
+        }
+        run {
+            val driver = driver()
+            val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            val second = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            driver.replaceState(
+                driver.state.updateEntity(second) {
+                    it.get<CardComponent>()?.let { card ->
+                        it.with(card.copy(typeLine = TypeLine.creature(setOf(Subtype("Wizard")))))
+                    } ?: it
+                }
+            )
+            validatePair(driver, requirementInfo(sameCreatureType = true), first, second)
+        }
+        run {
+            val driver = driver()
+            val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            val second = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            driver.replaceState(
+                driver.state.updateEntity(second) {
+                    it.get<CardComponent>()?.let { card ->
+                        it.with(card.copy(typeLine = TypeLine.artifact(), baseStats = null))
+                    } ?: it
+                }
+            )
+            validatePair(driver, requirementInfo(sameCardType = true), first, second)
+        }
+    }
+
+    test("pending candidate enumeration fails closed without authoritative X context") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(CardPredicate.ManaValueEqualsX),
+                )
+            ),
+        )
+        val finder = TargetFinder()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1, xValue = 1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1, xValue = 2),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
     test("608-15: a card that leaves and returns is an illegal target") {
         val driver = driver()
         val card = driver.putCardInHand(driver.player2, "Forest")
@@ -1577,6 +1700,50 @@ class PartialIllegalTargets608Test : FunSpec({
         result.diagnostics shouldBe emptyList()
         result.events.filterIsInstance<AbilityFizzledEvent>().size shouldBe 1
         result.newState.stack.size shouldBe 0
+    }
+
+    test("trigger modal skips an unsupported optional empty slot before metadata diagnostics") {
+        val driver = dynamicDriver()
+        val requirement = TargetObject(
+            optional = true,
+            filter = TargetFilter.CardInGraveyard,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Optionally choose a graveyard card within X mana value",
+                )
+            ),
+            chooseCount = 1,
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .presentTriggerModalTargetDecision(
+                state = driver.state,
+                ability = TriggeredAbilityOnStackComponent(
+                    sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-modal-optional-empty"),
+                    sourceName = "Synthetic trigger modal optional empty",
+                    controllerId = driver.player1,
+                    effect = modal,
+                    description = "Synthetic trigger modal optional empty",
+                ),
+                outerTargets = emptyList(),
+                outerTargetRequirements = emptyList(),
+                modes = modal.modes,
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+                causedByAttack = false,
+                recordChosenModesOnSource = false,
+                recordChosenModesThisTurn = false,
+            )
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        result.diagnostics shouldBe emptyList()
     }
 
     test("resolution-time modal metadata preserves the continuation X witnesses") {

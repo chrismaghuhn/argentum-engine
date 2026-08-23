@@ -183,7 +183,8 @@ data class TargetRequirementInfo(
             resolvedTotalManaValueAtMost: ResolvedTotalManaValueAtMost? = null,
         ): TargetRequirementInfoResult {
             val semantics = when (val result = TargetRequirementSemantics.inspect(
-                requirement = semanticSource,
+                requirement = requirement,
+                semanticSource = semanticSource,
                 resolvedTotalManaValueAtMost = resolvedTotalManaValueAtMost,
             )) {
                 is TargetRequirementSemanticsResult.Supported -> result.semantics
