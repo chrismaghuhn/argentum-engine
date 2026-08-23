@@ -280,7 +280,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
             }
 
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-            val requirementInfos = targetRequirements.mapIndexed { index, requirement ->
+            targetRequirements.forEachIndexed { index, requirement ->
                 val legal = targetFinder.findLegalTargets(
                     state = state,
                     requirement = requirement,
@@ -288,18 +288,23 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     sourceId = cardId,
                 )
                 legalTargetsMap[index] = legal
+            }
+            // Preserve the existing synthesized-cast no-op before converting metadata: an
+            // unresolved semantic fact cannot matter when a required slot has no candidate at all.
+            val mandatoryRequirementHasNoTargets = targetRequirements.withIndex().any { (index, requirement) ->
+                requirement.effectiveMinCount > 0 && legalTargetsMap[index].isNullOrEmpty()
+            }
+            if (mandatoryRequirementHasNoTargets) {
+                return TargetPrep.NoLegalTargets
+            }
+
+            val requirementInfos = targetRequirements.mapIndexed { index, requirement ->
                 TargetRequirementInfo.fromRequirement(
                     index = index,
                     requirement = requirement,
                     minTargets = requirement.effectiveMinCount,
                     maxTargets = requirement.count,
                 ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
-            }
-            val mandatoryRequirementHasNoTargets = requirementInfos.any { info ->
-                info.minTargets > 0 && legalTargetsMap[info.index].isNullOrEmpty()
-            }
-            if (mandatoryRequirementHasNoTargets) {
-                return TargetPrep.NoLegalTargets
             }
 
             // Name the face being cast — a transformed cast prompts for "Deluge of the Dead",
