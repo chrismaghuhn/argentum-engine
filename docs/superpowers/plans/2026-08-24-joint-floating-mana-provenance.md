@@ -29,11 +29,11 @@ Historical PaymentPlanV1, PaymentDomainV3, and existing CompactReplay fixtures r
 - Modify: rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/mana/ManaProvenanceStateTest.kt
 - Modify: rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/mana/FloatingManaProvenanceClassificationTest.kt
 - Modify: rules-engine/src/test/kotlin/com/wingedsheep/engine/hygiene/ManaProvenanceSerializationRoundTripTest.kt
-- Modify: rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/mana/ManaPoolConversionTest.kt
+- Create: rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/mana/ManaPoolConversionTest.kt
 
 - [ ] **Step 1: Add exact joint-state RED cases.**
 
-Use two keys with the same source/color pair and one different source/color key. The expected state is a complete map, not an inferred reconstruction:
+Use two keys with the same source/color pair and one different source/color key. The expected state is a complete map, not an inferred reconstruction. The helper used by the classifier tests must construct all authoritative fields explicitly:
 
 ~~~kotlin
 val forest = FloatingManaBucketKeyV1(e1, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
@@ -53,6 +53,26 @@ pool.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1, Subtype.CAVE to 1)
 pool.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.COMPLETE
 ~~~
 
+The classifier fixture uses the same explicit construction rather than an aggregate-only helper:
+
+~~~kotlin
+val partialSubtype = ManaPoolComponent(
+    black = 1,
+    green = 1,
+    manaBySubtype = mapOf(Subtype.FOREST to 1),
+    manaBySource = mapOf(e1 to 1, e2 to 1),
+    manaBySourceAndColor = mapOf(
+        e1 to mapOf(PaymentManaColor.GREEN to 1),
+        e2 to mapOf(PaymentManaColor.BLACK to 1),
+    ),
+    manaByFloatingBucket = mapOf(
+        forest to 1,
+        empty to 1,
+    ),
+    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+)
+~~~
+
 Add a RED case proving a legacy/untracked add with mana remaining cannot be repaired by a tracked add:
 
 ~~~kotlin
@@ -69,9 +89,13 @@ Add RED coverage that emptyAtBoundary(retain = setOf(Color.GREEN)) clears all jo
 Keep the existing partial aggregate subtype case and add both detailed shapes requested by review:
 
 ~~~kotlin
-val partialSubtype = poolWithCompleteJointBuckets(
-    buckets = mapOf(forest to 1, empty to 1),
+val partialSubtype = ManaPoolComponent(
+    green = 2,
     manaBySubtype = mapOf(Subtype.FOREST to 1),
+    manaBySource = mapOf(e1 to 2),
+    manaBySourceAndColor = mapOf(e1 to mapOf(PaymentManaColor.GREEN to 2)),
+    manaByFloatingBucket = mapOf(forest to 1, empty to 1),
+    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
 )
 FloatingManaProvenanceClassification.classify(partialSubtype)
     .shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
@@ -559,4 +583,3 @@ Check the PR’s reported head SHA against the pushed git rev-parse HEAD, wait f
 - No subtype matrix, card-specific logic, decklist change, Seed-0 run, corpus run, or ML work is included.
 
 No placeholder steps remain; every implementation decision has a named file boundary, test gate, and expected result.
-
