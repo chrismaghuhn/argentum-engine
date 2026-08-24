@@ -304,15 +304,26 @@ class GameGymEnv(
             is CastSpell -> submitted.paymentStrategy
             else -> throw IllegalArgumentException("Structured action changed its action type")
         }
-        val explicit = strategy as? PaymentStrategy.Explicit
-            ?: throw IllegalArgumentException(
-                "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1; automatic payment is not allowed"
+        when (strategy) {
+            is PaymentStrategy.Explicit -> {
+                require(strategy.paymentPlan != null) {
+                    "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1; source IDs alone are not sufficient"
+                }
+                require(strategy.manaAbilitiesToActivate.isEmpty()) {
+                    "PaymentPlanV1 must not include legacy runtime mana source handles"
+                }
+            }
+            is PaymentStrategy.ExplicitV2 -> {
+                require(strategy.paymentPlan != null) {
+                    "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV2; source IDs alone are not sufficient"
+                }
+                require(strategy.manaAbilitiesToActivate.isEmpty()) {
+                    "PaymentPlanV2 must not include legacy runtime mana source handles"
+                }
+            }
+            else -> throw IllegalArgumentException(
+                "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1 or PaymentPlanV2; automatic payment is not allowed"
             )
-        require(explicit.paymentPlan != null) {
-            "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1; source IDs alone are not sufficient"
-        }
-        require(explicit.manaAbilitiesToActivate.isEmpty()) {
-            "PaymentPlanV1 must not include legacy runtime mana source handles"
         }
     }
 }

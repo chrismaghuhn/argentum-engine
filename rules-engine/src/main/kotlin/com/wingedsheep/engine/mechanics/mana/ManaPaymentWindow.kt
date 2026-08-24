@@ -149,23 +149,26 @@ object ManaPaymentWindow {
             current = tapResult.state
             events.addAll(tapResult.events)
             for ((sourceId, p) in solution.manaProduced) {
-                val subtypes = state.getEntity(sourceId)
-                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                    ?.typeLine?.subtypes.orEmpty()
-                produced = if (p.color != null) {
+                produced = if (p.sourceSubtypes != null && p.color != null) {
                     produced.addTracked(
                         color = PaymentManaColor.fromEngine(p.color),
                         sourceId = sourceId,
-                        subtypes = subtypes,
+                        subtypes = p.sourceSubtypes,
                         amount = p.amount,
+                        knownToPlayers = setOf(playerId),
                     )
-                } else {
+                } else if (p.sourceSubtypes != null) {
                     produced.addTracked(
                         color = PaymentManaColor.COLORLESS,
                         sourceId = sourceId,
-                        subtypes = subtypes,
+                        subtypes = p.sourceSubtypes,
                         amount = p.colorless,
+                        knownToPlayers = setOf(playerId),
                     )
+                } else if (p.color != null) {
+                    produced.add(p.color, p.amount)
+                } else {
+                    produced.addColorless(p.colorless)
                 }
             }
             // Bonus mana from mana auras / "whenever you tap for mana" riders isn't in
@@ -173,14 +176,12 @@ object ManaPaymentWindow {
             for (source in solution.sources) {
                 val bonusColor = source.bonusManaColor
                 if (source.bonusManaPerTap > 0 && bonusColor != null) {
-                    val subtypes = state.getEntity(source.entityId)
-                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                        ?.typeLine?.subtypes.orEmpty()
                     produced = produced.addTracked(
                         color = PaymentManaColor.fromEngine(bonusColor),
                         sourceId = source.entityId,
-                        subtypes = subtypes,
+                        subtypes = source.sourceSubtypes,
                         amount = source.bonusManaPerTap,
+                        knownToPlayers = setOf(playerId),
                     )
                 }
             }
@@ -194,9 +195,9 @@ object ManaPaymentWindow {
             ) ?: return FloatResult(state, emptyList(), paid = false)
             for (resolved in resolvedSources) {
                 val sourceId = resolved.option.entityId
-                val subtypes = current.getEntity(sourceId)
-                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                    ?.typeLine?.subtypes.orEmpty()
+                val subtypes = current.getEntity(sourceId)?.let {
+                    current.projectedState.productionSourceSubtypes(sourceId)
+                }
                 val tapped = tapOrSacrifice(current, resolved.option.entityId, resolved.option, playerId)
                 current = tapped.first
                 events.addAll(tapped.second)
@@ -212,16 +213,22 @@ object ManaPaymentWindow {
                 current = sideEffects.state
                 events.addAll(sideEffects.events)
                 produced = when {
-                    resolved.producedColor != null -> produced.addTracked(
+                    resolved.producedColor != null && subtypes != null -> produced.addTracked(
                         color = PaymentManaColor.fromEngine(resolved.producedColor),
                         sourceId = sourceId,
                         subtypes = subtypes,
+                        knownToPlayers = setOf(playerId),
                     )
-                    resolved.option.producesColorless -> produced.addTracked(
+                    resolved.producedColor != null -> produced.add(
+                        resolved.producedColor,
+                    )
+                    resolved.option.producesColorless && subtypes != null -> produced.addTracked(
                         color = PaymentManaColor.COLORLESS,
                         sourceId = sourceId,
                         subtypes = subtypes,
+                        knownToPlayers = setOf(playerId),
                     )
+                    resolved.option.producesColorless -> produced.addColorless()
                     else -> produced
                 }
             }
@@ -284,16 +291,17 @@ object ManaPaymentWindow {
             var updated = pool
             if (produced.manaProvenanceCompleteness ==
                 com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness.COMPLETE &&
-                produced.manaBySourceAndColor.isNotEmpty()
+                produced.manaByFloatingBucket.isNotEmpty()
             ) {
-                for ((sourceId, colors) in produced.manaBySourceAndColor) {
-                    for ((color, amount) in colors) {
-                        updated = updated.addTracked(color, sourceId, emptySet(), amount)
-                    }
+                for ((key, amount) in produced.manaByFloatingBucket) {
+                    updated = updated.addTracked(
+                        color = key.poolColor,
+                        sourceId = key.sourceId,
+                        subtypes = key.sourceSubtypes,
+                        amount = amount,
+                        knownToPlayers = produced.manaProvenanceKnownTo,
+                    )
                 }
-                updated = updated.copy(
-                    manaBySubtype = mergeCounts(updated.manaBySubtype, produced.manaBySubtype),
-                )
             } else {
                 updated = updated
                     .add(Color.WHITE, produced.white)
@@ -307,14 +315,6 @@ object ManaPaymentWindow {
                 updated
             )
         }
-
-    private fun mergeCounts(
-        left: Map<com.wingedsheep.sdk.core.Subtype, Int>,
-        right: Map<com.wingedsheep.sdk.core.Subtype, Int>,
-    ): Map<com.wingedsheep.sdk.core.Subtype, Int> = buildMap {
-        putAll(left)
-        right.forEach { (subtype, amount) -> put(subtype, (get(subtype) ?: 0) + amount) }
-    }
 
     /**
      * Sets the window aside so a mana ability can resolve against a decision-free state, and

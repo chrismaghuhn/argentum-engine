@@ -6,6 +6,7 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.ReplacementEffectUtils
 import com.wingedsheep.engine.handlers.effects.permanent.counters.ProliferateExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.counters.RemoveAnyNumberOfCountersFlow
+import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypesAtSeam
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
@@ -974,10 +975,15 @@ class MiscContinuationResumer(
         val secondAmount = continuation.totalAmount - firstAmount
 
         val newState = com.wingedsheep.engine.handlers.effects.mana.AddDynamicManaExecutor.addMana(
-            state, continuation.playerId,
-            mapOf(continuation.firstColor to firstAmount, continuation.secondColor to secondAmount),
-            continuation.restriction,
-            continuation.sourceId,
+            state = state,
+            playerId = continuation.playerId,
+            amounts = mapOf(continuation.firstColor to firstAmount, continuation.secondColor to secondAmount),
+            restriction = continuation.restriction,
+            sourceId = continuation.sourceId,
+            sourceSubtypes = state.productionSourceSubtypesAtSeam(
+                sourceId = continuation.sourceId,
+                capturedSourceSubtypes = continuation.sourceSubtypes,
+            ),
         )
 
         return checkForMore(newState, emptyList())
@@ -1001,10 +1007,15 @@ class MiscContinuationResumer(
 
         val color = response.color
         val newState = com.wingedsheep.engine.handlers.effects.mana.AddDynamicManaExecutor.addMana(
-            state, continuation.playerId,
-            mapOf(color to 1),
-            continuation.restriction,
-            continuation.sourceId,
+            state = state,
+            playerId = continuation.playerId,
+            amounts = mapOf(color to 1),
+            restriction = continuation.restriction,
+            sourceId = continuation.sourceId,
+            sourceSubtypes = state.productionSourceSubtypesAtSeam(
+                sourceId = continuation.sourceId,
+                capturedSourceSubtypes = continuation.sourceSubtypes,
+            ),
         )
 
         val event = ManaAddedEvent(
@@ -1033,7 +1044,8 @@ class MiscContinuationResumer(
             sourceName = continuation.sourceName,
             remainingPips = remaining,
             allowedColors = continuation.allowedColors,
-            restriction = continuation.restriction
+            restriction = continuation.restriction,
+            sourceSubtypes = continuation.sourceSubtypes,
         )
 
         return ExecutionResult.paused(

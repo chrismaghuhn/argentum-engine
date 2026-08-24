@@ -1,14 +1,16 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.effects.ManaSpellRider
 import com.wingedsheep.engine.state.components.player.RestrictedManaEntry
 import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
-import com.wingedsheep.engine.state.components.player.hasCompleteSourceColorProvenance
+import com.wingedsheep.engine.state.components.player.hasCompleteFloatingManaProvenance
 import kotlinx.serialization.Serializable
 
 /**
@@ -202,8 +204,12 @@ data class ManaPool(
     val manaBySource: Map<com.wingedsheep.sdk.model.EntityId, Int> = emptyMap(),
     /** Exact unrestricted source/color buckets; meaningful only with COMPLETE status. */
     val manaBySourceAndColor: Map<com.wingedsheep.sdk.model.EntityId, Map<PaymentManaColor, Int>> = emptyMap(),
+    /** Exact production-time source/color/subtype-snapshot buckets. */
+    val manaByFloatingBucket: Map<FloatingManaBucketKeyV1, Int> = emptyMap(),
     /** Mirrors the authoritative component marker across transient payment operations. */
     val manaProvenanceCompleteness: ManaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+    /** Players for whom every current joint subtype snapshot is authoritatively known. */
+    val manaProvenanceKnownTo: Set<com.wingedsheep.sdk.model.EntityId> = emptySet(),
 ) {
     /**
      * Get amount of mana for a specific color.
@@ -234,7 +240,9 @@ data class ManaPool(
     /**
      * Check if the pool is empty (including restricted mana).
      */
-    fun isEmpty(): Boolean = total == 0 && restrictedMana.isEmpty()
+    fun isEmpty(): Boolean = total == 0 && restrictedMana.isEmpty() &&
+        manaBySubtype.isEmpty() && manaBySource.isEmpty() &&
+        manaBySourceAndColor.isEmpty() && manaByFloatingBucket.isEmpty()
 
     /**
      * Add mana of a specific color.
@@ -255,6 +263,7 @@ data class ManaPool(
         sourceId: com.wingedsheep.sdk.model.EntityId,
         subtypes: Set<com.wingedsheep.sdk.core.Subtype>,
         amount: Int = 1,
+        knownToPlayers: Set<com.wingedsheep.sdk.model.EntityId>? = null,
     ): ManaPool {
         if (amount <= 0) return this
         val beforeUnrestricted = unrestrictedTotal
@@ -263,7 +272,9 @@ data class ManaPool(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             this
@@ -281,7 +292,7 @@ data class ManaPool(
         }
         val canExtendComplete = beforeUnrestricted == 0 ||
             manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE &&
-                hasCompleteSourceColorProvenance(
+                hasCompleteFloatingManaProvenance(
                     colorCounts = mapOf(
                         PaymentManaColor.WHITE to white,
                         PaymentManaColor.BLUE to blue,
@@ -292,22 +303,37 @@ data class ManaPool(
                     ),
                     manaBySource = manaBySource,
                     manaBySourceAndColor = manaBySourceAndColor,
+                    manaBySubtype = manaBySubtype,
+                    manaByFloatingBucket = manaByFloatingBucket,
                 )
         if (!canExtendComplete) {
             return withColor.copy(
                 manaBySubtype = newBySubtype,
                 manaBySource = newBySource,
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
         val sourceBuckets = withColor.manaBySourceAndColor[sourceId].orEmpty().toMutableMap()
         sourceBuckets[color] = (sourceBuckets[color] ?: 0) + amount
+        val bucketKey = FloatingManaBucketKeyV1(sourceId, color, subtypes)
+        val floatingBuckets = withColor.manaByFloatingBucket.toMutableMap()
+        floatingBuckets[bucketKey] = (floatingBuckets[bucketKey] ?: 0) + amount
         return withColor.copy(
             manaBySubtype = newBySubtype,
             manaBySource = newBySource,
             manaBySourceAndColor = withColor.manaBySourceAndColor + (sourceId to sourceBuckets.toMap()),
+            manaByFloatingBucket = floatingBuckets.toMap(),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            manaProvenanceKnownTo = if (beforeUnrestricted == 0) {
+                knownToPlayers.orEmpty()
+            } else if (knownToPlayers == null) {
+                emptySet()
+            } else {
+                manaProvenanceKnownTo.intersect(knownToPlayers)
+            },
         )
     }
 
@@ -318,7 +344,9 @@ data class ManaPool(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             this
@@ -326,11 +354,13 @@ data class ManaPool(
         val updated = base.addColorTotal(color, amount)
         return updated.copy(
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = if (updated.unrestrictedTotal == 0) {
                 ManaProvenanceCompleteness.UNKNOWN
             } else {
                 ManaProvenanceCompleteness.INCOMPLETE
             },
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -408,8 +438,12 @@ data class ManaPool(
     private fun invalidateDetailedProvenanceIfNeeded(): ManaPool {
         if (unrestrictedTotal == 0) {
             return copy(
+                manaBySubtype = emptyMap(),
+                manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
 
@@ -426,7 +460,9 @@ data class ManaPool(
         }
         return copy(
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = nextCompleteness,
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -806,10 +842,31 @@ data class ManaPool(
      * can stamp the spell/event. Restricted mana never carries provenance, so it never contributes.
      */
     fun consumeProvenance(unrestrictedSpent: Int): Pair<ManaPool, SpentManaProvenance> {
-        if (unrestrictedSpent <= 0 ||
-            (manaBySubtype.isEmpty() && manaBySource.isEmpty() && manaBySourceAndColor.isEmpty())
-        ) {
+        if (unrestrictedSpent <= 0) {
             return this to SpentManaProvenance()
+        }
+        val hasDetailedProvenance = manaBySubtype.isNotEmpty() ||
+            manaBySource.isNotEmpty() ||
+            manaBySourceAndColor.isNotEmpty() ||
+            manaByFloatingBucket.isNotEmpty()
+        val remainingUnrestricted = unrestrictedTotal - unrestrictedSpent
+        if (!hasDetailedProvenance) {
+            val normalized = if (remainingUnrestricted <= 0) {
+                copy(
+                    manaBySubtype = emptyMap(),
+                    manaBySource = emptyMap(),
+                    manaBySourceAndColor = emptyMap(),
+                    manaByFloatingBucket = emptyMap(),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                    manaProvenanceKnownTo = emptySet(),
+                )
+            } else {
+                copy(
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+                    manaProvenanceKnownTo = emptySet(),
+                )
+            }
+            return normalized to SpentManaProvenance()
         }
         val consumedSubtypes = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
         val newSubtype = manaBySubtype.mapNotNull { (subtype, count) ->
@@ -825,23 +882,164 @@ data class ManaPool(
             val remaining = count - consumed
             if (remaining > 0) sourceId to remaining else null
         }.toMap()
-        val updated = if (unrestrictedTotal == 0) {
+        val updated = if (remainingUnrestricted <= 0) {
             copy(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             copy(
                 manaBySubtype = newSubtype,
                 manaBySource = newSource,
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
         return updated to
             SpentManaProvenance(consumedSubtypes, consumedSources)
+    }
+
+    /**
+     * Keep the balances from this post-payment pool while applying the provenance state produced
+     * by consuming [provenancePool]. Payment callers use this seam because the ordinary spend
+     * operations deliberately clear provenance when the pool becomes empty; the pre-spend pool
+     * is therefore the only place from which [SpentManaProvenance] can be materialized.
+     */
+    internal fun withProvenanceFrom(provenancePool: ManaPool): ManaPool = copy(
+        manaBySubtype = provenancePool.manaBySubtype,
+        manaBySource = provenancePool.manaBySource,
+        manaBySourceAndColor = provenancePool.manaBySourceAndColor,
+        manaByFloatingBucket = provenancePool.manaByFloatingBucket,
+        manaProvenanceCompleteness = provenancePool.manaProvenanceCompleteness,
+        manaProvenanceKnownTo = provenancePool.manaProvenanceKnownTo,
+    )
+
+    /** Add a solver-confirmed unrestricted production while retaining its production snapshot. */
+    internal fun addUnrestrictedProduction(
+        sourceId: EntityId,
+        production: ManaProduction,
+        knownToPlayer: EntityId,
+    ): ManaPool = when {
+        production.sourceSubtypes != null && production.color != null -> addTracked(
+            color = PaymentManaColor.fromEngine(production.color),
+            sourceId = sourceId,
+            subtypes = production.sourceSubtypes,
+            amount = production.amount,
+            knownToPlayers = setOf(knownToPlayer),
+        )
+        production.sourceSubtypes != null -> addTracked(
+            color = PaymentManaColor.COLORLESS,
+            sourceId = sourceId,
+            subtypes = production.sourceSubtypes,
+            amount = production.colorless,
+            knownToPlayers = setOf(knownToPlayer),
+        )
+        production.color != null -> add(production.color, production.amount)
+        else -> addColorless(production.colorless)
+    }
+
+    /**
+     * Consume only the exact Rules-owned joint buckets selected by the controller. This is the
+     * V2 allocation authority: no aggregate projection, source profile, or iteration order may
+     * choose a bucket. Unselected buckets remain fungible and fully represented in the result.
+     */
+    internal fun consumeCertifiedJoint(
+        spentByBucket: Map<FloatingManaBucketKeyV1, Int>,
+    ): Pair<ManaPool, SpentManaProvenance>? {
+        if (restrictedMana.isNotEmpty() ||
+            manaProvenanceCompleteness != ManaProvenanceCompleteness.COMPLETE ||
+            manaByFloatingBucket.isEmpty() ||
+            spentByBucket.isEmpty() ||
+            spentByBucket.values.any { it <= 0 } ||
+            !hasCompleteFloatingManaProvenance(
+                colorCounts = mapOf(
+                    PaymentManaColor.WHITE to white,
+                    PaymentManaColor.BLUE to blue,
+                    PaymentManaColor.BLACK to black,
+                    PaymentManaColor.RED to red,
+                    PaymentManaColor.GREEN to green,
+                    PaymentManaColor.COLORLESS to colorless,
+                ),
+                manaBySource = manaBySource,
+                manaBySourceAndColor = manaBySourceAndColor,
+                manaBySubtype = manaBySubtype,
+                manaByFloatingBucket = manaByFloatingBucket,
+            )
+        ) return null
+
+        if (spentByBucket.keys.any { it !in manaByFloatingBucket } ||
+            spentByBucket.any { (key, amount) -> amount > (manaByFloatingBucket[key] ?: 0) }
+        ) return null
+
+        val remainingBuckets = manaByFloatingBucket.mapNotNull { (key, amount) ->
+            val remaining = amount - (spentByBucket[key] ?: 0)
+            if (remaining > 0) key to remaining else null
+        }.toMap()
+
+        val remainingBySource = mutableMapOf<com.wingedsheep.sdk.model.EntityId, Int>()
+        val remainingBySourceAndColor = mutableMapOf<
+            com.wingedsheep.sdk.model.EntityId,
+            MutableMap<PaymentManaColor, Int>,
+        >()
+        val remainingBySubtype = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
+        for ((key, amount) in remainingBuckets) {
+            remainingBySource[key.sourceId] = (remainingBySource[key.sourceId] ?: 0) + amount
+            val sourceColors = remainingBySourceAndColor.getOrPut(key.sourceId) { mutableMapOf() }
+            sourceColors[key.poolColor] = (sourceColors[key.poolColor] ?: 0) + amount
+            for (subtype in key.sourceSubtypes) {
+                remainingBySubtype[subtype] = (remainingBySubtype[subtype] ?: 0) + amount
+            }
+        }
+
+        val spentByColor = mutableMapOf<PaymentManaColor, Int>()
+        val spentBySubtype = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
+        val spentSourceIds = mutableSetOf<com.wingedsheep.sdk.model.EntityId>()
+        for ((key, amount) in spentByBucket) {
+            spentByColor[key.poolColor] = (spentByColor[key.poolColor] ?: 0) + amount
+            spentSourceIds += key.sourceId
+            for (subtype in key.sourceSubtypes) {
+                spentBySubtype[subtype] = (spentBySubtype[subtype] ?: 0) + amount
+            }
+        }
+
+        val remainingColorCounts = mapOf(
+            PaymentManaColor.WHITE to white - (spentByColor[PaymentManaColor.WHITE] ?: 0),
+            PaymentManaColor.BLUE to blue - (spentByColor[PaymentManaColor.BLUE] ?: 0),
+            PaymentManaColor.BLACK to black - (spentByColor[PaymentManaColor.BLACK] ?: 0),
+            PaymentManaColor.RED to red - (spentByColor[PaymentManaColor.RED] ?: 0),
+            PaymentManaColor.GREEN to green - (spentByColor[PaymentManaColor.GREEN] ?: 0),
+            PaymentManaColor.COLORLESS to colorless - (spentByColor[PaymentManaColor.COLORLESS] ?: 0),
+        )
+        if (remainingColorCounts.values.any { it < 0 }) return null
+
+        val updated = copy(
+            white = remainingColorCounts.getValue(PaymentManaColor.WHITE),
+            blue = remainingColorCounts.getValue(PaymentManaColor.BLUE),
+            black = remainingColorCounts.getValue(PaymentManaColor.BLACK),
+            red = remainingColorCounts.getValue(PaymentManaColor.RED),
+            green = remainingColorCounts.getValue(PaymentManaColor.GREEN),
+            colorless = remainingColorCounts.getValue(PaymentManaColor.COLORLESS),
+            manaBySubtype = remainingBySubtype.toMap(),
+            manaBySource = remainingBySource.toMap(),
+            manaBySourceAndColor = remainingBySourceAndColor.mapValues { (_, colors) -> colors.toMap() },
+            manaByFloatingBucket = remainingBuckets,
+            manaProvenanceCompleteness = if (remainingBuckets.isEmpty()) {
+                ManaProvenanceCompleteness.UNKNOWN
+            } else {
+                ManaProvenanceCompleteness.COMPLETE
+            },
+            manaProvenanceKnownTo = if (remainingBuckets.isEmpty()) emptySet() else manaProvenanceKnownTo,
+        )
+        return updated to SpentManaProvenance(
+            bySubtype = spentBySubtype.toMap(),
+            sourceIds = spentSourceIds,
+        )
     }
 
     /**
@@ -856,6 +1054,7 @@ data class ManaPool(
     ): Pair<ManaPool, SpentManaProvenance>? {
         if (white < 0 || blue < 0 || black < 0 || red < 0 || green < 0 || colorless < 0 ||
             restrictedMana.isNotEmpty() ||
+            manaByFloatingBucket.isNotEmpty() ||
             candidate.sourceBuckets.isEmpty()
         ) return null
 
@@ -921,6 +1120,7 @@ data class ManaPool(
             } else {
                 ManaProvenanceCompleteness.COMPLETE
             },
+            manaProvenanceKnownTo = emptySet(),
         ) to SpentManaProvenance(
             bySubtype = if (candidate.sourceSubtypes.isEmpty()) {
                 emptyMap()
@@ -943,6 +1143,7 @@ data class ManaPool(
     ): Pair<ManaPool, SpentManaProvenance>? {
         if (white < 0 || blue < 0 || black < 0 || red < 0 || green < 0 || colorless < 0 ||
             restrictedMana.isNotEmpty() || manaProvenanceCompleteness != ManaProvenanceCompleteness.COMPLETE ||
+            manaByFloatingBucket.isNotEmpty() ||
             candidate.sourceColorBuckets.isEmpty() || candidate.total != unrestrictedTotal
         ) return null
 
@@ -1004,6 +1205,7 @@ data class ManaPool(
             } else {
                 ManaProvenanceCompleteness.COMPLETE
             },
+            manaProvenanceKnownTo = emptySet(),
         ) to SpentManaProvenance(
             bySubtype = candidate.sourceSubtypes
                 .sortedBy { it.value }

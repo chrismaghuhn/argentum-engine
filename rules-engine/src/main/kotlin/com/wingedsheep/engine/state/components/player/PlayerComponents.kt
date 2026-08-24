@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.state.components.player
 
 import com.wingedsheep.engine.state.Component
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.sdk.core.BendType
 import com.wingedsheep.sdk.core.Color
@@ -49,8 +50,12 @@ data class ManaPoolComponent(
     val manaBySource: Map<EntityId, Int> = emptyMap(),
     /** Exact unrestricted source/color buckets; meaningful only with COMPLETE status. */
     val manaBySourceAndColor: Map<EntityId, Map<PaymentManaColor, Int>> = emptyMap(),
+    /** Exact production-time source/color/subtype-snapshot buckets. */
+    val manaByFloatingBucket: Map<FloatingManaBucketKeyV1, Int> = emptyMap(),
     /** Distinguishes a fully known empty/detail-free state from lost legacy provenance. */
     val manaProvenanceCompleteness: ManaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+    /** Players for whom every current joint subtype snapshot is authoritatively known. */
+    val manaProvenanceKnownTo: Set<EntityId> = emptySet(),
 ) : Component {
     /**
      * Add mana of a specific color.
@@ -74,6 +79,7 @@ data class ManaPoolComponent(
         sourceId: EntityId,
         subtypes: Set<com.wingedsheep.sdk.core.Subtype>,
         amount: Int = 1,
+        knownToPlayers: Set<EntityId>? = null,
     ): ManaPoolComponent {
         if (amount <= 0) return this
         val beforeUnrestricted = unrestrictedTotal
@@ -82,7 +88,9 @@ data class ManaPoolComponent(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             this
@@ -100,23 +108,36 @@ data class ManaPoolComponent(
         }
 
         val canExtendComplete = beforeUnrestricted == 0 ||
-            hasCompleteSourceColorProvenance()
+            hasCompleteFloatingManaProvenance()
         if (!canExtendComplete) {
             return withColor.copy(
                 manaBySubtype = newBySubtype,
                 manaBySource = newBySource,
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
 
         val sourceBuckets = withColor.manaBySourceAndColor[sourceId].orEmpty().toMutableMap()
         sourceBuckets[color] = (sourceBuckets[color] ?: 0) + amount
+        val bucketKey = FloatingManaBucketKeyV1(sourceId, color, subtypes)
+        val floatingBuckets = withColor.manaByFloatingBucket.toMutableMap()
+        floatingBuckets[bucketKey] = (floatingBuckets[bucketKey] ?: 0) + amount
         return withColor.copy(
             manaBySubtype = newBySubtype,
             manaBySource = newBySource,
             manaBySourceAndColor = withColor.manaBySourceAndColor + (sourceId to sourceBuckets.toMap()),
+            manaByFloatingBucket = floatingBuckets.toMap(),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            manaProvenanceKnownTo = if (beforeUnrestricted == 0) {
+                knownToPlayers.orEmpty()
+            } else if (knownToPlayers == null) {
+                emptySet()
+            } else {
+                manaProvenanceKnownTo.intersect(knownToPlayers)
+            },
         )
     }
 
@@ -128,7 +149,9 @@ data class ManaPoolComponent(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             this
@@ -136,11 +159,13 @@ data class ManaPoolComponent(
         val updated = base.addColorTotal(color, amount)
         return updated.copy(
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = if (updated.unrestrictedTotal == 0) {
                 ManaProvenanceCompleteness.UNKNOWN
             } else {
                 ManaProvenanceCompleteness.INCOMPLETE
             },
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -214,11 +239,13 @@ data class ManaPoolComponent(
             manaBySubtype = newBySubtype,
             manaBySource = newBySource,
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = if (unrestrictedTotal > 0) {
                 ManaProvenanceCompleteness.INCOMPLETE
             } else {
                 ManaProvenanceCompleteness.UNKNOWN
             },
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -227,7 +254,7 @@ data class ManaPoolComponent(
      * still triggers the end-of-step pool reset.
      */
     val isEmpty: Boolean get() = total == 0 && manaBySubtype.isEmpty() && manaBySource.isEmpty() &&
-        manaBySourceAndColor.isEmpty()
+        manaBySourceAndColor.isEmpty() && manaByFloatingBucket.isEmpty()
 
     private fun invalidateDetailedProvenanceIfNeeded(): ManaPoolComponent {
         if (unrestrictedTotal == 0) {
@@ -235,7 +262,9 @@ data class ManaPoolComponent(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
 
@@ -252,7 +281,9 @@ data class ManaPoolComponent(
         }
         return copy(
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = nextCompleteness,
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -354,8 +385,7 @@ data class ManaPoolComponent(
                     // Provenance tags do not survive a mana-loss boundary. The marker reflects
                     // whether unrestricted mana actually remains after the retained-color filter.
                     manaProvenanceCompleteness = if (
-                        retainedWhite != 0 || retainedBlue != 0 || retainedBlack != 0 ||
-                        retainedRed != 0 || retainedGreen != 0
+                        retainedWhite + retainedBlue + retainedBlack + retainedRed + retainedGreen > 0
                     ) {
                         ManaProvenanceCompleteness.INCOMPLETE
                     } else {

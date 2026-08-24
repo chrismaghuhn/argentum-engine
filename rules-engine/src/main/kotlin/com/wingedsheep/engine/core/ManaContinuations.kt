@@ -4,6 +4,7 @@ import com.wingedsheep.engine.event.PendingTrigger
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.AbilityId
@@ -497,7 +498,9 @@ data class AddDynamicManaContinuation(
     val totalAmount: Int,
     val firstColor: Color,
     val secondColor: Color,
-    val restriction: ManaRestriction? = null
+    val restriction: ManaRestriction? = null,
+    /** LKI subtype snapshot captured before a self-sacrifice; null defers to the resume seam. */
+    val sourceSubtypes: Set<Subtype>? = null,
 ) : ContinuationFrame
 
 /**
@@ -519,7 +522,9 @@ data class AddManaPipsContinuation(
     val sourceName: String?,
     val remainingPips: Int,
     val allowedColors: Set<Color>,
-    val restriction: ManaRestriction? = null
+    val restriction: ManaRestriction? = null,
+    /** LKI subtype snapshot captured before a self-sacrifice; null defers to the resume seam. */
+    val sourceSubtypes: Set<Subtype>? = null,
 ) : ContinuationFrame
 
 /**

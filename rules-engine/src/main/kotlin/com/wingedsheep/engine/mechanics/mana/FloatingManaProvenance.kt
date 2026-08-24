@@ -3,6 +3,8 @@ package com.wingedsheep.engine.mechanics.mana
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
+import com.wingedsheep.engine.state.components.player.hasCompleteFloatingManaProvenance
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 
@@ -24,6 +26,19 @@ data class FloatingManaSourceColorKey(
     val sourceId: EntityId,
     val poolColor: PaymentManaColor,
 )
+
+/** One exact Rules-owned production bucket and its fungible amount. */
+data class CertifiedFloatingManaBucket(
+    val key: FloatingManaBucketKeyV1,
+    val amount: Int,
+)
+
+/** Complete source/color/subtype-snapshot proof used by PaymentDomainV4 and PaymentPlanV2. */
+data class CertifiedJointFloatingMana(
+    val buckets: List<CertifiedFloatingManaBucket>,
+) {
+    val total: Int get() = buckets.sumOf { it.amount }
+}
 
 /**
  * A complete homogeneous proof derived from aggregate counters or a validated detailed map.
@@ -60,6 +75,10 @@ sealed interface FloatingManaProvenanceClassification {
         val candidate: CertifiedHeterogeneousFloatingMana,
     ) : FloatingManaProvenanceClassification
 
+    data class CertifiedJoint(
+        val candidate: CertifiedJointFloatingMana,
+    ) : FloatingManaProvenanceClassification
+
     data class Ambiguous(val reason: String) : FloatingManaProvenanceClassification
 
     companion object {
@@ -84,6 +103,34 @@ sealed interface FloatingManaProvenanceClassification {
             }
 
             val total = colorCounts.values.sum()
+            if (pool.manaByFloatingBucket.isNotEmpty()) {
+                if (pool.manaProvenanceCompleteness != ManaProvenanceCompleteness.COMPLETE) {
+                    return Ambiguous("joint floating provenance is present without COMPLETE status")
+                }
+                if (!hasCompleteFloatingManaProvenance(
+                        colorCounts = colorCounts,
+                        manaBySource = pool.manaBySource,
+                        manaBySourceAndColor = pool.manaBySourceAndColor,
+                        manaBySubtype = pool.manaBySubtype,
+                        manaByFloatingBucket = pool.manaByFloatingBucket,
+                    )
+                ) {
+                    return Ambiguous("joint floating provenance does not match authoritative totals")
+                }
+                return CertifiedJoint(
+                    CertifiedJointFloatingMana(
+                        buckets = pool.manaByFloatingBucket.entries
+                            .sortedWith(
+                                compareBy(
+                                    { it.key.sourceId.value },
+                                    { it.key.poolColor.ordinal },
+                                    { it.key.sourceSubtypes.sortedBy { subtype -> subtype.value }.joinToString(",") },
+                                ),
+                            )
+                            .map { (key, amount) -> CertifiedFloatingManaBucket(key, amount) },
+                    ),
+                )
+            }
             val detailPresent = pool.manaBySourceAndColor.isNotEmpty()
             if (total == 0) {
                 if (detailPresent || pool.manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE) {

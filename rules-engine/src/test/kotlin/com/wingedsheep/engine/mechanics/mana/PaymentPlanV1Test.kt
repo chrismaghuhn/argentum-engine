@@ -3,6 +3,7 @@ package com.wingedsheep.engine.mechanics.mana
 import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.FixedManaOutput
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentManaColor
@@ -1623,6 +1624,82 @@ class PaymentPlanV1Test : FunSpec({
         ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
 
         rejected.reason shouldBe "PaymentPlanV1 spends more floating mana than is available"
+    }
+
+    test("PaymentPlanV1 rejects a source/color pair that names multiple joint subtype buckets") {
+        val (driver, player) = game()
+        val e1 = EntityId("e1")
+        val forestKey = FloatingManaBucketKeyV1(
+            sourceId = e1,
+            poolColor = PaymentManaColor.GREEN,
+            sourceSubtypes = setOf(Subtype.FOREST),
+        )
+        val emptyKey = forestKey.copy(sourceSubtypes = emptySet())
+        val pool = ManaPoolComponent()
+            .addTracked(PaymentManaColor.GREEN, e1, forestKey.sourceSubtypes)
+            .addTracked(PaymentManaColor.GREEN, e1, emptyKey.sourceSubtypes)
+        driver.addComponent(player, pool)
+
+        val submitted = plan(
+            poolSpend = PoolSpend(green = 1),
+            allocations = listOf(
+                CostUnitAllocation(
+                    symbolIndex = 0,
+                    spends = listOf(
+                        ManaSpendReference(
+                            floatingSourceId = e1,
+                            poolColor = PaymentManaColor.GREEN,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}"),
+            plan = submitted,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        result.reason shouldBe "PaymentPlanV1 floating source reference does not uniquely identify a joint bucket"
+        driver.state.getEntity(player)?.get<ManaPoolComponent>() shouldBe pool
+    }
+
+    test("PaymentPlanV1 resolves a uniquely representable joint bucket without reconstructing subtypes") {
+        val (driver, player) = game()
+        val e1 = EntityId("e1")
+        val forestKey = FloatingManaBucketKeyV1(
+            sourceId = e1,
+            poolColor = PaymentManaColor.GREEN,
+            sourceSubtypes = setOf(Subtype.FOREST),
+        )
+        val pool = ManaPoolComponent()
+            .addTracked(PaymentManaColor.GREEN, e1, forestKey.sourceSubtypes, amount = 2)
+        driver.addComponent(player, pool)
+
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}"),
+            plan = plan(
+                poolSpend = PoolSpend(green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        symbolIndex = 0,
+                        spends = listOf(
+                            ManaSpendReference(
+                                floatingSourceId = e1,
+                                poolColor = PaymentManaColor.GREEN,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        result.materialization.spentManaProvenance.bySubtype shouldBe
+            mapOf(Subtype.FOREST to 1)
+        result.poolAfterSpend.manaByFloatingBucket shouldBe mapOf(forestKey to 1)
     }
 
     test("mana abilities with activation tracking are fail-closed for PaymentPlanV1") {

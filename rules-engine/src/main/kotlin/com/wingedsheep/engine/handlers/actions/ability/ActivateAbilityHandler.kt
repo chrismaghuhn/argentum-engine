@@ -387,8 +387,13 @@ class ActivateAbilityHandler(
         }
 
         // Validate explicit payment sources
-        if (action.paymentStrategy is PaymentStrategy.Explicit) {
-            for (sourceId in action.paymentStrategy.manaAbilitiesToActivate) {
+        val explicitManaHandles = when (val strategy = action.paymentStrategy) {
+            is PaymentStrategy.Explicit -> strategy.manaAbilitiesToActivate
+            is PaymentStrategy.ExplicitV2 -> strategy.manaAbilitiesToActivate
+            else -> emptyList()
+        }
+        if (explicitManaHandles.isNotEmpty()) {
+            for (sourceId in explicitManaHandles) {
                 val sourceContainer = state.getEntity(sourceId)
                     ?: return "Mana source not found: $sourceId"
                 if (sourceContainer.has<TappedComponent>()) {
@@ -424,21 +429,34 @@ class ActivateAbilityHandler(
         val abilityPaymentContext = buildAbilityPaymentContext(cardComponent, state.projectedState, action.sourceId, ability)
 
         val submittedPaymentPlan = (action.paymentStrategy as? PaymentStrategy.Explicit)?.paymentPlan
-        if (submittedPaymentPlan != null) {
+        val submittedPaymentPlanV2 = (action.paymentStrategy as? PaymentStrategy.ExplicitV2)?.paymentPlan
+        if (submittedPaymentPlan != null || submittedPaymentPlanV2 != null) {
+            val planVersion = if (submittedPaymentPlanV2 != null) "PaymentPlanV2" else "PaymentPlanV1"
             if (action.xValue != null || action.alternativePayment?.hasResourcePayment == true) {
-                return "PaymentPlanV1 does not support X or alternative resource payment choices"
+                return "$planVersion does not support X or alternative resource payment choices"
             }
             val paymentCost = extractManaCost(costAfterConvokeReduction)
-                ?: return "PaymentPlanV1 requires an ordinary mana cost"
+                ?: return "$planVersion requires an ordinary mana cost"
             when (
-                val paymentValidation = paymentPlanValidator.validate(
-                    state = state,
-                    playerId = action.playerId,
-                    cost = paymentCost,
-                    plan = submittedPaymentPlan,
-                    spellContext = abilityPaymentContext,
-                    excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
-                )
+                val paymentValidation = if (submittedPaymentPlanV2 != null) {
+                    paymentPlanValidator.validateV2(
+                        state = state,
+                        playerId = action.playerId,
+                        cost = paymentCost,
+                        plan = submittedPaymentPlanV2,
+                        spellContext = abilityPaymentContext,
+                        excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
+                    )
+                } else {
+                    paymentPlanValidator.validate(
+                        state = state,
+                        playerId = action.playerId,
+                        cost = paymentCost,
+                        plan = submittedPaymentPlan!!,
+                        spellContext = abilityPaymentContext,
+                        excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
+                    )
+                }
             ) {
                 is PaymentPlanValidation.Accepted -> Unit
                 is PaymentPlanValidation.Rejected -> return paymentValidation.reason
@@ -449,7 +467,10 @@ class ActivateAbilityHandler(
         // checked against the *Equipment's* tap state rather than the host creature's.
         val validationGranterId = staticGrants.firstOrNull { it.first.id == action.abilityId }?.second
 
-        if (action.paymentStrategy !is PaymentStrategy.Explicit && !canPayAbilityCostWithSources(state, costAfterConvokeReduction, action.sourceId, action.playerId, abilityPaymentContext, validationGranterId)) {
+        if (action.paymentStrategy !is PaymentStrategy.Explicit &&
+            action.paymentStrategy !is PaymentStrategy.ExplicitV2 &&
+            !canPayAbilityCostWithSources(state, costAfterConvokeReduction, action.sourceId, action.playerId, abilityPaymentContext, validationGranterId)
+        ) {
             return when (effectiveCost) {
                 is AbilityCost.Tap -> "This permanent is already tapped"
                 is AbilityCost.TapAttachedCreature -> "Enchanted creature is tapped"
@@ -1308,11 +1329,11 @@ class ActivateAbilityHandler(
                         // are therefore consumed as part of this payment. Only the explicitly
                         // selected floating pool remainder is carried into the later cost path;
                         // adding fresh source mana here would leave paid units floating.
-                        manaPool = accepted.poolAfterSpend
+                        manaPool = accepted.materialization.poolAfterFloatingSpend
                         // Keep the exact validator materialization through the rest of the
                         // activation. The later cost path strips mana for an explicit plan, so it
                         // must not re-allocate the same pool spend with consumeProvenance().
-                        exactExplicitPoolAfterSpend = accepted.poolAfterSpend
+                        exactExplicitPoolAfterSpend = accepted.materialization.poolAfterFloatingSpend
                         if (accepted.solution.sources.isNotEmpty()) {
                             val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
                                 state = currentState,
@@ -1324,6 +1345,8 @@ class ActivateAbilityHandler(
                             }
                             currentState = sideEffectResult.state
                             events.addAll(sideEffectResult.events)
+                            manaPool = accepted.materialization.poolAfterSuccessfulSourceProduction(action.playerId)
+                            exactExplicitPoolAfterSpend = manaPool
                         }
                     } else {
                         // Spend floating mana first, then tap only the minimum subset of chosen
@@ -1337,8 +1360,15 @@ class ActivateAbilityHandler(
                         // pool + sources, so ignoring the pool here made a legal activation fail
                         // ("Selected mana sources cannot pay this ability's cost") or over-tap lands.
                         // The reduced [manaPool] flows into payAbilityCost and is persisted afterward.
-                        val partialResult = manaPool.payPartial(manaCost, executeAbilityContext)
-                        manaPool = partialResult.newPool
+                        val poolBeforeFloatingSpend = manaPool
+                        val partialResult = poolBeforeFloatingSpend.payPartial(manaCost, executeAbilityContext)
+                        val floatingSpent = maxOf(
+                            0,
+                            poolBeforeFloatingSpend.unrestrictedTotal - partialResult.newPool.unrestrictedTotal,
+                        )
+                        val (partialProvenancePool, _) =
+                            poolBeforeFloatingSpend.consumeProvenance(floatingSpent)
+                        manaPool = partialResult.newPool.withProvenanceFrom(partialProvenancePool)
                         val remainingCost = partialResult.remainingCost
                         if (!remainingCost.isEmpty() || manaXValue > 0) {
                             // Solve the remainder against the chosen sources only (non-chosen excluded),
@@ -1370,6 +1400,39 @@ class ActivateAbilityHandler(
                             currentState = sideEffectResult.state
                             events.addAll(sideEffectResult.events)
                         }
+                    }
+                }
+                is PaymentStrategy.ExplicitV2 -> {
+                    val paymentPlan = action.paymentStrategy.paymentPlan
+                        ?: return ExecutionResult.error(state, "PaymentStrategy.ExplicitV2 requires PaymentPlanV2")
+                    val paymentValidation = paymentPlanValidator.validateV2(
+                        state = currentState,
+                        playerId = action.playerId,
+                        cost = manaCost,
+                        plan = paymentPlan,
+                        spellContext = executeAbilityContext,
+                        excludeSources = selfExcludedSources,
+                    )
+                    val accepted = paymentValidation as? PaymentPlanValidation.Accepted
+                        ?: return ExecutionResult.error(
+                            state,
+                            (paymentValidation as PaymentPlanValidation.Rejected).reason,
+                        )
+                    manaPool = accepted.materialization.poolAfterFloatingSpend
+                    exactExplicitPoolAfterSpend = accepted.materialization.poolAfterFloatingSpend
+                    if (accepted.solution.sources.isNotEmpty()) {
+                        val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
+                            state = currentState,
+                            solution = accepted.solution,
+                            controllerId = action.playerId,
+                        )
+                        if (!sideEffectResult.success) {
+                            return ExecutionResult.error(state, "PaymentPlanV2 source activation failed")
+                        }
+                        currentState = sideEffectResult.state
+                        events.addAll(sideEffectResult.events)
+                        manaPool = accepted.materialization.poolAfterSuccessfulSourceProduction(action.playerId)
+                        exactExplicitPoolAfterSpend = manaPool
                     }
                 }
                 else -> {
@@ -1502,7 +1565,9 @@ class ActivateAbilityHandler(
             resolvedIds = action.preResolvedZoneChangeIds.toSet(),
             bounceChoices = action.costPayment?.bouncedPermanents ?: emptyList(),
         )
-        val costForPayment = if (action.paymentStrategy is PaymentStrategy.Explicit) {
+        val costForPayment = if (action.paymentStrategy is PaymentStrategy.Explicit ||
+            action.paymentStrategy is PaymentStrategy.ExplicitV2
+        ) {
             stripManaCost(effectiveCostAfterPreResolvedMoves)
         } else if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && action.alternativePayment.hasResourcePayment && manaCost != null) {
             // Convoke/waterbend reduced the mana cost — update the cost structure so payAbilityCost
@@ -1519,6 +1584,7 @@ class ActivateAbilityHandler(
         }
 
         // Pay the cost (using effective cost with text replacements applied)
+        val poolBeforeCostPayment = manaPool
         val costResult = costHandler.payAbilityCost(
             currentState,
             costForPayment,
@@ -1550,7 +1616,10 @@ class ActivateAbilityHandler(
         // Deduct X mana from the pool. ManaPool.pay() skips X symbols ("handled by caller"),
         // so we must explicitly spend the X portion here (same pattern as CastSpellHandler.autoPay).
         // Skip for Explicit payment — sources were already tapped to cover the full cost including X.
-        if (action.paymentStrategy !is PaymentStrategy.Explicit && manaCost != null && manaCost.hasX && xValue > 0) {
+        if (action.paymentStrategy !is PaymentStrategy.Explicit &&
+            action.paymentStrategy !is PaymentStrategy.ExplicitV2 &&
+            manaCost != null && manaCost.hasX && xValue > 0
+        ) {
             val xSymbolCount = manaCost.xCount.coerceAtLeast(1)
             var xRemainingToPay = xValue * xSymbolCount
             val xManaRestriction = ability.xManaRestriction
@@ -1581,10 +1650,10 @@ class ActivateAbilityHandler(
         // Consume mana-source provenance for the floating mana this activation spent (the maps ride
         // `manaPool` untouched by pay()/spend()), so the remaining tags reflect only the mana still
         // in the pool — a mana ability that only adds mana consumes nothing and keeps prior tags.
-        val originalUnrestricted = poolComponent.white + poolComponent.blue + poolComponent.black +
-            poolComponent.red + poolComponent.green + poolComponent.colorless
-        val finalUnrestricted = manaPool.white + manaPool.blue + manaPool.black +
-            manaPool.red + manaPool.green + manaPool.colorless
+        val unrestrictedSpentDuringCost = maxOf(
+            0,
+            poolBeforeCostPayment.unrestrictedTotal - manaPool.unrestrictedTotal,
+        )
         val poolAfterProvenance = exactExplicitPoolAfterSpend?.let { exactPool ->
             // PaymentPlanValidator already consumed the certified unit exactly. Preserve those
             // maps while retaining any non-mana-cost changes represented by the current counts.
@@ -1592,9 +1661,14 @@ class ActivateAbilityHandler(
                 manaBySubtype = exactPool.manaBySubtype,
                 manaBySource = exactPool.manaBySource,
                 manaBySourceAndColor = exactPool.manaBySourceAndColor,
+                manaByFloatingBucket = exactPool.manaByFloatingBucket,
                 manaProvenanceCompleteness = exactPool.manaProvenanceCompleteness,
+                manaProvenanceKnownTo = exactPool.manaProvenanceKnownTo,
             )
-        } ?: manaPool.consumeProvenance(maxOf(0, originalUnrestricted - finalUnrestricted)).first
+        } ?: run {
+            val (provenancePool, _) = poolBeforeCostPayment.consumeProvenance(unrestrictedSpentDuringCost)
+            manaPool.withProvenanceFrom(provenancePool)
+        }
         currentState = currentState.updateEntity(action.playerId) { c ->
             c.with(fromManaPool(poolAfterProvenance))
         }
@@ -1712,6 +1786,10 @@ class ActivateAbilityHandler(
                 sourceId = action.sourceId,
                 controllerId = action.playerId,
                 granterId = staticGranterId,
+                // A self-sacrificing mana source may no longer be in the projected battlefield
+                // state after its cost resolves. Carry the already-captured production-time LKI
+                // into the mana executor; never reconstruct it from the post-cost source state.
+                lastKnownSourceSnapshot = lastKnownSourceSnapshot,
                 targets = action.targets,
                 // Thread the chosen X so X-based mana abilities produce the right amount
                 // ("{X}, {T}, Sacrifice this: Add X mana..." — Wizard's Rockets). Without
@@ -2074,6 +2152,7 @@ class ActivateAbilityHandler(
                 val repeatTapSnapshots = captureEntitySnapshots(repeatTapSlice, currentState.projectedState)
 
                 // Pay the cost
+                val repeatPoolBeforeCostPayment = repeatPool
                 val repeatCostResult = costHandler.payAbilityCost(
                     currentState, effectiveCost, action.sourceId, action.playerId, repeatPool, CostPaymentChoices(tapChoices = repeatTapSlice), executeAbilityContext
                 )
@@ -2085,13 +2164,13 @@ class ActivateAbilityHandler(
 
                 // Update mana pool on state (consuming provenance for the floating mana this repeat
                 // spent, same rule as the primary writeback above).
-                val repeatOriginalUnrestricted = repeatPoolComponent.white + repeatPoolComponent.blue +
-                    repeatPoolComponent.black + repeatPoolComponent.red + repeatPoolComponent.green +
-                    repeatPoolComponent.colorless
-                val repeatFinalUnrestricted = repeatPool.white + repeatPool.blue + repeatPool.black +
-                    repeatPool.red + repeatPool.green + repeatPool.colorless
-                val (repeatPoolAfterProvenance, _) =
-                    repeatPool.consumeProvenance(maxOf(0, repeatOriginalUnrestricted - repeatFinalUnrestricted))
+                val repeatUnrestrictedSpent = maxOf(
+                    0,
+                    repeatPoolBeforeCostPayment.unrestrictedTotal - repeatPool.unrestrictedTotal,
+                )
+                val (repeatProvenancePool, _) =
+                    repeatPoolBeforeCostPayment.consumeProvenance(repeatUnrestrictedSpent)
+                val repeatPoolAfterProvenance = repeatPool.withProvenanceFrom(repeatProvenancePool)
                 currentState = currentState.updateEntity(action.playerId) { c ->
                     c.with(fromManaPool(repeatPoolAfterProvenance))
                 }
@@ -2596,10 +2675,11 @@ class ActivateAbilityHandler(
             currentPool = when {
                 color != null && restriction != null ->
                     currentPool.addRestricted(color, production.amount, restriction)
-                color != null ->
-                    currentPool.add(color, production.amount)
-                else ->
-                    currentPool.addColorless(production.colorless)
+                else -> currentPool.addUnrestrictedProduction(
+                    sourceId = source.entityId,
+                    production = production,
+                    knownToPlayer = playerId,
+                )
             }
         }
 
@@ -2614,7 +2694,13 @@ class ActivateAbilityHandler(
         // printed ability, not to the aura-granted extras.
         for (source in solution.sources) {
             if (source.bonusManaPerTap > 0 && source.bonusManaColor != null) {
-                currentPool = currentPool.add(source.bonusManaColor, source.bonusManaPerTap)
+                currentPool = currentPool.addTracked(
+                    color = PaymentManaColor.fromEngine(source.bonusManaColor),
+                    sourceId = source.entityId,
+                    subtypes = source.sourceSubtypes,
+                    amount = source.bonusManaPerTap,
+                    knownToPlayers = setOf(playerId),
+                )
             }
         }
 

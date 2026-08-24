@@ -679,7 +679,9 @@ if it diverged, serve the archived frames instead, flagged `degraded`. `ReplayFi
 `UNVERIFIED` / `DIVERGED`) and `stateReproducible` ride in the endpoint metadata, and the viewer
 shows a **From archive** badge and hides the scenario buttons when the position can't be rebuilt.
 
-`CompactReplay.version` is 3. All v2 fields default to empty and `persistenceJson` ignores unknown
+`CompactReplay.version` is 4. Versions 1 through 3 remain historical labels; v4 is required for
+actions carrying the explicitly versioned `PaymentStrategy.ExplicitV2` carrier and the joint floating
+provenance semantics. All additive fields default to empty and `persistenceJson` ignores unknown
 keys, so records round-trip in both directions across a rolling deploy. `engineVersion` (the git sha,
 passed to the backend image as `COMMIT_HASH`) is stamped on every record so a replay that stops
 re-simulating can be traced to the build that recorded it.
@@ -747,7 +749,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.15-certified-homogeneous-floating-mana`.
+The Gym contract is currently `argentum-gym-contract@v1.18-joint-floating-payment-domain-v4`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -765,14 +767,14 @@ the pending decision. `decisionId` is a routing value and is not part of `stateD
 sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
 configuration are used by the JVM service and HTTP server.
 
-### Action-level mana payment (PaymentDomainV3 / PaymentPlanV1)
+### Action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
 
 An affordable structured `ActivateAbility` or ordinary fixed-cost `CastSpell` whose action-level
 mana cost is published in `LegalActionView.manaCost` also publishes
-`LegalActionView.paymentDomain`. This domain is version 3 and is complete for the supported slice: ordinary
+`LegalActionView.paymentDomain`. This domain is version 4 and is complete for the supported slice: ordinary
 fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
 single-output color selection, deterministic fixed multi-mana bundles, and multiple source
-combinations. A payable action whose complete V3 domain
+combinations. A payable action whose complete V4 domain
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
@@ -782,7 +784,9 @@ fail-closed.
 The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
 while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
 
-The controller submits the choices inside `PaymentStrategy.Explicit.paymentPlan`:
+The controller submits representable historical choices inside `PaymentStrategy.Explicit.paymentPlan`.
+When the current domain exposes joint floating buckets, it submits the versioned
+`PaymentStrategy.ExplicitV2.paymentPlan`; V1 is never reinterpreted with an optional subtype field:
 
 ```json
 {
@@ -850,9 +854,10 @@ riders, hybrid/X shapes, and other exotic payment forms fail closed until their 
 corresponding public V1 field. Such a reachable shape is an unsupported Gym diagnostic, not a
 partial domain.
 
-#### Certified homogeneous and heterogeneous floating provenance
+#### Historical PaymentDomainV3 floating provenance
 
-`PaymentPoolDomainV3` may additionally contain one nullable `certifiedFloatingMana` value. It is
+`PaymentPoolDomainV3` is retained for historical payloads and may additionally contain one nullable
+`certifiedFloatingMana` value. It is
 the canonical representation for a Rules-certified homogeneous pool: the common color and
 stored subtype set are published once, while `sourceBuckets` partitions the current units by
 producing source.
@@ -881,7 +886,7 @@ closed. Every newly published floating bucket source identity must pass the exis
 `Visibility` authority; an unpublishable strategically distinct bucket invalidates the whole domain.
 Existing future `sourceActivations` visibility remains a separate concern.
 
-For a genuinely multi-color pool, V3 instead sets `certifiedHeterogeneousFloatingMana` and leaves
+For a genuinely multi-color pool, historical V3 instead sets `certifiedHeterogeneousFloatingMana` and leaves
 `certifiedFloatingMana` null. Its `sourceColorBuckets` list is the Rules-owned source×color matrix:
 
 ```json
@@ -898,7 +903,7 @@ For a genuinely multi-color pool, V3 instead sets `certifiedHeterogeneousFloatin
 The two certification fields are an explicit one-of. An incomplete or inconsistent detail map is
 never ignored or reconstructed from aggregate totals, source profiles, iteration order, or heuristics.
 
-`PaymentPlanV1` remains the submitted plan type, with additive
+`PaymentPlanV1` remains unchanged, with its existing
 `ManaSpendReference.floatingSourceId`. `sourceId` continues to mean a freshly activated source
 output; `floatingSourceId` plus `poolColor` means an already-floating unit from a certified bucket.
 `PoolSpend` remains only the aggregate color checksum. For a multi-bucket certified pool, every
@@ -908,8 +913,40 @@ selected source counts. A unique single-bucket pool may retain the legacy source
 Rules decrements only selected source buckets and the common subtype counters, preserving unselected
 sources; it never delegates the external choice to greedy `consumeProvenance()`.
 
-Compact replay remains version 3 because this change does not alter its persisted action payload
-meaning. The Gym `SchemaHash` is bumped for the current PaymentDomainV3 wire shape. The authoritative
-`GameState` now persists source×color provenance and its explicit completeness marker; semantic
-state digests include that information, while pure action/replay payload fingerprints do not gain
-an artificial version change.
+#### Current PaymentDomainV4 joint buckets
+
+`PaymentPoolDomainV4.certifiedFloatingBuckets` is the single canonical representation for both
+homogeneous and heterogeneous pools. Each row is a complete Rules-issued semantic key, and rows
+with the same source and color but different production-time subtype snapshots remain distinct:
+
+```json
+{
+  "certifiedFloatingBuckets": [
+    { "sourceId": "ent-forest", "poolColor": "GREEN", "sourceSubtypes": ["Forest"], "amount": 2 },
+    { "sourceId": "ent-forest", "poolColor": "GREEN", "sourceSubtypes": [], "amount": 1 },
+    { "sourceId": "ent-swamp", "poolColor": "BLACK", "sourceSubtypes": ["Swamp"], "amount": 1 }
+  ]
+}
+```
+
+`sourceSubtypes: []` means a known empty production snapshot. Rows are canonicalized by source,
+color, and sorted subtype names. An incomplete aggregate or legacy detail path is not published.
+The V4 publisher also requires authoritative Rules known-information metadata proving that the
+stored production snapshot is disclosed to the acting player; source addressability or the current
+`CardComponent` alone is not enough. If that proof is absent, the complete payment domain fails
+closed.
+
+The V2 plan echoes the complete row key and amount in its floating spend reference. The server
+checks that the key is currently certified and never merges a client-supplied subtype list into
+Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` identifies exactly one
+joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
+
+The Gym `SchemaHash` is
+`argentum-gym-contract@v1.18-joint-floating-payment-domain-v4`. A client must compare the hash
+before interpreting the payment domain and fail closed on mismatch; the historical V3 DTO also
+rejects a V4 version, so an old client cannot silently treat the new bucket list as V3.
+
+The authoritative `GameState` persists the joint bucket map, completeness marker, and known-
+information metadata. State digests and the v4 transition-semantic replay fingerprint bind those
+fields. CompactReplay v4 is required for actions carrying the new serialized `ExplicitV2`
+discriminator; old v1-v3 action payloads remain decodable under their historical labels.

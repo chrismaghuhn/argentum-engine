@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.core
 
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -38,6 +39,17 @@ enum class PaymentManaColor {
         }
     }
 }
+
+/**
+ * Rules-owned identity of one fungible floating-mana bucket. The subtype set is the snapshot
+ * taken when the mana was actually produced; an empty set is a known empty snapshot.
+ */
+@Serializable
+data class FloatingManaBucketKeyV1(
+    val sourceId: EntityId,
+    val poolColor: PaymentManaColor,
+    val sourceSubtypes: Set<Subtype>,
+)
 
 /** A single explicit source activation in a submitted payment plan. */
 @Serializable
@@ -155,4 +167,41 @@ data class PaymentPlanV1(
     val sourceActivations: List<SourceActivation> = emptyList(),
     val poolSpend: PoolSpend = PoolSpend(),
     val spendAllocation: SpendAllocation = SpendAllocation(),
+)
+
+/** A versioned spend reference that names the complete Rules-issued floating bucket key. */
+@Serializable
+data class ManaSpendReferenceV2(
+    val sourceId: EntityId? = null,
+    val poolColor: PaymentManaColor? = null,
+    val amount: Int = 1,
+    val restrictedBucketKey: String? = null,
+    val sourceOutputIndex: Int? = null,
+    val floatingSourceId: EntityId? = null,
+    /** Canonical subtype-name echo of the published [FloatingManaBucketKeyV1]. */
+    val floatingSourceSubtypes: List<String>? = null,
+)
+
+/** One cost-symbol allocation in the versioned exact payment carrier. */
+@Serializable
+data class CostUnitAllocationV2(
+    val symbolIndex: Int,
+    val spends: List<ManaSpendReferenceV2>,
+)
+
+/** Versioned exact allocation, retaining the V1 shape without changing its wire meaning. */
+@Serializable
+data class SpendAllocationV2(
+    val costUnits: List<CostUnitAllocationV2> = emptyList(),
+    val x: List<ManaSpendReferenceV2> = emptyList(),
+    val restricted: List<ManaSpendReferenceV2> = emptyList(),
+    val riderBearingSourceIds: List<EntityId> = emptyList(),
+)
+
+/** Complete externally selected payment whose floating references include the joint bucket key. */
+@Serializable
+data class PaymentPlanV2(
+    val sourceActivations: List<SourceActivation> = emptyList(),
+    val poolSpend: PoolSpend = PoolSpend(),
+    val spendAllocation: SpendAllocationV2 = SpendAllocationV2(),
 )

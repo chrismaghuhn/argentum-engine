@@ -364,6 +364,14 @@ sealed interface PaymentStrategy {
         val manaAbilitiesToActivate: List<EntityId> = emptyList(),
         val paymentPlan: PaymentPlanV1? = null,
     ) : PaymentStrategy
+
+    /** Explicit payment carrier for the complete source/color/subtype floating bucket key. */
+    @Serializable
+    @SerialName("ExplicitV2")
+    data class ExplicitV2(
+        val manaAbilitiesToActivate: List<EntityId> = emptyList(),
+        val paymentPlan: PaymentPlanV2? = null,
+    ) : PaymentStrategy
 }
 
 // =============================================================================

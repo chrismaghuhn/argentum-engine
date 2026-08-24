@@ -54,6 +54,9 @@ class CycleCardHandler(
     override val actionType: KClass<CycleCard> = CycleCard::class
 
     override fun validate(state: GameState, action: CycleCard): String? {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
+            return "PaymentStrategy.ExplicitV2 is not supported for cycling"
+        }
         if (state.priorityPlayerId != action.playerId) {
             return "You don't have priority"
         }
@@ -106,6 +109,9 @@ class CycleCardHandler(
     }
 
     override fun execute(state: GameState, action: CycleCard): ExecutionResult {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
+            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV2 is not supported for cycling")
+        }
         val container = state.getEntity(action.cardId)
             ?: return ExecutionResult.error(state, "Card not found")
 

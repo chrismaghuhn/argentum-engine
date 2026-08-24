@@ -20,7 +20,9 @@ import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 
 const val PAYMENT_DOMAIN_V2_VERSION: Int = 2
-const val PAYMENT_DOMAIN_VERSION: Int = 3
+const val PAYMENT_DOMAIN_V3_VERSION: Int = 3
+const val PAYMENT_DOMAIN_V4_VERSION: Int = 4
+const val PAYMENT_DOMAIN_VERSION: Int = PAYMENT_DOMAIN_V4_VERSION
 
 @Serializable
 enum class PaymentCostKind {
@@ -38,7 +40,7 @@ data class PaymentCostUnitDomain(
 )
 
 @Serializable
-@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV3")
+@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV4")
 data class PaymentPoolDomainV1(
     val white: Int = 0,
     val blue: Int = 0,
@@ -101,7 +103,7 @@ data class PaymentSourceActivationDomain(
  * whose source, production, pool, and allocation choices are all explicit.
  */
 @Serializable
-@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV3")
+@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV4")
 data class PaymentDomainV1(
     val version: Int = 1,
     val requiredCost: String,
@@ -173,21 +175,79 @@ data class PaymentPoolDomainV3(
 }
 
 /**
- * Current action-level payment domain. Version 3 is required because the existing repository does
- * not contain a proven fail-closed V2 client decoder path before domain interpretation.
+ * Historical action-level payment domain. Current observations use [PaymentDomainV4]; V3 remains
+ * decodable only under its own historical wire contract.
  */
 @Serializable
 data class PaymentDomainV3(
-    val version: Int = PAYMENT_DOMAIN_VERSION,
+    val version: Int = PAYMENT_DOMAIN_V3_VERSION,
     val requiredCost: String,
     val costUnits: List<PaymentCostUnitDomain>,
     val currentPool: PaymentPoolDomainV3,
     val sourceActivations: List<PaymentSourceActivationDomain>,
 ) {
     init {
-        require(version == PAYMENT_DOMAIN_VERSION) {
+        require(version == PAYMENT_DOMAIN_V3_VERSION) {
             "Unsupported PaymentDomainV3 version: $version"
         }
+    }
+}
+
+/** One complete public source/color/production-subtype bucket in PaymentDomain V4. */
+@Serializable
+data class CertifiedFloatingManaBucketDomainV4(
+    val sourceId: EntityId,
+    val poolColor: PaymentManaColor,
+    val sourceSubtypes: List<String>,
+    val amount: Int,
+)
+
+/** Current public pool shape: one canonical bucket list for homogeneous and heterogeneous pools. */
+@Serializable
+data class PaymentPoolDomainV4(
+    val white: Int = 0,
+    val blue: Int = 0,
+    val black: Int = 0,
+    val red: Int = 0,
+    val green: Int = 0,
+    val colorless: Int = 0,
+    val certifiedFloatingBuckets: List<CertifiedFloatingManaBucketDomainV4> = emptyList(),
+)
+
+/** Current action-level payment domain for exact joint floating-mana choices. */
+@Serializable
+data class PaymentDomainV4(
+    val version: Int = PAYMENT_DOMAIN_V4_VERSION,
+    val requiredCost: String,
+    val costUnits: List<PaymentCostUnitDomain>,
+    val currentPool: PaymentPoolDomainV4,
+    val sourceActivations: List<PaymentSourceActivationDomain>,
+) {
+    init {
+        require(version == PAYMENT_DOMAIN_V4_VERSION) {
+            "Unsupported PaymentDomainV4 version: $version"
+        }
+        require(currentPool.certifiedFloatingBuckets.all { it.amount > 0 }) {
+            "PaymentDomainV4 bucket amounts must be positive"
+        }
+        require(currentPool.certifiedFloatingBuckets.map { it.key() }.toSet().size ==
+            currentPool.certifiedFloatingBuckets.size
+        ) {
+            "PaymentDomainV4 cannot publish duplicate floating bucket keys"
+        }
+        require(currentPool.certifiedFloatingBuckets.all { bucket ->
+            bucket.sourceSubtypes == bucket.sourceSubtypes.distinct().sorted()
+        }) {
+            "PaymentDomainV4 subtype snapshots must be canonical"
+        }
+    }
+
+    private fun CertifiedFloatingManaBucketDomainV4.key(): String = buildString {
+        append(sourceId.value)
+        append('|')
+        append(poolColor.name)
+        append('|')
+        append(sourceSubtypes.joinToString(","))
     }
 }
 
@@ -207,57 +267,51 @@ class PaymentDomainBuilder(
         requiredCost: String,
         spellContext: SpellPaymentContext,
         excludeSources: Set<EntityId> = emptySet(),
-    ): PaymentDomainV3? {
+    ): PaymentDomainV4? {
         val cost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
         val costUnits = cost.symbols.mapIndexed { index, symbol -> symbol.toDomain(index) ?: return null }
 
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
-        // Restricted mana has no stable public bucket identity in V3. Do not publish a partial
+        // Restricted mana has no stable public bucket identity in V4. Do not publish a partial
         // domain that would force the engine to choose a restricted bucket during submission.
         if (pool.restrictedMana.isNotEmpty()) return null
-        var certifiedFloatingMana: CertifiedHomogeneousFloatingManaDomainV2? = null
-        var certifiedHeterogeneousFloatingMana: CertifiedHeterogeneousFloatingManaDomainV3? = null
+        var certifiedFloatingBuckets = emptyList<CertifiedFloatingManaBucketDomainV4>()
         when (val classification =
             FloatingManaProvenanceClassification.classify(pool)) {
             FloatingManaProvenanceClassification.NoTrackedProvenance -> Unit
             is FloatingManaProvenanceClassification.Ambiguous -> return null
             is FloatingManaProvenanceClassification.CertifiedHomogeneous -> {
-                val candidate = classification.candidate
-                if (candidate.sourceBuckets.any {
-                        !isPerspectiveSafeSource(state, playerId, it.sourceId)
-                    }
-                ) return null
-                certifiedFloatingMana = CertifiedHomogeneousFloatingManaDomainV2(
-                    poolColor = candidate.poolColor,
-                    sourceSubtypes = candidate.sourceSubtypes.map { it.value }.sorted(),
-                    sourceBuckets = candidate.sourceBuckets
-                        .sortedBy { it.sourceId.value }
-                        .map { bucket ->
-                            CertifiedFloatingManaSourceBucketDomainV2(
-                                sourceId = bucket.sourceId,
-                                amount = bucket.amount,
-                            )
-                        },
-                )
+                // A legacy aggregate/source-color proof is not a production-time joint proof.
+                // V4 never reconstructs subtype snapshots from those projections.
+                return null
             }
             is FloatingManaProvenanceClassification.CertifiedHeterogeneous -> {
-                val candidate = classification.candidate
-                if (candidate.sourceColorBuckets.any {
-                        !isPerspectiveSafeSource(state, playerId, it.sourceId)
+                return null
+            }
+            is FloatingManaProvenanceClassification.CertifiedJoint -> {
+                if (playerId !in pool.manaProvenanceKnownTo) return null
+                if (classification.candidate.buckets.any {
+                        !isPerspectiveSafeSource(state, playerId, it.key.sourceId)
                     }
                 ) return null
-                certifiedHeterogeneousFloatingMana = CertifiedHeterogeneousFloatingManaDomainV3(
-                    sourceColorBuckets = candidate.sourceColorBuckets
-                        .sortedWith(compareBy({ it.sourceId.value }, { it.poolColor.ordinal }))
-                        .map { bucket ->
-                            CertifiedFloatingManaSourceColorBucketDomainV3(
-                                sourceId = bucket.sourceId,
-                                poolColor = bucket.poolColor,
-                                amount = bucket.amount,
-                            )
-                        },
-                    sourceSubtypes = candidate.sourceSubtypes.map { it.value }.sorted(),
-                )
+                certifiedFloatingBuckets = classification.candidate.buckets
+                    .sortedWith(
+                        compareBy(
+                            { it.key.sourceId.value },
+                            { it.key.poolColor.ordinal },
+                            { it.key.sourceSubtypes.sortedBy { subtype -> subtype.value }.joinToString(",") },
+                        ),
+                    )
+                    .map { bucket ->
+                        CertifiedFloatingManaBucketDomainV4(
+                            sourceId = bucket.key.sourceId,
+                            poolColor = bucket.key.poolColor,
+                            sourceSubtypes = bucket.key.sourceSubtypes
+                                .map { subtype -> subtype.value }
+                                .sorted(),
+                            amount = bucket.amount,
+                        )
+                    }
             }
         }
 
@@ -271,18 +325,17 @@ class PaymentDomainBuilder(
             }
         }
 
-        return PaymentDomainV3(
+        return PaymentDomainV4(
             requiredCost = requiredCost,
             costUnits = costUnits,
-            currentPool = PaymentPoolDomainV3(
+            currentPool = PaymentPoolDomainV4(
                 white = pool.white,
                 blue = pool.blue,
                 black = pool.black,
                 red = pool.red,
                 green = pool.green,
                 colorless = pool.colorless,
-                certifiedFloatingMana = certifiedFloatingMana,
-                certifiedHeterogeneousFloatingMana = certifiedHeterogeneousFloatingMana,
+                certifiedFloatingBuckets = certifiedFloatingBuckets,
             ),
             sourceActivations = sourceActivations,
         )
