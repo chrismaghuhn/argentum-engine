@@ -25,10 +25,9 @@ import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.PaymentCostUnitDomain
-import com.wingedsheep.gym.contract.CertifiedFloatingManaSourceColorBucketDomainV3
-import com.wingedsheep.gym.contract.CertifiedHeterogeneousFloatingManaDomainV3
-import com.wingedsheep.gym.contract.PaymentDomainV3
-import com.wingedsheep.gym.contract.PaymentPoolDomainV3
+import com.wingedsheep.gym.contract.CertifiedFloatingManaBucketDomainV4
+import com.wingedsheep.gym.contract.PaymentDomainV4
+import com.wingedsheep.gym.contract.PaymentPoolDomainV4
 import com.wingedsheep.gym.contract.PaymentSourceActivationDomain
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
@@ -101,11 +100,11 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
-    test("the external policy turns the public payment domain into an explicit PaymentPlanV1") {
+    test("the external policy turns the public PaymentDomainV4 into ExplicitV2 PaymentPlanV2") {
         val player = EntityId("player-0")
         val blackSource = EntityId("source-black")
         val anySource = EntityId("source-any")
-        val paymentDomain = PaymentDomainV3(
+        val paymentDomain = PaymentDomainV4(
             requiredCost = "{1}{B}",
             costUnits = listOf(
                 PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, amount = 1),
@@ -116,7 +115,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     allowedColors = setOf(PaymentManaColor.BLACK),
                 ),
             ),
-            currentPool = PaymentPoolDomainV3(),
+            currentPool = PaymentPoolDomainV4(),
             sourceActivations = listOf(
                 PaymentSourceActivationDomain(
                     sourceId = blackSource,
@@ -182,33 +181,32 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             PaymentStrategy.serializer(),
             payload["paymentStrategy"] ?: error("Payment payload omitted paymentStrategy"),
         )
-        check(strategy is PaymentStrategy.Explicit) { "Expected Explicit payment strategy: $strategy" }
+        check(strategy is PaymentStrategy.ExplicitV2) { "Expected ExplicitV2 payment strategy: $strategy" }
         check(strategy.manaAbilitiesToActivate.isEmpty()) {
             "Payment policy must not emit legacy source handles"
         }
-        val plan = strategy.paymentPlan ?: error("Payment policy omitted PaymentPlanV1")
+        val plan = strategy.paymentPlan ?: error("Payment policy omitted PaymentPlanV2")
         plan.sourceActivations.map { it.sourceId }.toSet() shouldBe setOf(blackSource, anySource)
         plan.spendAllocation.costUnits.map { it.symbolIndex } shouldBe listOf(0, 1)
         plan.spendAllocation.costUnits.sumOf { it.spends.sumOf { spend -> spend.amount } } shouldBe 2
 
         val heterogeneousDomain = paymentDomain.copy(
-            currentPool = PaymentPoolDomainV3(
+            currentPool = PaymentPoolDomainV4(
                 black = 1,
                 green = 3,
-                certifiedHeterogeneousFloatingMana = CertifiedHeterogeneousFloatingManaDomainV3(
-                    sourceColorBuckets = listOf(
-                        CertifiedFloatingManaSourceColorBucketDomainV3(
+                certifiedFloatingBuckets = listOf(
+                        CertifiedFloatingManaBucketDomainV4(
                             sourceId = EntityId("floating-black"),
                             poolColor = PaymentManaColor.BLACK,
+                            sourceSubtypes = listOf("Forest"),
                             amount = 1,
                         ),
-                        CertifiedFloatingManaSourceColorBucketDomainV3(
+                        CertifiedFloatingManaBucketDomainV4(
                             sourceId = EntityId("floating-green"),
                             poolColor = PaymentManaColor.GREEN,
+                            sourceSubtypes = listOf("Forest"),
                             amount = 3,
                         ),
-                    ),
-                    sourceSubtypes = listOf("Forest"),
                 ),
             ),
             sourceActivations = emptyList(),
@@ -233,17 +231,19 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             heterogeneousPayload["paymentStrategy"]
                 ?: error("Heterogeneous payment payload omitted paymentStrategy"),
         )
-        check(heterogeneousStrategy is PaymentStrategy.Explicit) {
-            "Expected Explicit heterogeneous payment strategy: $heterogeneousStrategy"
+        check(heterogeneousStrategy is PaymentStrategy.ExplicitV2) {
+            "Expected ExplicitV2 heterogeneous payment strategy: $heterogeneousStrategy"
         }
         val heterogeneousPlan = heterogeneousStrategy.paymentPlan
-            ?: error("Heterogeneous payment policy omitted PaymentPlanV1")
+            ?: error("Heterogeneous payment policy omitted PaymentPlanV2")
         heterogeneousPlan.spendAllocation.costUnits
             .flatMap { it.spends }
-            .map { spend -> spend.floatingSourceId to spend.poolColor }
+            .map { spend ->
+                Triple(spend.floatingSourceId, spend.poolColor, spend.floatingSourceSubtypes)
+            }
             .toSet() shouldBe setOf(
-                EntityId("floating-black") to PaymentManaColor.BLACK,
-                EntityId("floating-green") to PaymentManaColor.GREEN,
+                Triple(EntityId("floating-black"), PaymentManaColor.BLACK, listOf("Forest")),
+                Triple(EntityId("floating-green"), PaymentManaColor.GREEN, listOf("Forest")),
             )
     }
 
@@ -375,7 +375,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     code = signal.semanticCode,
                     reason = when (signal.semanticCode) {
                         "PAYMENT_DOMAIN_UNSUPPORTED" ->
-                            "Trusted transition reached a payable legal action without a published PaymentDomainV3"
+                            "Trusted transition reached a payable legal action without a published PaymentDomainV4"
                         else -> "Authoritative trusted-episode diagnostic was recorded"
                     },
                     diagnostic = signal.semanticCode,
@@ -386,7 +386,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     },
                     proposedFollowUp = when (signal.semanticCode) {
                         "PAYMENT_DOMAIN_UNSUPPORTED" ->
-                            "Publish a complete PaymentDomainV3 for every reachable payable legal action outside #73"
+                            "Publish a complete PaymentDomainV4 for every reachable payable legal action outside #73"
                         else -> "Classify and repair the owning production path outside #73"
                     },
                 )

@@ -1,14 +1,14 @@
 package com.wingedsheep.gym
 
-import com.wingedsheep.engine.core.CostUnitAllocation
-import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.CostUnitAllocationV2
+import com.wingedsheep.engine.core.ManaSpendReferenceV2
 import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocation
+import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.DistributionDomain
@@ -16,10 +16,10 @@ import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
 import com.wingedsheep.gym.contract.PendingDecisionView
-import com.wingedsheep.gym.contract.PAYMENT_DOMAIN_VERSION
+import com.wingedsheep.gym.contract.PAYMENT_DOMAIN_V4_VERSION
 import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.PaymentCostUnitDomain
-import com.wingedsheep.gym.contract.PaymentDomainV3
+import com.wingedsheep.gym.contract.PaymentDomainV4
 import com.wingedsheep.gym.contract.ReorderLibraryDomain
 import com.wingedsheep.gym.contract.ReplacementDomain
 import com.wingedsheep.gym.contract.SearchLibraryDomain
@@ -175,26 +175,26 @@ class DeterministicExternalPolicy {
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
                     code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason = "Structured mana action published no PaymentDomainV3",
+                    reason = "Structured mana action published no PaymentDomainV4",
                     actionKind = action.kind,
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = "LegalActionView.paymentDomain=null; manaCost=${action.manaCost}",
-                    proposedFollowUp = "Publish a complete PaymentDomainV3 for this legal action",
+                    proposedFollowUp = "Publish a complete PaymentDomainV4 for this legal action",
                 )
             val paymentPlan = explicitPaymentPlan(domain)
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
                     code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason = "Published PaymentDomainV3 cannot be completed deterministically",
+                    reason = "Published PaymentDomainV4 cannot be completed deterministically",
                     actionKind = action.kind,
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = domain.toString(),
                     proposedFollowUp =
-                        "Extend PaymentDomainV3 until source, production, pool, and allocation choices are representable",
+                        "Extend PaymentDomainV4 until source, production, pool, and allocation choices are representable",
                 )
             payload["paymentStrategy"] = paymentJson.encodeToJsonElement(
                 PaymentStrategy.serializer(),
-                PaymentStrategy.Explicit(paymentPlan = paymentPlan),
+                PaymentStrategy.ExplicitV2(paymentPlan = paymentPlan),
             )
             completedChoice = true
         }
@@ -297,11 +297,11 @@ class DeterministicExternalPolicy {
     }
 
     /**
-     * Enumerates only the concrete origins and production choices published by PaymentDomainV3.
+     * Enumerates only the concrete origins and production choices published by PaymentDomainV4.
      * There is deliberately no cost parser, source discovery, or engine payment helper here.
      */
-    private fun explicitPaymentPlan(domain: PaymentDomainV3): PaymentPlanV1? {
-        if (domain.version != PAYMENT_DOMAIN_VERSION || domain.requiredCost.isBlank()) return null
+    private fun explicitPaymentPlan(domain: PaymentDomainV4): PaymentPlanV2? {
+        if (domain.version != PAYMENT_DOMAIN_V4_VERSION || domain.requiredCost.isBlank()) return null
 
         val units = domain.costUnits.sortedBy { it.symbolIndex }
         if (units.map { it.symbolIndex } != units.indices.toList()) return null
@@ -350,29 +350,18 @@ class DeterministicExternalPolicy {
         data class FloatingBucket(
             val sourceId: EntityId,
             val poolColor: PaymentManaColor,
+            val sourceSubtypes: List<String>,
             val initialAmount: Int,
             var remainingAmount: Int = initialAmount,
         )
 
-        val homogeneous = domain.currentPool.certifiedFloatingMana
-        val heterogeneous = domain.currentPool.certifiedHeterogeneousFloatingMana
-        if (homogeneous != null && heterogeneous != null) return null
-        val floatingBuckets = when {
-            heterogeneous != null -> heterogeneous.sourceColorBuckets.map {
-                FloatingBucket(
-                    sourceId = it.sourceId,
-                    poolColor = it.poolColor,
-                    initialAmount = it.amount,
-                )
-            }
-            homogeneous != null -> homogeneous.sourceBuckets.map {
-                FloatingBucket(
-                    sourceId = it.sourceId,
-                    poolColor = homogeneous.poolColor,
-                    initialAmount = it.amount,
-                )
-            }
-            else -> emptyList()
+        val floatingBuckets = domain.currentPool.certifiedFloatingBuckets.map {
+            FloatingBucket(
+                sourceId = it.sourceId,
+                poolColor = it.poolColor,
+                sourceSubtypes = it.sourceSubtypes,
+                initialAmount = it.amount,
+            )
         }.toMutableList()
         if (floatingBuckets.any { it.initialAmount <= 0 }) return null
         val floatingByColor = PaymentManaColor.entries.associateWith { color ->
@@ -428,7 +417,7 @@ class DeterministicExternalPolicy {
             )
 
         val poolSpent = linkedMapOf<PaymentManaColor, Int>()
-        val allocations = linkedMapOf<Int, MutableList<ManaSpendReference>>()
+        val allocations = linkedMapOf<Int, MutableList<ManaSpendReferenceV2>>()
         val selectedSources = linkedMapOf<EntityId, SourceActivation>()
         val selectedSourceChoices = linkedMapOf<EntityId, PublicSourceChoice>()
         val usedSourceOutputs = linkedMapOf<EntityId, MutableSet<Int>>()
@@ -447,9 +436,10 @@ class DeterministicExternalPolicy {
                 poolRemaining[color] = poolRemaining.getValue(color) - 1
                 poolSpent[color] = (poolSpent[color] ?: 0) + 1
                 bucket?.let { it.remainingAmount-- }
-                spends += ManaSpendReference(
+                spends += ManaSpendReferenceV2(
                     poolColor = color,
                     floatingSourceId = bucket?.sourceId,
+                    floatingSourceSubtypes = bucket?.sourceSubtypes,
                 )
                 if (allocate(index + 1)) return true
                 spends.removeAt(spends.lastIndex)
@@ -477,7 +467,7 @@ class DeterministicExternalPolicy {
                         productionChoice = choice.productionChoice,
                     )
                 }
-                spends += ManaSpendReference(
+                spends += ManaSpendReferenceV2(
                     sourceId = choice.sourceId,
                     sourceOutputIndex = choice.sourceOutputIndex,
                 )
@@ -495,12 +485,12 @@ class DeterministicExternalPolicy {
 
         if (!allocate(0)) return null
 
-        return PaymentPlanV1(
+        return PaymentPlanV2(
             sourceActivations = selectedSources.values.sortedBy { it.sourceId.value },
             poolSpend = PoolSpend.fromAmounts(poolSpent),
-            spendAllocation = SpendAllocation(
+            spendAllocation = SpendAllocationV2(
                 costUnits = units.map { unit ->
-                    CostUnitAllocation(
+                    CostUnitAllocationV2(
                         symbolIndex = unit.symbolIndex,
                         spends = allocations[unit.symbolIndex]?.toList().orEmpty(),
                     )
@@ -677,7 +667,7 @@ class DeterministicExternalPolicy {
                     actionKind = "DECISION",
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = domain.toString(),
-                    proposedFollowUp = "Publish PaymentDomainV3 for this pending payment",
+                    proposedFollowUp = "Publish PaymentDomainV4 for this pending payment",
                 )
             }
 
