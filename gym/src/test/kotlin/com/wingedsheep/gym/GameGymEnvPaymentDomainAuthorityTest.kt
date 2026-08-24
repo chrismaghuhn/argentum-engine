@@ -8,6 +8,8 @@ import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
@@ -321,13 +323,21 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(BorosCharm)
     }
 
-    fun prepared(cardName: String): Triple<GameEnvironment, EntityId, EntityId> {
+    fun prepared(
+        cardName: String,
+        includeGroundTarget: Boolean = false,
+    ): Triple<GameEnvironment, EntityId, EntityId> {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
+        val aliceDeck = if (includeGroundTarget) {
+            Deck.of(cardName to 1, "Mountain" to 8, groundTarget.name to 1)
+        } else {
+            Deck.of(cardName to 1, "Mountain" to 8)
+        }
         environment.reset(
             GameConfig(
                 players = listOf(
-                    PlayerConfig("Alice", Deck.of(cardName to 1, "Mountain" to 8)),
+                    PlayerConfig("Alice", aliceDeck),
                     PlayerConfig("Bob", Deck.of("Mountain" to 20)),
                 ),
                 startingHandSize = 1,
@@ -351,6 +361,14 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }.key
         val sourceZone = state.zones.entries.first { (_, ids) -> sourceId in ids }.key
         state = state.moveToZone(sourceId, sourceZone, ZoneKey(player, Zone.BATTLEFIELD))
+        if (includeGroundTarget) {
+            val targetId = state.entities.entries.first { (id, container) ->
+                id in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == groundTarget.name
+            }.key
+            val targetZone = state.zones.entries.first { (_, ids) -> targetId in ids }.key
+            state = state.moveToZone(targetId, targetZone, ZoneKey(player, Zone.BATTLEFIELD))
+        }
         environment.restore(state, environment.playerIds, environment.stepCount)
         return Triple(environment, player, sourceId)
     }
@@ -1015,7 +1033,13 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
     }
 
     test("target-dependent equip payment does not publish an optimistic domain") {
-        val (environment, player, sourceId) = prepared(equipmentWithTarget.name)
+        val (environment, player, sourceId) = prepared(
+            equipmentWithTarget.name,
+            includeGroundTarget = true,
+        )
+        val targetId = environment.state.getZone(player, Zone.BATTLEFIELD).first { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == groundTarget.name
+        }
         val action = ActivateAbility(
             playerId = player,
             sourceId = sourceId,
@@ -1026,8 +1050,19 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             actionType = "ActivateAbility",
             description = "Equip the test equipment",
             requiresTargets = true,
-            validTargets = listOf(EntityId("target-creature")),
+            validTargets = listOf(targetId),
             manaCostString = "{1}",
+            targetDomainSupport = TargetDomainSupport.SUPPORTED,
+            targetRequirements = listOf(
+                TargetInfo(
+                    index = 0,
+                    description = "target creature",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    validTargets = listOf(targetId),
+                    targetZone = Zone.BATTLEFIELD.name,
+                ),
+            ),
         )
 
         val view = ObservationBuilder(cardRegistry = registry())
