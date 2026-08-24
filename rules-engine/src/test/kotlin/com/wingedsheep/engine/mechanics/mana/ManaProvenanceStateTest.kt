@@ -155,4 +155,15 @@ class ManaProvenanceStateTest : FunSpec({
         after.manaBySourceAndColor shouldBe emptyMap()
         after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.INCOMPLETE
     }
+
+    test("phase cleanup resets completeness when retained colors leave no unrestricted mana") {
+        val sourceId = EntityId("discarded-red-source")
+        val after = ManaPoolComponent().addTracked(
+            color = PaymentManaColor.RED,
+            sourceId = sourceId,
+            subtypes = emptySet(),
+        ).emptyAtBoundary(convertToRed = false, retain = setOf(Color.GREEN))
+
+        after shouldBe ManaPoolComponent()
+    }
 })

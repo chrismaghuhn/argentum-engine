@@ -126,6 +126,49 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
         )
     }
 
+    test("rejects complete heterogeneous detail with partial subtype provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(
+                    EntityId("e108") to 1,
+                    EntityId("e117") to 1,
+                    EntityId("e136") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+                manaBySourceAndColor = mapOf(
+                    EntityId("e108") to mapOf(PaymentManaColor.BLACK to 1),
+                    EntityId("e117") to mapOf(PaymentManaColor.GREEN to 1),
+                    EntityId("e136") to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("rejects complete homogeneous detail with partial subtype provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 4,
+                manaBySource = mapOf(
+                    EntityId("source-a") to 2,
+                    EntityId("source-b") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+                manaBySourceAndColor = mapOf(
+                    EntityId("source-a") to mapOf(PaymentManaColor.GREEN to 2),
+                    EntityId("source-b") to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
     test("complete source-color detail supports exact homogeneous payment without a subtype matrix") {
         val sourceId = EntityId("source-without-subtype")
         val classification = FloatingManaProvenanceClassification.classify(

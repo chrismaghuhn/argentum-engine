@@ -104,6 +104,7 @@ sealed interface FloatingManaProvenanceClassification {
                 val detailedBuckets = validateDetailed(pool, colorCounts)
                     ?: return Ambiguous("source/color detail does not match authoritative totals")
                 val sourceSubtypes = commonSubtypeProof(pool, total)
+                    ?: return Ambiguous("subtype provenance is partial across the unrestricted pool")
                 return if (nonZeroColors.size > 1) {
                     CertifiedHeterogeneous(
                         CertifiedHeterogeneousFloatingMana(
@@ -181,7 +182,10 @@ sealed interface FloatingManaProvenanceClassification {
             return buckets.sortedWith(compareBy({ it.sourceId.value }, { it.poolColor.name }))
         }
 
-        private fun commonSubtypeProof(pool: ManaPoolComponent, total: Int): Set<Subtype> =
-            if (pool.manaBySubtype.values.all { it == total }) pool.manaBySubtype.keys else emptySet()
+        private fun commonSubtypeProof(pool: ManaPoolComponent, total: Int): Set<Subtype>? = when {
+            pool.manaBySubtype.isEmpty() -> emptySet()
+            pool.manaBySubtype.values.all { it == total } -> pool.manaBySubtype.keys
+            else -> null
+        }
     }
 }

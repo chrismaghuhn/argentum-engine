@@ -335,21 +335,35 @@ data class ManaPoolComponent(
                     },
                 )
             }
-            retain.isNotEmpty() -> ManaPoolComponent(
-                white = if (Color.WHITE in retain) white else 0,
-                blue = if (Color.BLUE in retain) blue else 0,
-                black = if (Color.BLACK in retain) black else 0,
-                red = if (Color.RED in retain) red else 0,
-                green = if (Color.GREEN in retain) green else 0,
-                colorless = 0,
-                restrictedMana = preserved + lostRestricted.filter { it.color != null && it.color in retain },
-                // Provenance tags do not survive a mana-loss boundary.
-                manaProvenanceCompleteness = if (white != 0 || blue != 0 || black != 0 || red != 0 || green != 0) {
-                    ManaProvenanceCompleteness.INCOMPLETE
-                } else {
-                    ManaProvenanceCompleteness.UNKNOWN
-                },
-            )
+            retain.isNotEmpty() -> {
+                val retainedWhite = if (Color.WHITE in retain) white else 0
+                val retainedBlue = if (Color.BLUE in retain) blue else 0
+                val retainedBlack = if (Color.BLACK in retain) black else 0
+                val retainedRed = if (Color.RED in retain) red else 0
+                val retainedGreen = if (Color.GREEN in retain) green else 0
+                val retained = ManaPoolComponent(
+                    white = retainedWhite,
+                    blue = retainedBlue,
+                    black = retainedBlack,
+                    red = retainedRed,
+                    green = retainedGreen,
+                    colorless = 0,
+                    restrictedMana = preserved + lostRestricted.filter {
+                        it.color != null && it.color in retain
+                    },
+                    // Provenance tags do not survive a mana-loss boundary. The marker reflects
+                    // whether unrestricted mana actually remains after the retained-color filter.
+                    manaProvenanceCompleteness = if (
+                        retainedWhite != 0 || retainedBlue != 0 || retainedBlack != 0 ||
+                        retainedRed != 0 || retainedGreen != 0
+                    ) {
+                        ManaProvenanceCompleteness.INCOMPLETE
+                    } else {
+                        ManaProvenanceCompleteness.UNKNOWN
+                    },
+                )
+                retained
+            }
             else -> ManaPoolComponent(restrictedMana = preserved)
         }
     }
