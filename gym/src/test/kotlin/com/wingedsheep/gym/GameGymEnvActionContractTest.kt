@@ -6,16 +6,20 @@ import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.CostUnitAllocation
+import com.wingedsheep.engine.core.CostUnitAllocationV2
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ManaSpendReference
+import com.wingedsheep.engine.core.ManaSpendReferenceV2
 import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.core.SpendAllocation
+import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentManaColor
@@ -24,6 +28,7 @@ import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
@@ -52,6 +57,13 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.jsonObject
 
+private data class PreparedEquipGym(
+    val environment: GameEnvironment,
+    val gym: GameGymEnv,
+    val sourceId: EntityId,
+    val targetIds: List<EntityId>,
+)
+
 /**
  * Regression coverage for action IDs whose LegalAction is a target/payment template rather than
  * an executable GameAction. The external controller must supply the missing choice explicitly;
@@ -67,6 +79,23 @@ class GameGymEnvActionContractTest : FunSpec({
         }
     }
 
+    val fixedCostEquipment = card("Gym Contract Fixed Cost Equipment") {
+        typeLine = "Artifact — Equipment"
+        equipAbility("{1}")
+    }
+
+    val firstEquipTarget = card("Gym Contract First Equip Target") {
+        typeLine = "Creature — Bear"
+        power = 1
+        toughness = 1
+    }
+
+    val secondEquipTarget = card("Gym Contract Second Equip Target") {
+        typeLine = "Creature — Bird"
+        power = 2
+        toughness = 2
+    }
+
     val targetlessSpell = card("Gym Contract Targetless Spell") {
         manaCost = "{R}"
         typeLine = "Sorcery"
@@ -80,6 +109,9 @@ class GameGymEnvActionContractTest : FunSpec({
         register(PortalSet.basicLands)
         register(StrongholdSet.cards)
         register(payableActionSource)
+        register(fixedCostEquipment)
+        register(firstEquipTarget)
+        register(secondEquipTarget)
         register(targetlessSpell)
     }
 
@@ -127,6 +159,133 @@ class GameGymEnvActionContractTest : FunSpec({
                     ),
                 ),
             ),
+        )
+    }
+
+    fun preparedFixedEquip(): PreparedEquipGym {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        environment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(
+                            fixedCostEquipment.name to 1,
+                            firstEquipTarget.name to 1,
+                            secondEquipTarget.name to 1,
+                            "Mountain" to 2,
+                        ),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 4)),
+                ),
+                startingHandSize = 1,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+            ),
+        )
+        var state = environment.state
+        while (state.step != com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            state = environment.state
+        }
+        val player = environment.playerIds.first()
+
+        fun moveNamed(name: String): EntityId {
+            val id = state.entities.entries.first { (candidate, container) ->
+                candidate in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == name
+            }.key
+            val from = state.zones.entries.first { (_, ids) -> id in ids }.key
+            state = state.moveToZone(id, from, ZoneKey(player, Zone.BATTLEFIELD))
+            return id
+        }
+
+        val sourceId = moveNamed(fixedCostEquipment.name)
+        val targetIds = listOf(
+            moveNamed(firstEquipTarget.name),
+            moveNamed(secondEquipTarget.name),
+        )
+        moveNamed("Mountain")
+        environment.restore(state, environment.playerIds, environment.stepCount)
+
+        return PreparedEquipGym(
+            environment = environment,
+            gym = GameGymEnv(
+                environment = environment,
+                perspectivePlayerIndex = 0,
+                observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+            ),
+            sourceId = sourceId,
+            targetIds = targetIds,
+        )
+    }
+
+    fun explicitV2Payment(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy.ExplicitV2 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val source = domain.sourceActivations.first()
+        val plan = PaymentPlanV2(
+            sourceActivations = listOf(
+                SourceActivation(
+                    sourceId = source.sourceId,
+                    manaAbilityKey = source.manaAbilityKey,
+                    productionChoice = source.productionChoices.single(),
+                ),
+            ),
+            poolSpend = PoolSpend(),
+            spendAllocation = SpendAllocationV2(
+                costUnits = listOf(
+                    CostUnitAllocationV2(
+                        symbolIndex = domain.costUnits.single().symbolIndex,
+                        spends = listOf(
+                            ManaSpendReferenceV2(sourceId = source.sourceId, amount = 1),
+                        ),
+                    ),
+                ),
+            ),
+        )
+        return PaymentStrategy.ExplicitV2(paymentPlan = plan)
+    }
+
+    fun incompleteExplicitV2Payment(
+        view: com.wingedsheep.gym.contract.LegalActionView,
+    ): PaymentStrategy.ExplicitV2 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val source = domain.sourceActivations.first()
+        return PaymentStrategy.ExplicitV2(
+            paymentPlan = PaymentPlanV2(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = source.sourceId,
+                        manaAbilityKey = source.manaAbilityKey,
+                        productionChoice = source.productionChoices.single(),
+                    ),
+                ),
+                poolSpend = PoolSpend(),
+                spendAllocation = SpendAllocationV2(),
+            ),
+        )
+    }
+
+    fun equipPayload(
+        view: com.wingedsheep.gym.contract.LegalActionView,
+        targetId: EntityId,
+        payment: PaymentStrategy.ExplicitV2,
+    ) = buildJsonObject {
+        view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+        put(
+            "paymentStrategy",
+            actionJson.encodeToJsonElement(PaymentStrategy.serializer(), payment),
+        )
+        put(
+            "targets",
+            buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "Permanent")
+                    put("entityId", targetId.value)
+                })
+            },
         )
     }
 
@@ -356,6 +515,70 @@ class GameGymEnvActionContractTest : FunSpec({
             classDiscriminator = "type"
         }.encodeToString(TrainingObservation.serializer(), observation)
             .contains("\"paymentDomain\"") shouldBe true
+    }
+
+    test("fixed Equip executes the complete public TargetDomain to ExplicitV2 to Attach path") {
+        val prepared = preparedFixedEquip()
+        val observed = prepared.gym.observe().observation
+        val view = observed.legalActions.firstOrNull { candidate ->
+            candidate.kind == "ActivateAbility" &&
+                candidate.paymentDomain?.requiredCost == "{1}" &&
+                candidate.targetDomain?.requirements?.singleOrNull()?.candidates?.size == 2
+        } ?: error("Expected target-bearing fixed Equip action: ${observed.legalActions}")
+        val publicCandidates = view.targetDomain!!.requirements.single().candidates.toSet()
+        publicCandidates shouldBe prepared.targetIds.toSet()
+        val submittedTarget = prepared.targetIds[1]
+        publicCandidates.contains(submittedTarget) shouldBe true
+
+        val stepCountBefore = prepared.environment.stepCount
+        prepared.gym.step(
+            view.actionId,
+            equipPayload(view, submittedTarget, explicitV2Payment(view)),
+        )
+        prepared.environment.stepCount shouldBe stepCountBefore + 1
+
+        var passes = 0
+        while (prepared.environment.state.stack.isNotEmpty() && passes++ < 8) {
+            val pass = prepared.environment.legalActions().first { it.action is PassPriority }
+            prepared.environment.step(pass.action)
+        }
+        prepared.environment.state.stack shouldBe emptyList()
+        prepared.environment.state.getEntity(prepared.sourceId)
+            ?.get<AttachedToComponent>()
+            ?.targetId shouldBe submittedTarget
+    }
+
+    test("fixed Equip rejects unpublished targets and incomplete ExplicitV2 without advancing") {
+        val prepared = preparedFixedEquip()
+        val observed = prepared.gym.observe().observation
+        val view = observed.legalActions.firstOrNull { candidate ->
+            candidate.kind == "ActivateAbility" &&
+                candidate.paymentDomain?.requiredCost == "{1}" &&
+                candidate.targetDomain?.requirements?.singleOrNull()?.candidates?.size == 2
+        } ?: error("Expected target-bearing fixed Equip action: ${observed.legalActions}")
+        val unpublishedTarget = EntityId("not-a-published-equip-target")
+        view.targetDomain!!.requirements.single().candidates.contains(unpublishedTarget) shouldBe false
+        val stepCountBefore = prepared.environment.stepCount
+
+        shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(
+                view.actionId,
+                equipPayload(view, unpublishedTarget, explicitV2Payment(view)),
+            )
+        }
+        prepared.environment.stepCount shouldBe stepCountBefore
+
+        shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(
+                view.actionId,
+                equipPayload(
+                    view,
+                    prepared.targetIds.first(),
+                    incompleteExplicitV2Payment(view),
+                ),
+            )
+        }
+        prepared.environment.stepCount shouldBe stepCountBefore
     }
 
     test("variable sacrifice publishes candidates and complete cardinality in the observation") {
