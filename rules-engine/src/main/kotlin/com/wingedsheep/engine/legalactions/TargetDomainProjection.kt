@@ -27,14 +27,26 @@ sealed interface TargetDomainSupport {
 /**
  * The ordered target-information result produced by the Rules target enumerator.
  *
- * The type delegates [List] so existing Rules callers can continue to perform candidate and
- * satisfiability checks without rebuilding a second list.  [support] is the authoritative seam
- * metadata; a caller must not treat [infos] as externally publishable when it is UNSUPPORTED.
+ * This is an engine-side result wrapper rather than a [List].  [infos] is the ordered target
+ * metadata and [support] is the authoritative seam metadata; a caller must not treat [infos] as
+ * externally publishable when it is UNSUPPORTED.  Keeping the wrapper distinct from [List] is
+ * intentional: a support-bearing projection must not claim list equality with its payload and
+ * thereby violate the symmetric [Any.equals] contract.
  */
 data class TargetInfoProjection(
     val infos: List<TargetInfo>,
     val support: TargetDomainSupport,
-) : List<TargetInfo> by infos {
+) : Iterable<TargetInfo> {
+    val size: Int get() = infos.size
+
+    operator fun get(index: Int): TargetInfo = infos[index]
+
+    fun isEmpty(): Boolean = infos.isEmpty()
+
+    fun isNotEmpty(): Boolean = infos.isNotEmpty()
+
+    override fun iterator(): Iterator<TargetInfo> = infos.iterator()
+
     override fun equals(other: Any?): Boolean =
         other is TargetInfoProjection && infos == other.infos && support == other.support
 

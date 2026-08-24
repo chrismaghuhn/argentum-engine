@@ -297,7 +297,7 @@ class CastFromCollectionWithoutPayingCostExecutor(
             // no-op is decided before target metadata conversion: no pending decision/domain will be
             // emitted, so an unresolved field must not replace the established no-target fallback.
             val mandatoryRequirementHasNoTargets = targetRequirements.withIndex().any { (index, requirement) ->
-                requirement.effectiveMinCount > 0 && legalTargetsMap[index].isNullOrEmpty()
+                legalTargetsMap[index].orEmpty().size < requirement.effectiveMinCount
             }
             if (mandatoryRequirementHasNoTargets) {
                 return TargetPrep.NoLegalTargets

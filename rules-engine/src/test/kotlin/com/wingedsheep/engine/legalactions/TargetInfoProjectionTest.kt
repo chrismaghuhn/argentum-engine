@@ -104,6 +104,23 @@ class TargetInfoProjectionTest : FunSpec({
         )
     }
 
+    test("a mandatory requirement is unsatisfied when fewer candidates than its minimum exist") {
+        val driver = setupP1(battlefield = listOf("Grizzly Bears"))
+        val projection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
+            state = driver.game.state,
+            playerId = driver.player1,
+            targetReqs = listOf(TargetObject(
+                count = 2,
+                minCount = 2,
+                filter = TargetFilter.Creature,
+            )),
+        )
+
+        projection.infos.single().minTargets shouldBe 2
+        projection.infos.single().validTargets shouldBe listOf(driver.game.state.getBattlefield().single())
+        TargetEnumerationUtils(PredicateEvaluator()).allRequirementsSatisfied(projection) shouldBe false
+    }
+
     test("non-controller chooser fails closed without changing chooser ownership") {
         val driver = setupP1(battlefield = listOf("Grizzly Bears"))
         val projection = TargetEnumerationUtils(PredicateEvaluator()).buildTargetInfos(
@@ -148,6 +165,7 @@ class TargetInfoProjectionTest : FunSpec({
 
         (supported == unsupported) shouldBe false
         (supported == emptyList<TargetInfo>()) shouldBe false
+        (emptyList<TargetInfo>() == supported) shouldBe false
         setOf(supported, unsupported).size shouldBe 2
         listOf(supported, unsupported) shouldContain supported
     }

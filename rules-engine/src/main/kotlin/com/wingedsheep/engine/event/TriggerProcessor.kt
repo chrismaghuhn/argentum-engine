@@ -512,7 +512,7 @@ class TriggerProcessor(
             ),
             requireAuthoritativeContext = true,
         )
-        if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) return null
+        if (legalTargets.size < targetRequirement.effectiveMinCount) return null
         return BatchKey(trigger.controllerId, identity)
     }
 
@@ -748,7 +748,7 @@ class TriggerProcessor(
             requireAuthoritativeContext = true,
         )
 
-        if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) {
+        if (legalTargets.size < targetRequirement.effectiveMinCount) {
             // No legal targets - ability doesn't go on stack
             return ExecutionResult.success(
                 state,
@@ -871,7 +871,7 @@ class TriggerProcessor(
             requireAuthoritativeContext = true,
         )
 
-        if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) {
+        if (legalTargets.size < targetRequirement.effectiveMinCount) {
             // No legal targets - ability doesn't go on stack
             return ExecutionResult.success(
                 state,
@@ -984,7 +984,7 @@ class TriggerProcessor(
         // (Rule 603.3d). This applies regardless of whether the ability is optional ("you may").
         for ((index, req) in allRequirements.withIndex()) {
             val legalTargets = allLegalTargets[index] ?: emptyList()
-            if (legalTargets.isEmpty() && req.effectiveMinCount > 0) {
+            if (legalTargets.size < req.effectiveMinCount) {
                 // The else branch is in one of two places, and both are the same printed clause.
                 // A mandatory ability writes "…; otherwise, X" as `elseEffect`. A "you may … If you
                 // don't, X" ability keeps its else inside the consent gate, because that is where
@@ -1538,7 +1538,7 @@ class TriggerProcessor(
             // filter. Preserve trigger-time fizzle/skip semantics before any unsupported target
             // metadata is converted into a structured-domain diagnostic.
             val hasMandatoryEmptySlot = mode.targetRequirements.withIndex().any { (index, req) ->
-                req.effectiveMinCount > 0 && legalTargetsMap[index].orEmpty().isEmpty()
+                legalTargetsMap[index].orEmpty().size < req.effectiveMinCount
             }
             if (hasMandatoryEmptySlot) {
                 val remainingModeIndices = chosenModeIndices.filterIndexed { index, _ -> index != ordinal }
@@ -1891,13 +1891,13 @@ class TriggerProcessor(
         requireAuthoritativeContext = true,
     )
 
-    /** True when every mandatory target requirement of [mode] has at least one legal target. */
+    /** True when every mandatory target requirement of [mode] can meet its minimum cardinality. */
     private fun modeHasLegalTargets(
         state: GameState,
         ability: TriggeredAbilityOnStackComponent,
         mode: com.wingedsheep.sdk.scripting.effects.Mode
     ): Boolean = mode.targetRequirements.all { req ->
-        req.effectiveMinCount == 0 || findModeLegalTargets(state, ability, req).isNotEmpty()
+        findModeLegalTargets(state, ability, req).size >= req.effectiveMinCount
     }
 
     /**

@@ -1708,7 +1708,7 @@ internal fun processChosenModeQueue(
     // Preserve the established fizzle before converting metadata: an unresolved semantic fact
     // cannot matter when a mandatory slot has no legal candidate at all.
     val allSatisfied = targetSnapshots.withIndex().all { (index, snapshot) ->
-        (legalTargetsMap[index]?.isNotEmpty() == true) || snapshot.requirement.effectiveMinCount == 0
+        legalTargetsMap[index].orEmpty().size >= snapshot.requirement.effectiveMinCount
     }
     if (!allSatisfied) {
         // Fizzle just this mode; continue with the rest.

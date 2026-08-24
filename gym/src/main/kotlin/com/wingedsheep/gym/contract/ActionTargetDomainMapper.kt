@@ -52,7 +52,7 @@ object ActionTargetDomainMapper {
                     requirement.minTargets < 0 ||
                     requirement.maxTargets < requirement.minTargets ||
                     requirement.validTargets.size != requirement.validTargets.toSet().size ||
-                    (requirement.minTargets > 0 && requirement.validTargets.isEmpty()) ||
+                    requirement.validTargets.size < requirement.minTargets ||
                     requirement.targetChooser != TargetChooser.Controller ||
                     requirement.validTargets.any { !isEntityReferenceAddressable(it) }
             }) {

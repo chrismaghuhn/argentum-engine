@@ -4476,19 +4476,18 @@ class CastSpellHandler(
     ): Boolean {
         if (mode.targetRequirements.isEmpty()) return true
         return mode.targetRequirements.all { req ->
-            req.effectiveMinCount == 0 ||
-                targetFinder.findLegalTargets(
-                    state = state,
-                    requirement = req,
+            targetFinder.findLegalTargets(
+                state = state,
+                requirement = req,
+                controllerId = casterId,
+                sourceId = sourceId,
+                pipelineContext = PredicateContext(
                     controllerId = casterId,
                     sourceId = sourceId,
-                    pipelineContext = PredicateContext(
-                        controllerId = casterId,
-                        sourceId = sourceId,
-                        xValue = xValue,
-                    ),
-                    requireAuthoritativeContext = true,
-                ).isNotEmpty()
+                    xValue = xValue,
+                ),
+                requireAuthoritativeContext = true,
+            ).size >= req.effectiveMinCount
         }
     }
 
@@ -4866,7 +4865,7 @@ class CastSpellHandler(
                 legalTargetsMap[index] = legal
             }
             val allSatisfied = mode.targetRequirements.withIndex().all { (index, req) ->
-                legalTargetsMap[index].orEmpty().isNotEmpty() || req.effectiveMinCount == 0
+                legalTargetsMap[index].orEmpty().size >= req.effectiveMinCount
             }
             if (!allSatisfied) {
                 return ExecutionResult.error(state, "No legal targets for mode: ${mode.description}")

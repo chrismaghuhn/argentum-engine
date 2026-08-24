@@ -208,7 +208,7 @@ data class LegalAction(
     override val additionalCostType: String? get() = additionalCostInfo?.costType
 
     override val hasUnfillableTargetRequirement: Boolean
-        get() = targetRequirements.any { it.minTargets > 0 && it.validTargets.isEmpty() }
+        get() = targetRequirements.any { it.validTargets.size < it.minTargets }
 }
 
 /**

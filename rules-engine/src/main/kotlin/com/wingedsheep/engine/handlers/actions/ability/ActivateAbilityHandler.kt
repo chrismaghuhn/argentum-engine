@@ -1118,7 +1118,7 @@ class ActivateAbilityHandler(
                         pipelineContext = pipelineContext,
                         requireAuthoritativeContext = true,
                     )
-                    if (legal.isEmpty() && effectiveReq.effectiveMinCount > 0) {
+                    if (legal.size < effectiveReq.effectiveMinCount) {
                         return ExecutionResult.error(state, "No legal target for ${cardComponent.name}")
                     }
                     legalTargets[index] = legal
@@ -2335,7 +2335,7 @@ class ActivateAbilityHandler(
                 ),
                 requireAuthoritativeContext = true,
             )
-            if (legal.isEmpty() && effectiveReq.effectiveMinCount > 0) {
+            if (legal.size < effectiveReq.effectiveMinCount) {
                 // A required target with no legal choice means the ability can't be activated
                 // (the enumerator gates on this; guard the engine-direct path too).
                 return ExecutionResult.error(state, "No legal target for opponent's choice")

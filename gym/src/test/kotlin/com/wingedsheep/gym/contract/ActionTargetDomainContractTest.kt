@@ -130,6 +130,25 @@ class ActionTargetDomainContractTest : FunSpec({
             )
     }
 
+    test("a mandatory domain with too few candidates fails closed") {
+        val result = ActionTargetDomainMapper.map(
+            action(
+                requirements = listOf(
+                    requirement(
+                        index = 0,
+                        minTargets = 2,
+                        maxTargets = 2,
+                        candidates = listOf(EntityId("only-candidate")),
+                    ),
+                ),
+            ),
+            ::allCandidatesAreAddressable,
+        ).shouldBeInstanceOf<ActionTargetDomainMapper.Result.Unsupported>()
+
+        result.diagnostic.code shouldBe DiagnosticCode.ACTION_TARGET_DOMAIN_UNSUPPORTED
+        result.diagnostic.semanticCode shouldBe "ACTION_TARGET_DOMAIN_UNSUPPORTED"
+    }
+
     test("maps the fixed action domain in semantic requirement order with canonical candidates") {
         val result = ActionTargetDomainMapper.map(
             action(

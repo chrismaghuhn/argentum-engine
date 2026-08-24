@@ -121,7 +121,7 @@ class WebSlingingCastEnumerator : ActionEnumerator {
                     targetCount = firstReqInfo?.maxTargets ?: 1,
                     minTargets = firstReq?.effectiveMinCount ?: (firstReq?.count ?: 1),
                     targetDescription = firstReq?.description,
-                    targetRequirements = targetReqInfos,
+                    targetRequirements = targetReqInfos.infos,
                                      targetDomainSupport = targetReqInfos.support,
                     manaCostString = webSlingMana.toString(),
                     additionalCostInfo = bounceCostInfo,

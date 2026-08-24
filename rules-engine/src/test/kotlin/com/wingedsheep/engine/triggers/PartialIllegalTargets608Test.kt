@@ -2214,6 +2214,33 @@ class PartialIllegalTargets608Test : FunSpec({
         decision.targetRequirements.single().maxTargets shouldBe 2
     }
 
+    test("processTargetedTrigger fizzles when a mandatory count cannot be filled") {
+        val driver = driver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature(count = 2)
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic unfillable mandatory trigger",
+        ).copy(id = AbilityId("synthetic-unfillable-mandatory-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic unfillable mandatory trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        result.pendingDecision shouldBe null
+        result.error shouldBe null
+        result.events.filterIsInstance<AbilityFizzledEvent>().size shouldBe 1
+    }
+
     test("processTargetedTrigger with missing X withholds dynamic count metadata") {
         val driver = dynamicDriver()
         val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")

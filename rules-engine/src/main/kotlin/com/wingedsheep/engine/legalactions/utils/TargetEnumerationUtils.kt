@@ -511,8 +511,13 @@ class TargetEnumerationUtils(
         else -> false
     }
 
+    /** Binary/source-compatible overload for callers that already hold a [List]. */
     fun allRequirementsSatisfied(targetInfos: List<TargetInfo>): Boolean {
-        return targetInfos.all { it.validTargets.isNotEmpty() || it.minTargets == 0 }
+        return targetInfos.all { it.validTargets.size >= it.minTargets }
+    }
+
+    fun allRequirementsSatisfied(targetInfos: Iterable<TargetInfo>): Boolean {
+        return targetInfos.all { it.validTargets.size >= it.minTargets }
     }
 
     // Player protection checks
