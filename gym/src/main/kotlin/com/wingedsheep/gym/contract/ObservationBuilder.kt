@@ -597,7 +597,7 @@ class ObservationBuilder(
      * Gym submission guard. A null result is meaningful: a payable action without a complete V2
      * V3 domain is unsupported and must not fall back to an engine-selected policy.
      */
-    internal fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV3? {
+    internal fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV4? {
         val requiredCost = legalAction.manaCostString ?: return null
         return when (val action = legalAction.action) {
             is ActivateAbility -> {
@@ -760,7 +760,7 @@ class ObservationBuilder(
      */
     private fun hasUnrepresentableAdditionalPayment(
         legalAction: LegalAction,
-        paymentDomain: PaymentDomainV3,
+        paymentDomain: PaymentDomainV4,
     ): Boolean {
         val info = legalAction.additionalCostInfo ?: return false
         if (info.costAfterSacrifice.isNotEmpty() ||

@@ -1,10 +1,11 @@
 package com.wingedsheep.engine.handlers.effects.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypes
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Subtype
 
 /**
  * Tags mana added to a player's pool with its provenance — which source produced it and what
@@ -28,10 +29,10 @@ object ManaProvenanceTracker {
 
     /**
      * Increment the producing player's provenance counters when [sourceId] produced [amount] mana.
-     * Snapshots the source's subtypes from its base [CardComponent.typeLine] — the source may already
-     * be in the graveyard (a Treasure's `{T}, Sacrifice this` pays the cost before the mana effect
-     * resolves), but the entity persists with its base type line intact. A source with no card
-     * component (or a null [sourceId]) still tags the source id if present, contributing no subtypes.
+     * [sourceSubtypes] is the production-time snapshot when the caller already captured it before
+     * a tap/sacrifice. The fallback reads effective projected characteristics at this actual
+     * production seam only; payment code never calls this method to reconstruct a historical
+     * bucket.
      */
     fun addUnrestrictedMana(
         state: GameState,
@@ -39,10 +40,11 @@ object ManaProvenanceTracker {
         sourceId: EntityId?,
         color: PaymentManaColor,
         amount: Int,
+        sourceSubtypes: Set<Subtype>? = null,
     ): GameState {
         if (amount <= 0) return state
-        val subtypes = sourceId?.let {
-            state.getEntity(it)?.get<CardComponent>()?.typeLine?.subtypes?.toSet()
+        val subtypes = sourceSubtypes ?: sourceId?.let {
+            state.projectedState.productionSourceSubtypes(it)
         } ?: emptySet()
         return state.updateEntity(playerId) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -50,7 +52,16 @@ object ManaProvenanceTracker {
                 if (color == PaymentManaColor.COLORLESS) pool.addColorless(amount)
                 else pool.add(color.asEngineColor()!!, amount)
             } else {
-                pool.addTracked(color, sourceId, subtypes, amount)
+                pool.addTracked(
+                    color = color,
+                    sourceId = sourceId,
+                    subtypes = subtypes,
+                    amount = amount,
+                    // This is stamped at the actual production transition, while the producing
+                    // player is authoritative for the snapshot. Publication later must use this
+                    // stored known-information fact, never current CardComponent visibility.
+                    knownToPlayers = setOf(playerId),
+                )
             }
             container.with(updated)
         }
@@ -60,10 +71,12 @@ object ManaProvenanceTracker {
     @Deprecated("Pass the concrete produced color to preserve source/color provenance")
     fun tagAddedMana(state: GameState, playerId: EntityId, sourceId: EntityId?, amount: Int): GameState {
         if (amount <= 0 || sourceId == null) return state
-        val subtypes = state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.subtypes?.toSet() ?: emptySet()
         return state.updateEntity(playerId) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
-            container.with(pool.withProvenance(sourceId, subtypes, amount))
+            // This compatibility API is called after the concrete production seam has already
+            // lost its snapshot. Do not reconstruct subtype provenance from the current source;
+            // preserve only the legacy source aggregate and remain fail-closed for joint payment.
+            container.with(pool.withProvenance(sourceId, emptySet(), amount))
         }
     }
 }

@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers.actions.spell
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
@@ -72,9 +73,8 @@ class CastPaymentProcessor(
 
     /**
      * Provenance of mana freshly tapped by the solver during a payment (AutoPay / Explicit). The
-     * floating-pool tags don't cover it — this mana never entered the pool — so we read each tapped
-     * source's subtypes from state and pair them with the source id. Combined with the pool's
-     * consumed provenance to form the full [SpentManaProvenance] for the payment.
+     * snapshot is carried from the actual production transition through [ManaProduction]; this
+     * method never rereads a source's current card state after a tap or sacrifice.
      */
     private fun tappedSourceProvenance(state: GameState, manaProduced: Map<EntityId, com.wingedsheep.engine.mechanics.mana.ManaProduction>): SpentManaProvenance {
         if (manaProduced.isEmpty()) return SpentManaProvenance()
@@ -84,9 +84,7 @@ class CastPaymentProcessor(
             val amount = production.amount + production.colorless
             if (amount <= 0) continue
             sourceIds.add(sourceId)
-            val subtypes = state.getEntity(sourceId)
-                ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                ?.typeLine?.subtypes ?: emptySet()
+            val subtypes = production.sourceSubtypes.orEmpty()
             for (subtype in subtypes) bySubtype[subtype] = (bySubtype[subtype] ?: 0) + amount
         }
         return SpentManaProvenance(bySubtype, sourceIds)
@@ -132,6 +130,20 @@ class CastPaymentProcessor(
                 spellContext,
                 xManaRestriction
             )
+            is PaymentStrategy.ExplicitV2 -> action.paymentStrategy.paymentPlan?.let { plan ->
+                explicitPlanV2Pay(
+                    state = state,
+                    playerId = action.playerId,
+                    plan = plan,
+                    cost = effectiveCost,
+                    cardName = cardName,
+                    spellContext = spellContext,
+                )
+            } ?: PaymentResult(
+                state = state,
+                events = emptyList(),
+                error = "PaymentStrategy.ExplicitV2 requires PaymentPlanV2",
+            )
         }
     }
 
@@ -165,12 +177,58 @@ class CastPaymentProcessor(
                 error = (validation as PaymentPlanValidation.Rejected).reason,
             )
 
+        return finishExplicitPlanPayment(
+            state = state,
+            playerId = playerId,
+            accepted = accepted,
+            cardName = cardName,
+            errorLabel = "PaymentPlanV1 source activation failed",
+        )
+    }
+
+    private fun explicitPlanV2Pay(
+        state: GameState,
+        playerId: EntityId,
+        plan: PaymentPlanV2,
+        cost: ManaCost,
+        cardName: String,
+        spellContext: SpellPaymentContext?,
+    ): PaymentResult {
+        val validation = paymentPlanValidator.validateV2(
+            state = state,
+            playerId = playerId,
+            cost = cost,
+            plan = plan,
+            spellContext = spellContext,
+        )
+        val accepted = validation as? PaymentPlanValidation.Accepted
+            ?: return PaymentResult(
+                state = state,
+                events = emptyList(),
+                error = (validation as PaymentPlanValidation.Rejected).reason,
+            )
+        return finishExplicitPlanPayment(
+            state = state,
+            playerId = playerId,
+            accepted = accepted,
+            cardName = cardName,
+            errorLabel = "PaymentPlanV2 source activation failed",
+        )
+    }
+
+    private fun finishExplicitPlanPayment(
+        state: GameState,
+        playerId: EntityId,
+        accepted: PaymentPlanValidation.Accepted,
+        cardName: String,
+        errorLabel: String,
+    ): PaymentResult {
         var currentState = state.updateEntity(playerId) { container ->
-            container.with(fromManaPool(accepted.poolAfterSpend))
+            container.with(fromManaPool(accepted.materialization.poolAfterFloatingSpend))
         }
         val events = mutableListOf<GameEvent>()
 
-        val spentProvenance = accepted.materialization.spentManaProvenance
+        var spentProvenance = accepted.materialization.spentManaProvenance
         if (accepted.materialization.sourcePayments.isNotEmpty()) {
             val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
                 state = currentState,
@@ -178,10 +236,22 @@ class CastPaymentProcessor(
                 controllerId = playerId,
             )
             if (!sideEffectResult.success) {
-                return PaymentResult(currentState, events, "PaymentPlanV1 source activation failed")
+                return PaymentResult(state, events, errorLabel)
             }
             currentState = sideEffectResult.state
             events.addAll(sideEffectResult.events)
+
+            // The selected source abilities have now actually produced mana. Only at this seam do
+            // the solver-carried subtype snapshots become authoritative: consumed outputs
+            // contribute to SpentManaProvenance, while unspent fixed outputs enter the pool as
+            // exact Rules-owned joint buckets. No current CardComponent is consulted here.
+            currentState = currentState.updateEntity(playerId) { container ->
+                container.with(
+                    fromManaPool(
+                        accepted.materialization.poolAfterSuccessfulSourceProduction(playerId)
+                    )
+                )
+            }
         }
 
         val spent = accepted.materialization.manaSpent
@@ -309,7 +379,8 @@ class CastPaymentProcessor(
         // Restricted mana doesn't participate (tagged mana is always unrestricted). Everything is
         // paid from the pool here, so there is no freshly-tapped-source provenance to add.
         val unrestrictedSpent = (whiteSpent + blueSpent + blackSpent + redSpent + greenSpent + colorlessSpent) - restrictedSpent
-        val (poolWithProvenanceUpdated, spentProvenance) = poolAfterPayment.consumeProvenance(maxOf(0, unrestrictedSpent))
+        val (provenancePool, spentProvenance) = pool.consumeProvenance(maxOf(0, unrestrictedSpent))
+        val poolWithProvenanceUpdated = poolAfterPayment.withProvenanceFrom(provenancePool)
 
         val newState = state.updateEntity(playerId) { container ->
             container.with(fromManaPool(poolWithProvenanceUpdated))
@@ -436,7 +507,8 @@ class CastPaymentProcessor(
                 (poolComponent.green - poolAfterPayment.green) +
                 (poolComponent.colorless - poolAfterPayment.colorless)
         )
-        val (poolWithProvenanceUpdated, poolProvenance) = poolAfterPayment.consumeProvenance(poolUnrestrictedSpent)
+        val (provenancePool, poolProvenance) = pool.consumeProvenance(poolUnrestrictedSpent)
+        val poolWithProvenanceUpdated = poolAfterPayment.withProvenanceFrom(provenancePool)
         var spentProvenance = poolProvenance
 
         currentState = currentState.updateEntity(playerId) { container ->

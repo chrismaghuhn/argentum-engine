@@ -1,7 +1,9 @@
 package com.wingedsheep.engine.state.components.player
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Subtype
 import kotlinx.serialization.Serializable
 
 /**
@@ -33,6 +35,50 @@ internal fun hasCompleteSourceColorProvenance(
         PaymentManaColor.entries.all { (byColor[it] ?: 0) == colorCounts[it] }
 }
 
+/**
+ * Structural check for the authoritative source/color/subtype production snapshot. Aggregate
+ * maps are projections of [manaByFloatingBucket] and are never sufficient to prove this helper.
+ */
+internal fun hasCompleteFloatingManaProvenance(
+    colorCounts: Map<PaymentManaColor, Int>,
+    manaBySource: Map<EntityId, Int>,
+    manaBySourceAndColor: Map<EntityId, Map<PaymentManaColor, Int>>,
+    manaBySubtype: Map<Subtype, Int>,
+    manaByFloatingBucket: Map<FloatingManaBucketKeyV1, Int>,
+): Boolean {
+    val unrestrictedTotal = colorCounts.values.sum()
+    if (unrestrictedTotal <= 0 || colorCounts.values.any { it < 0 }) return false
+    if (manaBySource.values.any { it <= 0 } || manaBySourceAndColor.isEmpty()) return false
+    if (manaBySourceAndColor.values.any {
+            it.isEmpty() || it.values.any { amount -> amount <= 0 }
+        }
+    ) return false
+    if (manaByFloatingBucket.isEmpty() || manaByFloatingBucket.values.any { it <= 0 }) return false
+    if (manaBySubtype.values.any { it <= 0 }) return false
+
+    val bySource = mutableMapOf<EntityId, Int>()
+    val bySourceAndColor = mutableMapOf<EntityId, MutableMap<PaymentManaColor, Int>>()
+    val byColor = mutableMapOf<PaymentManaColor, Int>()
+    val bySubtype = mutableMapOf<Subtype, Int>()
+    manaByFloatingBucket.forEach { (key, amount) ->
+        bySource[key.sourceId] = (bySource[key.sourceId] ?: 0) + amount
+        val sourceColors = bySourceAndColor.getOrPut(key.sourceId) { mutableMapOf() }
+        sourceColors[key.poolColor] = (sourceColors[key.poolColor] ?: 0) + amount
+        byColor[key.poolColor] = (byColor[key.poolColor] ?: 0) + amount
+        key.sourceSubtypes.forEach { subtype ->
+            bySubtype[subtype] = (bySubtype[subtype] ?: 0) + amount
+        }
+    }
+
+    if (manaByFloatingBucket.values.sum() != unrestrictedTotal) return false
+    if (bySource != manaBySource) return false
+    if (bySourceAndColor.mapValues { (_, colors) -> colors.toMap() } != manaBySourceAndColor) {
+        return false
+    }
+    if (PaymentManaColor.entries.any { (byColor[it] ?: 0) != colorCounts[it] }) return false
+    return bySubtype == manaBySubtype
+}
+
 internal fun ManaPoolComponent.hasCompleteSourceColorProvenance(): Boolean =
     manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE &&
         hasCompleteSourceColorProvenance(
@@ -46,6 +92,23 @@ internal fun ManaPoolComponent.hasCompleteSourceColorProvenance(): Boolean =
             ),
             manaBySource = manaBySource,
             manaBySourceAndColor = manaBySourceAndColor,
+        )
+
+internal fun ManaPoolComponent.hasCompleteFloatingManaProvenance(): Boolean =
+    manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE &&
+        hasCompleteFloatingManaProvenance(
+            colorCounts = mapOf(
+                PaymentManaColor.WHITE to white,
+                PaymentManaColor.BLUE to blue,
+                PaymentManaColor.BLACK to black,
+                PaymentManaColor.RED to red,
+                PaymentManaColor.GREEN to green,
+                PaymentManaColor.COLORLESS to colorless,
+            ),
+            manaBySource = manaBySource,
+            manaBySourceAndColor = manaBySourceAndColor,
+            manaBySubtype = manaBySubtype,
+            manaByFloatingBucket = manaByFloatingBucket,
         )
 
 /**

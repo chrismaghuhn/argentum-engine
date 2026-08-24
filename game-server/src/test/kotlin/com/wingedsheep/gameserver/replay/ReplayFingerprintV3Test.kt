@@ -2,6 +2,7 @@ package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.BatchYesNoDecision
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModeOption
@@ -49,6 +50,7 @@ import com.wingedsheep.sdk.scripting.effects.Gate
 import com.wingedsheep.sdk.scripting.effects.GatedEffect
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
 import io.kotest.core.spec.style.FunSpec
@@ -147,6 +149,39 @@ class ReplayFingerprintV3Test : FunSpec({
         ReplayFingerprint.of(blackThenGreen, 3) shouldNotBe ReplayFingerprint.of(greenThenBlack, 3)
         ReplayFingerprint.of(blackThenGreen, 3) shouldBe
             ReplayFingerprint.of(sameContentDifferentOrder, 3)
+    }
+
+    test("v4 fingerprint binds joint bucket provenance while v3 keeps its historical shape") {
+        val player = EntityId("p1")
+        val source = EntityId("e108")
+        val base = GameState().withEntity(
+            player,
+            ComponentContainer.of(
+                ManaPoolComponent(
+                    green = 1,
+                    manaBySource = mapOf(source to 1),
+                    manaBySourceAndColor = mapOf(source to mapOf(PaymentManaColor.GREEN to 1)),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                ),
+            ),
+        )
+        val joint = base.updateEntity(player) { container ->
+            container.with(
+                container.get<ManaPoolComponent>()!!.copy(
+                    manaByFloatingBucket = mapOf(
+                        FloatingManaBucketKeyV1(
+                            source,
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                    ),
+                    manaProvenanceKnownTo = setOf(player),
+                ),
+            )
+        }
+
+        ReplayFingerprint.of(base, 3) shouldBe ReplayFingerprint.of(joint, 3)
+        ReplayFingerprint.of(base, 4) shouldNotBe ReplayFingerprint.of(joint, 4)
     }
 
     test("v3 fingerprint includes semantic yields and canonicalizes unordered sets") {

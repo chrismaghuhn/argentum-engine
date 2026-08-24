@@ -130,6 +130,8 @@ class UnlockRoomDoorHandler(
                     return "Selected mana sources cannot pay the unlock cost"
                 }
             }
+            is PaymentStrategy.ExplicitV2 ->
+                return "PaymentStrategy.ExplicitV2 is not supported for room unlocking"
         }
 
         return null
@@ -238,6 +240,11 @@ class UnlockRoomDoorHandler(
                     tapEvent?.let(events::add)
                 }
             }
+            is PaymentStrategy.ExplicitV2 ->
+                return ExecutionResult.error(
+                    currentState,
+                    "PaymentStrategy.ExplicitV2 is not supported for room unlocking",
+                )
         }
 
         // Apply the unlock to the RoomComponent via the shared primitive, so the unlock-cost

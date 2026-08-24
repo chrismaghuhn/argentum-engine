@@ -12,6 +12,7 @@ import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
@@ -22,6 +23,7 @@ import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.CertifiedFloatingManaSourceBucketDomainV2
 import com.wingedsheep.gym.contract.CertifiedFloatingManaSourceColorBucketDomainV3
+import com.wingedsheep.gym.contract.CertifiedFloatingManaBucketDomainV4
 import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Step
@@ -57,7 +59,7 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.types.shouldBeInstanceOf
 
-/** Focused coverage for action-authoritative PaymentDomainV3 inputs. */
+/** Focused coverage for action-authoritative PaymentDomainV4 inputs. */
 class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
 
     val sourceWithTapPayment = card("Gym Action Payment Source") {
@@ -724,7 +726,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         return Triple(environment, player, cardId)
     }
 
-    test("PaymentDomainV3 excludes the ability source when the action also pays its tap cost") {
+    test("PaymentDomainV4 excludes the ability source when the action also pays its tap cost") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val action = ActivateAbility(
             playerId = player,
@@ -774,7 +776,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         result.observation.legalActions.single().paymentDomain shouldBe null
     }
 
-    test("Boros Charm choose-one CastSpellMode publishes a fixed PaymentDomainV3") {
+    test("Boros Charm choose-one CastSpellMode publishes a fixed PaymentDomainV4") {
         val (environment, player, cardId) = preparedBorosCharmCast()
         val legalAction = environment.legalActions().first {
             it.actionType == "CastSpellMode" &&
@@ -1012,7 +1014,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         result.observation.legalActions.single().paymentDomain shouldBe null
     }
 
-    test("targeted CastSpell without target-dependent cost still publishes PaymentDomainV3") {
+    test("targeted CastSpell without target-dependent cost still publishes PaymentDomainV4") {
         val (environment, player, targets) = preparedTargetDependentCast()
         val action = environment.legalActions().first {
             val cast = it.action as? CastSpell
@@ -1076,7 +1078,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldBe null
     }
 
-    test("PaymentDomainV3 is fail-closed when floating mana has hidden provenance") {
+    test("PaymentDomainV4 is fail-closed when floating mana has hidden provenance") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1110,7 +1112,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldBe null
     }
 
-    test("PaymentDomainV3 publishes a certified single-unit floating candidate") {
+    test("PaymentDomainV4 publishes a certified single-unit joint floating bucket") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1119,6 +1121,18 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
                     green = 1,
                     manaBySource = mapOf(sourceId to 1),
                     manaBySubtype = mapOf(Subtype.FOREST to 1),
+                    manaBySourceAndColor = mapOf(
+                        sourceId to mapOf(PaymentManaColor.GREEN to 1),
+                    ),
+                    manaByFloatingBucket = mapOf(
+                        FloatingManaBucketKeyV1(
+                            sourceId,
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                    ),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                    manaProvenanceKnownTo = setOf(player),
                 ),
             )
         }
@@ -1142,17 +1156,18 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             .legalActions
             .single()
         val domain = view.paymentDomain ?: error("expected a certified payment domain")
-        val candidate = domain.currentPool.certifiedFloatingMana
-            ?: error("expected certified floating-mana buckets")
-
-        candidate.poolColor shouldBe PaymentManaColor.GREEN
-        candidate.sourceSubtypes shouldBe listOf("Forest")
-        candidate.sourceBuckets shouldBe listOf(
-            CertifiedFloatingManaSourceBucketDomainV2(sourceId, 1),
+        domain.version shouldBe 4
+        domain.currentPool.certifiedFloatingBuckets shouldBe listOf(
+            CertifiedFloatingManaBucketDomainV4(
+                sourceId,
+                PaymentManaColor.GREEN,
+                listOf("Forest"),
+                1,
+            ),
         )
     }
 
-    test("PaymentDomainV3 publishes every visible homogeneous source bucket in stable order") {
+    test("PaymentDomainV4 publishes every visible homogeneous joint bucket in stable order") {
         val (environment, player, forestIds) = preparedWithTwoForests(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1161,6 +1176,24 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
                     green = 2,
                     manaBySource = mapOf(forestIds[1] to 1, forestIds[0] to 1),
                     manaBySubtype = mapOf(Subtype.FOREST to 2),
+                    manaBySourceAndColor = mapOf(
+                        forestIds[0] to mapOf(PaymentManaColor.GREEN to 1),
+                        forestIds[1] to mapOf(PaymentManaColor.GREEN to 1),
+                    ),
+                    manaByFloatingBucket = mapOf(
+                        FloatingManaBucketKeyV1(
+                            forestIds[0],
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                        FloatingManaBucketKeyV1(
+                            forestIds[1],
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                    ),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                    manaProvenanceKnownTo = setOf(player),
                 ),
             )
         }
@@ -1183,16 +1216,16 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             .observation
             .legalActions
             .single()
-        val candidate = view.paymentDomain?.currentPool?.certifiedFloatingMana
-            ?: error("expected the V3 certified floating domain")
+        val candidate = view.paymentDomain?.currentPool?.certifiedFloatingBuckets
+            ?: error("expected the V4 certified floating domain")
 
-        candidate.poolColor shouldBe PaymentManaColor.GREEN
-        candidate.sourceSubtypes shouldBe listOf("Forest")
-        candidate.sourceBuckets.map { it.sourceId } shouldBe forestIds.sortedBy { it.value }
-        candidate.sourceBuckets.map { it.amount } shouldBe listOf(1, 1)
+        candidate.map { it.sourceId } shouldBe forestIds.sortedBy { it.value }
+        candidate.map { it.poolColor } shouldBe listOf(PaymentManaColor.GREEN, PaymentManaColor.GREEN)
+        candidate.map { it.sourceSubtypes } shouldBe listOf(listOf("Forest"), listOf("Forest"))
+        candidate.map { it.amount } shouldBe listOf(1, 1)
     }
 
-    test("PaymentDomainV3 publishes exact heterogeneous source-color buckets") {
+    test("PaymentDomainV4 publishes exact heterogeneous joint buckets") {
         val (environment, player, forestIds) = preparedWithTwoForests(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1206,7 +1239,20 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
                         forestIds[0] to mapOf(PaymentManaColor.BLACK to 1),
                         forestIds[1] to mapOf(PaymentManaColor.GREEN to 3),
                     ),
+                    manaByFloatingBucket = mapOf(
+                        FloatingManaBucketKeyV1(
+                            forestIds[0],
+                            PaymentManaColor.BLACK,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                        FloatingManaBucketKeyV1(
+                            forestIds[1],
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 3,
+                    ),
                     manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                    manaProvenanceKnownTo = setOf(player),
                 ),
             )
         }
@@ -1229,23 +1275,67 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             .observation
             .legalActions
             .single()
-        val domain = view.paymentDomain ?: error("expected a V3 payment domain")
-        val heterogeneous = domain.currentPool.certifiedHeterogeneousFloatingMana
-            ?: error("expected heterogeneous source-color buckets")
+        val domain = view.paymentDomain ?: error("expected a V4 payment domain")
 
-        domain.version shouldBe 3
-        domain.currentPool.certifiedFloatingMana shouldBe null
-        heterogeneous.sourceColorBuckets shouldBe listOf(
-            CertifiedFloatingManaSourceColorBucketDomainV3(
-                forestIds[0], PaymentManaColor.BLACK, 1,
+        domain.version shouldBe 4
+        domain.currentPool.certifiedFloatingBuckets shouldBe listOf(
+            CertifiedFloatingManaBucketDomainV4(
+                forestIds[0], PaymentManaColor.BLACK, listOf("Forest"), 1,
             ),
-            CertifiedFloatingManaSourceColorBucketDomainV3(
-                forestIds[1], PaymentManaColor.GREEN, 3,
+            CertifiedFloatingManaBucketDomainV4(
+                forestIds[1], PaymentManaColor.GREEN, listOf("Forest"), 3,
             ),
-        ).sortedWith(compareBy({ it.sourceId.value }, { it.poolColor.ordinal }))
+        )
     }
 
-    test("PaymentDomainV3 does not publish a candidate for an invisible source reference") {
+    test("PaymentDomainV4 fails closed when joint snapshots are not authoritative known information") {
+        val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
+        val stateWithProvenance = environment.state.updateEntity(player) { container ->
+            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            container.with(
+                pool.copy(
+                    green = 1,
+                    manaBySource = mapOf(sourceId to 1),
+                    manaBySubtype = mapOf(Subtype.FOREST to 1),
+                    manaBySourceAndColor = mapOf(
+                        sourceId to mapOf(PaymentManaColor.GREEN to 1),
+                    ),
+                    manaByFloatingBucket = mapOf(
+                        FloatingManaBucketKeyV1(
+                            sourceId,
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                    ),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                    manaProvenanceKnownTo = emptySet(),
+                ),
+            )
+        }
+        environment.restore(stateWithProvenance, environment.playerIds, environment.stepCount)
+
+        val action = ActivateAbility(
+            playerId = player,
+            sourceId = sourceId,
+            abilityId = sourceWithTapPayment.activatedAbilities[1].id,
+        )
+        val legalAction = LegalAction(
+            action = action,
+            actionType = "ActivateAbility",
+            description = "Do not publish unknown production-time subtype visibility",
+            manaCostString = "{1}{R}",
+        )
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(legalAction))
+            .observation
+            .legalActions
+            .single()
+
+        view.paymentDomain shouldBe null
+    }
+
+    test("PaymentDomainV4 does not publish a candidate for an invisible source reference") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val hiddenSourceId = EntityId("hidden-source-reference")
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
@@ -1281,7 +1371,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldBe null
     }
 
-    test("PaymentDomainV3 does not publish a face-down public source identity") {
+    test("PaymentDomainV4 does not publish a face-down public source identity") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val opponent = environment.playerIds.single { it != player }
         val opponentMountain = environment.state.entities.entries.first { (id, container) ->
@@ -1330,7 +1420,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldBe null
     }
 
-    test("PaymentDomainV3 is fail-closed for mana abilities with activation tracking") {
+    test("PaymentDomainV4 is fail-closed for mana abilities with activation tracking") {
         val (environment, player, sourceId) = prepared(sourceWithTrackedMana.name)
         val action = ActivateAbility(
             playerId = player,

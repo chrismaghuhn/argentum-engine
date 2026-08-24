@@ -1308,8 +1308,10 @@ class CastSpellHandler(
             ?: cardDef?.script)?.xManaRestriction ?: emptySet()
 
         val explicitStrategy = action.paymentStrategy as? PaymentStrategy.Explicit
+        val explicitV2Strategy = action.paymentStrategy as? PaymentStrategy.ExplicitV2
         val explicitPlan = explicitStrategy?.paymentPlan
-        if (explicitPlan != null) {
+        val explicitV2Plan = explicitV2Strategy?.paymentPlan
+        if (explicitPlan != null || explicitV2Plan != null) {
             val unsupportedReason = when {
                 action.castFaceDown -> "face-down payment choices are not representable"
                 action.xValue != null || cost.symbols.any {
@@ -1334,17 +1336,29 @@ class CastSpellHandler(
                 else -> null
             }
             if (unsupportedReason != null) return paymentDomainUnsupported(unsupportedReason)
-            if (explicitStrategy.manaAbilitiesToActivate.isNotEmpty()) {
-                return "PaymentPlanV1 must not include legacy runtime mana source handles"
+            val legacyHandles = explicitStrategy?.manaAbilitiesToActivate
+                ?: explicitV2Strategy?.manaAbilitiesToActivate.orEmpty()
+            if (legacyHandles.isNotEmpty()) {
+                return "${if (explicitV2Plan != null) "PaymentPlanV2" else "PaymentPlanV1"} must not include legacy runtime mana source handles"
             }
             return when (
-                val paymentValidation = paymentPlanValidator.validate(
-                    state = state,
-                    playerId = action.playerId,
-                    cost = effectiveCost,
-                    plan = explicitPlan,
-                    spellContext = spellCtx,
-                )
+                val paymentValidation = if (explicitV2Plan != null) {
+                    paymentPlanValidator.validateV2(
+                        state = state,
+                        playerId = action.playerId,
+                        cost = effectiveCost,
+                        plan = explicitV2Plan,
+                        spellContext = spellCtx,
+                    )
+                } else {
+                    paymentPlanValidator.validate(
+                        state = state,
+                        playerId = action.playerId,
+                        cost = effectiveCost,
+                        plan = explicitPlan!!,
+                        spellContext = spellCtx,
+                    )
+                }
             ) {
                 is PaymentPlanValidation.Accepted -> null
                 is PaymentPlanValidation.Rejected -> paymentValidation.reason
@@ -1423,6 +1437,8 @@ class CastSpellHandler(
                     } else null
                 }
             }
+            is PaymentStrategy.ExplicitV2 ->
+                "PaymentStrategy.ExplicitV2 requires PaymentPlanV2"
         }
     }
 

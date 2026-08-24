@@ -1,10 +1,14 @@
 package com.wingedsheep.gameserver.replay
 
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.PaymentPlanV2
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.gameserver.persistence.persistenceJson
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.JsonElement
@@ -60,10 +64,34 @@ class ReplayVersionCompatibilityTest : FunSpec({
         ReplayFingerprint.of(GameState(), decoded.version).length shouldBe 16
     }
 
-    test("v3 checkpoint policy is explicit rather than tied to the current version") {
+    test("checkpoint policy covers both historical v3 and current v4") {
         ReplayCheckpointPolicy.requiresTailCheckpoint(3) shouldBe true
         ReplayCheckpointPolicy.requiresTailCheckpoint(2) shouldBe false
-        ReplayCheckpointPolicy.requiresTailCheckpoint(4) shouldBe false
+        ReplayCheckpointPolicy.requiresTailCheckpoint(4) shouldBe true
         ReplayCheckpointPolicy.requiresTailCheckpoint(5) shouldBe false
+    }
+
+    test("ExplicitV2 cannot be carried under the historical CompactReplay-v3 label") {
+        val action = CastSpell(
+            playerId = com.wingedsheep.sdk.model.EntityId("p1"),
+            cardId = com.wingedsheep.sdk.model.EntityId("spell"),
+            paymentStrategy = PaymentStrategy.ExplicitV2(paymentPlan = PaymentPlanV2()),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            replay(version = 3).copy(actions = listOf(action))
+        }
+        replay(version = 4).copy(actions = listOf(action)).version shouldBe 4
+    }
+
+    test("ExplicitV2 action round-trips under the CompactReplay-v4 label") {
+        val action = CastSpell(
+            playerId = com.wingedsheep.sdk.model.EntityId("p1"),
+            cardId = com.wingedsheep.sdk.model.EntityId("spell"),
+            paymentStrategy = PaymentStrategy.ExplicitV2(paymentPlan = PaymentPlanV2()),
+        )
+        val original = replay(version = 4).copy(actions = listOf(action))
+
+        ReplayCodec.decode(ReplayCodec.encode(original)) shouldBe original
     }
 })

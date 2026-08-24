@@ -8,6 +8,7 @@ import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.mana.capturedProductionSourceSubtypes
 import com.wingedsheep.engine.mechanics.mana.ManaColorSetResolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -137,6 +138,7 @@ class AddManaOfChoiceExecutor(
                 sourceId = context.sourceId,
                 color = com.wingedsheep.engine.core.PaymentManaColor.fromEngine(color),
                 amount = amount,
+                sourceSubtypes = context.capturedProductionSourceSubtypes(),
             )
             val sourceName = context.sourceId?.let { newState.getEntity(it)?.get<CardComponent>()?.name }
             val event = ManaAddedEvent(

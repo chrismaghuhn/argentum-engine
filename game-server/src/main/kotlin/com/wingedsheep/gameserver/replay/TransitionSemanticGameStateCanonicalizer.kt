@@ -109,12 +109,19 @@ internal object TransitionSemanticGameStateCanonicalizer {
         descriptors
     }
 
-    fun canonicalJson(state: GameState): String {
+    fun canonicalJson(
+        state: GameState,
+        includeJointFloatingProvenance: Boolean = true,
+    ): String {
         val serialized = persistenceJson.encodeToJsonElement(GameState.serializer(), state)
         // Action-level target metadata is an additive Gym observation contract. It is not part of
         // CompactReplay v3 reconstruction semantics, so omit those fields before canonicalization
         // and keep existing persisted fingerprints stable.
-        val replayInput = stripPostV3TargetRequirementFields(serialized, GameState.serializer().descriptor)
+        val replayInput = stripPostV3Fields(
+            serialized,
+            GameState.serializer().descriptor,
+            includeJointFloatingProvenance,
+        )
         val decisionAliases = DecisionNonceAliasTable()
         val abilityPlan = collectAbilityAliases(replayInput, GameState.serializer().descriptor)
         val abilityAliases = AbilityIdAliasTable(abilityPlan.aliases, abilityPlan.reservedRawIds)
@@ -134,21 +141,31 @@ internal object TransitionSemanticGameStateCanonicalizer {
      * compatibility transform: v3 must not silently reinterpret an old checkpoint because the
      * current Kotlin data class now contains additional fields.
      */
-    private fun stripPostV3TargetRequirementFields(
+    private val postV3JointFloatingProvenanceFields = setOf(
+        "manaByFloatingBucket",
+        "manaProvenanceKnownTo",
+    )
+
+    private fun stripPostV3Fields(
         element: JsonElement,
         descriptor: SerialDescriptor?,
+        includeJointFloatingProvenance: Boolean,
     ): JsonElement = when (element) {
         is JsonObject -> {
             val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
             val typeName = concreteDescriptor?.serialName?.substringAfterLast('.')
             val entries = element.entries
                 .filterNot { (key, _) ->
-                    typeName == "TargetRequirementInfo" && key in postV3TargetRequirementFields
+                    (typeName == "TargetRequirementInfo" && key in postV3TargetRequirementFields) ||
+                        (!includeJointFloatingProvenance &&
+                            typeName == "ManaPoolComponent" &&
+                            key in postV3JointFloatingProvenanceFields)
                 }
                 .map { (key, value) ->
-                    key to stripPostV3TargetRequirementFields(
+                    key to stripPostV3Fields(
                         value,
                         concreteDescriptor?.fieldDescriptor(key),
+                        includeJointFloatingProvenance,
                     )
                 }
             JsonObject(LinkedHashMap<String, JsonElement>().apply {
@@ -161,15 +178,16 @@ internal object TransitionSemanticGameStateCanonicalizer {
                 val keyDescriptor = descriptor.getElementDescriptor(0)
                 val valueDescriptor = descriptor.getElementDescriptor(1)
                 JsonArray(element.mapIndexed { index, child ->
-                    stripPostV3TargetRequirementFields(
+                    stripPostV3Fields(
                         child,
                         if (index % 2 == 0) keyDescriptor else valueDescriptor,
+                        includeJointFloatingProvenance,
                     )
                 })
             } else {
                 val elementDescriptor = descriptor?.getElementDescriptorOrNull()
                 JsonArray(element.map { child ->
-                    stripPostV3TargetRequirementFields(child, elementDescriptor)
+                    stripPostV3Fields(child, elementDescriptor, includeJointFloatingProvenance)
                 })
             }
         }
