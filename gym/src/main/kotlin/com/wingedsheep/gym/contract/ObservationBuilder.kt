@@ -66,6 +66,7 @@ import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
+import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -103,6 +104,8 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.effects.LevelUpClassEffect
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -143,6 +146,9 @@ class ObservationBuilder(
     }
     private val costCalculator by lazy { CostCalculator(cardRegistry) }
     private val manaSolver by lazy { ManaSolver(cardRegistry) }
+    private val activatedAbilityCostCalculator by lazy {
+        ActivatedAbilityCostCalculator(castPermissionUtils)
+    }
     private val actionSerialization = Json {
         encodeDefaults = true
         explicitNulls = false
@@ -175,13 +181,7 @@ class ObservationBuilder(
             legalActions.map { action ->
                 ActionDomainMapping(
                     action,
-                    ActionTargetDomainMapper.map(action) { entityId ->
-                        visibility.isEntityReferenceAddressableTo(
-                            state = state,
-                            entityId = entityId,
-                            viewingPlayerId = perspectivePlayerId,
-                        )
-                    },
+                    mapPublicTargetDomain(state, action, perspectivePlayerId),
                 )
             }
         } else {
@@ -609,7 +609,8 @@ class ObservationBuilder(
                     ability.hasConvoke ||
                     ability.hasWaterbend ||
                     legalAction.additionalCostInfo != null ||
-                    ability.isEquipAbility ||
+                    (ability.isEquipAbility &&
+                        !isSupportedEquipPayment(state, legalAction, action, ability, requiredCost)) ||
                     (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
                 ) {
                     // The action payload does not yet carry the non-mana/target choices that
@@ -708,6 +709,96 @@ class ObservationBuilder(
             else -> null
         }
     }
+
+    /**
+     * Map the exact public target domain used by observations and trusted submission proof.
+     * The acting player's visibility perspective is part of the support certificate; replacing
+     * it with an unconditional predicate would certify hidden or otherwise unaddressable targets.
+     */
+    private fun mapPublicTargetDomain(
+        state: GameState,
+        legalAction: LegalAction,
+        viewingPlayerId: EntityId,
+    ): ActionTargetDomainMapper.Result =
+        ActionTargetDomainMapper.map(legalAction) { entityId ->
+            visibility.isEntityReferenceAddressableTo(
+                state = state,
+                entityId = entityId,
+                viewingPlayerId = viewingPlayerId,
+            )
+        }
+
+    /**
+     * Equip enumeration is allowed to publish a payment domain only when its public target
+     * contract is fixed and every public target produces the same complete effective AbilityCost
+     * as the unbound enumerated action. The handler later reruns the same Rules-owned calculator
+     * with the submitted target, so this is an equality proof rather than a numeric-cost guess.
+     */
+    private fun isSupportedEquipPayment(
+        state: GameState,
+        legalAction: LegalAction,
+        action: ActivateAbility,
+        ability: ActivatedAbility,
+        requiredCost: String,
+    ): Boolean {
+        val targetDomain = when (val mapping = mapPublicTargetDomain(state, legalAction, action.playerId)) {
+            is ActionTargetDomainMapper.Result.Supported -> mapping.domain
+            ActionTargetDomainMapper.Result.Unsupported -> return false
+        }
+        val publicTargetRequirement = targetDomain.requirements.singleOrNull() ?: return false
+        if (publicTargetRequirement.minTargets != 1 ||
+            publicTargetRequirement.maxTargets != 1 ||
+            publicTargetRequirement.candidates.isEmpty()
+        ) return false
+
+        val legalTargetRequirement = legalAction.targetRequirements.singleOrNull() ?: return false
+        if (legalTargetRequirement.minTargets != 1 || legalTargetRequirement.maxTargets != 1) {
+            return false
+        }
+
+        val abilityTargetRequirement = ability.targetRequirements.singleOrNull() as? TargetObject
+            ?: return false
+        if (abilityTargetRequirement.count != 1 ||
+            abilityTargetRequirement.minCount != 1 ||
+            abilityTargetRequirement.optional ||
+            abilityTargetRequirement.unlimited ||
+            abilityTargetRequirement.dynamicMaxCount != null ||
+            abilityTargetRequirement.totalManaValueAtMost != null
+        ) return false
+
+        if (ability.genericCostReduction != null || ability.cost.manaCostOrNull == null) {
+            return false
+        }
+        val parsedPublicCost = runCatching { ManaCost.parse(requiredCost) }
+            .getOrNull()
+            ?.canonicalZero() ?: return false
+        if (parsedPublicCost.symbols.any {
+                it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
+            }
+        ) return false
+
+        val advertisedCost = AbilityCost.Atom(CostAtom.Mana(parsedPublicCost))
+        val unboundCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            ability = ability,
+        )
+        if (unboundCost != advertisedCost) return false
+
+        return publicTargetRequirement.candidates.all { candidateId ->
+            activatedAbilityCostCalculator.calculate(
+                state = state,
+                sourceId = action.sourceId,
+                controllerId = action.playerId,
+                ability = ability,
+                targets = listOf(ChosenTarget.Permanent(candidateId)),
+            ) == advertisedCost
+        }
+    }
+
+    private fun ManaCost.canonicalZero(): ManaCost =
+        if (symbols.all { it is ManaSymbol.Generic && it.amount == 0 }) ManaCost.ZERO else this
 
     private fun isSupportedCastSpellPayment(
         legalAction: LegalAction,
