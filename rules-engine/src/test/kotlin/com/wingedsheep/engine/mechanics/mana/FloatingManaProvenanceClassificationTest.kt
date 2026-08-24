@@ -149,15 +149,13 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
 
         val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedJoint>()
         certified.candidate.buckets shouldBe listOf(
-            CertifiedFloatingManaBucket(forestKey, 1),
             CertifiedFloatingManaBucket(emptyKey, 1),
+            CertifiedFloatingManaBucket(forestKey, 1),
         )
     }
 
     test("rejects complete joint buckets when aggregate subtype provenance is partial") {
         val sourceId = EntityId("partial-joint-source")
-        val forestKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
-        val emptyKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, emptySet())
 
         val result = FloatingManaProvenanceClassification.classify(
             ManaPoolComponent(
@@ -165,7 +163,6 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
                 manaBySource = mapOf(sourceId to 2),
                 manaBySubtype = mapOf(Subtype.FOREST to 1),
                 manaBySourceAndColor = mapOf(sourceId to mapOf(PaymentManaColor.GREEN to 2)),
-                manaByFloatingBucket = mapOf(forestKey to 1, emptyKey to 1),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
             ),
         )
@@ -175,8 +172,6 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
 
     test("rejects detailed homogeneous partial subtype provenance") {
         val sourceId = EntityId("partial-homogeneous-source")
-        val forestKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
-        val emptyKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, emptySet())
 
         val result = FloatingManaProvenanceClassification.classify(
             ManaPoolComponent(
@@ -184,7 +179,6 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
                 manaBySource = mapOf(sourceId to 2),
                 manaBySubtype = mapOf(Subtype.FOREST to 1),
                 manaBySourceAndColor = mapOf(sourceId to mapOf(PaymentManaColor.GREEN to 2)),
-                manaByFloatingBucket = mapOf(forestKey to 1, emptyKey to 1),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
             ),
         )

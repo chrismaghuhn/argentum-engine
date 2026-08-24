@@ -31,7 +31,7 @@ class ManaProvenanceSerializationRoundTripTest : FunSpec({
         return ManaPoolComponent(
             black = 1,
             green = 3,
-            manaBySubtype = mapOf(Subtype.FOREST to 4),
+            manaBySubtype = mapOf(Subtype.FOREST to 3),
             manaBySource = mapOf(blackSource to 1, greenSource to 3),
             manaBySourceAndColor = mapOf(
                 blackSource to mapOf(PaymentManaColor.BLACK to 1),
