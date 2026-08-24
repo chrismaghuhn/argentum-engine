@@ -68,6 +68,51 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
         result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
     }
 
+    test("rejects heterogeneous aggregate totals without source-color provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(
+                    EntityId("e108") to 1,
+                    EntityId("e117") to 1,
+                    EntityId("e136") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 4),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("certifies a complete heterogeneous source-color matrix") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(
+                    EntityId("e108") to 1,
+                    EntityId("e117") to 1,
+                    EntityId("e136") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 4),
+                manaBySourceAndColor = mapOf(
+                    EntityId("e108") to mapOf(PaymentManaColor.BLACK to 1),
+                    EntityId("e117") to mapOf(PaymentManaColor.GREEN to 1),
+                    EntityId("e136") to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHeterogeneous>()
+        certified.candidate.sourceColorBuckets shouldBe listOf(
+            CertifiedFloatingManaSourceColorBucket(EntityId("e108"), PaymentManaColor.BLACK, 1),
+            CertifiedFloatingManaSourceColorBucket(EntityId("e117"), PaymentManaColor.GREEN, 1),
+            CertifiedFloatingManaSourceColorBucket(EntityId("e136"), PaymentManaColor.GREEN, 2),
+        )
+    }
+
     test("rejects one tagged unit mixed with one untagged unit") {
         val result = FloatingManaProvenanceClassification.classify(
             ManaPoolComponent(
