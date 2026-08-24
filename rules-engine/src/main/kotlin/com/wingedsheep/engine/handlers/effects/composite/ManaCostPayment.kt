@@ -2,10 +2,13 @@ package com.wingedsheep.engine.handlers.effects.composite
 
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -32,14 +35,7 @@ fun payManaCostFromPool(
     val manaPoolComponent = playerEntity.get<ManaPoolComponent>()
         ?: return EffectResult.error(state, "Player has no mana pool")
 
-    val manaPool = ManaPool(
-        manaPoolComponent.white,
-        manaPoolComponent.blue,
-        manaPoolComponent.black,
-        manaPoolComponent.red,
-        manaPoolComponent.green,
-        manaPoolComponent.colorless
-    )
+    val manaPool = manaPoolComponent.toManaPool()
 
     val partialResult = manaPool.payPartial(cost)
     val remainingCost = partialResult.remainingCost
@@ -58,11 +54,24 @@ fun payManaCostFromPool(
         currentState = tapResult.state
         events.addAll(tapResult.events)
 
-        for ((_, production) in solution.manaProduced) {
+        for ((sourceId, production) in solution.manaProduced) {
+            val subtypes = state.getEntity(sourceId)
+                ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                ?.typeLine?.subtypes.orEmpty()
             currentPool = if (production.color != null) {
-                currentPool.add(production.color)
+                currentPool.addTracked(
+                    color = PaymentManaColor.fromEngine(production.color),
+                    sourceId = sourceId,
+                    subtypes = subtypes,
+                    amount = production.amount,
+                )
             } else {
-                currentPool.addColorless(production.colorless)
+                currentPool.addTracked(
+                    color = PaymentManaColor.COLORLESS,
+                    sourceId = sourceId,
+                    subtypes = subtypes,
+                    amount = production.colorless,
+                )
             }
         }
     }
@@ -72,14 +81,7 @@ fun payManaCostFromPool(
 
     currentState = currentState.updateEntity(player) { container ->
         container.with(
-            ManaPoolComponent(
-                white = newPool.white,
-                blue = newPool.blue,
-                black = newPool.black,
-                red = newPool.red,
-                green = newPool.green,
-                colorless = newPool.colorless
-            )
+            fromManaPool(newPool)
         )
     }
 
@@ -110,14 +112,7 @@ fun canAutoPayManaCost(
 ): Boolean {
     val manaPoolComponent = state.getEntity(player)?.get<ManaPoolComponent>() ?: return false
 
-    val manaPool = ManaPool(
-        manaPoolComponent.white,
-        manaPoolComponent.blue,
-        manaPoolComponent.black,
-        manaPoolComponent.red,
-        manaPoolComponent.green,
-        manaPoolComponent.colorless
-    )
+    val manaPool = manaPoolComponent.toManaPool()
 
     val remainingCost = manaPool.payPartial(cost).remainingCost
     if (remainingCost.isEmpty()) return true

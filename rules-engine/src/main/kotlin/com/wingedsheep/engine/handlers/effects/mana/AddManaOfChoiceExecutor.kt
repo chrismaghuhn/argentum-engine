@@ -130,18 +130,33 @@ class AddManaOfChoiceExecutor(
         val effectiveRestriction: ManaRestriction? = effect.restriction
             ?: if (effect.riders.isNotEmpty()) ManaRestriction.AnySpend else null
 
-        var newState = state.updateEntity(recipientId) { container ->
-            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
-            val updated = if (effectiveRestriction != null) {
-                pool.addRestricted(color, amount, effectiveRestriction, effect.riders)
-            } else {
-                pool.add(color, amount)
-            }
-            container.with(updated)
+        if (effectiveRestriction == null) {
+            val newState = ManaProvenanceTracker.addUnrestrictedMana(
+                state = state,
+                playerId = recipientId,
+                sourceId = context.sourceId,
+                color = com.wingedsheep.engine.core.PaymentManaColor.fromEngine(color),
+                amount = amount,
+            )
+            val sourceName = context.sourceId?.let { newState.getEntity(it)?.get<CardComponent>()?.name }
+            val event = ManaAddedEvent(
+                playerId = recipientId,
+                sourceId = context.sourceId,
+                sourceName = sourceName,
+                white = if (color == Color.WHITE) amount else 0,
+                blue = if (color == Color.BLUE) amount else 0,
+                black = if (color == Color.BLACK) amount else 0,
+                red = if (color == Color.RED) amount else 0,
+                green = if (color == Color.GREEN) amount else 0,
+                colorless = 0,
+            )
+            return EffectResult.success(newState, listOf(event))
         }
 
-        if (effectiveRestriction == null) {
-            newState = ManaProvenanceTracker.tagAddedMana(newState, recipientId, context.sourceId, amount)
+        val newState = state.updateEntity(recipientId) { container ->
+            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            val updated = pool.addRestricted(color, amount, effectiveRestriction, effect.riders)
+            container.with(updated)
         }
 
         val sourceName = context.sourceId?.let { newState.getEntity(it)?.get<CardComponent>()?.name }

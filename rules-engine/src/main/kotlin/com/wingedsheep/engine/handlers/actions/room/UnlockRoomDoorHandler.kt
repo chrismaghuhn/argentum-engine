@@ -15,10 +15,12 @@ import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.UnlockCostReducer
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
@@ -106,15 +108,7 @@ class UnlockRoomDoorHandler(
             is PaymentStrategy.FromPool -> {
                 val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = ManaPool(
-                    white = poolComponent.white,
-                    blue = poolComponent.blue,
-                    black = poolComponent.black,
-                    red = poolComponent.red,
-                    green = poolComponent.green,
-                    colorless = poolComponent.colorless,
-                    restrictedMana = poolComponent.restrictedMana
-                )
+                val pool = poolComponent.toManaPool()
                 if (!costHandler.canPayManaCost(pool, cost, unlockContext)) {
                     return "Insufficient mana in pool to unlock ${face.name}"
                 }
@@ -159,28 +153,12 @@ class UnlockRoomDoorHandler(
             is PaymentStrategy.FromPool -> {
                 val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = ManaPool(
-                    white = poolComponent.white,
-                    blue = poolComponent.blue,
-                    black = poolComponent.black,
-                    red = poolComponent.red,
-                    green = poolComponent.green,
-                    colorless = poolComponent.colorless,
-                    restrictedMana = poolComponent.restrictedMana
-                )
+                val pool = poolComponent.toManaPool()
                 val newPool = costHandler.payManaCost(pool, cost, unlockContext)
                     ?: return ExecutionResult.error(currentState, "Insufficient mana in pool")
                 currentState = currentState.updateEntity(action.playerId) { c ->
                     c.with(
-                        ManaPoolComponent(
-                            white = newPool.white,
-                            blue = newPool.blue,
-                            black = newPool.black,
-                            red = newPool.red,
-                            green = newPool.green,
-                            colorless = newPool.colorless,
-                            restrictedMana = newPool.restrictedMana
-                        )
+                        fromManaPool(newPool)
                     )
                 }
                 events.add(
@@ -199,15 +177,7 @@ class UnlockRoomDoorHandler(
             is PaymentStrategy.AutoPay -> {
                 val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = ManaPool(
-                    white = poolComponent.white,
-                    blue = poolComponent.blue,
-                    black = poolComponent.black,
-                    red = poolComponent.red,
-                    green = poolComponent.green,
-                    colorless = poolComponent.colorless,
-                    restrictedMana = poolComponent.restrictedMana
-                )
+                val pool = poolComponent.toManaPool()
                 val partialResult = pool.payPartial(cost, unlockContext)
                 val poolAfterPayment = partialResult.newPool
                 val remainingCost = partialResult.remainingCost
@@ -222,15 +192,7 @@ class UnlockRoomDoorHandler(
 
                 currentState = currentState.updateEntity(action.playerId) { c ->
                     c.with(
-                        ManaPoolComponent(
-                            white = poolAfterPayment.white,
-                            blue = poolAfterPayment.blue,
-                            black = poolAfterPayment.black,
-                            red = poolAfterPayment.red,
-                            green = poolAfterPayment.green,
-                            colorless = poolAfterPayment.colorless,
-                            restrictedMana = poolAfterPayment.restrictedMana
-                        )
+                        fromManaPool(poolAfterPayment)
                     )
                 }
 

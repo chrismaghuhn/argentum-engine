@@ -13,6 +13,7 @@ import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.LoyaltyChangedEvent
 import com.wingedsheep.engine.core.ManaAddedEvent
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
 import com.wingedsheep.engine.core.tap
@@ -26,6 +27,7 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry
+import com.wingedsheep.engine.handlers.effects.mana.ManaProvenanceTracker
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.toEntityId
 import com.wingedsheep.engine.handlers.effects.bend.BendEvents
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
@@ -37,10 +39,12 @@ import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
@@ -1237,21 +1241,7 @@ class ActivateAbilityHandler(
         // Get player's mana pool
         val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        var manaPool = ManaPool(
-            white = poolComponent.white,
-            blue = poolComponent.blue,
-            black = poolComponent.black,
-            red = poolComponent.red,
-            green = poolComponent.green,
-            colorless = poolComponent.colorless,
-            restrictedMana = poolComponent.restrictedMana,
-            // Carry mana-source provenance through the activation. pay()/spend() decrement colours
-            // but leave these maps untouched; the writeback below consumes them proportional to the
-            // floating mana actually spent, so tags for mana floated from earlier sources survive an
-            // ability activation instead of being wiped (mirrors CastPaymentProcessor's threading).
-            manaBySubtype = poolComponent.manaBySubtype,
-            manaBySource = poolComponent.manaBySource
-        )
+        var manaPool = poolComponent.toManaPool()
 
         // Pay mana costs before paying other costs
         var effectiveManaCost = extractManaCost(effectiveCost)
@@ -1601,20 +1591,12 @@ class ActivateAbilityHandler(
             manaPool.copy(
                 manaBySubtype = exactPool.manaBySubtype,
                 manaBySource = exactPool.manaBySource,
+                manaBySourceAndColor = exactPool.manaBySourceAndColor,
+                manaProvenanceCompleteness = exactPool.manaProvenanceCompleteness,
             )
         } ?: manaPool.consumeProvenance(maxOf(0, originalUnrestricted - finalUnrestricted)).first
         currentState = currentState.updateEntity(action.playerId) { c ->
-            c.with(ManaPoolComponent(
-                white = manaPool.white,
-                blue = manaPool.blue,
-                black = manaPool.black,
-                red = manaPool.red,
-                green = manaPool.green,
-                colorless = manaPool.colorless,
-                restrictedMana = manaPool.restrictedMana,
-                manaBySubtype = poolAfterProvenance.manaBySubtype,
-                manaBySource = poolAfterProvenance.manaBySource
-            ))
+            c.with(fromManaPool(poolAfterProvenance))
         }
 
         // Emit events for cost types. Tap/TapAttachedCreature/TapXPermanents taps are emitted by
@@ -1792,17 +1774,7 @@ class ActivateAbilityHandler(
                     // activation are preserved — Damping Sphere only replaces what the land just
                     // produced, not what was already in the pool. The replacement colorless carries no
                     // provenance (it comes from the replacement effect, not the land).
-                    val dampenedPool = ManaPoolComponent(
-                        white = oldPool.white,
-                        blue = oldPool.blue,
-                        black = oldPool.black,
-                        red = oldPool.red,
-                        green = oldPool.green,
-                        colorless = oldPool.colorless + 1,
-                        restrictedMana = oldPool.restrictedMana,
-                        manaBySubtype = oldPool.manaBySubtype,
-                        manaBySource = oldPool.manaBySource
-                    )
+                    val dampenedPool = oldPool.addColorless(1)
                     currentState = currentState.updateEntity(action.playerId) { container ->
                         container.with(dampenedPool)
                     }
@@ -2073,16 +2045,7 @@ class ActivateAbilityHandler(
                 // Re-read mana pool from current state
                 val repeatPoolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                var repeatPool = ManaPool(
-                    white = repeatPoolComponent.white,
-                    blue = repeatPoolComponent.blue,
-                    black = repeatPoolComponent.black,
-                    red = repeatPoolComponent.red,
-                    green = repeatPoolComponent.green,
-                    colorless = repeatPoolComponent.colorless,
-                    manaBySubtype = repeatPoolComponent.manaBySubtype,
-                    manaBySource = repeatPoolComponent.manaBySource
-                )
+                var repeatPool = repeatPoolComponent.toManaPool()
 
                 // Auto-tap for mana cost
                 if (manaCost != null) {
@@ -2130,16 +2093,7 @@ class ActivateAbilityHandler(
                 val (repeatPoolAfterProvenance, _) =
                     repeatPool.consumeProvenance(maxOf(0, repeatOriginalUnrestricted - repeatFinalUnrestricted))
                 currentState = currentState.updateEntity(action.playerId) { c ->
-                    c.with(ManaPoolComponent(
-                        white = repeatPool.white,
-                        blue = repeatPool.blue,
-                        black = repeatPool.black,
-                        red = repeatPool.red,
-                        green = repeatPool.green,
-                        colorless = repeatPool.colorless,
-                        manaBySubtype = repeatPoolAfterProvenance.manaBySubtype,
-                        manaBySource = repeatPoolAfterProvenance.manaBySource
-                    ))
+                    c.with(fromManaPool(repeatPoolAfterProvenance))
                 }
 
                 // Put another ability on the stack
@@ -2428,15 +2382,7 @@ class ActivateAbilityHandler(
         granterId: com.wingedsheep.sdk.model.EntityId? = null,
     ): Boolean {
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
-        val manaPool = ManaPool(
-            white = poolComponent.white,
-            blue = poolComponent.blue,
-            black = poolComponent.black,
-            red = poolComponent.red,
-            green = poolComponent.green,
-            colorless = poolComponent.colorless,
-            restrictedMana = poolComponent.restrictedMana,
-        )
+        val manaPool = poolComponent.toManaPool()
         val lifeTotal = CostAmountResolver.resolvePayLifeTotal(
             state = state,
             amounts = CostAmountResolver.payLifeAmounts(cost),
@@ -2678,17 +2624,7 @@ class ActivateAbilityHandler(
         // is transient (the caller overwrites the post-payment pool), but keeps intermediate state
         // consistent for anything that reads the pool between auto-tap and payment.
         currentState = currentState.updateEntity(playerId) { c ->
-            c.with(ManaPoolComponent(
-                white = currentPool.white,
-                blue = currentPool.blue,
-                black = currentPool.black,
-                red = currentPool.red,
-                green = currentPool.green,
-                colorless = currentPool.colorless,
-                restrictedMana = currentPool.restrictedMana,
-                manaBySubtype = currentPool.manaBySubtype,
-                manaBySource = currentPool.manaBySource,
-            ))
+            c.with(fromManaPool(currentPool))
         }
 
         return AutoTapResult(currentState, currentPool, events)
@@ -3029,10 +2965,13 @@ class ActivateAbilityHandler(
                 val extraFirings = countAdditionalSourceTriggerDoublers(currentState, entityId, auraController)
                 val firings = 1 + extraFirings
                 repeat(firings) {
-                    currentState = currentState.updateEntity(landController) { c ->
-                        val pool = c.get<ManaPoolComponent>() ?: ManaPoolComponent()
-                        c.with(pool.add(manaColor, amount))
-                    }
+                    currentState = ManaProvenanceTracker.addUnrestrictedMana(
+                        state = currentState,
+                        playerId = landController,
+                        sourceId = entityId,
+                        color = PaymentManaColor.fromEngine(manaColor),
+                        amount = amount,
+                    )
 
                     events.add(ManaAddedEvent(
                         playerId = landController,
@@ -3132,12 +3071,13 @@ class ActivateAbilityHandler(
                 val extraFirings = countAdditionalSourceTriggerDoublers(currentState, entityId, staticController)
                 val firings = 1 + extraFirings
                 repeat(firings) {
-                    currentState = currentState.updateEntity(tappingPlayerId) { c ->
-                        val pool = c.get<ManaPoolComponent>() ?: ManaPoolComponent()
-                        val newPool = if (bonusColor != null) pool.add(bonusColor, bonusAmount)
-                                      else pool.addColorless(bonusAmount)
-                        c.with(newPool)
-                    }
+                    currentState = ManaProvenanceTracker.addUnrestrictedMana(
+                        state = currentState,
+                        playerId = tappingPlayerId,
+                        sourceId = entityId,
+                        color = bonusColor?.let(PaymentManaColor::fromEngine) ?: PaymentManaColor.COLORLESS,
+                        amount = bonusAmount,
+                    )
 
                     events.add(ManaAddedEvent(
                         playerId = tappingPlayerId,

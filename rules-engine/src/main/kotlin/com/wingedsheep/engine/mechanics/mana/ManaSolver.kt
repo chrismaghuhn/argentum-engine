@@ -2357,19 +2357,7 @@ class ManaSolver(
         if (additionalPayLife > state.lifeTotal(playerId)) return false
         // Get the player's floating mana pool
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
-        val pool = if (poolComponent != null) {
-            ManaPool(
-                white = poolComponent.white,
-                blue = poolComponent.blue,
-                black = poolComponent.black,
-                red = poolComponent.red,
-                green = poolComponent.green,
-                colorless = poolComponent.colorless,
-                restrictedMana = poolComponent.restrictedMana
-            )
-        } else {
-            ManaPool()
-        }
+        val pool = poolComponent?.toManaPool() ?: ManaPool()
 
         // Pay partial from pool for the base cost
         val partialResult = pool.payPartial(cost, spellContext)

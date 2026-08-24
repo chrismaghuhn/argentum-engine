@@ -67,6 +67,7 @@ import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
@@ -1368,15 +1369,7 @@ class CastSpellHandler(
             is PaymentStrategy.FromPool -> {
                 val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = ManaPool(
-                    white = poolComponent.white,
-                    blue = poolComponent.blue,
-                    black = poolComponent.black,
-                    red = poolComponent.red,
-                    green = poolComponent.green,
-                    colorless = poolComponent.colorless,
-                    restrictedMana = poolComponent.restrictedMana
-                )
+                val pool = poolComponent.toManaPool()
                 if (!pool.canPay(effectiveCost, spellCtx)) {
                     "Insufficient mana in pool to cast this spell"
                 } else null
@@ -1397,15 +1390,7 @@ class CastSpellHandler(
                 // (post-convoke/delve) cost.
                 val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                     ?: ManaPoolComponent()
-                val pool = ManaPool(
-                    white = poolComponent.white,
-                    blue = poolComponent.blue,
-                    black = poolComponent.black,
-                    red = poolComponent.red,
-                    green = poolComponent.green,
-                    colorless = poolComponent.colorless,
-                    restrictedMana = poolComponent.restrictedMana
-                )
+                val pool = poolComponent.toManaPool()
                 val partial = pool.payPartial(effectiveCost, spellCtx)
                 val remainingCost = partial.remainingCost
                 // Floating mana also covers the {X} portion (execution — explicitPay → autoPay —
