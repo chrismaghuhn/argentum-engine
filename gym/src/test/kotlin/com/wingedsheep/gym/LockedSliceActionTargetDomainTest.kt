@@ -295,6 +295,29 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             listOf(ChosenTarget.Permanent(slot0), ChosenTarget.Permanent(slot1))
     }
 
+    test("locked Bonesplitter cast uses canonical raw targetless cardinality") {
+        val prepared = prepareLockedGame(
+            firstDeck = readLockedDeck("akiri-v0.1.txt"),
+            secondDeck = readLockedDeck("chevill-v0.1.txt"),
+            firstBattlefield = listOf("Plains", "Plains"),
+            firstHand = listOf("Bonesplitter"),
+            seed = 8_006L,
+        )
+        val bonesplitterId = prepared.environment.state.getZone(
+            prepared.environment.playerIds.first(),
+            Zone.HAND,
+        ).single { id -> stateCardName(prepared.environment, id) == "Bonesplitter" }
+
+        val cast = prepared.environment.legalActions().single { legal ->
+            (legal.action as? CastSpell)?.cardId == bonesplitterId
+        }
+
+        cast.targetRequirements shouldBe emptyList()
+        cast.requiresTargets shouldBe false
+        cast.minTargets shouldBe 0
+        cast.targetCount shouldBe 0
+    }
+
     test("locked Brass Squire publishes its target domain before the payment blocker is isolated") {
         val prepared = prepareLockedGame(
             firstDeck = readLockedDeck("akiri-v0.1.txt"),
