@@ -121,7 +121,8 @@ just test-class FloatingManaProvenanceClassificationTest
 ~~~
 
 Expected identity is branch `chris/a5-heterogeneous-floating-provenance`, HEAD
-`ed688e39ad` (the amended spec checkpoint), and base `485e4338f954d198a9b61a381c9a03c3fc528f8f`.
+`a93380f5d5` (the implementation-plan checkpoint), and base
+`485e4338f954d198a9b61a381c9a03c3fc528f8f`.
 Record the known launcher failure if `just` exits before Gradle; run the already-established native
 baseline separately:
 
