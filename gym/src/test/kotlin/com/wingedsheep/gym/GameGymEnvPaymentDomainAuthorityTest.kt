@@ -89,7 +89,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }
     }
 
-    val equipmentWithTarget = card("Gym Target Dependent Equipment") {
+    val fixedCostEquipment = card("Gym Fixed Cost Equipment") {
         typeLine = "Artifact — Equipment"
         equipAbility("{1}")
     }
@@ -310,7 +310,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(PortalSet.basicLands)
         register(sourceWithTapPayment)
         register(sourceWithTrackedMana)
-        register(equipmentWithTarget)
+        register(fixedCostEquipment)
         register(staticManaGrant)
         register(unsupportedXSpell)
         register(ordinarySpell)
@@ -330,6 +330,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
     fun prepared(
         cardName: String,
         includeGroundTarget: Boolean = false,
+        includeMountain: Boolean = false,
     ): Triple<GameEnvironment, EntityId, EntityId> {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
@@ -372,6 +373,14 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             }.key
             val targetZone = state.zones.entries.first { (_, ids) -> targetId in ids }.key
             state = state.moveToZone(targetId, targetZone, ZoneKey(player, Zone.BATTLEFIELD))
+        }
+        if (includeMountain) {
+            val mountainId = state.entities.entries.first { (id, container) ->
+                id in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
+                    container.get<CardComponent>()?.name == "Mountain"
+            }.key
+            val mountainZone = state.zones.entries.first { (_, ids) -> mountainId in ids }.key
+            state = state.moveToZone(mountainId, mountainZone, ZoneKey(player, Zone.BATTLEFIELD))
         }
         environment.restore(state, environment.playerIds, environment.stepCount)
         return Triple(environment, player, sourceId)
@@ -1036,38 +1045,21 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain!!.requiredCost shouldBe "{1}{U}"
     }
 
-    test("target-dependent equip payment does not publish an optimistic domain") {
+    test("fixed Equip {1} publishes its target and PaymentDomainV4 contracts") {
         val (environment, player, sourceId) = prepared(
-            equipmentWithTarget.name,
+            fixedCostEquipment.name,
             includeGroundTarget = true,
+            includeMountain = true,
         )
         val targetId = environment.state.getZone(player, Zone.BATTLEFIELD).first { id ->
             environment.state.getEntity(id)?.get<CardComponent>()?.name == groundTarget.name
         }
-        val action = ActivateAbility(
-            playerId = player,
-            sourceId = sourceId,
-            abilityId = equipmentWithTarget.activatedAbilities.single().id,
-        )
-        val legalAction = LegalAction(
-            action = action,
-            actionType = "ActivateAbility",
-            description = "Equip the test equipment",
-            requiresTargets = true,
-            validTargets = listOf(targetId),
-            manaCostString = "{1}",
-            targetDomainSupport = TargetDomainSupport.SUPPORTED,
-            targetRequirements = listOf(
-                TargetInfo(
-                    index = 0,
-                    description = "target creature",
-                    minTargets = 1,
-                    maxTargets = 1,
-                    validTargets = listOf(targetId),
-                    targetZone = Zone.BATTLEFIELD.name,
-                ),
-            ),
-        )
+        val legalAction = environment.legalActions().first { candidate ->
+            val activateAbility = candidate.action as? ActivateAbility
+            activateAbility?.playerId == player &&
+                activateAbility.sourceId == sourceId &&
+                activateAbility.abilityId == fixedCostEquipment.activatedAbilities.single().id
+        }
 
         val view = ObservationBuilder(cardRegistry = registry())
             .build(environment.state, player, listOf(legalAction))
@@ -1075,7 +1067,16 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             .legalActions
             .single()
 
-        view.paymentDomain shouldBe null
+        val targetDomain = view.targetDomain
+        targetDomain shouldNotBe null
+        val targetRequirement = targetDomain!!.requirements.single()
+        targetRequirement.minTargets shouldBe 1
+        targetRequirement.maxTargets shouldBe 1
+        targetRequirement.candidates shouldBe listOf(targetId)
+        view.manaCost shouldBe "{1}"
+        view.paymentDomain shouldNotBe null
+        view.paymentDomain!!.version shouldBe 4
+        view.paymentDomain!!.requiredCost shouldBe "{1}"
     }
 
     test("PaymentDomainV4 is fail-closed when floating mana has hidden provenance") {
