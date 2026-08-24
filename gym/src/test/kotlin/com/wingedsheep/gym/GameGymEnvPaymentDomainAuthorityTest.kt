@@ -795,6 +795,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             action = CastSpell(player, cardId),
             actionType = "CastSpell",
             description = "Cast the unsupported X spell",
+            affordable = true,
             manaCostString = "{X}{B}",
             hasXCost = true,
         )
@@ -806,6 +807,35 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         )
 
         result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("unaffordable fixed mana actions stay visible without a payment domain or diagnostic") {
+        val (environment, player, sourceId) = prepared(
+            sourceWithTapPayment.name,
+            includeMountain = true,
+        )
+        val legalAction = LegalAction(
+            action = ActivateAbility(
+                playerId = player,
+                sourceId = sourceId,
+                abilityId = sourceWithTapPayment.activatedAbilities[1].id,
+            ),
+            actionType = "ActivateAbility",
+            description = "Show the unaffordable fixed mana ability",
+            affordable = false,
+            manaCostString = "{1}{R}",
+        )
+
+        val result = ObservationBuilder(cardRegistry = registry()).build(
+            environment.state,
+            player,
+            listOf(legalAction),
+        )
+
+        result.diagnostics.any { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe false
+        result.observation.legalActions shouldHaveSize 1
+        result.observation.legalActions.single().affordable shouldBe false
         result.observation.legalActions.single().paymentDomain shouldBe null
     }
 
@@ -1084,6 +1114,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
                 activateAbility.sourceId == sourceId &&
                 activateAbility.abilityId == fixedCostEquipment.activatedAbilities.single().id
         }
+        legalAction.affordable shouldBe true
 
         val view = ObservationBuilder(cardRegistry = registry())
             .build(environment.state, player, listOf(legalAction))
@@ -1098,6 +1129,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         targetRequirement.maxTargets shouldBe 1
         targetRequirement.candidates shouldBe listOf(targetId)
         view.manaCost shouldBe "{1}"
+        view.affordable shouldBe true
         view.paymentDomain shouldNotBe null
         view.paymentDomain!!.version shouldBe 4
         view.paymentDomain!!.requiredCost shouldBe "{1}"
