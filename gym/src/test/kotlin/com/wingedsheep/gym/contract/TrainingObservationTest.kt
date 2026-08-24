@@ -54,7 +54,11 @@ class TrainingObservationTest : FunSpec({
         return env
     }
 
-    val json = Json { prettyPrint = false; ignoreUnknownKeys = true }
+    val json = Json {
+        prettyPrint = false
+        ignoreUnknownKeys = true
+        encodeDefaults = true
+    }
 
     test("observation includes all basic state fields and round-trips through JSON") {
         val env = newEnv()
@@ -80,6 +84,7 @@ class TrainingObservationTest : FunSpec({
 
         val encoded = json.encodeToString(TrainingObservation.serializer(), obs)
         encoded shouldContain "\"targetDomain\""
+        encoded shouldContain "\"requiredPayloadFields\""
         val decoded = json.decodeFromString(TrainingObservation.serializer(), encoded)
         decoded shouldBe obs
     }

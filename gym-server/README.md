@@ -99,6 +99,9 @@ object in the optional `action` field of the same step body. Even an explicit
 empty choice must be present; the server binds the completed payload to the
 current candidate and lets the rules engine validate it. It does not choose
 missing fields or apply a hidden `AutoPay` default for the trainer.
+`requiredPayloadFields` on the observation is the canonical ordered list of
+those JSON keys, including `additionalCostPayment` when the explicit choice is
+empty.
 
 ### No authentication, no TTLs, no metrics
 

@@ -239,7 +239,7 @@ class ActionTargetDomainContractTest : FunSpec({
             targetCount = 1,
         )
 
-        ActionPayloadRequirements.requiredPayloadFields(action) shouldBe setOf("targets")
+        ActionPayloadRequirements.requiredPayloadFields(action) shouldBe listOf("targets")
         shouldThrow<IllegalArgumentException> {
             ActionPayloadRequirements.requireTargetDomainSupported(action)
         }

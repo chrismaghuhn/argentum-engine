@@ -183,6 +183,8 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
         view.sacrificeMinCount shouldBe 0
         view.sacrificeMaxCount shouldBe 0
         view.requiresStructuredAction shouldBe true
+        view.requiredPayloadFields shouldBe listOf("paymentStrategy", "additionalCostPayment")
+        view.requiresStructuredAction shouldBe view.requiredPayloadFields.isNotEmpty()
         view.actionSemantics shouldNotBe null
 
         val before = gym.environment.stepCount
@@ -209,6 +211,8 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
         view.sacrificeMinCount shouldBe 0
         view.sacrificeMaxCount shouldBe 2
         view.requiresStructuredAction shouldBe true
+        view.requiredPayloadFields shouldBe listOf("paymentStrategy", "additionalCostPayment")
+        view.requiresStructuredAction shouldBe view.requiredPayloadFields.isNotEmpty()
 
         val before = gym.environment.stepCount
         shouldThrow<IllegalArgumentException> {

@@ -135,6 +135,31 @@ class ObservationCanonicalizationTest : FunSpec({
         StateDigest.compute(base) shouldNotBe StateDigest.compute(structuredVariant)
     }
 
+    test("required payload fields are ordered wire and digest semantics") {
+        val base = observation(environment())
+        val first = base.legalActions.first()
+        val withFields = base.copy(
+            legalActions = listOf(
+                first.copy(
+                    requiresStructuredAction = true,
+                    requiredPayloadFields = listOf("paymentStrategy", "additionalCostPayment"),
+                )
+            ) + base.legalActions.drop(1)
+        )
+        val reordered = withFields.copy(
+            legalActions = listOf(
+                withFields.legalActions.first().copy(
+                    requiredPayloadFields = listOf("additionalCostPayment", "paymentStrategy"),
+                )
+            ) + withFields.legalActions.drop(1)
+        )
+
+        ObservationCanonicalizer.wireJson(withFields) shouldContain "\"requiredPayloadFields\""
+        ObservationCanonicalizer.semanticJson(withFields) shouldNotBe
+            ObservationCanonicalizer.semanticJson(reordered)
+        StateDigest.compute(withFields) shouldNotBe StateDigest.compute(reordered)
+    }
+
     test("action target domains are present on the wire and candidates canonicalize by EntityId") {
         val base = observation(environment())
         val first = withActionTargetDomain(
