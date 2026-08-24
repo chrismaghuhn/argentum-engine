@@ -82,13 +82,29 @@ class CopySpellForEachOtherPossibleTargetExecutor(
 
         // Legal for *every* instance of "target" — intersect the per-requirement legal sets, keeping
         // the first requirement's ordering so the copies go on the stack deterministically.
+        val sourceSpell = container.get<SpellOnStackComponent>()
+        val sourcePredicateContext = PredicateContext(
+            controllerId = casterId,
+            sourceId = spellEntityId,
+            xValue = sourceSpell?.xValue,
+        )
         var couldTarget: List<EntityId> = targetFinder.findLegalTargets(
-            state, requirements.first(), controllerId = casterId, sourceId = spellEntityId
+            state = state,
+            requirement = requirements.first(),
+            controllerId = casterId,
+            sourceId = spellEntityId,
+            pipelineContext = sourcePredicateContext,
+            requireAuthoritativeContext = true,
         )
         for (requirement in requirements.drop(1)) {
             if (couldTarget.isEmpty()) break
             val legal = targetFinder.findLegalTargets(
-                state, requirement, controllerId = casterId, sourceId = spellEntityId
+                state = state,
+                requirement = requirement,
+                controllerId = casterId,
+                sourceId = spellEntityId,
+                pipelineContext = sourcePredicateContext,
+                requireAuthoritativeContext = true,
             ).toSet()
             couldTarget = couldTarget.filter { it in legal }
         }
@@ -112,7 +128,7 @@ class CopySpellForEachOtherPossibleTargetExecutor(
         // A modal spell keeps its chosen modes (700.2g — "the copies will have the same mode; a
         // different mode cannot be chosen"), but its targets live per-mode as well as flat. Retarget
         // both, or the copy's mode would still point at the original target.
-        val sourceModeTargets = container.get<SpellOnStackComponent>()?.modeTargetsOrdered
+        val sourceModeTargets = sourceSpell?.modeTargetsOrdered
 
         val stackResolver = StackResolver(cardRegistry = cardRegistry)
         var currentState = state

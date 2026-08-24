@@ -7,6 +7,8 @@ import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -52,6 +54,7 @@ class MoveCollectionExecutor(
      * only the latter receives the host IDs.
      */
     private val auraHostLegality = targetFinder?.let { AuraHostLegality(cardRegistry, it) }
+    private val targetValidator = TargetValidator()
 
     override val effectType: KClass<MoveCollectionEffect> = MoveCollectionEffect::class
 
@@ -723,6 +726,15 @@ class MoveCollectionExecutor(
             hostControllerId = controllerId
         ).orEmpty()
 
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = auraTarget,
+            context = EffectContext(sourceId = auraId, controllerId = controllerId),
+            legalTargetCount = legalTargets.size,
+            description = auraTarget.description,
+        ).orReturnUnsupported { return it.toEffectError(state) }
+
         if (legalTargets.isEmpty()) {
             // No legal targets — Aura stays in current zone per Rule 303.4g
             return continueAuraProcessingOrFinish(
@@ -732,12 +744,6 @@ class MoveCollectionExecutor(
 
         val decisionId = UUID.randomUUID().toString()
         val auraName = cardComponent.name
-        val requirementInfo = TargetRequirementInfo(
-            index = 0,
-            description = auraTarget.description,
-            minTargets = 1,
-            maxTargets = 1
-        )
         val decision = ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,

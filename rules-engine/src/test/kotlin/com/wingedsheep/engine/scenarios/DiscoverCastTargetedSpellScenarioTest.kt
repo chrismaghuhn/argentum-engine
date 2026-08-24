@@ -6,6 +6,12 @@ import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.state.components.identity.PlayWithoutPayingCostComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.assertions.withClue
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
@@ -27,7 +33,24 @@ import io.kotest.matchers.types.shouldBeInstanceOf
  */
 class DiscoverCastTargetedSpellScenarioTest : ScenarioTestBase() {
 
+    private val unresolvedAggregateTargetSpell = card("Synthetic Unresolved Aggregate Target Spell") {
+        manaCost = "{2}{B}"
+        typeLine = "Sorcery"
+        oracleText = "Return target creature card with total mana value X or less from a graveyard to the battlefield."
+        spell {
+            val target = target(
+                "target creature card in a graveyard",
+                TargetObject(
+                    filter = TargetFilter.CreatureInGraveyard,
+                    totalManaValueAtMost = DynamicAmount.XValue,
+                ),
+            )
+            effect = Effects.Move(target, Zone.BATTLEFIELD, fromZone = Zone.GRAVEYARD)
+        }
+    }
+
     init {
+        cardRegistry.register(unresolvedAggregateTargetSpell)
         context("discover free-casting a targeted spell") {
 
             test("Trumpeting Carnosaur's discover 5 hitting Zombify prompts for a target and reanimates it") {
@@ -114,6 +137,42 @@ class DiscoverCastTargetedSpellScenarioTest : ScenarioTestBase() {
                 }
                 withClue("No may-play permission is left covering the card") {
                     game.state.mayPlayPermissions.none { zombify in it.cardIds } shouldBe true
+                }
+            }
+
+            test("an unresolved target cap does not replace the no-legal-target no-op") {
+                // The target metadata cannot be serialized until X is known, but there is no
+                // mandatory legal candidate to choose. The existing discover fallback must win
+                // before metadata conversion and return the card to hand without an error.
+                val game = scenario()
+                    .withPlayers()
+                    .withCardInHand(1, "Trumpeting Carnosaur")
+                    .withLandsOnBattlefield(1, "Mountain", 6)
+                    .withCardInLibrary(1, unresolvedAggregateTargetSpell.name)
+                    .withCardInLibrary(1, "Mountain")
+                    .build()
+
+                val cast = game.castSpell(1, "Trumpeting Carnosaur")
+                withClue("Casting Trumpeting Carnosaur should succeed: ${cast.error}") {
+                    cast.error shouldBe null
+                }
+                game.resolveStack()
+
+                val yesNo = game.getPendingDecision().shouldBeInstanceOf<YesNoDecision>()
+                val chose = game.submitDecision(YesNoResponse(yesNo.id, choice = true))
+                withClue("Choosing to cast should preserve the no-op fallback: ${chose.error}") {
+                    chose.error shouldBe null
+                }
+
+                withClue("The unresolved target metadata must not create an executable pending decision") {
+                    game.getPendingDecision() shouldBe null
+                }
+
+                withClue("The unresolved-cap spell should return to hand") {
+                    game.isInHand(1, unresolvedAggregateTargetSpell.name) shouldBe true
+                }
+                withClue("The abandoned cast must not enter the graveyard") {
+                    game.isInGraveyard(1, unresolvedAggregateTargetSpell.name) shouldBe false
                 }
             }
 

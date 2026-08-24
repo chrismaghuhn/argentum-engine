@@ -9,6 +9,7 @@ import com.wingedsheep.engine.legalactions.support.shouldContainCastOf
 import com.wingedsheep.engine.legalactions.support.shouldNotContainCastOf
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.CantCastSpellsComponent
+import com.wingedsheep.mtg.sets.definitions.dmu.cards.BiteDown
 import com.wingedsheep.mtg.sets.definitions.dom.cards.StrongholdConfessor
 import com.wingedsheep.mtg.sets.definitions.ktk.cards.TormentingVoice
 import com.wingedsheep.mtg.sets.definitions.ecl.cards.BrigidsCommand
@@ -145,13 +146,50 @@ class CastSpellEnumeratorTest : FunSpec({
         // AnyTarget allows both players; both should be in the valid set.
         cast.validTargets!! shouldContain driver.player1
         cast.validTargets shouldContain driver.player2
+        cast.targetRequirements shouldHaveSize 1
+        cast.targetRequirements.single().validTargets shouldBe cast.validTargets
+        cast.targetDomainSupport shouldBe TargetDomainSupport.SUPPORTED
+    }
+
+    test("Bite Down exposes two ordered target requirements") {
+        val driver = setupP1(
+            hand = listOf("Bite Down"),
+            battlefield = listOf("Forest", "Forest", "Grizzly Bears"),
+            extraSetCards = listOf(BiteDown),
+        )
+        val opponentCreature = driver.game.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+
+        val view = driver.enumerateFor(driver.player1)
+        val allCasts = view.castActions()
+        val cast = allCasts.single { view.cardNameOf(it.action) == "Bite Down" }
+
+        cast.targetDomainSupport shouldBe TargetDomainSupport.SUPPORTED
+        cast.targetRequirements shouldHaveSize 2
+        cast.targetRequirements.map { it.index } shouldBe listOf(0, 1)
+        cast.targetRequirements[0].validTargets shouldContain driver.game.state.getBattlefield(driver.player1)
+            .first { id -> driver.game.state.getEntity(id)?.get<CardComponent>()?.name == "Grizzly Bears" }
+        cast.targetRequirements[1].validTargets shouldContain opponentCreature
+    }
+
+    test("targetless cast keeps the raw 1/1 compatibility fields but has an empty requirement list") {
+        val driver = setupP1(
+            hand = listOf("Grizzly Bears"),
+            battlefield = listOf("Forest", "Forest"),
+        )
+
+        val cast = driver.enumerateFor(driver.player1).castActionsFor("Grizzly Bears").single()
+
+        cast.targetRequirements shouldBe emptyList()
+        cast.targetDomainSupport shouldBe TargetDomainSupport.SUPPORTED
+        cast.minTargets shouldBe 1
+        cast.targetCount shouldBe 1
     }
 
     test("'any number of target creatures' caps at the legal-target count, not the static count of 1") {
         // Morningtide's Light declares TargetCreature(unlimited = true), whose static `count`
-        // is the default 1. The enumerated cap must be "every legal target" — a single-
-        // requirement action ships no targetRequirements, so `targetCount` is the only max
-        // the client and the AI ever see.
+        // is the default 1. The enumerated cap must be "every legal target" — this
+        // single-requirement action still exposes one ordered `targetRequirements` entry;
+        // `targetCount` remains only as a compatibility projection for legacy consumers.
         val driver = setupP1(
             hand = listOf("Morningtide's Light"),
             battlefield = listOf(

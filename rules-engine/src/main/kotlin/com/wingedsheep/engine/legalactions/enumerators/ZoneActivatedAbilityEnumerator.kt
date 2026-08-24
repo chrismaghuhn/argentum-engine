@@ -256,6 +256,8 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                                     playerId, entityId, ability.id,
                                     targets = listOf(autoSelectedTarget)
                                 ),
+                                targetRequirements = targetInfos.infos,
+                                targetDomainSupport = targetInfos.support,
                                 additionalCostInfo = costInfo,
                                 hasXCost = abilityHasXCost,
                                 maxAffordableX = abilityMaxAffordableX,
@@ -274,7 +276,8 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                                 targetCount = firstInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetInfos.size > 1) targetInfos else null,
+                                targetRequirements = targetInfos.infos,
+                                     targetDomainSupport = targetInfos.support,
                                 additionalCostInfo = costInfo,
                                 hasXCost = abilityHasXCost,
                                 maxAffordableX = abilityMaxAffordableX,

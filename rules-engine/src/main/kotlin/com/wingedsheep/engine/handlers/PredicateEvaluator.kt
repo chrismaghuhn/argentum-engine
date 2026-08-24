@@ -1194,15 +1194,7 @@ class PredicateEvaluator {
         // effect itself has already moved off the battlefield reads its last-known controller
         // (CR 608.2h).
         EffectTarget.TargetController -> {
-            val targetId = when (val first = context.targets.firstOrNull()) {
-                is ChosenTarget.Permanent -> first.entityId
-                is ChosenTarget.Card -> first.cardId
-                else -> null
-            } ?: return null
-            projected.getController(targetId)
-                ?: state.getEntity(targetId)?.get<ControllerComponent>()?.playerId
-                ?: state.getEntity(targetId)
-                    ?.get<LastKnownPermanentComponent>()?.snapshot?.controllerId
+            resolveControllerOfChosenTarget(state, projected, context.targets.firstOrNull())
         }
         else -> null
     }
@@ -1993,6 +1985,22 @@ class PredicateEvaluator {
             is CardPredicate.Not -> !matchesRecordPredicate(record, predicate.predicate)
         }
     }
+}
+
+/** Resolve the controller of a chosen object using the same live/projected/LKI order as predicates. */
+internal fun resolveControllerOfChosenTarget(
+    state: GameState,
+    projected: ProjectedState,
+    target: ChosenTarget?,
+): EntityId? {
+    val targetId = when (target) {
+        is ChosenTarget.Permanent -> target.entityId
+        is ChosenTarget.Card -> target.cardId
+        else -> null
+    } ?: return null
+    return projected.getController(targetId)
+        ?: state.getEntity(targetId)?.get<ControllerComponent>()?.playerId
+        ?: state.getEntity(targetId)?.get<LastKnownPermanentComponent>()?.snapshot?.controllerId
 }
 
 /**

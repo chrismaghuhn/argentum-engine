@@ -7,6 +7,9 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuation
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
@@ -18,6 +21,8 @@ import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils.destroyPermanen
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionResult
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -45,6 +50,7 @@ class MoveToZoneEffectExecutor(
 ) : EffectExecutor<MoveToZoneEffect> {
 
     private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
+    private val targetValidator = TargetValidator()
 
     override val effectType: KClass<MoveToZoneEffect> = MoveToZoneEffect::class
 
@@ -216,18 +222,37 @@ class MoveToZoneEffectExecutor(
         controllerId: EntityId,
         context: EffectContext
     ): EffectResult {
+        val cardName = cardComponent.name
+        val auraTarget = cardRegistry.getCard(cardComponent.cardDefinitionId)?.script?.auraTarget
+            ?: return EffectResult.error(
+                state,
+                "Target requirement semantics are unavailable for structured publication",
+                diagnostics = listOf(
+                    com.wingedsheep.engine.core.DiagnosticSignal(
+                        com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+                    )
+                )
+            )
         val legalHosts = auraHostLegality.findLegalHosts(
             state = state,
             auraId = cardId,
             hostControllerId = controllerId,
         )
 
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = auraTarget,
+            context = context.copy(sourceId = cardId, controllerId = controllerId),
+            legalTargetCount = legalHosts.size,
+            description = "what $cardName attaches to",
+        ).orReturnUnsupported { return it.toEffectError(state) }
+
         // No legal host — the Aura can't enter and stays in its current zone (CR 303.4g).
         if (legalHosts.isEmpty()) {
             return EffectResult.success(state)
         }
 
-        val cardName = cardComponent.name
         val decisionId = UUID.randomUUID().toString()
         val decision = ChooseTargetsDecision(
             id = decisionId,
@@ -238,14 +263,7 @@ class MoveToZoneEffectExecutor(
                 sourceName = context.sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.name },
                 phase = DecisionPhase.RESOLUTION
             ),
-            targetRequirements = listOf(
-                TargetRequirementInfo(
-                    index = 0,
-                    description = "what $cardName attaches to",
-                    minTargets = 1,
-                    maxTargets = 1
-                )
-            ),
+            targetRequirements = listOf(requirementInfo),
             legalTargets = mapOf(0 to legalHosts)
         )
         val continuation = PutOntoBattlefieldAttachedToChosenContinuation(

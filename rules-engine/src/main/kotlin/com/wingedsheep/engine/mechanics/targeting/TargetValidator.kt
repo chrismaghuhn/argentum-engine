@@ -10,14 +10,26 @@ import com.wingedsheep.engine.mechanics.ControllerGrants
 import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
+import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
+import com.wingedsheep.engine.core.ResolvedTargetCount
+import com.wingedsheep.engine.core.ResolvedTotalManaValueAtMost
+import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetRequirementInfoResult
+import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
+import com.wingedsheep.engine.core.totalManaValueAtMostOrNull
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
+import com.wingedsheep.engine.state.components.battlefield.CastChoicesComponent
+import com.wingedsheep.engine.state.components.battlefield.blightAmountChoice
+import com.wingedsheep.engine.state.components.battlefield.numberChoice
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.core.AbilityFlag
 import com.wingedsheep.sdk.core.CardType
@@ -27,6 +39,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.*
+import com.wingedsheep.sdk.scripting.values.ContextPropertyKey
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
 /**
@@ -170,6 +183,196 @@ class TargetValidator {
             triggeringPlayerId = triggeringPlayerId,
             storedCollections = storedCollections
         )
+    }
+
+    /**
+     * Snapshot target counts for a pending decision without allowing unavailable context to become
+     * the static SDK count. The legacy [snapshotDynamicCounts] path remains unchanged for direct
+     * resolution callers; pending publication needs the typed source witness and fail-closed
+     * result returned here.
+     */
+    internal fun snapshotDynamicCountsForPending(
+        state: GameState,
+        requirements: List<TargetRequirement>,
+        context: EffectContext,
+    ): List<PendingTargetRequirementSnapshot> = requirements.map { requirement ->
+        snapshotDynamicCountForPending(
+            state = state,
+            requirement = requirement,
+            context = context,
+        )
+    }
+
+    private fun snapshotDynamicCountForPending(
+        state: GameState,
+        requirement: TargetRequirement,
+        context: EffectContext,
+    ): PendingTargetRequirementSnapshot = when (requirement) {
+        is TargetObject -> {
+            val expression = requirement.dynamicMaxCount
+                ?: return PendingTargetRequirementSnapshot.Resolved(
+                    requirement = requirement,
+                    semanticSource = requirement,
+                    resolvedMaxTargets = null,
+                )
+            val resolved = evaluateDynamicAmountForPending(state, expression, context)
+                ?.coerceAtLeast(0)
+            if (resolved == null) {
+                PendingTargetRequirementSnapshot.Unsupported(
+                    requirement = requirement,
+                    semanticSource = requirement,
+                    reason = TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT,
+                )
+            } else {
+                PendingTargetRequirementSnapshot.Resolved(
+                    requirement = requirement.copy(
+                        count = resolved,
+                        minCount = requirement.minCount.coerceAtMost(resolved),
+                        unlimited = false,
+                        dynamicMaxCount = null,
+                    ),
+                    semanticSource = requirement,
+                    resolvedMaxTargets = ResolvedTargetCount(resolved),
+                )
+            }
+        }
+        is TargetOther -> when (
+            val base = snapshotDynamicCountForPending(
+                state = state,
+                requirement = requirement.baseRequirement,
+                context = context,
+            )
+        ) {
+            is PendingTargetRequirementSnapshot.Resolved ->
+                PendingTargetRequirementSnapshot.Resolved(
+                    requirement = requirement.copy(baseRequirement = base.requirement),
+                    semanticSource = requirement,
+                    resolvedMaxTargets = base.resolvedMaxTargets,
+                )
+            is PendingTargetRequirementSnapshot.Unsupported ->
+                PendingTargetRequirementSnapshot.Unsupported(
+                    requirement = requirement,
+                    semanticSource = requirement,
+                    reason = base.reason,
+                )
+        }
+        else -> PendingTargetRequirementSnapshot.Resolved(
+            requirement = requirement,
+            semanticSource = requirement,
+            resolvedMaxTargets = null,
+        )
+    }
+
+    /**
+     * Evaluate a dynamic source only when all pending-boundary context facts are available. The
+     * generic evaluator intentionally treats absent X, cast, and pipeline values as zero for
+     * legacy resolution; pending metadata cannot use those defaults as an authoritative fact.
+     */
+    internal fun evaluateDynamicAmountForPending(
+        state: GameState,
+        amount: DynamicAmount,
+        context: EffectContext,
+    ): Int? = if (dynamicCountContextUnavailable(state, amount, context)) {
+        null
+    } else {
+        runCatching { DynamicAmountEvaluator().evaluate(state, amount, context) }.getOrNull()
+    }
+
+    /**
+     * Resolve a source aggregate target cap for pending metadata. The nullable result is
+     * intentional: no cap is represented by null, and a dynamic cap with unavailable context also
+     * returns null so [TargetRequirementInfo] can reject publication rather than accept a fabricated
+     * value. The typed wrapper prevents callers from confusing this witness with a plain override.
+     */
+    internal fun resolveTotalManaValueAtMostForPending(
+        state: GameState,
+        requirement: TargetRequirement,
+        context: EffectContext,
+    ): ResolvedTotalManaValueAtMost? = requirement.totalManaValueAtMostOrNull()
+        ?.let { amount -> evaluateDynamicAmountForPending(state, amount, context) }
+        ?.let(::ResolvedTotalManaValueAtMost)
+
+    private fun dynamicCountContextUnavailable(
+        state: GameState,
+        amount: DynamicAmount,
+        context: EffectContext,
+    ): Boolean = when (amount) {
+        is DynamicAmount.XValue -> context.xValue == null
+        is DynamicAmount.CastX -> {
+            val source = context.sourceId?.let(state::getEntity)
+            context.xValue == null &&
+                source?.get<CastChoicesComponent>()?.x == null &&
+                source?.get<SpellOnStackComponent>()?.xValue == null
+        }
+        is DynamicAmount.CastChoice -> {
+            val source = context.sourceId?.let(state::getEntity)
+            when (amount.slot) {
+                com.wingedsheep.sdk.scripting.ChoiceSlot.BLIGHT_AMOUNT ->
+                    source?.blightAmountChoice() == null
+                else -> source?.numberChoice(amount.slot) == null
+            }
+        }
+        is DynamicAmount.ContextProperty -> when (amount.key) {
+            ContextPropertyKey.TRIGGER_DAMAGE_AMOUNT,
+            ContextPropertyKey.PREVENTED_DAMAGE_AMOUNT,
+            ContextPropertyKey.TRIGGER_LIFE_GAINED,
+            ContextPropertyKey.TRIGGER_LIFE_LOST -> context.triggerDamageAmount == null
+            ContextPropertyKey.LAST_KNOWN_PLUS_ONE_COUNTER_COUNT,
+            ContextPropertyKey.TRIGGER_COUNTERS_PLACED_AMOUNT -> context.triggerCounterCount == null
+            ContextPropertyKey.LAST_KNOWN_TOTAL_COUNTER_COUNT -> context.triggerTotalCounterCount == null
+            // These values are not carried by a pending-target producer's context, so zero would
+            // be an invented cap rather than an authoritative snapshot.
+            ContextPropertyKey.ADDITIONAL_COST_EXILED_COUNT,
+            ContextPropertyKey.TARGET_COUNT -> true
+            ContextPropertyKey.MODES_CHOSEN_ON_TRIGGERING_SPELL ->
+                context.triggerModesChosenCount == null
+            ContextPropertyKey.MANA_SPENT_ON_TRIGGERING_SPELL ->
+                context.triggerManaSpentOnTriggeringSpell == null
+            ContextPropertyKey.COLORS_SPENT_ON_TRIGGERING_SPELL ->
+                context.triggerColorsSpentOnTriggeringSpell == null
+            ContextPropertyKey.TRIGGERING_SPELL_MANA_VALUE ->
+                context.triggerManaValueOfTriggeringSpell == null
+            ContextPropertyKey.X_VALUE_OF_TRIGGERING_SPELL ->
+                context.triggerXValueOfTriggeringSpell == null
+            ContextPropertyKey.TRIGGER_SCRY_COUNT -> context.triggerScryCount == null
+            ContextPropertyKey.TRIGGER_DISCARD_COUNT -> context.triggerDiscardCount == null
+            ContextPropertyKey.TRIGGER_DISCOVER_VALUE -> context.triggerDiscoverValue == null
+            ContextPropertyKey.TRIGGER_EXCESS_DAMAGE_AMOUNT ->
+                context.triggerExcessDamageAmount == null
+            ContextPropertyKey.TRIGGER_RECIPIENT_TOUGHNESS -> context.triggerRecipientToughness == null
+            ContextPropertyKey.DIED_BATCH_TOTAL_POWER -> context.triggerDiedBatchTotalPower == null
+            ContextPropertyKey.LINKED_EXILE_CARD_COUNT,
+            ContextPropertyKey.LINKED_EXILE_DISTINCT_CARD_TYPE_COUNT -> {
+                val source = context.sourceId?.let(state::getEntity)
+                source?.get<com.wingedsheep.engine.state.components.battlefield.LinkedExileComponent>() == null
+            }
+        }
+        is DynamicAmount.VariableReference -> {
+            if (amount.variableName.endsWith("_count")) {
+                amount.variableName.removeSuffix("_count") !in context.pipeline.storedCollections
+            } else {
+                amount.variableName !in context.pipeline.storedNumbers
+            }
+        }
+        is DynamicAmount.Add ->
+            dynamicCountContextUnavailable(state, amount.left, context) ||
+                dynamicCountContextUnavailable(state, amount.right, context)
+        is DynamicAmount.Subtract ->
+            dynamicCountContextUnavailable(state, amount.left, context) ||
+                dynamicCountContextUnavailable(state, amount.right, context)
+        is DynamicAmount.Multiply -> dynamicCountContextUnavailable(state, amount.amount, context)
+        is DynamicAmount.Power -> dynamicCountContextUnavailable(state, amount.exponent, context)
+        is DynamicAmount.IfPositive -> dynamicCountContextUnavailable(state, amount.amount, context)
+        is DynamicAmount.Conditional ->
+            dynamicCountContextUnavailable(state, amount.ifTrue, context) ||
+                dynamicCountContextUnavailable(state, amount.ifFalse, context)
+        is DynamicAmount.Max ->
+            dynamicCountContextUnavailable(state, amount.left, context) ||
+                dynamicCountContextUnavailable(state, amount.right, context)
+        is DynamicAmount.Min ->
+            dynamicCountContextUnavailable(state, amount.left, context) ||
+                dynamicCountContextUnavailable(state, amount.right, context)
+        else -> false
     }
 
     private fun snapshotDynamicCount(
@@ -1813,5 +2016,54 @@ class TargetValidator {
 
     private fun playerHasHexproofAgainst(state: GameState, playerId: EntityId, casterId: EntityId): Boolean {
         return playerId != casterId && playerHasHexproof(state, playerId)
+    }
+}
+
+/**
+ * Build one pending target requirement from the authoritative source context.
+ *
+ * Pending producers must not duplicate the dynamic-count and aggregate-cap protocol: a plain
+ * maximum or a null aggregate result is not evidence that a dynamic source was resolved. This
+ * helper keeps the source snapshot, typed witnesses, and unlimited candidate bound together while
+ * leaving the legacy direct [TargetValidator] payload path unchanged.
+ */
+internal fun TargetValidator.pendingTargetRequirementInfo(
+    state: GameState,
+    index: Int,
+    requirement: TargetRequirement,
+    context: EffectContext,
+    legalTargetCount: Int? = null,
+    description: String = requirement.description,
+): TargetRequirementInfoResult {
+    val snapshot = snapshotDynamicCountsForPending(
+        state = state,
+        requirements = listOf(requirement),
+        context = context,
+    ).single()
+    return when (snapshot) {
+        is PendingTargetRequirementSnapshot.Unsupported ->
+            TargetRequirementInfoResult.Unsupported(snapshot.reason)
+        is PendingTargetRequirementSnapshot.Resolved ->
+            TargetRequirementInfo.fromRequirement(
+                index = index,
+                requirement = snapshot.requirement,
+                semanticSource = snapshot.semanticSource,
+                description = description,
+                minTargets = snapshot.requirement.effectiveMinCount,
+                maxTargets = if (snapshot.resolvedMaxTargets == null &&
+                    snapshot.requirement.unlimited &&
+                    !snapshot.requirement.hasUnresolvedDynamicMaxCount()
+                ) {
+                    legalTargetCount
+                } else {
+                    null
+                },
+                resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                resolvedTotalManaValueAtMost = resolveTotalManaValueAtMostForPending(
+                    state = state,
+                    requirement = snapshot.semanticSource,
+                    context = context,
+                ),
+            )
     }
 }

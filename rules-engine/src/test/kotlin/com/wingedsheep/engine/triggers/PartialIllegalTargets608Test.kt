@@ -2,19 +2,40 @@ package com.wingedsheep.engine.triggers
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.ChooseOptionDecision
+import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.EngineServices
+import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.ModalContinuation
 import com.wingedsheep.engine.core.ModalTargetContinuation
 import com.wingedsheep.engine.core.ModalPreChosenContinuation
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.PreTargetedEffectEntry
+import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
+import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.TriggerProcessor
+import com.wingedsheep.engine.event.PendingTrigger
+import com.wingedsheep.engine.event.TriggerContext
+import com.wingedsheep.engine.handlers.actions.ability.ActivateAbilityHandler
+import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
+import com.wingedsheep.engine.handlers.continuations.ModalAndCloneContinuationResumer
+import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.handlers.TargetFinder
+import com.wingedsheep.engine.handlers.actions.decision.DecisionValidators
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.CastChoicesComponent
+import com.wingedsheep.engine.state.components.battlefield.ChoiceValue
 import com.wingedsheep.engine.state.components.battlefield.DamageComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -30,6 +51,7 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.dsl.Costs
@@ -39,22 +61,36 @@ import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.dsl.splice
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.scripting.conditions.Condition
+import com.wingedsheep.sdk.scripting.ChoiceSlot
 import com.wingedsheep.sdk.scripting.conditions.CreatureDiedThisTurnCondition
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.predicates.ControllerPredicate
+import com.wingedsheep.sdk.scripting.predicates.StatePredicate
 import com.wingedsheep.sdk.scripting.effects.Mode
 import com.wingedsheep.sdk.scripting.effects.ModalEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
+import com.wingedsheep.sdk.scripting.targets.AnyTarget
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetChooser
+import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetPermanent
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
+import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.TriggeredAbility
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.values.ContextPropertyKey
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.collections.shouldContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
 
 /**
@@ -68,8 +104,68 @@ class PartialIllegalTargets608Test : FunSpec({
 
     val targetCount = DynamicAmount.ContextProperty(ContextPropertyKey.TARGET_COUNT)
 
+    // The existing negative-cap marker represents an unsupported aggregate fact and matches no
+    // candidate, which makes this a mandatory-empty resolution-time target slot.
+    val unsupportedResolutionModalRequirement = com.wingedsheep.sdk.scripting.targets.TargetObject(
+        filter = TargetFilter.CardInGraveyard,
+        totalManaValueAtMost = DynamicAmount.Fixed(-1)
+    )
+    val resolutionTimeModalSource = card("Synthetic 608 Resolution-Time Modal Source") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode(
+                        effect = Effects.GainLife(1),
+                        targetRequirements = listOf(unsupportedResolutionModalRequirement),
+                        description = "Gain life for a graveyard target"
+                    )
+                ),
+                chooseCount = 1
+            )
+        }
+    }
+
+    val castTimeModalSource = card("Synthetic 608 Cast-Time Modal Source") {
+        manaCost = "{0}"
+        typeLine = "Sorcery"
+        spell {
+            effect = ModalEffect(
+                modes = listOf(
+                    Mode(
+                        effect = Effects.GainLife(1),
+                        targetRequirements = listOf(unsupportedResolutionModalRequirement),
+                        description = "Gain life for a graveyard target"
+                    )
+                ),
+                chooseCount = 1
+            )
+        }
+    }
+
+    val variableCostAggregateTarget = card("Synthetic 608 Variable Cost Aggregate Target") {
+        manaCost = "{0}"
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.ExilePermanents(
+                filter = GameObjectFilter.Artifact,
+                minCount = 1,
+                excludeSelf = true,
+            )
+            target = TargetObject(
+                filter = TargetFilter.CardInGraveyard,
+                totalManaValueAtMost = DynamicAmount.XValue,
+            )
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun driver(): GameTestDriver = GameTestDriver().also {
-        it.registerCards(TestCards.all)
+        it.registerCards(
+            TestCards.all + resolutionTimeModalSource + castTimeModalSource + variableCostAggregateTarget
+        )
         it.initMirrorMatch(deck = Deck.of("Forest" to 40))
     }
 
@@ -733,6 +829,51 @@ class PartialIllegalTargets608Test : FunSpec({
         driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(driver.player2, com.wingedsheep.sdk.core.Zone.BATTLEFIELD)) shouldContain second
     }
 
+    test("608-12a: a modal fizzle precedes unsupported target metadata") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val source = driver.putPermanentOnBattlefield(driver.player1, resolutionTimeModalSource.name)
+        val lifeBefore = driver.getLifeTotal(driver.player1)
+        val abilityId = resolutionTimeModalSource.activatedAbilities.single().id
+
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId
+            )
+        )
+
+        driver.bothPass()
+        val modeDecision = driver.pendingDecision as ChooseOptionDecision
+        val result = driver.submitDecision(
+            driver.player1,
+            OptionChosenResponse(modeDecision.id, optionIndex = 0)
+        )
+
+        result.error shouldBe null
+        driver.getLifeTotal(driver.player1) shouldBe lifeBefore
+        driver.stackSize shouldBe 0
+    }
+
+    test("608-12b: a cast-time modal fizzle precedes unsupported target metadata") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val spellId = driver.putCardInHand(driver.player1, castTimeModalSource.name)
+
+        val result = driver.submit(
+            CastSpell(
+                playerId = driver.player1,
+                cardId = spellId,
+                chosenModes = listOf(0)
+            )
+        )
+
+        result.error shouldBe "No legal targets for mode: Gain life for a graveyard target"
+        result.diagnostics shouldBe emptyList()
+        driver.stackSize shouldBe 0
+    }
+
     test("608-13: modal target slots use the cast-time partial counts") {
         val driver = driver()
         val creature = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
@@ -817,6 +958,533 @@ class PartialIllegalTargets608Test : FunSpec({
         driver2.bothPass()
 
         driver2.getLifeTotal(driver2.player1) shouldBe typeBefore
+    }
+
+    test("pending target responses enforce published cross-target relations") {
+        fun requirementInfo(
+            sameController: Boolean = false,
+            sameCreatureType: Boolean = false,
+            sameCardType: Boolean = false,
+        ) = TargetRequirementInfo(
+            index = 0,
+            description = "relation-rich targets",
+            minTargets = 2,
+            maxTargets = 2,
+            targetZone = null,
+            mustDifferFromEarlier = false,
+            sameController = sameController,
+            sameOwner = false,
+            sameCreatureType = sameCreatureType,
+            sameCardType = sameCardType,
+            totalManaValueAtMost = null,
+            differentNames = false,
+            xConstrainsManaValue = false,
+            xConstrainsManaValueExactly = false,
+            xConstrainsPower = false,
+            xConstrainsCount = false,
+        )
+
+        fun validatePair(
+            driver: GameTestDriver,
+            info: TargetRequirementInfo,
+            first: com.wingedsheep.sdk.model.EntityId,
+            second: com.wingedsheep.sdk.model.EntityId,
+        ) {
+            val decision = ChooseTargetsDecision(
+                id = "relation-${info.description}",
+                playerId = driver.player1,
+                prompt = "Choose relation-rich targets",
+                context = DecisionContext(),
+                targetRequirements = listOf(info),
+                legalTargets = mapOf(0 to listOf(first, second)),
+            )
+            DecisionValidators.validate(
+                decision,
+                TargetsResponse(decision.id, mapOf(0 to listOf(first, second))),
+                driver.state,
+            ).shouldNotBeNull()
+        }
+
+        run {
+            val driver = driver()
+            val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            val second = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+            validatePair(driver, requirementInfo(sameController = true), first, second)
+        }
+        run {
+            val driver = driver()
+            val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            val second = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            driver.replaceState(
+                driver.state.updateEntity(second) {
+                    it.get<CardComponent>()?.let { card ->
+                        it.with(card.copy(typeLine = TypeLine.creature(setOf(Subtype("Wizard")))))
+                    } ?: it
+                }
+            )
+            validatePair(driver, requirementInfo(sameCreatureType = true), first, second)
+        }
+        run {
+            val driver = driver()
+            val first = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            val second = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+            driver.replaceState(
+                driver.state.updateEntity(second) {
+                    it.get<CardComponent>()?.let { card ->
+                        it.with(card.copy(typeLine = TypeLine.artifact(), baseStats = null))
+                    } ?: it
+                }
+            )
+            validatePair(driver, requirementInfo(sameCardType = true), first, second)
+        }
+    }
+
+    test("pending candidate enumeration fails closed without authoritative X context") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(CardPredicate.ManaValueEqualsX),
+                )
+            ),
+        )
+        val finder = TargetFinder()
+
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1, xValue = 1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1, xValue = 2),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder fails closed for negated chosen-value predicates") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.Not(CardPredicate.NameEqualsChosen("chosenName")),
+                    ),
+                ),
+            ),
+        )
+        val finder = TargetFinder()
+
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                chosenValues = mapOf("chosenName" to "Other Name"),
+            ),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder fails closed for missing source-derived chosen facts") {
+        val driver = driver()
+        val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val finder = TargetFinder()
+        val predicates = listOf(
+            CardPredicate.Not(CardPredicate.NameEqualsChosenComponent()),
+            CardPredicate.Not(CardPredicate.CardTypeEqualsChosenComponent()),
+            CardPredicate.Not(CardPredicate.HasChosenSubtype),
+            CardPredicate.Not(CardPredicate.SharesChosenColorWithSource),
+        )
+
+        predicates.forEach { predicate ->
+            val requirement = TargetObject(
+                filter = TargetFilter(
+                    baseFilter = GameObjectFilter(cardPredicates = listOf(predicate)),
+                    excludeSelf = true,
+                ),
+            )
+            shouldThrow<UnsupportedPathFailure> {
+                finder.findLegalTargets(
+                    state = driver.state,
+                    requirement = requirement,
+                    controllerId = driver.player1,
+                    sourceId = source,
+                    pipelineContext = PredicateContext(controllerId = driver.player1),
+                    requireAuthoritativeContext = true,
+                )
+            }
+        }
+    }
+
+    test("pending target finder evaluates source-derived chosen facts when present") {
+        val driver = driver()
+        val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.replaceState(
+            driver.state.updateEntity(source) {
+                it.with(
+                    CastChoicesComponent(
+                        chosen = mapOf(
+                            ChoiceSlot.CARD_NAME to ChoiceValue.TextChoice("Grizzly Bears"),
+                            ChoiceSlot.CARD_TYPE to ChoiceValue.TextChoice("Creature"),
+                            ChoiceSlot.CREATURE_TYPE to ChoiceValue.TextChoice("Bear"),
+                            ChoiceSlot.COLOR to ChoiceValue.ColorChoice(Color.GREEN),
+                        ),
+                    ),
+                )
+            },
+        )
+        val finder = TargetFinder()
+        val predicates = listOf(
+            CardPredicate.NameEqualsChosenComponent(),
+            CardPredicate.CardTypeEqualsChosenComponent(),
+            CardPredicate.HasChosenSubtype,
+            CardPredicate.SharesChosenColorWithSource,
+        )
+
+        predicates.forEach { predicate ->
+            val requirement = TargetObject(
+                filter = TargetFilter(
+                    baseFilter = GameObjectFilter(cardPredicates = listOf(predicate)),
+                    excludeSelf = true,
+                ),
+            )
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                sourceId = source,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            ) shouldBe listOf(candidate)
+        }
+    }
+
+    test("pending target finder fails closed for missing trigger and referenced-player context") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val triggerRequirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByTriggeringPlayer,
+                ),
+            ),
+        )
+        val referencedRequirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.ContextTarget(0),
+                    ),
+                ),
+            ),
+        )
+        val finder = TargetFinder()
+
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = triggerRequirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = referencedRequirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = triggerRequirement,
+            controllerId = driver.player1,
+            triggeringEntityId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = referencedRequirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targets = listOf(ChosenTarget.Player(driver.player1)),
+            ),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("authoritative OR context gaps do not collapse a known legal target into an empty domain") {
+        val driver = driver()
+        driver.putPermanentOnBattlefield(driver.player1, "Forest")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.Or(
+                            listOf(
+                                CardPredicate.IsLand,
+                                CardPredicate.NameEqualsChosen("chosenName"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val failure = shouldThrow<UnsupportedPathFailure> {
+            TargetFinder().findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        failure.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("missing authoritative OR context is typed instead of an ordinary empty domain") {
+        val driver = driver()
+        driver.putPermanentOnBattlefield(driver.player1, "Forest")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.Or(
+                            listOf(
+                                CardPredicate.NameEqualsChosen("chosenName"),
+                                CardPredicate.HasSubtypeFromVariable("chosenSubtype"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val failure = shouldThrow<UnsupportedPathFailure> {
+            TargetFinder().findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        failure.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("player target references use the evaluator's target-player context") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.PlayerRef(Player.TargetOpponent),
+                    ),
+                ),
+            ),
+        )
+
+        TargetFinder().findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targetPlayerId = driver.player2,
+            ),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("referenced triggering-player targets do not accept an entity-only fallback") {
+        val driver = driver()
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.PlayerRef(Player.TriggeringPlayer),
+                    ),
+                ),
+            ),
+        )
+
+        shouldThrow<UnsupportedPathFailure> {
+            TargetFinder().findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                triggeringEntityId = driver.player2,
+                pipelineContext = PredicateContext(
+                    controllerId = driver.player1,
+                    triggeringEntityId = driver.player2,
+                ),
+                requireAuthoritativeContext = true,
+            )
+        }
+    }
+
+    test("pending target finder resolves TargetController from permanent and card context") {
+        val driver = driver()
+        val referencedPermanent = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val permanentCandidate = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val referencedCard = driver.putCardInGraveyard(driver.player2, "Grizzly Bears")
+        val cardCandidate = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter.Creature.targetPlayerControls(EffectTarget.TargetController),
+            ),
+        )
+        val finder = TargetFinder()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targets = listOf(ChosenTarget.Permanent(referencedPermanent)),
+            ),
+            requireAuthoritativeContext = true,
+        ).toSet() shouldBe setOf(referencedPermanent, permanentCandidate, cardCandidate)
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targets = listOf(
+                    ChosenTarget.Card(
+                        cardId = referencedCard,
+                        ownerId = driver.player2,
+                        zone = Zone.GRAVEYARD,
+                    ),
+                ),
+            ),
+            requireAuthoritativeContext = true,
+        ).toSet() shouldBe setOf(referencedPermanent, permanentCandidate, cardCandidate)
+
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+    }
+
+    test("pending target finder fails closed for missing same-named-source context") {
+        val driver = driver()
+        val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val candidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    statePredicates = listOf(StatePredicate.NotTargetedByAbilityFromSameNamedSource),
+                ),
+            ),
+        )
+        val finder = TargetFinder()
+
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement.copy(filter = requirement.filter.copy(excludeSelf = true)),
+            controllerId = driver.player1,
+            sourceId = source,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("pending target finder preserves X context through hand and spell-or-permanent paths") {
+        val driver = driver()
+        val handCandidate = driver.putCardInHand(driver.player1, "Grizzly Bears")
+        val permanentCandidate = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val finder = TargetFinder()
+        val context = PredicateContext(controllerId = driver.player1, xValue = 2)
+
+        val handRequirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.And(listOf(CardPredicate.ManaValueEqualsX)),
+                    ),
+                ),
+                zone = Zone.HAND,
+            ),
+        )
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = handRequirement,
+            controllerId = driver.player1,
+            pipelineContext = context,
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(handCandidate)
+
+        val spellOrPermanentRequirement = com.wingedsheep.sdk.scripting.targets.TargetSpellOrPermanent(
+            permanentFilter = GameObjectFilter(
+                cardPredicates = listOf(CardPredicate.And(listOf(CardPredicate.ManaValueEqualsX))),
+            ),
+        )
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = spellOrPermanentRequirement,
+            controllerId = driver.player1,
+            pipelineContext = context,
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(permanentCandidate)
     }
 
     test("608-15: a card that leaves and returns is an illegal target") {
@@ -1244,6 +1912,526 @@ class PartialIllegalTargets608Test : FunSpec({
         stackCard?.get<SpellOnStackComponent>()?.modeTargetRequirementsOrdered?.single()
             ?.map { it.count } shouldBe listOf(2, 1)
         stackCard?.get<TargetsComponent>()?.targetRequirements?.map { it.count } shouldBe listOf(2, 1)
+    }
+
+    test("pending cast-modal metadata preserves an X-constrained target count") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            optional = true,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose X creatures",
+        )
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry))
+            .presentCastModalTargetDecision(
+                state = driver.state,
+                cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-modal"),
+                casterId = driver.player1,
+                cardName = "Synthetic cast modal",
+                baseCastAction = CastSpell(
+                    playerId = driver.player1,
+                    cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-modal"),
+                    xValue = 2,
+                ),
+                modes = listOf(mode),
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().xConstrainsCount shouldBe true
+        decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("pending cast-modal metadata preserves a resolved aggregate cap") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter.Creature,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose a creature within X mana value",
+        )
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry))
+            .presentCastModalTargetDecision(
+                state = driver.state,
+                cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-aggregate-modal"),
+                casterId = driver.player1,
+                cardName = "Synthetic cast aggregate modal",
+                baseCastAction = CastSpell(
+                    playerId = driver.player1,
+                    cardId = com.wingedsheep.sdk.model.EntityId("synthetic-cast-aggregate-modal"),
+                    xValue = 2,
+                ),
+                modes = listOf(mode),
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().totalManaValueAtMost shouldBe 2
+    }
+
+    test("pending trigger-modal metadata preserves an X-constrained target count") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            optional = true,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Choose X creatures",
+                )
+            ),
+            chooseCount = 1,
+        )
+        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+
+        val result = processor.presentTriggerModalTargetDecision(
+            state = driver.state,
+            ability = TriggeredAbilityOnStackComponent(
+                sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-modal"),
+                sourceName = "Synthetic trigger modal",
+                controllerId = driver.player1,
+                effect = modal,
+                description = "Synthetic trigger modal",
+                xValue = 2,
+            ),
+            outerTargets = emptyList(),
+            outerTargetRequirements = emptyList(),
+            modes = modal.modes,
+            chosenModeIndices = listOf(0),
+            resolvedModeTargets = emptyList(),
+            currentOrdinal = 0,
+            causedByAttack = false,
+            recordChosenModesOnSource = false,
+            recordChosenModesThisTurn = false,
+        )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().xConstrainsCount shouldBe true
+        decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("pending trigger-modal metadata preserves a resolved aggregate cap") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter.Creature,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Choose a creature within X mana value",
+                )
+            ),
+            chooseCount = 1,
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .presentTriggerModalTargetDecision(
+                state = driver.state,
+                ability = TriggeredAbilityOnStackComponent(
+                    sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-aggregate-modal"),
+                    sourceName = "Synthetic trigger aggregate modal",
+                    controllerId = driver.player1,
+                    effect = modal,
+                    description = "Synthetic trigger aggregate modal",
+                    xValue = 2,
+                ),
+                outerTargets = emptyList(),
+                outerTargetRequirements = emptyList(),
+                modes = modal.modes,
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+                causedByAttack = false,
+                recordChosenModesOnSource = false,
+                recordChosenModesThisTurn = false,
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().totalManaValueAtMost shouldBe 2
+    }
+
+    test("trigger modal fizzles an unsupported mandatory empty slot before metadata diagnostics") {
+        val driver = dynamicDriver()
+        val requirement = TargetObject(
+            filter = TargetFilter.CardInGraveyard,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Choose a graveyard card within X mana value",
+                )
+            ),
+            chooseCount = 1,
+        )
+        val processor = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+
+        val result = processor.presentTriggerModalTargetDecision(
+            state = driver.state,
+            ability = TriggeredAbilityOnStackComponent(
+                sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-modal-empty-unsupported"),
+                sourceName = "Synthetic trigger modal empty unsupported",
+                controllerId = driver.player1,
+                effect = modal,
+                description = "Synthetic trigger modal empty unsupported",
+            ),
+            outerTargets = emptyList(),
+            outerTargetRequirements = emptyList(),
+            modes = modal.modes,
+            chosenModeIndices = listOf(0),
+            resolvedModeTargets = emptyList(),
+            currentOrdinal = 0,
+            causedByAttack = false,
+            recordChosenModesOnSource = false,
+            recordChosenModesThisTurn = false,
+        )
+
+        result.error shouldBe null
+        result.diagnostics shouldBe emptyList()
+        result.events.filterIsInstance<AbilityFizzledEvent>().size shouldBe 1
+        result.newState.stack.size shouldBe 0
+    }
+
+    test("trigger modal skips an unsupported optional empty slot before metadata diagnostics") {
+        val driver = dynamicDriver()
+        val requirement = TargetObject(
+            optional = true,
+            filter = TargetFilter.CardInGraveyard,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val modal = ModalEffect(
+            modes = listOf(
+                Mode(
+                    effect = Effects.GainLife(1),
+                    targetRequirements = listOf(requirement),
+                    description = "Optionally choose a graveyard card within X mana value",
+                )
+            ),
+            chooseCount = 1,
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .presentTriggerModalTargetDecision(
+                state = driver.state,
+                ability = TriggeredAbilityOnStackComponent(
+                    sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-trigger-modal-optional-empty"),
+                    sourceName = "Synthetic trigger modal optional empty",
+                    controllerId = driver.player1,
+                    effect = modal,
+                    description = "Synthetic trigger modal optional empty",
+                ),
+                outerTargets = emptyList(),
+                outerTargetRequirements = emptyList(),
+                modes = modal.modes,
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+                causedByAttack = false,
+                recordChosenModesOnSource = false,
+                recordChosenModesThisTurn = false,
+            )
+
+        result.error shouldBe null
+        result.pendingDecision shouldBe null
+        result.diagnostics shouldBe emptyList()
+    }
+
+    test("resolution-time modal metadata preserves the continuation X witnesses") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            minCount = 1,
+            unlimited = true,
+            filter = TargetFilter.Creature,
+            dynamicMaxCount = DynamicAmount.XValue,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose up to X creatures within X mana value",
+        )
+        val continuation = ModalContinuation(
+            decisionId = "synthetic-resolution-modal-witness",
+            controllerId = driver.player1,
+            sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-resolution-modal-source"),
+            sourceName = "Synthetic resolution modal",
+            modes = listOf(mode),
+            xValue = 2,
+        )
+
+        val result = ModalAndCloneContinuationResumer(EngineServices(driver.cardRegistry))
+            .resumeModal(
+                state = driver.state,
+                continuation = continuation,
+                response = OptionChosenResponse(continuation.decisionId, optionIndex = 0),
+                checkForMore = { state, events -> ExecutionResult.success(state, events) },
+            )
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        val info = decision.targetRequirements.single()
+        info.maxTargets shouldBe 2
+        info.totalManaValueAtMost shouldBe 2
+        info.xConstrainsCount shouldBe true
+    }
+
+    test("pending activation metadata preserves a resolved aggregate cap after variable cost selection") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val source = driver.putPermanentOnBattlefield(driver.player1, variableCostAggregateTarget.name)
+        val paymentOne = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        val paymentTwo = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCardInGraveyard(driver.player1, "Sol Ring")
+        val abilityId = driver.cardRegistry.requireCard(variableCostAggregateTarget.name)
+            .script.activatedAbilities.single().id
+
+        val activationResult = driver.submit(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = source,
+                abilityId = abilityId,
+            )
+        )
+        activationResult.error shouldBe null
+        val costDecision = driver.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
+        driver.submitDecision(
+            driver.player1,
+            CardsSelectedResponse(costDecision.id, listOf(paymentOne, paymentTwo)),
+        )
+
+        val targetDecision = driver.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        targetDecision.targetRequirements.single().totalManaValueAtMost shouldBe 2
+    }
+
+    test("opponent-decider activation producer preserves chooser authority and X witnesses") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val handler = ActivateAbilityHandler.create(EngineServices(driver.cardRegistry))
+        val action = ActivateAbility(
+            playerId = driver.player1,
+            sourceId = com.wingedsheep.sdk.model.EntityId("synthetic-opponent-decider-source"),
+            abilityId = AbilityId("synthetic-opponent-decider-ability"),
+            xValue = 2,
+        )
+
+        val chooserRequirement = AnyTarget(chooser = TargetChooser.Opponent)
+        val chooserResult = handler.pauseForOpponentChosenTargetsForDecider(
+            state = driver.state,
+            action = action,
+            sourceName = "Synthetic opponent-decider activation",
+            fullTargetReqs = listOf(chooserRequirement),
+            opponentReqs = listOf(chooserRequirement),
+            deciderId = driver.player2,
+        )
+        chooserResult.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>().playerId shouldBe driver.player2
+
+        val witnessRequirement = TargetObject(
+            count = 1,
+            minCount = 1,
+            unlimited = true,
+            filter = TargetFilter.Creature,
+            dynamicMaxCount = DynamicAmount.XValue,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val witnessResult = handler.pauseForOpponentChosenTargetsForDecider(
+            state = driver.state,
+            action = action,
+            sourceName = "Synthetic opponent-decider activation",
+            fullTargetReqs = listOf(witnessRequirement),
+            opponentReqs = listOf(witnessRequirement),
+            deciderId = driver.player2,
+        )
+        val info = witnessResult.pendingDecision
+            .shouldBeInstanceOf<ChooseTargetsDecision>()
+            .targetRequirements.single()
+        info.maxTargets shouldBe 2
+        info.totalManaValueAtMost shouldBe 2
+        info.xConstrainsCount shouldBe true
+    }
+
+    test("pending cast-modal metadata is withheld when dynamic count is unresolved") {
+        val driver = dynamicDriver()
+        driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            optional = true,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val mode = Mode(
+            effect = Effects.GainLife(1),
+            targetRequirements = listOf(requirement),
+            description = "Choose unresolved X creatures",
+        )
+
+        val result = CastSpellHandler.create(EngineServices(driver.cardRegistry))
+            .presentCastModalTargetDecision(
+                state = driver.state,
+                cardId = com.wingedsheep.sdk.model.EntityId("synthetic-unresolved-cast-modal"),
+                casterId = driver.player1,
+                cardName = "Synthetic unresolved cast modal",
+                baseCastAction = CastSpell(
+                    playerId = driver.player1,
+                    cardId = com.wingedsheep.sdk.model.EntityId("synthetic-unresolved-cast-modal"),
+                ),
+                modes = listOf(mode),
+                chosenModeIndices = listOf(0),
+                resolvedModeTargets = emptyList(),
+                currentOrdinal = 0,
+            )
+
+        result.pendingDecision shouldBe null
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("processTargetedTrigger publishes fixed target cardinality") {
+        val driver = dynamicDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature(count = 2, minCount = 1)
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic fixed non-modal trigger",
+        ).copy(id = AbilityId("synthetic-fixed-non-modal-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic fixed non-modal trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        val decision = result.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        decision.targetRequirements.single().minTargets shouldBe 1
+        decision.targetRequirements.single().maxTargets shouldBe 2
+    }
+
+    test("processTargetedTrigger fizzles when a mandatory count cannot be filled") {
+        val driver = driver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature(count = 2)
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic unfillable mandatory trigger",
+        ).copy(id = AbilityId("synthetic-unfillable-mandatory-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic unfillable mandatory trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        result.pendingDecision shouldBe null
+        result.error shouldBe null
+        result.events.filterIsInstance<AbilityFizzledEvent>().size shouldBe 1
+    }
+
+    test("processTargetedTrigger with missing X withholds dynamic count metadata") {
+        val driver = dynamicDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetCreature(
+            count = 1,
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic unresolved non-modal trigger",
+        ).copy(id = AbilityId("synthetic-unresolved-non-modal-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic unresolved non-modal trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        result.pendingDecision shouldBe null
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("processTargetedTrigger with missing X withholds aggregate cap metadata") {
+        val driver = dynamicDriver()
+        val source = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
+        driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetObject(
+            count = 1,
+            filter = TargetFilter.Creature,
+            totalManaValueAtMost = DynamicAmount.XValue,
+        )
+        val ability = TriggeredAbility.create(
+            trigger = EventPattern.StepEvent(Step.UPKEEP, Player.You),
+            effect = Effects.GainLife(1),
+            targetRequirement = requirement,
+            descriptionOverride = "Synthetic unresolved aggregate trigger",
+        ).copy(id = AbilityId("synthetic-unresolved-aggregate-trigger"))
+        val trigger = PendingTrigger(
+            ability = ability,
+            sourceId = source,
+            sourceName = "Synthetic unresolved aggregate trigger",
+            controllerId = driver.player1,
+            triggerContext = TriggerContext(),
+        )
+
+        val result = TriggerProcessor(driver.cardRegistry, StackResolver(driver.cardRegistry))
+            .processTargetedTrigger(driver.state, trigger, requirement)
+
+        result.pendingDecision shouldBe null
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
     }
 
     test("608-19: splice dynamic slots and slices stay partitioned at announcement state") {

@@ -31,18 +31,32 @@ import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetRequirementInfoResult
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.handlers.effects.library.SelectTargetPipelineExecutor
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.effects.SelectTargetEffect
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
+import com.wingedsheep.sdk.scripting.predicates.CardPredicate
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetOther
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
+import com.wingedsheep.sdk.scripting.targets.TargetPlayer
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
@@ -50,7 +64,9 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 /** Contract coverage for the perspective-safe structured decision domains. */
 class StructuredDecisionDomainTest : FunSpec({
@@ -136,9 +152,18 @@ class StructuredDecisionDomainTest : FunSpec({
                     description = "up to two targets",
                     minTargets = 0,
                     maxTargets = 2,
+                    targetZone = "Graveyard",
+                    mustDifferFromEarlier = true,
+                    sameController = true,
                     sameOwner = true,
+                    sameCreatureType = true,
+                    sameCardType = true,
                     totalManaValueAtMost = 5,
-                    differentNames = true
+                    differentNames = true,
+                    xConstrainsManaValue = true,
+                    xConstrainsManaValueExactly = true,
+                    xConstrainsPower = true,
+                    xConstrainsCount = true,
                 )
             ),
             legalTargets = mapOf(0 to listOf(targetA, targetB)),
@@ -146,8 +171,21 @@ class StructuredDecisionDomainTest : FunSpec({
         )
         val targetDomain = observation(env, targets).pendingDecision!!.structuredDomain
             .shouldBeInstanceOf<TargetsDomain>()
-        targetDomain.requirements.single().candidates shouldBe listOf(targetA, targetB)
-        targetDomain.requirements.single().maxTargets shouldBe 2
+        val targetRequirement = targetDomain.requirements.single()
+        targetRequirement.candidates shouldBe listOf(targetA, targetB)
+        targetRequirement.maxTargets shouldBe 2
+        targetRequirement.targetZone shouldBe "Graveyard"
+        targetRequirement.mustDifferFromEarlier shouldBe true
+        targetRequirement.sameController shouldBe true
+        targetRequirement.sameOwner shouldBe true
+        targetRequirement.sameCreatureType shouldBe true
+        targetRequirement.sameCardType shouldBe true
+        targetRequirement.totalManaValueAtMost shouldBe 5
+        targetRequirement.differentNames shouldBe true
+        targetRequirement.xConstrainsManaValue shouldBe true
+        targetRequirement.xConstrainsManaValueExactly shouldBe true
+        targetRequirement.xConstrainsPower shouldBe true
+        targetRequirement.xConstrainsCount shouldBe true
         targetDomain.canCancel shouldBe true
 
         val cards = SelectCardsDecision(
@@ -315,6 +353,272 @@ class StructuredDecisionDomainTest : FunSpec({
         manaDomain.canDecline shouldBe true
     }
 
+    test("pending target domains use an independent version while the global version stays V1") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val domain = observation(
+            env,
+            ChooseTargetsDecision(
+                id = "targets-version",
+                playerId = owner,
+                prompt = "Choose targets",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                targetRequirements = listOf(
+                    TargetRequirementInfo(
+                        index = 0,
+                        description = "target",
+                        minTargets = 1,
+                        maxTargets = 1,
+                        targetZone = null,
+                        mustDifferFromEarlier = false,
+                        sameController = false,
+                        sameOwner = false,
+                        sameCreatureType = false,
+                        sameCardType = false,
+                        totalManaValueAtMost = null,
+                        differentNames = false,
+                        xConstrainsManaValue = false,
+                        xConstrainsManaValueExactly = false,
+                        xConstrainsPower = false,
+                        xConstrainsCount = false,
+                    )
+                ),
+                legalTargets = mapOf(0 to listOf(EntityId("candidate")))
+            )
+        ).pendingDecision!!.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+
+        STRUCTURED_DECISION_DOMAIN_VERSION shouldBe 1
+        domain.version shouldBe 2
+    }
+
+    test("pending target atom serializes every semantic field explicitly") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val domain = observation(
+            env,
+            ChooseTargetsDecision(
+                id = "targets-atom-fields",
+                playerId = owner,
+                prompt = "Choose targets",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                targetRequirements = listOf(
+                    TargetRequirementInfo(
+                        index = 0,
+                        description = "target",
+                        minTargets = 1,
+                        maxTargets = 1,
+                        targetZone = null,
+                        mustDifferFromEarlier = false,
+                        sameController = false,
+                        sameOwner = false,
+                        sameCreatureType = false,
+                        sameCardType = false,
+                        totalManaValueAtMost = null,
+                        differentNames = false,
+                        xConstrainsManaValue = false,
+                        xConstrainsManaValueExactly = false,
+                        xConstrainsPower = false,
+                        xConstrainsCount = false,
+                    )
+                ),
+                legalTargets = mapOf(0 to listOf(EntityId("candidate")))
+            )
+        ).pendingDecision!!.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+
+        val encoded = Json.encodeToJsonElement(
+            TargetRequirementDomain.serializer(),
+            domain.requirements.single()
+        ).jsonObject
+        listOf(
+            "targetZone",
+            "mustDifferFromEarlier",
+            "sameController",
+            "sameOwner",
+            "sameCreatureType",
+            "sameCardType",
+            "totalManaValueAtMost",
+            "differentNames",
+            "xConstrainsManaValue",
+            "xConstrainsManaValueExactly",
+            "xConstrainsPower",
+            "xConstrainsCount"
+        ).forEach { field ->
+            encoded[field] shouldNotBe null
+        }
+    }
+
+    test("pending target requirements keep index order and canonicalize candidate IDs") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val domain = observation(
+            env,
+            ChooseTargetsDecision(
+                id = "targets-order",
+                playerId = owner,
+                prompt = "Choose targets",
+                context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+                targetRequirements = listOf(
+                    TargetRequirementInfo.fromRequirement(index = 2, requirement = TargetPlayer())
+                        .shouldBeInstanceOf<TargetRequirementInfoResult.Supported>().info,
+                    TargetRequirementInfo.fromRequirement(index = 1, requirement = TargetPlayer())
+                        .shouldBeInstanceOf<TargetRequirementInfoResult.Supported>().info,
+                ),
+                legalTargets = mapOf(
+                    2 to listOf(EntityId("z"), EntityId("a")),
+                    1 to listOf(EntityId("m"), EntityId("b")),
+                ),
+            )
+        ).pendingDecision!!.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+
+        domain.requirements.map { it.index } shouldBe listOf(1, 2)
+        domain.requirements.map { it.candidates } shouldBe listOf(
+            listOf(EntityId("b"), EntityId("m")),
+            listOf(EntityId("a"), EntityId("z")),
+        )
+    }
+
+    test("real SelectTarget producer carries the shared atom to TargetsDomain and withholds unresolved metadata") {
+        val producerEnvironment = GameEnvironment.create(registry())
+        producerEnvironment.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig("Alice", Deck.of("Mountain" to 20)),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 20))
+                ),
+                skipMulligans = true,
+                startingPlayerIndex = 0
+            )
+        )
+        val owner = producerEnvironment.playerIds.first()
+        val library = ZoneKey(owner, Zone.LIBRARY)
+        val graveyard = ZoneKey(owner, Zone.GRAVEYARD)
+        var state = producerEnvironment.state
+        val candidates = state.getLibrary(owner)
+            .filter { id -> state.getEntity(id)?.get<CardComponent>()?.name == "Mountain" }
+            .take(2)
+        candidates.size shouldBe 2
+        candidates.forEach { id -> state = state.moveToZone(id, library, graveyard) }
+
+        val xAwareTarget = CardPredicate.Or(
+            listOf(
+                CardPredicate.ManaValueAtMostX,
+                CardPredicate.ManaValueEqualsX,
+                CardPredicate.PowerEqualsX,
+                CardPredicate.IsLand,
+            )
+        )
+        val resolvedRequirement = TargetOther(
+            baseRequirement = TargetObject(
+                count = 2,
+                minCount = 1,
+                filter = TargetFilter(
+                    baseFilter = GameObjectFilter(cardPredicates = listOf(xAwareTarget)),
+                    zone = Zone.GRAVEYARD,
+                ),
+                sameController = true,
+                sameOwner = true,
+                sameCreatureType = true,
+                sameCardType = true,
+                totalManaValueAtMost = DynamicAmount.Fixed(7),
+                differentNames = true,
+            )
+        )
+        val executor = SelectTargetPipelineExecutor()
+        val context = EffectContext(sourceId = null, controllerId = owner, xValue = 0)
+        val produced = executor.execute(
+            state = state,
+            effect = SelectTargetEffect(requirement = resolvedRequirement, storeAs = "chosen"),
+            context = context,
+        )
+        val pending = produced.pendingDecision.shouldBeInstanceOf<ChooseTargetsDecision>()
+        val view = ObservationBuilder(cardRegistry = registry()).build(
+            produced.state,
+            owner,
+            emptyList(),
+        ).observation as TrainingObservation
+        val domain = view.pendingDecision!!.structuredDomain.shouldBeInstanceOf<TargetsDomain>()
+        val requirement = domain.requirements.single()
+
+        domain.version shouldBe TARGETS_DOMAIN_VERSION
+        requirement.minTargets shouldBe 1
+        requirement.maxTargets shouldBe 2
+        requirement.targetZone shouldBe "Graveyard"
+        requirement.mustDifferFromEarlier shouldBe true
+        requirement.sameController shouldBe true
+        requirement.sameOwner shouldBe true
+        requirement.sameCreatureType shouldBe true
+        requirement.sameCardType shouldBe true
+        requirement.totalManaValueAtMost shouldBe 7
+        requirement.differentNames shouldBe true
+        requirement.xConstrainsManaValue shouldBe true
+        requirement.xConstrainsManaValueExactly shouldBe true
+        requirement.xConstrainsPower shouldBe true
+        requirement.xConstrainsCount shouldBe false
+        requirement.candidates shouldBe pending.legalTargets[0]!!.sortedBy { it.value }
+
+        val unresolvedDynamicCountRequirement = resolvedRequirement.copy(
+            baseRequirement = (resolvedRequirement.baseRequirement as TargetObject).copy(
+                dynamicMaxCount = DynamicAmount.XValue,
+            )
+        )
+        val unsupported = executor.execute(
+            state = state,
+            effect = SelectTargetEffect(
+                requirement = unresolvedDynamicCountRequirement,
+                storeAs = "chosen",
+            ),
+            context = context.copy(xValue = null),
+        )
+        unsupported.pendingDecision shouldBe null
+        unsupported.error shouldNotBe null
+        unsupported.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("pending target domain round-trips and rejects an unknown version") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val decision = ChooseTargetsDecision(
+            id = "targets-round-trip",
+            playerId = owner,
+            prompt = "Choose targets",
+            context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+            targetRequirements = listOf(
+                TargetRequirementInfo(
+                    index = 0,
+                    description = "target",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = "Exile",
+                    mustDifferFromEarlier = false,
+                    sameController = true,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = true,
+                    totalManaValueAtMost = 4,
+                    differentNames = true,
+                    xConstrainsManaValue = true,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = true,
+                    xConstrainsCount = true,
+                )
+            ),
+            legalTargets = mapOf(0 to listOf(EntityId("round-trip-candidate"))),
+        )
+        val domain = observation(env, decision).pendingDecision!!.structuredDomain
+            .shouldBeInstanceOf<TargetsDomain>()
+
+        val wireJson = Json { encodeDefaults = true }
+        val encoded = wireJson.encodeToString(TargetsDomain.serializer(), domain)
+        wireJson.decodeFromString<TargetsDomain>(encoded) shouldBe domain
+
+        val unknownVersion = encoded.replace(Regex("\\\"version\\\"\\s*:\\s*2"), "\"version\":99")
+        unknownVersion shouldNotBe encoded
+        shouldThrow<IllegalArgumentException> {
+            wireJson.decodeFromString<TargetsDomain>(unknownVersion)
+        }
+    }
+
     test("ChooseTargets domain constructs a response accepted by GameGymEnv and Rules") {
         val owner = environment().playerIds.first()
         val candidate = EntityId("target-candidate")
@@ -324,7 +628,26 @@ class StructuredDecisionDomainTest : FunSpec({
                 playerId = owner,
                 prompt = "Choose a target",
                 context = DecisionContext(phase = DecisionPhase.RESOLUTION),
-                targetRequirements = listOf(TargetRequirementInfo(0, "one target", 1, 1)),
+                targetRequirements = listOf(
+                    TargetRequirementInfo(
+                        index = 0,
+                        description = "one target",
+                        minTargets = 1,
+                        maxTargets = 1,
+                        targetZone = null,
+                        mustDifferFromEarlier = false,
+                        sameController = false,
+                        sameOwner = false,
+                        sameCreatureType = false,
+                        sameCardType = false,
+                        totalManaValueAtMost = null,
+                        differentNames = false,
+                        xConstrainsManaValue = false,
+                        xConstrainsManaValueExactly = false,
+                        xConstrainsPower = false,
+                        xConstrainsCount = false,
+                    )
+                ),
                 legalTargets = mapOf(0 to listOf(candidate))
             )
         )
@@ -557,7 +880,26 @@ class StructuredDecisionDomainTest : FunSpec({
                 playerId = owner,
                 prompt = "Choose one target",
                 context = DecisionContext(phase = DecisionPhase.RESOLUTION),
-                targetRequirements = listOf(TargetRequirementInfo(0, "one target", 1, 1)),
+                targetRequirements = listOf(
+                    TargetRequirementInfo(
+                        index = 0,
+                        description = "one target",
+                        minTargets = 1,
+                        maxTargets = 1,
+                        targetZone = null,
+                        mustDifferFromEarlier = false,
+                        sameController = false,
+                        sameOwner = false,
+                        sameCreatureType = false,
+                        sameCardType = false,
+                        totalManaValueAtMost = null,
+                        differentNames = false,
+                        xConstrainsManaValue = false,
+                        xConstrainsManaValueExactly = false,
+                        xConstrainsPower = false,
+                        xConstrainsCount = false,
+                    )
+                ),
                 legalTargets = mapOf(0 to listOf(firstCandidate, secondCandidate))
             )
         )

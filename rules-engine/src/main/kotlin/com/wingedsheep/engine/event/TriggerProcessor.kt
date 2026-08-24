@@ -35,8 +35,6 @@ import com.wingedsheep.sdk.scripting.effects.SelectionMode
 import com.wingedsheep.sdk.scripting.effects.StoreNumberEffect
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
-import com.wingedsheep.sdk.scripting.targets.TargetObject
-import com.wingedsheep.sdk.scripting.targets.TargetOther
 import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
@@ -511,9 +509,10 @@ class TriggerProcessor(
                 chosenValues = trigger.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                 storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
-            )
+            ),
+            requireAuthoritativeContext = true,
         )
-        if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) return null
+        if (legalTargets.size < targetRequirement.effectiveMinCount) return null
         return BatchKey(trigger.controllerId, identity)
     }
 
@@ -745,10 +744,11 @@ class TriggerProcessor(
                 chosenValues = trigger.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                 storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
-            )
+            ),
+            requireAuthoritativeContext = true,
         )
 
-        if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) {
+        if (legalTargets.size < targetRequirement.effectiveMinCount) {
             // No legal targets - ability doesn't go on stack
             return ExecutionResult.success(
                 state,
@@ -867,10 +867,11 @@ class TriggerProcessor(
                 chosenValues = trigger.carriedPipeline?.chosenValues ?: emptyMap(),
                 storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                 storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
-            )
+            ),
+            requireAuthoritativeContext = true,
         )
 
-        if (legalTargets.isEmpty() && targetRequirement.effectiveMinCount > 0) {
+        if (legalTargets.size < targetRequirement.effectiveMinCount) {
             // No legal targets - ability doesn't go on stack
             return ExecutionResult.success(
                 state,
@@ -933,11 +934,15 @@ class TriggerProcessor(
         targetRequirement: TargetRequirement
     ): ExecutionResult {
         val ability = trigger.ability
-        // Snapshot dynamicMaxCount on each requirement now (when the trigger is going on
-        // the stack) so the resolved cap is what the player sees and the validator
-        // enforces. CR 603.3c: X / target counts on triggered abilities are locked when
-        // the ability triggers. Only TargetObject carries dynamicMaxCount today.
-        val allRequirements = ability.allTargetRequirements.map { snapshotDynamicCount(state, trigger, it) }
+        // Snapshot dynamicMaxCount through the pending-only typed boundary. The legacy snapshot
+        // path treats missing X/context as zero or the static SDK count, neither of which is an
+        // authoritative pending cardinality. CR 603.3c still locks a resolved cap here.
+        val targetRequirementSnapshots = targetValidator.snapshotDynamicCountsForPending(
+            state = state,
+            requirements = ability.allTargetRequirements,
+            context = pendingTargetRequirementContext(trigger),
+        )
+        val allRequirements = targetRequirementSnapshots.map { it.requirement }
 
         // Find legal targets for each requirement
         val allLegalTargets = mutableMapOf<Int, List<EntityId>>()
@@ -970,6 +975,7 @@ class TriggerProcessor(
                     storedStringLists = trigger.carriedPipeline?.storedStringLists ?: emptyMap(),
                     storedSubtypeGroups = trigger.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
                 ),
+                requireAuthoritativeContext = true,
             )
             allLegalTargets[index] = legalTargets
         }
@@ -978,7 +984,7 @@ class TriggerProcessor(
         // (Rule 603.3d). This applies regardless of whether the ability is optional ("you may").
         for ((index, req) in allRequirements.withIndex()) {
             val legalTargets = allLegalTargets[index] ?: emptyList()
-            if (legalTargets.isEmpty() && req.effectiveMinCount > 0) {
+            if (legalTargets.size < req.effectiveMinCount) {
                 // The else branch is in one of two places, and both are the same printed clause.
                 // A mandatory ability writes "…; otherwise, X" as `elseEffect`. A "you may … If you
                 // don't, X" ability keeps its else inside the consent gate, because that is where
@@ -1034,20 +1040,53 @@ class TriggerProcessor(
         // from the stack when there is no legal one (the loop above) rather than resolve targetless.
         // Consent is now a gate on the effect, answered on its own — either before this method runs
         // (`processMayThenTargetTrigger`) or as the ability resolves.
-        val requirementInfos = allRequirements.mapIndexed { index, req ->
+        val requirementInfoResults = allRequirements.mapIndexed { index, req ->
             // "Any number of target ..." (unlimited) caps at however many legal targets exist,
             // mirroring the cast-time path (TargetEnumerationUtils). Using req.count (always 1
             // for an unlimited requirement) would wrongly clamp the decision to a single target.
-            val maxTargets = if (req.unlimited) (allLegalTargets[index]?.size ?: 0) else req.count
-            TargetRequirementInfo(
-                index = index,
-                description = req.description,
-                minTargets = req.effectiveMinCount,
-                maxTargets = maxTargets,
-                sameOwner = (req as? com.wingedsheep.sdk.scripting.targets.TargetObject)?.sameOwner == true,
-                totalManaValueAtMost = resolveTotalManaValueAtMost(state, trigger, req),
-                differentNames = (req as? com.wingedsheep.sdk.scripting.targets.TargetObject)?.differentNames == true
-            )
+            val snapshot = targetRequirementSnapshots[index]
+            val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                req.unlimited && !req.hasUnresolvedDynamicMaxCount()
+            ) {
+                allLegalTargets[index]?.size
+            } else {
+                null
+            }
+            when (snapshot) {
+                is PendingTargetRequirementSnapshot.Unsupported ->
+                    TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                is PendingTargetRequirementSnapshot.Resolved ->
+                    TargetRequirementInfo.fromRequirement(
+                        index = index,
+                        requirement = req,
+                        semanticSource = snapshot.semanticSource,
+                        minTargets = req.effectiveMinCount,
+                        maxTargets = maxTargets,
+                        resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                        resolvedTotalManaValueAtMost = resolveTotalManaValueAtMost(state, trigger, req),
+                    )
+            }
+        }
+
+        // A supported optional requirement remains a real pending decision even when its current
+        // candidate set is empty: the controller may explicitly choose zero targets. An
+        // unsupported optional requirement with no candidates is the one case that may be omitted
+        // without exposing incomplete metadata. Requirements with mandatory targets or candidates
+        // remain selected so their unsupported result fails closed below.
+        val selectableIndices = allRequirements.indices.filter { index ->
+            allRequirements[index].effectiveMinCount > 0 ||
+                allLegalTargets[index].orEmpty().isNotEmpty() ||
+                requirementInfoResults[index] is TargetRequirementInfoResult.Supported
+        }
+        if (selectableIndices.isEmpty()) {
+            return putTriggerOnStack(state, trigger, emptyList())
+        }
+
+        val requirementInfos = selectableIndices.map { index ->
+            when (val result = requirementInfoResults[index]) {
+                is TargetRequirementInfoResult.Supported -> result.info
+                is TargetRequirementInfoResult.Unsupported -> return result.toExecutionError(state)
+            }
         }
 
         // Create the target selection decision. The effect description becomes the
@@ -1108,7 +1147,7 @@ class TriggerProcessor(
             sourceId = trigger.sourceId,
             sourceName = trigger.sourceName,
             requirements = requirementInfos,
-            legalTargets = allLegalTargets,
+            legalTargets = selectableIndices.associateWith { allLegalTargets[it].orEmpty() },
             effectHint = effectHint
         )
 
@@ -1467,19 +1506,16 @@ class TriggerProcessor(
         recordChosenModesOnSource: Boolean,
         recordChosenModesThisTurn: Boolean
     ): ExecutionResult {
-        val effectiveModes = modes.map { mode ->
-            mode.copy(
-                targetRequirements = targetValidator.snapshotDynamicCounts(
-                    state = state,
-                    requirements = mode.targetRequirements,
-                    casterId = ability.controllerId,
-                    sourceId = ability.sourceId,
-                    xValue = ability.xValue,
-                    triggeringEntityId = ability.triggeringEntityId,
-                    triggeringPlayerId = ability.triggeringPlayerId,
-                    storedCollections = ability.carriedPipeline?.storedCollections ?: emptyMap()
-                )
+        val pendingContext = pendingTargetRequirementContext(ability)
+        val modeSnapshots = modes.map { mode ->
+            targetValidator.snapshotDynamicCountsForPending(
+                state = state,
+                requirements = mode.targetRequirements,
+                context = pendingContext,
             )
+        }
+        val effectiveModes = modes.mapIndexed { modeIndex, mode ->
+            mode.copy(targetRequirements = modeSnapshots[modeIndex].map { it.requirement })
         }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
@@ -1494,14 +1530,87 @@ class TriggerProcessor(
             }
 
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
+            mode.targetRequirements.forEachIndexed { index, req ->
                 legalTargetsMap[index] = findModeLegalTargets(state, ability, req)
-                TargetRequirementInfo(
-                    index = index,
-                    description = req.description,
-                    minTargets = req.effectiveMinCount,
-                    maxTargets = req.count
+            }
+
+            // A continuation may re-enter this method without passing through the mode-offer
+            // filter. Preserve trigger-time fizzle/skip semantics before any unsupported target
+            // metadata is converted into a structured-domain diagnostic.
+            val hasMandatoryEmptySlot = mode.targetRequirements.withIndex().any { (index, req) ->
+                legalTargetsMap[index].orEmpty().size < req.effectiveMinCount
+            }
+            if (hasMandatoryEmptySlot) {
+                val remainingModeIndices = chosenModeIndices.filterIndexed { index, _ -> index != ordinal }
+                if (remainingModeIndices.isEmpty()) {
+                    return modalTriggerRemovedFromStack(state, ability, "No legal mode could be chosen")
+                }
+                return presentTriggerModalTargetDecision(
+                    state = state,
+                    ability = ability,
+                    outerTargets = outerTargets,
+                    outerTargetRequirements = outerTargetRequirements,
+                    modes = modes,
+                    chosenModeIndices = remainingModeIndices,
+                    resolvedModeTargets = targetsAccum,
+                    currentOrdinal = ordinal,
+                    resolvedModeTargetRequirements = requirementsAccum,
+                    causedByAttack = causedByAttack,
+                    recordChosenModesOnSource = recordChosenModesOnSource,
+                    recordChosenModesThisTurn = recordChosenModesThisTurn,
                 )
+            }
+
+            // An optional slot with no legal candidates is a valid empty selection. Do not
+            // convert its unresolved metadata: the slot contributes no decision authority and
+            // the existing continuation still needs one empty target/requirement entry for mode
+            // alignment.
+            val selectableIndices = mode.targetRequirements.indices.filter { index ->
+                mode.targetRequirements[index].effectiveMinCount > 0 ||
+                    legalTargetsMap[index].orEmpty().isNotEmpty()
+            }
+            if (selectableIndices.isEmpty()) {
+                targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(
+                    targetValidator.lockRequirementsForSelectedCounts(
+                        mode.targetRequirements,
+                        List(mode.targetRequirements.size) { 0 },
+                    )
+                )
+                ordinal++
+                continue
+            }
+
+            val requirementInfos = selectableIndices.map { index ->
+                val req = mode.targetRequirements[index]
+                val snapshot = modeSnapshots[chosenModeIndices[ordinal]][index]
+                val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                    req.unlimited && !req.hasUnresolvedDynamicMaxCount()
+                ) {
+                    legalTargetsMap[index]?.size
+                } else {
+                    null
+                }
+                val result = when (snapshot) {
+                    is PendingTargetRequirementSnapshot.Unsupported ->
+                        TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                    is PendingTargetRequirementSnapshot.Resolved ->
+                        TargetRequirementInfo.fromRequirement(
+                            index = index,
+                            requirement = req,
+                            semanticSource = snapshot.semanticSource,
+                            minTargets = req.effectiveMinCount,
+                            maxTargets = maxTargets,
+                            resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                            resolvedTotalManaValueAtMost = targetValidator
+                                .resolveTotalManaValueAtMostForPending(
+                                    state = state,
+                                    requirement = snapshot.semanticSource,
+                                    context = pendingContext,
+                                ),
+                        )
+                }
+                result.orReturnUnsupported { return it.toExecutionError(state) }
             }
             // Auto-select the lone legal player target instead of prompting (mirrors
             // processTargetedTrigger's single-player-target shortcut).
@@ -1537,14 +1646,16 @@ class TriggerProcessor(
                     effectHint = mode.description
                 ),
                 targetRequirements = requirementInfos,
-                legalTargets = legalTargetsMap
+                legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() }
             )
             val continuation = TriggerModalTargetSelectionContinuation(
                 decisionId = decisionId,
                 ability = ability,
                 outerTargets = outerTargets,
                 outerTargetRequirements = outerTargetRequirements,
-                modes = effectiveModes,
+                // Keep the semantic source requirements. Each re-entry snapshots them again,
+                // while the selected mode's resolved slot counts are carried separately.
+                modes = modes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
                 currentOrdinal = ordinal,
@@ -1570,7 +1681,7 @@ class TriggerProcessor(
 
         return finalizeModalTrigger(
             state, ability, outerTargets, outerTargetRequirements,
-            effectiveModes, chosenModeIndices, targetsAccum, causedByAttack,
+            modes, chosenModeIndices, targetsAccum, causedByAttack,
             recordChosenModesOnSource, recordChosenModesThisTurn, requirementsAccum
         )
     }
@@ -1659,6 +1770,95 @@ class TriggerProcessor(
         )
     }
 
+    /** Carry a pending trigger's authoritative context into pending metadata snapshotting. */
+    private fun pendingTargetRequirementContext(
+        trigger: PendingTrigger,
+    ): EffectContext {
+        val context = trigger.triggerContext
+        return EffectContext(
+            sourceId = trigger.sourceId,
+            controllerId = trigger.controllerId,
+            triggeringEntityId = context.triggeringEntityId,
+            triggeringEntityEntryTimestamp = context.triggeringEntityEntryTimestamp,
+            triggeringEntityName = context.triggeringEntityName,
+            triggeringEntityNameKnown = context.triggeringEntityNameKnown,
+            triggeringPlayerId = context.triggeringPlayerId,
+            defendingPlayerId = context.defendingPlayerId,
+            damageSourceEntityId = context.damageSourceEntityId,
+            damageRecipientEntityId = context.damageRecipientEntityId,
+            damageRecipientKind = context.damageRecipientKind,
+            damageRecipientKinds = context.effectiveDamageRecipientKinds,
+            damageSourceLastKnownSnapshot = context.damageSourceLastKnownSnapshot,
+            damageRecipientLastKnownSnapshot = context.damageRecipientLastKnownSnapshot,
+            xValue = context.xValue,
+            triggerDamageAmount = context.damageAmount,
+            triggerCounterCount = context.counterCount,
+            triggerTotalCounterCount = context.totalCounterCount,
+            triggerLastKnownCounters = context.lastKnownCounters,
+            triggerLastKnownSubtypes = context.lastKnownSubtypes,
+            triggerLastKnownCardTypes = context.lastKnownCardTypes,
+            triggerLastKnownDamageDealtByPlayers = context.lastKnownDamageDealtByPlayers,
+            triggerLastKnownBlockingOrBlockedByIds = context.lastKnownBlockingOrBlockedByIds,
+            triggerLastKnownPower = context.lastKnownPower,
+            triggerLastKnownToughness = context.lastKnownToughness,
+            triggerDiedBatchTotalPower = context.diedBatchTotalPower,
+            triggerModesChosenCount = context.modesChosenCount,
+            triggerManaSpentOnTriggeringSpell = context.manaSpentOnTriggeringSpell,
+            triggerColorsSpentOnTriggeringSpell = context.colorsSpentOnTriggeringSpell,
+            triggerManaValueOfTriggeringSpell = context.manaValueOfTriggeringSpell,
+            triggerXValueOfTriggeringSpell = context.xValueOfTriggeringSpell,
+            triggerScryCount = context.scryCount,
+            triggerDiscardCount = context.discardedCardCount,
+            triggerDiscoverValue = context.discoverValue,
+            triggerExcessDamageAmount = context.excessDamageAmount,
+            triggerRecipientToughness = context.recipientToughnessAtDamage,
+            pipeline = trigger.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+        )
+    }
+
+    /** Carry a stack trigger's authoritative context into pending target-count snapshotting. */
+    private fun pendingTargetRequirementContext(
+        ability: TriggeredAbilityOnStackComponent,
+    ): EffectContext = EffectContext(
+        sourceId = ability.sourceId,
+        controllerId = ability.controllerId,
+        triggerDamageAmount = ability.triggerDamageAmount,
+        triggeringEntityId = ability.triggeringEntityId,
+        triggeringEntityEntryTimestamp = ability.triggeringEntityEntryTimestamp,
+        triggeringEntityName = ability.triggeringEntityName,
+        triggeringEntityNameKnown = ability.triggeringEntityNameKnown,
+        triggeringPlayerId = ability.triggeringPlayerId,
+        defendingPlayerId = ability.defendingPlayerId,
+        damageSourceEntityId = ability.damageSourceEntityId,
+        damageRecipientEntityId = ability.damageRecipientEntityId,
+        damageRecipientKind = ability.damageRecipientKind,
+        damageRecipientKinds = ability.damageRecipientKinds,
+        damageSourceLastKnownSnapshot = ability.damageSourceLastKnownSnapshot,
+        damageRecipientLastKnownSnapshot = ability.damageRecipientLastKnownSnapshot,
+        xValue = ability.xValue,
+        triggerCounterCount = ability.triggerCounterCount,
+        triggerTotalCounterCount = ability.triggerTotalCounterCount,
+        triggerLastKnownCounters = ability.triggerLastKnownCounters,
+        triggerLastKnownSubtypes = ability.triggerLastKnownSubtypes,
+        triggerLastKnownCardTypes = ability.triggerLastKnownCardTypes,
+        triggerLastKnownDamageDealtByPlayers = ability.triggerLastKnownDamageDealtByPlayers,
+        triggerLastKnownBlockingOrBlockedByIds = ability.triggerLastKnownBlockingOrBlockedByIds,
+        triggerLastKnownPower = ability.lastKnownPower,
+        triggerLastKnownToughness = ability.lastKnownToughness,
+        triggerDiedBatchTotalPower = ability.diedBatchTotalPower,
+        triggerModesChosenCount = ability.triggerModesChosenCount,
+        triggerManaSpentOnTriggeringSpell = ability.triggerManaSpentOnTriggeringSpell,
+        triggerColorsSpentOnTriggeringSpell = ability.triggerColorsSpentOnTriggeringSpell,
+        triggerManaValueOfTriggeringSpell = ability.triggerManaValueOfTriggeringSpell,
+        triggerXValueOfTriggeringSpell = ability.triggerXValueOfTriggeringSpell,
+        triggerScryCount = ability.triggerScryCount,
+        triggerDiscardCount = ability.triggerDiscardCount,
+        triggerDiscoverValue = ability.triggerDiscoverValue,
+        triggerExcessDamageAmount = ability.triggerExcessDamageAmount,
+        triggerRecipientToughness = ability.triggerRecipientToughness,
+        pipeline = ability.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+    )
+
     /** Legal targets for one of a mode's requirements, in the trigger's own targeting context. */
     private fun findModeLegalTargets(
         state: GameState,
@@ -1688,15 +1888,16 @@ class TriggerProcessor(
             storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap(),
             storedSubtypeGroups = ability.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
         ),
+        requireAuthoritativeContext = true,
     )
 
-    /** True when every mandatory target requirement of [mode] has at least one legal target. */
+    /** True when every mandatory target requirement of [mode] can meet its minimum cardinality. */
     private fun modeHasLegalTargets(
         state: GameState,
         ability: TriggeredAbilityOnStackComponent,
         mode: com.wingedsheep.sdk.scripting.effects.Mode
     ): Boolean = mode.targetRequirements.all { req ->
-        req.effectiveMinCount == 0 || findModeLegalTargets(state, ability, req).isNotEmpty()
+        findModeLegalTargets(state, ability, req).size >= req.effectiveMinCount
     }
 
     /**
@@ -1826,136 +2027,23 @@ class TriggerProcessor(
     }
 
     /**
-     * If the requirement carries a [TargetObject.dynamicMaxCount], evaluate it against
-     * the trigger's controller/source and return a copy with `count` rewritten to the
-     * resolved value (and `minCount` clamped to the new cap). When `dynamicMaxCount`
-     * is set, the resolved value is authoritative — the SDK's static `count` is only
-     * the no-dynamic-cap default. [TargetOther] is unwrapped, snapshotted, and
-     * re-wrapped so "another target" wording stays intact.
-     */
-    private fun snapshotDynamicCount(
-        state: GameState,
-        trigger: PendingTrigger,
-        requirement: TargetRequirement
-    ): TargetRequirement = when (requirement) {
-        is TargetObject -> {
-            val dyn = requirement.dynamicMaxCount
-            if (dyn == null) {
-                requirement
-            } else {
-                val resolved = try {
-                    val context = EffectContext(
-                        sourceId = trigger.sourceId,
-                        controllerId = trigger.controllerId,
-                        triggeringEntityId = trigger.triggerContext.triggeringEntityId,
-                        triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
-                        damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
-                        damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
-                        damageRecipientKind = trigger.triggerContext.damageRecipientKind,
-                        damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
-                        damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
-                        damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
-                        xValue = trigger.triggerContext.xValue,
-                        triggerDamageAmount = trigger.triggerContext.damageAmount,
-                        triggerCounterCount = trigger.triggerContext.counterCount,
-                        triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,
-                        triggerLastKnownCounters = trigger.triggerContext.lastKnownCounters,
-            triggerLastKnownSubtypes = trigger.triggerContext.lastKnownSubtypes,
-            triggerLastKnownCardTypes = trigger.triggerContext.lastKnownCardTypes,
-                        triggerLastKnownDamageDealtByPlayers = trigger.triggerContext.lastKnownDamageDealtByPlayers,
-                        triggerLastKnownBlockingOrBlockedByIds = trigger.triggerContext.lastKnownBlockingOrBlockedByIds,
-                        triggerLastKnownPower = trigger.triggerContext.lastKnownPower,
-                        triggerLastKnownToughness = trigger.triggerContext.lastKnownToughness,
-                        triggerDiedBatchTotalPower = trigger.triggerContext.diedBatchTotalPower,
-                        triggerModesChosenCount = trigger.triggerContext.modesChosenCount,
-                        triggerManaSpentOnTriggeringSpell = trigger.triggerContext.manaSpentOnTriggeringSpell,
-                        triggerColorsSpentOnTriggeringSpell = trigger.triggerContext.colorsSpentOnTriggeringSpell,
-                        triggerManaValueOfTriggeringSpell = trigger.triggerContext.manaValueOfTriggeringSpell,
-                        triggerXValueOfTriggeringSpell = trigger.triggerContext.xValueOfTriggeringSpell,
-                        // The dynamic cap may read trigger-context properties — e.g. Elrond,
-                        // Master of Healing's "up to X target creatures, where X is the number of
-                        // cards looked at while scrying" (ContextPropertyKey.TRIGGER_SCRY_COUNT).
-                        // Without this the cap resolves to 0 and the player can pick no targets.
-                        triggerScryCount = trigger.triggerContext.scryCount,
-                        triggerDiscardCount = trigger.triggerContext.discardedCardCount,
-                        triggerDiscoverValue = trigger.triggerContext.discoverValue,
-                        triggerExcessDamageAmount = trigger.triggerContext.excessDamageAmount,
-                        triggerRecipientToughness = trigger.triggerContext.recipientToughnessAtDamage,
-                        // A reflexive trigger's dynamic cap may read what its action half stashed
-                        // (e.g. `VariableReference("discarded_count")`, Amass's army reference).
-                        pipeline = trigger.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
-                    )
-                    DynamicAmountEvaluator().evaluate(state, dyn, context)
-                } catch (_: Exception) {
-                    requirement.count
-                }
-                val newMax = resolved.coerceAtLeast(0)
-                requirement.copy(
-                    count = newMax,
-                    minCount = requirement.minCount.coerceAtMost(newMax)
-                )
-            }
-        }
-        is TargetOther -> {
-            val newBase = snapshotDynamicCount(state, trigger, requirement.baseRequirement)
-            if (newBase !== requirement.baseRequirement) requirement.copy(baseRequirement = newBase) else requirement
-        }
-        else -> requirement
-    }
-
-    /**
      * Resolve a [TargetObject.totalManaValueAtMost] aggregate cap ("...with total mana value X or
      * less") to a concrete integer at decision-build time — e.g. Fire Lord Sozin's cap reflecting
      * the X just paid, or a reflexive trigger's action-half payment (CR 603.12) via
-     * [PendingTrigger.carriedPipeline]. `null` when the requirement carries no such cap.
+     * [PendingTrigger.carriedPipeline]. `null` when the requirement carries no such cap or the
+     * required source/context fact is unavailable. The typed result prevents an evaluator zero
+     * from being mistaken for an authoritative cap.
      */
     private fun resolveTotalManaValueAtMost(
         state: GameState,
         trigger: PendingTrigger,
         requirement: TargetRequirement
-    ): Int? {
-        val dyn = (requirement as? TargetObject)?.totalManaValueAtMost ?: return null
-        return try {
-            val context = EffectContext(
-                sourceId = trigger.sourceId,
-                controllerId = trigger.controllerId,
-                triggeringEntityId = trigger.triggerContext.triggeringEntityId,
-                triggeringPlayerId = trigger.triggerContext.triggeringPlayerId,
-                damageSourceEntityId = trigger.triggerContext.damageSourceEntityId,
-                damageRecipientEntityId = trigger.triggerContext.damageRecipientEntityId,
-                damageRecipientKind = trigger.triggerContext.damageRecipientKind,
-                damageRecipientKinds = trigger.triggerContext.effectiveDamageRecipientKinds,
-                damageSourceLastKnownSnapshot = trigger.triggerContext.damageSourceLastKnownSnapshot,
-                damageRecipientLastKnownSnapshot = trigger.triggerContext.damageRecipientLastKnownSnapshot,
-                xValue = trigger.triggerContext.xValue,
-                triggerDamageAmount = trigger.triggerContext.damageAmount,
-                triggerCounterCount = trigger.triggerContext.counterCount,
-                triggerTotalCounterCount = trigger.triggerContext.totalCounterCount,
-                triggerLastKnownCounters = trigger.triggerContext.lastKnownCounters,
-            triggerLastKnownSubtypes = trigger.triggerContext.lastKnownSubtypes,
-            triggerLastKnownCardTypes = trigger.triggerContext.lastKnownCardTypes,
-                triggerLastKnownDamageDealtByPlayers = trigger.triggerContext.lastKnownDamageDealtByPlayers,
-                triggerLastKnownBlockingOrBlockedByIds = trigger.triggerContext.lastKnownBlockingOrBlockedByIds,
-                triggerLastKnownPower = trigger.triggerContext.lastKnownPower,
-                triggerLastKnownToughness = trigger.triggerContext.lastKnownToughness,
-                triggerDiedBatchTotalPower = trigger.triggerContext.diedBatchTotalPower,
-                triggerModesChosenCount = trigger.triggerContext.modesChosenCount,
-                triggerManaSpentOnTriggeringSpell = trigger.triggerContext.manaSpentOnTriggeringSpell,
-                triggerColorsSpentOnTriggeringSpell = trigger.triggerContext.colorsSpentOnTriggeringSpell,
-                triggerManaValueOfTriggeringSpell = trigger.triggerContext.manaValueOfTriggeringSpell,
-                triggerXValueOfTriggeringSpell = trigger.triggerContext.xValueOfTriggeringSpell,
-                triggerScryCount = trigger.triggerContext.scryCount,
-                triggerDiscardCount = trigger.triggerContext.discardedCardCount,
-                triggerDiscoverValue = trigger.triggerContext.discoverValue,
-                triggerExcessDamageAmount = trigger.triggerContext.excessDamageAmount,
-                triggerRecipientToughness = trigger.triggerContext.recipientToughnessAtDamage,
-                pipeline = trigger.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
-            )
-            DynamicAmountEvaluator().evaluate(state, dyn, context).coerceAtLeast(0)
-        } catch (_: Exception) {
-            null
-        }
-    }
+    ): ResolvedTotalManaValueAtMost? = targetValidator.resolveTotalManaValueAtMostForPending(
+        state = state,
+        requirement = requirement,
+        context = pendingTargetRequirementContext(trigger),
+    )
+
 
     /**
      * Has this source's controller already taken [abilityId]'s "Do this only once each turn" action

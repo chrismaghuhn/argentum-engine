@@ -3,17 +3,18 @@ package com.wingedsheep.engine.handlers.effects.stack
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
-import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
-import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ReselectTargetRandomlyEffect
-import com.wingedsheep.sdk.scripting.targets.*
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlin.reflect.KClass
 
 /**
@@ -28,7 +29,7 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
 
     override val effectType: KClass<ReselectTargetRandomlyEffect> = ReselectTargetRandomlyEffect::class
 
-    private val predicateEvaluator = PredicateEvaluator()
+    private val targetFinder = TargetFinder()
 
     override fun execute(
         state: GameState,
@@ -55,7 +56,14 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
         val targetRequirements = targetsComponent.targetRequirements
 
         // 3. Find all legal targets
-        val legalTargets = findLegalTargets(state, currentTarget, targetRequirements, context.controllerId)
+        val legalTargets = findLegalTargets(
+            state = state,
+            currentTarget = currentTarget,
+            targetRequirements = targetRequirements,
+            controllerId = context.controllerId,
+            sourceId = triggeringEntityId,
+            predicateContext = predicateContextForRetarget(state, triggeringEntityId, context),
+        )
 
         if (legalTargets.isEmpty()) {
             // No legal targets at all — keep current target
@@ -112,84 +120,64 @@ class ReselectTargetRandomlyExecutor : EffectExecutor<ReselectTargetRandomlyEffe
         state: GameState,
         currentTarget: ChosenTarget,
         targetRequirements: List<TargetRequirement>,
-        controllerId: EntityId
+        controllerId: EntityId,
+        sourceId: EntityId,
+        predicateContext: PredicateContext,
     ): List<EntityId> {
-        val projected = state.projectedState
         val requirement = targetRequirements.firstOrNull()
-
-        return when {
-            requirement is AnyTarget -> {
-                val permanents = state.getBattlefield().filter { entityId ->
-                    projected.hasType(entityId, "CREATURE") || projected.hasType(entityId, "PLANESWALKER")
-                }
-                val players = state.turnOrder.filter { state.hasEntity(it) }
-                permanents + players
-            }
-
-            requirement is TargetCreatureOrPlayer -> {
-                val creatures = state.getBattlefield().filter { entityId ->
-                    projected.hasType(entityId, "CREATURE")
-                }
-                val players = state.turnOrder.filter { state.hasEntity(it) }
-                creatures + players
-            }
-
-            requirement is TargetPermanentOrPlayer -> {
-                val predContext = PredicateContext(controllerId = controllerId)
-                val permanents = state.getBattlefield().filter { entityId ->
-                    predicateEvaluator.matches(
-                        state, projected, entityId, requirement.permanentFilter.baseFilter, predContext
-                    )
-                }
-                val players = state.turnOrder.filter { state.hasEntity(it) }
-                permanents + players
-            }
-
-            requirement is TargetOpponentOrPlaneswalker -> {
-                val opponents = state.turnOrder.filter { it != controllerId && state.hasEntity(it) }
-                val planeswalkers = state.getBattlefield().filter { entityId ->
-                    projected.hasType(entityId, "PLANESWALKER")
-                }
-                opponents + planeswalkers
-            }
-
-            requirement is TargetCreatureOrPlaneswalker -> {
-                state.getBattlefield().filter { entityId ->
-                    projected.hasType(entityId, "CREATURE") || projected.hasType(entityId, "PLANESWALKER")
-                }
-            }
-
-            requirement is TargetObject && requirement.filter.zone == Zone.BATTLEFIELD -> {
-                val predContext = PredicateContext(controllerId = controllerId)
-                state.getBattlefield().filter { entityId ->
-                    predicateEvaluator.matches(
-                        state, projected, entityId, requirement.filter.baseFilter, predContext
-                    )
-                }
-            }
-
-            requirement is TargetPlayer -> {
-                state.turnOrder.filter { state.hasEntity(it) }
-            }
-
-            requirement is TargetOpponent -> {
-                state.turnOrder.filter { it != controllerId && state.hasEntity(it) }
-            }
-
-            requirement is TargetSpellOrPermanent -> {
-                // Spells on stack + permanents on battlefield
-                state.stack + state.getBattlefield()
-            }
-
-            // Fallback: infer from current target type
-            else -> findTargetsByCurrentType(state, currentTarget, projected)
+        return if (requirement != null) {
+            targetFinder.findLegalTargets(
+                state = state,
+                requirement = requirement,
+                controllerId = controllerId,
+                sourceId = sourceId,
+                pipelineContext = predicateContext,
+                requireAuthoritativeContext = true,
+            )
+        } else {
+            // A malformed/legacy stack payload without a requirement retains the old structural
+            // fallback, but a real requirement always goes through the authoritative context gate.
+            findTargetsByCurrentType(state, currentTarget)
         }
+    }
+
+    private fun predicateContextForRetarget(
+        state: GameState,
+        stackObjectId: EntityId,
+        context: EffectContext,
+    ): PredicateContext {
+        val base = PredicateContext.fromEffectContext(context)
+        val container = state.getEntity(stackObjectId)
+        container?.get<SpellOnStackComponent>()?.let { spell ->
+            return base.copy(
+                sourceId = stackObjectId,
+                xValue = spell.xValue,
+            )
+        }
+        container?.get<ActivatedAbilityOnStackComponent>()?.let { ability ->
+            return base.copy(
+                sourceId = stackObjectId,
+                xValue = ability.xValue,
+            )
+        }
+        container?.get<TriggeredAbilityOnStackComponent>()?.let { ability ->
+            return base.copy(
+                sourceId = stackObjectId,
+                triggeringEntityId = ability.triggeringEntityId,
+                triggeringPlayerId = ability.triggeringPlayerId,
+                xValue = ability.xValue,
+                chosenValues = ability.carriedPipeline?.chosenValues ?: emptyMap(),
+                storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap(),
+                storedSubtypeGroups = ability.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
+                storedCollections = ability.carriedPipeline?.storedCollections ?: emptyMap(),
+            )
+        }
+        return base.copy(sourceId = stackObjectId, xValue = null)
     }
 
     private fun findTargetsByCurrentType(
         state: GameState,
         currentTarget: ChosenTarget,
-        projected: ProjectedState
     ): List<EntityId> {
         return when (currentTarget) {
             is ChosenTarget.Permanent -> {

@@ -6,6 +6,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -127,6 +129,7 @@ class CopyTargetSpellOrAbilityExecutor(
             var currentState = state
             val allEvents = priorEvents.toMutableList()
             var copiesLeft = remainingCopies
+            val targetValidator = TargetValidator()
 
             while (copiesLeft > 0) {
                 val container = currentState.getEntity(abilityEntityId)
@@ -148,8 +151,41 @@ class CopyTargetSpellOrAbilityExecutor(
                 // Legal targets are found from the *copier's* perspective (its source), matching
                 // how new targets for a copy are validated — not from the copied ability's entity.
                 val legalTargetsMap = legalTargetsFor(
-                    currentState, targetFinder, targetRequirements, controllerId, copierSourceId
+                    state = currentState,
+                    targetFinder = targetFinder,
+                    targetRequirements = targetRequirements,
+                    abilityEntityId = abilityEntityId,
+                    controllerId = controllerId,
+                    sourceId = copierSourceId,
                 )
+
+                val pendingTargetContext = currentState.getEntity(abilityEntityId)?.let { container ->
+                    container.get<TriggeredAbilityOnStackComponent>()?.let { source ->
+                        EffectContext(
+                            sourceId = abilityEntityId,
+                            controllerId = controllerId,
+                            triggeringEntityId = source.triggeringEntityId,
+                            triggeringPlayerId = source.triggeringPlayerId,
+                            xValue = source.xValue,
+                            pipeline = source.carriedPipeline ?: com.wingedsheep.engine.handlers.PipelineState.EMPTY,
+                        )
+                    } ?: container.get<ActivatedAbilityOnStackComponent>()?.let { source ->
+                        EffectContext(
+                            sourceId = abilityEntityId,
+                            controllerId = controllerId,
+                            xValue = source.xValue,
+                        )
+                    }
+                } ?: EffectContext(sourceId = abilityEntityId, controllerId = controllerId)
+                val targetReqInfos = targetRequirements.mapIndexed { index, requirement ->
+                    targetValidator.pendingTargetRequirementInfo(
+                        state = currentState,
+                        index = index,
+                        requirement = requirement,
+                        context = pendingTargetContext,
+                        legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                    ).orReturnUnsupported { return it.toExecutionError(currentState) }
+                }
 
                 // CR 707.10c: no legal replacement for some requirement — the copy is still made,
                 // inheriting the source's targets (which may be illegal, so it's removed on
@@ -184,9 +220,7 @@ class CopyTargetSpellOrAbilityExecutor(
                         sourceName = sourceName,
                         effectHint = "Copy of $sourceName's ability"
                     ),
-                    targetRequirements = targetRequirements.mapIndexed { index, req ->
-                        TargetRequirementInfo(index = index, description = req.description)
-                    },
+                    targetRequirements = targetReqInfos,
                     legalTargets = legalTargetsMap
                 )
                 val continuation = CopyAbilityTargetContinuation(
@@ -243,12 +277,39 @@ class CopyTargetSpellOrAbilityExecutor(
             state: GameState,
             targetFinder: TargetFinder,
             targetRequirements: List<TargetRequirement>,
+            abilityEntityId: EntityId,
             controllerId: EntityId,
             sourceId: EntityId?
         ): Map<Int, List<EntityId>> {
             val map = mutableMapOf<Int, List<EntityId>>()
+            val sourcePredicateContext = state.getEntity(abilityEntityId)?.let { container ->
+                container.get<TriggeredAbilityOnStackComponent>()?.let { source ->
+                    com.wingedsheep.engine.handlers.PredicateContext(
+                        controllerId = controllerId,
+                        triggeringEntityId = source.triggeringEntityId,
+                        triggeringPlayerId = source.triggeringPlayerId,
+                        xValue = source.xValue,
+                        storedCollections = source.carriedPipeline?.storedCollections ?: emptyMap(),
+                        chosenValues = source.carriedPipeline?.chosenValues ?: emptyMap(),
+                        storedStringLists = source.carriedPipeline?.storedStringLists ?: emptyMap(),
+                        storedSubtypeGroups = source.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
+                    )
+                } ?: container.get<ActivatedAbilityOnStackComponent>()?.let { source ->
+                    com.wingedsheep.engine.handlers.PredicateContext(
+                        controllerId = controllerId,
+                        xValue = source.xValue,
+                    )
+                }
+            }
             for ((index, requirement) in targetRequirements.withIndex()) {
-                map[index] = targetFinder.findLegalTargets(state, requirement, controllerId, sourceId)
+                map[index] = targetFinder.findLegalTargets(
+                    state = state,
+                    requirement = requirement,
+                    controllerId = controllerId,
+                    sourceId = sourceId,
+                    pipelineContext = sourcePredicateContext,
+                    requireAuthoritativeContext = true,
+                )
             }
             return map
         }

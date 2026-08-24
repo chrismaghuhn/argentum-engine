@@ -87,8 +87,20 @@ class ActionProcessor(
         // Execute the action, then update which revealed/returned cards opponents may see
         // (cards revealed into hand or bounced back to hand stay visible until a same-named
         // card is played — see [RevealedInHandTracker]).
+        val executed = try {
+            registry.execute(state, action)
+        } catch (unsupported: UnsupportedPathFailure) {
+            // Authoritative target-context gaps must remain typed all the way to trusted
+            // observation/action boundaries. Do not let a missing predicate fact escape as an
+            // ordinary empty-target fizzle or as an untyped handler exception.
+            ExecutionResult.error(
+                state = state,
+                message = unsupported.message ?: "Trusted execution encountered an unsupported path",
+                diagnostics = unsupported.diagnostics,
+            )
+        }
         val result = com.wingedsheep.engine.mechanics.RevealedInHandTracker
-            .applyAfterAction(registry.execute(state, action))
+            .applyAfterAction(executed)
         val undoPolicy = if (computeUndo) {
             UndoPolicyComputer.compute(action, state, result, services.cardRegistry)
         } else {

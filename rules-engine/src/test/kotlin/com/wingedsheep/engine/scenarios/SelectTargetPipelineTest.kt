@@ -1,6 +1,9 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ChooseTargetsDecision
+import com.wingedsheep.engine.core.DiagnosticCode
+import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.effects.library.SelectTargetPipelineExecutor
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.ManaCost
@@ -13,9 +16,14 @@ import com.wingedsheep.sdk.scripting.effects.CompositeEffect
 import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.effects.SelectTargetEffect
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
 /**
@@ -155,6 +163,31 @@ class SelectTargetPipelineTest : FunSpec({
         driver.pendingDecision shouldBe null
         driver.assertLifeTotal(caster, 20)
         driver.assertLifeTotal(opponent, 20)
+    }
+
+    test("unresolved dynamic target metadata fails closed before an empty pipeline result") {
+        val driver = createDriver()
+        driver.initMirrorMatch(
+            deck = Deck.of("Mountain" to 40),
+            startingLife = 20
+        )
+
+        val (caster, _) = setupForCast(driver)
+        val unresolvedRequirement = TargetObject(
+            count = 2,
+            minCount = 1,
+            filter = TargetFilter(GameObjectFilter.Creature),
+            dynamicMaxCount = DynamicAmount.XValue,
+        )
+        val result = SelectTargetPipelineExecutor().execute(
+            state = driver.state,
+            effect = SelectTargetEffect(requirement = unresolvedRequirement, storeAs = "chosen"),
+            context = EffectContext(sourceId = null, controllerId = caster, xValue = null),
+        )
+
+        result.isSuccess shouldBe false
+        result.error shouldNotBe null
+        result.diagnostics.single().code shouldBe DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
     }
 
     test("caster's own creatures are also legal targets") {

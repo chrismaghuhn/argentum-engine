@@ -2,9 +2,12 @@ package com.wingedsheep.engine.handlers.continuations
 
 import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.ReplacementEffectUtils
 import com.wingedsheep.engine.handlers.effects.permanent.counters.ProliferateExecutor
 import com.wingedsheep.engine.handlers.effects.permanent.counters.RemoveAnyNumberOfCountersFlow
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 
@@ -428,11 +431,43 @@ class MiscContinuationResumer(
         // Prompt for next copy's targets
         val decisionId = "storm-copy-target-${java.util.UUID.randomUUID()}"
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
+        val copiedSpellXValue = continuation.resolvingSpellCopyPayload?.spell?.xValue
+            ?: currentState.getEntity(continuation.sourceId)
+                ?.get<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()?.xValue
+        val sourcePredicateContext = continuation.sourceId.let { id ->
+            currentState.getEntity(id)?.get<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
+                ?.let { spell ->
+                    PredicateContext(
+                        controllerId = continuation.controllerId,
+                        sourceId = id,
+                        xValue = spell.xValue,
+                    )
+                }
+        }
         for ((index, requirement) in continuation.spellTargetRequirements.withIndex()) {
             val legalTargets = services.targetFinder.findLegalTargets(
-                currentState, requirement, continuation.controllerId, continuation.sourceId
+                state = currentState,
+                requirement = requirement,
+                controllerId = continuation.controllerId,
+                sourceId = continuation.sourceId,
+                pipelineContext = sourcePredicateContext,
+                requireAuthoritativeContext = true,
             )
             legalTargetsMap[index] = legalTargets
+        }
+
+        val targetReqInfos = continuation.spellTargetRequirements.mapIndexed { index, requirement ->
+            TargetValidator().pendingTargetRequirementInfo(
+                state = currentState,
+                index = index,
+                requirement = requirement,
+                context = EffectContext(
+                    sourceId = continuation.sourceId,
+                    controllerId = continuation.controllerId,
+                    xValue = copiedSpellXValue,
+                ),
+                legalTargetCount = legalTargetsMap[index].orEmpty().size,
+            ).orReturnUnsupported { return it.toExecutionError(currentState) }
         }
 
         // 707.10c: if no legal replacement exists for any remaining copy, still put
@@ -479,13 +514,6 @@ class MiscContinuationResumer(
             removeLegendary = continuation.removeLegendary,
             resolvingSpellCopyPayload = continuation.resolvingSpellCopyPayload
         )
-        val targetReqInfos = continuation.spellTargetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo(
-                index = index,
-                description = req.description
-            )
-        }
-
         val totalCopies = continuation.totalCopies
         val copyNumber = totalCopies - remainingAfterThis + 1
         val copyLabel = if (totalCopies > 1)

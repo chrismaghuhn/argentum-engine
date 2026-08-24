@@ -8,10 +8,17 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.TargetRequirementInfoResult
+import com.wingedsheep.engine.core.TargetRequirementUnsupportedReason
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.actions.spell.CastSpellHandler
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -57,7 +64,6 @@ class CastFromCollectionWithoutPayingCostExecutor(
     private val cardRegistry: CardRegistry,
     private val targetFinder: TargetFinder = TargetFinder(),
 ) : EffectExecutor<CastFromCollectionWithoutPayingCostEffect> {
-
     override val effectType: KClass<CastFromCollectionWithoutPayingCostEffect> =
         CastFromCollectionWithoutPayingCostEffect::class
 
@@ -89,6 +95,9 @@ class CastFromCollectionWithoutPayingCostExecutor(
             // CR 601.2c — if no legal targets exist for a required slot, the cast can't
             // initiate; the chosen card simply stays where it is.
             return EffectResult.success(state)
+        }
+        if (prep is TargetPrep.Unsupported) {
+            return TargetRequirementInfoResult.Unsupported(prep.reason).toEffectError(state)
         }
 
         // payManaCost casts route through the normal cost (Kaervek, the Punisher — "you may cast
@@ -171,6 +180,11 @@ class CastFromCollectionWithoutPayingCostExecutor(
 
         /** A required target slot has no legal targets — the cast can't initiate (CR 601.2c). */
         data object NoLegalTargets : TargetPrep
+
+        /** The authoritative target metadata cannot be represented for Gym publication. */
+        data class Unsupported(
+            val reason: TargetRequirementUnsupportedReason,
+        ) : TargetPrep
 
         /** Pause with [decision] and push [continuation]; the resumer performs the cast with the picks. */
         data class NeedsTargets(
@@ -267,28 +281,50 @@ class CastFromCollectionWithoutPayingCostExecutor(
                 return TargetPrep.NotNeeded
             }
 
+            val targetValidator = TargetValidator()
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-            val requirementInfos = targetRequirements.mapIndexed { index, requirement ->
+            targetRequirements.forEachIndexed { index, requirement ->
                 val legal = targetFinder.findLegalTargets(
                     state = state,
                     requirement = requirement,
                     controllerId = casterId,
                     sourceId = cardId,
+                    requireAuthoritativeContext = true,
                 )
                 legalTargetsMap[index] = legal
-                TargetRequirementInfo(
-                    index = index,
-                    description = requirement.description,
-                    minTargets = requirement.effectiveMinCount,
-                    maxTargets = requirement.count,
-                )
             }
-            val mandatoryRequirementHasNoTargets = requirementInfos.any { info ->
-                info.minTargets > 0 && legalTargetsMap[info.index].isNullOrEmpty()
+            // A required slot with no candidate makes the synthesized cast unable to initiate. This
+            // no-op is decided before target metadata conversion: no pending decision/domain will be
+            // emitted, so an unresolved field must not replace the established no-target fallback.
+            val mandatoryRequirementHasNoTargets = targetRequirements.withIndex().any { (index, requirement) ->
+                legalTargetsMap[index].orEmpty().size < requirement.effectiveMinCount
             }
             if (mandatoryRequirementHasNoTargets) {
                 return TargetPrep.NoLegalTargets
             }
+
+            val selectableIndices = targetRequirements.indices.filter { index ->
+                targetRequirements[index].effectiveMinCount > 0 ||
+                    legalTargetsMap[index].orEmpty().isNotEmpty()
+            }
+            if (selectableIndices.isEmpty()) {
+                return TargetPrep.NotNeeded
+            }
+
+            // Only requirements that will actually be published in the pending decision need a
+            // representable metadata projection. Unsupported metadata therefore remains fail-closed
+            // for executable target choices without affecting a legitimate empty no-op.
+            val requirementInfos = selectableIndices.map { index ->
+                targetValidator.pendingTargetRequirementInfo(
+                    state = state,
+                    index = index,
+                    requirement = targetRequirements[index],
+                    context = EffectContext(sourceId = cardId, controllerId = casterId),
+                    legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                ).orReturnUnsupported { return TargetPrep.Unsupported(it.reason) }
+            }
+
+            val selectableRequirementInfos = requirementInfos
 
             // Name the face being cast — a transformed cast prompts for "Deluge of the Dead",
             // not for the front face the player exiled.
@@ -303,8 +339,8 @@ class CastFromCollectionWithoutPayingCostExecutor(
                     sourceName = cardName,
                     phase = DecisionPhase.CASTING,
                 ),
-                targetRequirements = requirementInfos,
-                legalTargets = legalTargetsMap,
+                targetRequirements = selectableRequirementInfos,
+                legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
                 canCancel = false,
             )
             val continuation = CastFromCollectionTargetsContinuation(

@@ -4,6 +4,8 @@ import com.wingedsheep.engine.core.AlternativeCostType
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.AdditionalCostData
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
+import com.wingedsheep.engine.legalactions.TargetDomainUnsupportedReason
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.ModalEnumerationMode
@@ -11,6 +13,7 @@ import com.wingedsheep.engine.legalactions.ModalLegalEnumeration
 import com.wingedsheep.engine.legalactions.TapForGenericPermanentData
 import com.wingedsheep.engine.legalactions.TapForPowerCreatureData
 import com.wingedsheep.engine.legalactions.TargetInfo
+import com.wingedsheep.engine.legalactions.TargetInfoProjection
 import com.wingedsheep.engine.legalactions.utils.SelectionCostPresentation
 import com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
 import com.wingedsheep.engine.mechanics.EscalateCosts
@@ -1163,7 +1166,9 @@ class CastSpellEnumerator : ActionEnumerator {
                                     delveCards = delveCards,
                                     minDelveNeeded = minDelveNeeded,
                                     manaCostString = modeEnum.manaCostString,
-                                    autoTapPreview = modeEnum.autoTapPreview
+                                    autoTapPreview = modeEnum.autoTapPreview,
+                                    targetRequirements = modeTargetInfos.infos,
+                                    targetDomainSupport = modeTargetInfos.support
                                 ))
                             } else {
                                 result.add(LegalAction(
@@ -1175,7 +1180,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                     targetCount = firstInfo.maxTargets,
                                     minTargets = firstReq.effectiveMinCount,
                                     targetDescription = firstReq.description,
-                                    targetRequirements = if (modeTargetInfos.size > 1) modeTargetInfos else null,
+                                    targetRequirements = modeTargetInfos.infos,
+                                     targetDomainSupport = modeTargetInfos.support,
                                     xConstrainsTargetManaValue = firstInfo.xConstrainsManaValue,
                                     xConstrainsTargetManaValueExactly = firstInfo.xConstrainsManaValueExactly,
                                     xConstrainsTargetPower = firstInfo.xConstrainsPower,
@@ -1221,7 +1227,7 @@ class CastSpellEnumerator : ActionEnumerator {
                             available = modeEnum.available,
                             additionalManaCost = modeEnum.mode.additionalManaCost,
                             additionalCostInfo = modeEnum.additionalCostInfo,
-                            targetRequirements = modeEnum.targetInfos
+                            targetRequirements = modeEnum.targetInfos.infos
                         )
                     }
                     val unavailableIndices = enumerationModes
@@ -1266,6 +1272,11 @@ class CastSpellEnumerator : ActionEnumerator {
                             minDelveNeeded = minDelveNeeded,
                             manaCostString = variant.manaCostString,
                             autoTapPreview = variant.autoTapPreview,
+                            targetDomainSupport = if (modeEnumerations.any { it.targetInfos.isNotEmpty() }) {
+                                TargetDomainSupport.UNSUPPORTED(TargetDomainUnsupportedReason.AMBIGUOUS_FLAT_PARTITION)
+                            } else {
+                                TargetDomainSupport.SUPPORTED
+                            },
                             modalEnumeration = ModalLegalEnumeration(
                                 chooseCount = effectiveChooseCount,
                                 minChooseCount = effectiveMinChooseCount,
@@ -1304,6 +1315,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastSpell",
                                 description = "Cast ${cardComponent.name}",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget)),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 hasXCost = hasXCost,
                                 maxAffordableX = maxAffordableX,
                                 additionalCostInfo = costInfo,
@@ -1324,6 +1337,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithAlternativeCost",
                                 description = "Cast ${cardComponent.name} (${altCostInfo.first})",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useAlternativeCost = true, alternativeCostType = AlternativeCostType.GRANTED),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 manaCostString = altCostInfo.first,
                                 requiresDamageDistribution = requiresDamageDistribution,
                                 totalDamageToDistribute = totalDamageToDistribute,
@@ -1336,6 +1351,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithAlternativeCost",
                                 description = "Cast ${cardComponent.name} (${selfAltCostResult.manaCostString})",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useAlternativeCost = true, alternativeCostType = AlternativeCostType.SELF_ALTERNATIVE),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 manaCostString = selfAltCostResult.manaCostString,
                                 additionalCostInfo = selfAltCostResult.additionalCostInfo,
                                 requiresDamageDistribution = requiresDamageDistribution,
@@ -1349,6 +1366,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithAlternativeCost",
                                 description = "Evoke ${cardComponent.name} (${evokeCostResult.manaCostString})",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useAlternativeCost = true, alternativeCostType = AlternativeCostType.EVOKE),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 manaCostString = evokeCostResult.manaCostString,
                                 autoTapPreview = evokeCostResult.autoTapPreview
                             ))
@@ -1358,6 +1377,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithAlternativeCost",
                                 description = "Impending ${cardComponent.name} (${impendingCostResult.manaCostString})",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useAlternativeCost = true, alternativeCostType = AlternativeCostType.IMPENDING),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 manaCostString = impendingCostResult.manaCostString,
                                 autoTapPreview = impendingCostResult.autoTapPreview
                             ))
@@ -1367,6 +1388,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithAlternativeCost",
                                 description = "Miracle ${cardComponent.name} (${miracleCostResult.manaCostString})",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useAlternativeCost = true, alternativeCostType = AlternativeCostType.MIRACLE),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 manaCostString = miracleCostResult.manaCostString,
                                 autoTapPreview = miracleCostResult.autoTapPreview
                             ))
@@ -1376,6 +1399,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithoutPayingManaCost",
                                 description = "Cast ${cardComponent.name} (Free)",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useWithoutPayingManaCost = true),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 manaCostString = freeCastResult.manaCostString,
                                 requiresDamageDistribution = requiresDamageDistribution,
                                 totalDamageToDistribute = totalDamageToDistribute,
@@ -1388,6 +1413,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastSpell",
                                 description = "Cast ${cardComponent.name} (${path.label})",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget)),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 additionalCostInfo = path.costInfo,
                                 manaCostString = path.manaCostString,
                                 requiresDamageDistribution = requiresDamageDistribution,
@@ -1407,7 +1434,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1437,7 +1465,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1459,7 +1488,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1482,7 +1512,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1501,7 +1532,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1520,7 +1552,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1539,7 +1572,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -1561,7 +1595,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 xConstrainsTargetManaValue = firstReqInfo.xConstrainsManaValue,
                                 xConstrainsTargetManaValueExactly = firstReqInfo.xConstrainsManaValueExactly,
                                 xConstrainsTargetPower = firstReqInfo.xConstrainsPower,
@@ -2039,7 +2074,8 @@ class CastSpellEnumerator : ActionEnumerator {
                     targetCount = firstReqInfo.maxTargets,
                     minTargets = firstReq.effectiveMinCount,
                     targetDescription = firstReq.description,
-                    targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                    targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                     affordable = canAfford,
                     manaCostString = baseCost.toString(),
                     autoTapPreview = autoTapPreview,
@@ -2154,7 +2190,8 @@ class CastSpellEnumerator : ActionEnumerator {
                     targetCount = firstReqInfo.maxTargets,
                     minTargets = firstReq.effectiveMinCount,
                     targetDescription = firstReq.description,
-                    targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                    targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                     affordable = canAfford,
                     manaCostString = baseCost.toString(),
                     autoTapPreview = autoTapPreview,
@@ -2294,7 +2331,8 @@ class CastSpellEnumerator : ActionEnumerator {
                     targetCount = firstReqInfo.maxTargets,
                     minTargets = firstReq.effectiveMinCount,
                     targetDescription = firstReq.description,
-                    targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                    targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                     affordable = canAfford,
                     manaCostString = splicedCost.toString(),
                     autoTapPreview = autoTapPreview
@@ -2598,6 +2636,11 @@ class CastSpellEnumerator : ActionEnumerator {
                         additionalCostInfo = kickerCostInfo,
                         hasXCost = kickedHasXCost,
                         maxAffordableX = kickedMaxAffordableX,
+                        targetDomainSupport = if (kickerModeEnumerations.any { it.targetInfos.isNotEmpty() }) {
+                            TargetDomainSupport.UNSUPPORTED(TargetDomainUnsupportedReason.AMBIGUOUS_FLAT_PARTITION)
+                        } else {
+                            TargetDomainSupport.SUPPORTED
+                        },
                         modalEnumeration = ModalLegalEnumeration(
                             chooseCount = kickerCounts.last,
                             minChooseCount = kickerCounts.first,
@@ -2609,7 +2652,7 @@ class CastSpellEnumerator : ActionEnumerator {
                                     available = modeEnum.available,
                                     additionalManaCost = modeEnum.mode.additionalManaCost,
                                     additionalCostInfo = modeEnum.additionalCostInfo,
-                                    targetRequirements = modeEnum.targetInfos
+                                    targetRequirements = modeEnum.targetInfos.infos
                                 )
                             },
                             unavailableIndices = kickerModeEnumerations
@@ -2636,6 +2679,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 actionType = "CastWithKicker",
                                 description = "Cast ${cardComponent.name} ($kickLabel)",
                                 action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), declaredCostSlot = declaredSlot),
+                                targetRequirements = targetReqInfos.infos,
+                                targetDomainSupport = targetReqInfos.support,
                                 affordable = canAffordKicked,
                                 manaCostString = kickedCostString,
                                 autoTapPreview = kickedAutoTapPreview,
@@ -2656,7 +2701,8 @@ class CastSpellEnumerator : ActionEnumerator {
                                 targetCount = firstReqInfo.maxTargets,
                                 minTargets = firstReq.effectiveMinCount,
                                 targetDescription = firstReq.description,
-                                targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                                targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                                 affordable = canAffordKicked,
                                 manaCostString = kickedCostString,
                                 autoTapPreview = kickedAutoTapPreview,
@@ -2814,6 +2860,8 @@ class CastSpellEnumerator : ActionEnumerator {
                         actionType = "CastWithAlternativeCost",
                         description = "Cleave ${cardComponent.name} ($cleaveCostString)",
                         action = CastSpell(playerId, cardId, targets = listOf(autoSelectedTarget), useAlternativeCost = true, alternativeCostType = AlternativeCostType.CLEAVE),
+                        targetRequirements = targetReqInfos.infos,
+                        targetDomainSupport = targetReqInfos.support,
                         affordable = canAffordCleave,
                         manaCostString = cleaveCostString,
                         hasXCost = cleaveHasX,
@@ -2830,7 +2878,8 @@ class CastSpellEnumerator : ActionEnumerator {
                         targetCount = firstReqInfo.maxTargets,
                         minTargets = firstReq.effectiveMinCount,
                         targetDescription = firstReq.description,
-                        targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                        targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                         affordable = canAffordCleave,
                         manaCostString = cleaveCostString,
                         hasXCost = cleaveHasX,
@@ -3047,7 +3096,7 @@ class CastSpellEnumerator : ActionEnumerator {
         val canPayAdditionalCosts: Boolean,
         val additionalCostInfo: AdditionalCostData?,
         val autoTapPreview: List<EntityId>?,
-        val targetInfos: List<TargetInfo>,
+        val targetInfos: TargetInfoProjection,
         val allTargetRequirementsSatisfied: Boolean
     ) {
         /** True when this mode is both payable and has its target requirements satisfied (700.2a). */
@@ -3214,7 +3263,7 @@ class CastSpellEnumerator : ActionEnumerator {
         val modeTargetInfos = if (modeTargetReqs.isNotEmpty()) {
             context.targetUtils.buildTargetInfos(state, playerId, modeTargetReqs, cardId)
         } else {
-            emptyList()
+            TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
         }
         val allTargetRequirementsSatisfied = modeTargetReqs.isEmpty() ||
             context.targetUtils.allRequirementsSatisfied(modeTargetInfos)
@@ -3326,6 +3375,8 @@ class CastSpellEnumerator : ActionEnumerator {
                     actionType = "CastSpell",
                     description = "Cast ${face.name}",
                     action = CastSpell(playerId, cardId, faceIndex = faceIndex, targets = listOf(autoTarget)),
+                    targetRequirements = targetInfos.infos,
+                    targetDomainSupport = targetInfos.support,
                     manaCostString = manaCostString,
                     autoTapPreview = autoTapPreview,
                 )
@@ -3343,7 +3394,8 @@ class CastSpellEnumerator : ActionEnumerator {
                 targetCount = firstInfo.maxTargets,
                 minTargets = firstReq.effectiveMinCount,
                 targetDescription = firstReq.description,
-                targetRequirements = if (targetInfos.size > 1) targetInfos else null,
+                targetRequirements = targetInfos.infos,
+                                     targetDomainSupport = targetInfos.support,
                 manaCostString = manaCostString,
                 autoTapPreview = autoTapPreview,
             )
@@ -3494,7 +3546,8 @@ class CastSpellEnumerator : ActionEnumerator {
                 targetCount = firstInfo.maxTargets,
                 minTargets = firstReq.effectiveMinCount,
                 targetDescription = firstReq.description,
-                targetRequirements = if (targetInfos.size > 1) targetInfos else null,
+                targetRequirements = targetInfos.infos,
+                                     targetDomainSupport = targetInfos.support,
                 manaCostString = costString,
                 autoTapPreview = autoTapPreview,
                 sourceZone = "HAND"
@@ -3617,7 +3670,8 @@ class CastSpellEnumerator : ActionEnumerator {
                 targetCount = firstInfo.maxTargets,
                 minTargets = firstReq.effectiveMinCount,
                 targetDescription = firstReq.description,
-                targetRequirements = if (targetInfos.size > 1) targetInfos else null,
+                targetRequirements = targetInfos.infos,
+                                     targetDomainSupport = targetInfos.support,
                 xConstrainsTargetManaValue = firstInfo.xConstrainsManaValue,
                 xConstrainsTargetManaValueExactly = firstInfo.xConstrainsManaValueExactly,
                 xConstrainsTargetPower = firstInfo.xConstrainsPower,

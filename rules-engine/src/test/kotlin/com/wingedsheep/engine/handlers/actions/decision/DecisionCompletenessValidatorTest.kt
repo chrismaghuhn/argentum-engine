@@ -21,7 +21,11 @@ import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.SplitPilesDecision
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.state.ComponentContainer
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -76,8 +80,42 @@ class DecisionCompletenessValidatorTest : FunSpec({
             prompt = "Choose both",
             context = context,
             targetRequirements = listOf(
-                TargetRequirementInfo(0, "first"),
-                TargetRequirementInfo(1, "second")
+                TargetRequirementInfo(
+                    index = 0,
+                    description = "first",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = false,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                ),
+                TargetRequirementInfo(
+                    index = 1,
+                    description = "second",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = false,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                )
             ),
             legalTargets = mapOf(0 to listOf(first), 1 to listOf(second))
         )
@@ -88,6 +126,59 @@ class DecisionCompletenessValidatorTest : FunSpec({
         ).shouldNotBeNull()
     }
 
+    test("target response rejects a target repeated across a must-differ slot") {
+        val decision = ChooseTargetsDecision(
+            id = "must-differ",
+            playerId = chooser,
+            prompt = "Choose different targets",
+            context = context,
+            targetRequirements = listOf(
+                TargetRequirementInfo(
+                    index = 0,
+                    description = "first",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = false,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                ),
+                TargetRequirementInfo(
+                    index = 1,
+                    description = "another",
+                    minTargets = 1,
+                    maxTargets = 1,
+                    targetZone = null,
+                    mustDifferFromEarlier = true,
+                    sameController = false,
+                    sameOwner = false,
+                    sameCreatureType = false,
+                    sameCardType = false,
+                    totalManaValueAtMost = null,
+                    differentNames = false,
+                    xConstrainsManaValue = false,
+                    xConstrainsManaValueExactly = false,
+                    xConstrainsPower = false,
+                    xConstrainsCount = false,
+                ),
+            ),
+            legalTargets = mapOf(0 to listOf(first), 1 to listOf(first, second)),
+        )
+
+        DecisionValidators.validate(
+            decision,
+            TargetsResponse(decision.id, mapOf(0 to listOf(first), 1 to listOf(first))),
+        ).shouldNotBeNull()
+    }
+
     test("state-dependent target restrictions fail closed without current state") {
         val cases = listOf(
             TargetRequirementInfo(
@@ -95,21 +186,54 @@ class DecisionCompletenessValidatorTest : FunSpec({
                 description = "same graveyard",
                 minTargets = 2,
                 maxTargets = 2,
-                sameOwner = true
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = true,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false
             ),
             TargetRequirementInfo(
                 index = 0,
                 description = "mana value cap",
                 minTargets = 2,
                 maxTargets = 2,
-                totalManaValueAtMost = 1
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = 1,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false
             ),
             TargetRequirementInfo(
                 index = 0,
                 description = "different names",
                 minTargets = 2,
                 maxTargets = 2,
-                differentNames = true
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = true,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false
             )
         )
 
@@ -125,6 +249,90 @@ class DecisionCompletenessValidatorTest : FunSpec({
             DecisionValidators.validate(
                 decision,
                 TargetsResponse(decision.id, mapOf(0 to listOf(first, second)))
+            ).shouldNotBeNull()
+        }
+    }
+
+    test("target relation validation fails closed when authoritative entity metadata is missing") {
+        val relationCases = listOf(
+            "same owner" to TargetRequirementInfo(
+                index = 0,
+                description = "same owner",
+                minTargets = 2,
+                maxTargets = 2,
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = true,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            ),
+            "same controller" to TargetRequirementInfo(
+                index = 0,
+                description = "same controller",
+                minTargets = 2,
+                maxTargets = 2,
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = true,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            ),
+            "total mana value" to TargetRequirementInfo(
+                index = 0,
+                description = "total mana value",
+                minTargets = 2,
+                maxTargets = 2,
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = 5,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            ),
+        )
+
+        relationCases.forEach { (label, requirement) ->
+            var state = GameState()
+                .withEntity(first, ComponentContainer())
+                .withEntity(second, ComponentContainer())
+            if (requirement.sameController) {
+                state = state
+                    .addToZone(ZoneKey(chooser, Zone.BATTLEFIELD), first)
+                    .addToZone(ZoneKey(chooser, Zone.BATTLEFIELD), second)
+            }
+            val decision = ChooseTargetsDecision(
+                id = "missing-$label",
+                playerId = chooser,
+                prompt = label,
+                context = context,
+                targetRequirements = listOf(requirement),
+                legalTargets = mapOf(0 to listOf(first, second)),
+            )
+
+            DecisionValidators.validate(
+                decision,
+                TargetsResponse(decision.id, mapOf(0 to listOf(first, second))),
+                state,
             ).shouldNotBeNull()
         }
     }
