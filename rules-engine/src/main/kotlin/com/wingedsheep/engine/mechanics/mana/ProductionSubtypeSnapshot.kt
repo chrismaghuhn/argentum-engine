@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
+import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 
@@ -13,3 +14,16 @@ import com.wingedsheep.sdk.model.EntityId
  */
 internal fun ProjectedState.productionSourceSubtypes(entityId: EntityId): Set<Subtype> =
     getSubtypes(entityId).map { Subtype.of(it) }.toSet()
+
+/**
+ * Recover the production-time subtype snapshot already captured for an activated source whose
+ * cost moved it out of the battlefield. An empty set is a known-empty snapshot; null means no
+ * such authoritative snapshot was captured and the live projected source may still be consulted
+ * at the actual production seam.
+ */
+internal fun EffectContext.capturedProductionSourceSubtypes(): Set<Subtype>? =
+    lastKnownSourceSnapshot
+        ?.takeIf { it.entityId == sourceId }
+        ?.subtypes
+        ?.map { Subtype.of(it) }
+        ?.toSet()

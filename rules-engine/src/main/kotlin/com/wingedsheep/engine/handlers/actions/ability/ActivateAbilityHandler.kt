@@ -1786,6 +1786,10 @@ class ActivateAbilityHandler(
                 sourceId = action.sourceId,
                 controllerId = action.playerId,
                 granterId = staticGranterId,
+                // A self-sacrificing mana source may no longer be in the projected battlefield
+                // state after its cost resolves. Carry the already-captured production-time LKI
+                // into the mana executor; never reconstruct it from the post-cost source state.
+                lastKnownSourceSnapshot = lastKnownSourceSnapshot,
                 targets = action.targets,
                 // Thread the chosen X so X-based mana abilities produce the right amount
                 // ("{X}, {T}, Sacrifice this: Add X mana..." — Wizard's Rockets). Without

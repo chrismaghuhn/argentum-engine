@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.mana.capturedProductionSourceSubtypes
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
@@ -68,6 +69,7 @@ class AddOneManaOfEachColorAmongExecutor : EffectExecutor<AddOneManaOfEachColorA
                         sourceId = context.sourceId,
                         color = com.wingedsheep.engine.core.PaymentManaColor.fromEngine(color),
                         amount = 1,
+                        sourceSubtypes = context.capturedProductionSourceSubtypes(),
                     )
                 }
             return EffectResult.success(newState)

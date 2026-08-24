@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.mana.capturedProductionSourceSubtypes
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.scripting.effects.AddManaEffect
@@ -40,6 +41,7 @@ class AddManaExecutor(
                     sourceId = context.sourceId,
                     color = PaymentManaColor.fromEngine(effect.color),
                     amount = amount,
+                    sourceSubtypes = context.capturedProductionSourceSubtypes(),
                 )
             )
         }
