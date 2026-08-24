@@ -32,6 +32,7 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
@@ -47,6 +48,7 @@ import com.wingedsheep.sdk.scripting.CostReductionSource
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifySpellCost
+import com.wingedsheep.sdk.scripting.ReduceEquipCost
 import com.wingedsheep.sdk.scripting.SpellCostTarget
 import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.effects.Mode
@@ -92,6 +94,25 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
     val fixedCostEquipment = card("Gym Fixed Cost Equipment") {
         typeLine = "Artifact — Equipment"
         equipAbility("{1}")
+    }
+
+    val targetPowerEquipment = card("Gym Target Power Equipment") {
+        typeLine = "Artifact — Equipment"
+        equipAbility("{3}", genericCostReduction = DynamicAmounts.targetPower())
+    }
+
+    val targetRestrictedEquipGrant = card("Gym Target Restricted Equip Grant") {
+        typeLine = "Creature — Human"
+        power = 2
+        toughness = 2
+        staticAbility {
+            ability = ReduceEquipCost(amount = 1, onlyIfTargetIsSource = true)
+        }
+    }
+
+    val targetRestrictedEquipment = card("Gym Target Restricted Equipment") {
+        typeLine = "Artifact — Equipment"
+        equipAbility("{2}")
     }
 
     val grantedAnyColorManaAbility = ActivatedAbility(
@@ -311,6 +332,9 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(sourceWithTapPayment)
         register(sourceWithTrackedMana)
         register(fixedCostEquipment)
+        register(targetPowerEquipment)
+        register(targetRestrictedEquipGrant)
+        register(targetRestrictedEquipment)
         register(staticManaGrant)
         register(unsupportedXSpell)
         register(ordinarySpell)
@@ -331,14 +355,16 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         cardName: String,
         includeGroundTarget: Boolean = false,
         includeMountain: Boolean = false,
+        includeFlyingTarget: Boolean = false,
+        includeTargetRestrictedGrant: Boolean = false,
     ): Triple<GameEnvironment, EntityId, EntityId> {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
-        val aliceDeck = if (includeGroundTarget) {
-            Deck.of(cardName to 1, "Mountain" to 8, groundTarget.name to 1)
-        } else {
-            Deck.of(cardName to 1, "Mountain" to 8)
-        }
+        val aliceDeckCards = mutableListOf(cardName to 1, "Mountain" to 8)
+        if (includeGroundTarget) aliceDeckCards += groundTarget.name to 1
+        if (includeFlyingTarget) aliceDeckCards += flyingTarget.name to 1
+        if (includeTargetRestrictedGrant) aliceDeckCards += targetRestrictedEquipGrant.name to 1
+        val aliceDeck = Deck.of(*aliceDeckCards.toTypedArray())
         environment.reset(
             GameConfig(
                 players = listOf(
@@ -366,21 +392,19 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         }.key
         val sourceZone = state.zones.entries.first { (_, ids) -> sourceId in ids }.key
         state = state.moveToZone(sourceId, sourceZone, ZoneKey(player, Zone.BATTLEFIELD))
-        if (includeGroundTarget) {
+        fun moveNamedToBattlefield(name: String) {
             val targetId = state.entities.entries.first { (id, container) ->
                 id in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
-                    container.get<CardComponent>()?.name == groundTarget.name
+                    container.get<CardComponent>()?.name == name
             }.key
             val targetZone = state.zones.entries.first { (_, ids) -> targetId in ids }.key
             state = state.moveToZone(targetId, targetZone, ZoneKey(player, Zone.BATTLEFIELD))
         }
+        if (includeGroundTarget) moveNamedToBattlefield(groundTarget.name)
+        if (includeFlyingTarget) moveNamedToBattlefield(flyingTarget.name)
+        if (includeTargetRestrictedGrant) moveNamedToBattlefield(targetRestrictedEquipGrant.name)
         if (includeMountain) {
-            val mountainId = state.entities.entries.first { (id, container) ->
-                id in state.getZone(player, Zone.HAND) + state.getZone(player, Zone.LIBRARY) &&
-                    container.get<CardComponent>()?.name == "Mountain"
-            }.key
-            val mountainZone = state.zones.entries.first { (_, ids) -> mountainId in ids }.key
-            state = state.moveToZone(mountainId, mountainZone, ZoneKey(player, Zone.BATTLEFIELD))
+            moveNamedToBattlefield("Mountain")
         }
         environment.restore(state, environment.playerIds, environment.stepCount)
         return Triple(environment, player, sourceId)
@@ -1077,6 +1101,62 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldNotBe null
         view.paymentDomain!!.version shouldBe 4
         view.paymentDomain!!.requiredCost shouldBe "{1}"
+    }
+
+    test("target-dependent Equip cost keeps every target but publishes no payment domain") {
+        val (environment, player, sourceId) = prepared(
+            targetPowerEquipment.name,
+            includeGroundTarget = true,
+            includeFlyingTarget = true,
+            includeMountain = true,
+        )
+        val groundId = environment.state.getZone(player, Zone.BATTLEFIELD).first { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == groundTarget.name
+        }
+        val flyingId = environment.state.getZone(player, Zone.BATTLEFIELD).first { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == flyingTarget.name
+        }
+        val action = environment.legalActions().first { candidate ->
+            val activateAbility = candidate.action as? ActivateAbility
+            activateAbility?.playerId == player && activateAbility.sourceId == sourceId
+        }
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(action))
+            .observation
+            .legalActions
+            .single()
+
+        view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(groundId, flyingId)
+        view.paymentDomain shouldBe null
+    }
+
+    test("target-restricted Equip reduction fails closed for the whole public target domain") {
+        val (environment, player, sourceId) = prepared(
+            targetRestrictedEquipment.name,
+            includeGroundTarget = true,
+            includeTargetRestrictedGrant = true,
+            includeMountain = true,
+        )
+        val grantId = environment.state.getZone(player, Zone.BATTLEFIELD).first { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == targetRestrictedEquipGrant.name
+        }
+        val groundId = environment.state.getZone(player, Zone.BATTLEFIELD).first { id ->
+            environment.state.getEntity(id)?.get<CardComponent>()?.name == groundTarget.name
+        }
+        val action = environment.legalActions().first { candidate ->
+            val activateAbility = candidate.action as? ActivateAbility
+            activateAbility?.playerId == player && activateAbility.sourceId == sourceId
+        }
+
+        val view = ObservationBuilder(cardRegistry = registry())
+            .build(environment.state, player, listOf(action))
+            .observation
+            .legalActions
+            .single()
+
+        view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(grantId, groundId)
+        view.paymentDomain shouldBe null
     }
 
     test("PaymentDomainV4 is fail-closed when floating mana has hidden provenance") {
