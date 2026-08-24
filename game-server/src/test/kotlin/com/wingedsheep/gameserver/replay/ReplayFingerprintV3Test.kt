@@ -1,6 +1,7 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.BatchYesNoDecision
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModeOption
@@ -24,12 +25,14 @@ import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.WaterbendPermanentChoice
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.PlayerYields
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.event.GrantedActivatedAbility
 import com.wingedsheep.engine.event.GrantedTriggeredAbility
-import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
@@ -102,6 +105,48 @@ class ReplayFingerprintV3Test : FunSpec({
         ReplayFingerprint.of(
             base.copy(zones = mapOf(library to listOf(EntityId("e2"), EntityId("e1"))))
         ) shouldNotBe ReplayFingerprint.of(base)
+    }
+
+    test("v3 semantic state fingerprint binds source-color floating provenance") {
+        val player = EntityId("p1")
+        val firstSource = EntityId("e108")
+        val secondSource = EntityId("e117")
+
+        fun state(detail: Map<EntityId, Map<PaymentManaColor, Int>>) = GameState().withEntity(
+            player,
+            ComponentContainer.of(
+                ManaPoolComponent(
+                    black = 1,
+                    green = 1,
+                    manaBySource = linkedMapOf(firstSource to 1, secondSource to 1),
+                    manaBySourceAndColor = detail,
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                ),
+            ),
+        )
+
+        val blackThenGreen = state(
+            linkedMapOf(
+                firstSource to mapOf(PaymentManaColor.BLACK to 1),
+                secondSource to mapOf(PaymentManaColor.GREEN to 1),
+            ),
+        )
+        val greenThenBlack = state(
+            linkedMapOf(
+                firstSource to mapOf(PaymentManaColor.GREEN to 1),
+                secondSource to mapOf(PaymentManaColor.BLACK to 1),
+            ),
+        )
+        val sameContentDifferentOrder = state(
+            linkedMapOf(
+                secondSource to mapOf(PaymentManaColor.GREEN to 1),
+                firstSource to mapOf(PaymentManaColor.BLACK to 1),
+            ),
+        )
+
+        ReplayFingerprint.of(blackThenGreen, 3) shouldNotBe ReplayFingerprint.of(greenThenBlack, 3)
+        ReplayFingerprint.of(blackThenGreen, 3) shouldBe
+            ReplayFingerprint.of(sameContentDifferentOrder, 3)
     }
 
     test("v3 fingerprint includes semantic yields and canonicalizes unordered sets") {

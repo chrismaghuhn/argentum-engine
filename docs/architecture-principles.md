@@ -1031,16 +1031,21 @@ The authoritative `ManaPoolComponent` also retains aggregate `manaBySource` and
 each colored unit in general. A narrow Rules-owned classifier can nevertheless certify a
 homogeneous aggregate when one unrestricted color contains the entire positive pool, positive
 source counters partition that total, every recorded subtype counter equals that total, and no
-restricted mana participates. The public `PaymentDomainV2` then publishes the common color and
-stored subtype set once plus a deterministic `sourceBuckets` partition. This proves that every unit
-has the same stored subtype set while preserving the controller's exact source-bucket choice.
+restricted mana participates. A complete Rules-owned source×color map may certify the same
+single-color shape without inventing subtype metadata. The public `PaymentDomainV3` publishes the
+common color and any proven subtype set once plus a deterministic `sourceBuckets` partition for
+that homogeneous shape. When multiple unrestricted colors are present, it publishes the
+authoritative `sourceColorBuckets` matrix instead; no source/color association is inferred from
+aggregate counts or source profiles.
+This preserves the controller's exact bucket choice.
 `ManaSpendReference.floatingSourceId` carries that choice; `sourceId` remains reserved for a newly
 activated source output. `PoolSpend` stays an aggregate checksum, and the validator aggregates and
 checks every bucket reference before exact materialization. The existing aggregate
 `consumeProvenance()` operation remains a legacy greedy adapter and is not used to choose
-provenance across the external explicit-payment boundary. Heterogeneous or otherwise uncertified
-tracked states remain fail-closed until authoritative per-unit state can represent the missing
-association.
+provenance across the external explicit-payment boundary. Otherwise uncertified tracked states
+remain fail-closed. `PaymentManaColor` is Rules-owned and the component/value conversion seam
+preserves the source×color map and completeness marker across payment, fork, and serialization
+paths.
 
 **Cost reductions and increases.** Before payment, the `CostCalculator` applies all active
 modifiers — static abilities that reduce costs (Goblin Electromancer's "instant and sorcery spells

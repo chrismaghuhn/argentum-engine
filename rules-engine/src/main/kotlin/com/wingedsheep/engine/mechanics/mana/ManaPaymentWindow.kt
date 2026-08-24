@@ -3,6 +3,7 @@ package com.wingedsheep.engine.mechanics.mana
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.ReopenManaPaymentDecisionContinuation
@@ -147,15 +148,40 @@ object ManaPaymentWindow {
             if (!tapResult.success) return FloatResult(state, emptyList(), paid = false)
             current = tapResult.state
             events.addAll(tapResult.events)
-            for ((_, p) in solution.manaProduced) {
-                produced = if (p.color != null) produced.add(p.color, p.amount) else produced.addColorless(p.colorless)
+            for ((sourceId, p) in solution.manaProduced) {
+                val subtypes = state.getEntity(sourceId)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.typeLine?.subtypes.orEmpty()
+                produced = if (p.color != null) {
+                    produced.addTracked(
+                        color = PaymentManaColor.fromEngine(p.color),
+                        sourceId = sourceId,
+                        subtypes = subtypes,
+                        amount = p.amount,
+                    )
+                } else {
+                    produced.addTracked(
+                        color = PaymentManaColor.COLORLESS,
+                        sourceId = sourceId,
+                        subtypes = subtypes,
+                        amount = p.colorless,
+                    )
+                }
             }
             // Bonus mana from mana auras / "whenever you tap for mana" riders isn't in
             // manaProduced; credit it or the cost comes up short (mirrors CostPaymentService.payMana).
             for (source in solution.sources) {
                 val bonusColor = source.bonusManaColor
                 if (source.bonusManaPerTap > 0 && bonusColor != null) {
-                    produced = produced.add(bonusColor, source.bonusManaPerTap)
+                    val subtypes = state.getEntity(source.entityId)
+                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                        ?.typeLine?.subtypes.orEmpty()
+                    produced = produced.addTracked(
+                        color = PaymentManaColor.fromEngine(bonusColor),
+                        sourceId = source.entityId,
+                        subtypes = subtypes,
+                        amount = source.bonusManaPerTap,
+                    )
                 }
             }
         } else {
@@ -167,6 +193,10 @@ object ManaPaymentWindow {
                 cardRegistry = services.cardRegistry,
             ) ?: return FloatResult(state, emptyList(), paid = false)
             for (resolved in resolvedSources) {
+                val sourceId = resolved.option.entityId
+                val subtypes = current.getEntity(sourceId)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.typeLine?.subtypes.orEmpty()
                 val tapped = tapOrSacrifice(current, resolved.option.entityId, resolved.option, playerId)
                 current = tapped.first
                 events.addAll(tapped.second)
@@ -182,8 +212,16 @@ object ManaPaymentWindow {
                 current = sideEffects.state
                 events.addAll(sideEffects.events)
                 produced = when {
-                    resolved.producedColor != null -> produced.add(resolved.producedColor)
-                    resolved.option.producesColorless -> produced.addColorless(1)
+                    resolved.producedColor != null -> produced.addTracked(
+                        color = PaymentManaColor.fromEngine(resolved.producedColor),
+                        sourceId = sourceId,
+                        subtypes = subtypes,
+                    )
+                    resolved.option.producesColorless -> produced.addTracked(
+                        color = PaymentManaColor.COLORLESS,
+                        sourceId = sourceId,
+                        subtypes = subtypes,
+                    )
                     else -> produced
                 }
             }
@@ -235,8 +273,7 @@ object ManaPaymentWindow {
         val pool = state.getEntity(playerId)
             ?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()
             ?: return cost
-        return ManaPool(pool.white, pool.blue, pool.black, pool.red, pool.green, pool.colorless)
-            .payPartial(cost).remainingCost
+        return pool.toManaPool().payPartial(cost).remainingCost
     }
 
     /** Adds [produced] to [playerId]'s pool, preserving restricted mana and provenance. */
@@ -244,17 +281,40 @@ object ManaPaymentWindow {
         updateEntity(playerId) { container ->
             val pool = container.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()
                 ?: com.wingedsheep.engine.state.components.player.ManaPoolComponent()
-            container.with(
-                pool.copy(
-                    white = pool.white + produced.white,
-                    blue = pool.blue + produced.blue,
-                    black = pool.black + produced.black,
-                    red = pool.red + produced.red,
-                    green = pool.green + produced.green,
-                    colorless = pool.colorless + produced.colorless
+            var updated = pool
+            if (produced.manaProvenanceCompleteness ==
+                com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness.COMPLETE &&
+                produced.manaBySourceAndColor.isNotEmpty()
+            ) {
+                for ((sourceId, colors) in produced.manaBySourceAndColor) {
+                    for ((color, amount) in colors) {
+                        updated = updated.addTracked(color, sourceId, emptySet(), amount)
+                    }
+                }
+                updated = updated.copy(
+                    manaBySubtype = mergeCounts(updated.manaBySubtype, produced.manaBySubtype),
                 )
+            } else {
+                updated = updated
+                    .add(Color.WHITE, produced.white)
+                    .add(Color.BLUE, produced.blue)
+                    .add(Color.BLACK, produced.black)
+                    .add(Color.RED, produced.red)
+                    .add(Color.GREEN, produced.green)
+                    .addColorless(produced.colorless)
+            }
+            container.with(
+                updated
             )
         }
+
+    private fun mergeCounts(
+        left: Map<com.wingedsheep.sdk.core.Subtype, Int>,
+        right: Map<com.wingedsheep.sdk.core.Subtype, Int>,
+    ): Map<com.wingedsheep.sdk.core.Subtype, Int> = buildMap {
+        putAll(left)
+        right.forEach { (subtype, amount) -> put(subtype, (get(subtype) ?: 0) + amount) }
+    }
 
     /**
      * Sets the window aside so a mana ability can resolve against a decision-free state, and
@@ -356,7 +416,7 @@ object ManaPaymentWindow {
         val pool = state.getEntity(playerId)
             ?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()
             ?: return false
-        return ManaPool(pool.white, pool.blue, pool.black, pool.red, pool.green, pool.colorless)
+        return pool.toManaPool()
             .payPartial(cost)
             .remainingCost
             .isEmpty()
@@ -372,7 +432,7 @@ object ManaPaymentWindow {
         val pool = state.getEntity(decision.playerId)
             ?.get<com.wingedsheep.engine.state.components.player.ManaPoolComponent>()
             ?: return cost
-        return ManaPool(pool.white, pool.blue, pool.black, pool.red, pool.green, pool.colorless)
+        return pool.toManaPool()
             .payPartial(cost)
             .remainingCost
     }

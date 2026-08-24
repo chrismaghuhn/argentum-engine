@@ -2,6 +2,7 @@ package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.engine.state.components.player.RestrictedManaEntry
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Subtype
@@ -66,6 +67,136 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
         )
 
         result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("rejects heterogeneous aggregate totals without source-color provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(
+                    EntityId("e108") to 1,
+                    EntityId("e117") to 1,
+                    EntityId("e136") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 4),
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("does not treat an empty detail map as complete for a nonempty pool") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 1,
+                manaBySource = mapOf(EntityId("source") to 1),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("certifies a complete heterogeneous source-color matrix") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(
+                    EntityId("e108") to 1,
+                    EntityId("e117") to 1,
+                    EntityId("e136") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 4),
+                manaBySourceAndColor = mapOf(
+                    EntityId("e108") to mapOf(PaymentManaColor.BLACK to 1),
+                    EntityId("e117") to mapOf(PaymentManaColor.GREEN to 1),
+                    EntityId("e136") to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHeterogeneous>()
+        certified.candidate.sourceColorBuckets shouldBe listOf(
+            CertifiedFloatingManaSourceColorBucket(EntityId("e108"), PaymentManaColor.BLACK, 1),
+            CertifiedFloatingManaSourceColorBucket(EntityId("e117"), PaymentManaColor.GREEN, 1),
+            CertifiedFloatingManaSourceColorBucket(EntityId("e136"), PaymentManaColor.GREEN, 2),
+        )
+    }
+
+    test("rejects complete heterogeneous detail with partial subtype provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(
+                    EntityId("e108") to 1,
+                    EntityId("e117") to 1,
+                    EntityId("e136") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+                manaBySourceAndColor = mapOf(
+                    EntityId("e108") to mapOf(PaymentManaColor.BLACK to 1),
+                    EntityId("e117") to mapOf(PaymentManaColor.GREEN to 1),
+                    EntityId("e136") to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("rejects complete homogeneous detail with partial subtype provenance") {
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 4,
+                manaBySource = mapOf(
+                    EntityId("source-a") to 2,
+                    EntityId("source-b") to 2,
+                ),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+                manaBySourceAndColor = mapOf(
+                    EntityId("source-a") to mapOf(PaymentManaColor.GREEN to 2),
+                    EntityId("source-b") to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("complete source-color detail supports exact homogeneous payment without a subtype matrix") {
+        val sourceId = EntityId("source-without-subtype")
+        val classification = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 1,
+                manaBySource = mapOf(sourceId to 1),
+                manaBySourceAndColor = mapOf(
+                    sourceId to mapOf(PaymentManaColor.GREEN to 1),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+        val candidate = classification
+            .shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedHomogeneous>()
+            .candidate
+
+        val (remaining, spent) = ManaPool(
+            green = 1,
+            manaBySource = mapOf(sourceId to 1),
+            manaBySourceAndColor = mapOf(
+                sourceId to mapOf(PaymentManaColor.GREEN to 1),
+            ),
+            manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+        ).consumeCertifiedHomogeneous(candidate, mapOf(sourceId to 1)) ?: error("expected exact payment")
+
+        remaining.green shouldBe 0
+        remaining.manaBySourceAndColor shouldBe emptyMap()
+        spent.bySubtype shouldBe emptyMap()
     }
 
     test("rejects one tagged unit mixed with one untagged unit") {

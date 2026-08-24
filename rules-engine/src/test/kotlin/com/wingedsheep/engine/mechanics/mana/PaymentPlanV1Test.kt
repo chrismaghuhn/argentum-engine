@@ -17,6 +17,7 @@ import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.sdk.core.ManaCost
@@ -1340,6 +1341,146 @@ class PaymentPlanV1Test : FunSpec({
         allUnits.poolAfterSpend.manaBySource shouldBe emptyMap()
         allUnits.poolAfterSpend.manaBySubtype shouldBe emptyMap()
         allUnits.materialization.spentManaProvenance.bySubtype shouldBe mapOf(Subtype.FOREST to 2)
+    }
+
+    test("certified heterogeneous floating mana allocates exact source-color buckets and preserves the rest") {
+        val e108 = EntityId("e108")
+        val e117 = EntityId("e117")
+        val e136 = EntityId("e136")
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                black = 1,
+                green = 3,
+                manaBySource = mapOf(e108 to 1, e117 to 1, e136 to 2),
+                manaBySubtype = mapOf(Subtype.FOREST to 4),
+                manaBySourceAndColor = mapOf(
+                    e108 to mapOf(PaymentManaColor.BLACK to 1),
+                    e117 to mapOf(PaymentManaColor.GREEN to 1),
+                    e136 to mapOf(PaymentManaColor.GREEN to 2),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        val accepted = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{B}{G}"),
+            plan = plan(
+                poolSpend = PoolSpend(black = 1, green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.BLACK,
+                                floatingSourceId = e108,
+                            ),
+                        ),
+                    ),
+                    CostUnitAllocation(
+                        1,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceId = e117,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        accepted.poolAfterSpend.black shouldBe 0
+        accepted.poolAfterSpend.green shouldBe 2
+        accepted.poolAfterSpend.manaBySource shouldBe mapOf(e136 to 2)
+        accepted.poolAfterSpend.manaBySourceAndColor shouldBe mapOf(
+            e136 to mapOf(PaymentManaColor.GREEN to 2),
+        )
+        accepted.poolAfterSpend.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.COMPLETE
+        accepted.materialization.spentManaProvenance.sourceIds shouldBe setOf(e108, e117)
+    }
+
+    test("heterogeneous allocation rejects omitted colors, wrong colors, and bucket overspend") {
+        val e108 = EntityId("e108")
+        val e117 = EntityId("e117")
+        val (driver, player) = game()
+        val pool = driver.state.getEntity(player)?.get<ManaPoolComponent>() ?: error("missing player pool")
+        driver.addComponent(
+            player,
+            pool.copy(
+                black = 1,
+                green = 1,
+                manaBySource = mapOf(e108 to 1, e117 to 1),
+                manaBySourceAndColor = mapOf(
+                    e108 to mapOf(PaymentManaColor.BLACK to 1),
+                    e117 to mapOf(PaymentManaColor.GREEN to 1),
+                ),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        fun validate(plan: PaymentPlanV1) = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validate(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{B}{G}"),
+            plan = plan,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        validate(
+            plan(
+                poolSpend = PoolSpend(black = 1, green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK, floatingSourceId = e108)),
+                    ),
+                    CostUnitAllocation(
+                        1,
+                        listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN)),
+                    ),
+                ),
+            ),
+        )
+        validate(
+            plan(
+                poolSpend = PoolSpend(black = 1, green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK, floatingSourceId = e117)),
+                    ),
+                    CostUnitAllocation(
+                        1,
+                        listOf(ManaSpendReference(poolColor = PaymentManaColor.GREEN, floatingSourceId = e117)),
+                    ),
+                ),
+            ),
+        )
+        validate(
+            plan(
+                poolSpend = PoolSpend(black = 1, green = 1),
+                allocations = listOf(
+                    CostUnitAllocation(
+                        0,
+                        listOf(ManaSpendReference(poolColor = PaymentManaColor.BLACK, floatingSourceId = e108)),
+                    ),
+                    CostUnitAllocation(
+                        1,
+                        listOf(
+                            ManaSpendReference(
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceId = e117,
+                                amount = 2,
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
     }
 
     test("floating provenance references reject capacity, aggregate, color, and origin violations") {

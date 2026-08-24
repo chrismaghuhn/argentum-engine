@@ -9,7 +9,6 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalManaOnSourceTap
@@ -74,10 +73,13 @@ object AdditionalManaOnSourceTapMirror {
                 val bonusAmount = dynamicAmountEvaluator.evaluate(currentState, onSourceTap.amount, effectContext)
                 if (bonusAmount <= 0) continue
 
-                currentState = currentState.updateEntity(tappingPlayerId) { c ->
-                    val pool = c.get<ManaPoolComponent>() ?: ManaPoolComponent()
-                    c.with(pool.add(producedColor, bonusAmount))
-                }
+                currentState = ManaProvenanceTracker.addUnrestrictedMana(
+                    state = currentState,
+                    playerId = tappingPlayerId,
+                    sourceId = entityId,
+                    color = com.wingedsheep.engine.core.PaymentManaColor.fromEngine(producedColor),
+                    amount = bonusAmount,
+                )
                 events.add(
                     ManaAddedEvent(
                         playerId = tappingPlayerId,

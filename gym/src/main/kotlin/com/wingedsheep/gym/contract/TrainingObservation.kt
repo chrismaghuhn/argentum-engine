@@ -257,7 +257,7 @@ data class LegalActionView(
     val targetDomain: ActionTargetDomainV1? = null,
     val manaCost: String? = null,
     /** Complete external payment choices for supported ordinary fixed-cost mana actions. */
-    val paymentDomain: PaymentDomainV2? = null,
+    val paymentDomain: PaymentDomainV3? = null,
     val hasXCost: Boolean = false,
     val maxAffordableX: Int? = null,
     val minTargets: Int = 0,

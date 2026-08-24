@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.handlers.effects.mana
 
 import com.wingedsheep.engine.core.EffectResult
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
@@ -29,18 +30,22 @@ class AddColorlessManaExecutor(
             return EffectResult.success(state)
         }
 
-        var newState = state.updateEntity(context.controllerId) { container ->
-            val manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
-            val updatedPool = if (effect.restriction != null) {
-                manaPool.addRestricted(null, amount, effect.restriction!!)
-            } else {
-                manaPool.addColorless(amount)
-            }
-            container.with(updatedPool)
+        if (effect.restriction == null) {
+            return EffectResult.success(
+                ManaProvenanceTracker.addUnrestrictedMana(
+                    state = state,
+                    playerId = context.controllerId,
+                    sourceId = context.sourceId,
+                    color = PaymentManaColor.COLORLESS,
+                    amount = amount,
+                )
+            )
         }
 
-        if (effect.restriction == null) {
-            newState = ManaProvenanceTracker.tagAddedMana(newState, context.controllerId, context.sourceId, amount)
+        val newState = state.updateEntity(context.controllerId) { container ->
+            val manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            val updatedPool = manaPool.addRestricted(null, amount, effect.restriction!!)
+            container.with(updatedPool)
         }
 
         return EffectResult.success(newState)

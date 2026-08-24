@@ -16,7 +16,9 @@ import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -152,14 +154,7 @@ class PlotCardHandler(
         // Pay the plot cost — drain mana pool first, then tap lands for the remainder.
         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = ManaPool(
-            white = poolComponent.white,
-            blue = poolComponent.blue,
-            black = poolComponent.black,
-            red = poolComponent.red,
-            green = poolComponent.green,
-            colorless = poolComponent.colorless
-        )
+        val pool = poolComponent.toManaPool()
         val partialResult = pool.payPartial(plotCost)
         val poolAfterPayment = partialResult.newPool
         val remainingCost = partialResult.remainingCost
@@ -174,14 +169,7 @@ class PlotCardHandler(
 
         currentState = currentState.updateEntity(action.playerId) { c ->
             c.with(
-                ManaPoolComponent(
-                    white = poolAfterPayment.white,
-                    blue = poolAfterPayment.blue,
-                    black = poolAfterPayment.black,
-                    red = poolAfterPayment.red,
-                    green = poolAfterPayment.green,
-                    colorless = poolAfterPayment.colorless
-                )
+                fromManaPool(poolAfterPayment)
             )
         }
 

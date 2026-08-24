@@ -7,10 +7,14 @@ import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSourceOption
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.tap
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
@@ -107,10 +111,7 @@ class CombatTaxContinuationResumer(
     ): TaxPayment? {
         val playerEntity = state.getEntity(playerId) ?: return null
         val poolComponent = playerEntity.get<ManaPoolComponent>() ?: return null
-        var pool = ManaPool(
-            poolComponent.white, poolComponent.blue, poolComponent.black,
-            poolComponent.red, poolComponent.green, poolComponent.colorless,
-        )
+        var pool = poolComponent.toManaPool()
 
         val partial = pool.payPartial(manaCost)
         var remainingCost = partial.remainingCost
@@ -126,11 +127,23 @@ class CombatTaxContinuationResumer(
                 if (!tapResult.success) return null
                 currentState = tapResult.state
                 events.addAll(tapResult.events)
-                for ((_, production) in solution.manaProduced) {
+                for ((sourceId, production) in solution.manaProduced) {
+                    val subtypes = state.getEntity(sourceId)
+                        ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
                     pool = if (production.color != null) {
-                        pool.add(production.color, production.amount)
+                        pool.addTracked(
+                            color = PaymentManaColor.fromEngine(production.color),
+                            sourceId = sourceId,
+                            subtypes = subtypes,
+                            amount = production.amount,
+                        )
                     } else {
-                        pool.addColorless(production.colorless)
+                        pool.addTracked(
+                            color = PaymentManaColor.COLORLESS,
+                            sourceId = sourceId,
+                            subtypes = subtypes,
+                            amount = production.colorless,
+                        )
                     }
                 }
             } else {
@@ -145,9 +158,19 @@ class CombatTaxContinuationResumer(
                     val (tappedState, tapEvent) = tap(currentState, sourceId)
                     currentState = tappedState
                     tapEvent?.let(events::add)
+                    val subtypes = currentState.getEntity(sourceId)
+                        ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
                     pool = when {
-                        source.producesColors.isNotEmpty() -> pool.add(source.producesColors.first())
-                        source.producesColorless -> pool.addColorless(1)
+                        source.producesColors.isNotEmpty() -> pool.addTracked(
+                            color = PaymentManaColor.fromEngine(source.producesColors.first()),
+                            sourceId = sourceId,
+                            subtypes = subtypes,
+                        )
+                        source.producesColorless -> pool.addTracked(
+                            color = PaymentManaColor.COLORLESS,
+                            sourceId = sourceId,
+                            subtypes = subtypes,
+                        )
                         else -> pool
                     }
                 }
@@ -157,10 +180,7 @@ class CombatTaxContinuationResumer(
         val newPool = pool.pay(manaCost) ?: return null
         currentState = currentState.updateEntity(playerId) { container ->
             container.with(
-                ManaPoolComponent(
-                    white = newPool.white, blue = newPool.blue, black = newPool.black,
-                    red = newPool.red, green = newPool.green, colorless = newPool.colorless,
-                )
+                fromManaPool(newPool)
             )
         }
         return TaxPayment(currentState, events)

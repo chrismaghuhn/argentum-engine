@@ -765,14 +765,14 @@ the pending decision. `decisionId` is a routing value and is not part of `stateD
 sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
 configuration are used by the JVM service and HTTP server.
 
-### Action-level mana payment (PaymentDomainV2 / PaymentPlanV1)
+### Action-level mana payment (PaymentDomainV3 / PaymentPlanV1)
 
 An affordable structured `ActivateAbility` or ordinary fixed-cost `CastSpell` whose action-level
 mana cost is published in `LegalActionView.manaCost` also publishes
-`LegalActionView.paymentDomain`. This domain is version 2 and is complete for the supported slice: ordinary
+`LegalActionView.paymentDomain`. This domain is version 3 and is complete for the supported slice: ordinary
 fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
 single-output color selection, deterministic fixed multi-mana bundles, and multiple source
-combinations. A payable action whose complete V2 domain
+combinations. A payable action whose complete V3 domain
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
@@ -850,10 +850,10 @@ riders, hybrid/X shapes, and other exotic payment forms fail closed until their 
 corresponding public V1 field. Such a reachable shape is an unsupported Gym diagnostic, not a
 partial domain.
 
-#### Certified homogeneous floating provenance
+#### Certified homogeneous and heterogeneous floating provenance
 
-`PaymentPoolDomainV2` may additionally contain one nullable `certifiedFloatingMana` value. It is
-the canonical V2 representation for a Rules-certified homogeneous pool: the common color and
+`PaymentPoolDomainV3` may additionally contain one nullable `certifiedFloatingMana` value. It is
+the canonical representation for a Rules-certified homogeneous pool: the common color and
 stored subtype set are published once, while `sourceBuckets` partitions the current units by
 producing source.
 
@@ -868,16 +868,35 @@ producing source.
 }
 ```
 
-The Rules-owned classifier publishes this value only when it proves from the authoritative aggregate
-pool that: unrestricted total is positive; exactly one color contains that total; restricted mana is
-empty; positive source counters partition the total; and every recorded subtype counter equals the
-total. Therefore every unit has the same stored subtype set and source identity is the only remaining
-partition. The subtype list and bucket list are canonicalized by stable content; their input collection
-order is not semantic. `NoTrackedProvenance` describes missing metadata, not the absence of a Magic
-source identity. Any tracked state that cannot be certified is unsupported and the complete action-level
-domain fails closed. Every newly published floating bucket source identity must pass the existing
-perspective-safe `Visibility` authority; an unpublishable strategically distinct bucket invalidates the
-whole domain. Existing future `sourceActivations` visibility remains a separate concern.
+The Rules-owned classifier publishes this value only when it proves from the authoritative pool state
+that: unrestricted total is positive; exactly one color contains that total; restricted mana is empty;
+positive source counters partition the total; and every recorded subtype counter equals the total.
+That proof may use the existing homogeneous aggregate shape or a COMPLETE source×color map; the
+detail map is never reconstructed from aggregates. Therefore every unit has the same stored subtype
+set when subtype metadata is available, and source identity is the only remaining partition. The
+subtype list and bucket list are canonicalized by stable content; their input collection order is not
+semantic. `NoTrackedProvenance` describes missing metadata, not the absence of a Magic source identity.
+Any tracked state that cannot be certified is unsupported and the complete action-level domain fails
+closed. Every newly published floating bucket source identity must pass the existing perspective-safe
+`Visibility` authority; an unpublishable strategically distinct bucket invalidates the whole domain.
+Existing future `sourceActivations` visibility remains a separate concern.
+
+For a genuinely multi-color pool, V3 instead sets `certifiedHeterogeneousFloatingMana` and leaves
+`certifiedFloatingMana` null. Its `sourceColorBuckets` list is the Rules-owned source×color matrix:
+
+```json
+{
+  "sourceColorBuckets": [
+    { "sourceId": "ent-source-a", "poolColor": "BLACK", "amount": 1 },
+    { "sourceId": "ent-source-b", "poolColor": "GREEN", "amount": 1 },
+    { "sourceId": "ent-source-c", "poolColor": "GREEN", "amount": 2 }
+  ],
+  "sourceSubtypes": []
+}
+```
+
+The two certification fields are an explicit one-of. An incomplete or inconsistent detail map is
+never ignored or reconstructed from aggregate totals, source profiles, iteration order, or heuristics.
 
 `PaymentPlanV1` remains the submitted plan type, with additive
 `ManaSpendReference.floatingSourceId`. `sourceId` continues to mean a freshly activated source
@@ -889,7 +908,8 @@ selected source counts. A unique single-bucket pool may retain the legacy source
 Rules decrements only selected source buckets and the common subtype counters, preserving unselected
 sources; it never delegates the external choice to greedy `consumeProvenance()`.
 
-Compact replay remains version 3 because the additive `PaymentPlanV1` field is already carried by the
-existing polymorphic action stream and v3 does not reinterpret historical fields. The Gym
-`SchemaHash` is bumped for the V2 public domain shape. The authoritative `GameState` remains
-aggregate-only; heterogeneous/unitized floating provenance is still fail-closed and open work.
+Compact replay remains version 3 because this change does not alter its persisted action payload
+meaning. The Gym `SchemaHash` is bumped for the current PaymentDomainV3 wire shape. The authoritative
+`GameState` now persists source×color provenance and its explicit completeness marker; semantic
+state digests include that information, while pure action/replay payload fingerprints do not gain
+an artificial version change.

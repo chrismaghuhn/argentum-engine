@@ -18,8 +18,10 @@ import com.wingedsheep.engine.mechanics.cost.PaymentResult
 import com.wingedsheep.engine.mechanics.layers.StaticAbilityHandler
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -120,15 +122,7 @@ class TurnFaceUpHandler(
                     is PaymentStrategy.FromPool -> {
                         val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                             ?: ManaPoolComponent()
-                        val pool = ManaPool(
-                            white = poolComponent.white,
-                            blue = poolComponent.blue,
-                            black = poolComponent.black,
-                            red = poolComponent.red,
-                            green = poolComponent.green,
-                            colorless = poolComponent.colorless,
-                            restrictedMana = poolComponent.restrictedMana
-                        )
+                        val pool = poolComponent.toManaPool()
                         if (!costHandler.canPayManaCost(pool, manaCost, faceUpContext)) {
                             return "Insufficient mana in pool to turn this creature face up"
                         }
@@ -202,30 +196,14 @@ class TurnFaceUpHandler(
                     is PaymentStrategy.FromPool -> {
                         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                             ?: ManaPoolComponent()
-                        val pool = ManaPool(
-                            white = poolComponent.white,
-                            blue = poolComponent.blue,
-                            black = poolComponent.black,
-                            red = poolComponent.red,
-                            green = poolComponent.green,
-                            colorless = poolComponent.colorless,
-                            restrictedMana = poolComponent.restrictedMana
-                        )
+                        val pool = poolComponent.toManaPool()
 
                         val newPool = costHandler.payManaCost(pool, manaCost, faceUpContext)
                             ?: return ExecutionResult.error(currentState, "Insufficient mana in pool")
 
                         currentState = currentState.updateEntity(action.playerId) { c ->
                             c.with(
-                                ManaPoolComponent(
-                                    white = newPool.white,
-                                    blue = newPool.blue,
-                                    black = newPool.black,
-                                    red = newPool.red,
-                                    green = newPool.green,
-                                    colorless = newPool.colorless,
-                                    restrictedMana = newPool.restrictedMana
-                                )
+                                fromManaPool(newPool)
                             )
                         }
 
@@ -247,15 +225,7 @@ class TurnFaceUpHandler(
                         // Use floating mana first
                         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
                             ?: ManaPoolComponent()
-                        val pool = ManaPool(
-                            white = poolComponent.white,
-                            blue = poolComponent.blue,
-                            black = poolComponent.black,
-                            red = poolComponent.red,
-                            green = poolComponent.green,
-                            colorless = poolComponent.colorless,
-                            restrictedMana = poolComponent.restrictedMana
-                        )
+                        val pool = poolComponent.toManaPool()
 
                         val partialResult = pool.payPartial(manaCost, faceUpContext)
                         var poolAfterPayment = partialResult.newPool
@@ -300,15 +270,7 @@ class TurnFaceUpHandler(
 
                         currentState = currentState.updateEntity(action.playerId) { c ->
                             c.with(
-                                ManaPoolComponent(
-                                    white = poolAfterPayment.white,
-                                    blue = poolAfterPayment.blue,
-                                    black = poolAfterPayment.black,
-                                    red = poolAfterPayment.red,
-                                    green = poolAfterPayment.green,
-                                    colorless = poolAfterPayment.colorless,
-                                    restrictedMana = poolAfterPayment.restrictedMana
-                                )
+                                fromManaPool(poolAfterPayment)
                             )
                         }
 
