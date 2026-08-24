@@ -286,8 +286,9 @@ class TargetFinder(
         /**
          * Pending target decisions must not use the legacy permissive behavior for an unbound X or
          * unavailable predicate relation. When enabled, the target requirement is structurally
-         * inspected before enumeration and the candidate set is empty until every required fact is
-         * available from the explicit source/trigger arguments or the supplied [pipelineContext].
+         * inspected before enumeration and an unavailable required fact produces a typed
+         * unsupported result instead of an ordinary empty candidate set. Every required fact must
+         * be available from the explicit source/trigger arguments or the supplied [pipelineContext].
          * This gate is deliberately stricter than the legacy evaluator: a predicate that would
          * otherwise default to false (and become true when negated) is never allowed to publish an
          * unknown candidate set.
