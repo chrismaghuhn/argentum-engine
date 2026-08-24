@@ -34,28 +34,58 @@ authority, or support restricted/rider-bearing mana in `PaymentPlanV1`.
 
 ## Data model and invariants
 
-Add `manaBySourceAndColor` to both `ManaPoolComponent` and the transient
-`ManaPool` value:
+Add `manaBySourceAndColor` and an explicit completeness marker to both
+`ManaPoolComponent` and the transient `ManaPool` value. `PaymentManaColor` is
+already Rules-owned in `com.wingedsheep.engine.core`, so the Rules state does
+not depend on a Gym/public DTO type:
 
 ```kotlin
 Map<EntityId, Map<PaymentManaColor, Int>>
+enum class ManaProvenanceCompleteness { UNKNOWN, COMPLETE, INCOMPLETE }
 ```
 
 Each inner value is a positive count of unrestricted units. The map is
-authoritative, not a cache. Every unrestricted-mana mutation must preserve the
-following invariants atomically:
+authoritative, not a cache. The completeness marker disambiguates an empty
+detail map from a complete empty pool:
 
-1. The sum of all source/color buckets equals the unrestricted color totals
-   whenever complete source/color provenance is present.
-2. Summing the inner map by source equals `manaBySource`.
-3. Adding mana updates the color total, `manaBySource`, and
-   `manaBySourceAndColor` in the same immutable transition.
+- `UNKNOWN` means no exact source/color detail is available for the current
+  nonempty pool. It is the safe default for legacy state that has no new field.
+- `COMPLETE` means every unrestricted unit is represented by the map. A
+  nonempty pool therefore cannot have an empty map while marked `COMPLETE`.
+- `INCOMPLETE` means detail was lost while mana remains, including when a
+  previously complete pool passed through an aggregate-only legacy mutation.
+  A later tracked add does not upgrade `UNKNOWN` or `INCOMPLETE` while the pool
+  is nonempty; certification resumes only after the pool is fully emptied or a
+  Rules-owned operation has reconstructed the complete matrix.
+
+Every unrestricted-mana mutation must preserve the following invariants
+atomically:
+
+1. When completeness is `COMPLETE`, the sum of all source/color buckets equals
+   each unrestricted color total W/U/B/R/G/C independently. `restrictedMana`
+   is excluded from this comparison.
+2. When completeness is `COMPLETE`, summing the inner map by source equals
+   `manaBySource`; `UNKNOWN` and `INCOMPLETE` states are never certified.
+3. A tracked add to a certifiable pool updates the color total,
+   `manaBySource`, and `manaBySourceAndColor` in the same immutable transition.
+   An aggregate-only add instead clears the detail map and marks the nonempty
+   result `INCOMPLETE`.
 4. Exact spending decrements the selected source/color bucket and all aggregate
    counters by the same amount.
 5. Clearing a pool or crossing a mana-loss boundary clears every provenance map.
-6. A legacy path that cannot preserve the new map must clear or reject the
-   detailed representation; it must never leave a stale map that could be
-   published as authoritative.
+6. A legacy path that cannot preserve the new map must clear the detailed map
+   and mark the nonempty result `INCOMPLETE` (or reject the transition); it must
+   never leave a stale or partial map that could be published as authoritative.
+7. A complete map can be established for a newly empty pool by a Rules-owned
+   tracked add. A tracked add to a nonempty `UNKNOWN`/`INCOMPLETE` pool remains
+   non-certifiable; no aggregate reconstruction, source profile, iteration
+   order, or heuristic may fill the gap.
+
+The implementation must make the `toManaPool()` and `fromManaPool()` seams
+explicit and preserve all three representations through them. These seams,
+plus every manual component/value reconstruction used by payment, fork,
+checkpoint, serialization, and phase cleanup, are part of the authoritative
+state boundary.
 
 The existing subtype counters remain aggregate metadata. A certified exact
 payment may expose subtype provenance only when the counters prove that every
@@ -69,14 +99,20 @@ paths remain outside this certification boundary.
 
 ## Classification and exact materialization
 
-`FloatingManaProvenanceClassification` validates the detailed map against the
-color totals, source totals, positivity, restricted-mana absence, and subtype
+`FloatingManaProvenanceClassification` first requires `COMPLETE`, then validates
+the detailed map against the unrestricted W/U/B/R/G/C totals, source totals,
+positivity, restricted-mana absence, and the existing aggregate subtype
 consistency. It returns a `CertifiedHeterogeneousFloatingMana` candidate
 containing sorted `CertifiedFloatingManaSourceColorBucket` values
 `(sourceId, poolColor, amount)` when more than one color is present. Malformed,
-partial, or inconsistent state remains ambiguous and fails closed. The
-`PaymentDomainBuilder` separately rejects any candidate whose source identity
-is not perspective-safe.
+partial, status-inconsistent, or otherwise inconsistent state remains
+ambiguous and fails closed. An inconsistent new detail field is not ignored in
+the homogeneous path. The `PaymentDomainBuilder` separately rejects any
+candidate whose source identity is not perspective-safe.
+
+There is no new source-by-subtype matrix in this change. Existing aggregate
+subtype certification is reused, and remains fail-closed when it cannot prove
+the requested payment.
 
 `ManaPool` receives an internal exact consumer for the heterogeneous candidate.
 It accepts only a validated map of selected `(sourceId, poolColor)` amounts,
@@ -93,13 +129,21 @@ explicit controller selection against the Rules-owned source/color buckets.
 
 `PaymentPoolDomainV2` gains the additive
 `certifiedHeterogeneousFloatingMana: CertifiedHeterogeneousFloatingManaDomainV2?`
-field. The existing homogeneous representation remains available for the
-already-supported shape. `PAYMENT_DOMAIN_VERSION` remains 2 because this is an
-additive V2 capability, but `SchemaHash.CURRENT` is bumped. The Gym
-`schemaHash` observation and `/schema-hash` endpoint are the compatibility
-handshake; consumers must reject a mismatched hash before interpreting the new
-field. No old client may silently treat the new domain shape as an unchanged
-contract.
+field only if the compatibility investigation proves that the actual
+Gym/client path rejects a mismatched `SchemaHash` before interpreting any
+payment-domain field. That proof must include a negative contract test; merely
+advertising a hash from `/schema-hash` is insufficient. If the current path
+cannot enforce that fail-closed handshake, the implementation bumps the
+payment-domain version instead (for example to `PaymentDomainV3`) and updates
+the schema hash accordingly. No old client may silently treat the new domain
+shape as an unchanged contract.
+
+Regardless of the chosen version, the published certified pool is an explicit
+one-of: the existing homogeneous representation is set and the heterogeneous
+representation is `null` for a homogeneous shape; a genuine multi-color
+shape sets the heterogeneous representation and the homogeneous one is `null`.
+Neither representation is published when the Rules state is incomplete,
+unknown where exact provenance is required, or internally inconsistent.
 
 `PaymentDomainBuilder` publishes the heterogeneous buckets only when every
 source identity is perspective-safe and the Rules classifier has proved the
@@ -108,23 +152,31 @@ never reconstructs buckets from aggregate data.
 
 `PaymentPlanValidator` consumes the same Rules classification used by the
 builder. It aggregates submitted `floatingSourceId` plus `poolColor` references,
-checks `PoolSpend`, bucket capacities, and complete allocation, then invokes
-the exact heterogeneous consumer. A plan that omits a required bucket, names a
-wrong color, or overspends is rejected without mutating state.
+checks `PoolSpend`, bucket capacities, and exact allocation, then invokes the
+exact heterogeneous consumer. “Exact allocation” is per color: for every
+color present in `PoolSpend`, the sum of submitted
+`(floatingSourceId, poolColor, amount)` references must equal that color's
+`PoolSpend` amount. The validator need not consume every available bucket;
+unselected buckets remain in the resulting pool. A plan that omits part of a
+requested color, names a wrong color, or overspends is rejected without
+mutating state.
 
 ## Serialization, fork, digest, and replay
 
-The new field is `@Serializable` and must survive every state copy path that
-handles unrestricted mana, including add, spend, clear/phase cleanup,
-payment-plan materialization, fork/snapshot, and checkpoint state construction.
-The implementation must inspect all manual `ManaPoolComponent` and `ManaPool`
-rebuilds rather than relying on default constructor values.
+The new field and completeness marker are `@Serializable` and must survive
+every state copy path that handles unrestricted mana, including add, spend,
+clear/phase cleanup, payment-plan materialization, fork/snapshot, and
+checkpoint state construction. The implementation must inspect all manual
+`ManaPoolComponent` and `ManaPool` rebuilds rather than relying on default
+constructor values, with `toManaPool()`/`fromManaPool()` covered explicitly.
 
-`StateDigest` and semantic replay fingerprints must include the new authoritative
-field. Any canonicalizer or fingerprint exclusion that would make two states
-with different source/color buckets collide must be corrected. Existing replay
-actions remain the source of truth; do not increase `CompactReplay`'s version
-unless the serialized replay format actually requires it. Tests must prove
+`StateDigest` and every fingerprint whose contract covers semantic game state
+must include the new authoritative field and completeness marker. Any
+canonicalizer or state-fingerprint exclusion that would make two states with
+different source/color buckets collide must be corrected. Pure action-payload
+or replay-payload fingerprints need no artificial change. Existing replay
+actions remain the source of truth; increase `CompactReplay`'s version only if
+its persisted format or semantics actually change. Tests must prove
 encode/decode, checkpoint/fork restoration, deterministic reconstruction, and
 digest separation for different source/color assignments.
 
@@ -135,8 +187,9 @@ GREEN cycle:
 
 1. Rules classification rejects the supplied heterogeneous aggregate when only
    `manaBySource` and color totals are present.
-2. Rules add/spend/clear tests prove atomic source/color invariants and no stale
-   detailed map after cleanup or unsupported legacy consumption.
+2. Rules add/spend/clear tests prove atomic source/color invariants, explicit
+   `UNKNOWN`/`COMPLETE`/`INCOMPLETE` transitions, and no stale detailed map
+   after cleanup or unsupported legacy consumption.
 3. Rules classification certifies a valid heterogeneous map and rejects forged,
    incomplete, inconsistent, wrong-color, and restricted variants.
 4. Gym publication exposes sorted heterogeneous buckets and remains fail-closed
@@ -146,9 +199,13 @@ GREEN cycle:
    the remaining pool.
 6. Payment-domain canonicalization and `StateDigest` distinguish different
    source/color assignments while ignoring only proven collection ordering.
-7. State serialization, fork/snapshot, checkpoint, and replay reconstruction
-   preserve the authoritative map and deterministic digest.
-8. Existing homogeneous PaymentDomainV2, PaymentPlanV1, replay, and surrounding
+7. State serialization, `toManaPool()`/`fromManaPool()`, fork/snapshot,
+   checkpoint, and replay reconstruction preserve the authoritative map and
+   deterministic digest.
+8. A negative schema-hash contract test proves fail-closed negotiation before
+   domain interpretation when the existing version is retained; otherwise the
+   new domain version is exercised.
+9. Existing homogeneous PaymentDomainV2, PaymentPlanV1, replay, and surrounding
    payment tests remain green.
 
 Only focused and surrounding tests are run locally and in hosted CI. Seed-0,
