@@ -27,7 +27,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PaymentDomainV2
+import com.wingedsheep.gym.contract.PaymentDomainV3
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
@@ -100,7 +100,7 @@ class GameGymEnvActionContractTest : FunSpec({
     }
 
     fun paymentStrategyPayload(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV2")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV3")
         val source = domain.sourceActivations.first()
         return PaymentStrategy.Explicit(
             paymentPlan = PaymentPlanV1(
@@ -339,7 +339,7 @@ class GameGymEnvActionContractTest : FunSpec({
 
         view.manaCost shouldBe "{1}{R}"
         view.requiresStructuredAction shouldBe true
-        val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV2")
+        val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV3")
         paymentDomain.sourceActivations.single().sourceId shouldBe mountainId
         paymentDomain.sourceActivations.single().productionChoices
             .map { it.producedColor } shouldContain PaymentManaColor.RED
@@ -348,7 +348,7 @@ class GameGymEnvActionContractTest : FunSpec({
             encodeDefaults = true
             explicitNulls = false
             classDiscriminator = "type"
-        }.encodeToJsonElement(PaymentDomainV2.serializer(), paymentDomain)
+        }.encodeToJsonElement(PaymentDomainV3.serializer(), paymentDomain)
             .jsonObject.containsKey("autoPaySuggestion") shouldBe false
         Json {
             encodeDefaults = true

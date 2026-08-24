@@ -26,7 +26,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
-/** Gym-level contract coverage for the canonical fixed-output PaymentDomainV2 wire shape. */
+/** Gym-level contract coverage for the canonical fixed-output PaymentDomainV3 wire shape. */
 class GameGymEnvPaymentBundleTest : FunSpec({
 
     val fixedCostSpell = card("Gym Fixed Bundle Payment Spell") {
@@ -171,7 +171,7 @@ class GameGymEnvPaymentBundleTest : FunSpec({
         return Triple(environment, player, spellId)
     }
 
-    test("PaymentDomainV2 publishes one ordered fixed bundle for Golgari Rot Farm") {
+    test("PaymentDomainV3 publishes one ordered fixed bundle for Golgari Rot Farm") {
         val (environment, player, ids) = prepared()
         val legalAction = environment.legalActions().first {
             it.actionType == "CastSpell" && (it.action as? CastSpell)?.cardId == ids.first

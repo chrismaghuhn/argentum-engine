@@ -171,7 +171,7 @@ class EnvControllerTest : FunSpec() {
             val response = get("/schema-hash")
             response.statusCode() shouldBe 200
             val parsed = json.decodeFromString<SchemaHashResponse>(response.body())
-            parsed.schemaHash shouldBe "argentum-gym-contract@v1.16-action-target-domain"
+            parsed.schemaHash shouldBe "argentum-gym-contract@v1.17-heterogeneous-floating-payment-domain-v3"
             parsed.schemaHash shouldBe SchemaHash.CURRENT
         }
 
@@ -419,7 +419,7 @@ class EnvControllerTest : FunSpec() {
             }
         }
 
-        test("HTTP round-trips PaymentDomain V2 buckets and PaymentPlan V1 floatingSourceId") {
+        test("HTTP round-trips PaymentDomain V3 buckets and PaymentPlan V1 floatingSourceId") {
             multiEnvService.cardRegistry.register(
                 listOf(httpForestSource, httpZeroForestSource, httpHomogeneousSpell)
             )
@@ -535,8 +535,8 @@ class EnvControllerTest : FunSpec() {
                 val spellAction = findAction(observation) {
                     it.kind == "CastSpell" && it.sourceEntityId == spellCardId
                 }
-                val domain = spellAction.paymentDomain ?: error("Expected the V2 HTTP payment domain")
-                domain.version shouldBe 2
+                val domain = spellAction.paymentDomain ?: error("Expected the V3 HTTP payment domain")
+                domain.version shouldBe 3
                 val certified = domain.currentPool.certifiedFloatingMana
                     ?: error("Expected certified homogeneous floating buckets")
                 certified.poolColor shouldBe PaymentManaColor.GREEN
@@ -546,7 +546,7 @@ class EnvControllerTest : FunSpec() {
 
                 val observedWire = get("/envs/${envId.value}")
                 observedWire.statusCode() shouldBe 200
-                observedWire.body() shouldContain "\"version\":2"
+                observedWire.body() shouldContain "\"version\":3"
                 observedWire.body() shouldContain "\"sourceBuckets\""
                 observedWire.body() shouldContain landId.value
                 observedWire.body() shouldContain zeroSourceId.value

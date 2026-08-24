@@ -127,16 +127,17 @@ remaining pool plus exact spent provenance. It never calls the legacy greedy
 explicit controller selection against the Rules-owned source/color buckets.
 `PoolSpend` remains an aggregate color checksum.
 
-`PaymentPoolDomainV2` gains the additive
-`certifiedHeterogeneousFloatingMana: CertifiedHeterogeneousFloatingManaDomainV2?`
-field only if the compatibility investigation proves that the actual
-Gym/client path rejects a mismatched `SchemaHash` before interpreting any
-payment-domain field. That proof must include a negative contract test; merely
-advertising a hash from `/schema-hash` is insufficient. If the current path
-cannot enforce that fail-closed handshake, the implementation bumps the
-payment-domain version instead (for example to `PaymentDomainV3`) and updates
-the schema hash accordingly. No old client may silently treat the new domain
-shape as an unchanged contract.
+The compatibility investigation found only the server's `/schema-hash`
+advertisement in this repository; it did not prove an actual Gym/client path
+that rejects a mismatched hash before interpreting payment-domain fields. The
+implementation therefore uses `PaymentDomainV3` and
+`PaymentPoolDomainV3`, with the heterogeneous field and schema hash updated
+for that new version. The historical V2 DTO remains decodable but is not used
+for current observations. No old client may silently treat the new domain
+shape as an unchanged contract. If a future compatibility investigation proves
+a fail-closed pre-interpretation V2 handshake, an additive V2 field could be
+considered in a separate change; the negative contract test remains required
+for that decision.
 
 Regardless of the chosen version, the published certified pool is an explicit
 one-of: the existing homogeneous representation is set and the heterogeneous
@@ -205,8 +206,9 @@ GREEN cycle:
 8. A negative schema-hash contract test proves fail-closed negotiation before
    domain interpretation when the existing version is retained; otherwise the
    new domain version is exercised.
-9. Existing homogeneous PaymentDomainV2, PaymentPlanV1, replay, and surrounding
-   payment tests remain green.
+9. Existing homogeneous current-domain publication through PaymentDomainV3,
+historical V2 decoding, PaymentPlanV1, replay, and surrounding payment tests
+remain green.
 
 Only focused and surrounding tests are run locally and in hosted CI. Seed-0,
 the 72-episode corpus, ML work, decklist changes, and PR #73 are out of scope.

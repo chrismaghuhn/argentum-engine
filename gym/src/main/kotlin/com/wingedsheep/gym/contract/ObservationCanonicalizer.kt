@@ -79,7 +79,7 @@ internal object ObservationCanonicalizer {
         action.targetDomain?.let { put("targetDomain", semanticActionTargetDomain(it)) }
         put("manaCost", action.manaCost)
         action.paymentDomain?.let {
-            put("paymentDomain", json.encodeToJsonElement(PaymentDomainV2.serializer(), it))
+            put("paymentDomain", json.encodeToJsonElement(PaymentDomainV3.serializer(), it))
         }
         put("hasXCost", action.hasXCost)
         put("maxAffordableX", action.maxAffordableX)
@@ -233,6 +233,7 @@ internal object ObservationCanonicalizer {
         "producesColors",
         "sourceSubtypes",
         "sourceBuckets",
+        "sourceColorBuckets",
         "blockedByIds",
         "blockedAttackerIds"
     )
