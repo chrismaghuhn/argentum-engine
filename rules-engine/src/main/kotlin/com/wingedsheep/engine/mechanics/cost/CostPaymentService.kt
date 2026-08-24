@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.tap
@@ -26,6 +27,8 @@ import com.wingedsheep.engine.handlers.effects.permanent.counters.resolveCounter
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.CountersComponent
@@ -474,10 +477,7 @@ class CostPaymentService(private val services: EngineServices) {
     private fun payMana(state: GameState, payerId: EntityId, manaCost: ManaCost, sourceId: EntityId): CostPaymentExecution {
         val playerEntity = state.getEntity(payerId) ?: return CostPaymentExecution(state, emptyList(), false)
         val poolComponent = playerEntity.get<ManaPoolComponent>() ?: ManaPoolComponent()
-        val pool = ManaPool(
-            poolComponent.white, poolComponent.blue, poolComponent.black,
-            poolComponent.red, poolComponent.green, poolComponent.colorless
-        )
+        val pool = poolComponent.toManaPool()
 
         // Spend floating mana first, then tap sources for the remainder.
         val partial = pool.payPartial(manaCost)
@@ -495,9 +495,24 @@ class CostPaymentService(private val services: EngineServices) {
             }
             current = tapResult.state
             events.addAll(tapResult.events)
-            for ((_, production) in solution.manaProduced) {
-                combined = if (production.color != null) combined.add(production.color, production.amount)
-                else combined.addColorless(production.colorless)
+            for ((producingSourceId, production) in solution.manaProduced) {
+                val subtypes = current.getEntity(producingSourceId)
+                    ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
+                combined = if (production.color != null) {
+                    combined.addTracked(
+                        color = PaymentManaColor.fromEngine(production.color),
+                        sourceId = producingSourceId,
+                        subtypes = subtypes,
+                        amount = production.amount,
+                    )
+                } else {
+                    combined.addTracked(
+                        color = PaymentManaColor.COLORLESS,
+                        sourceId = producingSourceId,
+                        subtypes = subtypes,
+                        amount = production.colorless,
+                    )
+                }
             }
             // Bonus mana from AdditionalManaOnTap / AdditionalManaOnSourceTap (e.g. Badgermole
             // Cub's "Whenever you tap a creature for mana, add an additional {G}") and mana auras
@@ -506,14 +521,21 @@ class CostPaymentService(private val services: EngineServices) {
             // auto-tap path (ActivateAbilityHandler.autoTapForManaCost).
             for (source in solution.sources) {
                 if (source.bonusManaPerTap > 0 && source.bonusManaColor != null) {
-                    combined = combined.add(source.bonusManaColor, source.bonusManaPerTap)
+                    val subtypes = current.getEntity(source.entityId)
+                        ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
+                    combined = combined.addTracked(
+                        color = PaymentManaColor.fromEngine(source.bonusManaColor),
+                        sourceId = source.entityId,
+                        subtypes = subtypes,
+                        amount = source.bonusManaPerTap,
+                    )
                 }
             }
         }
 
         val newPool = combined.pay(manaCost) ?: return CostPaymentExecution(state, emptyList(), false)
         current = current.updateEntity(payerId) {
-            it.with(ManaPoolComponent(newPool.white, newPool.blue, newPool.black, newPool.red, newPool.green, newPool.colorless))
+            it.with(fromManaPool(newPool))
         }
 
         val sourceName = state.getEntity(sourceId)?.get<CardComponent>()?.name ?: "the source"

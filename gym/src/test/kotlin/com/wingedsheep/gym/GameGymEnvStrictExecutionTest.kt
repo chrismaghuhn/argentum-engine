@@ -81,7 +81,7 @@ class GameGymEnvStrictExecutionTest : FunSpec({
         environment.state.getEntity(entityId)?.get<CardComponent>()?.name
 
     fun paymentPayload(view: LegalActionView): JsonObject {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV2 for ${view.description}")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV3 for ${view.description}")
         val source = domain.sourceActivations.firstOrNull()
             ?: error("Expected a mana source for ${view.description}")
         val costUnit = domain.costUnits.firstOrNull()

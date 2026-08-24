@@ -58,6 +58,21 @@ class AddOneManaOfEachColorAmongExecutor : EffectExecutor<AddOneManaOfEachColorA
             return EffectResult.success(state)
         }
 
+        if (effect.restriction == null && context.sourceId != null) {
+            val newState = availableColors
+                .sortedBy { it.name }
+                .fold(state) { current, color ->
+                    ManaProvenanceTracker.addUnrestrictedMana(
+                        state = current,
+                        playerId = context.controllerId,
+                        sourceId = context.sourceId,
+                        color = com.wingedsheep.engine.core.PaymentManaColor.fromEngine(color),
+                        amount = 1,
+                    )
+                }
+            return EffectResult.success(newState)
+        }
+
         val newState = state.updateEntity(context.controllerId) { container ->
             var manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
             for (color in availableColors) {

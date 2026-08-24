@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.handlers.effects.mana
 
 import com.wingedsheep.engine.core.EffectResult
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
@@ -31,7 +32,19 @@ class AddManaExecutor(
             return EffectResult.success(state)
         }
 
-        var newState = state.updateEntity(context.controllerId) { container ->
+        if (effect.restriction == null && effect.riders.isEmpty() && effect.expiry == ManaExpiry.END_OF_TURN) {
+            return EffectResult.success(
+                ManaProvenanceTracker.addUnrestrictedMana(
+                    state = state,
+                    playerId = context.controllerId,
+                    sourceId = context.sourceId,
+                    color = PaymentManaColor.fromEngine(effect.color),
+                    amount = amount,
+                )
+            )
+        }
+
+        val newState = state.updateEntity(context.controllerId) { container ->
             val manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
             val updatedPool = when {
                 effect.restriction != null ->
@@ -46,15 +59,9 @@ class AddManaExecutor(
                     // pool discards it when combat ends. Stored as an AnySpend restricted entry
                     // so it flows through the normal spend logic (canPay / pay / solver).
                     manaPool.addRestricted(effect.color, amount, ManaRestriction.AnySpend, expiry = effect.expiry)
-                else ->
-                    manaPool.add(effect.color, amount)
+                else -> error("plain unrestricted mana is handled by the atomic provenance seam")
             }
             container.with(updatedPool)
-        }
-
-        // Treasure tagging only applies to ordinary, plain-counter mana (the `add` branch above).
-        if (effect.restriction == null && effect.riders.isEmpty() && effect.expiry == ManaExpiry.END_OF_TURN) {
-            newState = ManaProvenanceTracker.tagAddedMana(newState, context.controllerId, context.sourceId, amount)
         }
 
         return EffectResult.success(newState)

@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.state.components.player
 
 import com.wingedsheep.engine.state.Component
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.sdk.core.BendType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
@@ -45,24 +46,112 @@ data class ManaPoolComponent(
      * `treasureMana`. Powers Alchemist's Talent level 3, Bat Colony, and the LCI mana-source lands.
      */
     val manaBySubtype: Map<com.wingedsheep.sdk.core.Subtype, Int> = emptyMap(),
-    val manaBySource: Map<EntityId, Int> = emptyMap()
+    val manaBySource: Map<EntityId, Int> = emptyMap(),
+    /** Exact unrestricted source/color buckets; meaningful only with COMPLETE status. */
+    val manaBySourceAndColor: Map<EntityId, Map<PaymentManaColor, Int>> = emptyMap(),
+    /** Distinguishes a fully known empty/detail-free state from lost legacy provenance. */
+    val manaProvenanceCompleteness: ManaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
 ) : Component {
     /**
      * Add mana of a specific color.
      */
-    fun add(color: Color, amount: Int = 1): ManaPoolComponent = when (color) {
-        Color.WHITE -> copy(white = white + amount)
-        Color.BLUE -> copy(blue = blue + amount)
-        Color.BLACK -> copy(black = black + amount)
-        Color.RED -> copy(red = red + amount)
-        Color.GREEN -> copy(green = green + amount)
-    }
+    fun add(color: Color, amount: Int = 1): ManaPoolComponent = addUntracked(
+        PaymentManaColor.fromEngine(color),
+        amount,
+    )
 
     /**
      * Add colorless mana.
      */
-    fun addColorless(amount: Int): ManaPoolComponent =
-        copy(colorless = colorless + amount)
+    fun addColorless(amount: Int): ManaPoolComponent = addUntracked(PaymentManaColor.COLORLESS, amount)
+
+    /**
+     * Add ordinary mana while preserving the producing source and exact produced color.
+     * This is the only component seam that can establish complete source/color provenance.
+     */
+    fun addTracked(
+        color: PaymentManaColor,
+        sourceId: EntityId,
+        subtypes: Set<com.wingedsheep.sdk.core.Subtype>,
+        amount: Int = 1,
+    ): ManaPoolComponent {
+        if (amount <= 0) return this
+        val beforeUnrestricted = unrestrictedTotal
+        val base = if (beforeUnrestricted == 0) {
+            copy(
+                manaBySubtype = emptyMap(),
+                manaBySource = emptyMap(),
+                manaBySourceAndColor = emptyMap(),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+            )
+        } else {
+            this
+        }
+        val withColor = base.addColorTotal(color, amount)
+        val newBySource = withColor.manaBySource +
+            (sourceId to ((withColor.manaBySource[sourceId] ?: 0) + amount))
+        val newBySubtype = if (subtypes.isEmpty()) {
+            withColor.manaBySubtype
+        } else {
+            buildMap {
+                putAll(withColor.manaBySubtype)
+                subtypes.forEach { put(it, (get(it) ?: 0) + amount) }
+            }
+        }
+
+        val canExtendComplete = beforeUnrestricted == 0 ||
+            hasCompleteSourceColorProvenance()
+        if (!canExtendComplete) {
+            return withColor.copy(
+                manaBySubtype = newBySubtype,
+                manaBySource = newBySource,
+                manaBySourceAndColor = emptyMap(),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+            )
+        }
+
+        val sourceBuckets = withColor.manaBySourceAndColor[sourceId].orEmpty().toMutableMap()
+        sourceBuckets[color] = (sourceBuckets[color] ?: 0) + amount
+        return withColor.copy(
+            manaBySubtype = newBySubtype,
+            manaBySource = newBySource,
+            manaBySourceAndColor = withColor.manaBySourceAndColor + (sourceId to sourceBuckets.toMap()),
+            manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+        )
+    }
+
+    /** Add an unrestricted unit without inventing its source/color provenance. */
+    private fun addUntracked(color: PaymentManaColor, amount: Int): ManaPoolComponent {
+        if (amount <= 0) return this
+        val base = if (unrestrictedTotal == 0) {
+            copy(
+                manaBySubtype = emptyMap(),
+                manaBySource = emptyMap(),
+                manaBySourceAndColor = emptyMap(),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+            )
+        } else {
+            this
+        }
+        val updated = base.addColorTotal(color, amount)
+        return updated.copy(
+            manaBySourceAndColor = emptyMap(),
+            manaProvenanceCompleteness = if (updated.unrestrictedTotal == 0) {
+                ManaProvenanceCompleteness.UNKNOWN
+            } else {
+                ManaProvenanceCompleteness.INCOMPLETE
+            },
+        )
+    }
+
+    private fun addColorTotal(color: PaymentManaColor, amount: Int): ManaPoolComponent = when (color) {
+        PaymentManaColor.WHITE -> copy(white = white + amount)
+        PaymentManaColor.BLUE -> copy(blue = blue + amount)
+        PaymentManaColor.BLACK -> copy(black = black + amount)
+        PaymentManaColor.RED -> copy(red = red + amount)
+        PaymentManaColor.GREEN -> copy(green = green + amount)
+        PaymentManaColor.COLORLESS -> copy(colorless = colorless + amount)
+    }
 
     /**
      * Get mana of a specific color.
@@ -79,28 +168,36 @@ data class ManaPoolComponent(
      * Remove mana of a specific color.
      */
     fun spend(color: Color, amount: Int = 1): ManaPoolComponent? {
+        if (amount < 0) return null
+        if (amount == 0) return this
         val current = getAmount(color)
         return if (current >= amount) {
-            when (color) {
+            val updated = when (color) {
                 Color.WHITE -> copy(white = white - amount)
                 Color.BLUE -> copy(blue = blue - amount)
                 Color.BLACK -> copy(black = black - amount)
                 Color.RED -> copy(red = red - amount)
                 Color.GREEN -> copy(green = green - amount)
             }
+            updated.invalidateDetailedProvenanceIfNeeded()
         } else null
     }
 
     /**
      * Spend colorless mana.
      */
-    fun spendColorless(amount: Int): ManaPoolComponent? =
-        if (colorless >= amount) copy(colorless = colorless - amount) else null
+    fun spendColorless(amount: Int): ManaPoolComponent? {
+        if (amount < 0 || colorless < amount) return null
+        if (amount == 0) return this
+        return copy(colorless = colorless - amount).invalidateDetailedProvenanceIfNeeded()
+    }
 
     /**
      * Total mana available.
      */
-    val total: Int get() = white + blue + black + red + green + colorless + restrictedMana.size
+    val unrestrictedTotal: Int get() = white + blue + black + red + green + colorless
+
+    val total: Int get() = unrestrictedTotal + restrictedMana.size
 
     /**
      * Add mana provenance tags for [amount] units produced by [sourceId] carrying [subtypes].
@@ -113,14 +210,51 @@ data class ManaPoolComponent(
             putAll(manaBySubtype)
             subtypes.forEach { put(it, (get(it) ?: 0) + amount) }
         }
-        return copy(manaBySubtype = newBySubtype, manaBySource = newBySource)
+        return copy(
+            manaBySubtype = newBySubtype,
+            manaBySource = newBySource,
+            manaBySourceAndColor = emptyMap(),
+            manaProvenanceCompleteness = if (unrestrictedTotal > 0) {
+                ManaProvenanceCompleteness.INCOMPLETE
+            } else {
+                ManaProvenanceCompleteness.UNKNOWN
+            },
+        )
     }
 
     /**
      * Check if pool is empty. Includes the provenance tags so a stale tag without backing mana
      * still triggers the end-of-step pool reset.
      */
-    val isEmpty: Boolean get() = total == 0 && manaBySubtype.isEmpty() && manaBySource.isEmpty()
+    val isEmpty: Boolean get() = total == 0 && manaBySubtype.isEmpty() && manaBySource.isEmpty() &&
+        manaBySourceAndColor.isEmpty()
+
+    private fun invalidateDetailedProvenanceIfNeeded(): ManaPoolComponent {
+        if (unrestrictedTotal == 0) {
+            return copy(
+                manaBySubtype = emptyMap(),
+                manaBySource = emptyMap(),
+                manaBySourceAndColor = emptyMap(),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+            )
+        }
+
+        // An aggregate-only pool has no source/color detail to lose. Preserve its existing
+        // UNKNOWN/INCOMPLETE marker; only a known or claimed detail map becomes INCOMPLETE when
+        // this legacy spend seam cannot identify which source/color bucket was consumed.
+        val nextCompleteness = if (
+            manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE ||
+            manaBySourceAndColor.isNotEmpty()
+        ) {
+            ManaProvenanceCompleteness.INCOMPLETE
+        } else {
+            manaProvenanceCompleteness
+        }
+        return copy(
+            manaBySourceAndColor = emptyMap(),
+            manaProvenanceCompleteness = nextCompleteness,
+        )
+    }
 
     /**
      * Add restricted mana to the pool.
@@ -156,9 +290,8 @@ data class ManaPoolComponent(
     fun convertExpiredToRed(expiry: ManaExpiry): ManaPoolComponent {
         val expiring = restrictedMana.count { it.expiry == expiry }
         if (expiring == 0) return this
-        return copy(
-            red = red + expiring,
-            restrictedMana = restrictedMana.filterNot { it.expiry == expiry }
+        return add(Color.RED, expiring).copy(
+            restrictedMana = restrictedMana.filterNot { it.expiry == expiry },
         )
     }
 
@@ -192,18 +325,45 @@ data class ManaPoolComponent(
                 // Count the would-be-lost mana the way `total` does (provenance tags are markers on
                 // already-counted colour mana, not extra mana); the tags don't carry over.
                 val lostTotal = white + blue + black + red + green + colorless + lostRestricted.size
-                ManaPoolComponent(red = lostTotal, restrictedMana = preserved)
+                ManaPoolComponent(
+                    red = lostTotal,
+                    restrictedMana = preserved,
+                    manaProvenanceCompleteness = if (lostTotal > 0) {
+                        ManaProvenanceCompleteness.INCOMPLETE
+                    } else {
+                        ManaProvenanceCompleteness.UNKNOWN
+                    },
+                )
             }
-            retain.isNotEmpty() -> ManaPoolComponent(
-                white = if (Color.WHITE in retain) white else 0,
-                blue = if (Color.BLUE in retain) blue else 0,
-                black = if (Color.BLACK in retain) black else 0,
-                red = if (Color.RED in retain) red else 0,
-                green = if (Color.GREEN in retain) green else 0,
-                colorless = 0,
-                restrictedMana = preserved + lostRestricted.filter { it.color != null && it.color in retain }
-                // Provenance tags do not survive a mana-loss boundary.
-            )
+            retain.isNotEmpty() -> {
+                val retainedWhite = if (Color.WHITE in retain) white else 0
+                val retainedBlue = if (Color.BLUE in retain) blue else 0
+                val retainedBlack = if (Color.BLACK in retain) black else 0
+                val retainedRed = if (Color.RED in retain) red else 0
+                val retainedGreen = if (Color.GREEN in retain) green else 0
+                val retained = ManaPoolComponent(
+                    white = retainedWhite,
+                    blue = retainedBlue,
+                    black = retainedBlack,
+                    red = retainedRed,
+                    green = retainedGreen,
+                    colorless = 0,
+                    restrictedMana = preserved + lostRestricted.filter {
+                        it.color != null && it.color in retain
+                    },
+                    // Provenance tags do not survive a mana-loss boundary. The marker reflects
+                    // whether unrestricted mana actually remains after the retained-color filter.
+                    manaProvenanceCompleteness = if (
+                        retainedWhite != 0 || retainedBlue != 0 || retainedBlack != 0 ||
+                        retainedRed != 0 || retainedGreen != 0
+                    ) {
+                        ManaProvenanceCompleteness.INCOMPLETE
+                    } else {
+                        ManaProvenanceCompleteness.UNKNOWN
+                    },
+                )
+                retained
+            }
             else -> ManaPoolComponent(restrictedMana = preserved)
         }
     }

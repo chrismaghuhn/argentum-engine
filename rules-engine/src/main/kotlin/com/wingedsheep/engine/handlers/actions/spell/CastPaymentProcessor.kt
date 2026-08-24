@@ -15,6 +15,8 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.SpentManaProvenance
 import com.wingedsheep.engine.mechanics.mana.isSatisfiedBy
@@ -67,30 +69,6 @@ class CastPaymentProcessor(
     private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor
 ) {
     private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
-
-    private fun toManaPool(component: ManaPoolComponent) = ManaPool(
-        white = component.white,
-        blue = component.blue,
-        black = component.black,
-        red = component.red,
-        green = component.green,
-        colorless = component.colorless,
-        restrictedMana = component.restrictedMana,
-        manaBySubtype = component.manaBySubtype,
-        manaBySource = component.manaBySource
-    )
-
-    private fun toComponent(pool: ManaPool) = ManaPoolComponent(
-        white = pool.white,
-        blue = pool.blue,
-        black = pool.black,
-        red = pool.red,
-        green = pool.green,
-        colorless = pool.colorless,
-        restrictedMana = pool.restrictedMana,
-        manaBySubtype = pool.manaBySubtype,
-        manaBySource = pool.manaBySource
-    )
 
     /**
      * Provenance of mana freshly tapped by the solver during a payment (AutoPay / Explicit). The
@@ -188,7 +166,7 @@ class CastPaymentProcessor(
             )
 
         var currentState = state.updateEntity(playerId) { container ->
-            container.with(toComponent(accepted.poolAfterSpend))
+            container.with(fromManaPool(accepted.poolAfterSpend))
         }
         val events = mutableListOf<GameEvent>()
 
@@ -239,7 +217,7 @@ class CastPaymentProcessor(
     ): PaymentResult {
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = toManaPool(poolComponent)
+        val pool = poolComponent.toManaPool()
 
         // Pay base cost first
         var poolAfterPayment = costHandler.payManaCost(pool, cost, spellContext)
@@ -334,7 +312,7 @@ class CastPaymentProcessor(
         val (poolWithProvenanceUpdated, spentProvenance) = poolAfterPayment.consumeProvenance(maxOf(0, unrestrictedSpent))
 
         val newState = state.updateEntity(playerId) { container ->
-            container.with(toComponent(poolWithProvenanceUpdated))
+            container.with(fromManaPool(poolWithProvenanceUpdated))
         }
 
         val event = ManaSpentEvent(
@@ -375,7 +353,7 @@ class CastPaymentProcessor(
         // Use floating mana first
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = toManaPool(poolComponent)
+        val pool = poolComponent.toManaPool()
 
         val partialResult = pool.payPartial(cost, spellContext)
         var poolAfterPayment = partialResult.newPool
@@ -462,7 +440,7 @@ class CastPaymentProcessor(
         var spentProvenance = poolProvenance
 
         currentState = currentState.updateEntity(playerId) { container ->
-            container.with(toComponent(poolWithProvenanceUpdated))
+            container.with(fromManaPool(poolWithProvenanceUpdated))
         }
 
         // Tap lands for remaining cost (using xRemainingToPay instead of full xValue)

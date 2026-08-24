@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.handlers.effects.mana
 
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -32,6 +33,31 @@ object ManaProvenanceTracker {
      * resolves), but the entity persists with its base type line intact. A source with no card
      * component (or a null [sourceId]) still tags the source id if present, contributing no subtypes.
      */
+    fun addUnrestrictedMana(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId?,
+        color: PaymentManaColor,
+        amount: Int,
+    ): GameState {
+        if (amount <= 0) return state
+        val subtypes = sourceId?.let {
+            state.getEntity(it)?.get<CardComponent>()?.typeLine?.subtypes?.toSet()
+        } ?: emptySet()
+        return state.updateEntity(playerId) { container ->
+            val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
+            val updated = if (sourceId == null) {
+                if (color == PaymentManaColor.COLORLESS) pool.addColorless(amount)
+                else pool.add(color.asEngineColor()!!, amount)
+            } else {
+                pool.addTracked(color, sourceId, subtypes, amount)
+            }
+            container.with(updated)
+        }
+    }
+
+    /** Compatibility path for old callers; it cannot preserve source/color detail. */
+    @Deprecated("Pass the concrete produced color to preserve source/color provenance")
     fun tagAddedMana(state: GameState, playerId: EntityId, sourceId: EntityId?, amount: Int): GameState {
         if (amount <= 0 || sourceId == null) return state
         val subtypes = state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.subtypes?.toSet() ?: emptySet()

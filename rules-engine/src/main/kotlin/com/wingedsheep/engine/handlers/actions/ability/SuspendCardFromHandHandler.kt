@@ -16,7 +16,9 @@ import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -125,14 +127,7 @@ class SuspendCardFromHandHandler(
             // validate without ever actually paying the cost.
             val poolComponent = state.getEntity(action.playerId)?.get<ManaPoolComponent>()
                 ?: ManaPoolComponent()
-            val pool = ManaPool(
-                white = poolComponent.white,
-                blue = poolComponent.blue,
-                black = poolComponent.black,
-                red = poolComponent.red,
-                green = poolComponent.green,
-                colorless = poolComponent.colorless
-            )
+            val pool = poolComponent.toManaPool()
             val remainingCost = pool.payPartial(suspend.cost).remainingCost
             if (!remainingCost.isEmpty()) {
                 val chosenSet = chosenSources.toSet()
@@ -164,14 +159,7 @@ class SuspendCardFromHandHandler(
         // Pay the suspend cost — drain mana pool first, then tap lands for the remainder.
         val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
-        val pool = ManaPool(
-            white = poolComponent.white,
-            blue = poolComponent.blue,
-            black = poolComponent.black,
-            red = poolComponent.red,
-            green = poolComponent.green,
-            colorless = poolComponent.colorless
-        )
+        val pool = poolComponent.toManaPool()
         val partialResult = pool.payPartial(suspend.cost)
         val poolAfterPayment = partialResult.newPool
         val remainingCost = partialResult.remainingCost
@@ -186,14 +174,7 @@ class SuspendCardFromHandHandler(
 
         currentState = currentState.updateEntity(action.playerId) { c ->
             c.with(
-                ManaPoolComponent(
-                    white = poolAfterPayment.white,
-                    blue = poolAfterPayment.blue,
-                    black = poolAfterPayment.black,
-                    red = poolAfterPayment.red,
-                    green = poolAfterPayment.green,
-                    colorless = poolAfterPayment.colorless
-                )
+                fromManaPool(poolAfterPayment)
             )
         }
 
