@@ -206,7 +206,7 @@ class ObservationBuilder(
                 add(DiagnosticSignal(code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
             }
             if (mayReceiveActions && state.pendingDecision == null && legalActions.any { action ->
-                    action.manaCostString != null && paymentDomainFor(state, action) == null
+                    action.affordable && action.manaCostString != null && paymentDomainFor(state, action) == null
                 }) {
                 add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             }
@@ -570,7 +570,7 @@ class ObservationBuilder(
             targetEntityIds = singleRequirement?.candidates ?: emptyList(),
             targetDomain = targetDomain,
             manaCost = la.manaCostString,
-            paymentDomain = paymentDomainFor(state, la),
+            paymentDomain = if (la.affordable) paymentDomainFor(state, la) else null,
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
             minTargets = singleRequirement?.minTargets ?: 0,

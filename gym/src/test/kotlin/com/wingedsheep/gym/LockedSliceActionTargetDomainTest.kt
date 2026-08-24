@@ -318,7 +318,7 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         cast.targetCount shouldBe 0
     }
 
-    test("locked Brass Squire publishes its target domain before the payment blocker is isolated") {
+    test("locked Brass Squire publishes its target domain without an unaffordable Equip blocker") {
         val prepared = prepareLockedGame(
             firstDeck = readLockedDeck("akiri-v0.1.txt"),
             secondDeck = readLockedDeck("chevill-v0.1.txt"),
@@ -348,15 +348,14 @@ class LockedSliceActionTargetDomainTest : FunSpec({
                 prepared.environment.playerIds.first()
         }
 
-        // The real Rules action is passed unchanged to ObservationBuilder. This proves the
-        // public domain before GameGymEnv applies its whole-observation payment guard.
+        // The real Rules actions are passed unchanged to ObservationBuilder. The unaffordable
+        // Bonesplitter Equip placeholder remains visible but does not make the observation fatal.
         val observed = ObservationBuilder(cardRegistry = registry).build(
             state = prepared.environment.state,
             perspectivePlayerId = prepared.environment.playerIds.first(),
             legalActions = legalActions,
         )
-        observed.diagnostics.map { it.code } shouldBe
-            listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
+        observed.diagnostics.shouldBeEmpty()
         val squire = publicActionViewForLegalAction(observed, brassAction)
             ?: error("Brass Squire legal action was not publicly published")
         squire.kind shouldBe "ActivateAbility"
@@ -367,11 +366,13 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             observationBuilder = ObservationBuilder(cardRegistry = registry),
         )
 
-        // This is deliberately a separate bounded characterization. The target domain is
-        // published by the raw builder, but trusted Gym execution remains blocked by payment.
-        val failure = shouldThrow<UnsupportedPathFailure> { gym.observe() }
-        failure.diagnostics.map { it.code } shouldBe
-            listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
+        val gymObserved = gym.observe()
+        gymObserved.diagnostics.shouldBeEmpty()
+        val greyedEquip = gymObserved.observation.legalActions.single {
+            it.kind == "ActivateAbility" && it.sourceEntityId == prepared.firstEquipment
+        }
+        greyedEquip.affordable shouldBe false
+        greyedEquip.paymentDomain shouldBe null
         val domain = squire.targetDomain.shouldNotBeNull()
 
         domain.requirements.map { it.index } shouldBe listOf(0, 1)
