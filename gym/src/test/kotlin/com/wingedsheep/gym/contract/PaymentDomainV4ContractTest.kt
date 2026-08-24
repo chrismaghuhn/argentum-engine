@@ -18,7 +18,7 @@ import kotlinx.serialization.json.put
 class PaymentDomainV4ContractTest : FunSpec({
 
     test("current Gym schema identifies the V4 payment contract") {
-        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.18-joint-floating-payment-domain-v4"
+        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.19-required-payload-fields"
         PAYMENT_DOMAIN_VERSION shouldBe PAYMENT_DOMAIN_V4_VERSION
     }
 

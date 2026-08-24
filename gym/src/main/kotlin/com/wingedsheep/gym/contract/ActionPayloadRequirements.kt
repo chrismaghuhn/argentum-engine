@@ -20,8 +20,39 @@ import kotlinx.serialization.json.JsonObject
  */
 object ActionPayloadRequirements {
 
+    /**
+     * Stable wire order for structured payload fields. The collector below deliberately remains a
+     * set because multiple independent rules can require the same field; this list makes the public
+     * result deterministic without coupling its order to conditional-branch order.
+     */
+    private val canonicalFieldOrder = listOf(
+        "targets",
+        "xValue",
+        "paymentStrategy",
+        "additionalCostPayment",
+        "costPayment",
+        "alternativePayment",
+        "manaColorChoice",
+        "damageDistribution",
+        "crewCreatures",
+        "saddleCreatures",
+        "repeatCount",
+        "graveyardLifeCost",
+        "chosenModes",
+        "modeTargetsOrdered",
+        "attackers",
+        "bands",
+        "blockers",
+        "orderedBlockers",
+    )
+
     /** The external JSON fields that must be present, even when their value is an explicit empty choice. */
-    fun requiredPayloadFields(action: LegalAction): Set<String> = buildSet {
+    fun requiredPayloadFields(action: LegalAction): List<String> {
+        val required = requiredFieldSet(action)
+        return canonicalFieldOrder.filter(required::contains)
+    }
+
+    private fun requiredFieldSet(action: LegalAction): Set<String> = buildSet {
         when (val targetPayload = TargetPayloadPartition.certify(action)) {
             is TargetPayloadPartition.Certification.Supported -> {
                 if (targetPayload.acceptsNonEmptyPayload) add("targets")

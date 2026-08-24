@@ -97,6 +97,9 @@ internal object ObservationCanonicalizer {
         put("requiresDamageDistribution", action.requiresDamageDistribution)
         put("isManaAbility", action.isManaAbility)
         put("requiresStructuredAction", action.requiresStructuredAction)
+        put("requiredPayloadFields", buildJsonArray {
+            action.requiredPayloadFields.forEach { add(JsonPrimitive(it)) }
+        })
         action.actionSemantics?.let { put("actionSemantics", it) }
         put("isDecisionOption", action.isDecisionOption)
     }

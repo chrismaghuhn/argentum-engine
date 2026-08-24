@@ -749,11 +749,18 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.18-joint-floating-payment-domain-v4`.
+The Gym contract is currently `argentum-gym-contract@v1.19-required-payload-fields`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
 domain or private candidates.
+
+Each `LegalActionView` publishes `requiredPayloadFields`, an ordered and deduplicated list of the
+structured JSON fields the acting controller must provide. `requiresStructuredAction` is exactly the
+non-empty projection of that list. The list is structural and remains published for unaffordable
+actions; an explicitly empty choice such as `additionalCostPayment` for a zero-card sacrifice is
+still required. The trusted server validates against the Rules-owned requirement helper and never
+infers a missing value from presentation fields.
 
 The domain hierarchy covers targets, card selection, modes, distribution, ordering, pile splitting,
 library search, library reorder, combat resolution, mana-source selection, replacement choices and
@@ -942,7 +949,7 @@ Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` iden
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
 The Gym `SchemaHash` is
-`argentum-gym-contract@v1.18-joint-floating-payment-domain-v4`. A client must compare the hash
+`argentum-gym-contract@v1.19-required-payload-fields`. A client must compare the hash
 before interpreting the payment domain and fail closed on mismatch; the historical V3 DTO also
 rejects a V4 version, so an old client cannot silently treat the new bucket list as V3.
 
