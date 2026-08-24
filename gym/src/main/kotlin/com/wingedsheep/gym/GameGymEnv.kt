@@ -81,6 +81,7 @@ class GameGymEnv(
     override fun step(actionId: Int): ObservationResult {
         val resolved = registry.resolve(actionId)
         if (resolved is ResolvedAction.Legal) {
+            ActionPayloadRequirements.requireTargetDomainSupported(resolved.legalAction)
             requireActionPaymentPlan(resolved, resolved.action)
         }
         if (resolved is ResolvedAction.Legal &&
@@ -107,6 +108,7 @@ class GameGymEnv(
             ?: throw IllegalArgumentException(
                 "Action ID $actionId does not resolve to a legal game-action candidate"
             )
+        ActionPayloadRequirements.requireTargetDomainSupported(legal.legalAction)
         val missingFields = ActionPayloadRequirements.missingRequiredFields(
             legal.legalAction,
             actionPayload
@@ -116,6 +118,7 @@ class GameGymEnv(
                 "copy actionSemantics and fill every required choice"
         }
         val submitted = materializeAction(legal.action, actionPayload)
+        ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
         requireActionPaymentPlan(legal, submitted)
         environment.stepFromCandidateStrict(legal.action, submitted)
         return build()

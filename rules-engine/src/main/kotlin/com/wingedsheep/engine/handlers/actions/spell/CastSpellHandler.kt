@@ -12,9 +12,13 @@ import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.EngineServices
+import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toExecutionError
 import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.LifeChangeReason
 import com.wingedsheep.engine.core.CardsDiscardedEvent
@@ -4437,7 +4441,9 @@ class CastSpellHandler(
         }
 
         val available = effectiveModalEffect.modes.withIndex()
-            .filter { (_, mode) -> modeHasSatisfiableTargets(currentState, action.playerId, action.cardId, mode) }
+            .filter { (_, mode) ->
+                modeHasSatisfiableTargets(currentState, action.playerId, action.cardId, action.xValue, mode)
+            }
             .map { it.index }
 
         if (available.size < effectiveModalEffect.minChooseCount) {
@@ -4465,12 +4471,23 @@ class CastSpellHandler(
         state: GameState,
         casterId: EntityId,
         sourceId: EntityId,
+        xValue: Int?,
         mode: com.wingedsheep.sdk.scripting.effects.Mode
     ): Boolean {
         if (mode.targetRequirements.isEmpty()) return true
         return mode.targetRequirements.all { req ->
-            req.effectiveMinCount == 0 ||
-                targetFinder.findLegalTargets(state, req, casterId, sourceId).isNotEmpty()
+            targetFinder.findLegalTargets(
+                state = state,
+                requirement = req,
+                controllerId = casterId,
+                sourceId = sourceId,
+                pipelineContext = PredicateContext(
+                    controllerId = casterId,
+                    sourceId = sourceId,
+                    xValue = xValue,
+                ),
+                requireAuthoritativeContext = true,
+            ).size >= req.effectiveMinCount
         }
     }
 
@@ -4804,16 +4821,20 @@ class CastSpellHandler(
         currentOrdinal: Int,
         resolvedModeTargetRequirements: List<List<com.wingedsheep.sdk.scripting.targets.TargetRequirement>> = emptyList()
     ): ExecutionResult {
-        val effectiveModes = modes.map { mode ->
-            mode.copy(
-                targetRequirements = targetValidator.snapshotDynamicCounts(
-                    state = state,
-                    requirements = mode.targetRequirements,
-                    casterId = casterId,
-                    sourceId = cardId,
-                    xValue = baseCastAction.xValue
-                )
+        val pendingContext = EffectContext(
+            sourceId = cardId,
+            controllerId = casterId,
+            xValue = baseCastAction.xValue,
+        )
+        val modeSnapshots = modes.map { mode ->
+            targetValidator.snapshotDynamicCountsForPending(
+                state = state,
+                requirements = mode.targetRequirements,
+                context = pendingContext,
             )
+        }
+        val effectiveModes = modes.mapIndexed { modeIndex, mode ->
+            mode.copy(targetRequirements = modeSnapshots[modeIndex].map { it.requirement })
         }
         var ordinal = currentOrdinal
         var targetsAccum = resolvedModeTargets
@@ -4832,21 +4853,73 @@ class CastSpellHandler(
             // Find legal targets per requirement. If any required slot has no legal
             // targets (and is mandatory), this mode can't resolve — surface an error.
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-            val requirementInfos = mode.targetRequirements.mapIndexed { index, req ->
-                val legal = targetFinder.findLegalTargets(state, req, casterId, cardId)
-                legalTargetsMap[index] = legal
-                com.wingedsheep.engine.core.TargetRequirementInfo(
-                    index = index,
-                    description = req.description,
-                    minTargets = req.effectiveMinCount,
-                    maxTargets = req.count
+            mode.targetRequirements.forEachIndexed { index, req ->
+                val legal = targetFinder.findLegalTargets(
+                    state = state,
+                    requirement = req,
+                    controllerId = casterId,
+                    sourceId = cardId,
+                    pipelineContext = PredicateContext.fromEffectContext(pendingContext),
+                    requireAuthoritativeContext = true,
                 )
+                legalTargetsMap[index] = legal
             }
-            val allSatisfied = requirementInfos.all { info ->
-                (legalTargetsMap[info.index]?.isNotEmpty() == true) || info.minTargets == 0
+            val allSatisfied = mode.targetRequirements.withIndex().all { (index, req) ->
+                legalTargetsMap[index].orEmpty().size >= req.effectiveMinCount
             }
             if (!allSatisfied) {
                 return ExecutionResult.error(state, "No legal targets for mode: ${mode.description}")
+            }
+
+            // Optional target slots with no legal candidates are valid empty selections. They
+            // must be skipped before metadata conversion so an unresolved semantic fact on an
+            // unused slot cannot fail the whole cast decision.
+            val selectableIndices = mode.targetRequirements.indices.filter { index ->
+                mode.targetRequirements[index].effectiveMinCount > 0 ||
+                    legalTargetsMap[index].orEmpty().isNotEmpty()
+            }
+            if (selectableIndices.isEmpty()) {
+                targetsAccum = targetsAccum + listOf(emptyList())
+                requirementsAccum = requirementsAccum + listOf(
+                    targetValidator.lockRequirementsForSelectedCounts(
+                        mode.targetRequirements,
+                        List(mode.targetRequirements.size) { 0 },
+                    )
+                )
+                ordinal++
+                continue
+            }
+
+            val requirementInfos = selectableIndices.map { index ->
+                val req = mode.targetRequirements[index]
+                val snapshot = modeSnapshots[modeIndex][index]
+                val maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                    req.unlimited && !req.hasUnresolvedDynamicMaxCount()
+                ) {
+                    legalTargetsMap[index]?.size
+                } else {
+                    null
+                }
+                val result = when (snapshot) {
+                    is PendingTargetRequirementSnapshot.Unsupported ->
+                        com.wingedsheep.engine.core.TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                    is PendingTargetRequirementSnapshot.Resolved ->
+                        com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
+                            index = index,
+                            requirement = req,
+                            semanticSource = snapshot.semanticSource,
+                            minTargets = req.effectiveMinCount,
+                            maxTargets = maxTargets,
+                            resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                            resolvedTotalManaValueAtMost = targetValidator
+                                .resolveTotalManaValueAtMostForPending(
+                                    state = state,
+                                    requirement = snapshot.semanticSource,
+                                    context = pendingContext,
+                                ),
+                        )
+                }
+                result.orReturnUnsupported { return it.toExecutionError(state) }
             }
 
             val decisionId = java.util.UUID.randomUUID().toString()
@@ -4863,7 +4936,7 @@ class CastSpellHandler(
                     effectHint = mode.description
                 ),
                 targetRequirements = requirementInfos,
-                legalTargets = legalTargetsMap,
+                legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
                 // Cast-time per-mode target selection must be cancellable (K2 in plan):
                 // the pause sits before cost payment, so aborting rolls back cleanly.
                 canCancel = true
@@ -4874,7 +4947,9 @@ class CastSpellHandler(
                 cardId = cardId,
                 casterId = casterId,
                 baseCastAction = baseCastAction,
-                modes = effectiveModes,
+                // Keep the semantic source requirements. Each re-entry snapshots them again,
+                // while the selected mode's resolved slot counts are carried separately.
+                modes = modes,
                 chosenModeIndices = chosenModeIndices,
                 resolvedModeTargets = targetsAccum,
                 currentOrdinal = ordinal,

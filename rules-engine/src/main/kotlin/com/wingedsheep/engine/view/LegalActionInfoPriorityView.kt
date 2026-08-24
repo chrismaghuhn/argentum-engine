@@ -26,5 +26,5 @@ private class LegalActionInfoPriorityView(private val info: LegalActionInfo) : P
     override val isAffordableAction: Boolean get() = info.isAffordable
     override val additionalCostType: String? get() = info.additionalCostInfo?.costType
     override val hasUnfillableTargetRequirement: Boolean
-        get() = info.targetRequirements?.any { it.minTargets > 0 && it.validTargets.isEmpty() } ?: false
+        get() = info.targetRequirements?.any { it.validTargets.size < it.minTargets } ?: false
 }

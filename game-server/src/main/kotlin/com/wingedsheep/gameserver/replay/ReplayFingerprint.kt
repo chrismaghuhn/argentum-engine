@@ -19,10 +19,10 @@ import java.security.MessageDigest
  * pins divergence to a window of actions and downgrades the replay's
  * [ReplayFidelity] instead of pretending nothing happened.
  *
- * Version 1 and 2 use the historical short digest below. Version 3 uses the complete
- * transition-semantic GameState canonicalizer and a full SHA-256 digest. Keeping the algorithms in
- * separate named paths prevents a new fingerprint meaning from silently reinterpreting old
- * persisted checkpoints.
+ * Version 1 and 2 use the historical short digest below. Version 3 uses the historical complete
+ * transition-semantic canonicalizer. Action-level target-domain metadata is an additive Gym
+ * observation contract and is deliberately excluded from this replay fingerprint, so CompactReplay
+ * v3 checkpoints and payload semantics remain unchanged.
  */
 object ReplayFingerprint {
 
@@ -67,7 +67,7 @@ object ReplayFingerprint {
         return digest(sb.toString())
     }
 
-    /** The v3 complete canonical state digest. */
+    /** The historical v3 complete canonical state digest. */
     internal fun v3(state: GameState): String {
         val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(state)
         return fullDigest("argentum-engine/replay-fingerprint/v3\n$canonical")

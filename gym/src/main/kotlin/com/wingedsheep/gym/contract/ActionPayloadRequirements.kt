@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.core.SaddleMount
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -21,7 +22,16 @@ object ActionPayloadRequirements {
 
     /** The external JSON fields that must be present, even when their value is an explicit empty choice. */
     fun requiredPayloadFields(action: LegalAction): Set<String> = buildSet {
-        if (action.requiresTargets) add("targets")
+        when (val targetPayload = TargetPayloadPartition.certify(action)) {
+            is TargetPayloadPartition.Certification.Supported -> {
+                if (targetPayload.acceptsNonEmptyPayload) add("targets")
+            }
+            is TargetPayloadPartition.Certification.Unsupported -> {
+                // Keep the field discoverable for an incomplete legacy template, but do not
+                // treat it as executable. The trusted execution seam rejects the action below.
+                if (action.requiresTargets || action.targetRequirements.isNotEmpty()) add("targets")
+            }
+        }
         if (action.hasXCost) add("xValue")
         if (action.manaCostString != null || action.autoTapPreview != null) add("paymentStrategy")
         if (action.additionalCostInfo != null) add(additionalPaymentField(action.action))
@@ -69,6 +79,52 @@ object ActionPayloadRequirements {
     /** Returns missing keys without decoding or executing the candidate. */
     fun missingRequiredFields(action: LegalAction, payload: JsonObject): List<String> =
         requiredPayloadFields(action).filterNot(payload::containsKey)
+
+    /**
+     * Enforce the V1 target contract at the server-owned action seam.
+     *
+     * The policy does not echo a target domain. The registry's [LegalAction] is authoritative;
+     * both its exhaustive Rules projection and the pure flat-payload certification must pass
+     * before an existing `GameAction.targets` payload is decoded or executed.
+     */
+    fun requireTargetDomainSupported(action: LegalAction) {
+        when (val support = action.targetDomainSupport) {
+            TargetDomainSupport.SUPPORTED -> Unit
+            is TargetDomainSupport.UNSUPPORTED ->
+                throw IllegalArgumentException(
+                    "Action target domain is unsupported: ${support.reason.name}"
+                )
+        }
+
+        when (val certification = TargetPayloadPartition.certify(action)) {
+            is TargetPayloadPartition.Certification.Supported -> Unit
+            is TargetPayloadPartition.Certification.Unsupported ->
+                throw IllegalArgumentException(
+                    "Action target payload partition is unsupported: ${certification.reason.name}"
+                )
+        }
+    }
+
+    /**
+     * Validate the target list carried by a caller-completed [GameAction] against the registered
+     * action's certified flat payload partition. This is structural validation only; final target
+     * identity and rules legality remain the responsibility of the engine.
+     */
+    fun requireTargetPayloadPartition(action: LegalAction, submitted: GameAction) {
+        val payloadLength = when (submitted) {
+            is CastSpell -> submitted.targets.size
+            is ActivateAbility -> submitted.targets.size
+            else -> 0
+        }
+        when (val partition = TargetPayloadPartition.partition(action.targetRequirements, payloadLength)) {
+            is TargetPayloadPartition.PayloadPartition.Accepted -> Unit
+            is TargetPayloadPartition.PayloadPartition.Rejected ->
+                throw IllegalArgumentException(
+                    "Submitted target payload does not match the certified action partition: " +
+                        partition.reason.name
+                )
+        }
+    }
 
     private fun additionalPaymentField(action: GameAction): String = when (action) {
         is ActivateAbility -> "costPayment"

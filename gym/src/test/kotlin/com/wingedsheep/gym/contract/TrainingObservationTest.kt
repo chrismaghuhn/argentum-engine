@@ -69,11 +69,17 @@ class TrainingObservationTest : FunSpec({
         obs.schemaHash shouldBe SchemaHash.CURRENT
         obs.stateDigest shouldMatch Regex("[0-9a-f]{64}")
         obs.legalActions.shouldNotBeEmpty()
+        obs.legalActions.forEach { action ->
+            val targetDomain = action.targetDomain.shouldNotBeNull()
+            targetDomain.version shouldBe ACTION_TARGET_DOMAIN_VERSION
+            targetDomain.composition shouldBe ActionTargetComposition.FIXED
+        }
 
         // Hand + library + graveyard + exile + battlefield + command for each player.
         obs.zones.size shouldBe 2 * 6
 
         val encoded = json.encodeToString(TrainingObservation.serializer(), obs)
+        encoded shouldContain "\"targetDomain\""
         val decoded = json.decodeFromString(TrainingObservation.serializer(), encoded)
         decoded shouldBe obs
     }

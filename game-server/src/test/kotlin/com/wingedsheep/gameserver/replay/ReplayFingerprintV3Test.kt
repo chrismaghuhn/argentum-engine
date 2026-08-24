@@ -547,9 +547,18 @@ class ReplayFingerprintV3Test : FunSpec({
                             description = "Target A",
                             minTargets = 1,
                             maxTargets = 1,
+                            targetZone = null,
+                            mustDifferFromEarlier = false,
+                            sameController = false,
                             sameOwner = true,
+                            sameCreatureType = false,
+                            sameCardType = false,
                             totalManaValueAtMost = 3,
                             differentNames = true,
+                            xConstrainsManaValue = false,
+                            xConstrainsManaValueExactly = false,
+                            xConstrainsPower = false,
+                            xConstrainsCount = false,
                         ),
                     ),
                     legalTargets = mapOf(0 to listOf(first)),
@@ -567,9 +576,18 @@ class ReplayFingerprintV3Test : FunSpec({
                             description = "Target B",
                             minTargets = 1,
                             maxTargets = 1,
+                            targetZone = null,
+                            mustDifferFromEarlier = false,
+                            sameController = false,
                             sameOwner = true,
+                            sameCreatureType = false,
+                            sameCardType = false,
                             totalManaValueAtMost = 3,
                             differentNames = true,
+                            xConstrainsManaValue = false,
+                            xConstrainsManaValueExactly = false,
+                            xConstrainsPower = false,
+                            xConstrainsCount = false,
                         ),
                     ),
                     legalTargets = mapOf(0 to listOf(first)),
@@ -856,6 +874,16 @@ class ReplayFingerprintV3Test : FunSpec({
             .copy(availableColors = listOf("R"))
         ReplayFingerprint.of(states[1].first.copy(pendingDecision = semanticColorChange), 3) shouldNotBe
             ReplayFingerprint.of(states[1].first, 3)
+
+        val targetZoneChange = (states[0].first.pendingDecision as ChooseTargetsDecision)
+            .targetRequirements.single()
+            .copy(targetZone = "Battlefield")
+        val changedTargetDomain = states[0].first.copy(
+            pendingDecision = (states[0].first.pendingDecision as ChooseTargetsDecision).copy(
+                targetRequirements = listOf(targetZoneChange),
+            ),
+        )
+        ReplayFingerprint.of(changedTargetDomain, 3) shouldBe ReplayFingerprint.of(states[0].first, 3)
     }
 
     test("decision routing fields remain present through shared canonical aliases") {

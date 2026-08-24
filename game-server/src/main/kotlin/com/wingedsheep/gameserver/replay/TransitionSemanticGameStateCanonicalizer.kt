@@ -66,6 +66,19 @@ internal object TransitionSemanticGameStateCanonicalizer {
         "BudgetModeOption" to setOf("description"),
     )
 
+    /** Fields introduced after the historical CompactReplay v3 fingerprint was recorded. */
+    private val postV3TargetRequirementFields = setOf(
+        "targetZone",
+        "mustDifferFromEarlier",
+        "sameController",
+        "sameCreatureType",
+        "sameCardType",
+        "xConstrainsManaValue",
+        "xConstrainsManaValueExactly",
+        "xConstrainsPower",
+        "xConstrainsCount",
+    )
+
     /** Polymorphic state values need their concrete descriptor to discover nested Set fields. */
     private val polymorphicDescriptors: Map<String, SerialDescriptor> by lazy {
         val descriptors = linkedMapOf<String, SerialDescriptor>()
@@ -98,17 +111,70 @@ internal object TransitionSemanticGameStateCanonicalizer {
 
     fun canonicalJson(state: GameState): String {
         val serialized = persistenceJson.encodeToJsonElement(GameState.serializer(), state)
+        // Action-level target metadata is an additive Gym observation contract. It is not part of
+        // CompactReplay v3 reconstruction semantics, so omit those fields before canonicalization
+        // and keep existing persisted fingerprints stable.
+        val replayInput = stripPostV3TargetRequirementFields(serialized, GameState.serializer().descriptor)
         val decisionAliases = DecisionNonceAliasTable()
-        val abilityPlan = collectAbilityAliases(serialized, GameState.serializer().descriptor)
+        val abilityPlan = collectAbilityAliases(replayInput, GameState.serializer().descriptor)
         val abilityAliases = AbilityIdAliasTable(abilityPlan.aliases, abilityPlan.reservedRawIds)
         val canonical = canonicalize(
-            element = serialized,
+            element = replayInput,
             path = emptyList(),
             decisionAliases = decisionAliases,
             abilityAliases = abilityAliases,
             descriptor = GameState.serializer().descriptor,
         )
         return persistenceJson.encodeToString(JsonElement.serializer(), canonical)
+    }
+
+    /**
+     * Recreate the input shape that the historical v3 canonicalizer saw before the target-domain
+     * contract added its relation and X-semantics fields. This is intentionally a structural
+     * compatibility transform: v3 must not silently reinterpret an old checkpoint because the
+     * current Kotlin data class now contains additional fields.
+     */
+    private fun stripPostV3TargetRequirementFields(
+        element: JsonElement,
+        descriptor: SerialDescriptor?,
+    ): JsonElement = when (element) {
+        is JsonObject -> {
+            val concreteDescriptor = resolvePolymorphicDescriptor(descriptor, element)
+            val typeName = concreteDescriptor?.serialName?.substringAfterLast('.')
+            val entries = element.entries
+                .filterNot { (key, _) ->
+                    typeName == "TargetRequirementInfo" && key in postV3TargetRequirementFields
+                }
+                .map { (key, value) ->
+                    key to stripPostV3TargetRequirementFields(
+                        value,
+                        concreteDescriptor?.fieldDescriptor(key),
+                    )
+                }
+            JsonObject(LinkedHashMap<String, JsonElement>().apply {
+                entries.forEach { (key, value) -> put(key, value) }
+            })
+        }
+
+        is JsonArray -> {
+            if (descriptor?.kind == StructureKind.MAP && descriptor.elementsCount >= 2) {
+                val keyDescriptor = descriptor.getElementDescriptor(0)
+                val valueDescriptor = descriptor.getElementDescriptor(1)
+                JsonArray(element.mapIndexed { index, child ->
+                    stripPostV3TargetRequirementFields(
+                        child,
+                        if (index % 2 == 0) keyDescriptor else valueDescriptor,
+                    )
+                })
+            } else {
+                val elementDescriptor = descriptor?.getElementDescriptorOrNull()
+                JsonArray(element.map { child ->
+                    stripPostV3TargetRequirementFields(child, elementDescriptor)
+                })
+            }
+        }
+
+        is JsonPrimitive -> element
     }
 
     private data class AbilityOccurrence(

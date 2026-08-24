@@ -747,7 +747,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.12-castspellmode-payment-domain`.
+The Gym contract is currently `argentum-gym-contract@v1.15-certified-homogeneous-floating-mana`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -765,14 +765,14 @@ the pending decision. `decisionId` is a routing value and is not part of `stateD
 sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
 configuration are used by the JVM service and HTTP server.
 
-### Action-level mana payment (PaymentPlanV1)
+### Action-level mana payment (PaymentDomainV2 / PaymentPlanV1)
 
 An affordable structured `ActivateAbility` or ordinary fixed-cost `CastSpell` whose action-level
 mana cost is published in `LegalActionView.manaCost` also publishes
-`LegalActionView.paymentDomain`. This domain is complete for the supported V1 slice: ordinary
+`LegalActionView.paymentDomain`. This domain is version 2 and is complete for the supported slice: ordinary
 fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
 single-output color selection, deterministic fixed multi-mana bundles, and multiple source
-combinations. A payable action whose complete V1 domain
+combinations. A payable action whose complete V2 domain
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
@@ -850,34 +850,46 @@ riders, hybrid/X shapes, and other exotic payment forms fail closed until their 
 corresponding public V1 field. Such a reachable shape is an unsupported Gym diagnostic, not a
 partial domain.
 
-#### Certified single-unit floating provenance
+#### Certified homogeneous floating provenance
 
-`PaymentPoolDomain` may additionally contain one nullable
-`certifiedFloatingMana` value. This is a deliberately singular exception, not a list of
-provenance-bearing mana units:
+`PaymentPoolDomainV2` may additionally contain one nullable `certifiedFloatingMana` value. It is
+the canonical V2 representation for a Rules-certified homogeneous pool: the common color and
+stored subtype set are published once, while `sourceBuckets` partitions the current units by
+producing source.
 
 ```json
 {
   "poolColor": "GREEN",
-  "sourceId": "ent-forest",
-  "sourceSubtypes": ["Forest"]
+  "sourceSubtypes": ["Forest"],
+  "sourceBuckets": [
+    { "sourceId": "ent-forest-a", "amount": 1 },
+    { "sourceId": "ent-forest-b", "amount": 1 }
+  ]
 }
 ```
 
-The public payment domain includes this value only when the Rules-owned classifier proves from the
-authoritative aggregate pool that exactly one
-unrestricted mana unit exists, its color is known, exactly one producing source is recorded, and
-all recorded subtype tags necessarily belong to that same unit. `sourceSubtypes` is semantically
-unordered and is serialized in canonical sorted order. The Rules classifier reports an empty
-provenance map as `NoTrackedProvenance`; that describes missing metadata, not the absence of a
-source identity under the Comprehensive Rules. Any tracked state that cannot be certified is
-unsupported and the action-level payment domain fails closed. Source visibility is checked
-separately by the perspective-safe observation builder.
+The Rules-owned classifier publishes this value only when it proves from the authoritative aggregate
+pool that: unrestricted total is positive; exactly one color contains that total; restricted mana is
+empty; positive source counters partition the total; and every recorded subtype counter equals the
+total. Therefore every unit has the same stored subtype set and source identity is the only remaining
+partition. The subtype list and bucket list are canonicalized by stable content; their input collection
+order is not semantic. `NoTrackedProvenance` describes missing metadata, not the absence of a Magic
+source identity. Any tracked state that cannot be certified is unsupported and the complete action-level
+domain fails closed. Every newly published floating bucket source identity must pass the existing
+perspective-safe `Visibility` authority; an unpublishable strategically distinct bucket invalidates the
+whole domain. Existing future `sourceActivations` visibility remains a separate concern.
 
-`PaymentPlanV1` remains unchanged. For a certified candidate, the existing pool-color spend is
-semantically unique. If it is spent, Rules removes the color count and exact recorded source and
-subtype provenance together. If it is not spent, both the mana and provenance are preserved.
-The materialized payment carries the exact provenance into existing spell-cast provenance and keeps
-the activated-ability pool state exact; no separate greedy allocation is performed at that boundary.
-Compact replay remains version 3; the additive public domain change is reflected in the Gym
-`SchemaHash`.
+`PaymentPlanV1` remains the submitted plan type, with additive
+`ManaSpendReference.floatingSourceId`. `sourceId` continues to mean a freshly activated source
+output; `floatingSourceId` plus `poolColor` means an already-floating unit from a certified bucket.
+`PoolSpend` remains only the aggregate color checksum. For a multi-bucket certified pool, every
+floating spend must name its exact bucket; the validator aggregates all such references, checks the
+complete plan against the certified bucket capacities and `PoolSpend`, and only then materializes the
+selected source counts. A unique single-bucket pool may retain the legacy source-less pool reference.
+Rules decrements only selected source buckets and the common subtype counters, preserving unselected
+sources; it never delegates the external choice to greedy `consumeProvenance()`.
+
+Compact replay remains version 3 because the additive `PaymentPlanV1` field is already carried by the
+existing polymorphic action stream and v3 does not reinterpret historical fields. The Gym
+`SchemaHash` is bumped for the V2 public domain shape. The authoritative `GameState` remains
+aggregate-only; heterogeneous/unitized floating provenance is still fail-closed and open work.

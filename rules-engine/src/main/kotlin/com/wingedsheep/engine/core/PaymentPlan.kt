@@ -133,12 +133,15 @@ data class SpendAllocation(
 /** A concrete origin for one unit of mana spent on a cost symbol. */
 @Serializable
 data class ManaSpendReference(
+    /** Freshly produced mana from a selected [SourceActivation]. */
     val sourceId: EntityId? = null,
     val poolColor: PaymentManaColor? = null,
     val amount: Int = 1,
     val restrictedBucketKey: String? = null,
     /** Required for fixed output bundles and forbidden for legacy single-output sources. */
     val sourceOutputIndex: Int? = null,
+    /** Already-floating mana from a Rules-certified provenance bucket. */
+    val floatingSourceId: EntityId? = null,
 )
 
 /**

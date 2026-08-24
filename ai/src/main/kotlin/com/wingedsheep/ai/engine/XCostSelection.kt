@@ -153,7 +153,7 @@ object XCostSelection {
      */
     fun narrowToX(state: GameState, action: LegalAction, x: Int): LegalAction? {
         val requirements = action.targetRequirements
-        if (requirements != null) {
+        if (requirements.isNotEmpty()) {
             val narrowed = requirements.map { narrowRequirement(state, it, x) ?: return null }
             val first = narrowed.firstOrNull() ?: return action.copy(targetRequirements = narrowed)
             return action.withFlatViewOf(first).copy(targetRequirements = narrowed)
@@ -269,7 +269,7 @@ object XCostSelection {
 
     /** Every requirement of [action], in either shape, as one list. */
     private fun allRequirements(action: LegalAction): List<TargetInfo> =
-        action.targetRequirements
+        action.targetRequirements.takeIf { it.isNotEmpty() }
             ?: action.validTargets?.let { listOf(flatRequirement(action, it)) }
             ?: emptyList()
 

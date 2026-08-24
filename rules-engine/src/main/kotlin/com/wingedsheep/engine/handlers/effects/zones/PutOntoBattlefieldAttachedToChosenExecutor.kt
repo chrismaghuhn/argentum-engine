@@ -6,12 +6,18 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.PutOntoBattlefieldAttachedToChosenContinuation
 import com.wingedsheep.engine.core.TargetRequirementInfo
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toEffectError
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.ZoneEntryOptions
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -54,6 +60,7 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
 ) : EffectExecutor<PutOntoBattlefieldAttachedToChosenEffect> {
 
     private val auraHostLegality = AuraHostLegality(cardRegistry, targetFinder)
+    private val targetValidator = TargetValidator()
 
     override val effectType: KClass<PutOntoBattlefieldAttachedToChosenEffect> =
         PutOntoBattlefieldAttachedToChosenEffect::class
@@ -86,7 +93,9 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             requirement = hostRequirement,
             controllerId = controllerId,
             sourceId = cardId,
-            ignoreTargetingRestrictions = true
+            ignoreTargetingRestrictions = true,
+            pipelineContext = PredicateContext.fromEffectContext(context),
+            requireAuthoritativeContext = true,
         )
 
         // For an Aura, narrow to hosts it can legally enchant (Rule 303.4f).
@@ -98,6 +107,15 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
             ).toSet()
             legalHosts = legalHosts.filter { it in auraLegal }
         }
+
+        val requirementInfo = targetValidator.pendingTargetRequirementInfo(
+            state = state,
+            index = 0,
+            requirement = hostRequirement,
+            context = context.copy(sourceId = cardId, controllerId = controllerId),
+            legalTargetCount = legalHosts.size,
+            description = effect.hostFilter.description,
+        ).orReturnUnsupported { return it.toEffectError(state) }
 
         if (legalHosts.isEmpty()) {
             // No legal host. Equipment still enters the battlefield (unattached, Rule 301.5c);
@@ -119,12 +137,6 @@ class PutOntoBattlefieldAttachedToChosenExecutor(
         // Pause for the controller to choose a host.
         val decisionId = UUID.randomUUID().toString()
         val cardName = cardComponent.name
-        val requirementInfo = TargetRequirementInfo(
-            index = 0,
-            description = effect.hostFilter.description,
-            minTargets = 1,
-            maxTargets = 1
-        )
         val decision = ChooseTargetsDecision(
             id = decisionId,
             playerId = controllerId,

@@ -500,8 +500,10 @@ class AIPlayerTest : FunSpec({
     }
 
     // Regression: a spell that targets "a spell on the stack" (Reprieve, a counterspell, …) is a
-    // SINGLE-requirement targeted spell, so the enumerator surfaces it with `targetRequirements =
-    // null` and only a flat `validTargets` list — i.e. with no target zone. The strategist's
+    // SINGLE-requirement targeted spell, so the enumerator surfaces one ordered
+    // `targetRequirements` entry with the stack target's zone. Targetless actions use `emptyList()`;
+    // the legacy flat fields remain compatibility projections, not the target-domain authority.
+    // The strategist's
     // single-target path then defaulted every entity to a `ChosenTarget.Permanent`, so the cast
     // was submitted with a Permanent target, rejected by the engine ("Target must be a spell on
     // the stack"), and re-picked forever. The fix consults `state.isSpellOnStack` and wraps a
@@ -549,14 +551,14 @@ class AIPlayerTest : FunSpec({
         val legalActions = simulator.getLegalActions(driver.state, aiId)
 
         // The single-target "target spell" cast must be offered (there IS a legal target on the
-        // stack) and must NOT carry the multi-requirement metadata — this is exactly the shape
-        // that produced the bug.
+        // stack) and must expose exactly one canonical target requirement — this is exactly the
+        // single-requirement shape that produced the bug.
         val cast = legalActions.find {
             it.actionType == "CastSpell" && it.requiresTargets &&
                 it.description.contains("Test Spell Bounce")
         }
         cast.shouldNotBeNull()
-        cast.targetRequirements shouldBe null
+        cast.targetRequirements.shouldNotBeNull().size shouldBe 1
         cast.validTargets.shouldNotBeNull()
 
         val ai = AIPlayer.create(driver.cardRegistry, aiId)

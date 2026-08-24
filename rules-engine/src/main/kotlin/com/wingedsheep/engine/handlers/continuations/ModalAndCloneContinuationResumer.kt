@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.handlers.effects.copy.CopyExceptionApplier
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
@@ -1671,25 +1672,43 @@ internal fun processChosenModeQueue(
     }
 
     // Targets required — find legal targets, auto-select / skip / pause as needed.
+    val pendingTargetContext = EffectContext(
+        sourceId = sourceId,
+        controllerId = controllerId,
+        xValue = xValue,
+        targets = outerTargets,
+        alignedTargets = outerAlignedTargets,
+        pipeline = PipelineState(namedTargets = outerNamedTargets),
+        triggeringEntityId = triggeringEntityId,
+    )
+    val pendingPredicateContext = PredicateContext(
+        controllerId = controllerId,
+        sourceId = sourceId,
+        triggeringEntityId = triggeringEntityId,
+        xValue = xValue,
+    )
+    val targetSnapshots = services.targetValidator.snapshotDynamicCountsForPending(
+        state = state,
+        requirements = head.targetRequirements,
+        context = pendingTargetContext,
+    )
     val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
-    val requirementInfos = head.targetRequirements.mapIndexed { index, req ->
+    targetSnapshots.forEachIndexed { index, snapshot ->
         val legalTargets = services.targetFinder.findLegalTargets(
             state = state,
-            requirement = req,
+            requirement = snapshot.requirement,
             controllerId = controllerId,
-            sourceId = sourceId
+            sourceId = sourceId,
+            pipelineContext = pendingPredicateContext,
+            requireAuthoritativeContext = true,
         )
         legalTargetsMap[index] = legalTargets
-        TargetRequirementInfo(
-            index = index,
-            description = req.description,
-            minTargets = req.effectiveMinCount,
-            maxTargets = req.count
-        )
     }
 
-    val allSatisfied = requirementInfos.all { info ->
-        (legalTargetsMap[info.index]?.isNotEmpty() == true) || info.minTargets == 0
+    // Preserve the established fizzle before converting metadata: an unresolved semantic fact
+    // cannot matter when a mandatory slot has no legal candidate at all.
+    val allSatisfied = targetSnapshots.withIndex().all { (index, snapshot) ->
+        legalTargetsMap[index].orEmpty().size >= snapshot.requirement.effectiveMinCount
     }
     if (!allSatisfied) {
         // Fizzle just this mode; continue with the rest.
@@ -1698,6 +1717,63 @@ internal fun processChosenModeQueue(
             triggeringEntityId, allowCancelBackToModesList, outerTargets, outerAlignedTargets, outerNamedTargets,
             accumulatedEvents, checkForMore
         )
+    }
+
+    // An optional slot with no legal candidates is a valid empty selection. Keep the mode's
+    // target/requirement alignment, but do not convert unsupported metadata for a slot the player
+    // cannot and need not choose.
+    val selectableIndices = targetSnapshots.indices.filter { index ->
+        targetSnapshots[index].requirement.effectiveMinCount > 0 ||
+            legalTargetsMap[index].orEmpty().isNotEmpty()
+    }
+    if (selectableIndices.isEmpty()) {
+        val lockedRequirements = services.targetValidator.lockRequirementsForSelectedCounts(
+            head.targetRequirements,
+            List(head.targetRequirements.size) { 0 },
+        )
+        val context = EffectContext(
+            sourceId = sourceId,
+            controllerId = controllerId,
+            xValue = xValue,
+            targets = emptyList(),
+            pipeline = PipelineState(namedTargets = EffectContext.buildNamedTargets(lockedRequirements, emptyList())),
+            triggeringEntityId = triggeringEntityId,
+        )
+        return executeChosenModeWithTail(
+            services, state, head.effect, context, tail,
+            controllerId, sourceId, sourceName, xValue, triggeringEntityId,
+            outerTargets, outerAlignedTargets, outerNamedTargets, accumulatedEvents, checkForMore,
+        )
+    }
+
+    val requirementInfos = selectableIndices.map { index ->
+        val snapshot = targetSnapshots[index]
+        val result = when (snapshot) {
+            is PendingTargetRequirementSnapshot.Unsupported ->
+                TargetRequirementInfoResult.Unsupported(snapshot.reason)
+            is PendingTargetRequirementSnapshot.Resolved ->
+                TargetRequirementInfo.fromRequirement(
+                    index = index,
+                    requirement = snapshot.requirement,
+                    semanticSource = snapshot.semanticSource,
+                    minTargets = snapshot.requirement.effectiveMinCount,
+                    maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                        snapshot.requirement.unlimited && !snapshot.requirement.hasUnresolvedDynamicMaxCount()
+                    ) {
+                        legalTargetsMap[index]?.size
+                    } else {
+                        null
+                    },
+                    resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                    resolvedTotalManaValueAtMost = services.targetValidator
+                        .resolveTotalManaValueAtMostForPending(
+                            state = state,
+                            requirement = snapshot.semanticSource,
+                            context = pendingTargetContext,
+                        ),
+                )
+        }
+        result.orReturnUnsupported { return it.toExecutionError(state) }
     }
 
     // Auto-select single player target.
@@ -1743,7 +1819,7 @@ internal fun processChosenModeQueue(
             phase = DecisionPhase.RESOLUTION
         ),
         targetRequirements = requirementInfos,
-        legalTargets = legalTargetsMap,
+        legalTargets = selectableIndices.associateWith { legalTargetsMap[it].orEmpty() },
         canCancel = allowCancelBackToModesList != null && tail.isEmpty()
     )
 

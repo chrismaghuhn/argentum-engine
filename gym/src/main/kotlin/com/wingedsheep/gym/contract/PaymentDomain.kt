@@ -19,7 +19,7 @@ import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 
-const val PAYMENT_DOMAIN_VERSION: Int = 1
+const val PAYMENT_DOMAIN_VERSION: Int = 2
 
 @Serializable
 enum class PaymentCostKind {
@@ -37,7 +37,8 @@ data class PaymentCostUnitDomain(
 )
 
 @Serializable
-data class PaymentPoolDomain(
+@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentPoolDomainV2")
+data class PaymentPoolDomainV1(
     val white: Int = 0,
     val blue: Int = 0,
     val black: Int = 0,
@@ -52,6 +53,34 @@ data class CertifiedFloatingManaCandidateV1(
     val poolColor: PaymentManaColor,
     val sourceId: EntityId,
     val sourceSubtypes: List<String>,
+)
+
+@Serializable
+data class CertifiedFloatingManaSourceBucketDomainV2(
+    val sourceId: EntityId,
+    val amount: Int,
+)
+
+/**
+ * The one canonical public representation of certified floating provenance in PaymentDomain V2.
+ * The subtype set is common to every unit; source buckets only partition the units by source.
+ */
+@Serializable
+data class CertifiedHomogeneousFloatingManaDomainV2(
+    val poolColor: PaymentManaColor,
+    val sourceSubtypes: List<String>,
+    val sourceBuckets: List<CertifiedFloatingManaSourceBucketDomainV2>,
+)
+
+@Serializable
+data class PaymentPoolDomainV2(
+    val white: Int = 0,
+    val blue: Int = 0,
+    val black: Int = 0,
+    val red: Int = 0,
+    val green: Int = 0,
+    val colorless: Int = 0,
+    val certifiedFloatingMana: CertifiedHomogeneousFloatingManaDomainV2? = null,
 )
 
 /** One exact mana-ability identity and its explicit production choices. */
@@ -71,11 +100,27 @@ data class PaymentSourceActivationDomain(
  * whose source, production, pool, and allocation choices are all explicit.
  */
 @Serializable
+@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV2")
 data class PaymentDomainV1(
+    val version: Int = 1,
+    val requiredCost: String,
+    val costUnits: List<PaymentCostUnitDomain>,
+    val currentPool: PaymentPoolDomainV1,
+    val sourceActivations: List<PaymentSourceActivationDomain>,
+)
+
+/**
+ * Complete action-level payment domain for the current supported ordinary fixed-cost slice.
+ *
+ * `certifiedFloatingMana` is the only public authority for historical floating source buckets.
+ * Future source activations remain a separate origin class and retain their existing domain shape.
+ */
+@Serializable
+data class PaymentDomainV2(
     val version: Int = PAYMENT_DOMAIN_VERSION,
     val requiredCost: String,
     val costUnits: List<PaymentCostUnitDomain>,
-    val currentPool: PaymentPoolDomain,
+    val currentPool: PaymentPoolDomainV2,
     val sourceActivations: List<PaymentSourceActivationDomain>,
 )
 
@@ -95,26 +140,35 @@ class PaymentDomainBuilder(
         requiredCost: String,
         spellContext: SpellPaymentContext,
         excludeSources: Set<EntityId> = emptySet(),
-    ): PaymentDomainV1? {
+    ): PaymentDomainV2? {
         val cost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
         val costUnits = cost.symbols.mapIndexed { index, symbol -> symbol.toDomain(index) ?: return null }
 
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
-        // Restricted mana has no stable public bucket identity in V1. Do not publish a partial
+        // Restricted mana has no stable public bucket identity in V2. Do not publish a partial
         // domain that would force the engine to choose a restricted bucket during submission.
         if (pool.restrictedMana.isNotEmpty()) return null
         val certifiedFloatingMana = when (val classification =
             FloatingManaProvenanceClassification.classify(pool)) {
             FloatingManaProvenanceClassification.NoTrackedProvenance -> null
             is FloatingManaProvenanceClassification.Ambiguous -> return null
-            is FloatingManaProvenanceClassification.CertifiedSingleUnit -> {
-                if (!isPerspectiveSafeSource(state, playerId, classification.candidate.sourceId)) return null
-                CertifiedFloatingManaCandidateV1(
-                    poolColor = classification.candidate.poolColor,
-                    sourceId = classification.candidate.sourceId,
-                    sourceSubtypes = classification.candidate.sourceSubtypes
-                        .map { it.value }
-                        .sorted(),
+            is FloatingManaProvenanceClassification.CertifiedHomogeneous -> {
+                val candidate = classification.candidate
+                if (candidate.sourceBuckets.any {
+                        !isPerspectiveSafeSource(state, playerId, it.sourceId)
+                    }
+                ) return null
+                CertifiedHomogeneousFloatingManaDomainV2(
+                    poolColor = candidate.poolColor,
+                    sourceSubtypes = candidate.sourceSubtypes.map { it.value }.sorted(),
+                    sourceBuckets = candidate.sourceBuckets
+                        .sortedBy { it.sourceId.value }
+                        .map { bucket ->
+                            CertifiedFloatingManaSourceBucketDomainV2(
+                                sourceId = bucket.sourceId,
+                                amount = bucket.amount,
+                            )
+                        },
                 )
             }
         }
@@ -129,10 +183,10 @@ class PaymentDomainBuilder(
             }
         }
 
-        return PaymentDomainV1(
+        return PaymentDomainV2(
             requiredCost = requiredCost,
             costUnits = costUnits,
-            currentPool = PaymentPoolDomain(
+            currentPool = PaymentPoolDomainV2(
                 white = pool.white,
                 blue = pool.blue,
                 black = pool.black,

@@ -5,6 +5,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
@@ -28,6 +30,8 @@ class StormCopyEffectExecutor(
 ) : EffectExecutor<StormCopyEffect> {
 
     override val effectType: KClass<StormCopyEffect> = StormCopyEffect::class
+
+    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -132,6 +136,14 @@ class StormCopyEffectExecutor(
         var currentState = state
         val allEvents = mutableListOf<GameEvent>()
         var copiesLeft = remainingCopies
+        val copiedSpellXValue = resolvingSpellCopyPayload?.spell?.xValue
+            ?: currentState.getEntity(sourceId)?.get<SpellOnStackComponent>()?.xValue
+        val copiedSpellPredicateContext =
+            com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context).copy(
+                // The target requirement belongs to the copied source spell. Do not use the
+                // copier effect's X as a substitute when the source snapshot is unavailable.
+                xValue = copiedSpellXValue,
+            )
 
         // Walk copies one at a time. If the copy can be retargeted legally, pause
         // with a ChooseTargetsDecision; otherwise put it on the stack inheriting
@@ -141,9 +153,24 @@ class StormCopyEffectExecutor(
             val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
             for ((index, requirement) in effect.spellTargetRequirements.withIndex()) {
                 val legalTargets = targetFinder.findLegalTargets(
-                    currentState, requirement, context.controllerId, sourceId
+                    state = currentState,
+                    requirement = requirement,
+                    controllerId = context.controllerId,
+                    sourceId = sourceId,
+                    pipelineContext = copiedSpellPredicateContext,
+                    requireAuthoritativeContext = true,
                 )
                 legalTargetsMap[index] = legalTargets
+            }
+
+            val targetReqInfos = effect.spellTargetRequirements.mapIndexed { index, requirement ->
+                targetValidator.pendingTargetRequirementInfo(
+                    state = currentState,
+                    index = index,
+                    requirement = requirement,
+                    context = context.copy(sourceId = sourceId, xValue = copiedSpellXValue),
+                    legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                ).orReturnUnsupported { return it.toEffectError(currentState) }
             }
 
             val hasNoLegalTargets = legalTargetsMap.any { (_, targets) -> targets.isEmpty() }
@@ -177,13 +204,6 @@ class StormCopyEffectExecutor(
                 totalCopies = effect.copyCount,
                 resolvingSpellCopyPayload = resolvingSpellCopyPayload
             )
-            val targetReqInfos = effect.spellTargetRequirements.mapIndexed { index, req ->
-                TargetRequirementInfo(
-                    index = index,
-                    description = req.description
-                )
-            }
-
             val copyLabel = if (effect.copyCount > 1)
                 "copy $copyNumber of ${effect.copyCount} of ${effect.spellName}"
                 else "copy of ${effect.spellName}"
@@ -246,11 +266,17 @@ class StormCopyEffectExecutor(
             var accumulated = accumulatedOrdinalTargets
             var ordinal = currentOrdinal
             var copiesLeft = remainingCopies
+            val targetValidator = TargetValidator()
 
             val sourceSpellComp = resolvingSpellCopyPayload?.spell
                 ?: currentState.getEntity(sourceId)?.get<SpellOnStackComponent>()
                 ?: return ExecutionResult.error(currentState, "Storm source spell not found: $sourceId")
             val sourceModeTargetsOrdered = sourceSpellComp.modeTargetsOrdered
+            val sourcePredicateContext = com.wingedsheep.engine.handlers.PredicateContext(
+                controllerId = controllerId,
+                sourceId = sourceId,
+                xValue = sourceSpellComp.xValue,
+            )
 
             while (copiesLeft > 0) {
                 while (ordinal < chosenModes.size) {
@@ -266,8 +292,27 @@ class StormCopyEffectExecutor(
                     val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
                     for ((reqIndex, requirement) in reqs.withIndex()) {
                         legalTargetsMap[reqIndex] = targetFinder.findLegalTargets(
-                            currentState, requirement, controllerId, sourceId
+                            state = currentState,
+                            requirement = requirement,
+                            controllerId = controllerId,
+                            sourceId = sourceId,
+                            pipelineContext = sourcePredicateContext,
+                            requireAuthoritativeContext = true,
                         )
+                    }
+
+                    val targetReqInfos = reqs.mapIndexed { index, requirement ->
+                        targetValidator.pendingTargetRequirementInfo(
+                            state = currentState,
+                            index = index,
+                            requirement = requirement,
+                            context = EffectContext(
+                                sourceId = sourceId,
+                                controllerId = controllerId,
+                                xValue = sourceSpellComp.xValue,
+                            ),
+                            legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                        ).orReturnUnsupported { return it.toExecutionError(currentState) }
                     }
 
                     val hasNoLegalTargets = legalTargetsMap.any { (_, t) -> t.isEmpty() }
@@ -295,12 +340,7 @@ class StormCopyEffectExecutor(
                             sourceName = spellName,
                             effectHint = "Copy of $spellName$modeLabel"
                         ),
-                        targetRequirements = reqs.mapIndexed { index, req ->
-                            TargetRequirementInfo(
-                                index = index,
-                                description = req.description
-                            )
-                        },
+                        targetRequirements = targetReqInfos,
                         legalTargets = legalTargetsMap
                     )
 

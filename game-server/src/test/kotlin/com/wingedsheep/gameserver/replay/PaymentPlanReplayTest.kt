@@ -19,6 +19,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.gameserver.ScenarioTestBase
+import com.wingedsheep.gameserver.persistence.persistenceJson
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
 import com.wingedsheep.sdk.core.Phase
@@ -36,7 +37,20 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
 import io.mockk.every
 import io.mockk.mockk
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import org.springframework.web.socket.WebSocketSession
+
+private fun JsonElement.withoutField(field: String): JsonElement = when (this) {
+    is JsonObject -> JsonObject(
+        entries
+            .filterNot { (key, _) -> key == field }
+            .associate { (key, value) -> key to value.withoutField(field) },
+    )
+    is JsonArray -> JsonArray(map { it.withoutField(field) })
+    else -> this
+}
 
 /** CompactReplay round-trip coverage for the serialized action-level PaymentPlanV1. */
 class PaymentPlanReplayTest : ScenarioTestBase() {
@@ -96,6 +110,24 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
         }
     }
 
+    private val zeroForestReplaySource = card("Replay Zero Forest Source") {
+        manaCost = "{0}"
+        typeLine = "Artifact — Forest"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.GREEN)
+            manaAbility = true
+        }
+    }
+
+    private val homogeneousFloatingReplaySpell = card("Replay Homogeneous Floating Payment Spell") {
+        manaCost = "{1}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     private val paymentModalSpell = card("Replay Payment Modal Spell") {
         manaCost = "{R}"
         typeLine = "Instant"
@@ -127,7 +159,8 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
             if (state.priorityPlayerId == playerId &&
                 state.activePlayerId == playerId &&
                 state.phase == Phase.PRECOMBAT_MAIN &&
-                state.pendingDecision == null
+                state.pendingDecision == null &&
+                state.stack.isEmpty()
             ) return
             val priority = state.priorityPlayerId ?: error("Expected priority while preparing replay")
             requireApplied(session.executeAutoPass(priority))
@@ -196,7 +229,15 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
             )
 
             replay.version shouldBe CompactReplay.CURRENT_VERSION
-            ReplayCodec.decode(ReplayCodec.encode(replay)) shouldBe replay
+            val historicalJson = persistenceJson.encodeToString(
+                JsonElement.serializer(),
+                persistenceJson
+                    .parseToJsonElement(ReplayCodec.decodeText(ReplayCodec.encode(replay)))
+                    .withoutField("floatingSourceId"),
+            )
+            val historicalV3Wire = ReplayCodec.encodeText(historicalJson)
+            ReplayCodec.decodeText(historicalV3Wire).contains("\"floatingSourceId\"") shouldBe false
+            ReplayCodec.decode(historicalV3Wire) shouldBe replay
         }
 
         test("PaymentPlanV1 survives CompactReplay encode/decode and reconstruction") {
@@ -640,6 +681,166 @@ class PaymentPlanReplayTest : ScenarioTestBase() {
                 .shouldNotBeNull()
             val reconstructedPool = reconstructedFinal.getEntity(player)?.get<ManaPoolComponent>()
                 ?: error("Expected the reconstructed forest replay mana pool")
+            reconstructedPool shouldBe livePool
+            ReplayFingerprint.of(reconstructedFinal, decoded.version) shouldBe
+                ReplayFingerprint.of(liveFinal, decoded.version)
+            reconstructor.reconstruct(decoded).fidelity shouldBe ReplayFidelity.EXACT
+        }
+
+        test("executed homogeneous multi-unit floating mana preserves the chosen source in v3 replay") {
+            cardRegistry.register(forestReplaySource)
+            cardRegistry.register(zeroForestReplaySource)
+            cardRegistry.register(homogeneousFloatingReplaySpell)
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val playerOne = EntityId.of("homogeneous-replay-player-one")
+            val playerTwo = EntityId.of("homogeneous-replay-player-two")
+            // Seven cards exactly keeps both sources and the spell in the opening hand.
+            val deck = mapOf(
+                forestReplaySource.name to 1,
+                zeroForestReplaySource.name to 1,
+                homogeneousFloatingReplaySpell.name to 1,
+                "Mountain" to 4,
+            )
+            session.addPlayer(PlayerSession(mockWs("homogeneous-replay-ws-1"), playerOne, "Alice"), deck)
+            session.addPlayer(PlayerSession(mockWs("homogeneous-replay-ws-2"), playerTwo, "Bob"), deck)
+            session.startGame()
+            session.keepHand(playerOne)
+            session.keepHand(playerTwo)
+
+            val player = session.getStateForTesting().shouldNotBeNull().activePlayerId
+                ?: error("Expected an active player after homogeneous replay mulligans")
+            val enumerator = LegalActionEnumerator.create(cardRegistry)
+            advanceToPriority(session, player)
+            val firstState = session.getStateForTesting().shouldNotBeNull()
+            val playLand = enumerator.enumerate(firstState, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? PlayLand ?: return@firstOrNull false
+                    firstState.getEntity(action.cardId)
+                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                        ?.name == forestReplaySource.name
+                }
+                ?: error("Expected the homogeneous replay land action: ${enumerator.enumerate(firstState, player)}")
+            submitAndResolve(session, player, playLand.action)
+
+            val afterLand = session.getStateForTesting().shouldNotBeNull()
+            val landSourceId = afterLand.getBattlefield(player).firstOrNull { id ->
+                afterLand.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == forestReplaySource.name
+            } ?: error("Expected the homogeneous replay land source")
+            submitAndResolve(
+                session,
+                player,
+                ActivateAbility(player, landSourceId, forestReplaySource.activatedAbilities.single().id),
+            )
+
+            val afterLandMana = session.getStateForTesting().shouldNotBeNull()
+            val zeroSourceCardId = afterLandMana.getHand(player).firstOrNull { id ->
+                afterLandMana.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == zeroForestReplaySource.name
+            } ?: error("Expected the zero-cost homogeneous replay source in hand")
+            val zeroSourceCast = enumerator.enumerate(afterLandMana, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? CastSpell ?: return@firstOrNull false
+                    action.cardId == zeroSourceCardId
+                }
+                ?: error("Expected the zero-cost homogeneous replay source cast action")
+            submitAndResolve(session, player, zeroSourceCast.action)
+
+            val afterZeroSource = session.getStateForTesting().shouldNotBeNull()
+            val zeroSourceId = afterZeroSource.getBattlefield(player).firstOrNull { id ->
+                afterZeroSource.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == zeroForestReplaySource.name
+            } ?: error("Expected the zero-cost homogeneous replay source on the battlefield")
+            submitAndResolve(
+                session,
+                player,
+                ActivateAbility(player, zeroSourceId, zeroForestReplaySource.activatedAbilities.single().id),
+            )
+
+            val afterBothMana = session.getStateForTesting().shouldNotBeNull()
+            val floating = afterBothMana.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected homogeneous floating mana")
+            floating.green shouldBe 2
+            floating.manaBySource shouldBe mapOf(landSourceId to 1, zeroSourceId to 1)
+            floating.manaBySubtype shouldBe mapOf(Subtype.FOREST to 2)
+
+            val spellId = afterBothMana.getHand(player).firstOrNull { id ->
+                afterBothMana.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == homogeneousFloatingReplaySpell.name
+            } ?: error("Expected the homogeneous replay spell in hand")
+            val legalCast = enumerator.enumerate(afterBothMana, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? CastSpell ?: return@firstOrNull false
+                    action.cardId == spellId
+                }
+                ?: error("Expected the homogeneous floating CastSpell action")
+            val explicitCast = (legalCast.action as CastSpell).copy(
+                paymentStrategy = PaymentStrategy.Explicit(
+                    paymentPlan = PaymentPlanV1(
+                        poolSpend = PoolSpend(green = 1),
+                        spendAllocation = SpendAllocation(
+                            costUnits = listOf(
+                                CostUnitAllocation(
+                                    symbolIndex = 0,
+                                    spends = listOf(
+                                        ManaSpendReference(
+                                            poolColor = PaymentManaColor.GREEN,
+                                            floatingSourceId = landSourceId,
+                                        ),
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            )
+            submitAndResolve(session, player, explicitCast)
+
+            val liveFinal = session.getStateForTesting().shouldNotBeNull()
+            val livePool = liveFinal.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the final homogeneous replay mana pool")
+            livePool.green shouldBe 1
+            livePool.manaBySource shouldBe mapOf(zeroSourceId to 1)
+            livePool.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+
+            val actions = session.getRecordedActions()
+            val recordedCast = actions.filterIsInstance<CastSpell>()
+                .firstOrNull { it.cardId == spellId }
+                ?: error("Expected the recorded homogeneous floating CastSpell: $actions")
+            recordedCast.paymentStrategy shouldBe explicitCast.paymentStrategy
+
+            val setup = session.getReplaySetup().shouldNotBeNull()
+            val replay = CompactReplay(
+                gameId = session.sessionId,
+                players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
+                startedAt = "2026-08-22T00:00:00Z",
+                endedAt = "2026-08-22T00:01:00Z",
+                winnerName = null,
+                setup = setup,
+                actions = actions,
+                checkpoints = listOf(
+                    ReplayCheckpoint(
+                        afterActionCount = actions.size,
+                        fingerprint = ReplayFingerprint.of(liveFinal, CompactReplay.CURRENT_VERSION),
+                    ),
+                ),
+            )
+
+            val encoded = ReplayCodec.encode(replay)
+            ReplayCodec.decodeText(encoded).contains("floatingSourceId") shouldBe true
+            val decoded = ReplayCodec.decode(encoded)
+            decoded shouldBe replay
+            decoded.version shouldBe CompactReplay.CURRENT_VERSION
+
+            val reconstructor = ReplayReconstructor(cardRegistry, null)
+            val reconstructedFinal = reconstructor.reconstructStateAt(decoded, decoded.actions.size)
+                .shouldNotBeNull()
+            val reconstructedPool = reconstructedFinal.getEntity(player)?.get<ManaPoolComponent>()
+                ?: error("Expected the reconstructed homogeneous replay mana pool")
             reconstructedPool shouldBe livePool
             ReplayFingerprint.of(reconstructedFinal, decoded.version) shouldBe
                 ReplayFingerprint.of(liveFinal, decoded.version)

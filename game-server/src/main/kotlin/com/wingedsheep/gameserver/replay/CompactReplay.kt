@@ -80,8 +80,9 @@ data class CompactReplay(
          * introduced. v1 is the original compact input stream; v2 added [engineVersion],
          * [pinnedCards] and legacy [checkpoints]; v3 defines the complete transition-semantic
          * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint. The
-         * codec still tolerates unknown fields on supported versions, but rejects versions newer
-         * than this constant before deserialization.
+         * action-level target-domain fields are an additive Gym observation contract and do not
+         * change replay reconstruction semantics. The codec still tolerates unknown fields on
+         * supported versions, but rejects versions newer than this constant before deserialization.
          */
         const val CURRENT_VERSION = 3
 

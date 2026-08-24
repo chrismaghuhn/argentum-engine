@@ -5,6 +5,8 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ResolvingSpellCopyPayload
@@ -31,6 +33,7 @@ class CopyTargetSpellExecutor(
     override val effectType: KClass<CopyTargetSpellEffect> = CopyTargetSpellEffect::class
 
     private val dynamicAmountEvaluator = com.wingedsheep.engine.handlers.DynamicAmountEvaluator()
+    private val targetValidator = TargetValidator()
 
     override fun execute(
         state: GameState,
@@ -199,13 +202,37 @@ class CopyTargetSpellExecutor(
         resolvingSpellCopyPayload: ResolvingSpellCopyPayload? = null
     ): EffectResult {
         val decisionId = targetDecisionId()
+        val copiedSpellXValue = resolvingSpellCopyPayload?.spell?.xValue
+            ?: state.getEntity(spellEntityId)?.get<SpellOnStackComponent>()?.xValue
+        val copiedSpellPredicateContext =
+            com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context).copy(
+                // X belongs to the copied spell, not to the effect that is creating the copy.
+                // If the source snapshot is unavailable, retain null so X-relative candidates
+                // fail closed in TargetFinder rather than inheriting the copier's X.
+                xValue = copiedSpellXValue,
+            )
 
         val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
         for ((index, requirement) in targetRequirements.withIndex()) {
             val legalTargets = targetFinder.findLegalTargets(
-                state, requirement, context.controllerId, context.sourceId
+                state = state,
+                requirement = requirement,
+                controllerId = context.controllerId,
+                sourceId = context.sourceId,
+                pipelineContext = copiedSpellPredicateContext,
+                requireAuthoritativeContext = true,
             )
             legalTargetsMap[index] = legalTargets
+        }
+
+        val targetReqInfos = targetRequirements.mapIndexed { index, requirement ->
+            targetValidator.pendingTargetRequirementInfo(
+                state = state,
+                index = index,
+                requirement = requirement,
+                context = context.copy(xValue = copiedSpellXValue),
+                legalTargetCount = legalTargetsMap[index].orEmpty().size,
+            ).orReturnUnsupported { return it.toEffectError(state) }
         }
 
         // CR 707.10c: no legal replacement for some requirement, so nothing can be re-chosen —
@@ -241,13 +268,6 @@ class CopyTargetSpellExecutor(
             removeLegendary = removeLegendary,
             resolvingSpellCopyPayload = resolvingSpellCopyPayload
         )
-        val targetReqInfos = targetRequirements.mapIndexed { index, req ->
-            TargetRequirementInfo(
-                index = index,
-                description = req.description
-            )
-        }
-
         // Matches the Storm path's labelling so a multi-copy prompt says which copy it is for.
         val copyLabel = if (copyCount > 1) "copy 1 of $copyCount of $spellName" else "copy of $spellName"
         val decision = ChooseTargetsDecision(

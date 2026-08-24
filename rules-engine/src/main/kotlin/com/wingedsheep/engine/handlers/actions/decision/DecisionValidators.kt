@@ -42,9 +42,13 @@ import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.mechanics.combat.CombatDamageAssignmentPlanValidator
+import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.model.EntityId
+
+private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()) { it.name }
 
 /**
  * Validators for different types of decision responses.
@@ -182,8 +186,9 @@ object DecisionValidators {
                 // response that only the rules engine could have checked with current state.
                 if (req.sameOwner && selectedIds.size > 1) {
                     if (state == null) return "Current game state is required to validate target ownership"
-                    val owners = selectedIds.mapNotNull { id ->
+                    val owners = selectedIds.map { id ->
                         state.getEntity(id)?.get<OwnerComponent>()?.playerId
+                            ?: return "Cannot validate owner for target $id"
                     }
                     if (owners.toSet().size > 1) {
                         return "Targets for requirement $reqIndex must be from a single graveyard"
@@ -196,7 +201,8 @@ object DecisionValidators {
                 if (manaCap != null && selectedIds.isNotEmpty()) {
                     if (state == null) return "Current game state is required to validate target mana value"
                     val totalManaValue = selectedIds.sumOf { id ->
-                        state.getEntity(id)?.get<CardComponent>()?.manaValue ?: 0
+                        state.getEntity(id)?.get<CardComponent>()?.manaValue
+                            ?: return "Cannot validate mana value for target $id"
                     }
                     if (totalManaValue > manaCap) {
                         return "Targets for requirement $reqIndex exceed total mana value $manaCap"
@@ -208,11 +214,74 @@ object DecisionValidators {
                     if (state == null) return "Current game state is required to validate target names"
                     val names = selectedIds.map { id ->
                         state.projectedState.getName(id) ?: state.getEntity(id)?.get<CardComponent>()?.name
+                            ?: return "Cannot validate name for target $id"
                     }
                     if (names.size != names.toSet().size) {
                         return "Targets for requirement $reqIndex must have different names"
                     }
                 }
+
+                if (req.sameController && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target controllers"
+                    val controllers = selectedIds.map { id ->
+                        state.projectedState.getController(id)
+                            ?: state.getEntity(id)?.get<ControllerComponent>()?.playerId
+                            ?: return "Cannot validate controller for target $id"
+                    }
+                    if (controllers.toSet().size > 1) {
+                        return "Targets for requirement $reqIndex must be controlled by the same player"
+                    }
+                }
+
+                if (req.sameCreatureType && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target creature types"
+                    val subtypeSets = selectedIds.map { id ->
+                        val card = state.getEntity(id)?.get<CardComponent>()
+                            ?: return "Cannot validate creature type for target $id"
+                        if (id in state.getBattlefield()) state.projectedState.getSubtypes(id)
+                        else card.typeLine.subtypes.map { it.value }.toSet()
+                    }
+                    val sharedSubtypes = subtypeSets.drop(1).fold(subtypeSets.firstOrNull().orEmpty()) { shared, next ->
+                        shared intersect next
+                    }
+                    if (sharedSubtypes.isEmpty()) {
+                        return "Targets for requirement $reqIndex must share a creature type"
+                    }
+                }
+
+                if (req.sameCardType && selectedIds.size > 1) {
+                    if (state == null) return "Current game state is required to validate target card types"
+                    val typeSets = selectedIds.map { id ->
+                        val card = state.getEntity(id)?.get<CardComponent>()
+                            ?: return "Cannot validate card type for target $id"
+                        if (id in state.getBattlefield()) {
+                            state.projectedState.getTypes(id).filter { it in CARD_TYPE_NAMES }.toSet()
+                        } else {
+                            card.typeLine.cardTypes.map { it.name }.filter { it in CARD_TYPE_NAMES }.toSet()
+                        }
+                    }
+                    val sharedTypes = typeSets.drop(1).fold(typeSets.firstOrNull().orEmpty()) { shared, next ->
+                        shared intersect next
+                    }
+                    if (sharedTypes.isEmpty()) {
+                        return "Targets for requirement $reqIndex must share a card type"
+                    }
+                }
+            }
+        }
+
+        val selectedByRequirement = decision.targetRequirements
+            .sortedBy { it.index }
+            .map { requirement -> requirement to response.selectedTargets[requirement.index].orEmpty() }
+        for ((position, pair) in selectedByRequirement.withIndex()) {
+            val (requirement, selectedIds) = pair
+            if (!requirement.mustDifferFromEarlier || selectedIds.isEmpty()) continue
+            val priorSelectedIds = selectedByRequirement
+                .take(position)
+                .flatMap { (_, ids) -> ids }
+                .toSet()
+            if (selectedIds.any { it in priorSelectedIds }) {
+                return "Targets for requirement ${requirement.index} must differ from earlier targets"
             }
         }
         return null

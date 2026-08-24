@@ -128,7 +128,12 @@ class ChainCopyExecutor(
 
         // Check if there are valid targets for a potential copy
         val legalTargets = targetFinder.findLegalTargets(
-            state, effect.copyTargetRequirement, recipientPlayerId, context.sourceId
+            state = state,
+            requirement = effect.copyTargetRequirement,
+            controllerId = recipientPlayerId,
+            sourceId = context.sourceId,
+            pipelineContext = PredicateContext.fromEffectContext(context),
+            requireAuthoritativeContext = true,
         )
         if (legalTargets.isEmpty()) {
             return EffectResult.success(state, events)

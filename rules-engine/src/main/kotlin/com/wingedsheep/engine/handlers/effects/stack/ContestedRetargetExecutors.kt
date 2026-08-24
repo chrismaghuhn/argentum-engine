@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.ContestedRetargetContinuation
 import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.state.GameState
@@ -191,11 +192,49 @@ object ContestedRetargetLogic {
             state = state,
             requirement = requirement,
             controllerId = ownerControllerId,
-            sourceId = stackObjectId
+            sourceId = stackObjectId,
+            pipelineContext = predicateContextForStackObject(state, stackObjectId, ownerControllerId),
+            requireAuthoritativeContext = true,
         )
         val excluded = alreadyChosen.mapNotNull { entityIdOf(it) }.toSet() - setOfNotNull(currentId)
         val filtered = legal.filter { it !in excluded }
         return if (currentId != null && currentId !in filtered) filtered + currentId else filtered
+    }
+
+    private fun predicateContextForStackObject(
+        state: GameState,
+        stackObjectId: EntityId,
+        controllerId: EntityId,
+    ): PredicateContext? {
+        val container = state.getEntity(stackObjectId) ?: return null
+        container.get<SpellOnStackComponent>()?.let { spell ->
+            return PredicateContext(
+                controllerId = controllerId,
+                sourceId = stackObjectId,
+                xValue = spell.xValue,
+            )
+        }
+        container.get<ActivatedAbilityOnStackComponent>()?.let { ability ->
+            return PredicateContext(
+                controllerId = controllerId,
+                sourceId = stackObjectId,
+                xValue = ability.xValue,
+            )
+        }
+        container.get<TriggeredAbilityOnStackComponent>()?.let { ability ->
+            return PredicateContext(
+                controllerId = controllerId,
+                sourceId = stackObjectId,
+                triggeringEntityId = ability.triggeringEntityId,
+                triggeringPlayerId = ability.triggeringPlayerId,
+                xValue = ability.xValue,
+                storedCollections = ability.carriedPipeline?.storedCollections ?: emptyMap(),
+                chosenValues = ability.carriedPipeline?.chosenValues ?: emptyMap(),
+                storedStringLists = ability.carriedPipeline?.storedStringLists ?: emptyMap(),
+                storedSubtypeGroups = ability.carriedPipeline?.storedSubtypeGroups ?: emptyMap(),
+            )
+        }
+        return null
     }
 
     private fun controllerOfStackObject(state: GameState, id: EntityId): EntityId? {

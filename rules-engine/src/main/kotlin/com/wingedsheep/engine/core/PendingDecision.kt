@@ -2,6 +2,7 @@ package com.wingedsheep.engine.core
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.targets.TargetRequirement
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
@@ -129,14 +130,19 @@ data class ChooseTargetsDecision(
 data class TargetRequirementInfo(
     val index: Int,
     val description: String,
-    val minTargets: Int = 1,
-    val maxTargets: Int = 1,
+    val minTargets: Int,
+    val maxTargets: Int,
+    val targetZone: String?,
+    val mustDifferFromEarlier: Boolean,
+    val sameController: Boolean,
     /**
      * When true, every chosen card target for this requirement must be owned by the same
      * player — "from a single graveyard" (Arashin Sunshield). Enforced against each
      * selected card's owner in [DecisionValidators.validateTargets].
      */
-    val sameOwner: Boolean = false,
+    val sameOwner: Boolean,
+    val sameCreatureType: Boolean,
+    val sameCardType: Boolean,
     /**
      * When non-null, the combined mana value of the chosen card targets for this requirement may
      * not exceed this cap — "any number of target creature cards with total mana value X or less"
@@ -145,14 +151,156 @@ data class TargetRequirementInfo(
      * [DecisionValidators.validateTargets] rejects a selection whose summed `manaValue` exceeds it.
      * `null` imposes no aggregate cap.
      */
-    val totalManaValueAtMost: Int? = null,
+    val totalManaValueAtMost: Int?,
     /**
      * When true, no two chosen targets for this requirement may share a name — "target creature
      * cards with different names" (Behold the Sinister Six!). Enforced against each selected
      * target's name in [DecisionValidators.validateTargets].
      */
-    val differentNames: Boolean = false
+    val differentNames: Boolean,
+    val xConstrainsManaValue: Boolean,
+    val xConstrainsManaValueExactly: Boolean,
+    val xConstrainsPower: Boolean,
+    val xConstrainsCount: Boolean
+) {
+    companion object {
+        /** Build pending metadata from the authoritative target-requirement source. */
+        fun fromRequirement(
+            index: Int,
+            requirement: TargetRequirement,
+            semanticSource: TargetRequirement = requirement,
+            description: String = requirement.description,
+            minTargets: Int = requirement.effectiveMinCount,
+            /**
+             * A plain explicit maximum is reserved for an authoritative finite candidate bound
+             * (for `unlimited`). Dynamic cardinality must use [resolvedMaxTargets], so a static
+             * override cannot be mistaken for a source-boundary resolution.
+             */
+            maxTargets: Int? = null,
+            /** A typed witness that a dynamic target maximum was resolved at the source boundary. */
+            resolvedMaxTargets: ResolvedTargetCount? = null,
+            /** A typed witness that a dynamic aggregate mana-value cap was resolved at the source boundary. */
+            resolvedTotalManaValueAtMost: ResolvedTotalManaValueAtMost? = null,
+        ): TargetRequirementInfoResult {
+            val semantics = when (val result = TargetRequirementSemantics.inspect(
+                requirement = requirement,
+                semanticSource = semanticSource,
+                resolvedTotalManaValueAtMost = resolvedTotalManaValueAtMost,
+            )) {
+                is TargetRequirementSemanticsResult.Supported -> result.semantics
+                is TargetRequirementSemanticsResult.Unsupported -> {
+                    return TargetRequirementInfoResult.Unsupported(result.reason)
+                }
+            }
+            val maxTargetValue = resolvedMaxTargets?.value ?: if (
+                semanticSource.hasUnresolvedDynamicMaxCount() || requirement.hasUnresolvedDynamicMaxCount()
+            ) {
+                return TargetRequirementInfoResult.Unsupported(
+                    TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
+                )
+            } else if (maxTargets != null) {
+                maxTargets
+            } else if (requirement.unlimited) {
+                return TargetRequirementInfoResult.Unsupported(
+                    TargetRequirementUnsupportedReason.UNRESOLVED_TARGET_COUNT
+                )
+            } else {
+                requirement.count
+            }
+            return TargetRequirementInfoResult.Supported(TargetRequirementInfo(
+                index = index,
+                description = description,
+                minTargets = minTargets,
+                maxTargets = maxTargetValue,
+                targetZone = semantics.targetZone,
+                mustDifferFromEarlier = semantics.mustDifferFromEarlier,
+                sameController = semantics.sameController,
+                sameOwner = semantics.sameOwner,
+                sameCreatureType = semantics.sameCreatureType,
+                sameCardType = semantics.sameCardType,
+                totalManaValueAtMost = semantics.totalManaValueAtMost,
+                differentNames = semantics.differentNames,
+                xConstrainsManaValue = semantics.xConstrainsManaValue,
+                xConstrainsManaValueExactly = semantics.xConstrainsManaValueExactly,
+                xConstrainsPower = semantics.xConstrainsPower,
+                xConstrainsCount = semantics.xConstrainsCount,
+            ))
+        }
+    }
+}
+
+/** An authoritative source-boundary witness for a resolved dynamic target maximum. */
+data class ResolvedTargetCount(val value: Int)
+
+/** An authoritative source-boundary witness for a resolved dynamic aggregate mana-value cap. */
+data class ResolvedTotalManaValueAtMost(val value: Int)
+
+/** The reason a pending target requirement cannot be published as a complete structured domain. */
+enum class TargetRequirementUnsupportedReason {
+    UNRESOLVED_TARGET_COUNT,
+    UNRESOLVED_TOTAL_MANA_VALUE,
+    INVALID_TOTAL_MANA_VALUE,
+}
+
+/** Typed result at the Rules-to-pending target metadata boundary. */
+sealed interface TargetRequirementInfoResult {
+    data class Supported(val info: TargetRequirementInfo) : TargetRequirementInfoResult
+
+    data class Unsupported(val reason: TargetRequirementUnsupportedReason) : TargetRequirementInfoResult
+}
+
+/**
+ * A dynamic-count snapshot used only while constructing a pending target decision.
+ *
+ * [requirement] is the normalized rule requirement. [semanticSource] retains the original
+ * TargetRequirement so source-level facts such as X-constrained cardinality remain available
+ * after normalization clears the dynamic expression. Unsupported snapshots retain the original
+ * requirement, so callers can perform their existing legal-target/fizzle checks before refusing
+ * to publish metadata.
+ */
+internal sealed interface PendingTargetRequirementSnapshot {
+    val requirement: TargetRequirement
+    val semanticSource: TargetRequirement
+    val resolvedMaxTargets: ResolvedTargetCount?
+
+    data class Resolved(
+        override val requirement: TargetRequirement,
+        override val semanticSource: TargetRequirement,
+        override val resolvedMaxTargets: ResolvedTargetCount?,
+    ) : PendingTargetRequirementSnapshot
+
+    data class Unsupported(
+        override val requirement: TargetRequirement,
+        override val semanticSource: TargetRequirement,
+        val reason: TargetRequirementUnsupportedReason,
+    ) : PendingTargetRequirementSnapshot {
+        override val resolvedMaxTargets: ResolvedTargetCount? = null
+    }
+}
+
+internal fun TargetRequirementInfoResult.Unsupported.toExecutionError(
+    state: com.wingedsheep.engine.state.GameState
+): ExecutionResult = ExecutionResult.error(
+    state = state,
+    message = "Target requirement semantics are unavailable for structured publication",
+    diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING)),
 )
+
+internal fun TargetRequirementInfoResult.Unsupported.toEffectError(
+    state: com.wingedsheep.engine.state.GameState
+): EffectResult = EffectResult.error(
+    state = state,
+    message = "Target requirement semantics are unavailable for structured publication",
+    diagnostics = listOf(DiagnosticSignal(DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING)),
+)
+
+/** Consume supported metadata while forcing every producer to handle unsupported semantics. */
+internal inline fun TargetRequirementInfoResult.orReturnUnsupported(
+    onUnsupported: (TargetRequirementInfoResult.Unsupported) -> Nothing,
+): TargetRequirementInfo = when (this) {
+    is TargetRequirementInfoResult.Supported -> info
+    is TargetRequirementInfoResult.Unsupported -> onUnsupported(this)
+}
 
 /**
  * Player must select cards from a set (e.g., discard, sacrifice, search library).

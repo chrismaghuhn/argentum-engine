@@ -76,9 +76,10 @@ internal object ObservationCanonicalizer {
                 action.targetEntityIds.forEach { add(JsonPrimitive(it.value)) }
             }
         )
+        action.targetDomain?.let { put("targetDomain", semanticActionTargetDomain(it)) }
         put("manaCost", action.manaCost)
         action.paymentDomain?.let {
-            put("paymentDomain", json.encodeToJsonElement(PaymentDomainV1.serializer(), it))
+            put("paymentDomain", json.encodeToJsonElement(PaymentDomainV2.serializer(), it))
         }
         put("hasXCost", action.hasXCost)
         put("maxAffordableX", action.maxAffordableX)
@@ -98,6 +99,53 @@ internal object ObservationCanonicalizer {
         put("requiresStructuredAction", action.requiresStructuredAction)
         action.actionSemantics?.let { put("actionSemantics", it) }
         put("isDecisionOption", action.isDecisionOption)
+    }
+
+    /**
+     * Canonical semantic identity for the fixed action-level target contract.
+     *
+     * This is intentionally separate from [semanticStructuredDomain]: action target candidates
+     * are legal-domain semantics, not presentation metadata. Requirement order is semantic, while
+     * candidate order is an unordered public set and is therefore normalized by EntityId value.
+     */
+    private fun semanticActionTargetDomain(domain: ActionTargetDomainV1): JsonObject {
+        require(domain.version == ACTION_TARGET_DOMAIN_VERSION) {
+            "Unsupported action target domain version: ${domain.version}"
+        }
+        require(domain.composition == ActionTargetComposition.FIXED) {
+            "Unsupported action target domain composition: ${domain.composition}"
+        }
+
+        return buildJsonObject {
+            put("version", domain.version)
+            put("composition", domain.composition.name)
+            put("requirements", buildJsonArray {
+                domain.requirements.forEach { requirement ->
+                    add(buildJsonObject {
+                        put("index", requirement.index)
+                        put("minTargets", requirement.minTargets)
+                        put("maxTargets", requirement.maxTargets)
+                        put("candidates", buildJsonArray {
+                            requirement.candidates
+                                .sortedBy { it.value }
+                                .forEach { add(JsonPrimitive(it.value)) }
+                        })
+                        put("targetZone", requirement.targetZone)
+                        put("mustDifferFromEarlier", requirement.mustDifferFromEarlier)
+                        put("sameController", requirement.sameController)
+                        put("sameOwner", requirement.sameOwner)
+                        put("sameCreatureType", requirement.sameCreatureType)
+                        put("sameCardType", requirement.sameCardType)
+                        put("totalManaValueAtMost", requirement.totalManaValueAtMost)
+                        put("differentNames", requirement.differentNames)
+                        put("xConstrainsManaValue", requirement.xConstrainsManaValue)
+                        put("xConstrainsManaValueExactly", requirement.xConstrainsManaValueExactly)
+                        put("xConstrainsPower", requirement.xConstrainsPower)
+                        put("xConstrainsCount", requirement.xConstrainsCount)
+                    })
+                }
+            })
+        }
     }
 
     /**
@@ -184,6 +232,7 @@ internal object ObservationCanonicalizer {
         "waterbendPermanents",
         "producesColors",
         "sourceSubtypes",
+        "sourceBuckets",
         "blockedByIds",
         "blockedAttackerIds"
     )

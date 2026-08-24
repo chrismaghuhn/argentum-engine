@@ -5,10 +5,13 @@ import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
+import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CantBeCopiedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.CopyEachTargetSpellEffect
@@ -80,6 +83,7 @@ class CopyEachTargetSpellExecutor(
             var currentState = state
             val allEvents = priorEvents.toMutableList()
             var queue = remainingSpellIds
+            val targetValidator = TargetValidator()
 
             while (queue.isNotEmpty()) {
                 val spellId = queue.first()
@@ -113,10 +117,34 @@ class CopyEachTargetSpellExecutor(
 
                 // Targeted spell — offer new targets for the copy.
                 val legalTargetsMap = mutableMapOf<Int, List<EntityId>>()
+                val sourcePredicateContext = com.wingedsheep.engine.handlers.PredicateContext(
+                    controllerId = controllerId,
+                    sourceId = spellId,
+                    xValue = container.get<SpellOnStackComponent>()?.xValue,
+                )
                 for ((index, requirement) in targetReqs.withIndex()) {
                     legalTargetsMap[index] = targetFinder.findLegalTargets(
-                        currentState, requirement, controllerId, spellId
+                        state = currentState,
+                        requirement = requirement,
+                        controllerId = controllerId,
+                        sourceId = spellId,
+                        pipelineContext = sourcePredicateContext,
+                        requireAuthoritativeContext = true,
                     )
+                }
+
+                val targetReqInfos = targetReqs.mapIndexed { index, requirement ->
+                    targetValidator.pendingTargetRequirementInfo(
+                        state = currentState,
+                        index = index,
+                        requirement = requirement,
+                        context = com.wingedsheep.engine.handlers.EffectContext(
+                            sourceId = spellId,
+                            controllerId = controllerId,
+                            xValue = container.get<SpellOnStackComponent>()?.xValue,
+                        ),
+                        legalTargetCount = legalTargetsMap[index].orEmpty().size,
+                    ).orReturnUnsupported { return it.toExecutionError(currentState) }
                 }
 
                 // 707.10c: no legal replacement — copy inherits the source's (now-illegal)
@@ -155,9 +183,7 @@ class CopyEachTargetSpellExecutor(
                         sourceName = spellName,
                         effectHint = "Copy of $spellName"
                     ),
-                    targetRequirements = targetReqs.mapIndexed { index, req ->
-                        TargetRequirementInfo(index = index, description = req.description)
-                    },
+                    targetRequirements = targetReqInfos,
                     legalTargets = legalTargetsMap
                 )
 

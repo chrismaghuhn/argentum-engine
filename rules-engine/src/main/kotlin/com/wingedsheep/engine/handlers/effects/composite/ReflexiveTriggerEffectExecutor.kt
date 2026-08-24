@@ -180,10 +180,8 @@ class ReflexiveTriggerEffectExecutor(
             // e.g. Dire Blunderbuss must NOT offer the sacrifice when the only artifact is the
             // granting Equipment itself. Minimal context (granterId only) matches the actual
             // selection path in SelectTargetPipelineExecutor, so feasibility and execution agree.
-            pipelineContext = com.wingedsheep.engine.handlers.PredicateContext(
-                controllerId = context.controllerId,
-                granterId = context.granterId
-            )
+            pipelineContext = com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context),
+            requireAuthoritativeContext = true,
         ).isNotEmpty()
         is SacrificeEffect -> {
             // You can only sacrifice permanents you control that match the filter (mirrors

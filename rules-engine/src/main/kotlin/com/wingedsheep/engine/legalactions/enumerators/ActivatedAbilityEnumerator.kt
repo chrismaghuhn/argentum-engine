@@ -945,7 +945,15 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 // player to select; the handler routes the opponent's pick. Satisfiability is
                 // computed relative to the controller (playerId), matching how the handler finds
                 // legal targets for the opponent.
-                if (allTargetReqs.any { it.chooser != com.wingedsheep.sdk.scripting.targets.TargetChooser.Controller }) {
+                val hasNonControllerChooser = allTargetReqs.any {
+                    it.chooser != com.wingedsheep.sdk.scripting.targets.TargetChooser.Controller
+                }
+                val chooserSupport = if (hasNonControllerChooser) {
+                    TargetDomainSupport.UNSUPPORTED(TargetDomainUnsupportedReason.NON_CONTROLLER_CHOOSER)
+                } else {
+                    TargetDomainSupport.SUPPORTED
+                }
+                if (hasNonControllerChooser) {
                     val allReqInfos = context.targetUtils.buildTargetInfos(state, playerId, allTargetReqs, sourceId = entityId)
                     if (!context.targetUtils.allRequirementsSatisfied(allReqInfos)) continue
                 }
@@ -969,6 +977,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             actionType = "ActivateAbility",
                             description = displayDescription,
                             action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
+                            targetRequirements = targetReqInfos.infos,
+                            targetDomainSupport = if (hasNonControllerChooser) chooserSupport else targetReqInfos.support,
                             additionalCostInfo = costInfo,
                             manaCostString = abilityManaCostString
                         ))
@@ -985,6 +995,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             actionType = "ActivateAbility",
                             description = displayDescription,
                             action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget), alternativePayment = equipAlternativePayment),
+                            targetRequirements = targetReqInfos.infos,
+                            targetDomainSupport = if (hasNonControllerChooser) chooserSupport else targetReqInfos.support,
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
                             maxAffordableX = abilityMaxAffordableX,
@@ -1004,6 +1016,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             actionType = "ActivateAbility",
                             description = displayDescription,
                             action = ActivateAbility(playerId, entityId, ability.id, targets = listOf(autoSelectedTarget), alternativePayment = equipAlternativePayment),
+                            targetRequirements = targetReqInfos.infos,
+                            targetDomainSupport = if (hasNonControllerChooser) chooserSupport else targetReqInfos.support,
                             additionalCostInfo = costInfo,
                             hasXCost = abilityHasXCost,
                             maxAffordableX = abilityMaxAffordableX,
@@ -1038,7 +1052,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                             targetCount = firstReqInfo.maxTargets,
                             minTargets = firstReq.effectiveMinCount,
                             targetDescription = firstReq.description,
-                            targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                            targetRequirements = targetReqInfos.infos,
+                            targetDomainSupport = if (hasNonControllerChooser) chooserSupport else targetReqInfos.support,
                             xConstrainsTargetManaValue = targetReqInfos.size == 1 && firstReqInfo.xConstrainsManaValue,
                             xConstrainsTargetManaValueExactly = targetReqInfos.size == 1 && firstReqInfo.xConstrainsManaValueExactly,
                             xConstrainsTargetPower = targetReqInfos.size == 1 && firstReqInfo.xConstrainsPower,
@@ -1064,6 +1079,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         actionType = "ActivateAbility",
                         description = displayDescription,
                         action = ActivateAbility(playerId, entityId, ability.id, alternativePayment = equipAlternativePayment),
+                        targetDomainSupport = chooserSupport,
                         additionalCostInfo = costInfo,
                         hasXCost = abilityHasXCost,
                         maxAffordableX = abilityMaxAffordableX,
@@ -1209,7 +1225,8 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                         targetCount = firstReqInfo.maxTargets,
                         minTargets = firstReq.effectiveMinCount,
                         targetDescription = firstReq.description,
-                        targetRequirements = if (targetReqInfos.size > 1) targetReqInfos else null,
+                        targetRequirements = targetReqInfos.infos,
+                                     targetDomainSupport = targetReqInfos.support,
                         manaCostString = anyPlayerManaCostString
                     ))
                 } else {

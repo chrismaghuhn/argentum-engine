@@ -109,7 +109,7 @@ class StateDigestTest : FunSpec({
         val withDomain = withoutDomain.copy(
             legalActions = withoutDomain.legalActions.map { action ->
                 if (action.actionId != candidate.actionId) action else action.copy(
-                    paymentDomain = PaymentDomainV1(
+                    paymentDomain = PaymentDomainV2(
                         requiredCost = "{1}{B}",
                         costUnits = listOf(
                             PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, 1),
@@ -120,7 +120,7 @@ class StateDigestTest : FunSpec({
                                 allowedColors = setOf(PaymentManaColor.BLACK),
                             ),
                         ),
-                        currentPool = PaymentPoolDomain(),
+                        currentPool = PaymentPoolDomainV2(),
                         sourceActivations = emptyList(),
                     ),
                 )
@@ -140,7 +140,7 @@ class StateDigestTest : FunSpec({
             manaCost = "{B}",
             requiresStructuredAction = true,
         )
-        val domain = PaymentDomainV1(
+        val domain = PaymentDomainV2(
             requiredCost = "{B}",
             costUnits = listOf(
                 PaymentCostUnitDomain(
@@ -150,7 +150,7 @@ class StateDigestTest : FunSpec({
                     allowedColors = setOf(PaymentManaColor.BLACK),
                 ),
             ),
-            currentPool = PaymentPoolDomain(),
+            currentPool = PaymentPoolDomainV2(),
             sourceActivations = listOf(
                 PaymentSourceActivationDomain(
                     sourceId = com.wingedsheep.sdk.model.EntityId("bundle-source"),
@@ -204,7 +204,7 @@ class StateDigestTest : FunSpec({
             manaCost = "{G}",
             requiresStructuredAction = true,
         )
-        val domain = PaymentDomainV1(
+        val domain = PaymentDomainV2(
             requiredCost = "{G}",
             costUnits = listOf(
                 PaymentCostUnitDomain(
@@ -214,12 +214,17 @@ class StateDigestTest : FunSpec({
                     allowedColors = setOf(PaymentManaColor.GREEN),
                 ),
             ),
-            currentPool = PaymentPoolDomain(
+            currentPool = PaymentPoolDomainV2(
                 green = 1,
-                certifiedFloatingMana = CertifiedFloatingManaCandidateV1(
+                certifiedFloatingMana = CertifiedHomogeneousFloatingManaDomainV2(
                     poolColor = PaymentManaColor.GREEN,
-                    sourceId = com.wingedsheep.sdk.model.EntityId("forest-source"),
                     sourceSubtypes = listOf("Forest", "Cave"),
+                    sourceBuckets = listOf(
+                        CertifiedFloatingManaSourceBucketDomainV2(
+                            com.wingedsheep.sdk.model.EntityId("forest-source"),
+                            1,
+                        ),
+                    ),
                 ),
             ),
             sourceActivations = emptyList(),
@@ -240,6 +245,81 @@ class StateDigestTest : FunSpec({
         )
 
         StateDigest.compute(first) shouldBe StateDigest.compute(second)
+
+    }
+
+    test("certified floating source bucket order is not digest-relevant") {
+        val base = observation(environment())
+        val candidate = LegalActionView(
+            actionId = 9004,
+            kind = "CastSpell",
+            description = "Cast bucketed floating spell",
+            affordable = true,
+            manaCost = "{1}",
+            requiresStructuredAction = true,
+        )
+        val domain = PaymentDomainV2(
+            requiredCost = "{1}",
+            costUnits = listOf(PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, 1)),
+            currentPool = PaymentPoolDomainV2(
+                green = 2,
+                certifiedFloatingMana = CertifiedHomogeneousFloatingManaDomainV2(
+                    poolColor = PaymentManaColor.GREEN,
+                    sourceSubtypes = listOf("Forest"),
+                    sourceBuckets = listOf(
+                        CertifiedFloatingManaSourceBucketDomainV2(
+                            com.wingedsheep.sdk.model.EntityId("e108"),
+                            1,
+                        ),
+                        CertifiedFloatingManaSourceBucketDomainV2(
+                            com.wingedsheep.sdk.model.EntityId("e117"),
+                            1,
+                        ),
+                    ),
+                ),
+            ),
+            sourceActivations = emptyList(),
+        )
+        val first = base.copy(legalActions = base.legalActions + candidate.copy(paymentDomain = domain))
+        val second = first.copy(
+            legalActions = first.legalActions.map { action ->
+                if (action.actionId != candidate.actionId) action else action.copy(
+                    paymentDomain = domain.copy(
+                        currentPool = domain.currentPool.copy(
+                            certifiedFloatingMana = domain.currentPool.certifiedFloatingMana!!.copy(
+                                sourceBuckets = domain.currentPool.certifiedFloatingMana!!.sourceBuckets.reversed(),
+                            ),
+                        ),
+                    ),
+                )
+            },
+        )
+
+        StateDigest.compute(first) shouldBe StateDigest.compute(second)
+
+        val changed = first.copy(
+            legalActions = first.legalActions.map { action ->
+                if (action.actionId != candidate.actionId) action else action.copy(
+                    paymentDomain = domain.copy(
+                        currentPool = domain.currentPool.copy(
+                            certifiedFloatingMana = domain.currentPool.certifiedFloatingMana!!.copy(
+                                sourceBuckets = listOf(
+                                    CertifiedFloatingManaSourceBucketDomainV2(
+                                        com.wingedsheep.sdk.model.EntityId("different-source"),
+                                        1,
+                                    ),
+                                    CertifiedFloatingManaSourceBucketDomainV2(
+                                        com.wingedsheep.sdk.model.EntityId("e117"),
+                                        1,
+                                    ),
+                                ),
+                            ),
+                        ),
+                    ),
+                )
+            },
+        )
+        StateDigest.compute(first) shouldNotBe StateDigest.compute(changed)
     }
 
     test("perspective is part of the information-set digest") {

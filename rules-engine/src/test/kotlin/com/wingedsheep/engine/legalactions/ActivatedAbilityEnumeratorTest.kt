@@ -277,6 +277,9 @@ class ActivatedAbilityEnumeratorTest : FunSpec({
             val targets = ability.validTargets.shouldNotBeNull()
             // validTargets is the set of creatures — Visara plus Grizzly Bears.
             targets shouldHaveSize 2
+            ability.targetRequirements shouldHaveSize 1
+            ability.targetRequirements.single().validTargets shouldBe targets
+            ability.targetDomainSupport shouldBe TargetDomainSupport.SUPPORTED
         }
 
         test("tapped Visara — pure Tap cost drops the ability entirely (NOT as unaffordable entry)") {

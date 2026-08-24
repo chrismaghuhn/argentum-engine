@@ -4,6 +4,9 @@ import com.wingedsheep.engine.state.components.battlefield.chosenColor
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.orReturnUnsupported
+import com.wingedsheep.engine.core.toExecutionError
+import com.wingedsheep.engine.core.hasUnresolvedDynamicMaxCount
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DiagnosticSignal
@@ -11,6 +14,7 @@ import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.LoyaltyChangedEvent
 import com.wingedsheep.engine.core.ManaAddedEvent
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PendingTargetRequirementSnapshot
 import com.wingedsheep.engine.core.tap
 import com.wingedsheep.engine.core.TurnManager
 import com.wingedsheep.engine.event.TriggerDetector
@@ -1086,28 +1090,72 @@ class ActivateAbilityHandler(
             }
             val controllerTargetReqsExec = execTargetReqs.filter { it.chooser == TargetChooser.Controller }
             if (controllerTargetReqsExec.any { it.effectiveMinCount > 0 }) {
-                val xForTargets = effectiveXValue ?: 0
+                val pendingTargetContext = EffectContext(
+                    sourceId = action.sourceId,
+                    controllerId = action.playerId,
+                    xValue = effectiveXValue,
+                )
+                val targetSnapshots = targetValidator.snapshotDynamicCountsForPending(
+                    state = state,
+                    requirements = controllerTargetReqsExec,
+                    context = pendingTargetContext,
+                )
                 val finder = com.wingedsheep.engine.handlers.TargetFinder()
                 val pipelineContext = com.wingedsheep.engine.handlers.PredicateContext(
                     controllerId = action.playerId,
                     sourceId = action.sourceId,
-                    xValue = xForTargets
+                    xValue = effectiveXValue,
                 )
                 val legalTargets = mutableMapOf<Int, List<EntityId>>()
-                val requirementInfos = controllerTargetReqsExec.mapIndexed { index, req ->
+                controllerTargetReqsExec.indices.forEach { index ->
+                    val snapshot = targetSnapshots[index]
+                    val effectiveReq = snapshot.requirement
                     val legal = finder.findLegalTargets(
-                        state, req, action.playerId, action.sourceId, pipelineContext = pipelineContext
+                        state,
+                        effectiveReq,
+                        action.playerId,
+                        action.sourceId,
+                        pipelineContext = pipelineContext,
+                        requireAuthoritativeContext = true,
                     )
-                    if (legal.isEmpty() && req.effectiveMinCount > 0) {
+                    if (legal.size < effectiveReq.effectiveMinCount) {
                         return ExecutionResult.error(state, "No legal target for ${cardComponent.name}")
                     }
                     legalTargets[index] = legal
-                    com.wingedsheep.engine.core.TargetRequirementInfo(
-                        index = index,
-                        description = req.description,
-                        minTargets = req.effectiveMinCount,
-                        maxTargets = req.count
-                    )
+                }
+                val selectableIndices = controllerTargetReqsExec.indices.filter { index ->
+                    controllerTargetReqsExec[index].effectiveMinCount > 0 ||
+                        legalTargets[index].orEmpty().isNotEmpty()
+                }
+                val requirementInfos = selectableIndices.map { index ->
+                    val snapshot = targetSnapshots[index]
+                    val effectiveReq = snapshot.requirement
+                    val legal = legalTargets[index].orEmpty()
+                    when (snapshot) {
+                        is PendingTargetRequirementSnapshot.Unsupported ->
+                            com.wingedsheep.engine.core.TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                        is PendingTargetRequirementSnapshot.Resolved ->
+                            com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
+                                index = index,
+                                requirement = effectiveReq,
+                                semanticSource = snapshot.semanticSource,
+                                minTargets = effectiveReq.effectiveMinCount,
+                                maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                                    effectiveReq.unlimited && !effectiveReq.hasUnresolvedDynamicMaxCount()
+                                ) {
+                                    legal.size
+                                } else {
+                                    null
+                                },
+                                resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                                resolvedTotalManaValueAtMost = targetValidator
+                                    .resolveTotalManaValueAtMostForPending(
+                                        state = state,
+                                        requirement = snapshot.semanticSource,
+                                        context = pendingTargetContext,
+                                    ),
+                            )
+                    }.orReturnUnsupported { return it.toExecutionError(state) }
                 }
                 val decisionId = java.util.UUID.randomUUID().toString()
                 val prompt = "Choose ${controllerTargetReqsExec.joinToString(" and ") { it.description }} for ${cardComponent.name}"
@@ -1121,7 +1169,7 @@ class ActivateAbilityHandler(
                         phase = com.wingedsheep.engine.core.DecisionPhase.CASTING
                     ),
                     targetRequirements = requirementInfos,
-                    legalTargets = legalTargets
+                    legalTargets = selectableIndices.associateWith { legalTargets[it].orEmpty() }
                 )
                 val continuation = com.wingedsheep.engine.core.ActivateAbilityControllerTargetContinuation(
                     decisionId = decisionId,
@@ -2261,21 +2309,73 @@ class ActivateAbilityHandler(
         }
 
         val finder = com.wingedsheep.engine.handlers.TargetFinder()
+        val pendingTargetContext = EffectContext(
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            xValue = action.xValue,
+        )
+        val targetSnapshots = targetValidator.snapshotDynamicCountsForPending(
+            state = state,
+            requirements = opponentReqs,
+            context = pendingTargetContext,
+        )
         val legalTargets = mutableMapOf<Int, List<EntityId>>()
-        val requirementInfos = opponentReqs.mapIndexed { index, req ->
-            val legal = finder.findLegalTargets(state, req, action.playerId, action.sourceId)
-            if (legal.isEmpty() && req.effectiveMinCount > 0) {
+        opponentReqs.indices.forEach { index ->
+            val snapshot = targetSnapshots[index]
+            val effectiveReq = snapshot.requirement
+            val legal = finder.findLegalTargets(
+                state = state,
+                requirement = effectiveReq,
+                controllerId = action.playerId,
+                sourceId = action.sourceId,
+                pipelineContext = com.wingedsheep.engine.handlers.PredicateContext(
+                    controllerId = action.playerId,
+                    sourceId = action.sourceId,
+                    xValue = action.xValue,
+                ),
+                requireAuthoritativeContext = true,
+            )
+            if (legal.size < effectiveReq.effectiveMinCount) {
                 // A required target with no legal choice means the ability can't be activated
                 // (the enumerator gates on this; guard the engine-direct path too).
                 return ExecutionResult.error(state, "No legal target for opponent's choice")
             }
             legalTargets[index] = legal
-            com.wingedsheep.engine.core.TargetRequirementInfo(
-                index = index,
-                description = req.description,
-                minTargets = req.effectiveMinCount,
-                maxTargets = req.count
-            )
+        }
+
+        val selectableIndices = opponentReqs.indices.filter { index ->
+            opponentReqs[index].effectiveMinCount > 0 ||
+                legalTargets[index].orEmpty().isNotEmpty()
+        }
+        val requirementInfos = selectableIndices.map { index ->
+            val snapshot = targetSnapshots[index]
+            val effectiveReq = snapshot.requirement
+            val legal = legalTargets[index].orEmpty()
+            when (snapshot) {
+                is PendingTargetRequirementSnapshot.Unsupported ->
+                    com.wingedsheep.engine.core.TargetRequirementInfoResult.Unsupported(snapshot.reason)
+                is PendingTargetRequirementSnapshot.Resolved ->
+                    com.wingedsheep.engine.core.TargetRequirementInfo.fromRequirement(
+                        index = index,
+                        requirement = effectiveReq,
+                        semanticSource = snapshot.semanticSource,
+                        minTargets = effectiveReq.effectiveMinCount,
+                        maxTargets = snapshot.resolvedMaxTargets?.value ?: if (
+                            effectiveReq.unlimited && !effectiveReq.hasUnresolvedDynamicMaxCount()
+                        ) {
+                            legal.size
+                        } else {
+                            null
+                        },
+                        resolvedMaxTargets = snapshot.resolvedMaxTargets,
+                        resolvedTotalManaValueAtMost = targetValidator
+                            .resolveTotalManaValueAtMostForPending(
+                                state = state,
+                                requirement = snapshot.semanticSource,
+                                context = pendingTargetContext,
+                            ),
+                    )
+            }.orReturnUnsupported { return it.toExecutionError(state) }
         }
 
         val decisionId = java.util.UUID.randomUUID().toString()
@@ -2294,7 +2394,7 @@ class ActivateAbilityHandler(
                 phase = com.wingedsheep.engine.core.DecisionPhase.CASTING
             ),
             targetRequirements = requirementInfos,
-            legalTargets = legalTargets
+            legalTargets = selectableIndices.associateWith { legalTargets[it].orEmpty() }
         )
         val continuation = com.wingedsheep.engine.core.ActivateAbilityOpponentTargetContinuation(
             decisionId = decisionId,
