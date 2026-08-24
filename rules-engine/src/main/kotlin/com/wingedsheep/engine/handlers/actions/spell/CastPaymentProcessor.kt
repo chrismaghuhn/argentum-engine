@@ -3,6 +3,7 @@ package com.wingedsheep.engine.handlers.actions.spell
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
@@ -129,6 +130,20 @@ class CastPaymentProcessor(
                 spellContext,
                 xManaRestriction
             )
+            is PaymentStrategy.ExplicitV2 -> action.paymentStrategy.paymentPlan?.let { plan ->
+                explicitPlanV2Pay(
+                    state = state,
+                    playerId = action.playerId,
+                    plan = plan,
+                    cost = effectiveCost,
+                    cardName = cardName,
+                    spellContext = spellContext,
+                )
+            } ?: PaymentResult(
+                state = state,
+                events = emptyList(),
+                error = "PaymentStrategy.ExplicitV2 requires PaymentPlanV2",
+            )
         }
     }
 
@@ -162,12 +177,58 @@ class CastPaymentProcessor(
                 error = (validation as PaymentPlanValidation.Rejected).reason,
             )
 
+        return finishExplicitPlanPayment(
+            state = state,
+            playerId = playerId,
+            accepted = accepted,
+            cardName = cardName,
+            errorLabel = "PaymentPlanV1 source activation failed",
+        )
+    }
+
+    private fun explicitPlanV2Pay(
+        state: GameState,
+        playerId: EntityId,
+        plan: PaymentPlanV2,
+        cost: ManaCost,
+        cardName: String,
+        spellContext: SpellPaymentContext?,
+    ): PaymentResult {
+        val validation = paymentPlanValidator.validateV2(
+            state = state,
+            playerId = playerId,
+            cost = cost,
+            plan = plan,
+            spellContext = spellContext,
+        )
+        val accepted = validation as? PaymentPlanValidation.Accepted
+            ?: return PaymentResult(
+                state = state,
+                events = emptyList(),
+                error = (validation as PaymentPlanValidation.Rejected).reason,
+            )
+        return finishExplicitPlanPayment(
+            state = state,
+            playerId = playerId,
+            accepted = accepted,
+            cardName = cardName,
+            errorLabel = "PaymentPlanV2 source activation failed",
+        )
+    }
+
+    private fun finishExplicitPlanPayment(
+        state: GameState,
+        playerId: EntityId,
+        accepted: PaymentPlanValidation.Accepted,
+        cardName: String,
+        errorLabel: String,
+    ): PaymentResult {
         var currentState = state.updateEntity(playerId) { container ->
-            container.with(fromManaPool(accepted.poolAfterSpend))
+            container.with(fromManaPool(accepted.materialization.poolAfterFloatingSpend))
         }
         val events = mutableListOf<GameEvent>()
 
-        val spentProvenance = accepted.materialization.spentManaProvenance
+        var spentProvenance = accepted.materialization.spentManaProvenance
         if (accepted.materialization.sourcePayments.isNotEmpty()) {
             val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
                 state = currentState,
@@ -175,10 +236,22 @@ class CastPaymentProcessor(
                 controllerId = playerId,
             )
             if (!sideEffectResult.success) {
-                return PaymentResult(currentState, events, "PaymentPlanV1 source activation failed")
+                return PaymentResult(state, events, errorLabel)
             }
             currentState = sideEffectResult.state
             events.addAll(sideEffectResult.events)
+
+            // The selected source abilities have now actually produced mana. Only at this seam do
+            // the solver-carried subtype snapshots become authoritative: consumed outputs
+            // contribute to SpentManaProvenance, while unspent fixed outputs enter the pool as
+            // exact Rules-owned joint buckets. No current CardComponent is consulted here.
+            currentState = currentState.updateEntity(playerId) { container ->
+                container.with(
+                    fromManaPool(
+                        accepted.materialization.poolAfterSuccessfulSourceProduction(playerId)
+                    )
+                )
+            }
         }
 
         val spent = accepted.materialization.manaSpent

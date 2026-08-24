@@ -171,7 +171,7 @@ class EnvControllerTest : FunSpec() {
             val response = get("/schema-hash")
             response.statusCode() shouldBe 200
             val parsed = json.decodeFromString<SchemaHashResponse>(response.body())
-            parsed.schemaHash shouldBe "argentum-gym-contract@v1.17-heterogeneous-floating-payment-domain-v3"
+            parsed.schemaHash shouldBe "argentum-gym-contract@v1.18-joint-floating-payment-domain-v4"
             parsed.schemaHash shouldBe SchemaHash.CURRENT
         }
 
@@ -419,7 +419,7 @@ class EnvControllerTest : FunSpec() {
             }
         }
 
-        test("HTTP round-trips PaymentDomain V3 buckets and PaymentPlan V1 floatingSourceId") {
+        test("HTTP round-trips PaymentDomain V4 buckets and PaymentPlan V1 floatingSourceId") {
             multiEnvService.cardRegistry.register(
                 listOf(httpForestSource, httpZeroForestSource, httpHomogeneousSpell)
             )
@@ -535,23 +535,22 @@ class EnvControllerTest : FunSpec() {
                 val spellAction = findAction(observation) {
                     it.kind == "CastSpell" && it.sourceEntityId == spellCardId
                 }
-                val domain = spellAction.paymentDomain ?: error("Expected the V3 HTTP payment domain")
-                domain.version shouldBe 3
-                val certified = domain.currentPool.certifiedFloatingMana
-                    ?: error("Expected certified homogeneous floating buckets")
-                certified.poolColor shouldBe PaymentManaColor.GREEN
-                certified.sourceSubtypes shouldBe listOf("Forest")
-                certified.sourceBuckets.map { it.sourceId }.toSet() shouldBe setOf(landId, zeroSourceId)
-                certified.sourceBuckets.map { it.amount } shouldBe listOf(1, 1)
+                val domain = spellAction.paymentDomain ?: error("Expected the V4 HTTP payment domain")
+                domain.version shouldBe 4
+                val certified = domain.currentPool.certifiedFloatingBuckets
+                certified.map { it.sourceId }.toSet() shouldBe setOf(landId, zeroSourceId)
+                certified.map { it.poolColor }.toSet() shouldBe setOf(PaymentManaColor.GREEN)
+                certified.map { it.sourceSubtypes }.toSet() shouldBe setOf(listOf("Forest"))
+                certified.map { it.amount } shouldBe listOf(1, 1)
 
                 val observedWire = get("/envs/${envId.value}")
                 observedWire.statusCode() shouldBe 200
-                observedWire.body() shouldContain "\"version\":3"
-                observedWire.body() shouldContain "\"sourceBuckets\""
+                observedWire.body() shouldContain "\"version\":4"
+                observedWire.body() shouldContain "\"certifiedFloatingBuckets\""
                 observedWire.body() shouldContain landId.value
                 observedWire.body() shouldContain zeroSourceId.value
 
-                val selectedSource = certified.sourceBuckets.first().sourceId
+                val selectedSource = certified.first().sourceId
                 val strategy = json.encodeToJsonElement(
                     PaymentStrategy.serializer(),
                     PaymentStrategy.Explicit(

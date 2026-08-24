@@ -155,6 +155,7 @@ object ManaPaymentWindow {
                         sourceId = sourceId,
                         subtypes = p.sourceSubtypes,
                         amount = p.amount,
+                        knownToPlayers = setOf(playerId),
                     )
                 } else if (p.sourceSubtypes != null) {
                     produced.addTracked(
@@ -162,6 +163,7 @@ object ManaPaymentWindow {
                         sourceId = sourceId,
                         subtypes = p.sourceSubtypes,
                         amount = p.colorless,
+                        knownToPlayers = setOf(playerId),
                     )
                 } else if (p.color != null) {
                     produced.add(p.color, p.amount)
@@ -179,6 +181,7 @@ object ManaPaymentWindow {
                         sourceId = source.entityId,
                         subtypes = source.sourceSubtypes,
                         amount = source.bonusManaPerTap,
+                        knownToPlayers = setOf(playerId),
                     )
                 }
             }
@@ -214,6 +217,7 @@ object ManaPaymentWindow {
                         color = PaymentManaColor.fromEngine(resolved.producedColor),
                         sourceId = sourceId,
                         subtypes = subtypes,
+                        knownToPlayers = setOf(playerId),
                     )
                     resolved.producedColor != null -> produced.add(
                         resolved.producedColor,
@@ -222,6 +226,7 @@ object ManaPaymentWindow {
                         color = PaymentManaColor.COLORLESS,
                         sourceId = sourceId,
                         subtypes = subtypes,
+                        knownToPlayers = setOf(playerId),
                     )
                     resolved.option.producesColorless -> produced.addColorless()
                     else -> produced
@@ -294,6 +299,7 @@ object ManaPaymentWindow {
                         sourceId = key.sourceId,
                         subtypes = key.sourceSubtypes,
                         amount = amount,
+                        knownToPlayers = produced.manaProvenanceKnownTo,
                     )
                 }
             } else {

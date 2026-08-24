@@ -4,7 +4,7 @@ package com.wingedsheep.gameserver.replay
 internal object ReplayCheckpointPolicy {
 
     /** v3 has a persistence-only tail checkpoint; older formats retain their historical shape. */
-    fun requiresTailCheckpoint(replayVersion: Int): Boolean = replayVersion == 3
+    fun requiresTailCheckpoint(replayVersion: Int): Boolean = replayVersion == 3 || replayVersion == 4
 
     /**
      * Return a de-duplicated, ordered checkpoint list with the current v3 tail materialized.

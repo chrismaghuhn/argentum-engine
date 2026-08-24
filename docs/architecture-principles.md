@@ -1032,11 +1032,12 @@ each colored unit in general. A narrow Rules-owned classifier can nevertheless c
 homogeneous aggregate when one unrestricted color contains the entire positive pool, positive
 source counters partition that total, every recorded subtype counter equals that total, and no
 restricted mana participates. A complete Rules-owned source×color map may certify the same
-single-color shape without inventing subtype metadata. The public `PaymentDomainV3` publishes the
-common color and any proven subtype set once plus a deterministic `sourceBuckets` partition for
-that homogeneous shape. When multiple unrestricted colors are present, it publishes the
-authoritative `sourceColorBuckets` matrix instead; no source/color association is inferred from
-aggregate counts or source profiles.
+single-color shape without inventing subtype metadata. The historical `PaymentDomainV3` publishes
+the common color and any proven subtype set once plus a deterministic `sourceBuckets` partition for
+that homogeneous shape. Current observations use `PaymentDomainV4`, whose single canonical
+`certifiedFloatingBuckets` list carries the complete production-time source/color/subtype key for
+both homogeneous and heterogeneous pools; no source/color association is inferred from aggregate
+counts or source profiles.
 This preserves the controller's exact bucket choice.
 `ManaSpendReference.floatingSourceId` carries that choice; `sourceId` remains reserved for a newly
 activated source output. `PoolSpend` stays an aggregate checksum, and the validator aggregates and

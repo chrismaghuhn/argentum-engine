@@ -22,6 +22,7 @@ internal fun ManaPoolComponent.toManaPool(): ManaPool = ManaPool(
     manaBySourceAndColor = manaBySourceAndColor,
     manaByFloatingBucket = manaByFloatingBucket,
     manaProvenanceCompleteness = manaProvenanceCompleteness,
+    manaProvenanceKnownTo = manaProvenanceKnownTo,
 )
 
 internal fun fromManaPool(pool: ManaPool): ManaPoolComponent {
@@ -66,5 +67,6 @@ internal fun fromManaPool(pool: ManaPool): ManaPoolComponent {
         manaBySourceAndColor = if (complete) pool.manaBySourceAndColor else emptyMap(),
         manaByFloatingBucket = if (complete) pool.manaByFloatingBucket else emptyMap(),
         manaProvenanceCompleteness = completeness,
+        manaProvenanceKnownTo = if (complete) pool.manaProvenanceKnownTo else emptySet(),
     )
 }

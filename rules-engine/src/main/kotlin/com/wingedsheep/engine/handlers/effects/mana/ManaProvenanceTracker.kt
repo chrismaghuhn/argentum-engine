@@ -51,7 +51,16 @@ object ManaProvenanceTracker {
                 if (color == PaymentManaColor.COLORLESS) pool.addColorless(amount)
                 else pool.add(color.asEngineColor()!!, amount)
             } else {
-                pool.addTracked(color, sourceId, subtypes, amount)
+                pool.addTracked(
+                    color = color,
+                    sourceId = sourceId,
+                    subtypes = subtypes,
+                    amount = amount,
+                    // This is stamped at the actual production transition, while the producing
+                    // player is authoritative for the snapshot. Publication later must use this
+                    // stored known-information fact, never current CardComponent visibility.
+                    knownToPlayers = setOf(playerId),
+                )
             }
             container.with(updated)
         }
@@ -61,10 +70,12 @@ object ManaProvenanceTracker {
     @Deprecated("Pass the concrete produced color to preserve source/color provenance")
     fun tagAddedMana(state: GameState, playerId: EntityId, sourceId: EntityId?, amount: Int): GameState {
         if (amount <= 0 || sourceId == null) return state
-        val subtypes = state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.subtypes?.toSet() ?: emptySet()
         return state.updateEntity(playerId) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
-            container.with(pool.withProvenance(sourceId, subtypes, amount))
+            // This compatibility API is called after the concrete production seam has already
+            // lost its snapshot. Do not reconstruct subtype provenance from the current source;
+            // preserve only the legacy source aggregate and remain fail-closed for joint payment.
+            container.with(pool.withProvenance(sourceId, emptySet(), amount))
         }
     }
 }

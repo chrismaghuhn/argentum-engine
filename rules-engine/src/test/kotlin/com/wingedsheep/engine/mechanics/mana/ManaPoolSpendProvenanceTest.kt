@@ -26,14 +26,14 @@ class ManaPoolSpendProvenanceTest : FunSpec({
 
         spent.bySubtype shouldBe mapOf(Subtype.FOREST to 1)
         spent.sourceIds shouldBe setOf(e1)
-        remaining.manaByFloatingBucket shouldBe mapOf(emptyKey to 1, caveKey to 1)
-        remaining.manaBySource shouldBe mapOf(e1 to 1, e2 to 1)
+        remaining.manaByFloatingBucket shouldBe mapOf(forestKey to 1, emptyKey to 1, caveKey to 1)
+        remaining.manaBySource shouldBe mapOf(e1 to 2, e2 to 1)
         remaining.manaBySourceAndColor shouldBe mapOf(
-            e1 to mapOf(PaymentManaColor.GREEN to 1),
+            e1 to mapOf(PaymentManaColor.GREEN to 2),
             e2 to mapOf(PaymentManaColor.BLACK to 1),
         )
-        remaining.manaBySubtype shouldBe mapOf(Subtype.CAVE to 1)
-        remaining.green shouldBe 1
+        remaining.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1, Subtype.CAVE to 1)
+        remaining.green shouldBe 2
         remaining.black shouldBe 1
     }
 

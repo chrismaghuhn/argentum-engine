@@ -42,10 +42,11 @@ class ManaProvenanceSerializationRoundTripTest : FunSpec({
                 FloatingManaBucketKeyV1(greenSource, PaymentManaColor.GREEN, setOf(Subtype.FOREST)) to 3,
             ),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            manaProvenanceKnownTo = setOf(EntityId("player")),
         )
     }
 
-    test("authoritative source-color provenance survives component and transient-pool seams") {
+    test("authoritative joint provenance survives component and transient-pool seams") {
         val component = pool()
         val encoded = json.encodeToString(ManaPoolComponent.serializer(), component)
         val decoded = json.decodeFromString(ManaPoolComponent.serializer(), encoded)
@@ -54,7 +55,7 @@ class ManaProvenanceSerializationRoundTripTest : FunSpec({
         fromManaPool(component.toManaPool()) shouldBe component
     }
 
-    test("a serialized GameState checkpoint and immutable fork retain source-color provenance") {
+    test("a serialized GameState checkpoint and immutable fork retain joint provenance") {
         val playerId = EntityId("player")
         val state = GameState().withEntity(playerId, ComponentContainer.of(pool()))
         val fork = state.copy()

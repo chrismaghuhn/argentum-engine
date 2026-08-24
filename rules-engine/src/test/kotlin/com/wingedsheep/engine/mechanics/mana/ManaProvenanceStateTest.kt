@@ -164,6 +164,23 @@ class ManaProvenanceStateTest : FunSpec({
         after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.UNKNOWN
     }
 
+    test("transient legacy color spend clears joint disclosure metadata when detail is lost") {
+        val playerId = EntityId("player")
+        val after = ManaPool()
+            .addTracked(
+                color = PaymentManaColor.GREEN,
+                sourceId = EntityId("transient-source"),
+                subtypes = setOf(Subtype.FOREST),
+                knownToPlayers = setOf(playerId),
+                amount = 2,
+            )
+            .spend(Color.GREEN, 1)!!
+
+        after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.INCOMPLETE
+        after.manaByFloatingBucket shouldBe emptyMap()
+        after.manaProvenanceKnownTo shouldBe emptySet()
+    }
+
     test("aggregate spend does not turn unknown provenance into a false loss marker") {
         val after = ManaPoolComponent(black = 1, colorless = 1)
             .spend(Color.BLACK)!!

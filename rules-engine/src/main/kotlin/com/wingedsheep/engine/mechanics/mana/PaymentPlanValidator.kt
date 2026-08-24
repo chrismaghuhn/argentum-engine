@@ -1,12 +1,12 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
@@ -22,6 +22,8 @@ internal data class ExactPaymentSourceMaterialization(
     val ability: ActivatedAbility?,
     val outputs: List<PaymentManaColor>,
     val consumedOutputIndexes: Set<Int>,
+    /** Snapshot captured before the source activation; applied only after production succeeds. */
+    val sourceSubtypes: Set<Subtype>,
 )
 
 /**
@@ -30,11 +32,35 @@ internal data class ExactPaymentSourceMaterialization(
  * selected source ability in order to execute non-mana side effects exactly once.
  */
 internal data class ExactPaymentMaterialization(
+    /** Floating pool after the submitted pool buckets have been consumed, before source production. */
+    val poolAfterFloatingSpend: ManaPool,
+    /** Validation preview including every selected source output not consumed by the plan. */
     val poolAfterSpend: ManaPool,
     val sourcePayments: List<ExactPaymentSourceMaterialization>,
     val manaSpent: ManaPool,
     val spentManaProvenance: SpentManaProvenance,
 ) {
+    /**
+     * Materialize the pool only after the selected source side effects have succeeded. Solver
+     * snapshots are carried into this method, but never become authoritative before that seam.
+     */
+    fun poolAfterSuccessfulSourceProduction(playerId: EntityId): ManaPool {
+        var pool = poolAfterFloatingSpend
+        for (payment in sourcePayments) {
+            for ((index, color) in payment.outputs.withIndex()) {
+                if (index !in payment.consumedOutputIndexes) {
+                    pool = pool.addTracked(
+                        color = color,
+                        sourceId = payment.source.entityId,
+                        subtypes = payment.sourceSubtypes,
+                        knownToPlayers = setOf(playerId),
+                    )
+                }
+            }
+        }
+        return pool
+    }
+
     fun asManaSolution(): ManaSolution {
         val ordered = sourcePayments.sortedBy { it.source.entityId.value }
         return ManaSolution(
@@ -127,6 +153,35 @@ private fun ManaSource.ordinaryTapManaAbilitiesOnly(): Boolean {
     }
 }
 
+private data class NormalizedPaymentPlan(
+    val sourceActivations: List<SourceActivation>,
+    val poolSpend: PoolSpend,
+    val spendAllocation: NormalizedSpendAllocation,
+    val contractName: String,
+)
+
+private data class NormalizedSpendAllocation(
+    val costUnits: List<NormalizedCostUnitAllocation>,
+    val x: List<NormalizedSpend>,
+    val restricted: List<NormalizedSpend>,
+    val riderBearingSourceIds: List<EntityId>,
+)
+
+private data class NormalizedCostUnitAllocation(
+    val symbolIndex: Int,
+    val spends: List<NormalizedSpend>,
+)
+
+private data class NormalizedSpend(
+    val sourceId: EntityId?,
+    val poolColor: PaymentManaColor?,
+    val amount: Int,
+    val restrictedBucketKey: String?,
+    val sourceOutputIndex: Int?,
+    val floatingSourceId: EntityId?,
+    val floatingBucketKey: FloatingManaBucketKeyV1? = null,
+)
+
 /**
  * Validates and materializes the exact choices in [PaymentPlanV1]. It intentionally does not call
  * [ManaSolver.solve]: that would reintroduce the hidden production-color, source, or generic-spend
@@ -140,6 +195,44 @@ class PaymentPlanValidator(
         playerId: EntityId,
         cost: ManaCost,
         plan: PaymentPlanV1,
+        spellContext: SpellPaymentContext? = null,
+        excludeSources: Set<EntityId> = emptySet(),
+    ): PaymentPlanValidation = validateInternal(
+        state = state,
+        playerId = playerId,
+        cost = cost,
+        plan = plan.toInternal(),
+        spellContext = spellContext,
+        excludeSources = excludeSources,
+    )
+
+    fun validateV2(
+        state: GameState,
+        playerId: EntityId,
+        cost: ManaCost,
+        plan: com.wingedsheep.engine.core.PaymentPlanV2,
+        spellContext: SpellPaymentContext? = null,
+        excludeSources: Set<EntityId> = emptySet(),
+    ): PaymentPlanValidation {
+        val (normalized, error) = plan.toInternal()
+        if (normalized == null) {
+            return PaymentPlanValidation.Rejected(error ?: "PaymentPlanV2 contains an invalid floating bucket reference")
+        }
+        return validateInternal(
+            state = state,
+            playerId = playerId,
+            cost = cost,
+            plan = normalized,
+            spellContext = spellContext,
+            excludeSources = excludeSources,
+        )
+    }
+
+    private fun validateInternal(
+        state: GameState,
+        playerId: EntityId,
+        cost: ManaCost,
+        plan: NormalizedPaymentPlan,
         spellContext: SpellPaymentContext? = null,
         excludeSources: Set<EntityId> = emptySet(),
     ): PaymentPlanValidation {
@@ -173,6 +266,8 @@ class PaymentPlanValidator(
             FloatingManaProvenanceClassification.CertifiedHomogeneous)?.candidate
         val certifiedHeterogeneousMana = (provenanceClassification as?
             FloatingManaProvenanceClassification.CertifiedHeterogeneous)?.candidate
+        val certifiedJointMana = (provenanceClassification as?
+            FloatingManaProvenanceClassification.CertifiedJoint)?.candidate
         val currentPool = poolComponent.toManaPool()
 
         val availableSources = manaSolver.findAvailableManaSources(state, playerId, spellContext)
@@ -277,6 +372,7 @@ class PaymentPlanValidator(
         val poolAmounts = mutableMapOf<PaymentManaColor, Int>()
         val floatingSourceAmounts = mutableMapOf<EntityId, Int>()
         val floatingSourceColorAmounts = mutableMapOf<FloatingManaSourceColorKey, Int>()
+        val floatingJointAmounts = mutableMapOf<FloatingManaBucketKeyV1, Int>()
         val sourceAmounts = mutableMapOf<EntityId, Int>()
         val sourceOutputAmounts = mutableMapOf<EntityId, MutableMap<Int, Int>>()
         for ((index, symbol) in cost.symbols.withIndex()) {
@@ -356,6 +452,37 @@ class PaymentPlanValidator(
                         )
                         floatingSourceColorAmounts[sourceColorKey] =
                             (floatingSourceColorAmounts[sourceColorKey] ?: 0) + spend.amount
+                        if (spend.floatingBucketKey != null) {
+                            if (certifiedJointMana == null ||
+                                certifiedJointMana.buckets.none { it.key == spend.floatingBucketKey }
+                            ) {
+                                return PaymentPlanValidation.Rejected(
+                                    "PaymentPlanV2 floating bucket key is not currently certified"
+                                )
+                            }
+                            val key = spend.floatingBucketKey
+                            floatingJointAmounts[key] =
+                                (floatingJointAmounts[key] ?: 0) + spend.amount
+                        } else if (certifiedJointMana != null) {
+                            val matchingBuckets = certifiedJointMana.buckets
+                                .map { it.key }
+                                .filter { key ->
+                                    key.sourceId == spend.floatingSourceId &&
+                                        key.poolColor == spend.poolColor
+                                }
+                            if (matchingBuckets.size != 1) {
+                                return PaymentPlanValidation.Rejected(
+                                    if (plan.contractName == "PaymentPlanV2") {
+                                        "PaymentPlanV2 floating bucket key is not currently certified"
+                                    } else {
+                                        "PaymentPlanV1 floating source reference does not uniquely identify a joint bucket"
+                                    },
+                                )
+                            }
+                            val key = matchingBuckets.single()
+                            floatingJointAmounts[key] =
+                                (floatingJointAmounts[key] ?: 0) + spend.amount
+                        }
                         poolAmounts[spend.poolColor] = (poolAmounts[spend.poolColor] ?: 0) + spend.amount
                         spend.poolColor
                     }
@@ -406,7 +533,8 @@ class PaymentPlanValidator(
 
         if (floatingSourceAmounts.isNotEmpty() &&
             certifiedFloatingMana == null &&
-            certifiedHeterogeneousMana == null
+            certifiedHeterogeneousMana == null &&
+            certifiedJointMana == null
         ) {
             return PaymentPlanValidation.Rejected(
                 "PaymentPlanV1 floatingSourceId requires certified floating provenance"
@@ -414,6 +542,51 @@ class PaymentPlanValidator(
         }
 
         val certifiedPoolPayment = when {
+            certifiedJointMana != null && plan.poolSpend.total() > 0 -> {
+                for (color in PaymentManaColor.entries) {
+                    val requested = plan.poolSpend.amount(color)
+                    if (requested == 0) continue
+                    val explicitlySelected = floatingJointAmounts.entries
+                        .filter { it.key.poolColor == color }
+                        .sumOf { it.value }
+                    val unassigned = requested - explicitlySelected
+                    if (unassigned < 0) {
+                        return PaymentPlanValidation.Rejected(
+                            "PaymentPlanV1 spends more floating mana than is available"
+                        )
+                    }
+                    if (unassigned > 0) {
+                        // A source-less legacy pool spend remains representable only when the
+                        // requested color has exactly one joint bucket. This is a uniqueness
+                        // proof, not an iteration-order choice; multiple subtype snapshots for
+                        // the same color require an explicit V2 bucket key.
+                        val matchingBuckets = certifiedJointMana.buckets
+                            .map { it.key }
+                            .filter { it.poolColor == color }
+                        if (matchingBuckets.size != 1) {
+                            return PaymentPlanValidation.Rejected(
+                                "PaymentPlanV1 joint pool spend must identify every requested color"
+                            )
+                        }
+                        val key = matchingBuckets.single()
+                        val available = certifiedJointMana.buckets
+                            .single { it.key == key }
+                            .amount
+                        val alreadySelected = floatingJointAmounts[key] ?: 0
+                        if (alreadySelected + unassigned > available) {
+                            return PaymentPlanValidation.Rejected(
+                                "PaymentPlanV1 spends more floating mana than is available"
+                            )
+                        }
+                        floatingJointAmounts[key] = alreadySelected + unassigned
+                    }
+                }
+                currentPool.consumeCertifiedJoint(floatingJointAmounts)
+                    ?: return PaymentPlanValidation.Rejected(
+                        "PaymentPlanV1 spends more floating mana than is available"
+                    )
+            }
+
             certifiedHeterogeneousMana != null && plan.poolSpend.total() > 0 -> {
                 for (color in PaymentManaColor.entries) {
                     val requested = plan.poolSpend.amount(color)
@@ -487,20 +660,21 @@ class PaymentPlanValidator(
             spentSourceIds += provenance.sourceIds
         }
 
-        // Materialize every unspent fixed output into the pool with the same source/subtype
-        // provenance that the normal mana effect executors record. No output is silently dropped.
+        val poolAfterFloatingSpend = poolAfterSpend
+
+        // Carry every fixed output through the validation preview using the production-time
+        // snapshot already captured on the resolved source. This preview is not written to state:
+        // actual source provenance is created only after the selected mana ability side effect
+        // succeeds (see ExactPaymentMaterialization.poolAfterSuccessfulSourceProduction).
         val sourcePayments = resolved.values.map { activation ->
             val consumedIndexes = sourceOutputAmounts[activation.source.entityId]
                 .orEmpty()
                 .filterValues { it > 0 }
                 .keys
-            val subtypes = state.getEntity(activation.source.entityId)
-                ?.get<CardComponent>()
-                ?.typeLine?.subtypes
-                .orEmpty()
+            val subtypes = activation.source.sourceSubtypes
             for ((index, color) in activation.outputs.withIndex()) {
                 if (index in consumedIndexes) {
-                    spentSourceIds.add(activation.source.entityId)
+                    spentSourceIds += activation.source.entityId
                     for (subtype in subtypes) {
                         spentSubtypes[subtype] = (spentSubtypes[subtype] ?: 0) + 1
                     }
@@ -512,12 +686,6 @@ class PaymentPlanValidator(
                         PaymentManaColor.GREEN -> greenSpent++
                         PaymentManaColor.COLORLESS -> colorlessSpent++
                     }
-                } else {
-                    poolAfterSpend = poolAfterSpend.addSourceMana(
-                        color = color,
-                        sourceId = activation.source.entityId,
-                        subtypes = subtypes,
-                    )
                 }
             }
             ExactPaymentSourceMaterialization(
@@ -525,11 +693,26 @@ class PaymentPlanValidator(
                 ability = activation.ability,
                 outputs = activation.outputs,
                 consumedOutputIndexes = consumedIndexes,
+                sourceSubtypes = subtypes,
             )
         }
 
+        var poolAfterPreview = poolAfterFloatingSpend
+        for (payment in sourcePayments) {
+            for ((index, color) in payment.outputs.withIndex()) {
+                if (index !in payment.consumedOutputIndexes) {
+                    poolAfterPreview = poolAfterPreview.addTracked(
+                        color = color,
+                        sourceId = payment.source.entityId,
+                        subtypes = payment.sourceSubtypes,
+                    )
+                }
+            }
+        }
+
         val materialization = ExactPaymentMaterialization(
-            poolAfterSpend = poolAfterSpend,
+            poolAfterSpend = poolAfterPreview,
+            poolAfterFloatingSpend = poolAfterFloatingSpend,
             sourcePayments = sourcePayments.sortedBy { it.source.entityId.value },
             manaSpent = ManaPool(
                 white = whiteSpent,
@@ -559,6 +742,108 @@ class PaymentPlanValidator(
     )
 }
 
+private fun PaymentPlanV1.toInternal(): NormalizedPaymentPlan = NormalizedPaymentPlan(
+    sourceActivations = sourceActivations,
+    poolSpend = poolSpend,
+    spendAllocation = NormalizedSpendAllocation(
+        costUnits = spendAllocation.costUnits.map { allocation ->
+            NormalizedCostUnitAllocation(
+                symbolIndex = allocation.symbolIndex,
+                spends = allocation.spends.map { it.toInternal() },
+            )
+        },
+        x = spendAllocation.x.map { it.toInternal() },
+        restricted = spendAllocation.restricted.map { it.toInternal() },
+        riderBearingSourceIds = spendAllocation.riderBearingSourceIds,
+    ),
+    contractName = "PaymentPlanV1",
+)
+
+private fun com.wingedsheep.engine.core.ManaSpendReference.toInternal(): NormalizedSpend =
+    NormalizedSpend(
+        sourceId = sourceId,
+        poolColor = poolColor,
+        amount = amount,
+        restrictedBucketKey = restrictedBucketKey,
+        sourceOutputIndex = sourceOutputIndex,
+        floatingSourceId = floatingSourceId,
+    )
+
+private fun com.wingedsheep.engine.core.PaymentPlanV2.toInternal(): Pair<NormalizedPaymentPlan?, String?> {
+    fun normalize(reference: com.wingedsheep.engine.core.ManaSpendReferenceV2): Pair<NormalizedSpend?, String?> {
+        if (reference.floatingSourceId == null && reference.floatingSourceSubtypes != null) {
+            return null to "PaymentPlanV2 subtype snapshot is only valid for floating mana"
+        }
+        if (reference.floatingSourceId == null) {
+            return NormalizedSpend(
+                sourceId = reference.sourceId,
+                poolColor = reference.poolColor,
+                amount = reference.amount,
+                restrictedBucketKey = reference.restrictedBucketKey,
+                sourceOutputIndex = reference.sourceOutputIndex,
+                floatingSourceId = null,
+            ) to null
+        }
+        val color = reference.poolColor
+            ?: return null to "PaymentPlanV2 floating bucket reference requires poolColor"
+        val subtypeNames = reference.floatingSourceSubtypes
+            ?: return null to "PaymentPlanV2 floating bucket reference requires floatingSourceSubtypes"
+        if (subtypeNames.size != subtypeNames.toSet().size ||
+            subtypeNames != subtypeNames.sorted()
+        ) {
+            return null to "PaymentPlanV2 floating subtype snapshot must be canonical"
+        }
+        return NormalizedSpend(
+            sourceId = reference.sourceId,
+            poolColor = color,
+            amount = reference.amount,
+            restrictedBucketKey = reference.restrictedBucketKey,
+            sourceOutputIndex = reference.sourceOutputIndex,
+            floatingSourceId = reference.floatingSourceId,
+            floatingBucketKey = FloatingManaBucketKeyV1(
+                sourceId = reference.floatingSourceId,
+                poolColor = color,
+                sourceSubtypes = subtypeNames.map { value -> Subtype(value) }.toSet(),
+            ),
+        ) to null
+    }
+
+    fun normalizeList(
+        references: List<com.wingedsheep.engine.core.ManaSpendReferenceV2>,
+    ): Pair<List<NormalizedSpend>?, String?> {
+        val normalized = mutableListOf<NormalizedSpend>()
+        for (reference in references) {
+            val (spend, error) = normalize(reference)
+            if (spend == null) return null to error
+            normalized += spend
+        }
+        return normalized to null
+    }
+
+    val costUnits = mutableListOf<NormalizedCostUnitAllocation>()
+    for (allocation in spendAllocation.costUnits) {
+        val (spends, error) = normalizeList(allocation.spends)
+        if (spends == null) return null to error
+        costUnits += NormalizedCostUnitAllocation(allocation.symbolIndex, spends)
+    }
+    val (x, xError) = normalizeList(spendAllocation.x)
+    if (x == null) return null to xError
+    val (restricted, restrictedError) = normalizeList(spendAllocation.restricted)
+    if (restricted == null) return null to restrictedError
+
+    return NormalizedPaymentPlan(
+        sourceActivations = sourceActivations,
+        poolSpend = poolSpend,
+        spendAllocation = NormalizedSpendAllocation(
+            costUnits = costUnits,
+            x = x,
+            restricted = restricted,
+            riderBearingSourceIds = spendAllocation.riderBearingSourceIds,
+        ),
+        contractName = "PaymentPlanV2",
+    ) to null
+}
+
 private fun validateCanonicalProductionChoice(choice: ProductionChoice): String? {
     if (choice.amount != 1 || choice.bonusChoice != null) {
         return "PaymentPlanV1 supports one ordinary mana per source activation"
@@ -577,19 +862,6 @@ private fun validateCanonicalProductionChoice(choice: ProductionChoice): String?
         return "producedColor must equal fixedOutputs[0].color"
     }
     return null
-}
-
-private fun ManaPool.addSourceMana(
-    color: PaymentManaColor,
-    sourceId: EntityId,
-    subtypes: Set<Subtype>,
-): ManaPool {
-    return addTracked(
-        color = color,
-        sourceId = sourceId,
-        subtypes = subtypes,
-        amount = 1,
-    )
 }
 
 private fun PoolSpend.hasNegativeAmount(): Boolean =

@@ -54,6 +54,8 @@ data class ManaPoolComponent(
     val manaByFloatingBucket: Map<FloatingManaBucketKeyV1, Int> = emptyMap(),
     /** Distinguishes a fully known empty/detail-free state from lost legacy provenance. */
     val manaProvenanceCompleteness: ManaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+    /** Players for whom every current joint subtype snapshot is authoritatively known. */
+    val manaProvenanceKnownTo: Set<EntityId> = emptySet(),
 ) : Component {
     /**
      * Add mana of a specific color.
@@ -77,6 +79,7 @@ data class ManaPoolComponent(
         sourceId: EntityId,
         subtypes: Set<com.wingedsheep.sdk.core.Subtype>,
         amount: Int = 1,
+        knownToPlayers: Set<EntityId>? = null,
     ): ManaPoolComponent {
         if (amount <= 0) return this
         val beforeUnrestricted = unrestrictedTotal
@@ -87,6 +90,7 @@ data class ManaPoolComponent(
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             this
@@ -112,6 +116,7 @@ data class ManaPoolComponent(
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
 
@@ -126,6 +131,13 @@ data class ManaPoolComponent(
             manaBySourceAndColor = withColor.manaBySourceAndColor + (sourceId to sourceBuckets.toMap()),
             manaByFloatingBucket = floatingBuckets.toMap(),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            manaProvenanceKnownTo = if (beforeUnrestricted == 0) {
+                knownToPlayers.orEmpty()
+            } else if (knownToPlayers == null) {
+                emptySet()
+            } else {
+                manaProvenanceKnownTo.intersect(knownToPlayers)
+            },
         )
     }
 
@@ -139,6 +151,7 @@ data class ManaPoolComponent(
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         } else {
             this
@@ -152,6 +165,7 @@ data class ManaPoolComponent(
             } else {
                 ManaProvenanceCompleteness.INCOMPLETE
             },
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -231,6 +245,7 @@ data class ManaPoolComponent(
             } else {
                 ManaProvenanceCompleteness.UNKNOWN
             },
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 
@@ -249,6 +264,7 @@ data class ManaPoolComponent(
                 manaBySourceAndColor = emptyMap(),
                 manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                manaProvenanceKnownTo = emptySet(),
             )
         }
 
@@ -267,6 +283,7 @@ data class ManaPoolComponent(
             manaBySourceAndColor = emptyMap(),
             manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = nextCompleteness,
+            manaProvenanceKnownTo = emptySet(),
         )
     }
 

@@ -168,3 +168,40 @@ data class PaymentPlanV1(
     val poolSpend: PoolSpend = PoolSpend(),
     val spendAllocation: SpendAllocation = SpendAllocation(),
 )
+
+/** A versioned spend reference that names the complete Rules-issued floating bucket key. */
+@Serializable
+data class ManaSpendReferenceV2(
+    val sourceId: EntityId? = null,
+    val poolColor: PaymentManaColor? = null,
+    val amount: Int = 1,
+    val restrictedBucketKey: String? = null,
+    val sourceOutputIndex: Int? = null,
+    val floatingSourceId: EntityId? = null,
+    /** Canonical subtype-name echo of the published [FloatingManaBucketKeyV1]. */
+    val floatingSourceSubtypes: List<String>? = null,
+)
+
+/** One cost-symbol allocation in the versioned exact payment carrier. */
+@Serializable
+data class CostUnitAllocationV2(
+    val symbolIndex: Int,
+    val spends: List<ManaSpendReferenceV2>,
+)
+
+/** Versioned exact allocation, retaining the V1 shape without changing its wire meaning. */
+@Serializable
+data class SpendAllocationV2(
+    val costUnits: List<CostUnitAllocationV2> = emptyList(),
+    val x: List<ManaSpendReferenceV2> = emptyList(),
+    val restricted: List<ManaSpendReferenceV2> = emptyList(),
+    val riderBearingSourceIds: List<EntityId> = emptyList(),
+)
+
+/** Complete externally selected payment whose floating references include the joint bucket key. */
+@Serializable
+data class PaymentPlanV2(
+    val sourceActivations: List<SourceActivation> = emptyList(),
+    val poolSpend: PoolSpend = PoolSpend(),
+    val spendAllocation: SpendAllocationV2 = SpendAllocationV2(),
+)

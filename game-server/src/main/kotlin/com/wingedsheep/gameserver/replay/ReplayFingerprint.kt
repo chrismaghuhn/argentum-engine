@@ -20,19 +20,20 @@ import java.security.MessageDigest
  * [ReplayFidelity] instead of pretending nothing happened.
  *
  * Version 1 and 2 use the historical short digest below. Version 3 uses the historical complete
- * transition-semantic canonicalizer. Action-level target-domain metadata is an additive Gym
- * observation contract and is deliberately excluded from this replay fingerprint, so CompactReplay
- * v3 checkpoints and payload semantics remain unchanged.
+ * transition-semantic canonicalizer and deliberately excludes fields introduced by the joint
+ * floating-provenance change. Version 4 binds the authoritative joint provenance, so a replay
+ * carrying [com.wingedsheep.engine.core.PaymentStrategy.ExplicitV2] cannot be mislabeled as v3.
  */
 object ReplayFingerprint {
 
-    /** Current recorder/replay fingerprint: the v3 complete transition-semantic digest. */
-    fun of(state: GameState): String = v3(state)
+    /** Current recorder/replay fingerprint: the v4 complete transition-semantic digest. */
+    fun of(state: GameState): String = v4(state)
 
     /** Select the fingerprint semantics recorded by a specific CompactReplay version. */
     fun of(state: GameState, replayVersion: Int): String = when (replayVersion) {
         1, 2 -> legacy(state)
         3 -> v3(state)
+        4 -> v4(state)
         else -> throw UnsupportedReplayVersionException(replayVersion, CompactReplay.CURRENT_VERSION)
     }
 
@@ -69,8 +70,17 @@ object ReplayFingerprint {
 
     /** The historical v3 complete canonical state digest. */
     internal fun v3(state: GameState): String {
-        val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(state)
+        val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(
+            state,
+            includeJointFloatingProvenance = false,
+        )
         return fullDigest("argentum-engine/replay-fingerprint/v3\n$canonical")
+    }
+
+    /** The v4 digest includes the Rules-owned source/color/subtype bucket map and disclosure set. */
+    internal fun v4(state: GameState): String {
+        val canonical = TransitionSemanticGameStateCanonicalizer.canonicalJson(state)
+        return fullDigest("argentum-engine/replay-fingerprint/v4\n$canonical")
     }
 
     private fun digest(value: String): String {

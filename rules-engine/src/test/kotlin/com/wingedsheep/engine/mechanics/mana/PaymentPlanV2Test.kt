@@ -70,6 +70,119 @@ class PaymentPlanV2Test : FunSpec({
         validation.poolAfterSpend.manaByFloatingBucket shouldBe mapOf(emptyKey to 1, caveKey to 1)
     }
 
+    test("V2 allocates mixed subtype and known-empty buckets exactly") {
+        val (driver, player) = game()
+        val e1 = EntityId("e1")
+        val e2 = EntityId("e2")
+        val forestKey = FloatingManaBucketKeyV1(e1, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
+        val emptyKey = FloatingManaBucketKeyV1(e1, PaymentManaColor.GREEN, emptySet())
+        val caveKey = FloatingManaBucketKeyV1(e2, PaymentManaColor.BLACK, setOf(Subtype.CAVE))
+        val pool = ManaPoolComponent()
+            .addTracked(PaymentManaColor.GREEN, e1, setOf(Subtype.FOREST))
+            .addTracked(PaymentManaColor.GREEN, e1, emptySet())
+            .addTracked(PaymentManaColor.BLACK, e2, setOf(Subtype.CAVE))
+        driver.addComponent(player, pool)
+
+        val plan = PaymentPlanV2(
+            poolSpend = PoolSpend(green = 2, black = 1),
+            spendAllocation = SpendAllocationV2(
+                costUnits = listOf(
+                    CostUnitAllocationV2(
+                        0,
+                        listOf(
+                            ManaSpendReferenceV2(
+                                floatingSourceId = e1,
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceSubtypes = listOf(Subtype.FOREST.value),
+                            ),
+                        ),
+                    ),
+                    CostUnitAllocationV2(
+                        1,
+                        listOf(
+                            ManaSpendReferenceV2(
+                                floatingSourceId = e2,
+                                poolColor = PaymentManaColor.BLACK,
+                                floatingSourceSubtypes = listOf(Subtype.CAVE.value),
+                            ),
+                        ),
+                    ),
+                    CostUnitAllocationV2(
+                        2,
+                        listOf(
+                            ManaSpendReferenceV2(
+                                floatingSourceId = e1,
+                                poolColor = PaymentManaColor.GREEN,
+                                floatingSourceSubtypes = emptyList(),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val validation = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}{B}{1}"),
+            plan = plan,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Accepted>()
+
+        validation.materialization.spentManaProvenance.bySubtype shouldBe
+            mapOf(Subtype.FOREST to 1, Subtype.CAVE to 1)
+        validation.materialization.spentManaProvenance.sourceIds shouldBe setOf(e1, e2)
+        validation.poolAfterSpend.manaByFloatingBucket shouldBe emptyMap()
+        validation.poolAfterSpend.green shouldBe 0
+        validation.poolAfterSpend.black shouldBe 0
+    }
+
+    test("V2 rejects an exact-key overspend without changing the pool") {
+        val (driver, player) = game()
+        val e1 = EntityId("e1")
+        val key = FloatingManaBucketKeyV1(e1, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
+        driver.addComponent(
+            player,
+            ManaPoolComponent().addTracked(PaymentManaColor.GREEN, e1, setOf(Subtype.FOREST)),
+        )
+
+        val result = PaymentPlanValidator(ManaSolver(driver.cardRegistry)).validateV2(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}{G}"),
+            plan = PaymentPlanV2(
+                poolSpend = PoolSpend(green = 2),
+                spendAllocation = SpendAllocationV2(
+                    costUnits = listOf(
+                        CostUnitAllocationV2(
+                            0,
+                            listOf(
+                                ManaSpendReferenceV2(
+                                    floatingSourceId = e1,
+                                    poolColor = PaymentManaColor.GREEN,
+                                    floatingSourceSubtypes = listOf(Subtype.FOREST.value),
+                                ),
+                            ),
+                        ),
+                        CostUnitAllocationV2(
+                            1,
+                            listOf(
+                                ManaSpendReferenceV2(
+                                    floatingSourceId = e1,
+                                    poolColor = PaymentManaColor.GREEN,
+                                    floatingSourceSubtypes = listOf(Subtype.FOREST.value),
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        result.reason shouldBe "PaymentPlanV1 spends more floating mana than is available"
+        driver.state.getEntity(player)!!.get<ManaPoolComponent>()!!.manaByFloatingBucket shouldBe
+            mapOf(key to 1)
+    }
+
     test("V2 rejects a client-invented subtype snapshot") {
         val (driver, player) = game()
         val e1 = EntityId("e1")

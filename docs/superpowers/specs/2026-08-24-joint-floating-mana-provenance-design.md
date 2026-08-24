@@ -142,13 +142,12 @@ must differ when only the joint subtype association differs while totals and exi
 remain equal. The observation canonicalizer must serialize the V4 domain and canonicalize subtype
 sets without using map or iteration order as a choice.
 
-The complete transition-semantic replay fingerprint must bind the joint state. CompactReplay version
-is not changed by this spec. Its compatibility is a required implementation gate after the V2
-strategy/plan carrier is chosen: if the serialized `PaymentStrategy`/`GameAction` carrier makes a
-new V2 action not unambiguously decodable by an old CompactReplay-v3 reader, the persisted replay
-format must receive a new version. No new payload may be stored under the old format label. A replay
-bump is not made merely because a new state field exists when the persisted action format remains
-unambiguously compatible.
+The complete transition-semantic replay fingerprint must bind the joint state. The implementation
+characterization proves that the new serialized `PaymentStrategy.ExplicitV2` discriminator is not
+unambiguously decodable by an old CompactReplay-v3 reader. CompactReplay therefore moves to v4;
+new V2 actions may not be stored under the v3 label, while old v1-v3 action payloads remain readable
+under their historical versions. This bump is caused by the persisted action carrier, not merely by
+the additive joint state field.
 
 ## Test contract
 

@@ -1,6 +1,16 @@
 package com.wingedsheep.gameserver.replay
 
+import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CycleCard
+import com.wingedsheep.engine.core.ForetellCard
 import com.wingedsheep.engine.core.GameAction
+import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PlotCard
+import com.wingedsheep.engine.core.SuspendCardFromHand
+import com.wingedsheep.engine.core.TurnFaceUp
+import com.wingedsheep.engine.core.TypecycleCard
+import com.wingedsheep.engine.core.UnlockRoomDoor
 import com.wingedsheep.engine.state.YieldKind
 import com.wingedsheep.gameserver.protocol.ServerMessage
 import com.wingedsheep.sdk.core.AttackMode
@@ -71,6 +81,15 @@ data class CompactReplay(
      */
     val checkpoints: List<ReplayCheckpoint> = emptyList(),
 ) {
+    init {
+        require(version >= 1) {
+            "Invalid CompactReplay version: $version"
+        }
+        require(version >= 4 || actions.none(GameAction::usesPaymentPlanV2)) {
+            "PaymentStrategy.ExplicitV2 requires CompactReplay v4 or newer"
+        }
+    }
+
     /** Number of reconstructable frames: the initial state plus one per applied action. */
     val frameCount: Int get() = 1 + actions.size
 
@@ -79,15 +98,31 @@ data class CompactReplay(
          * Bump when replay reconstruction semantics change, not merely when an additive field is
          * introduced. v1 is the original compact input stream; v2 added [engineVersion],
          * [pinnedCards] and legacy [checkpoints]; v3 defines the complete transition-semantic
-         * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint. The
-         * action-level target-domain fields are an additive Gym observation contract and do not
-         * change replay reconstruction semantics. The codec still tolerates unknown fields on
-         * supported versions, but rejects versions newer than this constant before deserialization.
+         * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint; v4 adds
+         * the joint floating-mana provenance state and the explicitly versioned
+         * PaymentStrategy.ExplicitV2 action carrier. The action-level target-domain fields are an
+         * additive Gym observation contract and do not change replay reconstruction semantics. The
+         * codec still tolerates unknown fields on supported versions, but rejects versions newer
+         * than this constant before deserialization.
          */
-        const val CURRENT_VERSION = 3
+        const val CURRENT_VERSION = 4
 
         const val UNKNOWN_VERSION = "unknown"
     }
+}
+
+/** V2 payment actions cannot be placed under the historical CompactReplay-v3 label. */
+private fun GameAction.usesPaymentPlanV2(): Boolean = when (this) {
+    is ActivateAbility -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is CastSpell -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is CycleCard -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is ForetellCard -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is PlotCard -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is SuspendCardFromHand -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is TurnFaceUp -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is TypecycleCard -> paymentStrategy is PaymentStrategy.ExplicitV2
+    is UnlockRoomDoor -> paymentStrategy is PaymentStrategy.ExplicitV2
+    else -> false
 }
 
 /**

@@ -15,8 +15,10 @@ import kotlinx.serialization.json.jsonObject
 
 class PaymentDomainContractTest : FunSpec({
 
-    test("the current payment domain version is V3") {
-        PAYMENT_DOMAIN_VERSION shouldBe 3
+    test("the current payment domain version is V4") {
+        PAYMENT_DOMAIN_VERSION shouldBe 4
+        PAYMENT_DOMAIN_V4_VERSION shouldBe 4
+        PAYMENT_DOMAIN_V3_VERSION shouldBe 3
         PAYMENT_DOMAIN_V2_VERSION shouldBe 2
     }
 
@@ -138,7 +140,7 @@ class PaymentDomainContractTest : FunSpec({
         }
     }
 
-    test("historical PaymentDomainV2 decoder rejects the current V3 version") {
+    test("historical PaymentDomainV2 decoder rejects the historical V3 version") {
         val json = Json {
             encodeDefaults = true
             explicitNulls = false

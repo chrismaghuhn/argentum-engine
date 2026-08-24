@@ -147,6 +147,8 @@ class TurnFaceUpHandler(
                             return "Selected mana sources cannot pay the morph cost"
                         }
                     }
+                    is PaymentStrategy.ExplicitV2 ->
+                        return "PaymentStrategy.ExplicitV2 is not supported for turn-face-up payment"
                 }
             }
             // Every other morph cost (life, sacrifice, discard, reveal, exile, return, tap,
@@ -318,6 +320,11 @@ class TurnFaceUpHandler(
                             tapEvent?.let(events::add)
                         }
                     }
+                    is PaymentStrategy.ExplicitV2 ->
+                        return ExecutionResult.error(
+                            currentState,
+                            "PaymentStrategy.ExplicitV2 is not supported for turn-face-up payment",
+                        )
                 }
             }
             // Every non-mana morph cost (life, sacrifice, discard, reveal, exile, return, tap,

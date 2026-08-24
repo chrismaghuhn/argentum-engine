@@ -502,6 +502,7 @@ class CostPaymentService(private val services: EngineServices) {
                         sourceId = producingSourceId,
                         subtypes = production.sourceSubtypes,
                         amount = production.amount,
+                        knownToPlayers = setOf(payerId),
                     )
                 } else if (production.sourceSubtypes != null) {
                     combined.addTracked(
@@ -509,6 +510,7 @@ class CostPaymentService(private val services: EngineServices) {
                         sourceId = producingSourceId,
                         subtypes = production.sourceSubtypes,
                         amount = production.colorless,
+                        knownToPlayers = setOf(payerId),
                     )
                 } else if (production.color != null) {
                     combined.add(production.color, production.amount)
@@ -528,6 +530,7 @@ class CostPaymentService(private val services: EngineServices) {
                         sourceId = source.entityId,
                         subtypes = source.sourceSubtypes,
                         amount = source.bonusManaPerTap,
+                        knownToPlayers = setOf(payerId),
                     )
                 }
             }

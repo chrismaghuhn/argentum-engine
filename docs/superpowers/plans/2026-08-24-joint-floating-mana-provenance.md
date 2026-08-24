@@ -4,7 +4,7 @@
 
 **Goal:** Preserve production-time source, color, and subtype-snapshot provenance for floating mana, expose every exact public bucket through PaymentDomainV4, and execute only server-validated PaymentPlanV2 selections.
 
-**Architecture:** Add the Rules-owned FloatingManaBucketKeyV1(sourceId, poolColor, sourceSubtypes) as the authoritative identity for unrestricted floating buckets. ManaPoolComponent and the transient ManaPool will maintain the joint bucket map plus color/source/subtype projections atomically; legacy paths that cannot preserve the joint map remain incomplete and fail closed. Keep PaymentPlanV1 and PaymentDomainV3 historical, add an explicit PaymentStrategy.ExplicitV2 carrier and PaymentDomainV4 with one canonical certifiedFloatingBuckets list, and bump the Gym schema hash. The actual production transition supplies the subtype snapshot; the solver, current card state at payment time, aggregate counts, and iteration order never create or recover authority.
+**Architecture:** Add the Rules-owned FloatingManaBucketKeyV1(sourceId, poolColor, sourceSubtypes) as the authoritative identity for unrestricted floating buckets. ManaPoolComponent and the transient ManaPool will maintain the joint bucket map plus color/source/subtype projections atomically; legacy paths that cannot preserve the joint map remain incomplete and fail closed. Keep PaymentPlanV1 and PaymentDomainV3 historical, add an explicit PaymentStrategy.ExplicitV2 carrier and PaymentDomainV4 with one canonical certifiedFloatingBuckets list, and bump the Gym schema hash. The actual production transition supplies the subtype snapshot; the solver, current card state at payment time, aggregate counts, and iteration order never create or recover authority. The replay characterization proves the new serialized carrier requires CompactReplay v4; old v1-v3 payloads remain historical.
 
 **Tech Stack:** Kotlin, kotlinx.serialization, Kotest, Gradle/just, immutable ECS GameState, Gym JSON contracts, CompactReplay and StateDigest.
 
@@ -21,7 +21,7 @@ The implementation stays in the existing modules and does not add card-specific 
 - Replay and state identity: game-server/src/main/kotlin/com/wingedsheep/gameserver/replay/CompactReplay.kt, game-server/src/main/kotlin/com/wingedsheep/gameserver/replay/ReplayCodec.kt, game-server/src/main/kotlin/com/wingedsheep/gameserver/replay/ReplayFingerprint.kt, and game-server/src/main/kotlin/com/wingedsheep/gameserver/replay/TransitionSemanticGameStateCanonicalizer.kt.
 - Contract documentation: docs/data-contracts.md.
 
-Historical PaymentPlanV1, PaymentDomainV3, and existing CompactReplay fixtures remain readable where their own version says they are supported. New V2 actions use an explicit serialized discriminator and are never decoded through the V1 field.
+Historical PaymentPlanV1, PaymentDomainV3, and existing CompactReplay fixtures remain readable where their own version says they are supported. New V2 actions use an explicit serialized discriminator and are never decoded through the V1 field; they are recorded only under CompactReplay v4 or newer.
 
 ### Task 1: Write RED tests for the Rules-owned joint state
 
