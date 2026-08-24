@@ -1237,6 +1237,56 @@ class PartialIllegalTargets608Test : FunSpec({
         ) shouldBe listOf(candidate)
     }
 
+    test("pending target finder resolves TargetController from permanent and card context") {
+        val driver = driver()
+        val referencedPermanent = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val permanentCandidate = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val referencedCard = driver.putCardInGraveyard(driver.player2, "Grizzly Bears")
+        val cardCandidate = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter.Creature.targetPlayerControls(EffectTarget.TargetController),
+            ),
+        )
+        val finder = TargetFinder()
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targets = listOf(ChosenTarget.Permanent(referencedPermanent)),
+            ),
+            requireAuthoritativeContext = true,
+        ).toSet() shouldBe setOf(referencedPermanent, permanentCandidate, cardCandidate)
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targets = listOf(
+                    ChosenTarget.Card(
+                        cardId = referencedCard,
+                        ownerId = driver.player2,
+                        zone = Zone.GRAVEYARD,
+                    ),
+                ),
+            ),
+            requireAuthoritativeContext = true,
+        ).toSet() shouldBe setOf(referencedPermanent, permanentCandidate, cardCandidate)
+
+        finder.findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(controllerId = driver.player1),
+            requireAuthoritativeContext = true,
+        ) shouldBe emptyList()
+    }
+
     test("pending target finder fails closed for missing same-named-source context") {
         val driver = driver()
         val source = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")

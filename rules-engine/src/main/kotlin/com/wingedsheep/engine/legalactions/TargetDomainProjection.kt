@@ -35,13 +35,10 @@ data class TargetInfoProjection(
     val infos: List<TargetInfo>,
     val support: TargetDomainSupport,
 ) : List<TargetInfo> by infos {
-    override fun equals(other: Any?): Boolean = when (other) {
-        is TargetInfoProjection -> infos == other.infos && support == other.support
-        is List<*> -> infos == other
-        else -> false
-    }
+    override fun equals(other: Any?): Boolean =
+        other is TargetInfoProjection && infos == other.infos && support == other.support
 
-    override fun hashCode(): Int = infos.hashCode()
+    override fun hashCode(): Int = 31 * infos.hashCode() + support.hashCode()
 
     override fun toString(): String = "TargetInfoProjection(infos=$infos, support=$support)"
 }

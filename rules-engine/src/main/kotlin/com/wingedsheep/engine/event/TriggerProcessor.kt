@@ -1030,18 +1030,6 @@ class TriggerProcessor(
             }
         }
 
-        // Optional slots with no legal candidates are valid empty selections. If every slot is
-        // such a slot, put the trigger on the stack targetless without converting unsupported
-        // metadata. Mixed requirements keep their original indices so the continuation can fill
-        // omitted optional slots with zero targets.
-        val selectableIndices = allRequirements.indices.filter { index ->
-            allRequirements[index].effectiveMinCount > 0 ||
-                allLegalTargets[index].orEmpty().isNotEmpty()
-        }
-        if (selectableIndices.isEmpty()) {
-            return putTriggerOnStack(state, trigger, emptyList())
-        }
-
         // Create target requirement infos for the decision.
         //
         // A slot's minimum is the *requirement's* — "up to one" allows zero, "target creature" does
@@ -1052,8 +1040,7 @@ class TriggerProcessor(
         // from the stack when there is no legal one (the loop above) rather than resolve targetless.
         // Consent is now a gate on the effect, answered on its own — either before this method runs
         // (`processMayThenTargetTrigger`) or as the ability resolves.
-        val requirementInfos = selectableIndices.map { index ->
-            val req = allRequirements[index]
+        val requirementInfoResults = allRequirements.mapIndexed { index, req ->
             // "Any number of target ..." (unlimited) caps at however many legal targets exist,
             // mirroring the cast-time path (TargetEnumerationUtils). Using req.count (always 1
             // for an unlimited requirement) would wrongly clamp the decision to a single target.
@@ -1078,7 +1065,28 @@ class TriggerProcessor(
                         resolvedMaxTargets = snapshot.resolvedMaxTargets,
                         resolvedTotalManaValueAtMost = resolveTotalManaValueAtMost(state, trigger, req),
                     )
-            }.orReturnUnsupported { return it.toExecutionError(state) }
+            }
+        }
+
+        // A supported optional requirement remains a real pending decision even when its current
+        // candidate set is empty: the controller may explicitly choose zero targets. An
+        // unsupported optional requirement with no candidates is the one case that may be omitted
+        // without exposing incomplete metadata. Requirements with mandatory targets or candidates
+        // remain selected so their unsupported result fails closed below.
+        val selectableIndices = allRequirements.indices.filter { index ->
+            allRequirements[index].effectiveMinCount > 0 ||
+                allLegalTargets[index].orEmpty().isNotEmpty() ||
+                requirementInfoResults[index] is TargetRequirementInfoResult.Supported
+        }
+        if (selectableIndices.isEmpty()) {
+            return putTriggerOnStack(state, trigger, emptyList())
+        }
+
+        val requirementInfos = selectableIndices.map { index ->
+            when (val result = requirementInfoResults[index]) {
+                is TargetRequirementInfoResult.Supported -> result.info
+                is TargetRequirementInfoResult.Unsupported -> return result.toExecutionError(state)
+            }
         }
 
         // Create the target selection decision. The effect description becomes the

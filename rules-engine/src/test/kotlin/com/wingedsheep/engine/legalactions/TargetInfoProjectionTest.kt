@@ -12,6 +12,7 @@ import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 
 class TargetInfoProjectionTest : FunSpec({
@@ -136,6 +137,19 @@ class TargetInfoProjectionTest : FunSpec({
         incompleteTargetAction.targetDomainSupport shouldBe TargetDomainSupport.UNSUPPORTED(
             TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS
         )
+    }
+
+    test("projection equality includes support metadata and does not collapse to a List") {
+        val supported = TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
+        val unsupported = TargetInfoProjection(
+            emptyList(),
+            TargetDomainSupport.UNSUPPORTED(TargetDomainUnsupportedReason.INCOMPLETE_SEMANTICS),
+        )
+
+        (supported == unsupported) shouldBe false
+        (supported == emptyList<TargetInfo>()) shouldBe false
+        setOf(supported, unsupported).size shouldBe 2
+        listOf(supported, unsupported) shouldContain supported
     }
 })
 

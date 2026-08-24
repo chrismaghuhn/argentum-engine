@@ -75,6 +75,7 @@ class TargetFinder(
         val storedSubtypeGroups: Set<String> = emptySet(),
         val storedCollections: Map<String, Set<Int>> = emptyMap(),
         val targetIndexes: Set<Int> = emptySet(),
+        val controllerTargetIndexes: Set<Int> = emptySet(),
         val namedTargets: Set<String> = emptySet(),
         val unsupported: Boolean = false,
     ) {
@@ -102,6 +103,7 @@ class TargetFinder(
                 storedSubtypeGroups = storedSubtypeGroups + other.storedSubtypeGroups,
                 storedCollections = mergeRequirements(storedCollections, other.storedCollections),
                 targetIndexes = targetIndexes + other.targetIndexes,
+                controllerTargetIndexes = controllerTargetIndexes + other.controllerTargetIndexes,
                 namedTargets = namedTargets + other.namedTargets,
                 unsupported = unsupported || other.unsupported,
             )
@@ -156,6 +158,13 @@ class TargetFinder(
             if (storedSubtypeGroups.any { it !in context.storedSubtypeGroups }) return false
             if (targetIndexes.any { index ->
                     (context.targets.getOrNull(index) as? ChosenTarget.Player) == null
+                }) return false
+            if (controllerTargetIndexes.any { index ->
+                    resolveControllerOfChosenTarget(
+                        state,
+                        state.projectedState,
+                        context.targets.getOrNull(index),
+                    ) == null
                 }) return false
             if (namedTargets.any { name ->
                     (context.namedTargets[name] as? ChosenTarget.Player) == null
@@ -394,7 +403,7 @@ class TargetFinder(
         )
         EffectTarget.TargetController -> RequiredPredicateContext(
             pipeline = true,
-            targetIndexes = setOf(0),
+            controllerTargetIndexes = setOf(0),
         )
         is EffectTarget.PipelineTarget -> RequiredPredicateContext(
             pipeline = true,

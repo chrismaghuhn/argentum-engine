@@ -64,5 +64,6 @@ class ReplayVersionCompatibilityTest : FunSpec({
         ReplayCheckpointPolicy.requiresTailCheckpoint(3) shouldBe true
         ReplayCheckpointPolicy.requiresTailCheckpoint(2) shouldBe false
         ReplayCheckpointPolicy.requiresTailCheckpoint(4) shouldBe false
+        ReplayCheckpointPolicy.requiresTailCheckpoint(5) shouldBe false
     }
 })
