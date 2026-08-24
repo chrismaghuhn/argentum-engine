@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.core
 
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonObject
@@ -38,6 +39,17 @@ enum class PaymentManaColor {
         }
     }
 }
+
+/**
+ * Rules-owned identity of one fungible floating-mana bucket. The subtype set is the snapshot
+ * taken when the mana was actually produced; an empty set is a known empty snapshot.
+ */
+@Serializable
+data class FloatingManaBucketKeyV1(
+    val sourceId: EntityId,
+    val poolColor: PaymentManaColor,
+    val sourceSubtypes: Set<Subtype>,
+)
 
 /** A single explicit source activation in a submitted payment plan. */
 @Serializable

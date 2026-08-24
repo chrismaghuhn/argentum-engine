@@ -496,22 +496,24 @@ class CostPaymentService(private val services: EngineServices) {
             current = tapResult.state
             events.addAll(tapResult.events)
             for ((producingSourceId, production) in solution.manaProduced) {
-                val subtypes = current.getEntity(producingSourceId)
-                    ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
-                combined = if (production.color != null) {
+                combined = if (production.sourceSubtypes != null && production.color != null) {
                     combined.addTracked(
                         color = PaymentManaColor.fromEngine(production.color),
                         sourceId = producingSourceId,
-                        subtypes = subtypes,
+                        subtypes = production.sourceSubtypes,
                         amount = production.amount,
                     )
-                } else {
+                } else if (production.sourceSubtypes != null) {
                     combined.addTracked(
                         color = PaymentManaColor.COLORLESS,
                         sourceId = producingSourceId,
-                        subtypes = subtypes,
+                        subtypes = production.sourceSubtypes,
                         amount = production.colorless,
                     )
+                } else if (production.color != null) {
+                    combined.add(production.color, production.amount)
+                } else {
+                    combined.addColorless(production.colorless)
                 }
             }
             // Bonus mana from AdditionalManaOnTap / AdditionalManaOnSourceTap (e.g. Badgermole
@@ -521,12 +523,10 @@ class CostPaymentService(private val services: EngineServices) {
             // auto-tap path (ActivateAbilityHandler.autoTapForManaCost).
             for (source in solution.sources) {
                 if (source.bonusManaPerTap > 0 && source.bonusManaColor != null) {
-                    val subtypes = current.getEntity(source.entityId)
-                        ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
                     combined = combined.addTracked(
                         color = PaymentManaColor.fromEngine(source.bonusManaColor),
                         sourceId = source.entityId,
-                        subtypes = subtypes,
+                        subtypes = source.sourceSubtypes,
                         amount = source.bonusManaPerTap,
                     )
                 }

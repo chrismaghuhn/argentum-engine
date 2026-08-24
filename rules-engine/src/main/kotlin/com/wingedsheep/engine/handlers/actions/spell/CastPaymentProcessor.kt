@@ -72,9 +72,8 @@ class CastPaymentProcessor(
 
     /**
      * Provenance of mana freshly tapped by the solver during a payment (AutoPay / Explicit). The
-     * floating-pool tags don't cover it — this mana never entered the pool — so we read each tapped
-     * source's subtypes from state and pair them with the source id. Combined with the pool's
-     * consumed provenance to form the full [SpentManaProvenance] for the payment.
+     * snapshot is carried from the actual production transition through [ManaProduction]; this
+     * method never rereads a source's current card state after a tap or sacrifice.
      */
     private fun tappedSourceProvenance(state: GameState, manaProduced: Map<EntityId, com.wingedsheep.engine.mechanics.mana.ManaProduction>): SpentManaProvenance {
         if (manaProduced.isEmpty()) return SpentManaProvenance()
@@ -84,9 +83,7 @@ class CastPaymentProcessor(
             val amount = production.amount + production.colorless
             if (amount <= 0) continue
             sourceIds.add(sourceId)
-            val subtypes = state.getEntity(sourceId)
-                ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                ?.typeLine?.subtypes ?: emptySet()
+            val subtypes = production.sourceSubtypes.orEmpty()
             for (subtype in subtypes) bySubtype[subtype] = (bySubtype[subtype] ?: 0) + amount
         }
         return SpentManaProvenance(bySubtype, sourceIds)

@@ -67,6 +67,8 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 data class ManaSource(
     val entityId: EntityId,
     val name: String,
+    /** Subtype snapshot captured during source discovery for the actual production transition. */
+    val sourceSubtypes: Set<Subtype> = emptySet(),
     /** Colors this source can produce (empty means colorless-only) */
     val producesColors: Set<Color>,
     /** Whether this source can produce colorless mana */
@@ -322,6 +324,8 @@ data class ManaProduction(
     val color: Color? = null,
     val amount: Int = 1,
     val colorless: Int = 0,
+    /** Snapshot carried from source discovery; null means this legacy result has no snapshot. */
+    val sourceSubtypes: Set<Subtype>? = null,
     /** Exact activated mana ability represented by this production, when the source has one. */
     val manaAbility: ActivatedAbility? = null,
 )
@@ -970,9 +974,13 @@ class ManaSolver(
         ) {
             return null
         }
+        val productionSnapshots = usedSources.associate { it.entityId to it.sourceSubtypes }
+        val authoritativeManaProduced = manaProduced.mapValues { (sourceId, production) ->
+            production.copy(sourceSubtypes = productionSnapshots[sourceId])
+        }
         return ManaSolution(
             usedSources,
-            manaProduced,
+            authoritativeManaProduced,
             bonusManaPool.filter { it.amount > 0 },
             consumedRiders,
             xRestrictedManaSpent = xRestrictedSpent,
@@ -1271,6 +1279,7 @@ class ManaSolver(
                         return@mapNotNull ManaSource(
                             entityId = entityId,
                             name = card.name,
+                            sourceSubtypes = card.typeLine.subtypes.toSet(),
                             producesColors = effectiveColors,
                             producesColorless = false,
                             isBasicLand = isBasicLand,
@@ -1726,6 +1735,7 @@ class ManaSolver(
                 return@mapNotNull ManaSource(
                     entityId = entityId,
                     name = card.name,
+                    sourceSubtypes = card.typeLine.subtypes.toSet(),
                     producesColors = combinedColors,
                     producesColorless = producesColorless,
                     isBasicLand = isBasicLand,
@@ -1773,6 +1783,7 @@ class ManaSolver(
             ManaSource(
                 entityId = entityId,
                 name = card.name,
+                sourceSubtypes = card.typeLine.subtypes.toSet(),
                 producesColors = emptySet(),
                 producesColorless = true,
                 isBasicLand = isBasicLand,

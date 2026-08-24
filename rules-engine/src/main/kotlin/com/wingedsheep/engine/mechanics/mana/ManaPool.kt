@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
@@ -8,7 +9,7 @@ import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.effects.ManaSpellRider
 import com.wingedsheep.engine.state.components.player.RestrictedManaEntry
 import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
-import com.wingedsheep.engine.state.components.player.hasCompleteSourceColorProvenance
+import com.wingedsheep.engine.state.components.player.hasCompleteFloatingManaProvenance
 import kotlinx.serialization.Serializable
 
 /**
@@ -202,6 +203,8 @@ data class ManaPool(
     val manaBySource: Map<com.wingedsheep.sdk.model.EntityId, Int> = emptyMap(),
     /** Exact unrestricted source/color buckets; meaningful only with COMPLETE status. */
     val manaBySourceAndColor: Map<com.wingedsheep.sdk.model.EntityId, Map<PaymentManaColor, Int>> = emptyMap(),
+    /** Exact production-time source/color/subtype-snapshot buckets. */
+    val manaByFloatingBucket: Map<FloatingManaBucketKeyV1, Int> = emptyMap(),
     /** Mirrors the authoritative component marker across transient payment operations. */
     val manaProvenanceCompleteness: ManaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
 ) {
@@ -234,7 +237,9 @@ data class ManaPool(
     /**
      * Check if the pool is empty (including restricted mana).
      */
-    fun isEmpty(): Boolean = total == 0 && restrictedMana.isEmpty()
+    fun isEmpty(): Boolean = total == 0 && restrictedMana.isEmpty() &&
+        manaBySubtype.isEmpty() && manaBySource.isEmpty() &&
+        manaBySourceAndColor.isEmpty() && manaByFloatingBucket.isEmpty()
 
     /**
      * Add mana of a specific color.
@@ -263,6 +268,7 @@ data class ManaPool(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
             )
         } else {
@@ -281,7 +287,7 @@ data class ManaPool(
         }
         val canExtendComplete = beforeUnrestricted == 0 ||
             manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE &&
-                hasCompleteSourceColorProvenance(
+                hasCompleteFloatingManaProvenance(
                     colorCounts = mapOf(
                         PaymentManaColor.WHITE to white,
                         PaymentManaColor.BLUE to blue,
@@ -292,21 +298,28 @@ data class ManaPool(
                     ),
                     manaBySource = manaBySource,
                     manaBySourceAndColor = manaBySourceAndColor,
+                    manaBySubtype = manaBySubtype,
+                    manaByFloatingBucket = manaByFloatingBucket,
                 )
         if (!canExtendComplete) {
             return withColor.copy(
                 manaBySubtype = newBySubtype,
                 manaBySource = newBySource,
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
             )
         }
         val sourceBuckets = withColor.manaBySourceAndColor[sourceId].orEmpty().toMutableMap()
         sourceBuckets[color] = (sourceBuckets[color] ?: 0) + amount
+        val bucketKey = FloatingManaBucketKeyV1(sourceId, color, subtypes)
+        val floatingBuckets = withColor.manaByFloatingBucket.toMutableMap()
+        floatingBuckets[bucketKey] = (floatingBuckets[bucketKey] ?: 0) + amount
         return withColor.copy(
             manaBySubtype = newBySubtype,
             manaBySource = newBySource,
             manaBySourceAndColor = withColor.manaBySourceAndColor + (sourceId to sourceBuckets.toMap()),
+            manaByFloatingBucket = floatingBuckets.toMap(),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
         )
     }
@@ -318,6 +331,7 @@ data class ManaPool(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
             )
         } else {
@@ -326,6 +340,7 @@ data class ManaPool(
         val updated = base.addColorTotal(color, amount)
         return updated.copy(
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = if (updated.unrestrictedTotal == 0) {
                 ManaProvenanceCompleteness.UNKNOWN
             } else {
@@ -408,7 +423,10 @@ data class ManaPool(
     private fun invalidateDetailedProvenanceIfNeeded(): ManaPool {
         if (unrestrictedTotal == 0) {
             return copy(
+                manaBySubtype = emptyMap(),
+                manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
             )
         }
@@ -426,6 +444,7 @@ data class ManaPool(
         }
         return copy(
             manaBySourceAndColor = emptyMap(),
+            manaByFloatingBucket = emptyMap(),
             manaProvenanceCompleteness = nextCompleteness,
         )
     }
@@ -807,7 +826,8 @@ data class ManaPool(
      */
     fun consumeProvenance(unrestrictedSpent: Int): Pair<ManaPool, SpentManaProvenance> {
         if (unrestrictedSpent <= 0 ||
-            (manaBySubtype.isEmpty() && manaBySource.isEmpty() && manaBySourceAndColor.isEmpty())
+            (manaBySubtype.isEmpty() && manaBySource.isEmpty() && manaBySourceAndColor.isEmpty() &&
+                manaByFloatingBucket.isEmpty())
         ) {
             return this to SpentManaProvenance()
         }
@@ -830,6 +850,7 @@ data class ManaPool(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
             )
         } else {
@@ -837,6 +858,7 @@ data class ManaPool(
                 manaBySubtype = newSubtype,
                 manaBySource = newSource,
                 manaBySourceAndColor = emptyMap(),
+                manaByFloatingBucket = emptyMap(),
                 manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
             )
         }
@@ -856,6 +878,7 @@ data class ManaPool(
     ): Pair<ManaPool, SpentManaProvenance>? {
         if (white < 0 || blue < 0 || black < 0 || red < 0 || green < 0 || colorless < 0 ||
             restrictedMana.isNotEmpty() ||
+            manaByFloatingBucket.isNotEmpty() ||
             candidate.sourceBuckets.isEmpty()
         ) return null
 
@@ -943,6 +966,7 @@ data class ManaPool(
     ): Pair<ManaPool, SpentManaProvenance>? {
         if (white < 0 || blue < 0 || black < 0 || red < 0 || green < 0 || colorless < 0 ||
             restrictedMana.isNotEmpty() || manaProvenanceCompleteness != ManaProvenanceCompleteness.COMPLETE ||
+            manaByFloatingBucket.isNotEmpty() ||
             candidate.sourceColorBuckets.isEmpty() || candidate.total != unrestrictedTotal
         ) return null
 

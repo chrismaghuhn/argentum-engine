@@ -5,6 +5,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Subtype
 
 /**
  * Tags mana added to a player's pool with its provenance — which source produced it and what
@@ -28,10 +29,9 @@ object ManaProvenanceTracker {
 
     /**
      * Increment the producing player's provenance counters when [sourceId] produced [amount] mana.
-     * Snapshots the source's subtypes from its base [CardComponent.typeLine] — the source may already
-     * be in the graveyard (a Treasure's `{T}, Sacrifice this` pays the cost before the mana effect
-     * resolves), but the entity persists with its base type line intact. A source with no card
-     * component (or a null [sourceId]) still tags the source id if present, contributing no subtypes.
+     * [sourceSubtypes] is the production-time snapshot when the caller already captured it before
+     * a tap/sacrifice. The fallback reads the source at this actual production seam only; payment
+     * code never calls this method to reconstruct a historical bucket.
      */
     fun addUnrestrictedMana(
         state: GameState,
@@ -39,9 +39,10 @@ object ManaProvenanceTracker {
         sourceId: EntityId?,
         color: PaymentManaColor,
         amount: Int,
+        sourceSubtypes: Set<Subtype>? = null,
     ): GameState {
         if (amount <= 0) return state
-        val subtypes = sourceId?.let {
+        val subtypes = sourceSubtypes ?: sourceId?.let {
             state.getEntity(it)?.get<CardComponent>()?.typeLine?.subtypes?.toSet()
         } ?: emptySet()
         return state.updateEntity(playerId) { container ->
