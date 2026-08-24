@@ -32,6 +32,7 @@ import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils.toEntityId
 import com.wingedsheep.engine.handlers.effects.bend.BendEvents
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
+import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
 import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
@@ -133,6 +134,7 @@ class ActivateAbilityHandler(
 ) : ActionHandler<ActivateAbility> {
     override val actionType: KClass<ActivateAbility> = ActivateAbility::class
     private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
+    private val activatedAbilityCostCalculator = ActivatedAbilityCostCalculator(castPermissionUtils)
 
     /** The first [CostAtom.TapPermanents] atom anywhere in this cost, or null if it has none. */
     private fun AbilityCost.firstTapPermanentsAtomOrNull(): CostAtom.TapPermanents? = when (this) {
@@ -279,29 +281,14 @@ class ActivateAbilityHandler(
 
         // Apply text-changing effects to cost and target filters
         val textReplacement = container.get<TextReplacementComponent>()
-        val rawCost = if (textReplacement != null) {
-            ability.cost.applyTextReplacement(textReplacement)
-        } else {
-            ability.cost
-        }
-        // Apply ability-specific generic cost reduction (e.g., The Dominion Bracelet's
-        // "{X} less, where X is this creature's power"). Per Scryfall ruling, the reduced
-        // cost is locked in here, before costs are paid. Then apply generic equip-cost reduction
-        // (Éowyn) and finally the explicitly selected Forge Anew free-first-equip mode.
-        val equipTargetIdForCost = action.targets.filterIsInstance<ChosenTarget.Permanent>().firstOrNull()?.entityId
-        val effectiveCost = castPermissionUtils.relaxAbilityCostColorsIfAny(
-            state, action.sourceId,
-            castPermissionUtils.applyFreeFirstEquipDiscount(
-                castPermissionUtils.applyEquipCostReduction(
-                    castPermissionUtils.applyActivatedAbilityCostReduction(
-                        applyGenericCostReduction(rawCost, ability, state, action.sourceId, action.playerId, action.targets),
-                        state, action.sourceId, ability.isExhaust, ability.isPowerUp
-                    ),
-                    ability, state, action.playerId, equipTargetIdForCost,
-                    abilitySourceId = action.sourceId
-                ),
-                ability, state, action.playerId, equipPayment
-            )
+        // The exact effective cost is shared with enumeration and public payment-domain proof.
+        val effectiveCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            ability = ability,
+            targets = action.targets,
+            equipPayment = equipPayment,
         )
         val effectiveTargetReqs = if (textReplacement != null) {
             ability.targetRequirements.map { it.applyTextReplacement(textReplacement) }
@@ -678,30 +665,14 @@ class ActivateAbilityHandler(
 
         // Apply text-changing effects to cost
         val textReplacement = container.get<TextReplacementComponent>()
-        val rawCost = if (textReplacement != null) {
-            ability.cost.applyTextReplacement(textReplacement)
-        } else {
-            ability.cost
-        }
-        // Apply ability-specific generic cost reduction (e.g., The Dominion Bracelet's
-        // "{X} less, where X is this creature's power"). Locked in before payment. Then apply
-        // generic equip-cost reduction (Éowyn) and the explicitly selected Forge Anew
-        // free-first-equip mode.
-        // Finally relax colored requirements when "mana of any type can be spent" applies (Sharkey).
-        val equipTargetIdForCost = action.targets.filterIsInstance<ChosenTarget.Permanent>().firstOrNull()?.entityId
-        val effectiveCost = castPermissionUtils.relaxAbilityCostColorsIfAny(
-            state, action.sourceId,
-            castPermissionUtils.applyFreeFirstEquipDiscount(
-                castPermissionUtils.applyEquipCostReduction(
-                    castPermissionUtils.applyActivatedAbilityCostReduction(
-                        applyGenericCostReduction(rawCost, ability, state, action.sourceId, action.playerId, action.targets),
-                        state, action.sourceId, ability.isExhaust, ability.isPowerUp
-                    ),
-                    ability, state, action.playerId, equipTargetIdForCost,
-                    abilitySourceId = action.sourceId
-                ),
-                ability, state, action.playerId, action.alternativePayment?.equipPayment
-            )
+        // The exact effective cost is shared with enumeration and public payment-domain proof.
+        val effectiveCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            ability = ability,
+            targets = action.targets,
+            equipPayment = action.alternativePayment?.equipPayment,
         )
 
         // Variable-count "exile/sacrifice one or more permanents you control" cost: X is defined by
@@ -2527,50 +2498,6 @@ class ActivateAbilityHandler(
         is AbilityCost.ExileSelf, is AbilityCost.SacrificeSelf, is AbilityCost.ReturnSelfToHand -> true
         is AbilityCost.Composite -> cost.costs.any { costExilesOrSacrificesSelf(it) }
         else -> false
-    }
-
-    /**
-     * Apply [ActivatedAbility.genericCostReduction] to the mana portion of [cost].
-     * The reduction is evaluated against the activating entity (e.g., the equipped creature
-     * for The Dominion Bracelet, whose granted ability reduces by the creature's power) and,
-     * when present, the chosen [targets] — so reductions that read the target the player picked
-     * (e.g. Dragonfire Blade's "costs {1} less to activate for each color of the creature it
-     * targets") resolve against that target. Per Scryfall ruling, this is locked in before costs
-     * are paid.
-     */
-    private fun applyGenericCostReduction(
-        cost: AbilityCost,
-        ability: ActivatedAbility,
-        state: GameState,
-        sourceId: EntityId,
-        controllerId: EntityId,
-        targets: List<ChosenTarget>
-    ): AbilityCost {
-        val reduction = ability.genericCostReduction ?: return cost
-        val reductionContext = EffectContext(
-            sourceId = sourceId,
-            controllerId = controllerId,
-            targets = targets
-        )
-        val amount = DynamicAmountEvaluator().evaluate(state, reduction, reductionContext)
-        if (amount <= 0) return cost
-        return reduceGenericInCost(cost, amount)
-    }
-
-    private fun reduceGenericInCost(cost: AbilityCost, amount: Int): AbilityCost = when (cost) {
-        is AbilityCost.Atom -> cost.manaCostOrNull
-            ?.let { AbilityCost.Atom(CostAtom.Mana(it.reduceGeneric(amount))) } ?: cost
-        is AbilityCost.Composite -> {
-            var applied = false
-            AbilityCost.Composite(cost.costs.map { sub ->
-                val subMana = sub.manaCostOrNull
-                if (!applied && subMana != null) {
-                    applied = true
-                    AbilityCost.Atom(CostAtom.Mana(subMana.reduceGeneric(amount)))
-                } else sub
-            })
-        }
-        else -> cost
     }
 
     /**

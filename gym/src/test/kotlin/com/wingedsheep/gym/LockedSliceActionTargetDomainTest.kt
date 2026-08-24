@@ -650,8 +650,8 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             it.targetShape != "TARGETLESS" && it.targetShape != "NO_REACHABLE_ACTION"
         } shouldBe 55
         orderedRows.count { it.publicDomain != "NOT_PUBLISHED" } shouldBe 215
-        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 26
-        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 134
+        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 13
+        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 147
         orderedRows.count { it.paymentStatus == "NOT_APPLICABLE" } shouldBe 55
         rawShapeTotals shouldBe mapOf(
             "0:1-1@-[]#1" to 1,
