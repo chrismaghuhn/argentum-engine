@@ -2,6 +2,8 @@ package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
@@ -56,5 +58,21 @@ class ManaPoolSpendProvenanceTest : FunSpec({
         pool.manaByFloatingBucket shouldBe mapOf(forestKey to 1)
         pool.manaBySource shouldBe mapOf(e1 to 1)
         pool.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+    }
+
+    test("full spend returns source and subtype provenance before the pool becomes empty") {
+        val e1 = EntityId("e1")
+        val pool = ManaPool().addTracked(PaymentManaColor.GREEN, e1, setOf(Subtype.FOREST))
+
+        val postSpend = pool.spend(Color.GREEN) ?: error("expected the pool to pay one green")
+        val (provenancePool, spent) = pool.consumeProvenance(1)
+        val remaining = postSpend.withProvenanceFrom(provenancePool)
+
+        spent.sourceIds shouldBe setOf(e1)
+        spent.bySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        remaining.unrestrictedTotal shouldBe 0
+        remaining.manaBySource shouldBe emptyMap()
+        remaining.manaBySubtype shouldBe emptyMap()
+        remaining.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.UNKNOWN
     }
 })

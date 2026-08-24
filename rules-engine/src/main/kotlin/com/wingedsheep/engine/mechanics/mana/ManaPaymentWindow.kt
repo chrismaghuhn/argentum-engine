@@ -195,9 +195,9 @@ object ManaPaymentWindow {
             ) ?: return FloatResult(state, emptyList(), paid = false)
             for (resolved in resolvedSources) {
                 val sourceId = resolved.option.entityId
-                val subtypes = current.getEntity(sourceId)
-                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
-                    ?.typeLine?.subtypes?.toSet()
+                val subtypes = current.getEntity(sourceId)?.let {
+                    current.projectedState.productionSourceSubtypes(sourceId)
+                }
                 val tapped = tapOrSacrifice(current, resolved.option.entityId, resolved.option, playerId)
                 current = tapped.first
                 events.addAll(tapped.second)

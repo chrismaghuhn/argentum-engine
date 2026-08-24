@@ -1360,8 +1360,15 @@ class ActivateAbilityHandler(
                         // pool + sources, so ignoring the pool here made a legal activation fail
                         // ("Selected mana sources cannot pay this ability's cost") or over-tap lands.
                         // The reduced [manaPool] flows into payAbilityCost and is persisted afterward.
-                        val partialResult = manaPool.payPartial(manaCost, executeAbilityContext)
-                        manaPool = partialResult.newPool
+                        val poolBeforeFloatingSpend = manaPool
+                        val partialResult = poolBeforeFloatingSpend.payPartial(manaCost, executeAbilityContext)
+                        val floatingSpent = maxOf(
+                            0,
+                            poolBeforeFloatingSpend.unrestrictedTotal - partialResult.newPool.unrestrictedTotal,
+                        )
+                        val (partialProvenancePool, _) =
+                            poolBeforeFloatingSpend.consumeProvenance(floatingSpent)
+                        manaPool = partialResult.newPool.withProvenanceFrom(partialProvenancePool)
                         val remainingCost = partialResult.remainingCost
                         if (!remainingCost.isEmpty() || manaXValue > 0) {
                             // Solve the remainder against the chosen sources only (non-chosen excluded),
@@ -1577,6 +1584,7 @@ class ActivateAbilityHandler(
         }
 
         // Pay the cost (using effective cost with text replacements applied)
+        val poolBeforeCostPayment = manaPool
         val costResult = costHandler.payAbilityCost(
             currentState,
             costForPayment,
@@ -1642,10 +1650,10 @@ class ActivateAbilityHandler(
         // Consume mana-source provenance for the floating mana this activation spent (the maps ride
         // `manaPool` untouched by pay()/spend()), so the remaining tags reflect only the mana still
         // in the pool — a mana ability that only adds mana consumes nothing and keeps prior tags.
-        val originalUnrestricted = poolComponent.white + poolComponent.blue + poolComponent.black +
-            poolComponent.red + poolComponent.green + poolComponent.colorless
-        val finalUnrestricted = manaPool.white + manaPool.blue + manaPool.black +
-            manaPool.red + manaPool.green + manaPool.colorless
+        val unrestrictedSpentDuringCost = maxOf(
+            0,
+            poolBeforeCostPayment.unrestrictedTotal - manaPool.unrestrictedTotal,
+        )
         val poolAfterProvenance = exactExplicitPoolAfterSpend?.let { exactPool ->
             // PaymentPlanValidator already consumed the certified unit exactly. Preserve those
             // maps while retaining any non-mana-cost changes represented by the current counts.
@@ -1657,7 +1665,10 @@ class ActivateAbilityHandler(
                 manaProvenanceCompleteness = exactPool.manaProvenanceCompleteness,
                 manaProvenanceKnownTo = exactPool.manaProvenanceKnownTo,
             )
-        } ?: manaPool.consumeProvenance(maxOf(0, originalUnrestricted - finalUnrestricted)).first
+        } ?: run {
+            val (provenancePool, _) = poolBeforeCostPayment.consumeProvenance(unrestrictedSpentDuringCost)
+            manaPool.withProvenanceFrom(provenancePool)
+        }
         currentState = currentState.updateEntity(action.playerId) { c ->
             c.with(fromManaPool(poolAfterProvenance))
         }
@@ -2137,6 +2148,7 @@ class ActivateAbilityHandler(
                 val repeatTapSnapshots = captureEntitySnapshots(repeatTapSlice, currentState.projectedState)
 
                 // Pay the cost
+                val repeatPoolBeforeCostPayment = repeatPool
                 val repeatCostResult = costHandler.payAbilityCost(
                     currentState, effectiveCost, action.sourceId, action.playerId, repeatPool, CostPaymentChoices(tapChoices = repeatTapSlice), executeAbilityContext
                 )
@@ -2148,13 +2160,13 @@ class ActivateAbilityHandler(
 
                 // Update mana pool on state (consuming provenance for the floating mana this repeat
                 // spent, same rule as the primary writeback above).
-                val repeatOriginalUnrestricted = repeatPoolComponent.white + repeatPoolComponent.blue +
-                    repeatPoolComponent.black + repeatPoolComponent.red + repeatPoolComponent.green +
-                    repeatPoolComponent.colorless
-                val repeatFinalUnrestricted = repeatPool.white + repeatPool.blue + repeatPool.black +
-                    repeatPool.red + repeatPool.green + repeatPool.colorless
-                val (repeatPoolAfterProvenance, _) =
-                    repeatPool.consumeProvenance(maxOf(0, repeatOriginalUnrestricted - repeatFinalUnrestricted))
+                val repeatUnrestrictedSpent = maxOf(
+                    0,
+                    repeatPoolBeforeCostPayment.unrestrictedTotal - repeatPool.unrestrictedTotal,
+                )
+                val (repeatProvenancePool, _) =
+                    repeatPoolBeforeCostPayment.consumeProvenance(repeatUnrestrictedSpent)
+                val repeatPoolAfterProvenance = repeatPool.withProvenanceFrom(repeatProvenancePool)
                 currentState = currentState.updateEntity(action.playerId) { c ->
                     c.with(fromManaPool(repeatPoolAfterProvenance))
                 }
@@ -2659,10 +2671,11 @@ class ActivateAbilityHandler(
             currentPool = when {
                 color != null && restriction != null ->
                     currentPool.addRestricted(color, production.amount, restriction)
-                color != null ->
-                    currentPool.add(color, production.amount)
-                else ->
-                    currentPool.addColorless(production.colorless)
+                else -> currentPool.addUnrestrictedProduction(
+                    sourceId = source.entityId,
+                    production = production,
+                    knownToPlayer = playerId,
+                )
             }
         }
 
@@ -2677,7 +2690,13 @@ class ActivateAbilityHandler(
         // printed ability, not to the aura-granted extras.
         for (source in solution.sources) {
             if (source.bonusManaPerTap > 0 && source.bonusManaColor != null) {
-                currentPool = currentPool.add(source.bonusManaColor, source.bonusManaPerTap)
+                currentPool = currentPool.addTracked(
+                    color = PaymentManaColor.fromEngine(source.bonusManaColor),
+                    sourceId = source.entityId,
+                    subtypes = source.sourceSubtypes,
+                    amount = source.bonusManaPerTap,
+                    knownToPlayers = setOf(playerId),
+                )
             }
         }
 

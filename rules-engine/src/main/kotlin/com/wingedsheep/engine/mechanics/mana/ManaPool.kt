@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.effects.ManaSpellRider
 import com.wingedsheep.engine.state.components.player.RestrictedManaEntry
@@ -841,11 +842,31 @@ data class ManaPool(
      * can stamp the spell/event. Restricted mana never carries provenance, so it never contributes.
      */
     fun consumeProvenance(unrestrictedSpent: Int): Pair<ManaPool, SpentManaProvenance> {
-        if (unrestrictedSpent <= 0 ||
-            (manaBySubtype.isEmpty() && manaBySource.isEmpty() && manaBySourceAndColor.isEmpty() &&
-                manaByFloatingBucket.isEmpty())
-        ) {
+        if (unrestrictedSpent <= 0) {
             return this to SpentManaProvenance()
+        }
+        val hasDetailedProvenance = manaBySubtype.isNotEmpty() ||
+            manaBySource.isNotEmpty() ||
+            manaBySourceAndColor.isNotEmpty() ||
+            manaByFloatingBucket.isNotEmpty()
+        val remainingUnrestricted = unrestrictedTotal - unrestrictedSpent
+        if (!hasDetailedProvenance) {
+            val normalized = if (remainingUnrestricted <= 0) {
+                copy(
+                    manaBySubtype = emptyMap(),
+                    manaBySource = emptyMap(),
+                    manaBySourceAndColor = emptyMap(),
+                    manaByFloatingBucket = emptyMap(),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+                    manaProvenanceKnownTo = emptySet(),
+                )
+            } else {
+                copy(
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+                    manaProvenanceKnownTo = emptySet(),
+                )
+            }
+            return normalized to SpentManaProvenance()
         }
         val consumedSubtypes = mutableMapOf<com.wingedsheep.sdk.core.Subtype, Int>()
         val newSubtype = manaBySubtype.mapNotNull { (subtype, count) ->
@@ -861,7 +882,7 @@ data class ManaPool(
             val remaining = count - consumed
             if (remaining > 0) sourceId to remaining else null
         }.toMap()
-        val updated = if (unrestrictedTotal == 0) {
+        val updated = if (remainingUnrestricted <= 0) {
             copy(
                 manaBySubtype = emptyMap(),
                 manaBySource = emptyMap(),
@@ -898,6 +919,30 @@ data class ManaPool(
         manaProvenanceCompleteness = provenancePool.manaProvenanceCompleteness,
         manaProvenanceKnownTo = provenancePool.manaProvenanceKnownTo,
     )
+
+    /** Add a solver-confirmed unrestricted production while retaining its production snapshot. */
+    internal fun addUnrestrictedProduction(
+        sourceId: EntityId,
+        production: ManaProduction,
+        knownToPlayer: EntityId,
+    ): ManaPool = when {
+        production.sourceSubtypes != null && production.color != null -> addTracked(
+            color = PaymentManaColor.fromEngine(production.color),
+            sourceId = sourceId,
+            subtypes = production.sourceSubtypes,
+            amount = production.amount,
+            knownToPlayers = setOf(knownToPlayer),
+        )
+        production.sourceSubtypes != null -> addTracked(
+            color = PaymentManaColor.COLORLESS,
+            sourceId = sourceId,
+            subtypes = production.sourceSubtypes,
+            amount = production.colorless,
+            knownToPlayers = setOf(knownToPlayer),
+        )
+        production.color != null -> add(production.color, production.amount)
+        else -> addColorless(production.colorless)
+    }
 
     /**
      * Consume only the exact Rules-owned joint buckets selected by the controller. This is the

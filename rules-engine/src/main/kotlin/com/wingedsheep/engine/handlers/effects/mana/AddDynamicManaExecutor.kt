@@ -5,6 +5,7 @@ import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypes
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -160,7 +161,7 @@ class AddDynamicManaExecutor(
             sourceId: com.wingedsheep.sdk.model.EntityId? = null,
         ): GameState {
             val subtypes = sourceId?.let {
-                state.getEntity(it)?.get<CardComponent>()?.typeLine?.subtypes?.toSet()
+                state.projectedState.productionSourceSubtypes(it)
             }.orEmpty()
             return state.updateEntity(playerId) { container ->
                 var manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -174,6 +175,7 @@ class AddDynamicManaExecutor(
                                 sourceId = sourceId,
                                 subtypes = subtypes,
                                 amount = amount,
+                                knownToPlayers = setOf(playerId),
                             )
                         } else {
                             manaPool.add(color, amount)

@@ -1279,7 +1279,7 @@ class ManaSolver(
                         return@mapNotNull ManaSource(
                             entityId = entityId,
                             name = card.name,
-                            sourceSubtypes = card.typeLine.subtypes.toSet(),
+                            sourceSubtypes = projected.productionSourceSubtypes(entityId),
                             producesColors = effectiveColors,
                             producesColorless = false,
                             isBasicLand = isBasicLand,
@@ -1735,7 +1735,7 @@ class ManaSolver(
                 return@mapNotNull ManaSource(
                     entityId = entityId,
                     name = card.name,
-                    sourceSubtypes = card.typeLine.subtypes.toSet(),
+                    sourceSubtypes = projected.productionSourceSubtypes(entityId),
                     producesColors = combinedColors,
                     producesColorless = producesColorless,
                     isBasicLand = isBasicLand,
@@ -1783,7 +1783,7 @@ class ManaSolver(
             ManaSource(
                 entityId = entityId,
                 name = card.name,
-                sourceSubtypes = card.typeLine.subtypes.toSet(),
+                sourceSubtypes = projected.productionSourceSubtypes(entityId),
                 producesColors = emptySet(),
                 producesColorless = true,
                 isBasicLand = isBasicLand,

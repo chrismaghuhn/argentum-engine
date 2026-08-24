@@ -9,6 +9,7 @@ import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
+import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypes
 import com.wingedsheep.engine.mechanics.mana.resolveManualManaSources
 import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.state.GameState
@@ -678,12 +679,8 @@ class ManaPaymentContinuationResumer(
                 }
                 currentState = tapResult.state
                 events.addAll(tapResult.events)
-                for ((_, production) in solution.manaProduced) {
-                    currentPool = if (production.color != null) {
-                        currentPool.add(production.color, production.amount)
-                    } else {
-                        currentPool.addColorless(production.colorless)
-                    }
+                for ((sourceId, production) in solution.manaProduced) {
+                    currentPool = currentPool.addUnrestrictedProduction(sourceId, production, playerId)
                 }
             } else {
                 // Split off sources that carry a tap-permanents sub-cost (Springleaf Drum) —
@@ -1083,12 +1080,8 @@ class ManaPaymentContinuationResumer(
                 }
                 currentState = tapResult.state
                 events.addAll(tapResult.events)
-                for ((_, production) in solution.manaProduced) {
-                    currentPool = if (production.color != null) {
-                        currentPool.add(production.color, production.amount)
-                    } else {
-                        currentPool.addColorless(production.colorless)
-                    }
+                for ((sourceId, production) in solution.manaProduced) {
+                    currentPool = currentPool.addUnrestrictedProduction(sourceId, production, playerId)
                 }
             } else {
                 val manual = applyManualSourceSelection(
@@ -1263,12 +1256,8 @@ class ManaPaymentContinuationResumer(
             currentState = tapResult.state
             events.addAll(tapResult.events)
 
-            for ((_, production) in solution.manaProduced) {
-                currentPool = if (production.color != null) {
-                    currentPool.add(production.color)
-                } else {
-                    currentPool.addColorless(production.colorless)
-                }
+            for ((sourceId, production) in solution.manaProduced) {
+                currentPool = currentPool.addUnrestrictedProduction(sourceId, production, playerId)
             }
         }
 
@@ -1344,12 +1333,8 @@ class ManaPaymentContinuationResumer(
                 currentState = tapResult.state
                 events.addAll(tapResult.events)
 
-                for ((_, production) in solution.manaProduced) {
-                    currentPool = if (production.color != null) {
-                        currentPool.add(production.color, production.amount)
-                    } else {
-                        currentPool.addColorless(production.colorless)
-                    }
+                for ((sourceId, production) in solution.manaProduced) {
+                    currentPool = currentPool.addUnrestrictedProduction(sourceId, production, playerId)
                 }
             } else {
                 val manual = applyManualSourceSelection(
@@ -1446,8 +1431,7 @@ class ManaPaymentContinuationResumer(
         for (resolved in resolvedSources) {
             val source = resolved.option
             val sourceId = source.entityId
-            val sourceSubtypes = currentState.getEntity(sourceId)
-                ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
+            val sourceSubtypes = currentState.projectedState.productionSourceSubtypes(sourceId)
 
             if (source.requiresSacrifice) {
                 val sourceController = currentState.getEntity(sourceId)
@@ -1495,12 +1479,14 @@ class ManaPaymentContinuationResumer(
                     color = PaymentManaColor.fromEngine(resolved.producedColor),
                     sourceId = sourceId,
                     subtypes = sourceSubtypes,
+                    knownToPlayers = setOf(fallbackControllerId),
                 )
             } else if (source.producesColorless) {
                 currentPool = currentPool.addTracked(
                     color = PaymentManaColor.COLORLESS,
                     sourceId = sourceId,
                     subtypes = sourceSubtypes,
+                    knownToPlayers = setOf(fallbackControllerId),
                 )
             }
         }
@@ -1648,8 +1634,7 @@ class ManaPaymentContinuationResumer(
             cardRegistry = services.cardRegistry,
         )?.singleOrNull()
             ?: return ExecutionResult.error(state, "Selected mana source cannot pay its activation cost")
-        val sourceSubtypes = state.getEntity(headSourceId)
-            ?.get<CardComponent>()?.typeLine?.subtypes.orEmpty()
+        val sourceSubtypes = state.projectedState.productionSourceSubtypes(headSourceId)
 
         if (response.selectedCards.size != subCost.count) {
             return ExecutionResult.error(state, "Expected ${subCost.count} target(s) for ${sourceOption.name}'s tap cost")
@@ -1710,12 +1695,14 @@ class ManaPaymentContinuationResumer(
                 color = PaymentManaColor.fromEngine(resolvedSource.producedColor),
                 sourceId = headSourceId,
                 subtypes = sourceSubtypes,
+                knownToPlayers = setOf(continuation.payingPlayerId),
             )
         } else if (sourceOption.producesColorless) {
             pool.addTracked(
                 color = PaymentManaColor.COLORLESS,
                 sourceId = headSourceId,
                 subtypes = sourceSubtypes,
+                knownToPlayers = setOf(continuation.payingPlayerId),
             )
         } else {
             pool

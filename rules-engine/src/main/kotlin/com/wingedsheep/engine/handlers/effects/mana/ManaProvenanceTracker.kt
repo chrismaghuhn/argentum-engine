@@ -1,8 +1,8 @@
 package com.wingedsheep.engine.handlers.effects.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypes
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.core.Subtype
@@ -30,8 +30,9 @@ object ManaProvenanceTracker {
     /**
      * Increment the producing player's provenance counters when [sourceId] produced [amount] mana.
      * [sourceSubtypes] is the production-time snapshot when the caller already captured it before
-     * a tap/sacrifice. The fallback reads the source at this actual production seam only; payment
-     * code never calls this method to reconstruct a historical bucket.
+     * a tap/sacrifice. The fallback reads effective projected characteristics at this actual
+     * production seam only; payment code never calls this method to reconstruct a historical
+     * bucket.
      */
     fun addUnrestrictedMana(
         state: GameState,
@@ -43,7 +44,7 @@ object ManaProvenanceTracker {
     ): GameState {
         if (amount <= 0) return state
         val subtypes = sourceSubtypes ?: sourceId?.let {
-            state.getEntity(it)?.get<CardComponent>()?.typeLine?.subtypes?.toSet()
+            state.projectedState.productionSourceSubtypes(it)
         } ?: emptySet()
         return state.updateEntity(playerId) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()

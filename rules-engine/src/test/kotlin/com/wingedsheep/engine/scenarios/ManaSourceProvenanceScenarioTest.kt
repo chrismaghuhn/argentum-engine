@@ -1,11 +1,14 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.SpellCastEvent
+import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Triggers
@@ -45,7 +48,16 @@ class ManaSourceProvenanceScenarioTest : ScenarioTestBase() {
                 game.execute(ActivateAbility(game.player1Id, riftId, manaAbilityId)).error shouldBe null
 
                 // Cast the creature spending that mana; the Rift's trigger sees its own mana.
-                game.castSpell(1, "Provenance Bear").error shouldBe null
+                val castResult = game.castSpell(1, "Provenance Bear")
+                castResult.error shouldBe null
+
+                val castEvent = castResult.events.filterIsInstance<SpellCastEvent>().single()
+                castEvent.spentManaSourceIds shouldBe setOf(riftId)
+                castEvent.spentManaSubtypes shouldBe setOf(Subtype.FOREST)
+                val remainingPool = game.state.getEntity(game.player1Id)
+                    ?.get<ManaPoolComponent>()?.toManaPool()
+                remainingPool?.manaBySource shouldBe emptyMap()
+                remainingPool?.manaBySubtype shouldBe emptyMap()
                 game.resolveStack()
 
                 game.getLifeTotal(1) shouldBe 25
@@ -106,7 +118,7 @@ class ManaSourceProvenanceScenarioTest : ScenarioTestBase() {
     companion object {
         /** A land that taps for {G} and rewards casting a permanent spell with its own mana. */
         private val ProvenanceRift = card("Provenance Rift") {
-            typeLine = "Land"
+            typeLine = "Land — Forest"
             activatedAbility {
                 cost = Costs.Tap
                 effect = Effects.AddMana(Color.GREEN, 1)
