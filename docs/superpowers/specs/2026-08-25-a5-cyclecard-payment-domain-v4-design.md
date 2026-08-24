@@ -32,9 +32,11 @@ The supported slice is generic, action-level, and deliberately narrower than all
 - The cycling cost must be fixed and must match the publicly advertised `LegalAction.manaCostString`
   exactly after parsing/canonicalization.
 - Every symbol must be an ordinary colored, colorless, or generic mana symbol.
-- The public domain is built from that exact cost through the existing `PaymentDomainBuilder`, with
-  no CastSpell-specific `SpellPaymentContext`; a null context means the ordinary unrestricted
-  payment-source semantics used by Rules for this action.
+- Plain Cycling constructs one canonical activated-ability payment context with
+  `buildAbilityPaymentContext(cardComponent = cardComponent, projected = state.projectedState,
+  sourceId = action.cardId, ability = null)`. The same non-null context is reused by action
+  enumeration, public domain publication, explicit-plan validation/materialization, and the
+  legacy solver path. No caller may substitute a null/unrestricted payment context.
 - The public Gym carrier is always `PaymentStrategy.ExplicitV2` containing `PaymentPlanV2`.
 
 Costs containing `X`, hybrid/Phyrexian/two-brid or other unsupported symbols, target-dependent or
@@ -58,36 +60,49 @@ responsibilities are:
 - emit the normal `ManaSpentEvent` plus the side-effect events.
 
 The executor must not calculate spell/ability costs, apply permissions or reductions, select a
-`SpellPaymentContext`, choose targets, call `ManaSolver.solve`, or fall back to AutoPay/FromPool or
-legacy source-ID payment. It accepts the already-authoritative cost/context/exclusion inputs from
-its caller. Existing CastSpell V2 materialization should use this executor so there is one generic
-V2 materialization implementation, while CastSpell-specific cost and permission logic remains in
-`CastSpellHandler`/`CastPaymentProcessor`.
+context, choose targets, call `ManaSolver.solve`, or fall back to AutoPay/FromPool or legacy
+source-ID payment. It accepts the already-authoritative cost, non-null payment context, source
+exclusions, and event reason from its caller. `ManaSpentEvent.reason` is caller-owned (for example,
+`Cast X` versus `Cycle X`); the executor knows no action type.
+
+If V2 validation or selected-source materialization fails, the executor returns the original state,
+no partial payment events, and the error. Existing CastSpell V2 materialization should use this
+executor so there is one generic V2 materialization implementation, while CastSpell-specific cost
+and permission logic remains in `CastSpellHandler`/`CastPaymentProcessor`.
 
 `CycleCardHandler` will:
 
 - retain its existing legacy behavior for non-Gym callers;
 - recognize `ExplicitV2` only for a fixed ordinary cycling cost;
+- construct the canonical activated-ability context once and use it for affordability, V2
+  validation/materialization, and the legacy solver path;
 - validate the exact plan without mutating state in `validate`; and
 - revalidate/materialize the plan through the shared executor before the existing discard, cycling
   event, trigger, and draw sequence in `execute`.
 
 Any rejected or incomplete plan returns the original state and emits no payment or cycling events.
-The CycleCard caller supplies no CastSpell context; its payment is an ordinary activation payment.
+The CycleCard caller supplies the canonical activated-ability context; it does not use a CastSpell
+context or a null/unrestricted context.
 
 ### 2. Exact CycleCard domain certification
 
 Extend `ObservationBuilder.paymentDomainFor` with a `CycleCard` branch that resolves the card's
-plain cycling ability and proves the following before calling `PaymentDomainBuilder`:
+plain cycling ability, constructs the canonical activated-ability context, and proves the following
+before calling `PaymentDomainBuilder`:
 
 - the legal action is `CycleCard` and its cycling ability is plain, not typed;
 - neither the legal action nor the authoritative cycling cost is an X/dynamic form;
 - the parsed authoritative cost equals the legal action's advertised cost; and
 - all symbols are ordinary fixed colored, colorless, or generic symbols.
 
-The builder receives the authoritative fixed cost string and a null payment context. It is the
-same source/profile/provenance builder used by other V4 actions. If any proof fails, it returns
+The builder receives the authoritative fixed cost string and the canonical non-null context. It is
+the same source/profile/provenance builder used by other V4 actions. If any proof fails, it returns
 null rather than publishing an optimistic or partial domain.
+
+`CyclingEnumerator` must construct and reuse the same context for `ManaSolver.canPay` and
+`ManaSolver.solve` when it sets `LegalAction.affordable` and `autoTapPreview`. This keeps
+enumeration, public certification, and authoritative execution aligned for context-sensitive mana
+abilities; no context-free affordability or solver preview is permitted for plain Cycling.
 
 ### 3. Strict Gym routing
 
@@ -112,7 +127,13 @@ The test sequence is RED → GREEN and must prove the real path:
    completes.
 5. Invalid/incomplete plans, unpublished source choices, `AutoPay`, `FromPool`, and legacy
    source-ID-only payment reject without advancing the environment.
-6. Dynamic/X, hybrid/unsupported-symbol, typed-cycling, and any future additional-payment shapes
+6. A mana source whose restriction is not satisfied by the Cycling activated-ability context must
+   not make cycling affordable and must not be accepted as a CycleCard payment source. If the
+   restricted shape is not representable by V4, the complete action remains fail-closed.
+7. At least one existing CastSpell ExplicitV2 end-to-end test proves that extracting the shared
+   executor preserves pool spend, source activation, side effects, unspent fixed outputs,
+   `ManaSpentEvent`, and provenance semantics.
+8. Dynamic/X, hybrid/unsupported-symbol, typed-cycling, and any future additional-payment shapes
    remain fail-closed with `paymentDomain = null`.
 
 ## Documentation and scope
