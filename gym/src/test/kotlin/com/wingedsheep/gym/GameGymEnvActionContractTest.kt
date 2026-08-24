@@ -662,6 +662,17 @@ class GameGymEnvActionContractTest : FunSpec({
         unaffordableView.requiresStructuredAction shouldBe unaffordableView.requiredPayloadFields.isNotEmpty()
     }
 
+    test("unknown required payload fields fail closed during canonicalization") {
+        val failure = shouldThrow<IllegalStateException> {
+            ActionPayloadRequirements.canonicalizeRequiredPayloadFields(
+                setOf("futureFieldB", "futureFieldA")
+            )
+        }
+
+        failure.message shouldBe
+            "Missing canonical required-payload field(s): [futureFieldA, futureFieldB]"
+    }
+
     test("combat declaration templates require explicit empty-or-populated choices") {
         val player = EntityId("player")
         val cases = listOf(

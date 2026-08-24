@@ -13,7 +13,8 @@ import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import kotlinx.serialization.json.JsonObject
 
 /**
- * Identifies legal-action entries whose engine action is a template and therefore cannot be
+ * Gym-owned canonical payload-requirement projection over the Rules-owned [LegalAction] contract.
+ * It identifies legal-action entries whose engine action is a template and therefore cannot be
  * committed by an action ID alone. The caller must copy [LegalActionView.actionSemantics], fill
  * every required choice field, and use the structured step input. No target, payment, mode,
  * combat declaration, or other player choice is selected here.
@@ -45,11 +46,24 @@ object ActionPayloadRequirements {
         "blockers",
         "orderedBlockers",
     )
+    private val canonicalFieldSet = canonicalFieldOrder.toSet()
 
     /** The external JSON fields that must be present, even when their value is an explicit empty choice. */
     fun requiredPayloadFields(action: LegalAction): List<String> {
-        val required = requiredFieldSet(action)
-        return canonicalFieldOrder.filter(required::contains)
+        return canonicalizeRequiredPayloadFields(requiredFieldSet(action))
+    }
+
+    /**
+     * Applies stable wire ordering and rejects fields that have no canonical wire position.
+     * Keeping this check at the shared projection seam makes both observation and trusted
+     * validation fail closed when a new requirement is added without updating the wire contract.
+     */
+    internal fun canonicalizeRequiredPayloadFields(requiredFields: Set<String>): List<String> {
+        val unknown = requiredFields - canonicalFieldSet
+        check(unknown.isEmpty()) {
+            "Missing canonical required-payload field(s): ${unknown.sorted()}"
+        }
+        return canonicalFieldOrder.filter(requiredFields::contains)
     }
 
     private fun requiredFieldSet(action: LegalAction): Set<String> = buildSet {

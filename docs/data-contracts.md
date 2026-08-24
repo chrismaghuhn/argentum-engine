@@ -759,8 +759,9 @@ Each `LegalActionView` publishes `requiredPayloadFields`, an ordered and dedupli
 structured JSON fields the acting controller must provide. `requiresStructuredAction` is exactly the
 non-empty projection of that list. The list is structural and remains published for unaffordable
 actions; an explicitly empty choice such as `additionalCostPayment` for a zero-card sacrifice is
-still required. The trusted server validates against the Rules-owned requirement helper and never
-infers a missing value from presentation fields.
+still required. The trusted server validates against the Gym-owned canonical requirement projection
+over the Rules-owned `LegalAction` contract and never infers a missing value from presentation
+fields.
 
 The domain hierarchy covers targets, card selection, modes, distribution, ordering, pile splitting,
 library search, library reorder, combat resolution, mana-source selection, replacement choices and
