@@ -161,6 +161,18 @@ class DeterministicExternalPolicy {
         action: com.wingedsheep.gym.contract.LegalActionView,
     ): SemanticChoice {
         val semanticKey = canonical(action.actionSemantics)
+        val requiredFields = action.requiredPayloadFields
+        val requiredFieldSet = requiredFields.toSet()
+        if (action.requiresStructuredAction != requiredFields.isNotEmpty()) {
+            return SemanticChoice.Gap(
+                family = action.kind,
+                code = "A5_DECISION_GAP",
+                reason =
+                    "Public structured-action marker disagrees with requiredPayloadFields",
+                actionKind = action.kind,
+                publicDomain = "requiredPayloadFields=$requiredFields",
+            )
+        }
         if (!action.requiresStructuredAction) {
             return SemanticChoice.Action(action.actionId, semanticKey, action.kind, null)
         }
@@ -170,7 +182,7 @@ class DeterministicExternalPolicy {
         }
         var completedChoice = false
 
-        if (action.manaCost != null) {
+        if ("paymentStrategy" in requiredFieldSet) {
             val domain = action.paymentDomain
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
@@ -199,7 +211,7 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        if (action.hasXCost) {
+        if ("xValue" in requiredFieldSet) {
             val maxX = action.maxAffordableX
                 ?: return SemanticChoice.Gap(
                     family = action.kind,
@@ -211,7 +223,7 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        if (action.minTargets > 0 || action.targetEntityIds.isNotEmpty()) {
+        if ("targets" in requiredFieldSet) {
             val targetCount = action.minTargets.coerceAtLeast(0)
             if (targetCount > action.maxTargets || targetCount > action.targetEntityIds.size) {
                 return SemanticChoice.Gap(
@@ -237,11 +249,25 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        if (action.sacrificeCount > 0 || action.sacrificeMinCount > 0) {
-            val count = if (action.sacrificeCount > 0) {
-                action.sacrificeCount
-            } else {
-                action.sacrificeMinCount
+        val additionalCostField = when {
+            "additionalCostPayment" in requiredFieldSet -> "additionalCostPayment"
+            "costPayment" in requiredFieldSet -> "costPayment"
+            else -> null
+        }
+        if (additionalCostField != null) {
+            val count = when {
+                action.sacrificeCount > 0 -> action.sacrificeCount
+                action.sacrificeMinCount > 0 -> action.sacrificeMinCount
+                else -> 0
+            }
+            if (action.sacrificeMaxCount > 0 && count > action.sacrificeMaxCount) {
+                return SemanticChoice.Gap(
+                    family = "ADDITIONAL_COST",
+                    code = "A5_DECISION_GAP",
+                    reason = "Published sacrifice domain cannot satisfy its cardinality",
+                    actionKind = action.kind,
+                    publicDomain = "requiredPayloadFields=$requiredFields",
+                )
             }
             val choices = action.validSacrificeTargets.sortedBy { it.value }.take(count)
             if (choices.size != count) {
@@ -252,12 +278,7 @@ class DeterministicExternalPolicy {
                     actionKind = action.kind,
                 )
             }
-            val field = if (action.kind.contains("Activate", ignoreCase = true)) {
-                "costPayment"
-            } else {
-                "additionalCostPayment"
-            }
-            payload[field] = buildJsonObject {
+            payload[additionalCostField] = buildJsonObject {
                 put(
                     "sacrificedPermanents",
                     JsonArray(choices.map { id -> JsonPrimitive(id.value) }),
@@ -266,12 +287,23 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        if (action.requiresDamageDistribution) {
+        if ("damageDistribution" in requiredFieldSet) {
             return SemanticChoice.Gap(
                 family = "DAMAGE_ASSIGNMENT",
                 code = "A5_DECISION_GAP",
                 reason = "Flat action does not publish a complete damage-distribution domain",
                 actionKind = action.kind,
+            )
+        }
+
+        val missingFields = requiredFields.filterNot(payload::containsKey)
+        if (missingFields.isNotEmpty()) {
+            return SemanticChoice.Gap(
+                family = action.kind,
+                code = "A5_DECISION_GAP",
+                reason = "Public requiredPayloadFields were not completed",
+                actionKind = action.kind,
+                publicDomain = "requiredPayloadFields=$requiredFields; missing=$missingFields",
             )
         }
 

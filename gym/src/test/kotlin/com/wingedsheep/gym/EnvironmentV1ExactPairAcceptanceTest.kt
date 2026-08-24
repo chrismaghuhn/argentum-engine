@@ -142,6 +142,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             manaCost = "{1}{B}",
             paymentDomain = paymentDomain,
             requiresStructuredAction = true,
+            requiredPayloadFields = listOf("paymentStrategy"),
             actionSemantics = buildJsonObject {
                 put("type", "ActivateAbility")
                 put("abilityKey", "ability-1")
