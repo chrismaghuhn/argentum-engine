@@ -83,6 +83,12 @@ val completed = action.actionSemantics!! // fill explicit choice fields first
 svc.step(StepRequest(envId, action.actionId, completed))
 ```
 
+`requiredPayloadFields` is the canonical ordered list of JSON keys the controller must provide.
+It is deduplicated even when multiple rules require the same field, and it remains structural for
+unaffordable actions. For example, a valid zero-card variable sacrifice still requires an explicit
+`additionalCostPayment` object with an empty permanent list; Gym never infers that choice from
+`sacrificeCount`.
+
 The server-side registry supplies only opaque runtime fields (for example a
 generated activated-ability handle). Candidate binding and rules validation are
 authoritative; Gym never auto-selects a target or payment.

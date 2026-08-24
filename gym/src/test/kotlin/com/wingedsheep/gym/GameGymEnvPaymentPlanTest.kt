@@ -363,6 +363,7 @@ class GameGymEnvPaymentPlanTest : FunSpec({
 
         view.kind shouldBe "CastSpell"
         view.manaCost shouldBe "{1}{B}"
+        view.requiredPayloadFields shouldBe listOf("paymentStrategy")
         view.paymentDomain?.requiredCost shouldBe "{1}{B}"
         view.paymentDomain?.costUnits?.map { it.symbolIndex } shouldBe listOf(0, 1)
 
@@ -374,6 +375,7 @@ class GameGymEnvPaymentPlanTest : FunSpec({
 
         view.kind shouldBe "CastSpellMode"
         view.manaCost shouldBe "{R}{W}"
+        view.requiredPayloadFields.contains("paymentStrategy") shouldBe true
         view.actionSemantics!!["chosenModes"]!!.jsonArray
             .map { it.jsonPrimitive.content } shouldBe listOf("1")
         view.paymentDomain?.requiredCost shouldBe "{R}{W}"

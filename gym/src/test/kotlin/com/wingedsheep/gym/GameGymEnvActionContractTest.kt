@@ -3,6 +3,7 @@ package com.wingedsheep.gym
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.CrewVehicle
 import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.CostUnitAllocation
@@ -26,6 +27,8 @@ import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.AdditionalCostData
+import com.wingedsheep.engine.legalactions.ModalEnumerationMode
+import com.wingedsheep.engine.legalactions.ModalLegalEnumeration
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
@@ -321,6 +324,8 @@ class GameGymEnvActionContractTest : FunSpec({
             it.kind == "CastSpell" && it.minTargets > 0 && it.actionSemantics != null
         } ?: error("Expected targeted action, got: ${observed.observation.legalActions}")
         targeted.requiresStructuredAction shouldBe true
+        targeted.requiredPayloadFields shouldContain "targets"
+        targeted.requiresStructuredAction shouldBe targeted.requiredPayloadFields.isNotEmpty()
         val stepCountBefore = environment.stepCount
 
         shouldThrow<IllegalArgumentException> {
@@ -498,6 +503,8 @@ class GameGymEnvActionContractTest : FunSpec({
 
         view.manaCost shouldBe "{1}{R}"
         view.requiresStructuredAction shouldBe true
+        view.requiredPayloadFields shouldBe listOf("paymentStrategy")
+        view.requiresStructuredAction shouldBe view.requiredPayloadFields.isNotEmpty()
         val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV4")
         paymentDomain.sourceActivations.single().sourceId shouldBe mountainId
         paymentDomain.sourceActivations.single().productionChoices
@@ -612,6 +619,58 @@ class GameGymEnvActionContractTest : FunSpec({
         view.sacrificeMinCount shouldBe 0
         view.sacrificeMaxCount shouldBe 2
         view.requiresStructuredAction shouldBe true
+        view.requiredPayloadFields shouldBe listOf("additionalCostPayment")
+        view.requiresStructuredAction shouldBe view.requiredPayloadFields.isNotEmpty()
+    }
+
+    test("required payload fields are canonical, deduplicated, and structural when unaffordable") {
+        val environment = GameEnvironment.create(registry())
+        environment.reset(config())
+        val player = environment.playerIds.first()
+        val action = LegalAction(
+            action = PassPriority(player),
+            actionType = "CastSpell",
+            description = "Plumb-shaped structured action",
+            manaCostString = "{X}",
+            hasXCost = true,
+            additionalCostInfo = AdditionalCostData(
+                description = "Sacrifice any number",
+                costType = "VariableSacrifice",
+                sacrificeMinCount = 0,
+                sacrificeMaxCount = 0,
+            ),
+            requiresForage = true,
+        )
+
+        ActionPayloadRequirements.requiredPayloadFields(action) shouldBe
+            listOf("xValue", "paymentStrategy", "additionalCostPayment")
+        ActionPayloadRequirements.missingRequiredFields(action, buildJsonObject {}) shouldBe
+            listOf("xValue", "paymentStrategy", "additionalCostPayment")
+
+        fun viewFor(candidate: LegalAction): TrainingObservation =
+            ObservationBuilder(cardRegistry = registry())
+                .build(environment.state, player, listOf(candidate))
+                .observation as TrainingObservation
+
+        val affordableView = viewFor(action).legalActions.single()
+        val unaffordableView = viewFor(action.copy(affordable = false)).legalActions.single()
+
+        affordableView.requiredPayloadFields shouldBe
+            listOf("xValue", "paymentStrategy", "additionalCostPayment")
+        unaffordableView.requiredPayloadFields shouldBe affordableView.requiredPayloadFields
+        affordableView.requiresStructuredAction shouldBe affordableView.requiredPayloadFields.isNotEmpty()
+        unaffordableView.requiresStructuredAction shouldBe unaffordableView.requiredPayloadFields.isNotEmpty()
+    }
+
+    test("unknown required payload fields fail closed during canonicalization") {
+        val failure = shouldThrow<IllegalStateException> {
+            ActionPayloadRequirements.canonicalizeRequiredPayloadFields(
+                setOf("futureFieldB", "futureFieldA")
+            )
+        }
+
+        failure.message shouldBe
+            "Missing canonical required-payload field(s): [futureFieldA, futureFieldB]"
     }
 
     test("combat declaration templates require explicit empty-or-populated choices") {
@@ -652,7 +711,7 @@ class GameGymEnvActionContractTest : FunSpec({
                 description = "crew",
                 tapForPower = true
             )
-        ) shouldBe setOf("crewCreatures")
+        ) shouldBe listOf("crewCreatures")
         ActionPayloadRequirements.requiredPayloadFields(
             LegalAction(
                 action = SaddleMount(player, mount, emptyList()),
@@ -660,7 +719,7 @@ class GameGymEnvActionContractTest : FunSpec({
                 description = "saddle",
                 tapForPower = true
             )
-        ) shouldBe setOf("saddleCreatures")
+        ) shouldBe listOf("saddleCreatures")
         ActionPayloadRequirements.requiredPayloadFields(
             LegalAction(
                 action = CycleCard(player, EntityId("cycling-card")),
@@ -669,7 +728,7 @@ class GameGymEnvActionContractTest : FunSpec({
                 manaCostString = "{X}",
                 hasXCost = true
             )
-        ) shouldBe setOf("xValue", "paymentStrategy")
+        ) shouldBe listOf("xValue", "paymentStrategy")
         ActionPayloadRequirements.requiredPayloadFields(
             LegalAction(
                 action = TurnFaceUp(player, EntityId("face-down")),
@@ -678,7 +737,7 @@ class GameGymEnvActionContractTest : FunSpec({
                 manaCostString = "{X}",
                 hasXCost = true
             )
-        ) shouldBe setOf("xValue", "paymentStrategy")
+        ) shouldBe listOf("xValue", "paymentStrategy")
 
         ActionPayloadRequirements.requiredPayloadFields(
             LegalAction(
@@ -693,7 +752,28 @@ class GameGymEnvActionContractTest : FunSpec({
                 actionType = "ActivateAbility",
                 description = "Equip {0}"
             )
-        ) shouldBe setOf("alternativePayment")
+        ) shouldBe listOf("alternativePayment")
+
+        ActionPayloadRequirements.requiredPayloadFields(
+            LegalAction(
+                action = CastSpell(player, EntityId("modal-spell")),
+                actionType = "CastSpellModal",
+                description = "choose modes",
+                modalEnumeration = ModalLegalEnumeration(
+                    chooseCount = 2,
+                    minChooseCount = 1,
+                    allowRepeat = false,
+                    modes = listOf(
+                        ModalEnumerationMode(
+                            index = 0,
+                            description = "mode",
+                            available = true,
+                        )
+                    ),
+                    unavailableIndices = emptyList(),
+                ),
+            )
+        ) shouldBe listOf("chosenModes", "modeTargetsOrdered")
     }
 
     test("structured candidate binding accepts choices but preserves action identity") {

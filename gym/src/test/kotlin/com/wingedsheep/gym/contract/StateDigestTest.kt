@@ -95,6 +95,29 @@ class StateDigestTest : FunSpec({
         StateDigest.compute(base) shouldNotBe StateDigest.compute(changed)
     }
 
+    test("required payload fields are digest-relevant") {
+        val base = observation(environment())
+        val first = base.legalActions.first()
+        val withoutFields = base.copy(
+            legalActions = listOf(
+                first.copy(
+                    requiresStructuredAction = true,
+                    requiredPayloadFields = emptyList(),
+                )
+            ) + base.legalActions.drop(1)
+        )
+        val withFields = base.copy(
+            legalActions = listOf(
+                first.copy(
+                    requiresStructuredAction = true,
+                    requiredPayloadFields = listOf("paymentStrategy", "additionalCostPayment"),
+                )
+            ) + base.legalActions.drop(1)
+        )
+
+        StateDigest.compute(withoutFields) shouldNotBe StateDigest.compute(withFields)
+    }
+
     test("CastSpell payment domains are digest-relevant") {
         val base = observation(environment())
         val candidate = LegalActionView(

@@ -274,6 +274,8 @@ data class LegalActionView(
     val isManaAbility: Boolean = false,
     /** True when an action ID alone is not an executable player choice. */
     val requiresStructuredAction: Boolean = false,
+    /** Canonical external JSON fields required to complete this structured action. */
+    val requiredPayloadFields: List<String> = emptyList(),
     /**
      * Structured, presentation-free action identity used by semantic equality and StateDigest.
      * This includes the engine action/decision payload but excludes the transport handle and

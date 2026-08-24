@@ -561,6 +561,7 @@ class ObservationBuilder(
         val sacrificeInfo = la.additionalCostInfo
             ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
         val singleRequirement = targetDomain.requirements.singleOrNull()
+        val requiredPayloadFields = ActionPayloadRequirements.requiredPayloadFields(la)
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
@@ -586,7 +587,8 @@ class ObservationBuilder(
                 ?: 0,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
-            requiresStructuredAction = ActionPayloadRequirements.requiresStructuredAction(la),
+            requiresStructuredAction = requiredPayloadFields.isNotEmpty(),
+            requiredPayloadFields = requiredPayloadFields,
             actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )
