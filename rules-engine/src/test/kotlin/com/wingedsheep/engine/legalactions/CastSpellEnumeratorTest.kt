@@ -14,6 +14,7 @@ import com.wingedsheep.mtg.sets.definitions.dom.cards.StrongholdConfessor
 import com.wingedsheep.mtg.sets.definitions.ktk.cards.TormentingVoice
 import com.wingedsheep.mtg.sets.definitions.ecl.cards.BrigidsCommand
 import com.wingedsheep.mtg.sets.definitions.ecl.cards.MorningtidesLight
+import com.wingedsheep.mtg.sets.definitions.otj.cards.GoldRush
 import com.wingedsheep.sdk.core.Step
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -142,6 +143,7 @@ class CastSpellEnumeratorTest : FunSpec({
 
         cast.requiresTargets shouldBe true
         cast.targetCount shouldBe 1
+        cast.minTargets shouldBe 1
         cast.validTargets shouldNotBe null
         // AnyTarget allows both players; both should be in the valid set.
         cast.validTargets!! shouldContain driver.player1
@@ -166,12 +168,14 @@ class CastSpellEnumeratorTest : FunSpec({
         cast.targetDomainSupport shouldBe TargetDomainSupport.SUPPORTED
         cast.targetRequirements shouldHaveSize 2
         cast.targetRequirements.map { it.index } shouldBe listOf(0, 1)
+        cast.targetRequirements.map { it.minTargets to it.maxTargets } shouldBe
+            listOf(1 to 1, 1 to 1)
         cast.targetRequirements[0].validTargets shouldContain driver.game.state.getBattlefield(driver.player1)
             .first { id -> driver.game.state.getEntity(id)?.get<CardComponent>()?.name == "Grizzly Bears" }
         cast.targetRequirements[1].validTargets shouldContain opponentCreature
     }
 
-    test("targetless cast keeps the raw 1/1 compatibility fields but has an empty requirement list") {
+    test("targetless cast uses canonical raw 0/0 cardinality with an empty requirement list") {
         val driver = setupP1(
             hand = listOf("Grizzly Bears"),
             battlefield = listOf("Forest", "Forest"),
@@ -181,8 +185,23 @@ class CastSpellEnumeratorTest : FunSpec({
 
         cast.targetRequirements shouldBe emptyList()
         cast.targetDomainSupport shouldBe TargetDomainSupport.SUPPORTED
-        cast.minTargets shouldBe 1
+        cast.minTargets shouldBe 0
+        cast.targetCount shouldBe 0
+    }
+
+    test("optional target exposes raw 0/1 cardinality") {
+        val driver = setupP1(
+            hand = listOf("Gold Rush"),
+            battlefield = listOf("Forest", "Forest", "Llanowar Elves"),
+            extraSetCards = listOf(GoldRush),
+        )
+
+        val cast = driver.enumerateFor(driver.player1).castActionsFor("Gold Rush").single()
+
+        cast.requiresTargets shouldBe true
+        cast.minTargets shouldBe 0
         cast.targetCount shouldBe 1
+        cast.targetRequirements.map { it.minTargets to it.maxTargets } shouldBe listOf(0 to 1)
     }
 
     test("'any number of target creatures' caps at the legal-target count, not the static count of 1") {

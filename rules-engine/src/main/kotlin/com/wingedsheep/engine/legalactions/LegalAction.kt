@@ -34,7 +34,7 @@ data class LegalAction(
      * The one exception is an X-driven cap ([xConstrainsTargetCount]): X is unbound at
      * enumeration time, so this stays a placeholder the client replaces with the chosen X.
      */
-    val targetCount: Int = 1,
+    val targetCount: Int = 0,
     val minTargets: Int = targetCount,
     val targetDescription: String? = null,
     /**
