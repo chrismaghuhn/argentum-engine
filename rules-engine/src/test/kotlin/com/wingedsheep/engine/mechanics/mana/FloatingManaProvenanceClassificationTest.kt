@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.engine.state.components.player.RestrictedManaEntry
@@ -124,6 +125,71 @@ class FloatingManaProvenanceClassificationTest : FunSpec({
             CertifiedFloatingManaSourceColorBucket(EntityId("e117"), PaymentManaColor.GREEN, 1),
             CertifiedFloatingManaSourceColorBucket(EntityId("e136"), PaymentManaColor.GREEN, 2),
         )
+    }
+
+    test("certifies complete joint buckets including an explicitly empty subtype snapshot") {
+        val forestSource = EntityId("forest-source")
+        val emptySource = EntityId("empty-source")
+        val forestKey = FloatingManaBucketKeyV1(
+            sourceId = forestSource,
+            poolColor = PaymentManaColor.GREEN,
+            sourceSubtypes = setOf(Subtype.FOREST),
+        )
+        val emptyKey = FloatingManaBucketKeyV1(
+            sourceId = emptySource,
+            poolColor = PaymentManaColor.BLACK,
+            sourceSubtypes = emptySet(),
+        )
+
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent()
+                .addTracked(PaymentManaColor.GREEN, forestSource, setOf(Subtype.FOREST))
+                .addTracked(PaymentManaColor.BLACK, emptySource, emptySet()),
+        )
+
+        val certified = result.shouldBeInstanceOf<FloatingManaProvenanceClassification.CertifiedJoint>()
+        certified.candidate.buckets shouldBe listOf(
+            CertifiedFloatingManaBucket(forestKey, 1),
+            CertifiedFloatingManaBucket(emptyKey, 1),
+        )
+    }
+
+    test("rejects complete joint buckets when aggregate subtype provenance is partial") {
+        val sourceId = EntityId("partial-joint-source")
+        val forestKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
+        val emptyKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, emptySet())
+
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 2,
+                manaBySource = mapOf(sourceId to 2),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+                manaBySourceAndColor = mapOf(sourceId to mapOf(PaymentManaColor.GREEN to 2)),
+                manaByFloatingBucket = mapOf(forestKey to 1, emptyKey to 1),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
+    }
+
+    test("rejects detailed homogeneous partial subtype provenance") {
+        val sourceId = EntityId("partial-homogeneous-source")
+        val forestKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
+        val emptyKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, emptySet())
+
+        val result = FloatingManaProvenanceClassification.classify(
+            ManaPoolComponent(
+                green = 2,
+                manaBySource = mapOf(sourceId to 2),
+                manaBySubtype = mapOf(Subtype.FOREST to 1),
+                manaBySourceAndColor = mapOf(sourceId to mapOf(PaymentManaColor.GREEN to 2)),
+                manaByFloatingBucket = mapOf(forestKey to 1, emptyKey to 1),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            ),
+        )
+
+        result.shouldBeInstanceOf<FloatingManaProvenanceClassification.Ambiguous>()
     }
 
     test("rejects complete heterogeneous detail with partial subtype provenance") {

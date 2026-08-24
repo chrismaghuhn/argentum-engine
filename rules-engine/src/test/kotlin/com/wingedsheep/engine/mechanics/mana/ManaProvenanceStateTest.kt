@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.sdk.core.Color
@@ -26,7 +27,33 @@ class ManaProvenanceStateTest : FunSpec({
         pool.manaBySourceAndColor shouldBe mapOf(
             sourceId to mapOf(PaymentManaColor.GREEN to 2),
         )
+        pool.manaByFloatingBucket shouldBe mapOf(
+            FloatingManaBucketKeyV1(
+                sourceId = sourceId,
+                poolColor = PaymentManaColor.GREEN,
+                sourceSubtypes = setOf(Subtype.FOREST),
+            ) to 2,
+        )
         pool.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.COMPLETE
+    }
+
+    test("tracked adds preserve mixed subtype and non-subtype buckets with identical source-color identity") {
+        val sourceId = EntityId("mixed-source")
+        val forestKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, setOf(Subtype.FOREST))
+        val emptyKey = FloatingManaBucketKeyV1(sourceId, PaymentManaColor.GREEN, emptySet())
+
+        val result = ManaPoolComponent()
+            .addTracked(PaymentManaColor.GREEN, sourceId, setOf(Subtype.FOREST))
+            .addTracked(PaymentManaColor.GREEN, sourceId, emptySet())
+
+        result.green shouldBe 2
+        result.manaBySource shouldBe mapOf(sourceId to 2)
+        result.manaBySourceAndColor shouldBe mapOf(
+            sourceId to mapOf(PaymentManaColor.GREEN to 2),
+        )
+        result.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        result.manaByFloatingBucket shouldBe mapOf(forestKey to 1, emptyKey to 1)
+        result.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.COMPLETE
     }
 
     test("tracked add cannot promote nonempty incomplete provenance") {
@@ -48,6 +75,7 @@ class ManaProvenanceStateTest : FunSpec({
         result.black shouldBe 1
         result.green shouldBe 1
         result.manaBySourceAndColor shouldBe emptyMap()
+        result.manaByFloatingBucket shouldBe emptyMap()
         result.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.INCOMPLETE
     }
 
@@ -84,6 +112,7 @@ class ManaProvenanceStateTest : FunSpec({
         result.black shouldBe 1
         result.red shouldBe 1
         result.manaBySourceAndColor shouldBe emptyMap()
+        result.manaByFloatingBucket shouldBe emptyMap()
         result.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.INCOMPLETE
     }
 
@@ -131,6 +160,7 @@ class ManaProvenanceStateTest : FunSpec({
         after.manaBySubtype shouldBe emptyMap()
         after.manaBySource shouldBe emptyMap()
         after.manaBySourceAndColor shouldBe emptyMap()
+        after.manaByFloatingBucket shouldBe emptyMap()
         after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.UNKNOWN
     }
 
@@ -153,6 +183,7 @@ class ManaProvenanceStateTest : FunSpec({
 
         after.green shouldBe 1
         after.manaBySourceAndColor shouldBe emptyMap()
+        after.manaByFloatingBucket shouldBe emptyMap()
         after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.INCOMPLETE
     }
 
@@ -165,5 +196,7 @@ class ManaProvenanceStateTest : FunSpec({
         ).emptyAtBoundary(convertToRed = false, retain = setOf(Color.GREEN))
 
         after shouldBe ManaPoolComponent()
+        after.manaByFloatingBucket shouldBe emptyMap()
+        after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.UNKNOWN
     }
 })

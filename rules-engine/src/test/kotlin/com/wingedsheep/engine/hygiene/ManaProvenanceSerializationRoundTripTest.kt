@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.hygiene
 
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -35,6 +36,10 @@ class ManaProvenanceSerializationRoundTripTest : FunSpec({
             manaBySourceAndColor = mapOf(
                 blackSource to mapOf(PaymentManaColor.BLACK to 1),
                 greenSource to mapOf(PaymentManaColor.GREEN to 3),
+            ),
+            manaByFloatingBucket = mapOf(
+                FloatingManaBucketKeyV1(blackSource, PaymentManaColor.BLACK, emptySet()) to 1,
+                FloatingManaBucketKeyV1(greenSource, PaymentManaColor.GREEN, setOf(Subtype.FOREST)) to 3,
             ),
             manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
         )
