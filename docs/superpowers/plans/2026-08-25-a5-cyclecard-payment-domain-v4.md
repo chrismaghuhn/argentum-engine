@@ -1,0 +1,107 @@
+# A5 CycleCard PaymentDomainV4 Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Publish and execute `PaymentDomainV4`/`PaymentPlanV2` for real plain `CycleCard` actions whose authoritative cycling cost is exactly fixed ordinary mana, while preserving the existing Rules semantics and failing closed for every unsupported payment shape.
+
+**Architecture:** Extract the generic `PaymentPlanV2` validation/materialization seam from `CastPaymentProcessor` into a Rules-side `ExplicitPaymentPlanExecutor` that accepts a caller-owned cost, non-null `SpellPaymentContext`, source exclusions, and `ManaSpentEvent.reason`. Keep CastSpell cost, permission, target, and spell-context construction in the Cast path. Make plain Cycling construct one canonical `buildAbilityPaymentContext(..., ability = null)` and reuse it in enumeration, public domain publication, `PaymentPlanValidator.validateV2`, the shared executor, and the legacy solver path. Extend Gym only after the Rules path is authoritative; strict CycleCard Gym accepts `ExplicitV2` only.
+
+**Tech Stack:** Kotlin, Gradle/just, Kotest, Argentum Rules ECS, `ManaSolver`, `PaymentPlanValidator`, `PaymentDomainV4`, `PaymentPlanV2`, and `PaymentStrategy.ExplicitV2`.
+
+---
+
+## File map
+
+- Create `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/ExplicitPaymentPlanExecutor.kt`: generic V2 validation, selected-source side effects, exact materialization, provenance, and caller-supplied payment event reason.
+- Create `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/FixedOrdinaryManaCost.kt`: one Rules-owned predicate for fixed ordinary mana certification, shared by CycleCard Rules and Gym publication.
+- Modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/actions/spell/CastPaymentProcessor.kt`: delegate only the ExplicitV2 materialization portion to the shared executor and fail closed if a V2 caller did not provide context.
+- Modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/actions/ability/CycleCardHandler.kt`: construct the canonical activated-ability context, validate/materialize ExplicitV2 before cycling effects, and pass the same context to legacy affordability/solver calls.
+- Modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/legalactions/enumerators/CyclingEnumerator.kt`: reuse the canonical context for plain and typed cycling affordability and auto-tap previews.
+- Modify `gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt`: certify only exact fixed ordinary plain Cycling costs and publish the domain with the canonical non-null context.
+- Modify `gym/src/main/kotlin/com/wingedsheep/gym/GameGymEnv.kt`: route CycleCard through the strict ExplicitV2-only Gym boundary.
+- Modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/AbilityPaymentContextBuilder.kt` only if its KDoc needs to document zone-scoped Cycling as a valid `ability = null` caller; do not alter the helper’s semantics.
+- Create `rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/mana/ExplicitPaymentPlanExecutorTest.kt`: generic success, rejected/incomplete plan atomicity, caller-owned reason, unspent outputs, and provenance.
+- Modify `gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvActionContractTest.kt`: preserve CastSpell ExplicitV2 end-to-end behavior and add a no-fallback CycleCard execution/rejection matrix if the new focused fixture is shared here.
+- Create `gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvCycleCardPaymentDomainTest.kt`: RED/GREEN real `Unearth` `{2}` publication, public-domain-only plan construction, Gym execution, invalid strategies, restriction negative, and unsupported-shape failures.
+- Modify `docs/data-contracts.md`: describe fixed ordinary CycleCard publication and the ExplicitV2 requirement without changing schema or replay versions.
+- Never modify PR #73 files, card definitions, decklists, corpus inputs/results, policy code, or public schema/replay version constants.
+
+### Task 1: Commit the reviewed design and capture the real RED
+
+Files: `docs/superpowers/specs/2026-08-25-a5-cyclecard-payment-domain-v4-design.md`, create `gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvCycleCardPaymentDomainTest.kt`.
+
+- [ ] Step 1: Verify the isolated branch is based on `origin/main` at `935d097805a5053b8b2fc492e59dfa9427defa0c`, the root checkout’s unrelated changes are outside this worktree, and `git diff --name-only origin/main...HEAD` contains no PR #73 or corpus paths.
+- [ ] Step 2: Keep the reviewed design changes committed separately from implementation. The design must state that Cycling uses `buildAbilityPaymentContext(cardComponent, state.projectedState, action.cardId, ability = null)` as one non-null context for enumeration, publication, validation/materialization, and the legacy solver; the executor owns no action type and receives the caller-owned reason.
+- [ ] Step 3: Add a real Gym fixture using corpus `Unearth` from `Urza’s Legacy`, with its actual plain `Cycling {2}` ability, two ordinary mana sources, and enough library cards for the cycle draw. Move the real card and sources into the exact precombat-main state through existing environment restore/setup conventions; do not add a card or a card-name production branch.
+- [ ] Step 4: Observe the real `LegalAction` for `CycleCard` and assert the desired post-change contract: `manaCost == "{2}"`, `paymentDomain.version == 4`, one generic cost unit of amount 2, and public source activations. Before production changes, the assertion must fail because the current observation has no domain and the strict diagnostic is `PAYMENT_DOMAIN_UNSUPPORTED`; preserve that command output as RED evidence.
+- [ ] Step 5: Run only the new test with `just test-class GameGymEnvCycleCardPaymentDomainTest`. If the Windows `WinError 193`/WSL launcher blocks `just`, record `just` as `NOT_RUN` and run the separately labeled fallback `.\gradlew.bat --no-daemon :gym:test --tests '*GameGymEnvCycleCardPaymentDomainTest' --console=plain`; the expected fallback result before implementation is a test failure at the missing-domain assertion.
+- [ ] Step 6: Commit only the reviewed spec and RED characterization with `git add` on those exact files and `git commit -m "test: reproduce missing CycleCard payment domain"` after confirming no unrelated file is staged.
+
+### Task 2: Extract the generic Rules ExplicitV2 executor
+
+Files: create `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/ExplicitPaymentPlanExecutor.kt`; modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/actions/spell/CastPaymentProcessor.kt`; create `rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/mana/ExplicitPaymentPlanExecutorTest.kt`.
+
+- [ ] Step 1: Add a small executor result that carries `state`, `events`, `error`, and `spentManaProvenance` (plus any exact spent-mana data the caller needs) and an API such as `executeV2(state, playerId, cost, plan, paymentContext, reason, excludeSources)`. Make the context parameter non-null. Do not make the executor accept `GameAction`, choose a context, compute a cost, call `ManaSolver.solve`, apply CastSpell permissions, select targets, or accept AutoPay/FromPool/legacy source IDs.
+- [ ] Step 2: Implement the executor with `PaymentPlanValidator.validateV2` using the exact caller-supplied cost/context/exclusions. On rejection, return the original input state, an empty event list, and the validator error. Do not update a pool before validation succeeds.
+- [ ] Step 3: On accepted materialization, consume only the submitted floating pool allocation, run `ManaAbilitySideEffectExecutor.tapSourcesWithSideEffects` for the selected source solution, then materialize unconsumed fixed outputs with `poolAfterSuccessfulSourceProduction(playerId)`. If selected-source side effects fail, return the original input state and no partial payment events. Emit `ManaSpentEvent` with the caller-supplied `reason`, `materialization.manaSpent`, and the accepted provenance only after all materialization succeeds.
+- [ ] Step 4: Refactor `CastPaymentProcessor` so its existing V1 path remains unchanged and its V2 path delegates to the executor with the CastSpell-owned cost/context and reason `"Cast $cardName"`. If a V2 call arrives without a context, return an error with the original state and no events; never substitute null or an unrestricted context. Preserve rider handling, X accounting, permission/reduction logic, and all non-V2 branches in the Cast path.
+- [ ] Step 5: Add executor tests with a real fixed-output/ordinary source fixture covering: exact floating-pool spend; selected source activation and side effects; unspent fixed outputs entering the pool; provenance preservation; the caller-provided reason; malformed/incomplete plan rejection; unpublished source rejection; and side-effect failure atomicity (`state` identity/digest unchanged and `events == emptyList()`).
+- [ ] Step 6: Run `just test-class ExplicitPaymentPlanExecutorTest` and the existing CastSpell ExplicitV2 end-to-end test(s). Use `.\gradlew.bat --no-daemon :rules-engine:test --tests '*ExplicitPaymentPlanExecutorTest' --console=plain` and the focused Gym Cast test as labeled native fallback only when `just` is unavailable. Commit this seam with `git commit -m "refactor: share ExplicitV2 payment materialization"`.
+
+### Task 3: Make CycleCard Rules execution authoritative before Gym publication
+
+Files: modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/handlers/actions/ability/CycleCardHandler.kt`; create/modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/FixedOrdinaryManaCost.kt`; modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/AbilityPaymentContextBuilder.kt` only for KDoc; create/modify Rules CycleCard tests as needed.
+
+- [ ] Step 1: Implement `ManaCost.isFixedOrdinaryManaCost()` (or an equivalently named public Rules helper) as the single predicate for no X/dynamic symbols and only `Colored`, `Colorless`, and `Generic` symbols. Use it for both domain certification and Rules ExplicitV2 acceptance; do not certify a cost merely because `withXAs(0)` became ordinary.
+- [ ] Step 2: In `CycleCardHandler.validate`, resolve the card and plain cycling ability before payment checks, construct exactly one `buildAbilityPaymentContext(cardComponent, state.projectedState, action.cardId, ability = null)`, and use that context for `manaSolver.canPay`. Keep X announcement/legacy behavior intact; for ExplicitV2 require a complete plan, reject dynamic/unsupported cost shapes, and call `PaymentPlanValidator.validateV2` with the authoritative fixed cost and the same non-null context without mutating state.
+- [ ] Step 3: In `CycleCardHandler.execute`, keep the existing X decision and cycling discard/draw/trigger sequence. For fixed ordinary ExplicitV2, invoke `ExplicitPaymentPlanExecutor` before discard with reason `"Cycle ${cardComponent.name}"`; on executor failure return the original state and no partial payment/cycling events. Do not route ExplicitV2 through `ManaSolver.solve`, source-ID taps, AutoPay, or FromPool. For legacy strategies, retain existing behavior but pass the canonical context to `canPay`/`solve`; preserve pool-first accounting and existing `ManaSpentEvent` semantics.
+- [ ] Step 4: Ensure `PaymentPlanValidator.validateV2` and the executor see the exact same context object/value as the canonical CycleCard context. Keep CastSpell-specific context construction outside the generic executor; `ability = null` means no equip property for the hand-activated Cycling ability and must not be replaced with `SpellPaymentContext()` or null.
+- [ ] Step 5: Add Rules tests for a real/plain fixed CycleCard or a reusable handler fixture: valid ExplicitV2 pays exact sources and completes the ordinary cycling path; incomplete, duplicate, unpublished, wrong production, and malformed plans return the original state with no payment/cycle events; dynamic `{X}`, hybrid, and typed/additional-cost shapes remain unsupported; a restriction that rejects the canonical Cycling context makes affordability and payment fail closed.
+- [ ] Step 6: Run the focused Rules CycleCard and payment tests. Confirm that the pre-existing CastSpell V2 tests still prove source activation, pool spend, unspent fixed outputs, side effects, provenance, and event reason. Commit with `git commit -m "rules: execute fixed CycleCard ExplicitV2 payments"` only after the Rules suite is green.
+
+### Task 4: Align Cycling enumeration with the canonical context
+
+Files: modify `rules-engine/src/main/kotlin/com/wingedsheep/engine/legalactions/enumerators/CyclingEnumerator.kt`; add/update focused enumerator tests if needed.
+
+- [ ] Step 1: For each hand card with a plain cycling ability, build the same `buildAbilityPaymentContext` from the card component, projected state, card ID, and `ability = null` used by CycleCardHandler and ObservationBuilder. Use it for base-cost affordability, `autoTapPreview`, and X baseline/max-affordability solver calls.
+- [ ] Step 2: Use the context for typed cycling’s `canPay` and preview as well, because the source/action is still an activated-ability payment even though typed cycling remains outside public V4 publication. Do not change the displayed `{X}` cost or X announcement semantics.
+- [ ] Step 3: Add a negative regression with context-sensitive/restricted mana showing the legal action’s `affordable` and preview do not become true from a context-free solver. Run `just test-class` for the enumerator test or the relevant full Rules class and record the native fallback separately if required.
+
+### Task 5: Certify fixed ordinary CycleCard domains and enforce the strict Gym carrier
+
+Files: modify `gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt`; modify `gym/src/main/kotlin/com/wingedsheep/gym/GameGymEnv.kt`; modify `gym/src/main/kotlin/com/wingedsheep/gym/contract/PaymentDomain.kt` only if a non-null type/KDoc clarification is necessary.
+
+- [ ] Step 1: Add a `CycleCard` branch in `ObservationBuilder.paymentDomainFor` that resolves the authoritative card and plain `KeywordAbility.Cycling` with `searchFilter == null`. Require the exact authoritative cost to parse, equal the legal action’s advertised cost after canonicalization, be fixed ordinary by the shared Rules predicate, and have no X/additional/alternative/dynamic payment shape. Do not inspect the card name or `Unearth`.
+- [ ] Step 2: Construct the canonical non-null `buildAbilityPaymentContext(cardComponent = card, projected = state.projectedState, sourceId = action.cardId, ability = null)` in that branch and pass it to `PaymentDomainBuilder.build`. Let the existing builder fail closed on restricted pools, unsupported source profiles, unavailable/cost-changing sources, and incomplete provenance. Never call it with null.
+- [ ] Step 3: Extend `GameGymEnv.requireActionPaymentPlan` to include `CycleCard` in strategy extraction, then require `PaymentStrategy.ExplicitV2` with a complete `PaymentPlanV2` and no runtime source handles for CycleCard. Reject `AutoPay`, `FromPool`, and legacy `Explicit` before Rules execution; keep existing ActivateAbility/CastSpell compatibility policy unchanged.
+- [ ] Step 4: Confirm a payable CycleCard with `paymentDomainFor == null` still produces `PAYMENT_DOMAIN_UNSUPPORTED`, so observation and strict submission share one fail-closed certificate.
+- [ ] Step 5: Run the RED test again and confirm it reaches the Rules boundary rather than failing on an unsupported strategy. Commit with `git commit -m "gym: publish fixed CycleCard payment domains"` after focused Gym compilation/tests pass.
+
+### Task 6: Prove public-domain-only CycleCard execution, no fallback, and unsupported shapes
+
+Files: create/modify `gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvCycleCardPaymentDomainTest.kt`; modify `gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvActionContractTest.kt`.
+
+- [ ] Step 1: From the observed real `Unearth` `PaymentDomainV4`, build `PaymentPlanV2` only from public fields: use each selected `sourceActivations` entry’s public `sourceId`, `manaAbilityKey`, and canonical `productionChoice`; allocate the domain’s generic `{2}` cost unit with two `ManaSpendReferenceV2` entries of amount 1; leave legacy source handles empty. Do not read the hidden `GameState` to choose an alternate source or color.
+- [ ] Step 2: Submit the serialized `CycleCard` action semantics plus `PaymentStrategy.ExplicitV2` through `gym.step`. Assert the environment advances exactly once, the selected sources are the only sources tapped, the card is discarded, the draw path completes, and the payment/cycling events and pool/provenance state reflect the submitted plan.
+- [ ] Step 3: Submit incomplete/zero allocations, duplicate or unpublished source activations, wrong production choices, V1 `Explicit` source IDs, `AutoPay`, and `FromPool`. Assert each rejects before state advancement, with unchanged state digest/step count and no payment or cycling events. Include a plan that leaves one valid published source unselected to prove there is no hidden solver/native fallback.
+- [ ] Step 4: Add a CastSpell ExplicitV2 end-to-end assertion using the existing targetless fixed-cost fixture. Verify the extracted executor preserves pool spend, selected source activation and side effects, unspent fixed outputs, `ManaSpentEvent.reason == "Cast ..."`, and provenance; this is the regression guard for the Cast refactor.
+- [ ] Step 5: Add the restriction negative using a source or produced mana whose restriction is not satisfied by `isAbilityActivation = true` with `isEquipAbilityActivation = false`. Verify Cycling enumeration is not affordable, the source is absent from or rejected by the V4 domain, and a direct/serialized CycleCard payment cannot use it. If the public V4 shape cannot represent that restriction, assert the whole domain is null rather than publishing a partial source list.
+- [ ] Step 6: Keep plain Cycling only: test `{X}`, hybrid/Phyrexian/two-brid/unsupported symbols, typed cycling, additional-cost, and dynamic/cost-changing shapes remain `paymentDomain = null` with `PAYMENT_DOMAIN_UNSUPPORTED`. No card-name, Unearth, Typecycling, or AutoPay exception is allowed.
+- [ ] Step 7: Run `just test-class GameGymEnvCycleCardPaymentDomainTest` and `just test-class GameGymEnvActionContractTest`. Native fallback equivalents are `.\gradlew.bat --no-daemon :gym:test --tests '*GameGymEnvCycleCardPaymentDomainTest' --tests '*GameGymEnvActionContractTest' --console=plain`, labeled independently when used.
+
+### Task 7: Documentation, affected suites, and independent final-diff review
+
+Files: modify `docs/data-contracts.md`; inspect all changed files.
+
+- [ ] Step 1: Update the action-level payment section to say that affordable fixed ordinary `CycleCard` actions may publish `PaymentDomainV4`, that Cycling uses `PaymentStrategy.ExplicitV2`/`PaymentPlanV2`, and that unsupported/dynamic/restricted shapes fail closed. State that the public wire schema and replay version are unchanged.
+- [ ] Step 2: Run focused Rules + Gym regressions, then full affected suites with `just test-rules` and `just test-gym`. Run `just test` only if the affected suites are clean and time permits. If the wrapper is blocked, run clearly labeled native `.\gradlew.bat --no-daemon :rules-engine:test :gym:test --console=plain` equivalents; do not promote fallback results to hosted CI evidence.
+- [ ] Step 3: Run `git diff --check`, `git status --short`, `git diff --stat origin/main...HEAD`, and inspect the complete diff. Verify the diff contains no #73/corpus/card/decklist changes, no schema/replay bump, no null/unrestricted Cycling context, no hidden AutoPay/native fallback, no Cast-specific logic inside the executor, and no duplicated cost/permission pipeline in Gym.
+- [ ] Step 4: Independently review every changed file against the approved design. Re-run the exact focused tests after review findings are resolved. Record each gate separately as `PASS`, `FAIL`, `NOT_RUN`, `SKIPPED`, or `BLOCKED`, including the Windows wrapper, native fallback, and hosted CI.
+- [ ] Step 5: Before any publication, verify `git remote get-url origin` is `https://github.com/chrismaghuhn/argentum-engine.git`, record the exact base and HEAD SHAs, and do not push/open a PR without explicit publication authorization. PR #73 remains outside this branch.
+
+### Task 8: Post-merge acceptance gate (only after merge and explicit sync authority)
+
+- [ ] Step 1: After the implementation is merged, synchronize PR #73 without editing its files or rebasing its corpus changes into this feature branch.
+- [ ] Step 2: Run the exact 72-episode acceptance from `0/72` with the pinned seeds/configuration. Do not resume from a partial run and do not modify the corpus or policy to make it pass.
+- [ ] Step 3: Confirm episode 3, game seed `1`, policy seed `5259908`, external step `1314`, fixed cost `{2}`, crosses the former `PAYMENT_DOMAIN_UNSUPPORTED` failure. Stop at the first `NEW` failure.
+- [ ] Step 4: Report corpus status separately from local/hosted implementation status; `BLOCKED`/`NOT_RUN` is not a PASS if merge, sync, CI, or infrastructure authority is unavailable.
