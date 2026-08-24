@@ -30,7 +30,9 @@ import com.wingedsheep.gym.contract.PaymentDomainV4
 import com.wingedsheep.gym.contract.PaymentPoolDomainV4
 import com.wingedsheep.gym.contract.PaymentSourceActivationDomain
 import com.wingedsheep.gym.contract.LegalActionView
+import com.wingedsheep.gym.contract.EntityFeatures
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.gym.contract.ZoneView
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
 import com.wingedsheep.gym.service.EnvId
@@ -39,11 +41,13 @@ import com.wingedsheep.gym.service.PlayerSpec
 import com.wingedsheep.gym.service.StepRequest
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.put
@@ -246,6 +250,82 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 Triple(EntityId("floating-black"), PaymentManaColor.BLACK, listOf("Forest")),
                 Triple(EntityId("floating-green"), PaymentManaColor.GREEN, listOf("Forest")),
             )
+    }
+
+    test("the external policy completes CommanderIdentity manaColorChoice from public data") {
+        val player = EntityId("player-0")
+        val commander = EntityFeatures(
+            entityId = EntityId("commander-0"),
+            cardDefinitionId = "public-commander",
+            name = "Public Commander",
+            zone = Zone.COMMAND,
+            ownerId = player,
+            controllerId = null,
+            types = setOf("CREATURE"),
+            subtypes = emptySet(),
+            colors = setOf("RED", "WHITE"),
+            keywords = emptySet(),
+            manaCost = "",
+            manaValue = 0,
+            power = null,
+            toughness = null,
+        )
+        val action = LegalActionView(
+            actionId = 42,
+            kind = "ActivateAbility",
+            description = "Add one mana from the commander's color identity",
+            affordable = true,
+            isManaAbility = true,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("manaColorChoice"),
+            actionSemantics = buildJsonObject {
+                put("type", "ActivateAbility")
+                put("playerId", player.value)
+                put("abilityKey", buildJsonObject {
+                    put("ability", buildJsonObject {
+                        put("effect", buildJsonObject {
+                            put("colorSet", buildJsonObject {
+                                put("type", "ManaColorSet.CommanderIdentity")
+                            })
+                        })
+                    })
+                })
+            },
+        )
+        val observation = TrainingObservation(
+            schemaHash = "test-schema",
+            perspectivePlayerId = player,
+            agentToAct = player,
+            turnNumber = 1,
+            phase = com.wingedsheep.sdk.core.Phase.PRECOMBAT_MAIN,
+            step = com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN,
+            activePlayerId = player,
+            priorityPlayerId = player,
+            players = emptyList(),
+            zones = listOf(
+                ZoneView(
+                    ownerId = player,
+                    zoneType = Zone.COMMAND,
+                    hidden = false,
+                    size = 1,
+                    cards = listOf(commander),
+                )
+            ),
+            stack = emptyList(),
+            pendingDecision = null,
+            legalActions = listOf(action),
+            terminated = false,
+            truncated = false,
+            winnerId = null,
+            stateDigest = "digest",
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            observation,
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        check(choice is SemanticChoice.Action) { "Expected a public mana-color action, got $choice" }
+        choice.payload?.get("manaColorChoice") shouldBe JsonPrimitive("WHITE")
     }
 
     test("seed zero original reproducer stops at the first current finding") {
