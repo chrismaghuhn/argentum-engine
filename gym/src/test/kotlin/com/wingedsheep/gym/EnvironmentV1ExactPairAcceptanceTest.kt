@@ -25,8 +25,8 @@ import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.PaymentCostUnitDomain
-import com.wingedsheep.gym.contract.PaymentDomainV1
-import com.wingedsheep.gym.contract.PaymentPoolDomain
+import com.wingedsheep.gym.contract.PaymentDomainV2
+import com.wingedsheep.gym.contract.PaymentPoolDomainV2
 import com.wingedsheep.gym.contract.PaymentSourceActivationDomain
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
@@ -103,7 +103,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         val player = EntityId("player-0")
         val blackSource = EntityId("source-black")
         val anySource = EntityId("source-any")
-        val paymentDomain = PaymentDomainV1(
+        val paymentDomain = PaymentDomainV2(
             requiredCost = "{1}{B}",
             costUnits = listOf(
                 PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, amount = 1),
@@ -114,7 +114,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     allowedColors = setOf(PaymentManaColor.BLACK),
                 ),
             ),
-            currentPool = PaymentPoolDomain(),
+            currentPool = PaymentPoolDomainV2(),
             sourceActivations = listOf(
                 PaymentSourceActivationDomain(
                     sourceId = blackSource,
@@ -318,7 +318,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     code = signal.semanticCode,
                     reason = when (signal.semanticCode) {
                         "PAYMENT_DOMAIN_UNSUPPORTED" ->
-                            "Trusted transition reached a payable legal action without a published PaymentDomainV1"
+                            "Trusted transition reached a payable legal action without a published PaymentDomainV2"
                         else -> "Authoritative trusted-episode diagnostic was recorded"
                     },
                     diagnostic = signal.semanticCode,
@@ -329,7 +329,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     },
                     proposedFollowUp = when (signal.semanticCode) {
                         "PAYMENT_DOMAIN_UNSUPPORTED" ->
-                            "Publish a complete PaymentDomainV1 for every reachable payable legal action outside #73"
+                            "Publish a complete PaymentDomainV2 for every reachable payable legal action outside #73"
                         else -> "Classify and repair the owning production path outside #73"
                     },
                 )

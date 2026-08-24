@@ -19,7 +19,7 @@ import com.wingedsheep.gym.contract.PendingDecisionView
 import com.wingedsheep.gym.contract.PAYMENT_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.PaymentCostUnitDomain
-import com.wingedsheep.gym.contract.PaymentDomainV1
+import com.wingedsheep.gym.contract.PaymentDomainV2
 import com.wingedsheep.gym.contract.ReorderLibraryDomain
 import com.wingedsheep.gym.contract.ReplacementDomain
 import com.wingedsheep.gym.contract.SearchLibraryDomain
@@ -175,22 +175,22 @@ class DeterministicExternalPolicy {
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
                     code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason = "Structured mana action published no PaymentDomainV1",
+                    reason = "Structured mana action published no PaymentDomainV2",
                     actionKind = action.kind,
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = "LegalActionView.paymentDomain=null; manaCost=${action.manaCost}",
-                    proposedFollowUp = "Publish a complete PaymentDomainV1 for this legal action",
+                    proposedFollowUp = "Publish a complete PaymentDomainV2 for this legal action",
                 )
             val paymentPlan = explicitPaymentPlan(domain)
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
                     code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason = "Published PaymentDomainV1 cannot be completed deterministically",
+                    reason = "Published PaymentDomainV2 cannot be completed deterministically",
                     actionKind = action.kind,
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = domain.toString(),
                     proposedFollowUp =
-                        "Extend PaymentDomainV1 until source, production, pool, and allocation choices are representable",
+                        "Extend PaymentDomainV2 until source, production, pool, and allocation choices are representable",
                 )
             payload["paymentStrategy"] = paymentJson.encodeToJsonElement(
                 PaymentStrategy.serializer(),
@@ -297,10 +297,10 @@ class DeterministicExternalPolicy {
     }
 
     /**
-     * Enumerates only the concrete origins and production choices published by PaymentDomainV1.
+     * Enumerates only the concrete origins and production choices published by PaymentDomainV2.
      * There is deliberately no cost parser, source discovery, or engine payment helper here.
      */
-    private fun explicitPaymentPlan(domain: PaymentDomainV1): PaymentPlanV1? {
+    private fun explicitPaymentPlan(domain: PaymentDomainV2): PaymentPlanV1? {
         if (domain.version != PAYMENT_DOMAIN_VERSION || domain.requiredCost.isBlank()) return null
 
         val units = domain.costUnits.sortedBy { it.symbolIndex }
@@ -586,7 +586,7 @@ class DeterministicExternalPolicy {
                     actionKind = "DECISION",
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = domain.toString(),
-                    proposedFollowUp = "Publish PaymentDomainV1 for this pending payment",
+                    proposedFollowUp = "Publish PaymentDomainV2 for this pending payment",
                 )
             }
 
