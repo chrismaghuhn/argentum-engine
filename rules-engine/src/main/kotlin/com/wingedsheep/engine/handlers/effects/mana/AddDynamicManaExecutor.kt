@@ -5,11 +5,13 @@ import com.wingedsheep.engine.handlers.DecisionHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
-import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypes
+import com.wingedsheep.engine.mechanics.mana.capturedProductionSourceSubtypes
+import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypesAtSeam
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.scripting.effects.AddDynamicManaEffect
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import kotlin.reflect.KClass
@@ -49,11 +51,15 @@ class AddDynamicManaExecutor(
         if (colors.size <= 1) {
             val color = colors.firstOrNull() ?: return EffectResult.success(state)
             val newState = addMana(
-                state,
-                context.controllerId,
-                mapOf(color to amount),
-                effect.restriction,
-                context.sourceId,
+                state = state,
+                playerId = context.controllerId,
+                amounts = mapOf(color to amount),
+                restriction = effect.restriction,
+                sourceId = context.sourceId,
+                sourceSubtypes = state.productionSourceSubtypesAtSeam(
+                    sourceId = context.sourceId,
+                    capturedSourceSubtypes = context.capturedProductionSourceSubtypes(),
+                ),
             )
             return EffectResult.success(newState)
         }
@@ -72,6 +78,7 @@ class AddDynamicManaExecutor(
                 remainingPips = amount,
                 allowedColors = effect.allowedColors,
                 restriction = effect.restriction,
+                sourceSubtypes = context.capturedProductionSourceSubtypes(),
                 decisionHandler = decisionHandler
             )
         }
@@ -99,7 +106,8 @@ class AddDynamicManaExecutor(
             totalAmount = amount,
             firstColor = firstColor,
             secondColor = secondColor,
-            restriction = effect.restriction
+            restriction = effect.restriction,
+            sourceSubtypes = context.capturedProductionSourceSubtypes(),
         )
 
         val stateWithContinuation = decisionResult.state.pushContinuation(continuation)
@@ -126,6 +134,7 @@ class AddDynamicManaExecutor(
             remainingPips: Int,
             allowedColors: Set<Color>,
             restriction: ManaRestriction?,
+            sourceSubtypes: Set<Subtype>? = null,
             decisionHandler: DecisionHandler = DecisionHandler()
         ): EffectResult {
             val decisionResult = decisionHandler.createColorDecision(
@@ -144,7 +153,8 @@ class AddDynamicManaExecutor(
                 sourceName = sourceName,
                 remainingPips = remainingPips,
                 allowedColors = allowedColors,
-                restriction = restriction
+                restriction = restriction,
+                sourceSubtypes = sourceSubtypes,
             )
             return EffectResult.paused(
                 decisionResult.state.pushContinuation(continuation),
@@ -159,10 +169,8 @@ class AddDynamicManaExecutor(
             amounts: Map<Color, Int>,
             restriction: ManaRestriction? = null,
             sourceId: com.wingedsheep.sdk.model.EntityId? = null,
+            sourceSubtypes: Set<Subtype>,
         ): GameState {
-            val subtypes = sourceId?.let {
-                state.projectedState.productionSourceSubtypes(it)
-            }.orEmpty()
             return state.updateEntity(playerId) { container ->
                 var manaPool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
                 for ((color, amount) in amounts) {
@@ -173,7 +181,7 @@ class AddDynamicManaExecutor(
                             manaPool.addTracked(
                                 color = PaymentManaColor.fromEngine(color),
                                 sourceId = sourceId,
-                                subtypes = subtypes,
+                                subtypes = sourceSubtypes,
                                 amount = amount,
                                 knownToPlayers = setOf(playerId),
                             )

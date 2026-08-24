@@ -2,6 +2,7 @@ package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.model.EntityId
 
@@ -27,3 +28,15 @@ internal fun EffectContext.capturedProductionSourceSubtypes(): Set<Subtype>? =
         ?.subtypes
         ?.map { Subtype.of(it) }
         ?.toSet()
+
+/**
+ * Resolve the subtype snapshot at the actual production seam. A captured LKI snapshot is
+ * authoritative, including an explicitly known-empty set; only its absence permits reading the
+ * live projected source.
+ */
+internal fun GameState.productionSourceSubtypesAtSeam(
+    sourceId: EntityId?,
+    capturedSourceSubtypes: Set<Subtype>?,
+): Set<Subtype> = capturedSourceSubtypes
+    ?: sourceId?.let { projectedState.productionSourceSubtypes(it) }
+    ?: emptySet()
