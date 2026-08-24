@@ -37,18 +37,29 @@ class SelectTargetPipelineExecutor(
         val controllerId = context.controllerId
         val sourceId = context.sourceId
 
-        val legalTargets = targetFinder.findLegalTargets(
-            state = state,
-            requirement = effect.requirement,
-            controllerId = controllerId,
-            sourceId = sourceId,
-            // Carry the resolving ability's granter so a target filter can exclude it via
-            // StatePredicate.IsGrantingPermanent — e.g. Dire Blunderbuss's "an artifact other than
-            // Dire Blunderbuss" (CR 201.5a). Only granterId is threaded; other context fields keep
-            // their prior (null) defaults so no existing SelectTargetEffect changes behavior.
-            pipelineContext = com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context),
-            requireAuthoritativeContext = true,
-        )
+        val legalTargets = try {
+            targetFinder.findLegalTargets(
+                state = state,
+                requirement = effect.requirement,
+                controllerId = controllerId,
+                sourceId = sourceId,
+                // Carry the resolving ability's granter so a target filter can exclude it via
+                // StatePredicate.IsGrantingPermanent — e.g. Dire Blunderbuss's "an artifact other than
+                // Dire Blunderbuss" (CR 201.5a). Only granterId is threaded; other context fields keep
+                // their prior (null) defaults so no existing SelectTargetEffect changes behavior.
+                pipelineContext = com.wingedsheep.engine.handlers.PredicateContext.fromEffectContext(context),
+                requireAuthoritativeContext = true,
+            )
+        } catch (unsupported: UnsupportedPathFailure) {
+            // A missing predicate fact is not an ordinary empty collection. Preserve the typed
+            // diagnostic at this direct effect boundary so callers can fail closed without
+            // interpreting the gap as a no-target success.
+            return EffectResult.error(
+                state = state,
+                message = unsupported.message ?: "Authoritative target predicate context is unavailable",
+                diagnostics = unsupported.diagnostics,
+            )
+        }
 
         // This executor is the pending-decision seam: even an empty candidate list must first pass
         // the authoritative metadata conversion. Otherwise an unresolved X/count or aggregate

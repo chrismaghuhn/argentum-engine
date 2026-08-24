@@ -19,6 +19,7 @@ import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.SpliceTailContinuation
 import com.wingedsheep.engine.core.TargetRequirementInfo
 import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.event.TriggerProcessor
 import com.wingedsheep.engine.event.PendingTrigger
@@ -84,6 +85,7 @@ import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.values.ContextPropertyKey
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.nulls.shouldNotBeNull
@@ -1050,13 +1052,15 @@ class PartialIllegalTargets608Test : FunSpec({
         )
         val finder = TargetFinder()
 
-        finder.findLegalTargets(
-            state = driver.state,
-            requirement = requirement,
-            controllerId = driver.player1,
-            pipelineContext = PredicateContext(controllerId = driver.player1),
-            requireAuthoritativeContext = true,
-        ) shouldBe emptyList()
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
         finder.findLegalTargets(
             state = driver.state,
             requirement = requirement,
@@ -1087,13 +1091,15 @@ class PartialIllegalTargets608Test : FunSpec({
         )
         val finder = TargetFinder()
 
-        finder.findLegalTargets(
-            state = driver.state,
-            requirement = requirement,
-            controllerId = driver.player1,
-            pipelineContext = PredicateContext(controllerId = driver.player1),
-            requireAuthoritativeContext = true,
-        ) shouldBe emptyList()
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
 
         finder.findLegalTargets(
             state = driver.state,
@@ -1126,14 +1132,16 @@ class PartialIllegalTargets608Test : FunSpec({
                     excludeSelf = true,
                 ),
             )
-            finder.findLegalTargets(
-                state = driver.state,
-                requirement = requirement,
-                controllerId = driver.player1,
-                sourceId = source,
-                pipelineContext = PredicateContext(controllerId = driver.player1),
-                requireAuthoritativeContext = true,
-            ) shouldBe emptyList()
+            shouldThrow<UnsupportedPathFailure> {
+                finder.findLegalTargets(
+                    state = driver.state,
+                    requirement = requirement,
+                    controllerId = driver.player1,
+                    sourceId = source,
+                    pipelineContext = PredicateContext(controllerId = driver.player1),
+                    requireAuthoritativeContext = true,
+                )
+            }
         }
     }
 
@@ -1202,20 +1210,24 @@ class PartialIllegalTargets608Test : FunSpec({
         )
         val finder = TargetFinder()
 
-        finder.findLegalTargets(
-            state = driver.state,
-            requirement = triggerRequirement,
-            controllerId = driver.player1,
-            pipelineContext = PredicateContext(controllerId = driver.player1),
-            requireAuthoritativeContext = true,
-        ) shouldBe emptyList()
-        finder.findLegalTargets(
-            state = driver.state,
-            requirement = referencedRequirement,
-            controllerId = driver.player1,
-            pipelineContext = PredicateContext(controllerId = driver.player1),
-            requireAuthoritativeContext = true,
-        ) shouldBe emptyList()
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = triggerRequirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = referencedRequirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
 
         finder.findLegalTargets(
             state = driver.state,
@@ -1235,6 +1247,120 @@ class PartialIllegalTargets608Test : FunSpec({
             ),
             requireAuthoritativeContext = true,
         ) shouldBe listOf(candidate)
+    }
+
+    test("authoritative OR context gaps do not collapse a known legal target into an empty domain") {
+        val driver = driver()
+        driver.putPermanentOnBattlefield(driver.player1, "Forest")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.Or(
+                            listOf(
+                                CardPredicate.IsLand,
+                                CardPredicate.NameEqualsChosen("chosenName"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val failure = shouldThrow<UnsupportedPathFailure> {
+            TargetFinder().findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        failure.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("missing authoritative OR context is typed instead of an ordinary empty domain") {
+        val driver = driver()
+        driver.putPermanentOnBattlefield(driver.player1, "Forest")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    cardPredicates = listOf(
+                        CardPredicate.Or(
+                            listOf(
+                                CardPredicate.NameEqualsChosen("chosenName"),
+                                CardPredicate.HasSubtypeFromVariable("chosenSubtype"),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+
+        val failure = shouldThrow<UnsupportedPathFailure> {
+            TargetFinder().findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
+        failure.diagnostics.single().code shouldBe
+            com.wingedsheep.engine.core.DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING
+    }
+
+    test("player target references use the evaluator's target-player context") {
+        val driver = driver()
+        val candidate = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.PlayerRef(Player.TargetOpponent),
+                    ),
+                ),
+            ),
+        )
+
+        TargetFinder().findLegalTargets(
+            state = driver.state,
+            requirement = requirement,
+            controllerId = driver.player1,
+            pipelineContext = PredicateContext(
+                controllerId = driver.player1,
+                targetPlayerId = driver.player2,
+            ),
+            requireAuthoritativeContext = true,
+        ) shouldBe listOf(candidate)
+    }
+
+    test("referenced triggering-player targets do not accept an entity-only fallback") {
+        val driver = driver()
+        val requirement = TargetObject(
+            filter = TargetFilter(
+                baseFilter = GameObjectFilter(
+                    controllerPredicate = ControllerPredicate.ControlledByReferencedPlayer(
+                        EffectTarget.PlayerRef(Player.TriggeringPlayer),
+                    ),
+                ),
+            ),
+        )
+
+        shouldThrow<UnsupportedPathFailure> {
+            TargetFinder().findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                triggeringEntityId = driver.player2,
+                pipelineContext = PredicateContext(
+                    controllerId = driver.player1,
+                    triggeringEntityId = driver.player2,
+                ),
+                requireAuthoritativeContext = true,
+            )
+        }
     }
 
     test("pending target finder resolves TargetController from permanent and card context") {
@@ -1278,13 +1404,15 @@ class PartialIllegalTargets608Test : FunSpec({
             requireAuthoritativeContext = true,
         ).toSet() shouldBe setOf(referencedPermanent, permanentCandidate, cardCandidate)
 
-        finder.findLegalTargets(
-            state = driver.state,
-            requirement = requirement,
-            controllerId = driver.player1,
-            pipelineContext = PredicateContext(controllerId = driver.player1),
-            requireAuthoritativeContext = true,
-        ) shouldBe emptyList()
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
     }
 
     test("pending target finder fails closed for missing same-named-source context") {
@@ -1300,13 +1428,15 @@ class PartialIllegalTargets608Test : FunSpec({
         )
         val finder = TargetFinder()
 
-        finder.findLegalTargets(
-            state = driver.state,
-            requirement = requirement,
-            controllerId = driver.player1,
-            pipelineContext = PredicateContext(controllerId = driver.player1),
-            requireAuthoritativeContext = true,
-        ) shouldBe emptyList()
+        shouldThrow<UnsupportedPathFailure> {
+            finder.findLegalTargets(
+                state = driver.state,
+                requirement = requirement,
+                controllerId = driver.player1,
+                pipelineContext = PredicateContext(controllerId = driver.player1),
+                requireAuthoritativeContext = true,
+            )
+        }
 
         finder.findLegalTargets(
             state = driver.state,
