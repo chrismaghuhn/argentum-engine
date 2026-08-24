@@ -379,7 +379,8 @@ class CastPaymentProcessor(
         // Restricted mana doesn't participate (tagged mana is always unrestricted). Everything is
         // paid from the pool here, so there is no freshly-tapped-source provenance to add.
         val unrestrictedSpent = (whiteSpent + blueSpent + blackSpent + redSpent + greenSpent + colorlessSpent) - restrictedSpent
-        val (poolWithProvenanceUpdated, spentProvenance) = poolAfterPayment.consumeProvenance(maxOf(0, unrestrictedSpent))
+        val (provenancePool, spentProvenance) = pool.consumeProvenance(maxOf(0, unrestrictedSpent))
+        val poolWithProvenanceUpdated = poolAfterPayment.withProvenanceFrom(provenancePool)
 
         val newState = state.updateEntity(playerId) { container ->
             container.with(fromManaPool(poolWithProvenanceUpdated))
@@ -506,7 +507,8 @@ class CastPaymentProcessor(
                 (poolComponent.green - poolAfterPayment.green) +
                 (poolComponent.colorless - poolAfterPayment.colorless)
         )
-        val (poolWithProvenanceUpdated, poolProvenance) = poolAfterPayment.consumeProvenance(poolUnrestrictedSpent)
+        val (provenancePool, poolProvenance) = pool.consumeProvenance(poolUnrestrictedSpent)
+        val poolWithProvenanceUpdated = poolAfterPayment.withProvenanceFrom(provenancePool)
         var spentProvenance = poolProvenance
 
         currentState = currentState.updateEntity(playerId) { container ->

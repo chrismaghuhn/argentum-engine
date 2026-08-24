@@ -885,6 +885,21 @@ data class ManaPool(
     }
 
     /**
+     * Keep the balances from this post-payment pool while applying the provenance state produced
+     * by consuming [provenancePool]. Payment callers use this seam because the ordinary spend
+     * operations deliberately clear provenance when the pool becomes empty; the pre-spend pool
+     * is therefore the only place from which [SpentManaProvenance] can be materialized.
+     */
+    internal fun withProvenanceFrom(provenancePool: ManaPool): ManaPool = copy(
+        manaBySubtype = provenancePool.manaBySubtype,
+        manaBySource = provenancePool.manaBySource,
+        manaBySourceAndColor = provenancePool.manaBySourceAndColor,
+        manaByFloatingBucket = provenancePool.manaByFloatingBucket,
+        manaProvenanceCompleteness = provenancePool.manaProvenanceCompleteness,
+        manaProvenanceKnownTo = provenancePool.manaProvenanceKnownTo,
+    )
+
+    /**
      * Consume only the exact Rules-owned joint buckets selected by the controller. This is the
      * V2 allocation authority: no aggregate projection, source profile, or iteration order may
      * choose a bucket. Unselected buckets remain fungible and fully represented in the result.
