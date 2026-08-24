@@ -134,6 +134,13 @@ class ManaProvenanceStateTest : FunSpec({
         after.manaProvenanceCompleteness shouldBe ManaProvenanceCompleteness.UNKNOWN
     }
 
+    test("aggregate spend does not turn unknown provenance into a false loss marker") {
+        val after = ManaPoolComponent(black = 1, colorless = 1)
+            .spend(Color.BLACK)!!
+
+        after shouldBe ManaPoolComponent(colorless = 1)
+    }
+
     test("phase cleanup drops detailed provenance for retained unrestricted mana") {
         val sourceId = EntityId("retained-source")
         val pool = ManaPoolComponent().addTracked(

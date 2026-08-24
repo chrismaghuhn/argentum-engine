@@ -229,17 +229,30 @@ data class ManaPoolComponent(
     val isEmpty: Boolean get() = total == 0 && manaBySubtype.isEmpty() && manaBySource.isEmpty() &&
         manaBySourceAndColor.isEmpty()
 
-    private fun invalidateDetailedProvenanceIfNeeded(): ManaPoolComponent = if (unrestrictedTotal == 0) {
-        copy(
-            manaBySubtype = emptyMap(),
-            manaBySource = emptyMap(),
+    private fun invalidateDetailedProvenanceIfNeeded(): ManaPoolComponent {
+        if (unrestrictedTotal == 0) {
+            return copy(
+                manaBySubtype = emptyMap(),
+                manaBySource = emptyMap(),
+                manaBySourceAndColor = emptyMap(),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+            )
+        }
+
+        // An aggregate-only pool has no source/color detail to lose. Preserve its existing
+        // UNKNOWN/INCOMPLETE marker; only a known or claimed detail map becomes INCOMPLETE when
+        // this legacy spend seam cannot identify which source/color bucket was consumed.
+        val nextCompleteness = if (
+            manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE ||
+            manaBySourceAndColor.isNotEmpty()
+        ) {
+            ManaProvenanceCompleteness.INCOMPLETE
+        } else {
+            manaProvenanceCompleteness
+        }
+        return copy(
             manaBySourceAndColor = emptyMap(),
-            manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
-        )
-    } else {
-        copy(
-            manaBySourceAndColor = emptyMap(),
-            manaProvenanceCompleteness = ManaProvenanceCompleteness.INCOMPLETE,
+            manaProvenanceCompleteness = nextCompleteness,
         )
     }
 

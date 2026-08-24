@@ -405,14 +405,30 @@ data class ManaPool(
         return copy(colorless = colorless - amount).invalidateDetailedProvenanceIfNeeded()
     }
 
-    private fun invalidateDetailedProvenanceIfNeeded(): ManaPool = copy(
-        manaBySourceAndColor = emptyMap(),
-        manaProvenanceCompleteness = if (unrestrictedTotal == 0) {
-            ManaProvenanceCompleteness.UNKNOWN
-        } else {
+    private fun invalidateDetailedProvenanceIfNeeded(): ManaPool {
+        if (unrestrictedTotal == 0) {
+            return copy(
+                manaBySourceAndColor = emptyMap(),
+                manaProvenanceCompleteness = ManaProvenanceCompleteness.UNKNOWN,
+            )
+        }
+
+        // An aggregate-only pool has no source/color detail to lose. Preserve its existing
+        // UNKNOWN/INCOMPLETE marker; only a known or claimed detail map becomes INCOMPLETE when
+        // this legacy spend seam cannot identify which source/color bucket was consumed.
+        val nextCompleteness = if (
+            manaProvenanceCompleteness == ManaProvenanceCompleteness.COMPLETE ||
+            manaBySourceAndColor.isNotEmpty()
+        ) {
             ManaProvenanceCompleteness.INCOMPLETE
-        },
-    )
+        } else {
+            manaProvenanceCompleteness
+        }
+        return copy(
+            manaBySourceAndColor = emptyMap(),
+            manaProvenanceCompleteness = nextCompleteness,
+        )
+    }
 
     /**
      * The ordered units of *unrestricted* floating mana this pool would spend to cover up to
