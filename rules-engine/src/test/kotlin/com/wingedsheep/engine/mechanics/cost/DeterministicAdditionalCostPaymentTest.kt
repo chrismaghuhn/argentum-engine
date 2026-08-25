@@ -99,4 +99,11 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
             EntityId("source"),
         ) shouldBe null
     }
+
+    test("zero-mana shapes remain outside the certified shape") {
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(Costs.Mana("{0}"), Costs.Tap, Costs.SacrificeSelf),
+            EntityId("source"),
+        ) shouldBe null
+    }
 })

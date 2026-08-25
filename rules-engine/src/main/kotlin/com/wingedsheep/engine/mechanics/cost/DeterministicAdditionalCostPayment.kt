@@ -29,7 +29,10 @@ object DeterministicAdditionalCostPayment {
     private fun collect(cost: AbilityCost): Counts? = when (cost) {
         is AbilityCost.Atom -> {
             val atom = cost.atom
-            if (atom is CostAtom.Mana && atom.cost.isFixedOrdinaryManaCost()) Counts(manaCount = 1) else null
+            if (atom is CostAtom.Mana &&
+                atom.cost.cmc > 0 &&
+                atom.cost.isFixedOrdinaryManaCost()
+            ) Counts(manaCount = 1) else null
         }
 
         AbilityCost.Tap -> Counts(tapCount = 1)
