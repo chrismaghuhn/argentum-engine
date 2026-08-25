@@ -18,7 +18,7 @@ object DeterministicAdditionalCostPayment {
 
     fun expectedFor(cost: AbilityCost, sourceId: EntityId): AdditionalCostPayment? {
         val counts = collect(cost) ?: return null
-        if (counts.tapCount > 1 || counts.sacrificeCount > 1) return null
+        if (counts.manaCount != 1 || counts.tapCount > 1 || counts.sacrificeCount > 1) return null
 
         return AdditionalCostPayment(
             tappedPermanents = List(counts.tapCount) { sourceId },
@@ -29,7 +29,7 @@ object DeterministicAdditionalCostPayment {
     private fun collect(cost: AbilityCost): Counts? = when (cost) {
         is AbilityCost.Atom -> {
             val atom = cost.atom
-            if (atom is CostAtom.Mana && atom.cost.isFixedOrdinaryManaCost()) Counts() else null
+            if (atom is CostAtom.Mana && atom.cost.isFixedOrdinaryManaCost()) Counts(manaCount = 1) else null
         }
 
         AbilityCost.Tap -> Counts(tapCount = 1)
@@ -39,6 +39,7 @@ object DeterministicAdditionalCostPayment {
             cost.costs.fold(Counts()) { accumulated, child ->
                 val next = collect(child) ?: return null
                 Counts(
+                    manaCount = accumulated.manaCount + next.manaCount,
                     tapCount = accumulated.tapCount + next.tapCount,
                     sacrificeCount = accumulated.sacrificeCount + next.sacrificeCount,
                 )
@@ -49,6 +50,7 @@ object DeterministicAdditionalCostPayment {
     }
 
     private data class Counts(
+        val manaCount: Int = 0,
         val tapCount: Int = 0,
         val sacrificeCount: Int = 0,
     )

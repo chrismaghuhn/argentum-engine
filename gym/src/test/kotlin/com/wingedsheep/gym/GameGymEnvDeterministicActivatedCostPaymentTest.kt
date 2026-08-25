@@ -405,6 +405,39 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .contains(prepared.sourceId) shouldBe true
     }
 
+    test("Rules rejects missing deterministic costPayment atomically for Explicit V1 and V2") {
+        fun assertDirectRulesRejection(
+            paymentStrategyFor: (LegalActionView) -> PaymentStrategy,
+        ) {
+            val prepared = preparedWayfarer()
+            val view = activatedView(prepared)
+            val stateBefore = prepared.environment.state
+            val stepCountBefore = prepared.environment.stepCount
+            val eventsBefore = prepared.environment.lastStepEvents
+
+            shouldThrow<IllegalArgumentException> {
+                prepared.environment.stepStrict(
+                    ActivateAbility(
+                        playerId = prepared.playerId,
+                        sourceId = prepared.sourceId,
+                        abilityId = prepared.abilityId,
+                        paymentStrategy = paymentStrategyFor(view),
+                    ),
+                )
+            }
+
+            (prepared.environment.state === stateBefore) shouldBe true
+            prepared.environment.stepCount shouldBe stepCountBefore
+            prepared.environment.lastStepEvents shouldBe eventsBefore
+            prepared.environment.state.getZone(prepared.playerId, Zone.BATTLEFIELD)
+                .contains(prepared.sourceId) shouldBe true
+            prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe false
+        }
+
+        assertDirectRulesRejection(::explicitV1FromPublic)
+        assertDirectRulesRejection(::explicitV2FromPublic)
+    }
+
     test("Wayfarer's search continuation resolves after the explicit activation") {
         val prepared = preparedWayfarer()
         val view = (prepared.gym.observe().observation as TrainingObservation).legalActions.single {

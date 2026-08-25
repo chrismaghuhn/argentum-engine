@@ -78,4 +78,15 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
             ) shouldBe null
         }
     }
+
+    test("only one canonical mana atom is certified") {
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(Costs.Mana("{1}"), Costs.Mana("{1}"), Costs.Tap),
+            EntityId("source"),
+        ) shouldBe null
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Tap,
+            EntityId("source"),
+        ) shouldBe null
+    }
 })
