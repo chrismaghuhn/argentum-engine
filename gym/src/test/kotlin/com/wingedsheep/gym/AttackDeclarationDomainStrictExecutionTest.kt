@@ -6,81 +6,48 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayLand
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.SelectManaSourcesDecision
+import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.mtg.sets.definitions.lgn.LegionsSet
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
-class GameGymEnvAttackDeclarationSubmissionTest : FunSpec({
+class AttackDeclarationDomainStrictExecutionTest : FunSpec({
     test("out-of-domain attack choices are rejected atomically before Rules execution") {
-        val registry = CardRegistry().apply {
-            register(PortalSet.cards)
-            register(PortalSet.basicLands)
-        }
-        val environment = GameEnvironment.create(registry)
-        environment.reset(
-            GameConfig(
-                players = listOf(
-                    PlayerConfig("Alice", Deck.of("Mountain" to 99, "Raging Goblin" to 1)),
-                    PlayerConfig("Bob", Deck.of("Mountain" to 99)),
-                ),
-                startingHandSize = 2,
-                skipMulligans = true,
-                startingPlayerIndex = 0,
-            )
-        )
-        val alice = environment.playerIds[0]
-        val bob = environment.playerIds[1]
-        moveCardsIntoHand(environment, alice, listOf("Mountain", "Raging Goblin"))
-
-        val land = findEnvironmentAction(environment) { it.action is PlayLand }
-        environment.step(land.action)
-        val goblin = findEnvironmentAction(environment) {
-            val action = it.action as? CastSpell
-            action?.cardId != null && cardName(environment, action.cardId) == "Raging Goblin"
-        }
-        environment.step(goblin.action)
-        advanceToAttackers(environment, alice)
-
-        val gym = GameGymEnv(
-            environment = environment,
-            perspectivePlayerIndex = 0,
-            observationBuilder = ObservationBuilder(cardRegistry = registry),
-        )
-        val observation = gym.observe().observation as TrainingObservation
-        val attack = observation.legalActions.first { it.kind == "DeclareAttackers" }
+        val prepared = prepareAttack()
+        val environment = prepared.environment
+        val attack = attackView(prepared.gym)
         val domain = attack.attackDeclarationDomain
         domain shouldNotBe null
         val attacker = domain!!.attackerToDefenders.keys.single()
-        val payload = buildJsonObject {
-            attack.actionSemantics!!.forEach { (key, value) -> put(key, value) }
-            put(
-                "attackers",
-                buildJsonObject { put(attacker.value, "unpublished-defender") },
-            )
-            put("bands", buildJsonArray {})
-        }
+        val payload = attackPayload(attack, attacker, EntityId("unpublished-defender"))
 
         val stateBefore = environment.state
         val stepCountBefore = environment.stepCount
         val lastStepEventsBefore = environment.lastStepEvents
 
         val failure = shouldThrow<IllegalArgumentException> {
-            gym.step(attack.actionId, payload)
+            prepared.gym.step(attack.actionId, payload)
         }
 
         failure.message shouldBe
@@ -89,10 +56,156 @@ class GameGymEnvAttackDeclarationSubmissionTest : FunSpec({
         environment.stepCount shouldBe stepCountBefore
         environment.lastStepEvents shouldBe lastStepEventsBefore
         environment.state.step shouldBe Step.DECLARE_ATTACKERS
-        environment.state.priorityPlayerId shouldBe alice
-        environment.playerIds shouldBe listOf(alice, bob)
+        environment.state.priorityPlayerId shouldBe prepared.alice
+        environment.playerIds shouldBe listOf(prepared.alice, prepared.bob)
+    }
+
+    test("action-ID-only combat submission still requires both explicit payload fields") {
+        val prepared = prepareAttack()
+        val attack = attackView(prepared.gym)
+
+        val failure = shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(attack.actionId)
+        }
+
+        failure.message shouldContain "requires a structured action payload"
+    }
+
+    test("a declaration accepted by the snapshot reaches the existing Rules combat step") {
+        val prepared = prepareAttack()
+        val attack = attackView(prepared.gym)
+        val domain = checkNotNull(attack.attackDeclarationDomain)
+        val attacker = domain.attackerToDefenders.keys.single()
+        val defender = domain.attackerToDefenders.getValue(attacker).single()
+        val stepCountBefore = prepared.environment.stepCount
+
+        prepared.gym.step(attack.actionId, attackPayload(attack, attacker, defender))
+
+        prepared.environment.stepCount shouldBe stepCountBefore + 1
+        prepared.environment.lastStepEvents.filterIsInstance<AttackersDeclaredEvent>().size shouldBe 1
+        prepared.environment.state.getEntity(attacker)?.get<AttackingComponent>() shouldNotBe null
+        prepared.environment.state.pendingDecision shouldBe null
+    }
+
+    test("snapshot acceptance is followed by the stale-candidate guard when live state changes") {
+        val prepared = prepareAttack()
+        val attack = attackView(prepared.gym)
+        val domain = checkNotNull(attack.attackDeclarationDomain)
+        val attacker = domain.attackerToDefenders.keys.single()
+        val defender = domain.attackerToDefenders.getValue(attacker).single()
+        val stepCountBefore = prepared.environment.stepCount
+
+        prepared.environment.restore(
+            prepared.environment.state.copy(priorityPlayerId = prepared.bob),
+            prepared.environment.playerIds,
+            stepCountBefore,
+        )
+        val stateBefore = prepared.environment.state
+        val lastStepEventsBefore = prepared.environment.lastStepEvents
+
+        val failure = shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(attack.actionId, attackPayload(attack, attacker, defender))
+        }
+
+        failure.message shouldContain "Action candidate is not in the current legal action set"
+        prepared.environment.state shouldBe stateBefore
+        prepared.environment.stepCount shouldBe stepCountBefore
+        prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
+    }
+
+    test("a valid declaration stops at the existing explicit attack-tax decision boundary") {
+        val prepared = prepareAttack(includeAttackTaxer = true)
+        val attack = attackView(prepared.gym)
+        val domain = checkNotNull(attack.attackDeclarationDomain)
+        val attacker = domain.attackerToDefenders.keys.single()
+        val defender = domain.attackerToDefenders.getValue(attacker).single()
+        val stepCountBefore = prepared.environment.stepCount
+
+        prepared.gym.step(attack.actionId, attackPayload(attack, attacker, defender))
+
+        prepared.environment.stepCount shouldBe stepCountBefore + 1
+        val pending = prepared.environment.state.pendingDecision
+            .shouldBeInstanceOf<SelectManaSourcesDecision>()
+        pending.context.sourceName shouldBe "Attack tax"
+        pending.requiredCost shouldBe "{1}{1}"
     }
 })
+
+private data class PreparedAttack(
+    val environment: GameEnvironment,
+    val gym: GameGymEnv,
+    val alice: EntityId,
+    val bob: EntityId,
+)
+
+private fun prepareAttack(includeAttackTaxer: Boolean = false): PreparedAttack {
+    val registry = CardRegistry().apply {
+        register(PortalSet.cards)
+        register(PortalSet.basicLands)
+        register(LegionsSet.cards)
+    }
+    val environment = GameEnvironment.create(registry)
+    environment.reset(
+        GameConfig(
+            players = listOf(
+                PlayerConfig("Alice", Deck.of("Mountain" to 99, "Raging Goblin" to 1)),
+                PlayerConfig("Bob", Deck.of("Mountain" to 99, "Windborn Muse" to 1)),
+            ),
+            startingHandSize = 2,
+            skipMulligans = true,
+            startingPlayerIndex = 0,
+        )
+    )
+    val alice = environment.playerIds[0]
+    val bob = environment.playerIds[1]
+    moveCardsIntoHand(environment, alice, listOf("Mountain", "Raging Goblin"))
+
+    val land = findEnvironmentAction(environment) { it.action is PlayLand }
+    environment.step(land.action)
+    val goblin = findEnvironmentAction(environment) {
+        val action = it.action as? CastSpell
+        action?.cardId != null && cardName(environment, action.cardId) == "Raging Goblin"
+    }
+    environment.step(goblin.action)
+    advanceToAttackers(environment, alice)
+
+    if (includeAttackTaxer) {
+        val muse = environment.state.getZone(bob, Zone.LIBRARY).firstOrNull { id ->
+            cardName(environment, id) == "Windborn Muse"
+        } ?: error("Expected Windborn Muse in Bob's library")
+        val stateWithMuse = environment.state.moveToZone(
+            muse,
+            ZoneKey(bob, Zone.LIBRARY),
+            ZoneKey(bob, Zone.BATTLEFIELD),
+        )
+        environment.restore(stateWithMuse, environment.playerIds, environment.stepCount)
+    }
+
+    return PreparedAttack(
+        environment = environment,
+        gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry),
+        ),
+        alice = alice,
+        bob = bob,
+    )
+}
+
+private fun attackView(gym: GameGymEnv): LegalActionView =
+    (gym.observe().observation as TrainingObservation).legalActions
+        .first { it.kind == "DeclareAttackers" }
+
+private fun attackPayload(
+    view: LegalActionView,
+    attacker: EntityId,
+    defender: EntityId,
+) = buildJsonObject {
+    view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+    put("attackers", buildJsonObject { put(attacker.value, defender.value) })
+    put("bands", buildJsonArray {})
+}
 
 private fun cardName(environment: GameEnvironment, entityId: EntityId): String? =
     environment.state.getEntity(entityId)?.get<CardComponent>()?.name
