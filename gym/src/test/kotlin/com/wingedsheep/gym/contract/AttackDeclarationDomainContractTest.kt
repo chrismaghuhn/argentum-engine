@@ -4,7 +4,10 @@ import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.legalactions.AttackDeclarationDomainSupport
 import com.wingedsheep.gym.GameEnvironment
+import com.wingedsheep.engine.legalactions.RulesAttackBandConstraints
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomain
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
@@ -52,10 +55,23 @@ class AttackDeclarationDomainContractTest : FunSpec({
                     action = DeclareAttackers(player, emptyMap()),
                     actionType = "DeclareAttackers",
                     description = "Declare attackers",
+                    attackDeclarationDomain = RulesAttackDeclarationDomain(
+                        attackerToDefenders = emptyMap(),
+                        mandatoryAttackers = emptyList(),
+                        canDeclareZeroAttackers = true,
+                        maxAttackers = null,
+                        coAttackerRequirements = emptyMap(),
+                        bandConstraints = RulesAttackBandConstraints(
+                            bandingAttackersByDefender = emptyMap(),
+                            nonBandingAttackersByDefender = emptyMap(),
+                        ),
+                    ),
+                    attackDeclarationDomainSupport = AttackDeclarationDomainSupport.SUPPORTED,
                 )
             ),
         )
         val view = (result.observation as TrainingObservation).legalActions.single()
+        view.attackDeclarationDomain shouldNotBe null
         view.requiredPayloadFields shouldBe listOf("attackers", "bands")
 
         val actionSerialization = Json {
