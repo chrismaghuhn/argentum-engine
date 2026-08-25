@@ -274,29 +274,14 @@ class DeterministicExternalPolicy {
         }
 
         if ("additionalCostPayment" in requiredFieldSet) {
-            val count = when {
-                action.sacrificeCount > 0 -> action.sacrificeCount
-                action.sacrificeMinCount > 0 -> action.sacrificeMinCount
-                else -> 0
-            }
-            if (action.sacrificeMaxCount > 0 && count > action.sacrificeMaxCount) {
-                return SemanticChoice.Gap(
+            val choices = publicSacrificeSelection(action, allowEmpty = true)
+                ?: return SemanticChoice.Gap(
                     family = "ADDITIONAL_COST",
                     code = "A5_DECISION_GAP",
                     reason = "Published sacrifice domain cannot satisfy its cardinality",
                     actionKind = action.kind,
                     publicDomain = "requiredPayloadFields=$requiredFields",
                 )
-            }
-            val choices = action.validSacrificeTargets.sortedBy { it.value }.take(count)
-            if (choices.size != count) {
-                return SemanticChoice.Gap(
-                    family = "ADDITIONAL_COST",
-                    code = "A5_DECISION_GAP",
-                    reason = "Published sacrifice domain cannot satisfy its cardinality",
-                    actionKind = action.kind,
-                )
-            }
             payload["additionalCostPayment"] = buildJsonObject {
                 put(
                     "sacrificedPermanents",
@@ -308,15 +293,29 @@ class DeterministicExternalPolicy {
 
         if ("costPayment" in requiredFieldSet) {
             val costPayment = sourceBoundCostPayment(action)
+                ?: publicSacrificeSelection(action, allowEmpty = false)?.let { choices ->
+                    buildJsonObject {
+                        put(
+                            "sacrificedPermanents",
+                            JsonArray(choices.map { id -> JsonPrimitive(id.value) }),
+                        )
+                        put("tappedPermanents", JsonArray(emptyList()))
+                    }
+                }
                 ?: return SemanticChoice.Gap(
                     family = "COST_PAYMENT",
                     code = "A5_DECISION_GAP",
                     reason =
-                        "Public costPayment is not a deterministic source-bound cost",
+                        "Public costPayment is neither deterministic source-bound nor a complete " +
+                            "published sacrifice domain",
                     actionKind = action.kind,
                     publicDomain =
                         "requiredPayloadFields=$requiredFields; " +
                             "sourceEntityId=${action.sourceEntityId}; " +
+                            "validSacrificeTargets=${action.validSacrificeTargets}; " +
+                            "sacrificeCount=${action.sacrificeCount}; " +
+                            "sacrificeMinCount=${action.sacrificeMinCount}; " +
+                            "sacrificeMaxCount=${action.sacrificeMaxCount}; " +
                             "actionSemantics=${action.actionSemantics}",
                     proposedFollowUp =
                         "Publish a complete public domain for non-source-bound cost payment",
@@ -355,6 +354,7 @@ class DeterministicExternalPolicy {
                 code = "A5_DECISION_GAP",
                 reason = "Structured action has no complete public choice domain",
                 actionKind = action.kind,
+                publicDomain = publicActionDomain(action),
             )
         }
 
@@ -365,6 +365,39 @@ class DeterministicExternalPolicy {
             payload = JsonObject(payload),
         )
     }
+
+    private fun publicSacrificeSelection(
+        action: com.wingedsheep.gym.contract.LegalActionView,
+        allowEmpty: Boolean,
+    ): List<EntityId>? {
+        val min = action.sacrificeMinCount
+        val max = action.sacrificeMaxCount
+        val count = action.sacrificeCount.takeIf { it > 0 } ?: min
+        if (min < 0 || max < 0 || count < min || count > max) return null
+
+        val targets = action.validSacrificeTargets
+        if (targets.distinct().size != targets.size) return null
+        if (!allowEmpty && count == 0 && targets.isEmpty()) return null
+
+        val choices = targets.sortedBy { it.value }.take(count)
+        return choices.takeIf { it.size == count }
+    }
+
+    private fun publicActionDomain(
+        action: com.wingedsheep.gym.contract.LegalActionView,
+    ): String = listOf(
+        "requiredPayloadFields=${action.requiredPayloadFields}",
+        "sourceEntityId=${action.sourceEntityId}",
+        "targetEntityIds=${action.targetEntityIds}",
+        "minTargets=${action.minTargets}",
+        "maxTargets=${action.maxTargets}",
+        "validSacrificeTargets=${action.validSacrificeTargets}",
+        "sacrificeCount=${action.sacrificeCount}",
+        "sacrificeMinCount=${action.sacrificeMinCount}",
+        "sacrificeMaxCount=${action.sacrificeMaxCount}",
+        "requiresDamageDistribution=${action.requiresDamageDistribution}",
+        "actionSemantics=${action.actionSemantics}",
+    ).joinToString("; ")
 
     /**
      * Enumerates only the concrete origins and production choices published by PaymentDomainV4.

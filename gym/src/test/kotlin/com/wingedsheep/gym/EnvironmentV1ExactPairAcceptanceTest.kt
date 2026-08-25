@@ -49,6 +49,8 @@ import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -413,6 +415,135 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         payment.payXLifeAmount shouldBe 0
     }
 
+    test("COSTPAY-01 maps TapSelf costPayment to the public source") {
+        val source = EntityId("source-tap")
+        val action = sourceBoundCostPaymentAction(
+            actionId = 103,
+            source = source,
+            cost = buildJsonObject { put("type", "CostTap") },
+        )
+
+        val payment = decodeCostPayment(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payment.tappedPermanents shouldBe listOf(source)
+        payment.sacrificedPermanents.shouldBeEmpty()
+        payment.discardedCards.shouldBeEmpty()
+        payment.exiledCards.shouldBeEmpty()
+        payment.variableCostPermanents.shouldBeEmpty()
+    }
+
+    test("COSTPAY-02 maps SacrificeSelf costPayment to the public source") {
+        val source = EntityId("source-sacrifice")
+        val action = sourceBoundCostPaymentAction(
+            actionId = 104,
+            source = source,
+            cost = buildJsonObject { put("type", "CostSacrificeSelf") },
+        )
+
+        val payment = decodeCostPayment(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payment.tappedPermanents.shouldBeEmpty()
+        payment.sacrificedPermanents shouldBe listOf(source)
+        payment.discardedCards.shouldBeEmpty()
+        payment.exiledCards.shouldBeEmpty()
+        payment.variableCostPermanents.shouldBeEmpty()
+    }
+
+    test("COSTPAY-03 maps choice-bearing costPayment from its published sacrifice domain") {
+        val source = EntityId("source-choice")
+        val firstTarget = EntityId("sacrifice-choice-a")
+        val secondTarget = EntityId("sacrifice-choice-b")
+        val action = choiceBearingCostPaymentAction(
+            actionId = 105,
+            source = source,
+            targets = listOf(secondTarget, firstTarget),
+            count = 1,
+            min = 1,
+            max = 1,
+        )
+
+        val payment = decodeCostPayment(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payment.sacrificedPermanents shouldBe listOf(firstTarget)
+        payment.tappedPermanents.shouldBeEmpty()
+    }
+
+    test("COSTPAY-04 keeps costPayment fail-closed without a published sacrifice domain") {
+        val action = choiceBearingCostPaymentAction(
+            actionId = 106,
+            source = EntityId("source-without-domain"),
+            targets = emptyList(),
+            count = 1,
+            min = 1,
+            max = 1,
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        check(choice is SemanticChoice.Gap) { "Expected A5 gap, got $choice" }
+        choice.code shouldBe "A5_DECISION_GAP"
+    }
+
+    test("COSTPAY-05 keeps costPayment fail-closed when cardinality exceeds the domain") {
+        val action = choiceBearingCostPaymentAction(
+            actionId = 107,
+            source = EntityId("source-insufficient-domain"),
+            targets = listOf(EntityId("only-sacrifice-target")),
+            count = 2,
+            min = 2,
+            max = 2,
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        check(choice is SemanticChoice.Gap) { "Expected A5 gap, got $choice" }
+        choice.code shouldBe "A5_DECISION_GAP"
+    }
+
+    test("COSTPAY-06 does not reinterpret a choice-bearing sacrifice as SacrificeSelf") {
+        val source = EntityId("source-choice")
+        val otherTarget = EntityId("other-sacrifice-target")
+        val action = choiceBearingCostPaymentAction(
+            actionId = 108,
+            source = source,
+            targets = listOf(source, otherTarget),
+            count = 1,
+            min = 1,
+            max = 1,
+        )
+
+        val payment = decodeCostPayment(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payment.sacrificedPermanents shouldBe listOf(otherTarget)
+        payment.tappedPermanents.shouldBeEmpty()
+    }
+
     test("the external policy retains the published additionalCostPayment domain") {
         val player = EntityId("player-0")
         val source = EntityId("source-permanent")
@@ -470,6 +601,131 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         )
         payment.sacrificedPermanents shouldBe listOf(firstTarget, secondTarget)
         payment.tappedPermanents.shouldBeEmpty()
+    }
+
+    test("the real Viscera Seer action publishes its complete public sacrifice domain") {
+        val service = MultiEnvService(exactPairRegistry())
+        val episode = EpisodeConfig(
+            seed = 4L,
+            startingPlayerIndex = 0,
+            seat0 = "Akiri",
+            seat1 = "Chevill",
+            rosterLabel = "Akiri-vs-Chevill",
+        )
+        val policy = DeterministicExternalPolicy()
+        var policyState = DeterministicPolicyState(policySeed(episode))
+
+        fun game(result: ObservationResult): TrainingObservation {
+            check(result.diagnostics.isEmpty()) {
+                "Viscera Seer characterization observed diagnostics: ${result.diagnostics}"
+            }
+            return result.observation as? TrainingObservation
+                ?: error("Viscera Seer characterization requires TrainingObservation")
+        }
+
+        fun hasType(element: JsonElement?, expected: String): Boolean = when (element) {
+            is JsonObject ->
+                (element["type"] as? JsonPrimitive)?.content == expected ||
+                    element.values.any { child -> hasType(child, expected) }
+            is JsonArray -> element.any { child -> hasType(child, expected) }
+            else -> false
+        }
+
+        try {
+            val created = service.create(episode.envConfig())
+            var observation = game(created.observation)
+            repeat(64) { step ->
+                val choice = policy.choose(observation, policyState)
+                policyState = policyState.afterChoice()
+                observation = when (choice) {
+                    is SemanticChoice.Action -> game(
+                        service.step(
+                            StepRequest(
+                                envId = created.envId,
+                                actionId = choice.actionId,
+                                action = choice.payload,
+                            ),
+                        ),
+                    )
+                    is SemanticChoice.Structured -> {
+                        val pending = observation.pendingDecision
+                            ?: error("Structured choice without a pending decision at step $step")
+                        val decisionId = pending.decisionId
+                            ?: error("Structured characterization decision has no decisionId")
+                        game(
+                            service.submitDecision(
+                                envId = created.envId,
+                                response = toDecisionResponse(decisionId, choice.selection),
+                                actorId = observation.agentToAct,
+                            ),
+                        )
+                    }
+                    is SemanticChoice.Gap -> error(
+                        "Unexpected policy gap before Viscera Seer characterization at step " +
+                            "$step: $choice",
+                    )
+                }
+            }
+
+            val sacrificeActions = observation.legalActions.filter { action ->
+                action.kind == "ActivateAbility" &&
+                    action.requiredPayloadFields.contains("costPayment") &&
+                    hasType(action.actionSemantics, "AtomSacrifice")
+            }
+            sacrificeActions.size shouldBe 1
+            val visceraAction = sacrificeActions.single()
+            visceraAction.kind shouldBe "ActivateAbility"
+            visceraAction.requiredPayloadFields shouldBe listOf("costPayment")
+            visceraAction.sourceEntityId shouldBe EntityId("e146")
+            check(hasType(visceraAction.actionSemantics, "CostAtomWrapper")) {
+                "Viscera Seer action did not publish CostAtomWrapper semantics"
+            }
+            check(hasType(visceraAction.actionSemantics, "AtomSacrifice")) {
+                "Viscera Seer action did not publish AtomSacrifice semantics"
+            }
+            println(
+                "VISCERA_SEER_PUBLIC_BATTLEFIELD " +
+                    observation.zones
+                        .filter { zone -> zone.zoneType == Zone.BATTLEFIELD && !zone.hidden }
+                        .flatMap { zone -> zone.cards }
+                        .joinToString { card ->
+                            "${card.entityId}:${card.name}:${card.types.sorted()}"
+                        },
+            )
+            println(
+                "VISCERA_SEER_PUBLIC_DOMAIN_RAW " +
+                    "targets=${visceraAction.validSacrificeTargets} " +
+                    "count=${visceraAction.sacrificeCount} " +
+                    "min=${visceraAction.sacrificeMinCount} " +
+                    "max=${visceraAction.sacrificeMaxCount}",
+            )
+            visceraAction.sacrificeCount shouldBe 1
+            visceraAction.sacrificeMinCount shouldBe 1
+            visceraAction.sacrificeMaxCount shouldBe 1
+            visceraAction.validSacrificeTargets.size shouldBe 1
+            check(visceraAction.sourceEntityId in visceraAction.validSacrificeTargets) {
+                "The public sacrifice domain omitted the source candidate: $visceraAction"
+            }
+            println(
+                "VISCERA_SEER_PUBLIC_DOMAIN " +
+                    "targets=${visceraAction.validSacrificeTargets} " +
+                    "count=${visceraAction.sacrificeCount} " +
+                    "min=${visceraAction.sacrificeMinCount} " +
+                    "max=${visceraAction.sacrificeMaxCount}",
+            )
+            val actorCreatureIds = observation.zones
+                .filter { zone -> zone.zoneType == Zone.BATTLEFIELD && !zone.hidden }
+                .flatMap { zone -> zone.cards }
+                .filter { card ->
+                    card.controllerId == observation.agentToAct &&
+                        "CREATURE" in card.types
+                }
+                .map { card -> card.entityId }
+                .sortedBy { id -> id.value }
+            visceraAction.validSacrificeTargets.sortedBy { id -> id.value } shouldBe actorCreatureIds
+        } finally {
+            service.dispose(service.listEnvs())
+        }
     }
 
     test("seed zero original reproducer stops at the first current finding") {
@@ -1014,6 +1270,97 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 .joinToString("") { byte -> "%02X".format(byte) }
         }
     }
+}
+
+private fun sourceBoundCostPaymentAction(
+    actionId: Int,
+    source: EntityId,
+    cost: JsonObject,
+): LegalActionView = LegalActionView(
+    actionId = actionId,
+    kind = "ActivateAbility",
+    description = "opaque source-bound cost-payment action",
+    affordable = true,
+    sourceEntityId = source,
+    requiresStructuredAction = true,
+    requiredPayloadFields = listOf("costPayment"),
+    actionSemantics = buildJsonObject {
+        put("type", "ActivateAbility")
+        put("abilityKey", buildJsonObject {
+            put("ability", buildJsonObject {
+                put("cost", cost)
+            })
+        })
+    },
+)
+
+private fun choiceBearingCostPaymentAction(
+    actionId: Int,
+    source: EntityId,
+    targets: List<EntityId>,
+    count: Int,
+    min: Int,
+    max: Int,
+): LegalActionView = LegalActionView(
+    actionId = actionId,
+    kind = "ActivateAbility",
+    description = "opaque choice-bearing cost-payment action",
+    affordable = true,
+    sourceEntityId = source,
+    validSacrificeTargets = targets,
+    sacrificeCount = count,
+    sacrificeMinCount = min,
+    sacrificeMaxCount = max,
+    requiresStructuredAction = true,
+    requiredPayloadFields = listOf("costPayment"),
+    actionSemantics = buildJsonObject {
+        put("type", "ActivateAbility")
+        put("abilityKey", buildJsonObject {
+            put("ability", buildJsonObject {
+                put("cost", buildJsonObject {
+                    put("type", "CostAtomWrapper")
+                    put("atom", buildJsonObject {
+                        put("type", "AtomSacrifice")
+                        put("count", count)
+                    })
+                })
+            })
+        })
+    },
+)
+
+private fun publicActionObservation(
+    action: LegalActionView,
+    player: EntityId = EntityId("player-0"),
+): TrainingObservation = TrainingObservation(
+    schemaHash = "test-schema",
+    perspectivePlayerId = player,
+    agentToAct = player,
+    turnNumber = 1,
+    phase = com.wingedsheep.sdk.core.Phase.PRECOMBAT_MAIN,
+    step = com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN,
+    activePlayerId = player,
+    priorityPlayerId = player,
+    players = emptyList(),
+    zones = emptyList(),
+    stack = emptyList(),
+    pendingDecision = null,
+    legalActions = listOf(action),
+    terminated = false,
+    truncated = false,
+    winnerId = null,
+    stateDigest = "digest",
+)
+
+private fun decodeCostPayment(choice: SemanticChoice): AdditionalCostPayment {
+    check(choice is SemanticChoice.Action) { "Expected a cost-payment action, got $choice" }
+    return Json {
+        ignoreUnknownKeys = true
+    }.decodeFromJsonElement(
+        AdditionalCostPayment.serializer(),
+        choice.payload?.get("costPayment")
+            ?: error("Cost-payment action omitted costPayment"),
+    )
 }
 
 private data class LockedDeck(
