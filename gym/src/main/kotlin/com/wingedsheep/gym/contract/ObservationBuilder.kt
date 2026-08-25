@@ -873,13 +873,13 @@ class ObservationBuilder(
             }
         ) return false
 
-        val advertisedCost = AbilityCost.Atom(CostAtom.Mana(parsedPublicCost))
+        val advertisedCost = AbilityCost.Atom(CostAtom.Mana(parsedPublicCost)).canonicalZero()
         val unboundCost = activatedAbilityCostCalculator.calculate(
             state = state,
             sourceId = action.sourceId,
             controllerId = action.playerId,
             ability = ability,
-        )
+        ).canonicalZero()
         if (unboundCost != advertisedCost) return false
 
         return publicTargetRequirement.candidates.all { candidateId ->
@@ -889,8 +889,16 @@ class ObservationBuilder(
                 controllerId = action.playerId,
                 ability = ability,
                 targets = listOf(ChosenTarget.Permanent(candidateId)),
-            ) == advertisedCost
+            ).canonicalZero() == advertisedCost
         }
+    }
+
+    private fun AbilityCost.canonicalZero(): AbilityCost = when (this) {
+        is AbilityCost.Atom -> when (val atom = atom) {
+            is CostAtom.Mana -> AbilityCost.Atom(CostAtom.Mana(atom.cost.canonicalZero()))
+            else -> this
+        }
+        else -> this
     }
 
     private fun ManaCost.canonicalZero(): ManaCost =
