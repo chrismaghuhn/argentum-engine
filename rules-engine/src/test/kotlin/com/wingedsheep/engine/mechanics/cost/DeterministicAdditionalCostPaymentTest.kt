@@ -1,9 +1,11 @@
 package com.wingedsheep.engine.mechanics.cost
 
 import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -54,6 +56,33 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
         }
     }
 
+    test("CommanderColorIdentityCount is certified without making PayLife generally supported") {
+        val certificate = DeterministicAdditionalCostPayment.certify(
+            Costs.Composite(
+                Costs.Mana("{3}"),
+                Costs.Tap,
+                Costs.PayLife(DynamicAmounts.commanderColorIdentityCount()),
+            ),
+            EntityId("source"),
+        )
+
+        certificate?.additionalCostPayment shouldBe AdditionalCostPayment(
+            tappedPermanents = listOf(EntityId("source")),
+        )
+        certificate?.deterministicPayLifeExpressions shouldBe listOf(
+            DynamicAmount.CommanderColorIdentityCount,
+        )
+
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(
+                Costs.Mana("{3}"),
+                Costs.Tap,
+                Costs.PayLife(DynamicAmounts.sourcePower()),
+            ),
+            EntityId("source"),
+        ) shouldBe null
+    }
+
     test("more than one deterministic self payment is not certified") {
         DeterministicAdditionalCostPayment.expectedFor(
             Costs.Composite(Costs.Tap, Costs.Tap),
@@ -61,6 +90,14 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
         ) shouldBe null
         DeterministicAdditionalCostPayment.expectedFor(
             Costs.Composite(Costs.SacrificeSelf, Costs.SacrificeSelf),
+            EntityId("source"),
+        ) shouldBe null
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(Costs.Mana("{1}"), Costs.Tap, Costs.Tap),
+            EntityId("source"),
+        ) shouldBe null
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(Costs.Mana("{1}"), Costs.SacrificeSelf, Costs.SacrificeSelf),
             EntityId("source"),
         ) shouldBe null
     }
