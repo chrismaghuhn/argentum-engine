@@ -93,7 +93,13 @@ data class RulesAttackDeclarationDomain(
     val attackerToDefenders: Map<EntityId, List<EntityId>>,
     val mandatoryAttackers: List<EntityId>,
     val canDeclareZeroAttackers: Boolean,
+    val maxAttackers: Int?,
+    val coAttackerRequirements: Map<EntityId, List<RulesCoAttackerRequirement>>,
     val bandConstraints: RulesAttackBandConstraints,
+)
+
+data class RulesCoAttackerRequirement(
+    val anyOf: List<EntityId>,
 )
 
 data class RulesAttackBandConstraints(
@@ -104,8 +110,10 @@ data class RulesAttackBandConstraints(
 
 The certificate must be canonical: map keys, attacker lists, defender lists, and band member
 lists are duplicate-free and sorted by `EntityId.value`. Every mandatory attacker is a certificate
-attacker. Every banding or non-banding entry is present in the attacker-to-defender relation for
-the same defender.
+attacker. `maxAttackers` is null or non-negative. Every co-attacker requirement belongs to a
+certificate attacker, has a duplicate-free non-empty `anyOf` list of certificate attackers, and
+uses IDs that are valid companions for that restriction. Every banding or non-banding entry is
+present in the attacker-to-defender relation for the same defender.
 
 The certificate is produced from the same Rules-owned combat authority used by execution. The
 enumerator must not reconstruct legality from card components or implement a second attack filter.
@@ -116,10 +124,13 @@ empty domain.
 ### Attacker-to-defender completeness
 
 For each published attacker and each candidate defender, the certificate contains the relation if
-and only if the Rules per-attacker defender checks accept that pair in the enumerated state. The
-check must include the existing attack-mode, player, planeswalker, battle-protector, and
-`AttackDefenderRule` authority. The implementation must not publish one global defender list and
-leave the relation for Gym to infer.
+and only if all currently state-resolvable Rules-owned defender requirements accept that pair in the
+enumerated state. This includes the existing attack-mode, player, planeswalker, battle-protector,
+and `AttackDefenderRule` authority, plus any resolved defender requirement from Taunt/Must-Attack
+and Goad. If a Goaded attacker can legally attack a non-goader player, defender IDs whose defending
+player is a goader are excluded; if no non-goader player is legal, the certificate retains the
+fallback defender choices that Rules permits. The implementation must not publish one global
+defender list and leave the relation for Gym to infer.
 
 An executable Rules regression uses asymmetric fixtures so that at least one attacker can attack a
 defender that another attacker cannot. It compares the certificate relation with the direct Rules
@@ -144,23 +155,59 @@ partition cannot represent, the implementation must extend both the certificate 
 the attack domain unsupported. It must never publish a convenient approximation.
 
 The partition is a certificate of band shape conditional on the submitted attacker map. It does
-not claim that every combination of attackers is globally legal; the final Rules execution remains
-authoritative for those constraints.
+not claim that every combination of attackers and defenders is legal without also applying the
+other fields in the complete factored domain. Rules remains the final execution authority.
+
+### Declaration-level completeness
+
+The per-attacker relation and band partition are not sufficient by themselves. The certificate is a
+complete factored constraint system for every non-payment legality check that can reject the
+attacker map after individual attacker/defender checks:
+
+- `mandatoryAttackers` expresses every current Must-Attack, Must-Attack-This-Turn, projected
+  Must-Attack, and Goaded attacker that Rules requires to appear;
+- `maxAttackers` is the smallest active global attacker cap, or `null` when no cap applies;
+- `coAttackerRequirements` is an all-of list per restricted attacker. Each
+  `RulesCoAttackerRequirement.anyOf` contains concrete IDs of certificate attackers that Rules has
+  already resolved as legal companions for that restriction. A selected restricted attacker must
+  have at least one selected companion in every `anyOf` set. Gym never evaluates the original
+  predicate or recreates its filter semantics;
+- `attackerToDefenders` already contains the resolved defender consequences of Taunt and Goad, as
+  described above; and
+- `bandConstraints` expresses the complete current Rules band predicate.
+
+The Rules-side certificate builder must derive these fields from the same helpers and projected
+state used by execution. It must not copy the current flat `mandatoryAttackers` projection and call
+that complete. For supported attack shapes, an executable equivalence harness enumerates all
+attacker maps, defender assignments, and bands for small fixtures and compares the factored
+certificate predicate with the Rules pre-tax declaration validator. A mismatch marks the domain
+unsupported until the certificate shape is extended.
 
 ### Zero attackers and mandatory attackers
 
 `canDeclareZeroAttackers` is a first-class certificate field. It is computed by Rules authority,
-not inferred from an empty list. A non-empty mandatory-attacker list makes it false. A submitted
-empty attacker map is accepted by the trusted certificate validator only when this field is true,
-and the Rules processor then performs its final stateful check.
+not inferred from an empty list. The builder derives it by applying the same complete factored
+constraint authority to the empty declaration and proving that result equivalent to the Rules
+pre-tax validator; it must not use `mandatoryAttackers.isEmpty()` as a shortcut. A submitted empty
+attacker map is accepted by the trusted certificate validator only when this field is true, and the
+Rules processor then performs its final stateful check.
+
+Attack taxes are the one deliberate later boundary. A declaration that satisfies this complete
+constraint system may still open the existing Rules-owned attack-tax payment/confirmation decision;
+that decision is not a declaration-legality approximation and remains a separate explicit payment
+contract.
 
 ## LegalAction and unsupported behavior
 
 `LegalAction` carries the Rules certificate and a typed support result parallel to the existing
 target-domain support seam. A `DeclareAttackers` action is publishable to trusted Gym only when its
 certificate is structurally complete. An unsupported certificate produces a stable typed
-`ATTACK_DECLARATION_DOMAIN_UNSUPPORTED` diagnostic and omits the action from the observation; it
-does not produce an empty domain that could be mistaken for “no attackers are legal.”
+`ATTACK_DECLARATION_DOMAIN_UNSUPPORTED` diagnostic. The trusted `GameGymEnv` fails the whole
+observation with `UnsupportedPathFailure`; it does not return a normal observation with a silently
+reduced legal-action list. An intermediate builder result may omit the unsupported action while
+assembling diagnostics, but no caller may observe that reduced action set as a successful trusted
+observation. It does not produce an empty domain that could be mistaken for “no attackers are
+legal.”
 
 Non-combat actions retain their current behavior and have no attack declaration domain.
 Compatibility flat combat fields may remain for existing Rules/client callers, but they are not the
@@ -179,7 +226,14 @@ data class AttackDeclarationDomainV1(
     val attackerToDefenders: Map<EntityId, List<EntityId>>,
     val mandatoryAttackers: List<EntityId>,
     val canDeclareZeroAttackers: Boolean,
+    val maxAttackers: Int?,
+    val coAttackerRequirements: Map<EntityId, List<AttackCoAttackerRequirementV1>>,
     val bandConstraints: AttackBandConstraintsV1,
+)
+
+@Serializable
+data class AttackCoAttackerRequirementV1(
+    val anyOf: List<EntityId>,
 )
 
 @Serializable
@@ -211,24 +265,35 @@ submitted `DeclareAttackers` action. It must not receive or read `GameState`. It
 - every selected defender is in that attacker's published defender list;
 - every mandatory attacker is present;
 - an empty map is allowed only when `canDeclareZeroAttackers` is true;
+- the submitted attacker count does not exceed `maxAttackers`;
+- every selected attacker satisfies every registered co-attacker requirement through a selected
+  concrete ID in that requirement's `anyOf` list;
 - every band has at least two members, contains only submitted attackers, uses one defender, and
   obeys the certified banding/non-banding partition;
 - no attacker occurs in more than one band;
-- no malformed or future-version certificate is accepted.
+- all registered certificate fields satisfy their structural invariants.
+
+The Rules certificate is a concrete, non-wire type and has no independent future-version check.
+The `AttackDeclarationDomainV1` decoder and mapper reject unsupported wire versions before a
+certificate snapshot can be registered; the snapshot validator then validates only the concrete
+registered Rules certificate type.
 
 The validator runs against the certificate stored in the current `ActionRegistry` entry. It does
 not re-enumerate the `GameState` or call a Gym legality algorithm. After it succeeds,
 `GameEnvironment.stepFromCandidateStrict` retains its stale-candidate guard and sends the submitted
 action through the existing Rules processor, which performs the final Magic legality check before
-committing state. All certificate failures happen before state mutation and do not advance the
-environment.
+committing state. For an unchanged registered snapshot, a declaration that passes the factored
+validator but fails the Rules pre-tax declaration checks is an implementation failure exposed by
+the equivalence harness, not an accepted policy outcome. All certificate failures happen before
+state mutation and do not advance the environment.
 
 ## Schema, canonicalization, and digest
 
 The new `LegalActionView` field is part of the wire DTO and semantic action identity. The
 canonicalizer includes the version, attacker-to-defender relations, mandatory list, zero-attacker
-flag, and band constraints, normalizing all unordered entity collections. A domain reorder must not
-change the digest; a domain relation, constraint, or zero-attacker change must change it.
+flag, global cap, co-attacker requirements, and band constraints, normalizing all unordered entity
+collections. A domain reorder must not change the digest; a domain relation, constraint, or
+zero-attacker change must change it.
 
 `SchemaHash.CURRENT` advances from
 `argentum-gym-contract@v1.19-required-payload-fields` to
@@ -274,12 +339,17 @@ with asymmetric choices, not two global lists.
 Focused verification covers:
 
 - Rules certificate structure, deterministic ordering, asymmetric attacker-to-defender relations,
-  mandatory attackers, and explicit zero-attacker legality;
+  mandatory attackers, global attacker caps, concrete co-attacker requirements, and explicit
+  zero-attacker legality;
+- exhaustive small-fixture equivalence of the complete factored certificate predicate against the
+  existing Rules pre-tax declaration validator, including co-attacker requirements, global caps,
+  mandatory/zero-attacker constraints, and resolved Taunt/Goad defender requirements;
 - exhaustive small-fixture band completeness against the existing Rules validator;
 - V1 projection, visibility/addressability fail-closed behavior, and typed unsupported diagnostics;
 - trusted snapshot validation for valid declarations, invalid relation choices, missing mandatory
   attackers, malformed bands, and zero-attacker rejection;
-- atomic strict execution and final Rules rejection for state-dependent constraints;
+- atomic strict execution, Rules defense-in-depth validation, and the attack-tax/payment
+  continuation after a declaration that satisfies the complete certificate;
 - wire round-trip, schema hash v1.20, semantic canonicalization, and digest changes;
 - replay audit with replay version unchanged only when the audit passes;
 - existing target, payment, required-payload, combat-band, and strict-execution regressions.
