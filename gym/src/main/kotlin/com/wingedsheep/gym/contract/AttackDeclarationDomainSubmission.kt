@@ -37,6 +37,9 @@ object AttackDeclarationDomainSubmission {
         requireSupported(action)
         val declaration = submitted as? DeclareAttackers
             ?: throw IllegalArgumentException("Structured action changed its action type")
+        require(candidate.playerId == declaration.playerId) {
+            "Structured action changed its action actor"
+        }
         val domain = checkNotNull(action.attackDeclarationDomain)
 
         when (val result = AttackDeclarationDomainValidator.validate(domain, declaration)) {
@@ -46,10 +49,7 @@ object AttackDeclarationDomainSubmission {
             )
         }
 
-        // Keep the candidate use explicit at this seam: the engine's membership check remains the
-        // owner of actor/source identity, while this pure validator owns declaration choices.
-        check(candidate.playerId == declaration.playerId) {
-            "Structured action changed its action actor"
-        }
+        // The input guard rejects JSON actor overrides before the pure domain predicate; the
+        // engine's strict candidate-membership check remains the final execution authority.
     }
 }

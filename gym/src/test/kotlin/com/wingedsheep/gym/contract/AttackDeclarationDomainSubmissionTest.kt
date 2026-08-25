@@ -35,6 +35,22 @@ class AttackDeclarationDomainSubmissionTest : FunSpec({
             "Attack declaration is outside the registered domain: INVALID_DEFENDER"
     }
 
+    test("rejects an actor mismatch as input before validating declaration choices") {
+        val action = legalAction()
+
+        val failure = shouldThrow<IllegalArgumentException> {
+            AttackDeclarationDomainSubmission.requireWithinRegisteredDomain(
+                action,
+                DeclareAttackers(
+                    EntityId("other-player"),
+                    mapOf(attacker to EntityId("unpublished-defender")),
+                ),
+            )
+        }
+
+        failure.message shouldBe "Structured action changed its action actor"
+    }
+
     test("unsupported registered certificates fail closed") {
         val action = LegalAction(
             action = DeclareAttackers(player, emptyMap()),
