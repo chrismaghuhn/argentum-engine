@@ -137,11 +137,11 @@ internal object DeterministicAdditionalCostPayment {
 }
 ```
 
-The private recursion accepts `AbilityCost.Atom` only when its atom is ordinary `CostAtom.Mana`,
-accepts one `AbilityCost.Tap`, accepts one `AbilityCost.SacrificeSelf`, recursively combines
-`AbilityCost.Composite`, and returns `null` for every other `AbilityCost` or `CostAtom`. Keep all
-other `AdditionalCostPayment` fields at their defaults. The function must be pure and must not
-mutate a `GameState` or select a candidate.
+The private collector accepts `AbilityCost.Atom` only when its atom is ordinary `CostAtom.Mana`,
+accepts one `AbilityCost.Tap`, accepts one `AbilityCost.SacrificeSelf`, and combines only a flat
+`AbilityCost.Composite` whose direct children have those shapes. Nested composites and every other
+`AbilityCost` or `CostAtom` return `null`. Keep all other `AdditionalCostPayment` fields at their
+defaults. The function must be pure and must not mutate a `GameState` or select a candidate.
 
 - [ ] **Step 4: Run the unit tests to verify the certificate GREEN**
 

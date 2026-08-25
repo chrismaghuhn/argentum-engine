@@ -22,15 +22,18 @@ candidate and cardinality domains are complete.
 Reuse the existing `AdditionalCostPayment` payload. Do not add an additional-cost domain DTO, schema
 version, replay version, card-name branch, automatic payment, or heuristic completion.
 
-For the first supported slice, Rules recursively examines the authoritative effective `AbilityCost`
-computed by `ActivatedAbilityCostCalculator`. The only accepted leaves are:
+For the first supported slice, Rules examines the authoritative effective `AbilityCost` computed by
+`ActivatedAbilityCostCalculator`. The accepted shape is a flat `AbilityCost.Composite` (or a single
+leaf) whose direct children are limited to the following leaves; nested composites are rejected
+fail-closed:
 
 - ordinary fixed mana;
 - `AbilityCost.Tap`, meaning tap the activated source exactly once;
 - `AbilityCost.SacrificeSelf`, meaning sacrifice the activated source exactly once.
 
-Composite costs are accepted only when every leaf belongs to that set and the source-bound leaves are
-represented exactly once. The Rules-derived expected payload for source `sourceId` is:
+Flat composite costs are accepted only when every direct child belongs to that set and the
+source-bound leaves are represented exactly once. The Rules-derived expected payload for source
+`sourceId` is:
 
 ```json
 {
