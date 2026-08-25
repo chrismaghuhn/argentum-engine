@@ -32,15 +32,29 @@ Build the smallest DeclareAttackers observation using the same CardRegistry, Gam
 For the observed DeclareAttackers view, assert the existing explicit payload contract remains:
 
     view.requiredPayloadFields shouldBe listOf("attackers", "bands")
-    view.attackDeclarationDomain shouldBe null
 
-Serialize the view with the repository's observation JSON configuration and assert that the attackDeclarationDomain property is absent on the baseline. The test must demonstrate the exact gap: payload fields are required while the action domain is not published.
+Serialize the view with the repository's observation JSON configuration and assert the behavioral
+publication contract:
+
+    val actionSerialization = Json {
+        encodeDefaults = true
+        explicitNulls = false
+        classDiscriminator = "type"
+    }
+    val json = actionSerialization.encodeToJsonElement(LegalActionView.serializer(), view).jsonObject
+    json["attackDeclarationDomain"] shouldNotBe null
+
+The baseline keeps the required-payload assertion GREEN but fails the JSON presence assertion because
+the property is not published at all. Do not reference LegalActionView.attackDeclarationDomain in
+this RED test; add that typed assertion only after the DTO field exists in Task 5.
 
 - [ ] **Step 3: Run the focused RED test.**
 
     just test-class AttackDeclarationDomainContractTest
 
-Expected result: the characterization fails because the current LegalActionView has no published attack declaration domain. If just is blocked by WinError 193, run:
+Expected result: the required-payload assertion passes and the JSON presence assertion fails because
+the current LegalActionView has no published attack declaration domain. If just is blocked by
+WinError 193, run:
 
     .\gradlew.bat :gym:test --tests '*AttackDeclarationDomainContractTest' --console=plain
 
@@ -48,7 +62,7 @@ Record the failure as RED evidence before changing production code.
 
 - [ ] **Step 4: Commit only the RED test.**
 
-    git add gym/src/test/kotlin/com/wingedsheep/gym/contract/AttackDeclarationDomainContractTest.kt gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvActionContractTest.kt
+    git add gym/src/test/kotlin/com/wingedsheep/gym/contract/AttackDeclarationDomainContractTest.kt
     git commit -m "test: characterize missing attack declaration domain"
 
 ## Task 2: Add the Rules certificate model and pure snapshot predicate
@@ -147,12 +161,29 @@ Provide package-internal helpers used both by execution and certificate construc
     getGlobalAttackerCap(state: GameState, attackingPlayer: EntityId): Int?
     getConcreteCoAttackerRequirements(state: GameState, attackingPlayer: EntityId): Map<EntityId, List<RulesCoAttackerRequirement>>
     getMandatoryAttackers(state: GameState, attackingPlayer: EntityId): List<EntityId>
+    getAttackDeclarationCandidateAttackers(state: GameState, attackingPlayer: EntityId): List<EntityId>
+    getAttackDeclarationCandidateDefenders(state: GameState, attackingPlayer: EntityId): List<EntityId>
 
 The co-attacker helper must reuse the current projected PredicateEvaluator and PredicateContext logic from validateCoAttackerRequirements, but publish resolved companion IDs rather than the original filter. Generic MustAttack remains an attacker requirement; only Rules shapes that actually resolve a defender, especially MustAttackPlayerComponent/Taunt and Goad, constrain attackerToDefenders.
 
+The candidate helpers are pre-certificate Rules universes. Candidate attackers come from the existing
+Rules attacker eligibility authority. Candidate defenders include the complete global universe of
+Rules-resolved opponent players, attackable planeswalkers, and attackable battles; they are not filtered
+per attacker and do not read attackerToDefenders. The equivalence test uses these helpers before it
+constructs or reads the certificate.
+
 - [ ] **Step 4: Build the Rules certificate from the same authority.**
 
-Add AttackPhaseManager.getAttackDeclarationDomain(state, attackingPlayer) and delegate it through CombatManager and TurnManager. Build a sorted relation by testing every valid attacker against every Rules-resolved defender. Apply the concrete Taunt/MustAttackPlayer and Goad defender restrictions while constructing the relation; retain Goad's existing fallback when no non-goader player is legally attackable. Populate the mandatory list, smallest global cap, concrete co-attacker requirements, and banding/non-banding partitions from projected Rules data. Derive canDeclareZeroAttackers by running the shared Rules pre-tax validator on the empty declaration and comparing that result with the factorized predicate; never set it from mandatoryAttackers.isEmpty().
+Add AttackPhaseManager.getAttackDeclarationDomain(state, attackingPlayer) and delegate it through CombatManager and TurnManager. Build a sorted relation by testing every valid attacker against every Rules-resolved defender. Apply the concrete Taunt/MustAttackPlayer and Goad defender restrictions while constructing the relation; retain Goad's existing fallback when no non-goader player is legally attackable. Populate the mandatory list, smallest global cap, concrete co-attacker requirements, and banding/non-banding partitions from projected Rules data. Derive canDeclareZeroAttackers directly as
+
+    AttackPhaseManager.validateDeclarationBeforeTax(
+        state,
+        DeclareAttackers(attackingPlayer, emptyMap()),
+    ) completes successfully
+
+Do not compare the empty declaration with the factorized predicate while building the certificate and
+never set the flag from mandatoryAttackers.isEmpty(). Task 4 performs the independent equivalence
+comparison for the empty declaration.
 
 If a requirement cannot be represented by the V1 certificate, return AttackDeclarationDomainSupport.UNSUPPORTED and never publish a partial or empty domain. Verify that all mandatory IDs occur in the relation and all resolved companions are certificate attackers before returning SUPPORTED.
 
@@ -191,16 +222,34 @@ Then commit:
 
 - [ ] **Step 1: Define the small-fixture declaration generator.**
 
-For fixtures with at most three attackers and the available player/planeswalker/battle defenders, enumerate every attacker subset, every selected defender assignment from the certificate relation, and every band subset of the selected attackers. Include empty and single-attacker declarations. Generate DeclareAttackers values using the actual Map<EntityId, EntityId> and List<Set<EntityId>> types; do not compare only the DTO.
+For each small fixture, capture candidateAttackers from getAttackDeclarationCandidateAttackers and
+candidateDefenders from getAttackDeclarationCandidateDefenders before constructing the certificate.
+Never use certificate.attackerToDefenders.keys, certificate.attackerToDefenders values, or any other
+certificate field to generate the test universe. Enumerate every subset of the independent candidate
+attacker list, then every defender assignment for that subset from the complete independent defender
+universe, including assignments that Rules will reject. Include empty and single-attacker
+declarations. Generate DeclareAttackers values using the actual Map<EntityId, EntityId> and
+List<Set<EntityId>> types; do not compare only the DTO.
+
+Generate band declarations as lists, not one band subset. For each selected attacker set, enumerate
+all non-empty member subsets and all ordered band lists of lengths 0 through the selected attacker
+count. This includes empty lists, singleton bands, valid pairs/triples, duplicate bands, overlapping
+bands such as [{A,B}, {B,C}], and disjoint bands. Use a separate four-attacker fixture and assert
+that the generator includes [{A,B}, {C,D}] so two simultaneous valid disjoint bands are exercised.
 
 - [ ] **Step 2: Compare the two predicates exactly.**
 
-For every generated declaration, compare:
+For every generated declaration from that independent universe, compare:
 
     AttackDeclarationDomainValidator.validate(certificate, declaration) == Accepted
     AttackPhaseManager.validateDeclarationBeforeTax(state, declaration) completes successfully
 
-Assert both directions, not merely that all Rules-legal declarations are published. Include fixtures for co-attacker requirements, global caps, mandatory/zero-attacker constraints, MustAttackPlayer/Taunt, projected MustAttack, Goad non-goader/fallback behavior, asymmetric defender relations, and bands.
+Assert both directions, not merely that all Rules-legal declarations are published. Because the
+generator includes every candidate attacker and every global candidate defender independently, the
+test catches both an over-permissive certificate and an under-published legal relation such as a
+missing A -> P2 edge. Include fixtures for co-attacker requirements, global caps,
+mandatory/zero-attacker constraints, MustAttackPlayer/Taunt, projected MustAttack, Goad
+non-goader/fallback behavior, asymmetric defender relations, and bands.
 
 - [ ] **Step 3: Fail closed on any representational mismatch.**
 
@@ -239,7 +288,13 @@ Extend the existing action-domain mapping so each action carries both the target
 
 - [ ] **Step 4: Add mapper/privacy/wire regressions.**
 
-Test DTO round-trip and version rejection, deterministic sorting, noncombat null behavior, asymmetric attacker-to-defender publication, all certificate fields, hidden-ID/addressability failure for each relation/constraint family, and whole-observation diagnostics. Update the RED test so it now asserts a complete V1 domain and the unchanged explicit payload fields.
+Test DTO round-trip and version rejection, deterministic sorting, noncombat null behavior, asymmetric attacker-to-defender publication, all certificate fields, hidden-ID/addressability failure for each relation/constraint family, and whole-observation diagnostics. Update the RED test so it now asserts both
+
+    view.attackDeclarationDomain shouldNotBe null
+    view.requiredPayloadFields shouldBe listOf("attackers", "bands")
+
+alongside the JSON property assertion. The typed assertion is introduced only after the DTO field is
+implemented; the initial RED remains behavioral and compileable against the baseline.
 
 - [ ] **Step 5: Run the focused Gym contract gate and commit.**
 
@@ -269,7 +324,22 @@ step(actionId) must continue rejecting structured DeclareAttackers because both 
 
 - [ ] **Step 3: Add trusted snapshot tests.**
 
-Use a legal registry entry and assert accepted asymmetric choices, valid bands, mandatory attackers, co-attacker all-of requirements, cap boundaries, and explicit empty declarations when allowed. Assert rejection of an attacker not in the snapshot, an attacker choosing another defender, missing mandatory attacker, cap overflow, unsatisfied concrete companion, malformed/duplicate band, zero declaration when forbidden, and a certificate-support failure. Freeze or replace the GameState after observation with a state that would change live legality, then prove validation still uses the registered snapshot and the subsequent Rules stale-candidate/legality guard remains in force. Assert all rejected submissions leave state.step and environment.stepCount unchanged.
+Use a legal registry entry and assert accepted asymmetric choices, valid bands, mandatory attackers, co-attacker all-of requirements, cap boundaries, and explicit empty declarations when allowed. Assert rejection of an attacker not in the snapshot, an attacker choosing another defender, missing mandatory attacker, cap overflow, unsatisfied concrete companion, malformed/duplicate band, zero declaration when forbidden, and a certificate-support failure. Freeze or replace the GameState after observation with a state that would change live legality, then prove validation still uses the registered snapshot and the subsequent Rules stale-candidate/legality guard remains in force.
+
+For every rejected trusted submission, capture the complete atomic boundary before calling step:
+
+    val stateBefore = environment.state
+    val stepCountBefore = environment.stepCount
+    val lastStepEventsBefore = environment.lastStepEvents
+
+After the rejection, assert:
+
+    environment.state shouldBe stateBefore
+    environment.stepCount shouldBe stepCountBefore
+    environment.lastStepEvents shouldBe lastStepEventsBefore
+
+The test must not settle for state.step alone; GameState, step count, and last-step events must all be
+unchanged because validation occurs before stepFromCandidateStrict and before any Rules transition.
 
 - [ ] **Step 4: Prove tax remains a later explicit boundary.**
 
@@ -382,9 +452,25 @@ Classify each result separately as PASS, FAIL, NOT_RUN, or BLOCKED; preserve unr
 - [ ] **Step 2: Run the module gates.**
 
     just test-rules
+    just test-gym
     just test-server
+    just test-gym-server
 
-If the wrapper is unavailable, run the corresponding native .\gradlew.bat module tasks only as labelled fallback evidence. Do not run PR #73, Environment V1, Seed 0, corpus restart, or cross-seed acceptance in this PR.
+These gates cover :rules-engine plus scenario tests, :gym:test, :game-server:test, and
+:gym-server:test. If the wrapper is unavailable, run each corresponding native fallback separately
+and label it explicitly:
+
+    .\gradlew.bat :rules-engine:test :mtg-sets:scenarioTest --console=plain
+    .\gradlew.bat :gym:test --console=plain
+    .\gradlew.bat :game-server:test --console=plain
+    .\gradlew.bat :gym-server:test --console=plain
+
+When the host has enough time and memory, also run the repository-wide optional gate:
+
+    just test
+
+Classify the optional full gate separately from the required module gates. Do not run PR #73,
+Environment V1, Seed 0, corpus restart, or cross-seed acceptance in this PR.
 
 - [ ] **Step 3: Check contract and scope invariants.**
 
