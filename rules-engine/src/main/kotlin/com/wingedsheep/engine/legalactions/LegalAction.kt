@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.legalactions
 
 import com.wingedsheep.engine.core.GameAction
+import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
@@ -93,6 +94,14 @@ data class LegalAction(
     override val validAttackers: List<EntityId>? = null,
     val mandatoryAttackers: List<EntityId>? = null,
     val validAttackTargets: List<EntityId>? = null,
+    val attackDeclarationDomain: RulesAttackDeclarationDomain? = null,
+    val attackDeclarationDomainSupport: AttackDeclarationDomainSupport = if (action is DeclareAttackers) {
+        AttackDeclarationDomainSupport.UNSUPPORTED(
+            AttackDeclarationDomainUnsupportedReason.CERTIFICATE_MISSING,
+        )
+    } else {
+        AttackDeclarationDomainSupport.SUPPORTED
+    },
     override val validBlockers: List<EntityId>? = null,
     val blockerMaxBlockCounts: Map<EntityId, Int>? = null,
     val mandatoryBlockerAssignments: Map<EntityId, List<EntityId>>? = null,

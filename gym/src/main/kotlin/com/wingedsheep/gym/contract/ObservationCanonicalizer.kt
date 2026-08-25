@@ -1,5 +1,6 @@
 package com.wingedsheep.gym.contract
 
+import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -77,6 +78,9 @@ internal object ObservationCanonicalizer {
             }
         )
         action.targetDomain?.let { put("targetDomain", semanticActionTargetDomain(it)) }
+        action.attackDeclarationDomain?.let {
+            put("attackDeclarationDomain", semanticAttackDeclarationDomain(it))
+        }
         put("manaCost", action.manaCost)
         action.paymentDomain?.let {
             put("paymentDomain", json.encodeToJsonElement(PaymentDomainV4.serializer(), it))
@@ -149,6 +153,71 @@ internal object ObservationCanonicalizer {
                 }
             })
         }
+    }
+
+    /** Canonical semantic identity for the complete Rules-owned attacker declaration domain. */
+    private fun semanticAttackDeclarationDomain(domain: AttackDeclarationDomainV1): JsonObject {
+        require(domain.version == ATTACK_DECLARATION_DOMAIN_VERSION) {
+            "Unsupported attack declaration domain version: ${domain.version}"
+        }
+
+        return buildJsonObject {
+            put("version", domain.version)
+            put("attackerToDefenders", semanticEntityRelation(domain.attackerToDefenders))
+            put(
+                "mandatoryAttackers",
+                buildJsonArray {
+                    domain.mandatoryAttackers
+                        .sortedBy(EntityId::value)
+                        .forEach { add(JsonPrimitive(it.value)) }
+                },
+            )
+            put("canDeclareZeroAttackers", domain.canDeclareZeroAttackers)
+            put("maxAttackers", domain.maxAttackers)
+            put("coAttackerRequirements", buildJsonObject {
+                domain.coAttackerRequirements
+                    .entries
+                    .sortedBy { (attacker, _) -> attacker.value }
+                    .forEach { (attacker, requirements) ->
+                        put(attacker.value, buildJsonArray {
+                            requirements
+                                .sortedBy { requirement ->
+                                    requirement.anyOf.sortedBy(EntityId::value)
+                                        .joinToString(separator = "\u0000") { it.value }
+                                }
+                                .forEach { requirement ->
+                                    add(buildJsonArray {
+                                        requirement.anyOf
+                                            .sortedBy(EntityId::value)
+                                            .forEach { add(JsonPrimitive(it.value)) }
+                                    })
+                                }
+                        })
+                    }
+            })
+            put("bandConstraints", buildJsonObject {
+                put(
+                    "bandingAttackersByDefender",
+                    semanticEntityRelation(domain.bandConstraints.bandingAttackersByDefender),
+                )
+                put(
+                    "nonBandingAttackersByDefender",
+                    semanticEntityRelation(domain.bandConstraints.nonBandingAttackersByDefender),
+                )
+            })
+        }
+    }
+
+    private fun semanticEntityRelation(
+        relation: Map<EntityId, List<EntityId>>,
+    ): JsonObject = buildJsonObject {
+        relation.entries
+            .sortedBy { (entityId, _) -> entityId.value }
+            .forEach { (entityId, related) ->
+                put(entityId.value, buildJsonArray {
+                    related.sortedBy(EntityId::value).forEach { add(JsonPrimitive(it.value)) }
+                })
+            }
     }
 
     /**

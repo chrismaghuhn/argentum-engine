@@ -30,6 +30,13 @@ import com.wingedsheep.sdk.scripting.filters.unified.Scope
 import com.wingedsheep.engine.mechanics.battle.Battles
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.handlers.PredicateContext
+import com.wingedsheep.engine.legalactions.AttackDeclarationDomainUnsupportedReason
+import com.wingedsheep.engine.legalactions.AttackDeclarationDomainValidator
+import com.wingedsheep.engine.legalactions.AttackDeclarationRejection
+import com.wingedsheep.engine.legalactions.RulesAttackBandConstraints
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomain
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
+import com.wingedsheep.engine.legalactions.RulesCoAttackerRequirement
 
 /**
  * Handles the declare attackers step of combat.
@@ -62,89 +69,13 @@ internal class AttackPhaseManager(
         attackers: Map<EntityId, EntityId>,
         bands: List<Set<EntityId>> = emptyList()
     ): ExecutionResult {
-        // Validate each attacker
+        val declaration = DeclareAttackers(attackingPlayer, attackers, bands)
+        val validation = validateDeclarationBeforeTax(state, declaration)
+        if (validation != null) {
+            return ExecutionResult.error(state, validation)
+        }
+
         val projected = state.projectedState
-        // CR 805.10a/b — a creature attacks the opposing team; never a teammate. Exclude the whole
-        // attacking team from legal player targets (in a non-team game this is just the attacker).
-        val attackingTeam = state.teamOf(attackingPlayer)
-        val opponents = state.activePlayers.filter { it !in attackingTeam }
-
-        // Validate band declarations (CR 702.22c).
-        val bandValidation = validateBands(state, attackers, bands, projected)
-        if (bandValidation != null) {
-            return ExecutionResult.error(state, bandValidation)
-        }
-        for ((attackerId, defenderId) in attackers) {
-            val validation = validateAttacker(state, attackingPlayer, attackerId)
-            if (validation != null) {
-                return ExecutionResult.error(state, validation)
-            }
-            // Validate the defender: an opponent player, a planeswalker controlled by an opponent,
-            // or a battle protected by an opponent. A battle is keyed off its *protector*, never
-            // its controller (CR 310.8b), which is what lets a player attack a Siege they control.
-            if (defenderId !in opponents) {
-                val isAttackableBattle = projected.isBattle(defenderId) &&
-                    Battles.canBeAttackedBy(state, defenderId, attackingPlayer, opponents.toSet())
-                val isAttackablePlaneswalker = projected.isPlaneswalker(defenderId) &&
-                    projected.getController(defenderId) !in attackingTeam
-                if (!isAttackableBattle && !isAttackablePlaneswalker) {
-                    return ExecutionResult.error(
-                        state,
-                        "Invalid attack target: must be an opponent, their planeswalker, or a battle they protect"
-                    )
-                }
-                if (defenderId !in state.getBattlefield()) {
-                    return ExecutionResult.error(state, "Attacked permanent is not on the battlefield")
-                }
-            }
-            // Check per-defender restrictions (CantAttackUnless, CantBeAttackedWithout, etc.)
-            val ctx = AttackCheckContext(state, projected, attackerId, attackingPlayer, cardRegistry)
-            for (rule in attackDefenderRules) {
-                val error = rule.check(ctx, defenderId)
-                if (error != null) {
-                    return ExecutionResult.error(state, error)
-                }
-            }
-        }
-
-        // Check co-attacker requirements (Scarred Puma — "can't attack unless a black or
-        // green creature also attacks"). Depends on the whole proposed attacker group, not
-        // the defender, so it's validated here rather than via an AttackDefenderRule.
-        val coAttackerValidation = validateCoAttackerRequirements(state, projected, attackers.keys)
-        if (coAttackerValidation != null) {
-            return ExecutionResult.error(state, coAttackerValidation)
-        }
-
-        // Check global attacker-count caps (Dueling Grounds — "No more than one creature can
-        // attack each combat"). Applies to the whole declared attacker set, not per creature.
-        val attackerCountValidation = validateGlobalAttackerCount(state, attackers.keys)
-        if (attackerCountValidation != null) {
-            return ExecutionResult.error(state, attackerCountValidation)
-        }
-
-        // Check must-attack requirements (Taunt)
-        val mustAttackValidation = validateMustAttackRequirements(state, attackingPlayer, attackers)
-        if (mustAttackValidation != null) {
-            return ExecutionResult.error(state, mustAttackValidation)
-        }
-
-        // Check must-attack-this-turn requirements (Walking Desecration)
-        val mustAttackThisTurnValidation = validateMustAttackThisTurnRequirements(state, attackingPlayer, attackers)
-        if (mustAttackThisTurnValidation != null) {
-            return ExecutionResult.error(state, mustAttackThisTurnValidation)
-        }
-
-        // Check projected must-attack requirements (Grand Melee)
-        val projectedMustAttackValidation = validateProjectedMustAttackRequirements(state, attackingPlayer, attackers)
-        if (projectedMustAttackValidation != null) {
-            return ExecutionResult.error(state, projectedMustAttackValidation)
-        }
-
-        // Check goaded requirements (CR 701.15b–c)
-        val goadValidation = validateGoadedRequirements(state, attackingPlayer, attackers, projected, opponents)
-        if (goadValidation != null) {
-            return ExecutionResult.error(state, goadValidation)
-        }
 
         // Calculate (but don't pay) the attack tax. If non-zero, pause for the attacking
         // player to confirm before we tap any of their mana — otherwise auto-tapping the
@@ -155,6 +86,50 @@ internal class AttackPhaseManager(
         }
 
         return commitAttackDeclaration(state, attackingPlayer, attackers, projected, taxEvents = emptyList(), bands = bands)
+    }
+
+    /**
+     * Validate every non-monetary attacker-declaration requirement in the same order used by
+     * execution. Attack tax is intentionally outside this seam: it is a later explicit payment
+     * decision after the declaration itself has been accepted.
+     */
+    internal fun validateDeclarationBeforeTax(
+        state: GameState,
+        declaration: DeclareAttackers,
+    ): String? {
+        val attackingPlayer = declaration.playerId
+        val attackers = declaration.attackers
+        val projected = state.projectedState
+        val attackingTeam = state.teamOf(attackingPlayer)
+        val opponents = state.activePlayers.filter { it !in attackingTeam }
+
+        val bandValidation = validateBands(state, attackers, declaration.bands, projected)
+        if (bandValidation != null) return bandValidation
+
+        for ((attackerId, defenderId) in attackers) {
+            val attackerValidation = validateAttacker(state, attackingPlayer, attackerId)
+            if (attackerValidation != null) return attackerValidation
+
+            val defenderValidation = validateAttackDefender(
+                state = state,
+                projected = projected,
+                attackingPlayer = attackingPlayer,
+                attackingTeam = attackingTeam,
+                opponents = opponents,
+                attackerId = attackerId,
+                defenderId = defenderId,
+            )
+            if (defenderValidation != null) return defenderValidation
+        }
+
+        validateCoAttackerRequirements(state, projected, attackers.keys)?.let { return it }
+        validateGlobalAttackerCount(state, attackers.keys)?.let { return it }
+        validateMustAttackRequirements(state, attackingPlayer, attackers)?.let { return it }
+        validateMustAttackThisTurnRequirements(state, attackingPlayer, attackers)?.let { return it }
+        validateProjectedMustAttackRequirements(state, attackingPlayer, attackers)?.let { return it }
+        validateGoadedRequirements(state, attackingPlayer, attackers, projected, opponents)?.let { return it }
+
+        return null
     }
 
     /**
@@ -400,6 +375,39 @@ internal class AttackPhaseManager(
         return null
     }
 
+    /** Validate the target kind, battlefield presence, and all Rules-owned defender rules. */
+    private fun validateAttackDefender(
+        state: GameState,
+        projected: ProjectedState,
+        attackingPlayer: EntityId,
+        attackingTeam: List<EntityId>,
+        opponents: List<EntityId>,
+        attackerId: EntityId,
+        defenderId: EntityId,
+    ): String? {
+        // An attacker may target an opponent player, a planeswalker controlled by an opponent, or
+        // a battle protected by an opponent. A battle is keyed off its protector, never its
+        // controller, which is what lets a player attack a Siege they control.
+        if (defenderId !in opponents) {
+            val isAttackableBattle = projected.isBattle(defenderId) &&
+                Battles.canBeAttackedBy(state, defenderId, attackingPlayer, opponents.toSet())
+            val isAttackablePlaneswalker = projected.isPlaneswalker(defenderId) &&
+                projected.getController(defenderId) !in attackingTeam
+            if (!isAttackableBattle && !isAttackablePlaneswalker) {
+                return "Invalid attack target: must be an opponent, their planeswalker, or a battle they protect"
+            }
+            if (defenderId !in state.getBattlefield()) {
+                return "Attacked permanent is not on the battlefield"
+            }
+        }
+
+        val ctx = AttackCheckContext(state, projected, attackerId, attackingPlayer, cardRegistry)
+        for (rule in attackDefenderRules) {
+            rule.check(ctx, defenderId)?.let { return it }
+        }
+        return null
+    }
+
     /**
      * Validate "can't attack unless [X] also attacks" restrictions ([CantAttackUnlessCoAttacker]).
      *
@@ -414,29 +422,78 @@ internal class AttackPhaseManager(
     ): String? {
         for (attackerId in attackerIds) {
             val cardComponent = state.getEntity(attackerId)?.get<CardComponent>() ?: continue
-            // Tokens have no CardDefinition, so their restrictions arrive via grantedStaticAbilities
-            // (CreateTokenExecutor). Union both sources so the "can't attack alone" half of Toby's
-            // Beast token is enforced alongside printed restrictions (Scarred Puma).
-            val printed = cardRegistry.getCard(cardComponent.cardDefinitionId)
-                ?.staticAbilities.orEmpty()
-            val granted = state.grantedStaticAbilities
-                .filter { it.entityId == attackerId }
-                .map { it.ability }
-            val restrictions = (printed + granted)
-                .filterIsInstance<CantAttackUnlessCoAttacker>()
-                .filter { it.filter.scope is Scope.Self }
-            for (restriction in restrictions) {
-                val context = PredicateContext(controllerId = projected.getController(attackerId) ?: attackerId)
-                val satisfied = attackerIds.any { otherId ->
-                    otherId != attackerId &&
-                        predicateEvaluator.matches(state, projected, otherId, restriction.coAttackerFilter, context)
-                }
-                if (!satisfied) {
-                    return "${cardComponent.name} ${restriction.description}"
+            val resolvedRequirements = resolveConcreteCoAttackerRequirements(
+                state = state,
+                projected = projected,
+                attackingPlayer = state.projectedState.getController(attackerId) ?: attackerId,
+                candidateAttackers = attackerIds,
+            )[attackerId].orEmpty()
+            for ((index, requirement) in resolvedRequirements.withIndex()) {
+                if (requirement.anyOf.none { it in attackerIds }) {
+                    val restriction = getCoAttackerRestrictions(state, attackerId).getOrNull(index)
+                    val description = restriction?.description ?: "can't attack unless a qualifying creature also attacks"
+                    return "${cardComponent.name} $description"
                 }
             }
         }
         return null
+    }
+
+    /**
+     * Resolve every self-scoped co-attacker filter into concrete candidate IDs. The public helper
+     * is used while publishing the certificate; the private overload lets execution reuse the
+     * exact same projected PredicateEvaluator semantics for the submitted set.
+     */
+    internal fun getConcreteCoAttackerRequirements(
+        state: GameState,
+        attackingPlayer: EntityId,
+    ): Map<EntityId, List<RulesCoAttackerRequirement>> =
+        resolveConcreteCoAttackerRequirements(
+            state = state,
+            projected = state.projectedState,
+            attackingPlayer = attackingPlayer,
+            candidateAttackers = getAttackDeclarationCandidateAttackers(state, attackingPlayer),
+        )
+
+    private fun resolveConcreteCoAttackerRequirements(
+        state: GameState,
+        projected: ProjectedState,
+        attackingPlayer: EntityId,
+        candidateAttackers: Collection<EntityId>,
+    ): Map<EntityId, List<RulesCoAttackerRequirement>> {
+        val candidates = candidateAttackers.toSet()
+        return candidates.sortedBy(EntityId::value).associateWith { attackerId ->
+            val context = PredicateContext(controllerId = projected.getController(attackerId) ?: attackerId)
+            getCoAttackerRestrictions(state, attackerId).map { restriction ->
+                RulesCoAttackerRequirement(
+                    anyOf = candidates
+                        .asSequence()
+                        .filter { otherId ->
+                            otherId != attackerId &&
+                                predicateEvaluator.matches(state, projected, otherId, restriction.coAttackerFilter, context)
+                        }
+                        .sortedBy(EntityId::value)
+                        .toList(),
+                )
+            }
+        }.filterValues { it.isNotEmpty() }
+    }
+
+    private fun getCoAttackerRestrictions(
+        state: GameState,
+        attackerId: EntityId,
+    ): List<CantAttackUnlessCoAttacker> {
+        val cardComponent = state.getEntity(attackerId)?.get<CardComponent>() ?: return emptyList()
+        // Tokens have no CardDefinition, so their restrictions arrive via grantedStaticAbilities.
+        // Union both sources so the printed and granted forms share one resolution path.
+        val printed = cardRegistry.getCard(cardComponent.cardDefinitionId)
+            ?.staticAbilities.orEmpty()
+        val granted = state.grantedStaticAbilities
+            .filter { it.entityId == attackerId }
+            .map { it.ability }
+        return (printed + granted)
+            .filterIsInstance<CantAttackUnlessCoAttacker>()
+            .filter { it.filter.scope is Scope.Self }
     }
 
     /**
@@ -448,22 +505,30 @@ internal class AttackPhaseManager(
         state: GameState,
         attackerIds: Set<EntityId>
     ): String? {
-        var cap: Int? = null
-        var capDescription = ""
+        val cap = getGlobalAttackerCapWithDescription(state)
+        if (cap != null && attackerIds.size > cap.first) {
+            return cap.second
+        }
+        return null
+    }
+
+    /** The smallest active Rules-owned attacker-count cap, if one is present. */
+    internal fun getGlobalAttackerCap(state: GameState, _attackingPlayer: EntityId): Int? =
+        getGlobalAttackerCapWithDescription(state)?.first
+
+    private fun getGlobalAttackerCapWithDescription(state: GameState): Pair<Int, String>? {
+        var cap: Pair<Int, String>? = null
         for (permId in state.getBattlefield()) {
             val cardComponent = state.getEntity(permId)?.get<CardComponent>() ?: continue
             val cardDef = cardRegistry.getCard(cardComponent.cardDefinitionId) ?: continue
             for (ability in cardDef.staticAbilities.filterIsInstance<AttackerCountLimit>()) {
-                if (cap == null || ability.maxAttackers < cap) {
-                    cap = ability.maxAttackers
-                    capDescription = ability.description
+                val currentCap = cap
+                if (currentCap == null || ability.maxAttackers < currentCap.first) {
+                    cap = ability.maxAttackers to ability.description
                 }
             }
         }
-        if (cap != null && attackerIds.size > cap) {
-            return capDescription
-        }
-        return null
+        return cap
     }
 
     /**
@@ -696,9 +761,15 @@ internal class AttackPhaseManager(
     }
 
     /**
-     * Get all creatures that can legally attack for a player.
+     * Get all creatures that pass attacker-independent restrictions for the public declaration
+     * domain. Defender-dependent legality is resolved by [getAttackDeclarationDomain] so a legal
+     * Battle-only attacker cannot disappear merely because the legacy all-player/planeswalker
+     * helper does not enumerate Battles.
      */
-    private fun getValidAttackers(state: GameState, playerId: EntityId): List<EntityId> {
+    internal fun getAttackDeclarationCandidateAttackers(
+        state: GameState,
+        playerId: EntityId,
+    ): List<EntityId> {
         val projected = state.projectedState
 
         return state.getBattlefield().filter { entityId ->
@@ -707,10 +778,166 @@ internal class AttackPhaseManager(
             val ctx = AttackCheckContext(state, projected, entityId, playerId, cardRegistry)
 
             if (attackRestrictionRules.any { it.check(ctx) != null }) return@filter false
-            if (attackDefenderRules.any { it.restrictsAllDefenders(ctx) }) return@filter false
 
             true
         }
+    }
+
+    /**
+     * Preserve the legacy valid-attacker semantics used by existing MustAttack/Goad checks.
+     * This deliberately remains separate from the public declaration candidate universe, whose
+     * defender relation is complete over players, planeswalkers, and Battles.
+     */
+    private fun getValidAttackers(state: GameState, playerId: EntityId): List<EntityId> =
+        state.getBattlefield().filter { entityId ->
+            isValidAttacker(state, entityId, playerId) &&
+                !isRestrictedFromAllDefenders(state, entityId, playerId)
+        }
+
+    /**
+     * Build the complete Rules-owned certificate used by the DeclareAttackers legal action.
+     * Every field is resolved from the same state and Rules predicates that execute a declaration;
+     * an unrepresentable shape returns typed unsupported rather than a weakened certificate.
+     */
+    internal fun getAttackDeclarationDomain(
+        state: GameState,
+        attackingPlayer: EntityId,
+    ): RulesAttackDeclarationDomainResult {
+        val projected = state.projectedState
+        val attackingTeam = state.teamOf(attackingPlayer)
+        val opponents = state.activePlayers.filter { it !in attackingTeam }
+        val candidateAttackers = getAttackDeclarationCandidateAttackers(state, attackingPlayer)
+        val candidateDefenders = CombatDefenders
+            .getAttackDeclarationCertificateCandidateDefenders(state, attackingPlayer)
+        val mustAttackPlayer = state.getEntity(attackingPlayer)
+            ?.get<MustAttackPlayerComponent>()
+            ?.takeIf { it.activeThisTurn }
+            ?.defenderId
+
+        val relation = candidateAttackers
+            .sortedBy(EntityId::value)
+            .associateWith { attackerId ->
+                var legalDefenders = candidateDefenders.filter { defenderId ->
+                    validateAttackDefender(
+                        state = state,
+                        projected = projected,
+                        attackingPlayer = attackingPlayer,
+                        attackingTeam = attackingTeam,
+                        opponents = opponents,
+                        attackerId = attackerId,
+                        defenderId = defenderId,
+                    ) == null
+                }
+
+                // MustAttackPlayerComponent/Taunt constrains the defender only for Rules shapes
+                // that actually name one. Generic MustAttack remains a mandatory-attacker
+                // constraint and must not be generalized into a defender choice.
+                if (mustAttackPlayer != null) {
+                    legalDefenders = legalDefenders.filter { it == mustAttackPlayer }
+                }
+
+                val goaded = state.getEntity(attackerId)?.get<GoadedComponent>()
+                if (goaded != null) {
+                    val context = AttackCheckContext(
+                        state,
+                        projected,
+                        attackerId,
+                        attackingPlayer,
+                        cardRegistry,
+                    )
+                    val hasNonGoaderPlayer = opponents.any { playerId ->
+                        playerId !in goaded.goaderIds &&
+                            attackDefenderRules.all { rule -> rule.check(context, playerId) == null }
+                    }
+                    if (hasNonGoaderPlayer) {
+                        legalDefenders = legalDefenders.filter { defenderId ->
+                            defenderControllerOf(state, projected, defenderId) !in goaded.goaderIds
+                        }
+                    }
+                }
+
+                legalDefenders.sortedBy(EntityId::value)
+            }
+            .filterValues { it.isNotEmpty() }
+
+        val mandatoryAttackers = getMandatoryAttackers(state, attackingPlayer)
+            .distinct()
+            .sortedBy(EntityId::value)
+        if (mandatoryAttackers.any { it !in relation }) {
+            return RulesAttackDeclarationDomainResult.Unsupported(
+                AttackDeclarationDomainUnsupportedReason.INCOMPLETE_DECLARATION_CONSTRAINTS,
+            )
+        }
+
+        val resolvedCoAttackers = getConcreteCoAttackerRequirements(state, attackingPlayer)
+            .filterKeys { it in relation }
+            .mapValues { (_, requirements) ->
+                requirements
+                    .map { requirement ->
+                        RulesCoAttackerRequirement(
+                            anyOf = requirement.anyOf
+                                .filter { it in relation }
+                                .distinct()
+                                .sortedBy(EntityId::value),
+                        )
+                    }
+                    .sortedBy { requirement ->
+                        requirement.anyOf.joinToString(separator = "\u0000") { it.value }
+                    }
+            }
+        if (resolvedCoAttackers.values.any { requirements -> requirements.any { it.anyOf.isEmpty() } }) {
+            return RulesAttackDeclarationDomainResult.Unsupported(
+                AttackDeclarationDomainUnsupportedReason.UNRESOLVED_CO_ATTACKER_REQUIREMENTS,
+            )
+        }
+
+        val bandingAttackersByDefender = mutableMapOf<EntityId, MutableList<EntityId>>()
+        val nonBandingAttackersByDefender = mutableMapOf<EntityId, MutableList<EntityId>>()
+        for ((attackerId, defenders) in relation) {
+            for (defenderId in defenders) {
+                val destination = if (projected.hasKeyword(attackerId, Keyword.BANDING)) {
+                    bandingAttackersByDefender
+                } else {
+                    nonBandingAttackersByDefender
+                }
+                destination.getOrPut(defenderId) { mutableListOf() }.add(attackerId)
+            }
+        }
+
+        val domain = RulesAttackDeclarationDomain(
+            attackerToDefenders = relation,
+            mandatoryAttackers = mandatoryAttackers,
+            canDeclareZeroAttackers = validateDeclarationBeforeTax(
+                state,
+                DeclareAttackers(attackingPlayer, emptyMap()),
+            ) == null,
+            maxAttackers = getGlobalAttackerCap(state, attackingPlayer),
+            coAttackerRequirements = resolvedCoAttackers,
+            bandConstraints = RulesAttackBandConstraints(
+                bandingAttackersByDefender = bandingAttackersByDefender
+                    .mapValues { (_, attackers) -> attackers.sortedBy(EntityId::value) }
+                    .toSortedEntityIdMap(),
+                nonBandingAttackersByDefender = nonBandingAttackersByDefender
+                    .mapValues { (_, attackers) -> attackers.sortedBy(EntityId::value) }
+                    .toSortedEntityIdMap(),
+            ),
+        )
+
+        // This is a structural guard only. Zero-attacker legality above is derived directly from
+        // Rules; this check prevents a future builder edit from registering malformed data.
+        val structuralCheck = AttackDeclarationDomainValidator.validate(
+            domain,
+            DeclareAttackers(attackingPlayer, emptyMap()),
+        )
+        if (structuralCheck is com.wingedsheep.engine.legalactions.AttackDeclarationValidationResult.Rejected &&
+            structuralCheck.reason == AttackDeclarationRejection.MALFORMED_CERTIFICATE
+        ) {
+            return RulesAttackDeclarationDomainResult.Unsupported(
+                AttackDeclarationDomainUnsupportedReason.INCOMPLETE_BAND_CONSTRAINTS,
+            )
+        }
+
+        return RulesAttackDeclarationDomainResult.Supported(domain)
     }
 
     /**
@@ -770,4 +997,9 @@ internal class AttackPhaseManager(
         attackers: Map<EntityId, EntityId>,
         projected: ProjectedState
     ): Int = CombatTaxes.attackTax(state, cardRegistry, attackers, projected)
+
+    private fun Map<EntityId, List<EntityId>>.toSortedEntityIdMap(): Map<EntityId, List<EntityId>> =
+        entries.sortedBy { (entityId, _) -> entityId.value }.associate { (entityId, ids) ->
+            entityId to ids
+        }
 }

@@ -255,6 +255,8 @@ data class LegalActionView(
     val targetEntityIds: List<EntityId> = emptyList(),
     /** Complete fixed V1 target domain; null is retained only for legacy/decision entries. */
     val targetDomain: ActionTargetDomainV1? = null,
+    /** Complete fixed V1 attacker-to-defender declaration domain for DeclareAttackers. */
+    val attackDeclarationDomain: AttackDeclarationDomainV1? = null,
     val manaCost: String? = null,
     /** Complete external payment choices for supported ordinary fixed-cost mana actions. */
     val paymentDomain: PaymentDomainV4? = null,
