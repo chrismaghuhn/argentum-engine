@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.TypecycleCard
 import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.scripting.KeywordAbility
 
@@ -31,6 +32,12 @@ class CyclingEnumerator : ActionEnumerator {
             val cyclingAbilities = cardDef.keywordAbilities.filterIsInstance<KeywordAbility.Cycling>()
             val plainCycling = cyclingAbilities.firstOrNull { it.searchFilter == null }
             val typedCycling = cyclingAbilities.firstOrNull { it.searchFilter != null }
+            val cyclingPaymentContext = buildAbilityPaymentContext(
+                cardComponent = cardComponent,
+                projected = context.projected,
+                sourceId = cardId,
+                ability = null,
+            )
 
             if (plainCycling != null) {
                 // An `{X}` cycling cost (Webstrike Elite's "Cycling {X}{G}{G}") is affordable as
@@ -40,13 +47,30 @@ class CyclingEnumerator : ActionEnumerator {
                 // the real cost, and hasXCost/maxAffordableX drive the client's X chooser.
                 val hasXCost = plainCycling.cost.hasX
                 val baseCost = plainCycling.cost.withXAs(0)
-                val canAfford = context.manaSolver.canPay(state, playerId, baseCost, precomputedSources = context.availableManaSources)
+                val canAfford = context.manaSolver.canPay(
+                    state = state,
+                    playerId = playerId,
+                    cost = baseCost,
+                    spellContext = cyclingPaymentContext,
+                    precomputedSources = context.availableManaSources,
+                )
                 val autoTapPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, baseCost, precomputedSources = context.availableManaSources)
+                    context.manaSolver.solve(
+                        state = state,
+                        playerId = playerId,
+                        cost = baseCost,
+                        spellContext = cyclingPaymentContext,
+                        precomputedSources = context.availableManaSources,
+                    )
                         ?.sources?.map { it.entityId }
                 }
                 val maxAffordableX = if (hasXCost) {
-                    val available = context.manaSolver.getAvailableManaCount(state, playerId, context.availableManaSources)
+                    val available = context.manaSolver.getAvailableManaCount(
+                        state = state,
+                        playerId = playerId,
+                        precomputedSources = context.availableManaSources,
+                        spellContext = cyclingPaymentContext,
+                    )
                     ((available - baseCost.cmc).coerceAtLeast(0)) / plainCycling.cost.xCount.coerceAtLeast(1)
                 } else null
                 result.add(
@@ -66,9 +90,21 @@ class CyclingEnumerator : ActionEnumerator {
             if (typedCycling != null) {
                 val cost = typedCycling.cost
                 val description = "${typedCycling.displayPrefix} ${cardComponent.name}"
-                val canAfford = context.manaSolver.canPay(state, playerId, cost, precomputedSources = context.availableManaSources)
+                val canAfford = context.manaSolver.canPay(
+                    state = state,
+                    playerId = playerId,
+                    cost = cost,
+                    spellContext = cyclingPaymentContext,
+                    precomputedSources = context.availableManaSources,
+                )
                 val autoTapPreview = if (context.skipAutoTapPreview) null else {
-                    context.manaSolver.solve(state, playerId, cost, precomputedSources = context.availableManaSources)
+                    context.manaSolver.solve(
+                        state = state,
+                        playerId = playerId,
+                        cost = cost,
+                        spellContext = cyclingPaymentContext,
+                        precomputedSources = context.availableManaSources,
+                    )
                         ?.sources?.map { it.entityId }
                 }
                 result.add(

@@ -21,9 +21,10 @@ import com.wingedsheep.sdk.model.EntityId
  * rather than defaulted) so every activation site has to state what it is activating: facts about
  * the *ability* rather than its source — currently only "is this an equip ability", CR 702.6, for
  * [com.wingedsheep.sdk.scripting.effects.ManaRestriction.EquipAbilityActivationOnly] — can't be
- * recovered from [cardComponent]. Pass null only where the ability genuinely isn't resolvable
- * (a granted ability the caller can't look up); the equip fact then reads false, i.e. the
- * restriction refuses, which is the safe direction.
+ * recovered from [cardComponent]. A zone-scoped keyword activation such as Cycling may pass null
+ * when there is no equip-specific property to claim; that still produces an activated-ability
+ * context and is not an unrestricted/null payment context. For any other unresolved ability the
+ * equip fact also reads false, i.e. the restriction refuses, which is the safe direction.
  */
 fun buildAbilityPaymentContext(
     cardComponent: CardComponent,

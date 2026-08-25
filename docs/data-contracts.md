@@ -777,18 +777,25 @@ configuration are used by the JVM service and HTTP server.
 
 ### Action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
 
-An affordable structured `ActivateAbility` or ordinary fixed-cost `CastSpell` whose action-level
-mana cost is published in `LegalActionView.manaCost` also publishes
+An affordable structured `ActivateAbility`, ordinary fixed-cost `CastSpell`, or plain fixed-cost
+`CycleCard` whose action-level mana cost is published in `LegalActionView.manaCost` also publishes
 `LegalActionView.paymentDomain`. This domain is version 4 and is complete for the supported slice: ordinary
 fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
 single-output color selection, deterministic fixed multi-mana bundles, and multiple source
 combinations. A payable action whose complete V4 domain
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
+For `CycleCard`, publication is limited to a plain Cycling keyword whose authoritative cost is
+exactly fixed ordinary mana; the Gym carrier must submit `PaymentStrategy.ExplicitV2` with a complete
+`PaymentPlanV2`. X, hybrid/alternative, additional, dynamic, restricted, typed-cycling, and other
+unrepresentable Cycling shapes remain unsupported and publish no domain. Cycling uses the same
+non-null activated-ability payment context for enumeration, domain certification, validation, and
+Rules materialization; `ability = null` in that context does not disable mana restrictions.
 `autoPaySuggestion` is not part of this action-level domain and is never a policy input.
 Non-mana structured cast choices may be submitted alongside the plan when they do not alter the
 effective mana cost or the published source set; cost-changing or source-affecting choices remain
 fail-closed.
+The public payment and replay schemas are unchanged by this CycleCard slice.
 The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
 while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
 
