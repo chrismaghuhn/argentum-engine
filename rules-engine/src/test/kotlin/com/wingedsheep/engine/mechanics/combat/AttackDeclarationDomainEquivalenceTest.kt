@@ -14,12 +14,14 @@ import com.wingedsheep.engine.state.components.combat.MustAttackPlayerComponent
 import com.wingedsheep.engine.state.components.combat.MustAttackThisTurnComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.CantBeAttackedWithout
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
@@ -94,6 +96,37 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
             (fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) == null) shouldBe false
             domain.attackerToDefenders.getValue(attacker).contains(defender) shouldBe false
         }
+    }
+
+    test("retains a Battle-only attacker when every player and planeswalker is restricted") {
+        val fixture = battleOnlyDefenderFixture()
+        val attacker = fixture.attackerIds.single()
+        val player = fixture.defenderIds[0]
+        val planeswalker = fixture.defenderIds[1]
+        val battle = fixture.defenderIds[2]
+
+        fixture.manager.getAttackDeclarationCandidateAttackers(fixture.state, fixture.player) shouldContain attacker
+        fixture.manager.isRestrictedFromAllDefenders(fixture.state, attacker, fixture.player) shouldBe true
+
+        val playerDeclaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to player),
+        )
+        val planeswalkerDeclaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to planeswalker),
+        )
+        val battleDeclaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to battle),
+        )
+
+        (fixture.manager.validateDeclarationBeforeTax(fixture.state, playerDeclaration) == null) shouldBe false
+        (fixture.manager.validateDeclarationBeforeTax(fixture.state, planeswalkerDeclaration) == null) shouldBe false
+        fixture.manager.validateDeclarationBeforeTax(fixture.state, battleDeclaration) shouldBe null
+
+        fixture.certificate().attackerToDefenders.getValue(attacker) shouldContain battle
+        assertEquivalent(fixture)
     }
 
     test("the independent four-attacker band generator includes two disjoint bands") {
@@ -361,6 +394,30 @@ private fun illegalPlaneswalkerAndBattleDefenderFixture(): Fixture {
     )
 }
 
+private fun battleOnlyDefenderFixture(): Fixture {
+    val (driver, players) = newDriver(
+        extraCards = listOf(attackDomainWalker, attackDomainSiege, attackDomainMoat),
+    )
+    val active = players[0]
+    val opponent = players[1]
+    val attacker = driver.putCreatureOnBattlefield(active, "Grizzly Bears")
+    val planeswalker = driver.putPermanentOnBattlefield(opponent, attackDomainWalker.name)
+    driver.putPermanentOnBattlefield(opponent, attackDomainMoat.name)
+    val battle = driver.putPermanentOnBattlefield(active, attackDomainSiege.name)
+    driver.replaceState(driver.state.updateEntity(battle) {
+        it.with(ProtectorComponent(opponent))
+    })
+    driver.removeSummoningSickness(attacker)
+
+    return fixture(
+        name = "battle-only-defender",
+        driver = driver,
+        players = players,
+        attackerIds = listOf(attacker),
+        defenderIds = listOf(opponent, planeswalker, battle),
+    )
+}
+
 private fun fixture(
     name: String,
     driver: GameTestDriver,
@@ -416,4 +473,12 @@ private val attackDomainSiege = card("Attack Domain Siege") {
     manaCost = "{2}{B}{B}"
     typeLine = "Battle — Siege"
     startingDefense = 5
+}
+
+private val attackDomainMoat = card("Attack Domain Moat") {
+    manaCost = "{2}{W}"
+    typeLine = "Enchantment"
+    staticAbility {
+        ability = CantBeAttackedWithout(Keyword.FLYING)
+    }
 }

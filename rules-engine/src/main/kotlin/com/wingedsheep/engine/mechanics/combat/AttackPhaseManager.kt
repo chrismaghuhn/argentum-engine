@@ -761,7 +761,10 @@ internal class AttackPhaseManager(
     }
 
     /**
-     * Get all creatures that can legally attack for a player.
+     * Get all creatures that pass attacker-independent restrictions for the public declaration
+     * domain. Defender-dependent legality is resolved by [getAttackDeclarationDomain] so a legal
+     * Battle-only attacker cannot disappear merely because the legacy all-player/planeswalker
+     * helper does not enumerate Battles.
      */
     internal fun getAttackDeclarationCandidateAttackers(
         state: GameState,
@@ -775,14 +778,21 @@ internal class AttackPhaseManager(
             val ctx = AttackCheckContext(state, projected, entityId, playerId, cardRegistry)
 
             if (attackRestrictionRules.any { it.check(ctx) != null }) return@filter false
-            if (attackDefenderRules.any { it.restrictsAllDefenders(ctx) }) return@filter false
 
             true
         }
     }
 
+    /**
+     * Preserve the legacy valid-attacker semantics used by existing MustAttack/Goad checks.
+     * This deliberately remains separate from the public declaration candidate universe, whose
+     * defender relation is complete over players, planeswalkers, and Battles.
+     */
     private fun getValidAttackers(state: GameState, playerId: EntityId): List<EntityId> =
-        getAttackDeclarationCandidateAttackers(state, playerId)
+        state.getBattlefield().filter { entityId ->
+            isValidAttacker(state, entityId, playerId) &&
+                !isRestrictedFromAllDefenders(state, entityId, playerId)
+        }
 
     /**
      * Build the complete Rules-owned certificate used by the DeclareAttackers legal action.

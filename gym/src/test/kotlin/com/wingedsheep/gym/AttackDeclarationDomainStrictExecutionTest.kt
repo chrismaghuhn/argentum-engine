@@ -380,19 +380,25 @@ private fun moveCardsIntoBattlefield(
     name: String,
     count: Int,
 ): List<EntityId> {
-    val cardIds = environment.state.getZone(playerId, Zone.LIBRARY)
+    val state = environment.state
+    val cardIds = (state.getZone(playerId, Zone.LIBRARY) + state.getZone(playerId, Zone.HAND))
         .filter { cardName(environment, it) == name }
         .take(count)
     require(cardIds.size == count) { "Expected $count copies of $name for $playerId" }
-    var state = environment.state
+    var movedState = state
     cardIds.forEach { cardId ->
-        state = state.moveToZone(
+        val sourceZone = when {
+            movedState.getZone(playerId, Zone.LIBRARY).contains(cardId) -> Zone.LIBRARY
+            movedState.getZone(playerId, Zone.HAND).contains(cardId) -> Zone.HAND
+            else -> error("Expected $name to remain in a movable zone for $playerId")
+        }
+        movedState = movedState.moveToZone(
             cardId,
-            ZoneKey(playerId, Zone.LIBRARY),
+            ZoneKey(playerId, sourceZone),
             ZoneKey(playerId, Zone.BATTLEFIELD),
         )
     }
-    environment.restore(state, environment.playerIds, environment.stepCount)
+    environment.restore(movedState, environment.playerIds, environment.stepCount)
     return cardIds
 }
 
