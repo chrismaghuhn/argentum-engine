@@ -52,7 +52,7 @@ object DeterministicAdditionalCostPayment {
             val atom = cost.atom
             when (atom) {
                 is CostAtom.Mana -> if (
-                    atom.cost.cmc > 0 && atom.cost.isFixedOrdinaryManaCost()
+                    atom.cost.isFixedOrdinaryManaCost()
                 ) {
                     Counts(manaCount = 1)
                 } else {

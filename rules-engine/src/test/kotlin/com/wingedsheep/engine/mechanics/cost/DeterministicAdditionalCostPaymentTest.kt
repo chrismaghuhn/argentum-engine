@@ -137,9 +137,22 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
         ) shouldBe null
     }
 
-    test("zero-mana shapes remain outside the certified shape") {
+    test("fixed ordinary zero mana is a deterministic certified mana atom") {
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Mana("{0}"),
+            EntityId("source"),
+        ) shouldBe AdditionalCostPayment()
+
         DeterministicAdditionalCostPayment.expectedFor(
             Costs.Composite(Costs.Mana("{0}"), Costs.Tap, Costs.SacrificeSelf),
+            EntityId("source"),
+        ) shouldBe AdditionalCostPayment(
+            tappedPermanents = listOf(EntityId("source")),
+            sacrificedPermanents = listOf(EntityId("source")),
+        )
+
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(Costs.Mana("{0}"), Costs.Mana("{X}")),
             EntityId("source"),
         ) shouldBe null
     }

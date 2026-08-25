@@ -14,6 +14,7 @@ import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentPlanV2
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
@@ -25,11 +26,15 @@ import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.mtg.sets.definitions.mrd.cards.LightningGreaves
 import com.wingedsheep.mtg.sets.definitions.`5dn`.cards.WayfarersBauble
 import com.wingedsheep.mtg.sets.definitions.cmr.cards.WarRoom
 import com.wingedsheep.mtg.sets.definitions.c17.cards.RamosDragonEngine
@@ -54,8 +59,10 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 
 private data class PreparedDeterministicAbilityGym(
     val environment: GameEnvironment,
@@ -110,6 +117,17 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             cost = Costs.Composite(Costs.Mana("{1}"), Costs.PayLife(DynamicAmounts.sourcePower()))
             effect = Effects.GainLife(1)
         }
+    }
+
+    val zeroManaEquipment = card("Gym Zero-Mana Equipment") {
+        typeLine = "Artifact — Equipment"
+        equipAbility("{0}")
+    }
+
+    val zeroManaEquipTarget = card("Gym Zero-Mana Equip Target") {
+        typeLine = "Creature — Probe"
+        power = 1
+        toughness = 1
     }
 
     fun registry(extraCards: List<CardDefinition> = emptyList()) = CardRegistry().apply {
@@ -225,6 +243,20 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         extraCards = listOf(dynamicPayLifeSource),
     )
 
+    fun preparedZeroManaEquip() = preparedActivatedAbility(
+        sourceCard = zeroManaEquipment,
+        battlefieldCardNames = listOf(zeroManaEquipTarget.name),
+        extraCards = listOf(zeroManaEquipment, zeroManaEquipTarget),
+        manaSourceCount = 1,
+    )
+
+    fun preparedLightningGreaves() = preparedActivatedAbility(
+        sourceCard = LightningGreaves,
+        battlefieldCardNames = listOf(zeroManaEquipTarget.name),
+        extraCards = listOf(LightningGreaves, zeroManaEquipTarget),
+        manaSourceCount = 1,
+    )
+
     fun activatedView(prepared: PreparedDeterministicAbilityGym): LegalActionView {
         val action = prepared.environment.legalActions().single { legalAction ->
             val activate = legalAction.action as? ActivateAbility
@@ -331,6 +363,89 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         }
     }
 
+    fun targetedPayload(
+        view: LegalActionView,
+        targetId: EntityId,
+        paymentStrategy: PaymentStrategy,
+    ): JsonObject = buildJsonObject {
+        view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+        put(
+            "paymentStrategy",
+            actionJson.encodeToJsonElement(PaymentStrategy.serializer(), paymentStrategy),
+        )
+        put(
+            "targets",
+            buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "Permanent")
+                    put("entityId", targetId.value)
+                })
+            },
+        )
+    }
+
+    fun publicTarget(view: LegalActionView): EntityId =
+        view.targetDomain?.requirements?.singleOrNull()?.candidates?.singleOrNull()
+            ?: error("Expected exactly one public target candidate: $view")
+
+    fun explicitV2WithExtraSource(view: LegalActionView): PaymentStrategy.ExplicitV2 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val costUnit = domain.costUnits.single()
+        val source = domain.sourceActivations.first()
+        return PaymentStrategy.ExplicitV2(
+            paymentPlan = PaymentPlanV2(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = source.sourceId,
+                        manaAbilityKey = source.manaAbilityKey,
+                        productionChoice = source.productionChoices.single(),
+                    ),
+                ),
+                poolSpend = PoolSpend(),
+                spendAllocation = SpendAllocationV2(
+                    costUnits = listOf(
+                        CostUnitAllocationV2(
+                            symbolIndex = costUnit.symbolIndex,
+                            spends = emptyList(),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    fun explicitV2WithNonEmptyZeroSpend(view: LegalActionView): PaymentStrategy.ExplicitV2 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val costUnit = domain.costUnits.single()
+        return PaymentStrategy.ExplicitV2(
+            paymentPlan = PaymentPlanV2(
+                poolSpend = PoolSpend(),
+                spendAllocation = SpendAllocationV2(
+                    costUnits = listOf(
+                        CostUnitAllocationV2(
+                            symbolIndex = costUnit.symbolIndex,
+                            spends = listOf(
+                                ManaSpendReferenceV2(
+                                    poolColor = PaymentManaColor.RED,
+                                    amount = 1,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    fun explicitV2WithoutZeroSymbolAllocation(view: LegalActionView): PaymentStrategy.ExplicitV2 {
+        val validPayment = explicitV2FromPublic(view)
+        return validPayment.copy(
+            paymentPlan = validPayment.paymentPlan!!.copy(
+                spendAllocation = SpendAllocationV2(),
+            ),
+        )
+    }
+
     fun assertRejectedAtomically(
         prepared: PreparedDeterministicAbilityGym,
         view: LegalActionView,
@@ -429,6 +544,122 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             view = view,
             actionPayload = payload(view, explicitV2FromPublic(view), costPayment = null),
         )
+    }
+
+    test("fixed ordinary zero-mana Equip publishes V4 and executes an explicit zero-spend plan") {
+        val prepared = preparedZeroManaEquip()
+        val view = gymActivatedView(prepared, requiredCost = "{0}")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val costUnit = domain.costUnits.single()
+
+        domain.version shouldBe 4
+        domain.requiredCost shouldBe "{0}"
+        costUnit.symbolIndex shouldBe 0
+        costUnit.kind shouldBe PaymentCostKind.GENERIC
+        costUnit.amount shouldBe 0
+        view.requiredPayloadFields shouldContain "paymentStrategy"
+        view.requiredPayloadFields shouldContain "targets"
+
+        val target = publicTarget(view)
+        view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(target)
+        val stepCountBefore = prepared.environment.stepCount
+        val poolBefore = prepared.environment.state.getEntity(prepared.playerId)
+            ?.get<ManaPoolComponent>()
+        val zeroPayment = explicitV2FromPublic(view)
+        zeroPayment.paymentPlan!!.sourceActivations shouldBe emptyList()
+        zeroPayment.paymentPlan!!.poolSpend shouldBe PoolSpend()
+        zeroPayment.paymentPlan!!.spendAllocation.costUnits.single().symbolIndex shouldBe 0
+        zeroPayment.paymentPlan!!.spendAllocation.costUnits.single().spends shouldBe emptyList()
+
+        prepared.gym.step(
+            view.actionId,
+            targetedPayload(view, target, zeroPayment),
+        )
+
+        prepared.environment.stepCount shouldBe stepCountBefore + 1
+        prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe false
+        prepared.mountainIds.forEach { mountainId ->
+            prepared.environment.state.getEntity(mountainId)?.has<TappedComponent>() shouldBe false
+        }
+        prepared.environment.state.getEntity(prepared.playerId)
+            ?.get<ManaPoolComponent>() shouldBe poolBefore
+
+        var passes = 0
+        while (prepared.environment.state.stack.isNotEmpty() && passes++ < 8) {
+            val pass = prepared.environment.legalActions().first { it.action is PassPriority }
+            prepared.environment.step(pass.action)
+        }
+        prepared.environment.state.stack shouldBe emptyList()
+        prepared.environment.state.getEntity(prepared.sourceId)
+            ?.get<AttachedToComponent>()
+            ?.targetId shouldBe target
+    }
+
+    test("zero-mana ExplicitV2 rejects hidden payment choices and incomplete zero allocations atomically") {
+        fun freshCase(strategyFor: (LegalActionView) -> PaymentStrategy) {
+            val prepared = preparedZeroManaEquip()
+            val view = gymActivatedView(prepared, requiredCost = "{0}")
+            val target = publicTarget(view)
+            assertRejectedAtomically(
+                prepared,
+                view,
+                targetedPayload(view, target, strategyFor(view)),
+            )
+        }
+
+        freshCase(::explicitV2WithExtraSource)
+        freshCase(::explicitV2WithNonEmptyZeroSpend)
+        freshCase(::explicitV2WithoutZeroSymbolAllocation)
+        freshCase { PaymentStrategy.AutoPay }
+        freshCase { PaymentStrategy.FromPool }
+        freshCase {
+            PaymentStrategy.Explicit(
+                manaAbilitiesToActivate = listOf(EntityId("legacy-source-id")),
+            )
+        }
+    }
+
+    test("zero-mana Equip preserves the public target domain and rejects an unpublished target") {
+        val prepared = preparedZeroManaEquip()
+        val view = gymActivatedView(prepared, requiredCost = "{0}")
+        val target = publicTarget(view)
+        view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(target)
+
+        assertRejectedAtomically(
+            prepared,
+            view,
+            targetedPayload(
+                view,
+                EntityId("unpublished-target"),
+                explicitV2FromPublic(view),
+            ),
+        )
+    }
+
+    test("real Lightning Greaves publishes and executes its generic zero-mana Equip contract") {
+        val prepared = preparedLightningGreaves()
+        val view = gymActivatedView(prepared, requiredCost = "{0}")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val target = publicTarget(view)
+
+        domain.version shouldBe 4
+        domain.requiredCost shouldBe "{0}"
+        domain.costUnits.single().amount shouldBe 0
+        view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(target)
+
+        prepared.gym.step(
+            view.actionId,
+            targetedPayload(view, target, explicitV2FromPublic(view)),
+        )
+        var passes = 0
+        while (prepared.environment.state.stack.isNotEmpty() && passes++ < 8) {
+            val pass = prepared.environment.legalActions().first { it.action is PassPriority }
+            prepared.environment.step(pass.action)
+        }
+        prepared.environment.state.stack shouldBe emptyList()
+        prepared.environment.state.getEntity(prepared.sourceId)
+            ?.get<AttachedToComponent>()
+            ?.targetId shouldBe target
     }
 
     test("public PaymentPlanV2 pays Wayfarer's {2}, then Rules taps and sacrifices the source once") {
