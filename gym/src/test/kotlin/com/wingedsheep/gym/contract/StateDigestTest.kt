@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -93,6 +94,50 @@ class StateDigestTest : FunSpec({
         )
 
         StateDigest.compute(base) shouldNotBe StateDigest.compute(changed)
+    }
+
+    test("attack declaration domain semantics are digest-relevant") {
+        val base = observation(environment())
+        val attacker = EntityId("digest-attacker")
+        val defender = EntityId("digest-defender")
+        val domain = AttackDeclarationDomainV1(
+            attackerToDefenders = mapOf(attacker to listOf(defender)),
+            mandatoryAttackers = listOf(attacker),
+            canDeclareZeroAttackers = false,
+            maxAttackers = 1,
+            coAttackerRequirements = emptyMap(),
+            bandConstraints = AttackBandConstraintsV1(
+                bandingAttackersByDefender = emptyMap(),
+                nonBandingAttackersByDefender = mapOf(defender to listOf(attacker)),
+            ),
+        )
+        val candidate = LegalActionView(
+            actionId = 9003,
+            kind = "DeclareAttackers",
+            description = "Declare attackers",
+            affordable = true,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("attackers", "bands"),
+        )
+        val withoutDomain = base.copy(legalActions = base.legalActions + candidate)
+        val withDomain = withoutDomain.copy(
+            legalActions = withoutDomain.legalActions.map { action ->
+                if (action.actionId != candidate.actionId) action else action.copy(
+                    attackDeclarationDomain = domain,
+                )
+            },
+        )
+
+        StateDigest.compute(withDomain) shouldNotBe StateDigest.compute(withoutDomain)
+        StateDigest.compute(withDomain) shouldNotBe StateDigest.compute(
+            withDomain.copy(
+                legalActions = withDomain.legalActions.map { action ->
+                    if (action.actionId != candidate.actionId) action else action.copy(
+                        attackDeclarationDomain = domain.copy(maxAttackers = null),
+                    )
+                },
+            )
+        )
     }
 
     test("required payload fields are digest-relevant") {

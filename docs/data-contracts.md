@@ -749,7 +749,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.19-required-payload-fields`.
+The Gym contract is currently `argentum-gym-contract@v1.20-attack-declaration-domain`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -774,6 +774,47 @@ infer candidates from hidden zones or compute legality locally. Rules validates 
 the pending decision. `decisionId` is a routing value and is not part of `stateDigest`; candidate
 sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
 configuration are used by the JVM service and HTTP server.
+
+### DeclareAttackers choice domain (AttackDeclarationDomainV1)
+
+`LegalActionView.attackDeclarationDomain` is present only for `DeclareAttackers` and is a
+versioned, complete public choice domain. Its `version` is `1`, and its fields are:
+
+- `attackerToDefenders`: every attacker maps to every Rules-resolved legal defender reference;
+  this includes individual attack/defender legality and state-resolved Taunt/Goad defender
+  restrictions. It is not a convenient global attacker list plus a second client-side filter.
+- `mandatoryAttackers`: the complete Rules-resolved set required by MustAttack, MustAttackThisTurn,
+  projected MustAttack, and Goad requirements.
+- `canDeclareZeroAttackers`: explicit legality of the empty declaration, derived from the same
+  Rules pre-tax authority; an empty relation is not an implicit approval of zero attackers.
+- `maxAttackers`: the Rules-resolved global attacker cap, or `null` when no cap applies.
+- `coAttackerRequirements`: per-attacker requirements whose `anyOf` lists contain the concrete,
+  already Rules-resolved companion IDs. Gym never reconstructs this filter.
+- `bandConstraints`: the complete per-defender partition of `bandingAttackersByDefender` and
+  `nonBandingAttackersByDefender`. Each attacker/defender relation appears exactly once. Rules
+  semantics remain authoritative for band size, common defender, declared membership, at-most-one
+  non-banding member, and no multi-band membership.
+
+The DTO is a pure canonical projection of the Rules-owned certificate. Maps and set-like entity
+collections are ordered by `EntityId.value` for stable wire and semantic identity. Before Rules
+execution, the trusted Gym boundary validates the submitted `DeclareAttackers` against the exact
+certificate snapshot registered on the selected `LegalAction`; it does not rebuild the domain from
+the current `GameState`. Rules then performs its existing stateful pre-tax Magic validation, and
+Attack Tax remains a later explicit payment decision boundary rather than an implicit Gym choice.
+
+If the complete certificate cannot be projected, or any reference is not perspective-addressable,
+the whole trusted observation fails closed with `ATTACK_DECLARATION_DOMAIN_UNSUPPORTED`. The Gym
+never exposes a silently reduced attacker/defender relation. The required payload contract is
+unchanged: a DeclareAttackers submission must explicitly include the ordered fields
+`["attackers", "bands"]`, including explicit empty choices. This change is limited to
+DeclareAttackers; blockers, blocker ordering, damage assignment, cards, decks, and frontend
+contracts are unchanged.
+
+The explicit replay-wire audit confirmed that `CompactReplay` serializes only the existing
+`GameAction` carrier (`attackers` and `bands`) plus its setup/yield/pin/checkpoint metadata; it
+does not contain `LegalActionView`, `AttackDeclarationDomainV1`, `schemaHash`, or any observation
+domain. Replay reconstruction therefore remains independent of Gym observation data and stays at
+`CompactReplay` v4; this additive observation contract does not require a replay bump.
 
 ### Action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
 
@@ -981,7 +1022,7 @@ Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` iden
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
 The Gym `SchemaHash` is
-`argentum-gym-contract@v1.19-required-payload-fields`. A client must compare the hash
+`argentum-gym-contract@v1.20-attack-declaration-domain`. A client must compare the hash
 before interpreting the payment domain and fail closed on mismatch; the historical V3 DTO also
 rejects a V4 version, so an old client cannot silently treat the new bucket list as V3.
 

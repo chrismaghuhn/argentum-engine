@@ -186,19 +186,30 @@ class ObservationBuilder(
             legalActions.map { action ->
                 ActionDomainMapping(
                     action,
-                    mapPublicTargetDomain(state, action, perspectivePlayerId),
+                    targetResult = mapPublicTargetDomain(state, action, perspectivePlayerId),
+                    attackResult = mapPublicAttackDeclarationDomain(state, action, perspectivePlayerId),
                 )
             }
         } else {
             emptyList()
         }
         val supportedActionMappings = actionDomainMappings.mapNotNull { mapping ->
-            val supported = mapping.result as? ActionTargetDomainMapper.Result.Supported
-            supported?.let { SupportedActionDomain(mapping.action, it.domain) }
+            val target = mapping.targetResult as? ActionTargetDomainMapper.Result.Supported
+            val attack = mapping.attackResult as? AttackDeclarationDomainMapper.Result.Supported
+            if (target == null || attack == null) {
+                null
+            } else {
+                SupportedActionDomain(mapping.action, target.domain, attack.domain)
+            }
         }
         val targetDomainDiagnostics = actionDomainMappings
             .mapNotNull { mapping ->
-                (mapping.result as? ActionTargetDomainMapper.Result.Unsupported)?.diagnostic
+                (mapping.targetResult as? ActionTargetDomainMapper.Result.Unsupported)?.diagnostic
+            }
+            .distinct()
+        val attackDeclarationDomainDiagnostics = actionDomainMappings
+            .mapNotNull { mapping ->
+                (mapping.attackResult as? AttackDeclarationDomainMapper.Result.Unsupported)?.diagnostic
             }
             .distinct()
         val diagnostics = buildList {
@@ -216,9 +227,11 @@ class ObservationBuilder(
                 add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             }
             // Keep payment diagnostics and their existing order intact. Target-domain failures
-            // are appended as a separate trusted-path signal; GameGymEnv treats any diagnostic
-            // as whole-observation fatal and never exposes a silently reduced action list.
+            // and attack-domain failures are appended as separate trusted-path signals;
+            // GameGymEnv treats any diagnostic as whole-observation fatal and never exposes a
+            // silently reduced action list.
             addAll(targetDomainDiagnostics)
+            addAll(attackDeclarationDomainDiagnostics)
         }
 
         // Build legal-action views and their registry. When mid-decision the
@@ -234,7 +247,13 @@ class ObservationBuilder(
             actionRegistry = decisionRegistry
         } else {
             legalActionViews = supportedActionMappings.mapIndexed { idx, mapped ->
-                legalActionToView(state, idx, mapped.action, mapped.domain)
+                legalActionToView(
+                    state,
+                    idx,
+                    mapped.action,
+                    mapped.targetDomain,
+                    mapped.attackDeclarationDomain,
+                )
             }
             actionRegistry = ActionRegistry.ofLegalActions(supportedActionMappings.map { it.action })
         }
@@ -562,6 +581,7 @@ class ObservationBuilder(
         actionId: Int,
         la: LegalAction,
         targetDomain: ActionTargetDomainV1,
+        attackDeclarationDomain: AttackDeclarationDomainV1?,
     ): LegalActionView {
         val sacrificeInfo = la.additionalCostInfo
             ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
@@ -575,6 +595,7 @@ class ObservationBuilder(
             sourceEntityId = actionSourceEntityId(la),
             targetEntityIds = singleRequirement?.candidates ?: emptyList(),
             targetDomain = targetDomain,
+            attackDeclarationDomain = attackDeclarationDomain,
             manaCost = la.manaCostString,
             paymentDomain = if (la.affordable) paymentDomainFor(state, la) else null,
             hasXCost = la.hasXCost,
@@ -783,6 +804,19 @@ class ObservationBuilder(
         viewingPlayerId: EntityId,
     ): ActionTargetDomainMapper.Result =
         ActionTargetDomainMapper.map(legalAction) { entityId ->
+            visibility.isEntityReferenceAddressableTo(
+                state = state,
+                entityId = entityId,
+                viewingPlayerId = viewingPlayerId,
+            )
+        }
+
+    private fun mapPublicAttackDeclarationDomain(
+        state: GameState,
+        legalAction: LegalAction,
+        viewingPlayerId: EntityId,
+    ): AttackDeclarationDomainMapper.Result =
+        AttackDeclarationDomainMapper.map(legalAction) { entityId ->
             visibility.isEntityReferenceAddressableTo(
                 state = state,
                 entityId = entityId,
@@ -1788,10 +1822,12 @@ data class ObservationResult(
 
 private data class ActionDomainMapping(
     val action: LegalAction,
-    val result: ActionTargetDomainMapper.Result,
+    val targetResult: ActionTargetDomainMapper.Result,
+    val attackResult: AttackDeclarationDomainMapper.Result,
 )
 
 private data class SupportedActionDomain(
     val action: LegalAction,
-    val domain: ActionTargetDomainV1,
+    val targetDomain: ActionTargetDomainV1,
+    val attackDeclarationDomain: AttackDeclarationDomainV1?,
 )

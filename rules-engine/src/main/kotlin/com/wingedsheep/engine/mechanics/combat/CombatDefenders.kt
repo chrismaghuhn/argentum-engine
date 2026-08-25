@@ -255,6 +255,64 @@ object CombatDefenders {
         }
 
     /**
+     * Legacy defender hint for the enumerated DeclareAttackers action. This intentionally follows
+     * the attack-mode seat restriction and must not be widened to the certificate universe: the
+     * hint is a compatibility projection, while the Rules-owned certificate is the complete
+     * declaration contract.
+     */
+    fun getAttackDeclarationCandidateDefenders(
+        state: GameState,
+        attackingPlayer: EntityId,
+    ): List<EntityId> {
+        val projected = state.projectedState
+        val attackableOpponents = legalDefendingPlayers(state, attackingPlayer)
+        val attackablePermanents = state.getBattlefield().filter { entityId ->
+            when {
+                projected.isBattle(entityId) ->
+                    com.wingedsheep.engine.mechanics.battle.Battles
+                        .canBeAttackedBy(state, entityId, attackingPlayer, attackableOpponents)
+                projected.isPlaneswalker(entityId) ->
+                    projected.getController(entityId) in attackableOpponents
+                else -> false
+            }
+        }
+        return (attackableOpponents + attackablePermanents)
+            .distinct()
+            .sortedBy(EntityId::value)
+    }
+
+    /**
+     * Broad defender universe for the Rules-owned attack declaration certificate. This intentionally
+     * stops before AttackModeDefenderRule: the pre-tax validator first accepts any opponent player,
+     * any permanent controlled by an opponent, or any Battle protected by an opponent, and only
+     * then applies the remaining defender rules. The certificate builder resolves that final
+     * legality per attacker.
+     *
+     * Keep this separate from [getAttackDeclarationCandidateDefenders]. The latter feeds the
+     * legacy `validAttackTargets` hint and must retain its existing attack-mode filtering.
+     */
+    fun getAttackDeclarationCertificateCandidateDefenders(
+        state: GameState,
+        attackingPlayer: EntityId,
+    ): List<EntityId> {
+        val projected = state.projectedState
+        val candidateOpponents = state.getOpponents(attackingPlayer).toSet()
+        val candidatePermanents = state.getBattlefield().filter { entityId ->
+            when {
+                projected.isBattle(entityId) ->
+                    com.wingedsheep.engine.mechanics.battle.Battles
+                        .canBeAttackedBy(state, entityId, attackingPlayer, candidateOpponents)
+                projected.isPlaneswalker(entityId) ->
+                    projected.getController(entityId) in candidateOpponents
+                else -> false
+            }
+        }
+        return (candidateOpponents + candidatePermanents)
+            .distinct()
+            .sortedBy(EntityId::value)
+    }
+
+    /**
      * The defending players ordered for sequential block declaration: turn order starting
      * from the active player (CR 101.4 APNAP). The active player is never a defender, so in
      * practice this is the defenders in turn order after the active player, wrapping around.

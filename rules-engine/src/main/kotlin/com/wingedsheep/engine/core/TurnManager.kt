@@ -47,6 +47,7 @@ import com.wingedsheep.engine.mechanics.combat.CombatDefenders
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.replacement.ReplacementEffectProcessor
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
 import com.wingedsheep.sdk.scripting.Duration
 
 /**
@@ -1043,6 +1044,12 @@ class TurnManager(
     fun getMandatoryAttackers(state: GameState, playerId: EntityId): List<EntityId> {
         return combatManager.getMandatoryAttackers(state, playerId)
     }
+
+    internal fun getAttackDeclarationDomain(
+        state: GameState,
+        playerId: EntityId,
+    ): RulesAttackDeclarationDomainResult =
+        combatManager.getAttackDeclarationDomain(state, playerId)
 
     fun getMandatoryBlockerAssignments(state: GameState, playerId: EntityId): Map<EntityId, List<EntityId>> {
         return combatManager.getMandatoryBlockerAssignments(state, playerId)

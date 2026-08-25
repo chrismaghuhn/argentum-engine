@@ -100,6 +100,20 @@ class ObservationCanonicalizationTest : FunSpec({
         )
     )
 
+    fun withAttackDeclarationDomain(
+        base: TrainingObservation,
+        domain: AttackDeclarationDomainV1?,
+    ): TrainingObservation = base.copy(
+        legalActions = listOf(
+            base.legalActions.first().copy(
+                actionId = 9001,
+                attackDeclarationDomain = domain,
+                requiresStructuredAction = true,
+                requiredPayloadFields = listOf("attackers", "bands"),
+            )
+        )
+    )
+
     test("wire JSON retains transport IDs while semantic JSON excludes them") {
         val base = observation(environment())
         val transportVariant = base.copy(
@@ -262,6 +276,79 @@ class ObservationCanonicalizationTest : FunSpec({
 
         val missingDomain = withActionTargetDomain(base, null)
         StateDigest.compute(withDomain) shouldNotBe StateDigest.compute(missingDomain)
+    }
+
+    test("attack declaration domains are canonical semantic legal-action identity") {
+        val base = observation(environment())
+        val attackerA = EntityId("attacker-a")
+        val attackerB = EntityId("attacker-b")
+        val defenderA = EntityId("defender-a")
+        val defenderB = EntityId("defender-b")
+        val domain = AttackDeclarationDomainV1(
+            attackerToDefenders = linkedMapOf(
+                attackerB to listOf(defenderB, defenderA),
+                attackerA to listOf(defenderA),
+            ),
+            mandatoryAttackers = listOf(attackerB, attackerA),
+            canDeclareZeroAttackers = false,
+            maxAttackers = 2,
+            coAttackerRequirements = linkedMapOf(
+                attackerB to listOf(AttackCoAttackerRequirementV1(listOf(attackerA))),
+            ),
+            bandConstraints = AttackBandConstraintsV1(
+                bandingAttackersByDefender = linkedMapOf(defenderA to listOf(attackerB)),
+                nonBandingAttackersByDefender = linkedMapOf(
+                    defenderB to listOf(attackerB),
+                    defenderA to listOf(attackerA),
+                ),
+            ),
+        )
+        val equivalentIterationOrder = domain.copy(
+            attackerToDefenders = linkedMapOf(
+                attackerA to listOf(defenderA),
+                attackerB to listOf(defenderA, defenderB),
+            ),
+            mandatoryAttackers = listOf(attackerA, attackerB),
+            bandConstraints = AttackBandConstraintsV1(
+                bandingAttackersByDefender = linkedMapOf(defenderA to listOf(attackerB)),
+                nonBandingAttackersByDefender = linkedMapOf(
+                    defenderA to listOf(attackerA),
+                    defenderB to listOf(attackerB),
+                ),
+            ),
+        )
+        val first = withAttackDeclarationDomain(base, domain)
+        val reordered = withAttackDeclarationDomain(base, equivalentIterationOrder)
+
+        ObservationCanonicalizer.semanticJson(first) shouldBe
+            ObservationCanonicalizer.semanticJson(reordered)
+        StateDigest.compute(first) shouldBe StateDigest.compute(reordered)
+        first.legalActions.single().requiredPayloadFields shouldBe listOf("attackers", "bands")
+
+        val wire = ObservationCanonicalizer.wireJson(first)
+        wire shouldContain "\"attackDeclarationDomain\""
+        wire shouldContain "\"attackerToDefenders\""
+        wire shouldContain "\"coAttackerRequirements\""
+        wire shouldContain "\"bandConstraints\""
+
+        val baselineDigest = StateDigest.compute(first)
+        listOf(
+            domain.copy(
+                attackerToDefenders = domain.attackerToDefenders +
+                    (attackerA to listOf(defenderB)),
+            ),
+            domain.copy(mandatoryAttackers = listOf(attackerA)),
+            domain.copy(canDeclareZeroAttackers = true),
+            domain.copy(maxAttackers = 1),
+            domain.copy(coAttackerRequirements = emptyMap()),
+            domain.copy(
+                bandConstraints = domain.bandConstraints.copy(
+                    nonBandingAttackersByDefender = mapOf(defenderA to listOf(attackerA, attackerB)),
+                )
+            ),
+        ).forEach { variant ->
+            StateDigest.compute(withAttackDeclarationDomain(base, variant)) shouldNotBe baselineDigest
+        }
     }
 
     test("unknown future action target versions fail before canonicalization") {
