@@ -27,7 +27,7 @@ private data class PreparedTearAsunderGym(
     val tearAsunderId: EntityId,
 )
 
-/** RED coverage for real normal and kicked Tear Asunder PaymentDomainV4 publication. */
+/** Regression coverage for real normal and kicked Tear Asunder PaymentDomainV4 publication. */
 class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
 
     val targetArtifact = card("Gym Tear Asunder Target Artifact") {

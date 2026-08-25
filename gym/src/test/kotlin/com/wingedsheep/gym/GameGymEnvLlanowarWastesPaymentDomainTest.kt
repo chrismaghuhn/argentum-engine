@@ -46,7 +46,7 @@ private data class PreparedLlanowarWastesGym(
     val sourceId: EntityId,
 )
 
-/** RED coverage for complete real Llanowar Wastes publication and exact execution. */
+/** Regression coverage for complete real Llanowar Wastes publication and exact execution. */
 class GameGymEnvLlanowarWastesPaymentDomainTest : FunSpec({
 
     val fixedCostSpell = card("Gym Llanowar Wastes Payment Spell") {

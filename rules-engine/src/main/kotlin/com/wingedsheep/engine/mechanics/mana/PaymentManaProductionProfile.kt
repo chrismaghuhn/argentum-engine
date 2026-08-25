@@ -6,8 +6,12 @@ import com.wingedsheep.sdk.scripting.effects.AddColorlessManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaOfChoiceEffect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
+import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.ManaExpiry
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
+import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 
 /**
  * Rules-owned description of the currently resolved output of one selected mana ability.
@@ -36,6 +40,41 @@ sealed interface PaymentManaProductionProfile {
 data class PaymentManaOutput(
     val color: PaymentManaColor,
 )
+
+private fun flattenPaymentManaEffect(effect: Effect): List<Effect> = when (effect) {
+    is CompositeEffect -> effect.effects.flatMap(::flattenPaymentManaEffect)
+    else -> listOf(effect)
+}
+
+private fun isPaymentManaProductionLeaf(effect: Effect): Boolean = when (effect) {
+    is AddManaEffect,
+    is AddColorlessManaEffect,
+    is AddManaOfChoiceEffect,
+    -> true
+    else -> false
+}
+
+/**
+ * Exact support certificate for the non-mana part of one selected mana ability.
+ *
+ * This is a closure proof only. It never authorizes or executes an effect; the selected
+ * [com.wingedsheep.sdk.scripting.ActivatedAbility] remains the sole execution input to
+ * [ManaAbilitySideEffectExecutor].
+ */
+sealed interface PaymentManaSideEffectCertificate {
+    /** The exact ability has no non-mana effect. */
+    data object NoSideEffect : PaymentManaSideEffectCertificate
+
+    /** The exact ability deals this fixed amount of damage to its controller. */
+    data class FixedSelfDamage(
+        val amount: Int,
+    ) : PaymentManaSideEffectCertificate
+
+    /** The ability's non-mana effect is outside the narrow exact support slice. */
+    data class Unsupported(
+        val reason: String,
+    ) : PaymentManaSideEffectCertificate
+}
 
 /**
  * Reconciles raw ability profiles with the final aggregate [ManaSource] semantics.
@@ -96,29 +135,32 @@ private fun ManaSource.representsFixedBundle(
 }
 
 /**
- * Resolves only unconditional fixed leaves of the selected ability. The caller supplies the
- * colors already resolved by source discovery for a single-output color-choice effect; this keeps
- * this helper on the same Rules-owned resolution path as [ManaSolver].
+ * Resolves only the unconditional fixed mana-production leaves of the selected ability. Non-mana
+ * leaves are deliberately left to [PaymentManaSideEffectCertificateResolver]. The caller supplies
+ * the colors already resolved by source discovery for a single-output color-choice effect; this
+ * keeps this helper on the same Rules-owned resolution path as [ManaSolver].
  */
 object PaymentManaProductionProfileResolver {
     fun resolve(
         effect: Effect,
         resolvedChoiceColors: Set<Color>,
     ): PaymentManaProductionProfile {
-        val leaves = flatten(effect)
-        if (leaves.isEmpty()) {
+        val leaves = flattenPaymentManaEffect(effect)
+        val productionLeaves = leaves.filter(::isPaymentManaProductionLeaf)
+        if (productionLeaves.isEmpty()) {
             return PaymentManaProductionProfile.Unsupported("The mana ability has no production leaf")
         }
 
-        if (leaves.any { it is AddManaOfChoiceEffect }) {
-            if (leaves.size != 1) {
+        if (productionLeaves.any { it is AddManaOfChoiceEffect }) {
+            if (productionLeaves.size != 1) {
                 return PaymentManaProductionProfile.Unsupported(
                     "A multi-output ability cannot contain an unresolved color choice"
                 )
             }
-            val choice = leaves.single() as AddManaOfChoiceEffect
+            val choice = productionLeaves.single() as AddManaOfChoiceEffect
             if (choice.restriction != null || choice.amount !is DynamicAmount.Fixed ||
-                (choice.amount as DynamicAmount.Fixed).amount != 1 || resolvedChoiceColors.isEmpty()
+                (choice.amount as DynamicAmount.Fixed).amount != 1 || resolvedChoiceColors.isEmpty() ||
+                choice.riders.isNotEmpty() || choice.recipient != EffectTarget.Controller
             ) {
                 return PaymentManaProductionProfile.Unsupported(
                     "Selectable mana production is not a fixed single output"
@@ -130,12 +172,14 @@ object PaymentManaProductionProfileResolver {
         }
 
         val outputs = mutableListOf<PaymentManaOutput>()
-        for (leaf in leaves) {
+        for (leaf in productionLeaves) {
             when (leaf) {
                 is AddManaEffect -> {
-                    if (leaf.restriction != null) {
+                    if (leaf.restriction != null || leaf.riders.isNotEmpty() ||
+                        leaf.expiry != ManaExpiry.END_OF_TURN
+                    ) {
                         return PaymentManaProductionProfile.Unsupported(
-                            "Fixed mana output has a spending restriction"
+                            "Fixed mana output has an unsupported restriction, rider, or expiry"
                         )
                     }
                     val amount = (leaf.amount as? DynamicAmount.Fixed)?.amount
@@ -185,10 +229,55 @@ object PaymentManaProductionProfileResolver {
         }
     }
 
-    private fun flatten(effect: Effect): List<Effect> = when (effect) {
-        is CompositeEffect -> effect.effects.flatMap(::flatten)
-        else -> listOf(effect)
+}
+
+/**
+ * Certifies only the exact deterministic self-damage tail supported by the payment domain.
+ * Mana production is intentionally ignored here; that is [PaymentManaProductionProfileResolver]'s
+ * separate responsibility.
+ */
+object PaymentManaSideEffectCertificateResolver {
+    fun resolve(effect: Effect): PaymentManaSideEffectCertificate {
+        val nonManaLeaves = flattenPaymentManaEffect(effect).filterNot(::isPaymentManaProductionLeaf)
+        return when {
+            nonManaLeaves.isEmpty() -> PaymentManaSideEffectCertificate.NoSideEffect
+            nonManaLeaves.size != 1 -> PaymentManaSideEffectCertificate.Unsupported(
+                "Mana ability has multiple non-mana side effects"
+            )
+
+            else -> certifySingle(nonManaLeaves.single())
+        }
     }
+
+    private fun certifySingle(effect: Effect): PaymentManaSideEffectCertificate = when (effect) {
+        is DealDamageEffect -> {
+            val target = effect.target
+            val amount = (effect.amount as? DynamicAmount.Fixed)?.amount
+            when {
+                target !is EffectTarget.PlayerRef || target.player != Player.You ->
+                    PaymentManaSideEffectCertificate.Unsupported(
+                        "Self-damage certificate requires a fixed damage effect targeting Player.You"
+                    )
+
+                amount == null || amount <= 0 ->
+                    PaymentManaSideEffectCertificate.Unsupported(
+                        "Self-damage certificate requires a positive fixed amount"
+                    )
+
+                effect.cantBePrevented || effect.damageSource != null || effect.excessToController ->
+                    PaymentManaSideEffectCertificate.Unsupported(
+                        "Self-damage certificate does not support damage modifiers or source overrides"
+                    )
+
+                else -> PaymentManaSideEffectCertificate.FixedSelfDamage(amount)
+            }
+        }
+
+        else -> PaymentManaSideEffectCertificate.Unsupported(
+            "Mana ability contains an unsupported non-mana side effect"
+        )
+    }
+
 }
 
 internal fun ManaSource.invalidatePaymentManaProductionProfiles(reason: String): ManaSource =
@@ -197,5 +286,12 @@ internal fun ManaSource.invalidatePaymentManaProductionProfiles(reason: String):
             mapOf("__source__" to PaymentManaProductionProfile.Unsupported(reason))
         } else {
             paymentManaProductionProfiles.mapValues { PaymentManaProductionProfile.Unsupported(reason) }
-        }
+        },
+        paymentManaSideEffectCertificates = if (paymentManaSideEffectCertificates.isEmpty()) {
+            mapOf("__source__" to PaymentManaSideEffectCertificate.Unsupported(reason))
+        } else {
+            paymentManaSideEffectCertificates.mapValues {
+                PaymentManaSideEffectCertificate.Unsupported(reason)
+            }
+        },
     )
