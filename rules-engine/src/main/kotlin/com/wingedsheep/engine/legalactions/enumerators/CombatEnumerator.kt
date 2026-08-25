@@ -3,8 +3,10 @@ package com.wingedsheep.engine.legalactions.enumerators
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.legalactions.ActionEnumerator
+import com.wingedsheep.engine.legalactions.AttackDeclarationDomainSupport
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
 import com.wingedsheep.engine.state.components.combat.AttackersDeclaredThisCombatComponent
 import com.wingedsheep.engine.state.components.combat.BlockersDeclaredThisCombatComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -55,31 +57,25 @@ class CombatEnumerator : ActionEnumerator {
                 ?.get<AttackersDeclaredThisCombatComponent>() != null
             if (!attackersAlreadyDeclared) {
                 val validAttackers = context.turnManager.getValidAttackers(state, playerId)
-                val projected = context.projected
-                // Opponents this player may attack under the game's AttackMode (CR 802 / 803).
-                // A planeswalker is attackable iff its controller is one of those opponents; a
-                // battle iff its *protector* is (CR 310.8b), which is why a Siege the attacking
-                // player controls themselves shows up here once an opponent protects it.
-                val attackableOpponents = com.wingedsheep.engine.mechanics.combat.CombatDefenders
-                    .legalDefendingPlayers(state, playerId)
-                val attackablePermanents = state.getBattlefield().filter { entityId ->
-                    when {
-                        projected.isBattle(entityId) -> com.wingedsheep.engine.mechanics.battle.Battles
-                            .canBeAttackedBy(state, entityId, playerId, attackableOpponents)
-                        projected.isPlaneswalker(entityId) ->
-                            projected.getController(entityId) in attackableOpponents
-                        else -> false
-                    }
-                }
-                val validAttackTargets = attackableOpponents.toList() + attackablePermanents
+                val validAttackTargets = com.wingedsheep.engine.mechanics.combat.CombatDefenders
+                    .getAttackDeclarationCandidateDefenders(state, playerId)
                 val mandatoryAttackers = context.turnManager.getMandatoryAttackers(state, playerId)
+                val attackDeclarationDomain = context.turnManager.getAttackDeclarationDomain(state, playerId)
+                val (domain, domainSupport) = when (attackDeclarationDomain) {
+                    is RulesAttackDeclarationDomainResult.Supported ->
+                        attackDeclarationDomain.domain to AttackDeclarationDomainSupport.SUPPORTED
+                    is RulesAttackDeclarationDomainResult.Unsupported ->
+                        null to AttackDeclarationDomainSupport.UNSUPPORTED(attackDeclarationDomain.reason)
+                }
                 return listOf(LegalAction(
                     actionType = "DeclareAttackers",
                     description = "Declare attackers",
                     action = DeclareAttackers(playerId, emptyMap()),
                     validAttackers = validAttackers,
                     mandatoryAttackers = mandatoryAttackers.ifEmpty { null },
-                    validAttackTargets = validAttackTargets.ifEmpty { null }
+                    validAttackTargets = validAttackTargets.ifEmpty { null },
+                    attackDeclarationDomain = domain,
+                    attackDeclarationDomainSupport = domainSupport,
                 ))
             }
         }

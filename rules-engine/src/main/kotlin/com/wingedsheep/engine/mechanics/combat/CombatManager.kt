@@ -13,6 +13,7 @@ import com.wingedsheep.engine.mechanics.combat.rules.BlockEvasionRule
 import com.wingedsheep.engine.mechanics.combat.rules.defaultAttackDefenderRules
 import com.wingedsheep.engine.mechanics.combat.rules.defaultAttackRestrictionRules
 import com.wingedsheep.engine.mechanics.combat.rules.defaultBlockEvasionRules
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
 
 /**
  * Manages combat flow: attackers, blockers, damage.
@@ -51,6 +52,12 @@ class CombatManager(
         attackers: Map<EntityId, EntityId>,
         bands: List<Set<EntityId>> = emptyList()
     ): ExecutionResult = attackPhase.declareAttackers(state, attackingPlayer, attackers, bands)
+
+    internal fun getAttackDeclarationDomain(
+        state: GameState,
+        attackingPlayer: EntityId,
+    ): RulesAttackDeclarationDomainResult =
+        attackPhase.getAttackDeclarationDomain(state, attackingPlayer)
 
     fun isValidAttacker(state: GameState, attackerId: EntityId, attackingPlayer: EntityId): Boolean =
         attackPhase.isValidAttacker(state, attackerId, attackingPlayer)

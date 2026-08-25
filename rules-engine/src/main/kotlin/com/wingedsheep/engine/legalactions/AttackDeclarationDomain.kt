@@ -40,6 +40,16 @@ sealed interface AttackDeclarationDomainSupport {
     ) : AttackDeclarationDomainSupport
 }
 
+sealed interface RulesAttackDeclarationDomainResult {
+    data class Supported(
+        val domain: RulesAttackDeclarationDomain,
+    ) : RulesAttackDeclarationDomainResult
+
+    data class Unsupported(
+        val reason: AttackDeclarationDomainUnsupportedReason,
+    ) : RulesAttackDeclarationDomainResult
+}
+
 enum class AttackDeclarationRejection {
     MALFORMED_CERTIFICATE,
     UNKNOWN_ATTACKER,

@@ -255,6 +255,33 @@ object CombatDefenders {
         }
 
     /**
+     * Complete global defender universe for an attacker declaration. This intentionally does not
+     * apply per-attacker restrictions; those belong to the attacker-to-defender relation built by
+     * the attack phase authority. Keeping this universe independent is important for proving that
+     * the published relation did not omit a legal edge.
+     */
+    fun getAttackDeclarationCandidateDefenders(
+        state: GameState,
+        attackingPlayer: EntityId,
+    ): List<EntityId> {
+        val projected = state.projectedState
+        val attackableOpponents = legalDefendingPlayers(state, attackingPlayer)
+        val attackablePermanents = state.getBattlefield().filter { entityId ->
+            when {
+                projected.isBattle(entityId) ->
+                    com.wingedsheep.engine.mechanics.battle.Battles
+                        .canBeAttackedBy(state, entityId, attackingPlayer, attackableOpponents)
+                projected.isPlaneswalker(entityId) ->
+                    projected.getController(entityId) in attackableOpponents
+                else -> false
+            }
+        }
+        return (attackableOpponents + attackablePermanents)
+            .distinct()
+            .sortedBy(EntityId::value)
+    }
+
+    /**
      * The defending players ordered for sequential block declaration: turn order starting
      * from the active player (CR 101.4 APNAP). The active player is never a defender, so in
      * practice this is the defenders in turn order after the active player, wrapping around.
