@@ -40,7 +40,6 @@ import com.wingedsheep.sdk.scripting.effects.AddDynamicManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaOfChoiceEffect
 import com.wingedsheep.sdk.scripting.effects.CompositeEffect
-import com.wingedsheep.sdk.scripting.effects.DealDamageEffect
 import com.wingedsheep.sdk.scripting.effects.Effect
 import com.wingedsheep.sdk.scripting.effects.Gate
 import com.wingedsheep.sdk.scripting.effects.GatedEffect
@@ -56,8 +55,6 @@ import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.MultiplyManaOnSourceTap
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
-import com.wingedsheep.sdk.scripting.references.Player
-import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 
@@ -175,6 +172,8 @@ data class ManaSource(
      * production-transforming runtime modifier.
      */
     val paymentManaProductionProfiles: Map<String, PaymentManaProductionProfile> = emptyMap(),
+    /** Exact support certificate for the selected ability's non-mana side effects. */
+    val paymentManaSideEffectCertificates: Map<String, PaymentManaSideEffectCertificate> = emptyMap(),
     /**
      * Tapping this source also requires sacrificing it (e.g. Treasure tokens —
      * "{T}, Sacrifice this artifact: Add one mana of any color"). The auto-pay
@@ -1291,6 +1290,9 @@ class ManaSolver(
                             painAmount = 0,
                             canAttack = canAttack,
                             paymentManaProductionProfiles = productionProfiles,
+                            paymentManaSideEffectCertificates = productionProfiles.mapValues {
+                                PaymentManaSideEffectCertificate.NoSideEffect
+                            },
                         )
                     }
                     landSubtypeSeedColors = effectiveColors
@@ -1356,6 +1358,7 @@ class ManaSolver(
             // plain `{T}: Add {C}` ability contributes nothing).
             val perColorRiders = mutableMapOf<Color, MutableSet<ManaSpellRider>>()
             val paymentProductionProfiles = linkedMapOf<String, PaymentManaProductionProfile>()
+            val paymentSideEffectCertificates = linkedMapOf<String, PaymentManaSideEffectCertificate>()
 
             // Seed the accumulators with a basic land's intrinsic subtype mana (Rule 305.7) when a
             // static grant kept us out of the short-circuit above. The intrinsic ability is
@@ -1372,6 +1375,8 @@ class ManaSolver(
                             ?: PaymentManaProductionProfile.SelectableSingleOutput(
                                 setOf(PaymentManaColor.fromEngine(color))
                             )
+                    paymentSideEffectCertificates[ManaAbilityIdentity.intrinsic(color)] =
+                        PaymentManaSideEffectCertificate.NoSideEffect
                 }
                 hasUnrestrictedAbility = true
             }
@@ -1488,10 +1493,13 @@ class ManaSolver(
                     continue // Can't use this ability due to summoning sickness
                 }
 
-                // Pain modeled as a self-damage side effect in the ability's effect chain
-                // (Battlefield Forge: "{T}: Add {R} or {W}. This land deals 1 damage to you.")
-                // counts the same as a PayLife cost atom.
-                val effectPain = selfDamageAmount(ability.effect)
+                // Pain modeled as a self-damage side effect is derived from the same exact
+                // certificate used by PaymentPlanV1 publication. The certificate is not an
+                // execution authority; the selected ActivatedAbility remains the only effect input
+                // to ManaAbilitySideEffectExecutor.
+                val sideEffectCertificate = PaymentManaSideEffectCertificateResolver.resolve(ability.effect)
+                val effectPain = (sideEffectCertificate as? PaymentManaSideEffectCertificate.FixedSelfDamage)
+                    ?.amount ?: 0
                 if (effectPain > 0) {
                     abilityHasPainCost = true
                     abilityPainAmount += effectPain
@@ -1598,6 +1606,7 @@ class ManaSolver(
                 paymentProductionProfiles[ManaAbilityIdentity.key(ability)] =
                     landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
                         ?: PaymentManaProductionProfileResolver.resolve(ability.effect, effectColors)
+                paymentSideEffectCertificates[ManaAbilityIdentity.key(ability)] = sideEffectCertificate
 
                 // Record the cheapest activation mana cost per color this ability produces.
                 for (color in effectColors) {
@@ -1765,6 +1774,7 @@ class ManaSolver(
                     },
                     manaAbilityOptionsForColorless = colorlessManaAbilities.distinctBy { it.id.value },
                     paymentManaProductionProfiles = paymentProductionProfiles,
+                    paymentManaSideEffectCertificates = paymentSideEffectCertificates,
                     requiresSacrifice = requiresSacrifice,
                     colorsRequiringSacrifice = colorsRequiringSacrifice,
                     hasContextSensitiveAbilities = hasMixedRestrictions,
@@ -1798,7 +1808,10 @@ class ManaSolver(
                         PaymentManaProductionProfile.SelectableSingleOutput(
                             setOf(PaymentManaColor.COLORLESS)
                         )
-                )
+                ),
+                paymentManaSideEffectCertificates = mapOf(
+                    ManaAbilityIdentity.intrinsic(null) to PaymentManaSideEffectCertificate.NoSideEffect
+                ),
             )
         }.map { source -> augmentWithAuraBonusMana(state, source, playerId, manaStatics) }
             .map { source -> augmentWithSourceTapBonusMana(state, source, playerId, manaStatics) }
@@ -1925,22 +1938,6 @@ class ManaSolver(
             else -> effect
         }
         else -> effect
-    }
-
-    /**
-     * Total fixed self-damage a mana ability's effect chain deals to its controller
-     * (Battlefield Forge: `AddMana(RED).then(DealDamage(1, PlayerRef(You)))`). Dynamic
-     * amounts are ignored (no printed mana ability self-damages a dynamic amount).
-     */
-    private fun selfDamageAmount(effect: Effect): Int = when (effect) {
-        is CompositeEffect -> effect.effects.sumOf { selfDamageAmount(it) }
-        is DealDamageEffect -> {
-            val target = effect.target
-            if (target is EffectTarget.PlayerRef && target.player == Player.You) {
-                (effect.amount as? DynamicAmount.Fixed)?.amount ?: 0
-            } else 0
-        }
-        else -> 0
     }
 
     private fun extractManaRestriction(

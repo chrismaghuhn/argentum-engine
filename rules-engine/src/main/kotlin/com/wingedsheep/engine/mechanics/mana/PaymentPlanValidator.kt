@@ -108,7 +108,11 @@ sealed interface PaymentPlanValidation {
  */
 fun ManaSource.supportsPaymentPlanV1(): Boolean {
     val productionShapeSupported = if (paymentManaProductionProfiles.isNotEmpty()) {
-        paymentManaProductionProfiles.values.any { it !is PaymentManaProductionProfile.Unsupported }
+        paymentManaProductionProfiles.keys == paymentManaSideEffectCertificates.keys &&
+            paymentManaProductionProfiles.values.all { it !is PaymentManaProductionProfile.Unsupported } &&
+            paymentManaSideEffectCertificates.values.all { it.isSupported() } &&
+            paymentProfileKeysAreComplete() &&
+            sideEffectPainMetadataIsComplete()
     } else {
         manaAmount == 1 &&
             bonusManaPerTap == 0 &&
@@ -116,6 +120,8 @@ fun ManaSource.supportsPaymentPlanV1(): Boolean {
             bonusManaColor == null &&
             !bonusManaIsAnyColor
     }
+    val legacySideEffectShapeSupported = paymentManaProductionProfiles.isNotEmpty() ||
+        (paymentManaSideEffectCertificates.isEmpty() && colorPainCost.isEmpty() && colorlessPainCost == 0)
     return !requiresSacrifice &&
         tapPermanentsSubCost == null &&
         productionShapeSupported &&
@@ -124,11 +130,73 @@ fun ManaSource.supportsPaymentPlanV1(): Boolean {
         colorRiders.isEmpty() &&
         !hasContextSensitiveAbilities &&
         colorActivationManaCost.isEmpty() &&
-        colorPainCost.isEmpty() &&
-        colorlessPainCost == 0 &&
+        legacySideEffectShapeSupported &&
         colorsRequiringSacrifice.isEmpty() &&
         !hasUnrepresentedIntrinsicManaChoice() &&
         ordinaryTapManaAbilitiesOnly()
+}
+
+private fun PaymentManaSideEffectCertificate.isSupported(): Boolean = when (this) {
+    PaymentManaSideEffectCertificate.NoSideEffect -> true
+    is PaymentManaSideEffectCertificate.FixedSelfDamage -> amount > 0
+    is PaymentManaSideEffectCertificate.Unsupported -> false
+}
+
+/**
+ * Every candidate that can currently be activated for payment must have both halves of the exact
+ * profile. A source may not publish a convenient subset while hiding another legal mana ability.
+ */
+private fun ManaSource.paymentProfileKeysAreComplete(): Boolean {
+    val legalKeys = buildSet {
+        for ((color, abilities) in manaAbilityOptionsForColor) {
+            if (abilities.isEmpty()) add(ManaAbilityIdentity.intrinsic(color))
+            else abilities.forEach { add(ManaAbilityIdentity.key(it)) }
+        }
+        if (manaAbilityOptionsForColorless.isEmpty()) {
+            if (producesColorless) add(ManaAbilityIdentity.intrinsic(null))
+        } else {
+            manaAbilityOptionsForColorless.forEach { add(ManaAbilityIdentity.key(it)) }
+        }
+        intrinsicManaColors.forEach { add(ManaAbilityIdentity.intrinsic(it)) }
+    }
+    return legalKeys.isNotEmpty() && legalKeys == paymentManaProductionProfiles.keys
+}
+
+/**
+ * [colorPainCost] is legacy aggregate metadata, not authority for side effects. It may only pass
+ * when it exactly agrees with the certificate bound to each production profile key.
+ */
+private fun ManaSource.sideEffectPainMetadataIsComplete(): Boolean {
+    val expectedColoredPain = mutableMapOf<com.wingedsheep.sdk.core.Color, Int>()
+    var expectedColorlessPain = Int.MAX_VALUE
+
+    for ((key, profile) in paymentManaProductionProfiles) {
+        val certificate = paymentManaSideEffectCertificates[key] ?: return false
+        val pain = when (certificate) {
+            PaymentManaSideEffectCertificate.NoSideEffect -> 0
+            is PaymentManaSideEffectCertificate.FixedSelfDamage -> certificate.amount
+            is PaymentManaSideEffectCertificate.Unsupported -> return false
+        }
+        val colors = when (profile) {
+            is PaymentManaProductionProfile.SelectableSingleOutput -> profile.allowedColors
+            is PaymentManaProductionProfile.FixedOutputBundle -> profile.outputs.map { it.color }.toSet()
+            is PaymentManaProductionProfile.Unsupported -> return false
+        }
+        for (color in colors) {
+            val engineColor = color.asEngineColor()
+            if (engineColor == null) {
+                expectedColorlessPain = minOf(expectedColorlessPain, pain)
+            } else {
+                expectedColoredPain[engineColor] = minOf(expectedColoredPain[engineColor] ?: Int.MAX_VALUE, pain)
+            }
+        }
+    }
+
+    val expectedColoredPositive = expectedColoredPain
+        .filterValues { it > 0 }
+    val actualColoredPositive = colorPainCost.filterValues { it > 0 }
+    val expectedColorless = if (expectedColorlessPain == Int.MAX_VALUE) 0 else expectedColorlessPain
+    return actualColoredPositive == expectedColoredPositive && colorlessPainCost == expectedColorless
 }
 
 /**

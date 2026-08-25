@@ -777,12 +777,15 @@ configuration are used by the JVM service and HTTP server.
 
 ### Action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
 
-An affordable structured `ActivateAbility`, ordinary fixed-cost `CastSpell`, or plain fixed-cost
-`CycleCard` whose action-level mana cost is published in `LegalActionView.manaCost` also publishes
-`LegalActionView.paymentDomain`. This domain is version 4 and is complete for the supported slice: ordinary
-fixed colored/colorless/generic costs, unrestricted floating mana, ordinary tap sources, explicit
-single-output color selection, deterministic fixed multi-mana bundles, and multiple source
-combinations. A payable action whose complete V4 domain
+An affordable structured `ActivateAbility`, ordinary fixed-cost `CastSpell`, plain fixed-cost
+`CastWithKicker`, or plain fixed-cost `CycleCard` whose action-level mana cost is published in
+`LegalActionView.manaCost` also publishes `LegalActionView.paymentDomain`. This domain is version 4
+and is complete for the supported slice: ordinary fixed colored/colorless/generic costs, unrestricted
+floating mana, ordinary tap sources, explicit single-output color selection, deterministic fixed
+multi-mana bundles, deterministic fixed self-damage side effects bound to the selected
+`manaAbilityKey`, and multiple source combinations. A mixed source is publishable only when every
+currently legal payment-relevant mana ability has a complete exact production profile and side-effect
+certificate. A payable action whose complete V4 domain
 cannot be published fails closed with `PAYMENT_DOMAIN_UNSUPPORTED`; it never falls back to an
 engine-selected payment policy at the trusted Gym boundary.
 For `CycleCard`, publication is limited to a plain Cycling keyword whose authoritative cost is
@@ -795,7 +798,10 @@ Rules materialization; `ability = null` in that context does not disable mana re
 Non-mana structured cast choices may be submitted alongside the plan when they do not alter the
 effective mana cost or the published source set; cost-changing or source-affecting choices remain
 fail-closed.
-The public payment and replay schemas are unchanged by this CycleCard slice.
+The public payment and replay schemas are unchanged by the CycleCard and deterministic mana
+side-effect slices. `PaymentSourceActivationDomain.manaAbilityKey` remains the structural identity
+of the entire selected activated ability (excluding runtime `id` and `descriptionOverride`); the
+side-effect certificate is an internal closure proof, not a second execution authority.
 The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
 while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
 

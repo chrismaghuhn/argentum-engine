@@ -103,6 +103,8 @@ import com.wingedsheep.sdk.scripting.AdditionalCost
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.ChoiceSlot
+import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
@@ -841,7 +843,8 @@ class ObservationBuilder(
         state: GameState,
     ): Boolean {
         val isCastSpellMode = legalAction.actionType == "CastSpellMode"
-        if ((legalAction.actionType != "CastSpell" && !isCastSpellMode) ||
+        val isCastWithKicker = legalAction.actionType == "CastWithKicker"
+        if ((legalAction.actionType != "CastSpell" && !isCastSpellMode && !isCastWithKicker) ||
             legalAction.hasXCost ||
             (legalAction.hasConvoke && !legalAction.convokeCreatures.isNullOrEmpty()) ||
             (legalAction.hasDelve && !legalAction.delveCards.isNullOrEmpty()) ||
@@ -852,6 +855,24 @@ class ObservationBuilder(
 
         val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return false
         val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return false
+        // Plain kicker's additional mana cost is already folded into the enumerated fixed
+        // manaCostString and the declared ChoiceSlot. It has no separate DTO choice. Other
+        // optional-cost variants remain closed unless they have their own explicit contract.
+        if (legalAction.actionType == "CastWithKicker") {
+            val kicker = cardDef.keywordAbilities
+                .filterIsInstance<KeywordAbility.OptionalAdditionalCost>()
+                .singleOrNull { it.declaredSlot == ChoiceSlot.KICKED }
+            val isPlainFixedKicker = action.declaredCostSlot ==
+                ChoiceSlot.KICKED &&
+                legalAction.additionalCostInfo == null &&
+                kicker != null &&
+                kicker.manaCost != null &&
+                kicker.additionalCost == null &&
+                !kicker.multi &&
+                kicker.keyword == null &&
+                !kicker.grantsFlashTiming
+            if (!isPlainFixedKicker) return false
+        }
         if (isCastSpellMode) {
             if (!ModalPaymentPlanSupport.supportsFixedChooseOne(
                     state = state,
