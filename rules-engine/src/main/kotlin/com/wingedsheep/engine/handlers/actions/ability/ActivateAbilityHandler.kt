@@ -299,7 +299,8 @@ class ActivateAbilityHandler(
             return "Additional cost payment does not match the deterministic activated-ability cost"
         }
         if (expectedAdditionalCostPayment != null && action.costPayment == null &&
-            expectedAdditionalCostPayment.sacrificedPermanents.isNotEmpty() &&
+            (expectedAdditionalCostPayment.tappedPermanents.isNotEmpty() ||
+                expectedAdditionalCostPayment.sacrificedPermanents.isNotEmpty()) &&
             (action.paymentStrategy is PaymentStrategy.Explicit ||
                 action.paymentStrategy is PaymentStrategy.ExplicitV2)
         ) {

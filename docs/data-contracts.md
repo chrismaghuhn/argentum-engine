@@ -801,8 +801,10 @@ fail-closed.
 For the existing `ActivateAbility.costPayment` field, there is one deliberately narrow additional-
 cost exception: when the authoritative effective ability cost contains only ordinary mana,
 `TapSelf`, and `SacrificeSelf`, Rules may certify the source-bound payment for Gym. The public
-`LegalActionView` already provides `sourceEntityId` and the existing `requiredPayloadFields` already
-requires `costPayment` when the enumerated action has `additionalCostInfo`. The controller
+`LegalActionView` already provides `sourceEntityId`; the existing `requiredPayloadFields` requires
+`costPayment` when the enumerated action has `additionalCostInfo`, and the observation/trusted Gym
+seam adds the same requirement for a certified TapSelf-only action even when no choice metadata is
+needed. The controller
 materializes the canonical acknowledgement as `tappedPermanents: [sourceEntityId]` and/or
 `sacrificedPermanents: [sourceEntityId]`; every other `AdditionalCostPayment` field must remain at
 its empty/default value. This is not a selection domain: Rules derives the expected value from the

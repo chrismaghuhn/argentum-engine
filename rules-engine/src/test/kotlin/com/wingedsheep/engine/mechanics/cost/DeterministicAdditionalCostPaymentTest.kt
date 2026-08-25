@@ -64,4 +64,18 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
             EntityId("source"),
         ) shouldBe null
     }
+
+    test("only fixed ordinary mana atoms are certified") {
+        listOf(
+            Costs.Mana("{X}"),
+            Costs.Mana("{W/U}"),
+            Costs.Mana("{G/P}"),
+            Costs.Mana("{2/W}"),
+        ).forEach { manaCost ->
+            DeterministicAdditionalCostPayment.expectedFor(
+                Costs.Composite(manaCost, Costs.Tap, Costs.SacrificeSelf),
+                EntityId("source"),
+            ) shouldBe null
+        }
+    }
 })

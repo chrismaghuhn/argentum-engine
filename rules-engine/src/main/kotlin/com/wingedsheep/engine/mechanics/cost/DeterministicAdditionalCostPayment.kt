@@ -4,6 +4,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.costs.CostAtom
+import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 
 /**
  * Derives the canonical public acknowledgement for the narrow source-bound activated-cost slice.
@@ -26,8 +27,10 @@ object DeterministicAdditionalCostPayment {
     }
 
     private fun collect(cost: AbilityCost): Counts? = when (cost) {
-        is AbilityCost.Atom ->
-            if (cost.atom is CostAtom.Mana) Counts() else null
+        is AbilityCost.Atom -> {
+            val atom = cost.atom
+            if (atom is CostAtom.Mana && atom.cost.isFixedOrdinaryManaCost()) Counts() else null
+        }
 
         AbilityCost.Tap -> Counts(tapCount = 1)
         AbilityCost.SacrificeSelf -> Counts(sacrificeCount = 1)

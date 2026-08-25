@@ -2,11 +2,14 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.CostUnitAllocationV2
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ManaSpendReferenceV2
+import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
@@ -82,6 +85,14 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         typeLine = "Creature — Probe"
         power = 1
         toughness = 1
+    }
+
+    val tapSelfSource = card("Gym Tap-Self Activated Cost Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.Tap)
+            effect = Effects.GainLife(1)
+        }
     }
 
     fun registry(extraCards: List<CardDefinition> = emptyList()) = CardRegistry().apply {
@@ -168,6 +179,11 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         extraCards = listOf(choiceCostSource, choiceCostCreature),
     )
 
+    fun preparedTapSelf() = preparedActivatedAbility(
+        sourceCard = tapSelfSource,
+        extraCards = listOf(tapSelfSource),
+    )
+
     fun activatedView(prepared: PreparedDeterministicAbilityGym): LegalActionView {
         val action = prepared.environment.legalActions().single { legalAction ->
             val activate = legalAction.action as? ActivateAbility
@@ -181,11 +197,16 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .single()
     }
 
+    fun gymActivatedView(prepared: PreparedDeterministicAbilityGym): LegalActionView =
+        (prepared.gym.observe().observation as TrainingObservation).legalActions.single {
+            it.kind == "ActivateAbility" && it.sourceEntityId == prepared.sourceId
+        }
+
     fun explicitV2FromPublic(view: LegalActionView): PaymentStrategy.ExplicitV2 {
         val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val selected = domain.sourceActivations.take(2)
-        selected.size shouldBe 2
         val costUnit = domain.costUnits.single()
+        val selected = domain.sourceActivations.take(costUnit.amount)
+        selected.size shouldBe costUnit.amount
         return PaymentStrategy.ExplicitV2(
             paymentPlan = PaymentPlanV2(
                 sourceActivations = selected.map { source ->
@@ -202,6 +223,35 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
                             symbolIndex = costUnit.symbolIndex,
                             spends = selected.map { source ->
                                 ManaSpendReferenceV2(sourceId = source.sourceId, amount = 1)
+                            },
+                        ),
+                    ),
+                ),
+            ),
+        )
+    }
+
+    fun explicitV1FromPublic(view: LegalActionView): PaymentStrategy.Explicit {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val costUnit = domain.costUnits.single()
+        val selected = domain.sourceActivations.take(costUnit.amount)
+        selected.size shouldBe costUnit.amount
+        return PaymentStrategy.Explicit(
+            paymentPlan = PaymentPlanV1(
+                sourceActivations = selected.map { source ->
+                    SourceActivation(
+                        sourceId = source.sourceId,
+                        manaAbilityKey = source.manaAbilityKey,
+                        productionChoice = source.productionChoices.single(),
+                    )
+                },
+                poolSpend = PoolSpend(),
+                spendAllocation = com.wingedsheep.engine.core.SpendAllocation(
+                    costUnits = listOf(
+                        CostUnitAllocation(
+                            symbolIndex = costUnit.symbolIndex,
+                            spends = selected.map { source ->
+                                ManaSpendReference(sourceId = source.sourceId, amount = 1)
                             },
                         ),
                     ),
@@ -281,6 +331,33 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         domain.requiredCost shouldBe "{1}"
     }
 
+    test("TapSelf-only activated costs publish and require the source-bound acknowledgement") {
+        val prepared = preparedTapSelf()
+        val view = gymActivatedView(prepared)
+
+        view.requiredPayloadFields shouldBe listOf("paymentStrategy", "costPayment")
+        view.sourceEntityId shouldBe prepared.sourceId
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        domain.requiredCost shouldBe "{1}"
+
+        val payment = AdditionalCostPayment(tappedPermanents = listOf(prepared.sourceId))
+        prepared.gym.step(view.actionId, payload(view, explicitV2FromPublic(view), payment))
+        prepared.environment.state.getZone(prepared.playerId, Zone.BATTLEFIELD)
+            .contains(prepared.sourceId) shouldBe true
+        prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe true
+    }
+
+    test("TapSelf-only ExplicitV2 without costPayment rejects atomically") {
+        val prepared = preparedTapSelf()
+        val view = gymActivatedView(prepared)
+
+        assertRejectedAtomically(
+            prepared = prepared,
+            view = view,
+            actionPayload = payload(view, explicitV2FromPublic(view), costPayment = null),
+        )
+    }
+
     test("public PaymentPlanV2 pays Wayfarer's {2}, then Rules taps and sacrifices the source once") {
         val prepared = preparedWayfarer()
         val view = (prepared.gym.observe().observation as TrainingObservation).legalActions.single {
@@ -301,6 +378,31 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .single().permanentIds shouldBe listOf(prepared.sourceId)
         prepared.environment.lastStepEvents.filterIsInstance<TappedEvent>()
             .map { it.entityId }.toSet() shouldBe prepared.mountainIds.toSet() + prepared.sourceId
+    }
+
+    test("public PaymentPlanV1 remains accepted for the existing explicit compatibility path") {
+        val prepared = preparedWayfarer()
+        val view = gymActivatedView(prepared)
+
+        prepared.gym.step(view.actionId, payload(view, explicitV1FromPublic(view)))
+
+        prepared.environment.state.getZone(prepared.playerId, Zone.GRAVEYARD)
+            .contains(prepared.sourceId) shouldBe true
+    }
+
+    test("native Rules AutoPay with null costPayment remains compatible") {
+        val prepared = preparedWayfarer()
+
+        prepared.environment.step(
+            ActivateAbility(
+                playerId = prepared.playerId,
+                sourceId = prepared.sourceId,
+                abilityId = prepared.abilityId,
+            ),
+        )
+
+        prepared.environment.state.getZone(prepared.playerId, Zone.GRAVEYARD)
+            .contains(prepared.sourceId) shouldBe true
     }
 
     test("Wayfarer's search continuation resolves after the explicit activation") {
