@@ -2486,8 +2486,24 @@ class ManaSolver(
         // (Springleaf Drum) are counted below via their dedicated bonus helpers, so skip
         // them here to avoid double-counting.
         val sacrificeManaBySource = sacrificeSelfManaBySource(state, playerId)
-        val autoTappableSources = (precomputedSources ?: findAvailableManaSources(state, playerId))
+        // Enumeration caches are built without a payment context. Rebuild when a mixed source
+        // collapsed mutually exclusive restricted abilities into one aggregate; single-restriction
+        // sources remain safe in the cache because availableColorsFor() below applies their
+        // per-color restriction to this payment.
+        val cachedSources = precomputedSources
+        val sources = if (spellContext != null && (
+                cachedSources == null || cachedSources.any { it.hasContextSensitiveAbilities }
+            )) {
+            findAvailableManaSources(state, playerId, spellContext)
+        } else {
+            cachedSources ?: findAvailableManaSources(state, playerId)
+        }
+        val autoTappableSources = sources
             .filter { !it.requiresSacrifice && it.tapPermanentsSubCost == null }
+            .filter { source ->
+                (source.restriction == null || spellContext == null || source.restriction.isSatisfiedBy(spellContext)) &&
+                    (source.producesColorless || source.availableColorsFor(spellContext).isNotEmpty())
+            }
         val sourceMana = autoTappableSources
             // A *mixed* source (Ancient Spring — "{T}: Add {U}" plus "{T}, Sacrifice this land:
             // Add {W}{B}") is auto-tappable and so counted here, but its sacrifice ability is also

@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.CostUnitAllocationV2
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.ManaSpendReferenceV2
+import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.OrderBlockers
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PaymentPlanV1
@@ -25,6 +26,7 @@ import com.wingedsheep.engine.core.TurnFaceUp
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.legalactions.ModalEnumerationMode
@@ -32,7 +34,9 @@ import com.wingedsheep.engine.legalactions.ModalLegalEnumeration
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.PaymentDomainV4
@@ -42,6 +46,7 @@ import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
@@ -107,6 +112,23 @@ class GameGymEnvActionContractTest : FunSpec({
         }
     }
 
+    val castV2MaterializationSpell = card("Gym Contract V2 Materialization Spell") {
+        manaCost = "{2}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    val fixedOutputManaSource = card("Gym Contract Fixed Output Mana Source") {
+        typeLine = "Land — Cave"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.RED).then(Effects.AddMana(Color.GREEN))
+            manaAbility = true
+        }
+    }
+
     fun registry() = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
@@ -116,6 +138,8 @@ class GameGymEnvActionContractTest : FunSpec({
         register(firstEquipTarget)
         register(secondEquipTarget)
         register(targetlessSpell)
+        register(castV2MaterializationSpell)
+        register(fixedOutputManaSource)
     }
 
     fun config() = GameConfig(
@@ -228,12 +252,13 @@ class GameGymEnvActionContractTest : FunSpec({
     fun explicitV2Payment(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy.ExplicitV2 {
         val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
         val source = domain.sourceActivations.first()
+        val productionChoice = source.productionChoices.single()
         val plan = PaymentPlanV2(
             sourceActivations = listOf(
                 SourceActivation(
                     sourceId = source.sourceId,
                     manaAbilityKey = source.manaAbilityKey,
-                    productionChoice = source.productionChoices.single(),
+                    productionChoice = productionChoice,
                 ),
             ),
             poolSpend = PoolSpend(),
@@ -242,7 +267,11 @@ class GameGymEnvActionContractTest : FunSpec({
                     CostUnitAllocationV2(
                         symbolIndex = domain.costUnits.single().symbolIndex,
                         spends = listOf(
-                            ManaSpendReferenceV2(sourceId = source.sourceId, amount = 1),
+                            ManaSpendReferenceV2(
+                                sourceId = source.sourceId,
+                                amount = 1,
+                                sourceOutputIndex = productionChoice.fixedOutputs?.first()?.index,
+                            ),
                         ),
                     ),
                 ),
@@ -267,6 +296,45 @@ class GameGymEnvActionContractTest : FunSpec({
                 ),
                 poolSpend = PoolSpend(),
                 spendAllocation = SpendAllocationV2(),
+            ),
+        )
+    }
+
+    fun castV2MaterializationPayment(
+        view: com.wingedsheep.gym.contract.LegalActionView,
+    ): PaymentStrategy.ExplicitV2 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val source = domain.sourceActivations.single()
+        val productionChoice = source.productionChoices.single()
+        val fixedOutputs = productionChoice.fixedOutputs ?: error("Expected fixed output metadata")
+        return PaymentStrategy.ExplicitV2(
+            paymentPlan = PaymentPlanV2(
+                sourceActivations = listOf(
+                    SourceActivation(
+                        sourceId = source.sourceId,
+                        manaAbilityKey = source.manaAbilityKey,
+                        productionChoice = productionChoice,
+                    ),
+                ),
+                poolSpend = PoolSpend(colorless = 1),
+                spendAllocation = SpendAllocationV2(
+                    costUnits = listOf(
+                        CostUnitAllocationV2(
+                            symbolIndex = domain.costUnits.single().symbolIndex,
+                            spends = listOf(
+                                ManaSpendReferenceV2(
+                                    poolColor = PaymentManaColor.COLORLESS,
+                                    amount = 1,
+                                ),
+                                ManaSpendReferenceV2(
+                                    sourceId = source.sourceId,
+                                    amount = 1,
+                                    sourceOutputIndex = fixedOutputs.first().index,
+                                ),
+                            ),
+                        ),
+                    ),
+                ),
             ),
         )
     }
@@ -440,6 +508,82 @@ class GameGymEnvActionContractTest : FunSpec({
             gym.step(targetless.actionId, payload)
         }
         environment.stepCount shouldBe stepCountBefore
+    }
+
+    test("targetless CastSpell ExplicitV2 preserves shared payment materialization") {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry)
+        val setupGym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
+        setupGym.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(fixedOutputManaSource.name to 1, castV2MaterializationSpell.name to 1),
+                    ),
+                    PlayerConfig("Bob", Deck.of("Mountain" to 1, "Shock" to 1)),
+                ),
+                startingHandSize = 2,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+            ),
+        )
+
+        var observed = setupGym.observe()
+        var land = observed.observation.legalActions.firstOrNull { it.kind == "PlayLand" }
+        var setupSteps = 0
+        while (land == null && setupSteps++ < 20) {
+            val pass = environment.legalActions().first { it.action is PassPriority }
+            environment.step(pass.action)
+            observed = setupGym.observe()
+            land = observed.observation.legalActions.firstOrNull { it.kind == "PlayLand" }
+        }
+        val selectedLand = land ?: error("Expected a PlayLand action during setup")
+        setupGym.step(selectedLand.actionId)
+        val playerId = environment.playerIds.first()
+        val sourceId = environment.state.getZone(playerId, Zone.BATTLEFIELD).single()
+
+        val stateWithPool = environment.state.updateEntity(playerId) { container ->
+            container.with(ManaPoolComponent(colorless = 1))
+        }
+        environment.restore(stateWithPool, environment.playerIds, environment.stepCount)
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
+
+        val targetless = gym.observe().observation.legalActions.firstOrNull {
+            it.kind == "CastSpell" &&
+                it.description.contains(castV2MaterializationSpell.name) &&
+                it.actionSemantics != null
+        } ?: error("Expected targetless CastSpell action")
+        val payload = buildJsonObject {
+            targetless.actionSemantics!!.forEach { (key, value) -> put(key, value) }
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    castV2MaterializationPayment(targetless),
+                ),
+            )
+        }
+        val stepCountBefore = environment.stepCount
+        gym.step(targetless.actionId, payload)
+
+        environment.stepCount shouldBe stepCountBefore + 1
+        environment.state.getEntity(sourceId)?.has<TappedComponent>() shouldBe true
+        environment.state.getEntity(playerId)?.get<ManaPoolComponent>()?.green shouldBe 1
+        environment.state.getEntity(playerId)?.get<ManaPoolComponent>()?.manaBySource?.get(sourceId) shouldBe 1
+        environment.state.stack.isNotEmpty() shouldBe true
+        environment.lastStepEvents.filterIsInstance<ManaSpentEvent>().single().reason shouldBe
+            "Cast ${castV2MaterializationSpell.name}"
+        environment.lastStepEvents.filterIsInstance<SpellCastEvent>().single().spentManaSourceIds shouldBe
+            setOf(sourceId)
     }
 
     test("payable structured ActivateAbility publishes an externally usable payment domain") {

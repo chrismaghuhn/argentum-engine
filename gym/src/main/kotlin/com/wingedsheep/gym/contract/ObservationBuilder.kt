@@ -64,6 +64,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
+import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
@@ -597,7 +598,7 @@ class ObservationBuilder(
     /**
      * Canonical action-level payment-domain publication used by both observations and the trusted
      * Gym submission guard. A null result is meaningful: a payable action without a complete V2
-     * V3 domain is unsupported and must not fall back to an engine-selected policy.
+     * V4 domain is unsupported and must not fall back to an engine-selected policy.
      */
     internal fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV4? {
         val requiredCost = legalAction.manaCostString ?: return null
@@ -706,6 +707,38 @@ class ObservationBuilder(
                 } else {
                     paymentDomain
                 }
+            }
+
+            is CycleCard -> {
+                if (!legalAction.affordable) return null
+                val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return null
+                val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return null
+                val cyclingAbility = cardDef.keywordAbilities
+                    .filterIsInstance<com.wingedsheep.sdk.scripting.KeywordAbility.Cycling>()
+                    .firstOrNull { it.searchFilter == null }
+                    ?: return null
+                if (legalAction.hasXCost ||
+                    legalAction.additionalCostInfo != null ||
+                    legalAction.hasConvoke ||
+                    legalAction.hasTapForGeneric ||
+                    action.xValue != null
+                ) return null
+                val parsedCost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
+                if (parsedCost != cyclingAbility.cost || !cyclingAbility.cost.isFixedOrdinaryManaCost()) {
+                    return null
+                }
+                val paymentContext = buildAbilityPaymentContext(
+                    cardComponent = card,
+                    projected = state.projectedState,
+                    sourceId = action.cardId,
+                    ability = null,
+                )
+                paymentDomainBuilder.build(
+                    state = state,
+                    playerId = action.playerId,
+                    requiredCost = requiredCost,
+                    spellContext = paymentContext,
+                )
             }
 
             else -> null
