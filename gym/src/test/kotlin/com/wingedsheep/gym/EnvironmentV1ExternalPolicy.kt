@@ -12,6 +12,9 @@ import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.DistributionDomain
+import com.wingedsheep.gym.contract.ATTACK_DECLARATION_DOMAIN_VERSION
+import com.wingedsheep.gym.contract.AttackDeclarationDomainV1
+import com.wingedsheep.gym.contract.ACTION_TARGET_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
@@ -27,6 +30,7 @@ import com.wingedsheep.gym.contract.SplitPilesDomain
 import com.wingedsheep.gym.contract.StructuredCardInfo
 import com.wingedsheep.gym.contract.StructuredDecisionDomain
 import com.wingedsheep.gym.contract.TargetsDomain
+import com.wingedsheep.gym.contract.TargetRequirementDomain
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
@@ -39,6 +43,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -183,6 +188,46 @@ class DeterministicExternalPolicy {
         }
         var completedChoice = false
 
+        if ("attackers" in requiredFieldSet || "bands" in requiredFieldSet) {
+            val attackFields = setOf("attackers", "bands")
+            if (action.kind != "DeclareAttackers" || !attackFields.all { it in requiredFieldSet }) {
+                return SemanticChoice.Gap(
+                    family = "DECLARE_ATTACKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "DeclareAttackers required fields are not the supported public V1 shape",
+                    actionKind = action.kind,
+                    publicDomain = "requiredPayloadFields=$requiredFields",
+                )
+            }
+            val attackPayload = publicAttackDeclarationPayload(action.attackDeclarationDomain)
+                ?: return SemanticChoice.Gap(
+                    family = "DECLARE_ATTACKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "DeclareAttackers published no complete AttackDeclarationDomainV1",
+                    actionKind = action.kind,
+                    publicDomain =
+                        "requiredPayloadFields=$requiredFields; " +
+                            "attackDeclarationDomain=${action.attackDeclarationDomain}",
+                    proposedFollowUp =
+                        "Publish a complete perspective-safe AttackDeclarationDomainV1",
+                )
+            payload["attackers"] = attackPayload["attackers"]
+                ?: return SemanticChoice.Gap(
+                    family = "DECLARE_ATTACKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "Public attack declaration omitted attackers",
+                    actionKind = action.kind,
+                )
+            payload["bands"] = attackPayload["bands"]
+                ?: return SemanticChoice.Gap(
+                    family = "DECLARE_ATTACKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "Public attack declaration omitted bands",
+                    actionKind = action.kind,
+                )
+            completedChoice = true
+        }
+
         if ("paymentStrategy" in requiredFieldSet) {
             val domain = action.paymentDomain
                 ?: return SemanticChoice.Gap(
@@ -225,27 +270,18 @@ class DeterministicExternalPolicy {
         }
 
         if ("targets" in requiredFieldSet) {
-            val targetCount = action.minTargets.coerceAtLeast(0)
-            if (targetCount > action.maxTargets || targetCount > action.targetEntityIds.size) {
-                return SemanticChoice.Gap(
+            val targetValues = publicTargetSelection(observation, action)
+                ?: return SemanticChoice.Gap(
                     family = "TARGETS",
                     code = "A5_DECISION_GAP",
-                    reason = "Published target cardinality cannot be satisfied",
+                    reason = "Published target candidates/domain cannot be completed deterministically",
                     actionKind = action.kind,
+                    publicDomain =
+                        "requiredPayloadFields=$requiredFields; targetDomain=${action.targetDomain}; " +
+                            "targetEntityIds=${action.targetEntityIds}; " +
+                            "minTargets=${action.minTargets}; maxTargets=${action.maxTargets}",
+                    proposedFollowUp = "Publish a complete public target candidate/domain",
                 )
-            }
-            val targetIds = action.targetEntityIds
-                .sortedBy { it.value }
-                .take(targetCount)
-            val targetValues = targetIds.map { target ->
-                publicTarget(observation, target)
-                    ?: return SemanticChoice.Gap(
-                        family = "TARGETS",
-                        code = "A5_DECISION_GAP",
-                        reason = "Target identity kind is not derivable from the public observation",
-                        actionKind = action.kind,
-                    )
-            }
             payload["targets"] = JsonArray(targetValues)
             completedChoice = true
         }
@@ -383,6 +419,107 @@ class DeterministicExternalPolicy {
         return choices.takeIf { it.size == count }
     }
 
+    /**
+     * Selects an attack declaration only from the versioned public certificate. This adapter does
+     * not evaluate combat rules; it searches the published attacker relation and constraints in a
+     * stable EntityId order, then chooses the first published defender for each selected attacker.
+     */
+    private fun publicAttackDeclarationPayload(
+        domain: AttackDeclarationDomainV1?,
+    ): JsonObject? {
+        if (domain == null || domain.version != ATTACK_DECLARATION_DOMAIN_VERSION) return null
+
+        val attackers = domain.attackerToDefenders.keys.sortedBy { it.value }
+        if (attackers.distinct().size != attackers.size) return null
+        if (domain.attackerToDefenders.values.any { defenders ->
+                defenders.isEmpty() || defenders.distinct().size != defenders.size
+            }
+        ) {
+            return null
+        }
+
+        val mandatory = domain.mandatoryAttackers
+        if (mandatory.distinct().size != mandatory.size || mandatory.any { it !in attackers }) {
+            return null
+        }
+
+        val requirements = domain.coAttackerRequirements
+        if (requirements.keys.any { it !in attackers } || requirements.values.any { entries ->
+                entries.any { requirement ->
+                    requirement.anyOf.isEmpty() ||
+                        requirement.anyOf.distinct().size != requirement.anyOf.size ||
+                        requirement.anyOf.any { it !in attackers }
+                }
+            }
+        ) {
+            return null
+        }
+
+        val maximum = (domain.maxAttackers ?: attackers.size).coerceAtMost(attackers.size)
+        if (maximum < 0 || mandatory.size > maximum) return null
+
+        val selected = if (domain.canDeclareZeroAttackers && mandatory.isEmpty()) {
+            emptyList()
+        } else {
+            val minimum = mandatory.size.coerceAtLeast(1)
+            (minimum..maximum).firstNotNullOfOrNull { size ->
+                firstAttackSubset(
+                    attackers = attackers,
+                    size = size,
+                    mandatory = mandatory.toSet(),
+                    requirements = requirements,
+                )
+            } ?: return null
+        }
+
+        val attackerPayload = linkedMapOf<String, JsonElement>()
+        for (attacker in selected) {
+            val defender = domain.attackerToDefenders.getValue(attacker)
+                .minByOrNull { it.value }
+                ?: return null
+            attackerPayload[attacker.value] = JsonPrimitive(defender.value)
+        }
+
+        return buildJsonObject {
+            put("attackers", JsonObject(attackerPayload))
+            // V1 lets this deterministic acceptance policy choose the explicit empty band list.
+            put("bands", JsonArray(emptyList()))
+        }
+    }
+
+    private fun firstAttackSubset(
+        attackers: List<EntityId>,
+        size: Int,
+        mandatory: Set<EntityId>,
+        requirements: Map<EntityId, List<com.wingedsheep.gym.contract.AttackCoAttackerRequirementV1>>,
+    ): List<EntityId>? {
+        val selected = ArrayList<EntityId>(size)
+
+        fun search(nextIndex: Int): List<EntityId>? {
+            if (selected.size == size) {
+                if (!selected.containsAll(mandatory)) return null
+                val selectedSet = selected.toSet()
+                val satisfiesRequirements = requirements.all { (attacker, entries) ->
+                    attacker !in selectedSet || entries.all { requirement ->
+                        requirement.anyOf.any { it in selectedSet }
+                    }
+                }
+                return selected.toList().takeIf { satisfiesRequirements }
+            }
+
+            val remaining = size - selected.size
+            val lastStart = attackers.size - remaining
+            for (index in nextIndex..lastStart) {
+                selected += attackers[index]
+                search(index + 1)?.let { return it }
+                selected.removeAt(selected.lastIndex)
+            }
+            return null
+        }
+
+        return search(0)
+    }
+
     private fun publicActionDomain(
         action: com.wingedsheep.gym.contract.LegalActionView,
     ): String = listOf(
@@ -397,7 +534,68 @@ class DeterministicExternalPolicy {
         "sacrificeMaxCount=${action.sacrificeMaxCount}",
         "requiresDamageDistribution=${action.requiresDamageDistribution}",
         "actionSemantics=${action.actionSemantics}",
-    ).joinToString("; ")
+        ).joinToString("; ")
+
+    private fun publicTargetDomainSelection(
+        observation: TrainingObservation,
+        action: com.wingedsheep.gym.contract.LegalActionView,
+    ): List<JsonObject>? {
+        val domain = action.targetDomain ?: return null
+        if (domain.version != ACTION_TARGET_DOMAIN_VERSION ||
+            domain.composition != com.wingedsheep.gym.contract.ActionTargetComposition.FIXED
+        ) {
+            return null
+        }
+
+        val requirements = domain.requirements.sortedBy { it.index }
+        if (requirements.map { it.index } != requirements.indices.toList()) return null
+
+        val selectedIds = mutableSetOf<EntityId>()
+        val selectedTargets = mutableListOf<JsonObject>()
+        for (requirement in requirements) {
+            val choices = targetRequirementChoices(requirement, selectedIds)
+                ?: return null
+            for (id in choices) {
+                val target = publicTarget(observation, id) ?: return null
+                selectedIds += id
+                selectedTargets += target
+            }
+        }
+        return selectedTargets
+    }
+
+    private fun publicTargetSelection(
+        observation: TrainingObservation,
+        action: com.wingedsheep.gym.contract.LegalActionView,
+    ): List<JsonObject>? = if (action.targetDomain != null) {
+        publicTargetDomainSelection(observation, action)
+    } else {
+        val targetCount = action.minTargets.coerceAtLeast(0)
+        if (targetCount > action.maxTargets || targetCount > action.targetEntityIds.size) {
+            null
+        } else {
+            action.targetEntityIds
+                .sortedBy { it.value }
+                .take(targetCount)
+                .map { target -> publicTarget(observation, target) }
+                .takeIf { values -> values.all { it != null } }
+                ?.map { value -> value!! }
+        }
+    }
+
+    private fun targetRequirementChoices(
+        requirement: TargetRequirementDomain,
+        previouslySelected: Set<EntityId>,
+    ): List<EntityId>? {
+        val min = requirement.minTargets
+        val max = requirement.maxTargets
+        if (min < 0 || max < min || requirement.candidates.distinct().size != requirement.candidates.size) {
+            return null
+        }
+        val candidates = requirement.candidates.sortedBy { it.value }
+            .filterNot { requirement.mustDifferFromEarlier && it in previouslySelected }
+        return candidates.take(min).takeIf { it.size == min }
+    }
 
     /**
      * Enumerates only the concrete origins and production choices published by PaymentDomainV4.
@@ -1032,11 +1230,15 @@ class DeterministicExternalPolicy {
             }
         } else {
             val owner = feature.ownerId ?: return null
+            val wireZone = paymentJson
+                .encodeToJsonElement(Zone.serializer(), feature.zone)
+                .jsonPrimitive
+                .content
             buildJsonObject {
                 put("type", "Card")
                 put("cardId", id.value)
                 put("ownerId", owner.value)
-                put("zone", feature.zone.name)
+                put("zone", wireZone)
             }
         }
     }

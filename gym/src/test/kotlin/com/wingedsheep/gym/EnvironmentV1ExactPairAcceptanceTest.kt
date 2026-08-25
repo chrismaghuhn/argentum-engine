@@ -22,6 +22,10 @@ import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.registry.CardDefinitionMissingException
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationResult
+import com.wingedsheep.gym.contract.AttackBandConstraintsV1
+import com.wingedsheep.gym.contract.AttackCoAttackerRequirementV1
+import com.wingedsheep.gym.contract.AttackDeclarationDomainV1
+import com.wingedsheep.gym.contract.ActionTargetDomainV1
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.PaymentCostUnitDomain
@@ -32,6 +36,7 @@ import com.wingedsheep.gym.contract.PaymentSourceActivationDomain
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.EntityFeatures
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.gym.contract.TargetRequirementDomain
 import com.wingedsheep.gym.contract.ZoneView
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
@@ -54,6 +59,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.nio.file.Path
 import java.security.MessageDigest
@@ -104,6 +112,11 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         ).forEach { forbidden ->
             check(forbidden !in source) {
                 "Observation-only acceptance policy contains forbidden symbol: $forbidden"
+            }
+        }
+        listOf("validAttackers", "validAttackTargets").forEach { legacyHint ->
+            check(legacyHint !in source) {
+                "DeclareAttackers policy must not consume legacy flat hint: $legacyHint"
             }
         }
     }
@@ -544,6 +557,332 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         payment.tappedPermanents.shouldBeEmpty()
     }
 
+    test("TARGETPOL-01 uses the public Zone wire name for a card target") {
+        val player = EntityId("player-0")
+        val card = EntityFeatures(
+            entityId = EntityId("card-in-graveyard"),
+            cardDefinitionId = "public-card",
+            name = "Public Card",
+            zone = Zone.GRAVEYARD,
+            ownerId = player,
+            controllerId = null,
+            types = emptySet(),
+            subtypes = emptySet(),
+            colors = emptySet(),
+            keywords = emptySet(),
+            manaCost = "",
+            manaValue = 0,
+            power = null,
+            toughness = null,
+        )
+        val action = LegalActionView(
+            actionId = 109,
+            kind = "CastSpell",
+            description = "public card target",
+            affordable = true,
+            targetEntityIds = listOf(card.entityId),
+            minTargets = 1,
+            maxTargets = 1,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("targets"),
+            actionSemantics = buildJsonObject { put("type", "CastSpell") },
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action, player).copy(
+                zones = listOf(
+                    ZoneView(
+                        ownerId = player,
+                        zoneType = Zone.GRAVEYARD,
+                        hidden = false,
+                        size = 1,
+                        cards = listOf(card),
+                    ),
+                ),
+            ),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        check(choice is SemanticChoice.Action) { "Expected a target action, got $choice" }
+        val target = checkNotNull(choice.payload?.get("targets"))
+            .jsonArray
+            .single()
+            .jsonObject
+
+        target["zone"] shouldBe JsonPrimitive("Graveyard")
+    }
+
+    test("TARGETPOL-02 selects every fixed target slot from the public target domain") {
+        val player = EntityId("player-0")
+        val firstTarget = EntityId("target-slot-a")
+        val secondTarget = EntityId("target-slot-b")
+        fun feature(id: EntityId) = EntityFeatures(
+            entityId = id,
+            cardDefinitionId = "public-permanent",
+            name = "Public Permanent",
+            zone = Zone.BATTLEFIELD,
+            ownerId = player,
+            controllerId = player,
+            types = setOf("CREATURE"),
+            subtypes = emptySet(),
+            colors = emptySet(),
+            keywords = emptySet(),
+            manaCost = "",
+            manaValue = 0,
+            power = 1,
+            toughness = 1,
+        )
+        val action = LegalActionView(
+            actionId = 110,
+            kind = "CastSpell",
+            description = "public fixed multi-target action",
+            affordable = true,
+            targetEntityIds = emptyList(),
+            targetDomain = ActionTargetDomainV1(
+                requirements = listOf(
+                    publicTargetRequirement(0, listOf(firstTarget)),
+                    publicTargetRequirement(1, listOf(secondTarget)),
+                ),
+            ),
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("targets"),
+            actionSemantics = buildJsonObject { put("type", "CastSpell") },
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action, player).copy(
+                zones = listOf(
+                    ZoneView(
+                        ownerId = player,
+                        zoneType = Zone.BATTLEFIELD,
+                        hidden = false,
+                        size = 2,
+                        cards = listOf(feature(firstTarget), feature(secondTarget)),
+                    ),
+                ),
+            ),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        check(choice is SemanticChoice.Action) { "Expected a target action, got $choice" }
+        val selectedIds = checkNotNull(choice.payload?.get("targets"))
+            .jsonArray
+            .map { target -> target.jsonObject.getValue("entityId").jsonPrimitive.content }
+
+        selectedIds shouldBe listOf(firstTarget.value, secondTarget.value)
+    }
+
+    test("ATTACKPOL-01 chooses an explicit zero-attacker declaration") {
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = emptyMap(),
+                canDeclareZeroAttackers = true,
+            ),
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        val payload = policyPayload(choice)
+
+        payload["attackers"] shouldBe JsonObject(emptyMap())
+        payload["bands"] shouldBe JsonArray(emptyList())
+    }
+
+    test("ATTACKPOL-02 includes every mandatory attacker") {
+        val attacker = EntityId("attacker-mandatory")
+        val defender = EntityId("defender-mandatory")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = mapOf(attacker to listOf(defender)),
+                mandatoryAttackers = listOf(attacker),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 1,
+            ),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payload["attackers"] shouldBe JsonObject(
+            mapOf(attacker.value to JsonPrimitive(defender.value)),
+        )
+    }
+
+    test("ATTACKPOL-03 satisfies every selected co-attacker requirement") {
+        val required = EntityId("attacker-required")
+        val coAttacker = EntityId("attacker-co")
+        val requiredDefender = EntityId("defender-required")
+        val coAttackerDefender = EntityId("defender-co")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = mapOf(
+                    required to listOf(requiredDefender),
+                    coAttacker to listOf(coAttackerDefender),
+                ),
+                mandatoryAttackers = listOf(required),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 2,
+                coAttackerRequirements = mapOf(
+                    required to listOf(
+                        AttackCoAttackerRequirementV1(anyOf = listOf(coAttacker)),
+                    ),
+                ),
+            ),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+        val attackers = payload.getValue("attackers").jsonObject.keys
+
+        attackers shouldBe setOf(required.value, coAttacker.value)
+    }
+
+    test("ATTACKPOL-04 never exceeds the public maximum attacker count") {
+        val attackerA = EntityId("attacker-a")
+        val attackerB = EntityId("attacker-b")
+        val attackerC = EntityId("attacker-c")
+        val defender = EntityId("defender")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = mapOf(
+                    attackerA to listOf(defender),
+                    attackerB to listOf(defender),
+                    attackerC to listOf(defender),
+                ),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 1,
+            ),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payload.getValue("attackers").jsonObject.size shouldBe 1
+    }
+
+    test("ATTACKPOL-05 chooses each defender only from that attacker's relation") {
+        val attackerA = EntityId("attacker-a")
+        val attackerB = EntityId("attacker-b")
+        val defenderA = EntityId("defender-a")
+        val defenderB = EntityId("defender-b")
+        val wrongForB = EntityId("defender-z")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = mapOf(
+                    attackerA to listOf(wrongForB, defenderA),
+                    attackerB to listOf(wrongForB, defenderB),
+                ),
+                mandatoryAttackers = listOf(attackerA, attackerB),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 2,
+            ),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payload["attackers"] shouldBe JsonObject(
+            mapOf(
+                attackerA.value to JsonPrimitive(defenderA.value),
+                attackerB.value to JsonPrimitive(defenderB.value),
+            ),
+        )
+    }
+
+    test("ATTACKPOL-06 fails closed when the public attack domain is missing") {
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(attackPolicyAction(domain = null)),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        check(choice is SemanticChoice.Gap) { "Expected an attack-domain gap, got $choice" }
+        choice.code shouldBe "A5_DECISION_GAP"
+    }
+
+    test("ATTACKPOL-07 fails closed when a required attacker has no defender") {
+        val attacker = EntityId("attacker-without-defender")
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(
+                attackPolicyAction(
+                    domain = attackPolicyDomain(
+                        attackerToDefenders = mapOf(attacker to emptyList()),
+                        mandatoryAttackers = listOf(attacker),
+                        canDeclareZeroAttackers = false,
+                        maxAttackers = 1,
+                    ),
+                ),
+            ),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        check(choice is SemanticChoice.Gap) { "Expected an attack-domain gap, got $choice" }
+        choice.code shouldBe "A5_DECISION_GAP"
+    }
+
+    test("ATTACKPOL-08 ignores misleading flat target hints") {
+        val attacker = EntityId("attacker-public-domain")
+        val domainDefender = EntityId("defender-from-domain")
+        val legacyDefender = EntityId("legacy-flat-defender")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = mapOf(attacker to listOf(domainDefender)),
+                mandatoryAttackers = listOf(attacker),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 1,
+            ),
+            targetEntityIds = listOf(legacyDefender),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payload["attackers"] shouldBe JsonObject(
+            mapOf(attacker.value to JsonPrimitive(domainDefender.value)),
+        )
+    }
+
+    test("ATTACKPOL-09 always includes explicit empty bands") {
+        val attacker = EntityId("attacker-bands")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = mapOf(attacker to listOf(EntityId("defender-bands"))),
+                mandatoryAttackers = listOf(attacker),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 1,
+            ),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payload.containsKey("bands") shouldBe true
+        payload["bands"] shouldBe JsonArray(emptyList())
+    }
+
     test("the external policy retains the published additionalCostPayment domain") {
         val player = EntityId("player-0")
         val source = EntityId("source-permanent")
@@ -756,6 +1095,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         println(evidence.render())
 
         evidence.firstFailure?.let { failure ->
+            System.err.println("ENVIRONMENT_V1_CORPUS_FIRST_FAILURE\n${evidence.render()}")
             error("Environment V1 corpus stopped at first real finding: $failure")
         }
         evidence.episodesStarted shouldBe 72
@@ -797,6 +1137,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var observation: TrainingObservation? = null
             var lastFamily = "RESET"
             var lastActionKind = "RESET"
+            var lastActionView: LegalActionView? = null
+            var lastChoicePayload: JsonObject? = null
+            var lastPreTransitionObservation: TrainingObservation? = null
             var transitions = 0
             val actionKinds = TreeMap<String, Int>()
             val decisionFamilies = TreeMap<String, Int>()
@@ -840,6 +1183,33 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 return game
             }
 
+            fun paymentDomainOffenderInventory(
+                game: TrainingObservation?,
+            ): String {
+                val offenders = game?.legalActions
+                    ?.filter { action -> action.manaCost != null && action.paymentDomain == null }
+                    .orEmpty()
+                val payableActions = game?.legalActions
+                    ?.filter { action -> action.manaCost != null }
+                    .orEmpty()
+                return buildString {
+                    append("UNPUBLISHED_PAYABLE_ACTION_COUNT=${offenders.size}")
+                    offenders.forEachIndexed { index, action ->
+                        append("; offender[")
+                        append(index)
+                        append("]=")
+                        append(acceptancePublicActionDomain(action, null, game?.pendingDecision))
+                    }
+                    append("; PUBLIC_PAYABLE_ACTION_COUNT=${payableActions.size}")
+                    payableActions.forEachIndexed { index, action ->
+                        append("; payable[")
+                        append(index)
+                        append("]=")
+                        append(acceptancePublicActionDomain(action, null, game?.pendingDecision))
+                    }
+                }
+            }
+
             fun diagnosticFailure(): AcceptanceFailure? {
                 val id = envId ?: return null
                 val diagnostics = service.diagnostics(id)
@@ -862,7 +1232,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     diagnostic = signal.semanticCode,
                     publicDomain = when (signal.semanticCode) {
                         "PAYMENT_DOMAIN_UNSUPPORTED" ->
-                            "LegalActionView.paymentDomain=null; post-transition observation was not published"
+                            "PRE_TRANSITION=${paymentDomainOffenderInventory(lastPreTransitionObservation)}; " +
+                                "POST_TRANSITION=${paymentDomainOffenderInventory(observation)}; " +
+                                "LAST_SUBMITTED=${acceptancePublicActionDomain(lastActionView, lastChoicePayload, observation?.pendingDecision)}"
                         else -> "authoritative diagnostic event; public domain not captured"
                     },
                     proposedFollowUp = when (signal.semanticCode) {
@@ -996,8 +1368,11 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     }
 
                     countPublicBoundary(game)
+                    lastPreTransitionObservation = game
                     val choice = policy.choose(game, state)
                     state = state.afterChoice()
+                    lastActionView = null
+                    lastChoicePayload = null
                     when (choice) {
                         is SemanticChoice.Gap -> {
                             lastFamily = choice.family
@@ -1028,6 +1403,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
                         is SemanticChoice.Action -> {
                             lastActionKind = choice.kind
+                            lastActionView = game.legalActions.firstOrNull { action ->
+                                action.actionId == choice.actionId
+                            }
+                            lastChoicePayload = choice.payload
                             actionKinds[choice.kind] = (actionKinds[choice.kind] ?: 0) + 1
                             val result = service.step(
                                 StepRequest(
@@ -1128,7 +1507,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     failure = currentFailure(
                         classification = "A5_CANDIDATE_CONTRACT_GAP",
                         code = "PUBLIC_CHOICE_REJECTED",
-                        reason = "A choice generated from the published domain was rejected",
+                        reason = failure.message
+                            ?: "A choice generated from the published domain was rejected",
+                        publicDomain = acceptancePublicActionDomain(
+                            action = lastActionView,
+                            payload = lastChoicePayload,
+                            pendingDecision = observation?.pendingDecision,
+                        ),
+                        proposedFollowUp =
+                            "Classify the public action contract and trusted execution rejection before changing #73",
                     ),
                 )
             } catch (failure: IllegalStateException) {
@@ -1328,6 +1715,110 @@ private fun choiceBearingCostPaymentAction(
         })
     },
 )
+
+private fun attackPolicyAction(
+    domain: AttackDeclarationDomainV1?,
+    targetEntityIds: List<EntityId> = emptyList(),
+): LegalActionView = LegalActionView(
+    actionId = 201,
+    kind = "DeclareAttackers",
+    description = "public attack declaration",
+    affordable = true,
+    targetEntityIds = targetEntityIds,
+    attackDeclarationDomain = domain,
+    requiresStructuredAction = true,
+    requiredPayloadFields = listOf("attackers", "bands"),
+    actionSemantics = buildJsonObject {
+        put("type", "DeclareAttackers")
+        put("attackers", buildJsonObject {})
+        put("bands", JsonArray(emptyList()))
+    },
+)
+
+private fun attackPolicyDomain(
+    attackerToDefenders: Map<EntityId, List<EntityId>>,
+    mandatoryAttackers: List<EntityId> = emptyList(),
+    canDeclareZeroAttackers: Boolean = false,
+    maxAttackers: Int? = null,
+    coAttackerRequirements: Map<EntityId, List<AttackCoAttackerRequirementV1>> = emptyMap(),
+): AttackDeclarationDomainV1 {
+    val nonBandingAttackersByDefender = attackerToDefenders.entries
+        .flatMap { (attacker, defenders) ->
+            defenders.map { defender -> defender to attacker }
+        }
+        .groupBy({ it.first }, { it.second })
+        .mapValues { (_, attackers) -> attackers.sortedBy(EntityId::value) }
+
+    return AttackDeclarationDomainV1(
+        attackerToDefenders = attackerToDefenders,
+        mandatoryAttackers = mandatoryAttackers,
+        canDeclareZeroAttackers = canDeclareZeroAttackers,
+        maxAttackers = maxAttackers,
+        coAttackerRequirements = coAttackerRequirements,
+        bandConstraints = AttackBandConstraintsV1(
+            bandingAttackersByDefender = emptyMap(),
+            nonBandingAttackersByDefender = nonBandingAttackersByDefender,
+        ),
+    )
+}
+
+private fun publicTargetRequirement(
+    index: Int,
+    candidates: List<EntityId>,
+    minTargets: Int = 1,
+    maxTargets: Int = minTargets,
+): TargetRequirementDomain = TargetRequirementDomain(
+    index = index,
+    description = "public target slot $index",
+    minTargets = minTargets,
+    maxTargets = maxTargets,
+    candidates = candidates,
+    targetZone = null,
+    mustDifferFromEarlier = false,
+    sameController = false,
+    sameOwner = false,
+    sameCreatureType = false,
+    sameCardType = false,
+    totalManaValueAtMost = null,
+    differentNames = false,
+    xConstrainsManaValue = false,
+    xConstrainsManaValueExactly = false,
+    xConstrainsPower = false,
+    xConstrainsCount = false,
+)
+
+private fun policyPayload(choice: SemanticChoice): JsonObject {
+    check(choice is SemanticChoice.Action) { "Expected an attack action, got $choice" }
+    return checkNotNull(choice.payload) { "Attack action omitted its structured payload" }
+}
+
+private fun acceptancePublicActionDomain(
+    action: LegalActionView?,
+    payload: JsonObject?,
+    pendingDecision: com.wingedsheep.gym.contract.PendingDecisionView?,
+): String {
+    if (action == null) {
+        return "action=not captured; pendingDecision=$pendingDecision; payload=$payload"
+    }
+    return listOf(
+        "kind=${action.kind}",
+        "requiredPayloadFields=${action.requiredPayloadFields}",
+        "sourceEntityId=${action.sourceEntityId}",
+        "targetEntityIds=${action.targetEntityIds}",
+        "targetDomain=${action.targetDomain}",
+        "attackDeclarationDomain=${action.attackDeclarationDomain}",
+        "paymentDomain=${action.paymentDomain}",
+        "minTargets=${action.minTargets}",
+        "maxTargets=${action.maxTargets}",
+        "validSacrificeTargets=${action.validSacrificeTargets}",
+        "sacrificeCount=${action.sacrificeCount}",
+        "sacrificeMinCount=${action.sacrificeMinCount}",
+        "sacrificeMaxCount=${action.sacrificeMaxCount}",
+        "actionSemantics=${action.actionSemantics}",
+        "pendingDecision=$pendingDecision",
+        "submittedPayload=$payload",
+    ).joinToString("; ")
+}
 
 private fun publicActionObservation(
     action: LegalActionView,
