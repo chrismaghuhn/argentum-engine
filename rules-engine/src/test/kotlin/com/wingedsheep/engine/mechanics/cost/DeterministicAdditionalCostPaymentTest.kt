@@ -89,4 +89,14 @@ class DeterministicAdditionalCostPaymentTest : FunSpec({
             EntityId("source"),
         ) shouldBe null
     }
+
+    test("nested cost composites remain outside the certified shape") {
+        DeterministicAdditionalCostPayment.expectedFor(
+            Costs.Composite(
+                Costs.Mana("{1}"),
+                Costs.Composite(Costs.Tap),
+            ),
+            EntityId("source"),
+        ) shouldBe null
+    }
 })

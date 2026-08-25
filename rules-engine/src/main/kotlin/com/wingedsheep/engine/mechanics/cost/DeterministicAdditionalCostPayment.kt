@@ -36,6 +36,10 @@ object DeterministicAdditionalCostPayment {
         AbilityCost.SacrificeSelf -> Counts(sacrificeCount = 1)
 
         is AbilityCost.Composite -> {
+            // The existing activated-ability enumerator and handler treat this cost as a flat
+            // composite when exposing/excluding mana sources. Keep the public certificate aligned
+            // with that authoritative shape instead of certifying a recursively different path.
+            if (cost.costs.any { it is AbilityCost.Composite }) return null
             cost.costs.fold(Counts()) { accumulated, child ->
                 val next = collect(child) ?: return null
                 Counts(
