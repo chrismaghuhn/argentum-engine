@@ -799,18 +799,20 @@ Non-mana structured cast choices may be submitted alongside the plan when they d
 effective mana cost or the published source set; cost-changing or source-affecting choices remain
 fail-closed.
 For the existing `ActivateAbility.costPayment` field, there is one deliberately narrow additional-
-cost exception: when the authoritative effective ability cost contains only ordinary mana,
-`TapSelf`, and `SacrificeSelf`, Rules may certify the source-bound payment for Gym. The public
-`LegalActionView` already provides `sourceEntityId`; the existing `requiredPayloadFields` requires
-`costPayment` when the enumerated action has `additionalCostInfo`, and the observation/trusted Gym
-seam adds the same requirement for a certified TapSelf-only action even when no choice metadata is
-needed. The controller
-materializes the canonical acknowledgement as `tappedPermanents: [sourceEntityId]` and/or
-`sacrificedPermanents: [sourceEntityId]`; every other `AdditionalCostPayment` field must remain at
-its empty/default value. This is not a selection domain: Rules derives the expected value from the
-authoritative effective `AbilityCost` plus the activated source ID, then checks exact equality before
-any mana, tap, or sacrifice mutation. `PaymentDomainV4` remains mana-only, and no serialized DTO,
-schema hash, or replay version changes for this contract.
+cost exception: when the authoritative effective ability cost contains one positive fixed ordinary
+mana atom, optional `TapSelf` and/or `SacrificeSelf`, and the explicitly certified
+`PayLife(CommanderColorIdentityCount)` expression, Rules may certify the source-bound payment for
+Gym. The public `LegalActionView` already provides `sourceEntityId`; the existing
+`requiredPayloadFields` requires `costPayment` when the enumerated action has `additionalCostInfo`,
+and the observation/trusted Gym seam adds the same requirement for a certified TapSelf-only action
+even when no choice metadata is needed. The controller materializes the canonical acknowledgement
+as `tappedPermanents: [sourceEntityId]` and/or `sacrificedPermanents: [sourceEntityId]`; every other
+`AdditionalCostPayment` field must remain at its empty/default value. The life expression adds no
+payload field and is not a player decision: Rules resolves and pays it through the existing
+authoritative life-payment path. This is not a selection domain: Rules derives the expected value
+from the authoritative effective `AbilityCost` plus the activated source ID, then checks exact
+equality before any mana, tap, sacrifice, or life mutation. `PaymentDomainV4` remains mana-only,
+and no serialized DTO, schema hash, or replay version changes for this contract.
 The public payment and replay schemas are unchanged by the CycleCard, deterministic mana
 side-effect, and source-bound activated self-cost slices. `PaymentSourceActivationDomain.manaAbilityKey`
 remains the structural identity

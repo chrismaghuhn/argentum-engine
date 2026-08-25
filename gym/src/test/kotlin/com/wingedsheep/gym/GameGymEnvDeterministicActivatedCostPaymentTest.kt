@@ -2,10 +2,13 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.CostUnitAllocationV2
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.LifeChangedEvent
+import com.wingedsheep.engine.core.LifeChangeReason
 import com.wingedsheep.engine.core.ManaSpendReferenceV2
 import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PassPriority
@@ -28,11 +31,15 @@ import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.`5dn`.cards.WayfarersBauble
+import com.wingedsheep.mtg.sets.definitions.cmr.cards.WarRoom
+import com.wingedsheep.mtg.sets.definitions.c17.cards.RamosDragonEngine
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.wth.cards.MindStone
+import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.DynamicAmounts
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.CardDefinition
@@ -60,7 +67,7 @@ private data class PreparedDeterministicAbilityGym(
     val mountainIds: List<EntityId>,
 )
 
-/** RED characterization for public payment of deterministic activated-ability additional costs. */
+/** Characterization for public payment of deterministic activated-ability additional costs. */
 class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
     val actionJson = Json {
@@ -95,11 +102,23 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         }
     }
 
+    val dynamicPayLifeSource = card("Gym Dynamic PayLife Activated Cost Source") {
+        typeLine = "Creature — Probe"
+        power = 2
+        toughness = 2
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.PayLife(DynamicAmounts.sourcePower()))
+            effect = Effects.GainLife(1)
+        }
+    }
+
     fun registry(extraCards: List<CardDefinition> = emptyList()) = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
         register(WayfarersBauble)
         register(MindStone)
+        register(WarRoom)
+        register(RamosDragonEngine)
         extraCards.forEach(::register)
     }
 
@@ -108,23 +127,35 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         abilityIndex: Int = 0,
         battlefieldCardNames: List<String> = emptyList(),
         extraCards: List<CardDefinition> = emptyList(),
+        format: Format = Format.Standard,
+        commanderCardName: String? = null,
+        manaSourceCount: Int = 2,
     ): PreparedDeterministicAbilityGym {
         val cardRegistry = registry(extraCards)
         val environment = GameEnvironment.create(cardRegistry)
         val deckEntries = buildList {
             add(sourceCard.name to 1)
             battlefieldCardNames.forEach { add(it to 1) }
-            add("Mountain" to 6)
+            add("Mountain" to (manaSourceCount + 5))
         }
         environment.reset(
             GameConfig(
                 players = listOf(
-                    PlayerConfig("Alice", Deck.of(*deckEntries.toTypedArray())),
-                    PlayerConfig("Bob", Deck.of("Mountain" to 2)),
+                    PlayerConfig(
+                        "Alice",
+                        Deck.of(*deckEntries.toTypedArray()),
+                        commanderCardName = commanderCardName,
+                    ),
+                    PlayerConfig(
+                        "Bob",
+                        Deck.of("Mountain" to 2),
+                        commanderCardName = commanderCardName,
+                    ),
                 ),
                 startingHandSize = 1,
                 skipMulligans = true,
                 startingPlayerIndex = 0,
+                format = format,
             ),
         )
 
@@ -148,10 +179,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
         val sourceId = moveNamed(sourceCard.name, Zone.BATTLEFIELD)
         battlefieldCardNames.forEach { moveNamed(it, Zone.BATTLEFIELD) }
-        val mountainIds = listOf(
-            moveNamed("Mountain", Zone.BATTLEFIELD),
-            moveNamed("Mountain", Zone.BATTLEFIELD),
-        )
+        val mountainIds = List(manaSourceCount) { moveNamed("Mountain", Zone.BATTLEFIELD) }
         environment.restore(state, environment.playerIds, environment.stepCount)
 
         return PreparedDeterministicAbilityGym(
@@ -184,6 +212,19 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         extraCards = listOf(tapSelfSource),
     )
 
+    fun preparedWarRoom() = preparedActivatedAbility(
+        sourceCard = WarRoom,
+        abilityIndex = 1,
+        format = Format.Commander(),
+        commanderCardName = RamosDragonEngine.name,
+        manaSourceCount = 3,
+    )
+
+    fun preparedDynamicPayLife() = preparedActivatedAbility(
+        sourceCard = dynamicPayLifeSource,
+        extraCards = listOf(dynamicPayLifeSource),
+    )
+
     fun activatedView(prepared: PreparedDeterministicAbilityGym): LegalActionView {
         val action = prepared.environment.legalActions().single { legalAction ->
             val activate = legalAction.action as? ActivateAbility
@@ -197,9 +238,13 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .single()
     }
 
-    fun gymActivatedView(prepared: PreparedDeterministicAbilityGym): LegalActionView =
+    fun gymActivatedView(
+        prepared: PreparedDeterministicAbilityGym,
+        requiredCost: String? = null,
+    ): LegalActionView =
         (prepared.gym.observe().observation as TrainingObservation).legalActions.single {
-            it.kind == "ActivateAbility" && it.sourceEntityId == prepared.sourceId
+            it.kind == "ActivateAbility" && it.sourceEntityId == prepared.sourceId &&
+                (requiredCost == null || it.paymentDomain?.requiredCost == requiredCost)
         }
 
     fun explicitV2FromPublic(view: LegalActionView): PaymentStrategy.ExplicitV2 {
@@ -331,6 +376,34 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         domain.requiredCost shouldBe "{1}"
     }
 
+    test("real War Room exposes its structural deterministic life cost through public V4 data") {
+        val prepared = preparedWarRoom()
+        val action = prepared.environment.legalActions().single { legalAction ->
+            val activate = legalAction.action as? ActivateAbility
+            activate?.sourceId == prepared.sourceId && activate.abilityId == prepared.abilityId
+        }
+        val result = ObservationBuilder(cardRegistry = prepared.cardRegistry)
+            .build(prepared.environment.state, prepared.playerId, listOf(action))
+        val observation = result.observation as TrainingObservation
+        val view = observation.legalActions.single()
+
+        view.requiredPayloadFields shouldBe listOf("paymentStrategy", "costPayment")
+        view.sourceEntityId shouldBe prepared.sourceId
+        view.actionSemantics.toString().contains("CommanderColorIdentityCount") shouldBe true
+        val commandCard = observation.zones.single {
+            it.ownerId == prepared.playerId && it.zoneType == Zone.COMMAND
+        }.cards.single()
+        // Ramos is colorless as an object, while its public oracle text carries the WUBRG
+        // identity symbols. The policy still supplies no life amount; Rules resolves the count.
+        commandCard.colors shouldBe emptySet()
+        commandCard.oracleText.contains("{W}{W}{U}{U}{B}{B}{R}{R}{G}{G}") shouldBe true
+
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        domain.version shouldBe 4
+        domain.requiredCost shouldBe "{3}"
+        domain.sourceActivations.any { it.sourceId == prepared.sourceId } shouldBe false
+    }
+
     test("TapSelf-only activated costs publish and require the source-bound acknowledgement") {
         val prepared = preparedTapSelf()
         val view = gymActivatedView(prepared)
@@ -378,6 +451,81 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .single().permanentIds shouldBe listOf(prepared.sourceId)
         prepared.environment.lastStepEvents.filterIsInstance<TappedEvent>()
             .map { it.entityId }.toSet() shouldBe prepared.mountainIds.toSet() + prepared.sourceId
+    }
+
+    test("public PaymentPlanV2 pays War Room mana, then Rules pays commander life and resolves normally") {
+        val prepared = preparedWarRoom()
+        val view = gymActivatedView(prepared, requiredCost = "{3}")
+        val lifeBefore = prepared.environment.state.lifeTotal(prepared.playerId)
+
+        prepared.gym.step(
+            view.actionId,
+            payload(
+                view,
+                explicitV2FromPublic(view),
+                AdditionalCostPayment(
+                    tappedPermanents = listOf(view.sourceEntityId ?: error("Expected sourceEntityId")),
+                ),
+            ),
+        )
+
+        prepared.environment.state.lifeTotal(prepared.playerId) shouldBe lifeBefore - 5
+        prepared.environment.lastStepEvents.filterIsInstance<LifeChangedEvent>()
+            .single { it.playerId == prepared.playerId } shouldBe LifeChangedEvent(
+            playerId = prepared.playerId,
+            oldLife = lifeBefore,
+            newLife = lifeBefore - 5,
+            reason = LifeChangeReason.PAYMENT,
+        )
+        prepared.environment.lastStepEvents.filterIsInstance<TappedEvent>()
+            .count { it.entityId == prepared.sourceId } shouldBe 1
+        prepared.environment.lastStepEvents.filterIsInstance<PermanentsSacrificedEvent>()
+            .none { it.permanentIds.contains(prepared.sourceId) } shouldBe true
+        prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe true
+        prepared.environment.state.getZone(prepared.playerId, Zone.BATTLEFIELD)
+            .contains(prepared.sourceId) shouldBe true
+        prepared.environment.state.stack.isNotEmpty() shouldBe true
+
+        var passCount = 0
+        while (prepared.environment.pendingDecision == null &&
+            prepared.environment.state.stack.isNotEmpty() && passCount++ < 8
+        ) {
+            val pass = prepared.environment.legalActions().first { it.action is PassPriority }
+            prepared.environment.step(pass.action)
+        }
+
+        prepared.environment.pendingDecision shouldBe null
+        prepared.environment.state.stack shouldBe emptyList()
+        prepared.environment.lastStepEvents.filterIsInstance<CardsDrawnEvent>()
+            .single { it.playerId == prepared.playerId && it.count == 1 }
+    }
+
+    test("War Room rejects missing or invalid structured payment atomically") {
+        fun freshCase(mutator: (LegalActionView, PaymentStrategy.ExplicitV2) -> JsonObject) {
+            val prepared = preparedWarRoom()
+            val view = gymActivatedView(prepared, requiredCost = "{3}")
+            val payment = explicitV2FromPublic(view)
+            assertRejectedAtomically(prepared, view, mutator(view, payment))
+        }
+
+        freshCase { view, payment -> payload(view, payment, costPayment = null) }
+        freshCase { view, payment ->
+            payload(
+                view,
+                payment,
+                costPayment = AdditionalCostPayment(
+                    tappedPermanents = listOf(EntityId("wrong-source")),
+                ),
+            )
+        }
+        freshCase { view, payment ->
+            payload(
+                view,
+                payment.copy(
+                    paymentPlan = payment.paymentPlan!!.copy(spendAllocation = SpendAllocationV2()),
+                ),
+            )
+        }
     }
 
     test("public PaymentPlanV1 remains accepted for the existing explicit compatibility path") {
@@ -534,6 +682,19 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
     test("selected tap and sacrifice costs remain PAYMENT_DOMAIN_UNSUPPORTED") {
         val prepared = preparedChoiceCost()
+        val action = prepared.environment.legalActions().single { legalAction ->
+            val activate = legalAction.action as? ActivateAbility
+            activate?.sourceId == prepared.sourceId && activate.abilityId == prepared.abilityId
+        }
+        val result = ObservationBuilder(cardRegistry = prepared.cardRegistry)
+            .build(prepared.environment.state, prepared.playerId, listOf(action))
+
+        result.diagnostics.map { it.code } shouldBe listOf(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED)
+        result.observation.legalActions.single().paymentDomain shouldBe null
+    }
+
+    test("unsupported dynamic PayLife remains PAYMENT_DOMAIN_UNSUPPORTED") {
+        val prepared = preparedDynamicPayLife()
         val action = prepared.environment.legalActions().single { legalAction ->
             val activate = legalAction.action as? ActivateAbility
             activate?.sourceId == prepared.sourceId && activate.abilityId == prepared.abilityId
