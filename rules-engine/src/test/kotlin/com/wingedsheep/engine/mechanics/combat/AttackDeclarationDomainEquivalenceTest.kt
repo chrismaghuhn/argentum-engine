@@ -70,6 +70,28 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
             setOf(attackers[2], attackers[3]),
         )
     }
+
+    test("a four-attacker fixture accepts two disjoint valid bands on both sides") {
+        val fixture = fourAttackerBandFixture()
+        val domain = fixture.certificate()
+        val defender = fixture.state.activePlayers.first { it != fixture.player }
+        val declaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = fixture.attackerIds.associateWith { defender },
+            bands = listOf(
+                setOf(fixture.attackerIds[0], fixture.attackerIds[1]),
+                setOf(fixture.attackerIds[2], fixture.attackerIds[3]),
+            ),
+        )
+
+        val certificateAccepted = AttackDeclarationDomainValidator
+            .validate(domain, declaration) is AttackDeclarationValidationResult.Accepted
+        val rulesAccepted = fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) == null
+
+        certificateAccepted shouldBe true
+        rulesAccepted shouldBe true
+        certificateAccepted shouldBe rulesAccepted
+    }
 })
 
 private data class Fixture(
@@ -234,6 +256,24 @@ private fun goadFallbackFixture(): Fixture {
     driver.addComponent(creature, GoadedComponent(setOf(goader)))
     driver.removeSummoningSickness(creature)
     return fixture("goad-fallback", driver, players, listOf(creature))
+}
+
+private fun fourAttackerBandFixture(): Fixture {
+    val (driver, players) = newDriver()
+    val active = players[0]
+    val firstBanding = driver.putCreatureOnBattlefield(active, "Banding Scout")
+    val firstNonBanding = driver.putCreatureOnBattlefield(active, "Centaur Courser")
+    val secondBanding = driver.putCreatureOnBattlefield(active, "Banding Scout")
+    val secondNonBanding = driver.putCreatureOnBattlefield(active, "Centaur Courser")
+    listOf(firstBanding, firstNonBanding, secondBanding, secondNonBanding).forEach {
+        driver.removeSummoningSickness(it)
+    }
+    return fixture(
+        name = "four-attacker-two-bands",
+        driver = driver,
+        players = players,
+        attackerIds = listOf(firstBanding, firstNonBanding, secondBanding, secondNonBanding),
+    )
 }
 
 private fun fixture(
