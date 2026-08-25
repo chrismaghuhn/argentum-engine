@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticSignal
@@ -302,8 +303,24 @@ class GameGymEnv(
         val strategy = when (submitted) {
             is ActivateAbility -> submitted.paymentStrategy
             is CastSpell -> submitted.paymentStrategy
+            is CycleCard -> submitted.paymentStrategy
             else -> throw IllegalArgumentException("Structured action changed its action type")
         }
+
+        if (submitted is CycleCard) {
+            val explicitV2 = strategy as? PaymentStrategy.ExplicitV2
+                ?: throw IllegalArgumentException(
+                    "CycleCard payment must submit PaymentStrategy.ExplicitV2; automatic, pool, and legacy payments are not allowed"
+                )
+            require(explicitV2.paymentPlan != null) {
+                "CycleCard payment must submit a complete PaymentPlanV2; source IDs alone are not sufficient"
+            }
+            require(explicitV2.manaAbilitiesToActivate.isEmpty()) {
+                "PaymentPlanV2 must not include legacy runtime mana source handles"
+            }
+            return
+        }
+
         when (strategy) {
             is PaymentStrategy.Explicit -> {
                 require(strategy.paymentPlan != null) {

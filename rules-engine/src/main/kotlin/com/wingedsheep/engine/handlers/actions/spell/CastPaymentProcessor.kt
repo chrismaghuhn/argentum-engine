@@ -8,6 +8,7 @@ import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.ExplicitPaymentPlanExecutor
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.state.GameState
@@ -70,6 +71,10 @@ class CastPaymentProcessor(
     private val manaAbilitySideEffectExecutor: ManaAbilitySideEffectExecutor
 ) {
     private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
+    private val explicitPaymentPlanExecutor = ExplicitPaymentPlanExecutor(
+        manaSolver = manaSolver,
+        manaAbilitySideEffectExecutor = manaAbilitySideEffectExecutor,
+    )
 
     /**
      * Provenance of mana freshly tapped by the solver during a payment (AutoPay / Explicit). The
@@ -131,13 +136,19 @@ class CastPaymentProcessor(
                 xManaRestriction
             )
             is PaymentStrategy.ExplicitV2 -> action.paymentStrategy.paymentPlan?.let { plan ->
-                explicitPlanV2Pay(
+                spellContext?.let { context ->
+                    explicitPlanV2Pay(
+                        state = state,
+                        playerId = action.playerId,
+                        plan = plan,
+                        cost = effectiveCost,
+                        cardName = cardName,
+                        spellContext = context,
+                    )
+                } ?: PaymentResult(
                     state = state,
-                    playerId = action.playerId,
-                    plan = plan,
-                    cost = effectiveCost,
-                    cardName = cardName,
-                    spellContext = spellContext,
+                    events = emptyList(),
+                    error = "PaymentStrategy.ExplicitV2 requires SpellPaymentContext",
                 )
             } ?: PaymentResult(
                 state = state,
@@ -192,27 +203,21 @@ class CastPaymentProcessor(
         plan: PaymentPlanV2,
         cost: ManaCost,
         cardName: String,
-        spellContext: SpellPaymentContext?,
+        spellContext: SpellPaymentContext,
     ): PaymentResult {
-        val validation = paymentPlanValidator.validateV2(
+        val execution = explicitPaymentPlanExecutor.executeV2(
             state = state,
             playerId = playerId,
             cost = cost,
             plan = plan,
-            spellContext = spellContext,
+            paymentContext = spellContext,
+            reason = "Cast $cardName",
         )
-        val accepted = validation as? PaymentPlanValidation.Accepted
-            ?: return PaymentResult(
-                state = state,
-                events = emptyList(),
-                error = (validation as PaymentPlanValidation.Rejected).reason,
-            )
-        return finishExplicitPlanPayment(
-            state = state,
-            playerId = playerId,
-            accepted = accepted,
-            cardName = cardName,
-            errorLabel = "PaymentPlanV2 source activation failed",
+        return PaymentResult(
+            state = execution.state,
+            events = execution.events,
+            error = execution.error,
+            spentManaProvenance = execution.spentManaProvenance,
         )
     }
 
