@@ -17,8 +17,9 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.arn.ArabianNightsSet
-import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.lgn.LegionsSet
+import com.wingedsheep.mtg.sets.definitions.inv.InvasionSet
+import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
@@ -188,6 +189,41 @@ class AttackDeclarationDomainStrictExecutionTest : FunSpec({
         prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
     }
 
+    test("stale snapshot reaches live Rules rejection when an attacker cap appears") {
+        val prepared = prepareAttack(
+            includeBandAttackers = true,
+            includeDuelingGrounds = true,
+        )
+        val attack = attackView(prepared.gym)
+        val domain = checkNotNull(attack.attackDeclarationDomain)
+        val defender = domain.attackerToDefenders
+            .getValue(prepared.bandAttackers.first())
+            .single()
+        val assignments = prepared.bandAttackers.associateWith { defender }
+
+        moveCardsIntoBattlefield(prepared.environment, prepared.alice, "Dueling Grounds", 1)
+        val currentDeclareAttackers = prepared.environment.legalActions()
+            .mapNotNull { it.action as? DeclareAttackers }
+        currentDeclareAttackers.any {
+            it.playerId == prepared.alice && it.attackers.isEmpty() && it.bands.isEmpty()
+        } shouldBe true
+
+        val stateBefore = prepared.environment.state
+        val stepCountBefore = prepared.environment.stepCount
+        val lastStepEventsBefore = prepared.environment.lastStepEvents
+        val failure = shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(
+                attack.actionId,
+                attackPayload(attack, assignments, emptyList()),
+            )
+        }
+
+        failure.message shouldContain "No more than 1 creature can attack each combat"
+        prepared.environment.state shouldBe stateBefore
+        prepared.environment.stepCount shouldBe stepCountBefore
+        prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
+    }
+
     test("a valid declaration stops at the existing explicit attack-tax decision boundary") {
         val prepared = prepareAttack(includeAttackTaxer = true)
         val attack = attackView(prepared.gym)
@@ -217,18 +253,21 @@ private data class PreparedAttack(
 private fun prepareAttack(
     includeAttackTaxer: Boolean = false,
     includeBandAttackers: Boolean = false,
+    includeDuelingGrounds: Boolean = false,
 ): PreparedAttack {
     val registry = CardRegistry().apply {
         register(PortalSet.cards)
         register(PortalSet.basicLands)
         register(LegionsSet.cards)
         register(ArabianNightsSet.cards)
+        if (includeDuelingGrounds) register(InvasionSet.cards)
     }
     val environment = GameEnvironment.create(registry)
     val aliceDeck = buildList {
         add("Mountain" to 99)
         add("Raging Goblin" to 1)
         if (includeBandAttackers) add("Camel" to 2)
+        if (includeDuelingGrounds) add("Dueling Grounds" to 1)
     }
     environment.reset(
         GameConfig(

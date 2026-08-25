@@ -8,6 +8,7 @@ import com.wingedsheep.engine.mechanics.combat.rules.defaultAttackDefenderRules
 import com.wingedsheep.engine.mechanics.combat.rules.defaultAttackRestrictionRules
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.battlefield.ProtectorComponent
 import com.wingedsheep.engine.state.components.combat.GoadedComponent
 import com.wingedsheep.engine.state.components.combat.MustAttackPlayerComponent
 import com.wingedsheep.engine.state.components.combat.MustAttackThisTurnComponent
@@ -15,6 +16,8 @@ import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
@@ -55,6 +58,42 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
 
     test("matches Rules for Goad fallback when every legal player is a goader") {
         assertEquivalent(goadFallbackFixture())
+    }
+
+    test("publishes independently retained planeswalker and battle defenders") {
+        val fixture = planeswalkerAndBattleDefenderFixture()
+        val domain = fixture.certificate()
+        val attacker = fixture.attackerIds.single()
+        val planeswalker = fixture.defenderIds[0]
+        val battle = fixture.defenderIds[1]
+
+        // These defender IDs come directly from fixture setup. This proof deliberately does not
+        // use CombatDefenders' candidate-universe helper as an oracle for either publication.
+        listOf(planeswalker, battle).forEach { defender ->
+            val declaration = DeclareAttackers(
+                playerId = fixture.player,
+                attackers = mapOf(attacker to defender),
+            )
+
+            fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) shouldBe null
+            domain.attackerToDefenders.getValue(attacker) shouldContain defender
+        }
+    }
+
+    test("does not publish planeswalkers or battles with illegal controller or protector") {
+        val fixture = illegalPlaneswalkerAndBattleDefenderFixture()
+        val domain = fixture.certificate()
+        val attacker = fixture.attackerIds.single()
+
+        fixture.defenderIds.forEach { defender ->
+            val declaration = DeclareAttackers(
+                playerId = fixture.player,
+                attackers = mapOf(attacker to defender),
+            )
+
+            (fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) == null) shouldBe false
+            domain.attackerToDefenders.getValue(attacker).contains(defender) shouldBe false
+        }
     }
 
     test("the independent four-attacker band generator includes two disjoint bands") {
@@ -100,6 +139,7 @@ private data class Fixture(
     val player: EntityId,
     val manager: AttackPhaseManager,
     val attackerIds: List<EntityId>,
+    val defenderIds: List<EntityId> = emptyList(),
 )
 
 private fun Fixture.certificate() = when (val result = manager.getAttackDeclarationDomain(state, player)) {
@@ -276,11 +316,57 @@ private fun fourAttackerBandFixture(): Fixture {
     )
 }
 
+private fun planeswalkerAndBattleDefenderFixture(): Fixture {
+    val (driver, players) = newDriver(
+        extraCards = listOf(attackDomainWalker, attackDomainSiege),
+    )
+    val active = players[0]
+    val opponent = players[1]
+    val attacker = driver.putCreatureOnBattlefield(active, "Grizzly Bears")
+    val planeswalker = driver.putPermanentOnBattlefield(opponent, attackDomainWalker.name)
+    val battle = driver.putPermanentOnBattlefield(active, attackDomainSiege.name)
+    driver.replaceState(driver.state.updateEntity(battle) {
+        it.with(ProtectorComponent(opponent))
+    })
+    driver.removeSummoningSickness(attacker)
+
+    return fixture(
+        name = "planeswalker-and-battle-defenders",
+        driver = driver,
+        players = players,
+        attackerIds = listOf(attacker),
+        defenderIds = listOf(planeswalker, battle),
+    )
+}
+
+private fun illegalPlaneswalkerAndBattleDefenderFixture(): Fixture {
+    val (driver, players) = newDriver(
+        extraCards = listOf(attackDomainWalker, attackDomainSiege),
+    )
+    val active = players[0]
+    val planeswalker = driver.putPermanentOnBattlefield(active, attackDomainWalker.name)
+    val battle = driver.putPermanentOnBattlefield(active, attackDomainSiege.name)
+    val attacker = driver.putCreatureOnBattlefield(active, "Grizzly Bears")
+    driver.replaceState(driver.state.updateEntity(battle) {
+        it.with(ProtectorComponent(active))
+    })
+    driver.removeSummoningSickness(attacker)
+
+    return fixture(
+        name = "illegal-planeswalker-and-battle-defenders",
+        driver = driver,
+        players = players,
+        attackerIds = listOf(attacker),
+        defenderIds = listOf(planeswalker, battle),
+    )
+}
+
 private fun fixture(
     name: String,
     driver: GameTestDriver,
     players: List<EntityId>,
     attackerIds: List<EntityId>,
+    defenderIds: List<EntityId> = emptyList(),
 ): Fixture {
     val active = players[0]
     driver.replaceState(
@@ -297,12 +383,15 @@ private fun fixture(
         defaultAttackDefenderRules(),
         ManaAbilitySideEffectExecutor.noOp(driver.cardRegistry),
     )
-    return Fixture(name, driver.state, active, manager, attackerIds)
+    return Fixture(name, driver.state, active, manager, attackerIds, defenderIds)
 }
 
-private fun newDriver(playerCount: Int = 2): Pair<GameTestDriver, List<EntityId>> {
+private fun newDriver(
+    playerCount: Int = 2,
+    extraCards: List<CardDefinition> = emptyList(),
+): Pair<GameTestDriver, List<EntityId>> {
     val driver = GameTestDriver()
-    driver.registerCards(TestCards.all)
+    driver.registerCards(TestCards.all + extraCards)
     val deck = Deck.of("Forest" to 20, "Grizzly Bears" to 20)
     val players = if (playerCount == 2) {
         driver.initMirrorMatch(deck = deck, skipMulligans = true)
@@ -315,4 +404,16 @@ private fun newDriver(playerCount: Int = 2): Pair<GameTestDriver, List<EntityId>
         )
     }
     return driver to players
+}
+
+private val attackDomainWalker = card("Attack Domain Walker") {
+    manaCost = "{2}{U}{U}"
+    typeLine = "Planeswalker — Test"
+    startingLoyalty = 4
+}
+
+private val attackDomainSiege = card("Attack Domain Siege") {
+    manaCost = "{2}{B}{B}"
+    typeLine = "Battle — Siege"
+    startingDefense = 5
 }
