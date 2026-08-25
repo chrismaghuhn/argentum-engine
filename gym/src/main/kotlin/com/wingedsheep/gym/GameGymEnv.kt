@@ -13,6 +13,7 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
+import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ResolvedAction
@@ -83,6 +84,7 @@ class GameGymEnv(
         val resolved = registry.resolve(actionId)
         if (resolved is ResolvedAction.Legal) {
             ActionPayloadRequirements.requireTargetDomainSupported(resolved.legalAction)
+            AttackDeclarationDomainSubmission.requireSupported(resolved.legalAction)
             requireActionPaymentPlan(resolved, resolved.action)
         }
         if (resolved is ResolvedAction.Legal &&
@@ -110,6 +112,7 @@ class GameGymEnv(
                 "Action ID $actionId does not resolve to a legal game-action candidate"
             )
         ActionPayloadRequirements.requireTargetDomainSupported(legal.legalAction)
+        AttackDeclarationDomainSubmission.requireSupported(legal.legalAction)
         val missingFields = observationBuilder.missingRequiredFieldsFor(
             environment.state,
             legal.legalAction,
@@ -120,6 +123,7 @@ class GameGymEnv(
                 "copy actionSemantics and fill every required choice"
         }
         val submitted = materializeAction(legal.action, actionPayload)
+        AttackDeclarationDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
         ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
         requireActionPaymentPlan(legal, submitted)
         environment.stepFromCandidateStrict(legal.action, submitted)
