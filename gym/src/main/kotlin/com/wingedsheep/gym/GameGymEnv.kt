@@ -86,7 +86,7 @@ class GameGymEnv(
             requireActionPaymentPlan(resolved, resolved.action)
         }
         if (resolved is ResolvedAction.Legal &&
-            ActionPayloadRequirements.requiresStructuredAction(resolved.legalAction)
+            observationBuilder.requiresStructuredActionFor(environment.state, resolved.legalAction)
         ) {
             throw IllegalArgumentException(
                 "Action ID $actionId requires a structured action payload; " +
@@ -110,9 +110,10 @@ class GameGymEnv(
                 "Action ID $actionId does not resolve to a legal game-action candidate"
             )
         ActionPayloadRequirements.requireTargetDomainSupported(legal.legalAction)
-        val missingFields = ActionPayloadRequirements.missingRequiredFields(
+        val missingFields = observationBuilder.missingRequiredFieldsFor(
+            environment.state,
             legal.legalAction,
-            actionPayload
+            actionPayload,
         )
         require(missingFields.isEmpty()) {
             "Structured action payload is missing explicit field(s): ${missingFields.joinToString()}; " +

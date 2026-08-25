@@ -651,10 +651,10 @@ class LockedSliceActionTargetDomainTest : FunSpec({
             it.targetShape != "TARGETLESS" && it.targetShape != "NO_REACHABLE_ACTION"
         } shouldBe 55
         orderedRows.count { it.publicDomain != "NOT_PUBLISHED" } shouldBe 215
-        // Exact deterministic mana-side-effect certificates close the two Talismans, and the
-        // plain fixed-kicker rail closes Tear Asunder's kicked cast.
-        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 10
-        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 150
+        // The deterministic source-bound activated-cost certificate closes three previously
+        // unsupported actions, and the plain fixed-kicker rail closes Tear Asunder's kicked cast.
+        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 7
+        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 153
         orderedRows.count { it.paymentStatus == "NOT_APPLICABLE" } shouldBe 55
         rawShapeTotals shouldBe mapOf(
             "0:1-1@-[]#1" to 1,

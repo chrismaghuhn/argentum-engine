@@ -33,6 +33,7 @@ import com.wingedsheep.engine.handlers.effects.bend.BendEvents
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
+import com.wingedsheep.engine.mechanics.cost.DeterministicAdditionalCostPayment
 import com.wingedsheep.engine.mechanics.mana.AlternativePaymentHandler
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
@@ -290,6 +291,21 @@ class ActivateAbilityHandler(
             targets = action.targets,
             equipPayment = equipPayment,
         )
+        val expectedAdditionalCostPayment =
+            DeterministicAdditionalCostPayment.expectedFor(effectiveCost, action.sourceId)
+        if (expectedAdditionalCostPayment != null && action.costPayment != null &&
+            action.costPayment != expectedAdditionalCostPayment
+        ) {
+            return "Additional cost payment does not match the deterministic activated-ability cost"
+        }
+        if (expectedAdditionalCostPayment != null && action.costPayment == null &&
+            (expectedAdditionalCostPayment.tappedPermanents.isNotEmpty() ||
+                expectedAdditionalCostPayment.sacrificedPermanents.isNotEmpty()) &&
+            (action.paymentStrategy is PaymentStrategy.Explicit ||
+                action.paymentStrategy is PaymentStrategy.ExplicitV2)
+        ) {
+            return "Explicit activated-ability payment must include costPayment"
+        }
         val effectiveTargetReqs = if (textReplacement != null) {
             ability.targetRequirements.map { it.applyTextReplacement(textReplacement) }
         } else {

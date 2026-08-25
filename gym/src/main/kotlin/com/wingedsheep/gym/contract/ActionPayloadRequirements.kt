@@ -49,8 +49,11 @@ object ActionPayloadRequirements {
     private val canonicalFieldSet = canonicalFieldOrder.toSet()
 
     /** The external JSON fields that must be present, even when their value is an explicit empty choice. */
-    fun requiredPayloadFields(action: LegalAction): List<String> {
-        return canonicalizeRequiredPayloadFields(requiredFieldSet(action))
+    fun requiredPayloadFields(
+        action: LegalAction,
+        additionalRequiredFields: Set<String> = emptySet(),
+    ): List<String> {
+        return canonicalizeRequiredPayloadFields(requiredFieldSet(action) + additionalRequiredFields)
     }
 
     /**
@@ -118,12 +121,18 @@ object ActionPayloadRequirements {
         }
     }
 
-    fun requiresStructuredAction(action: LegalAction): Boolean =
-        requiredPayloadFields(action).isNotEmpty()
+    fun requiresStructuredAction(
+        action: LegalAction,
+        additionalRequiredFields: Set<String> = emptySet(),
+    ): Boolean = requiredPayloadFields(action, additionalRequiredFields).isNotEmpty()
 
     /** Returns missing keys without decoding or executing the candidate. */
-    fun missingRequiredFields(action: LegalAction, payload: JsonObject): List<String> =
-        requiredPayloadFields(action).filterNot(payload::containsKey)
+    fun missingRequiredFields(
+        action: LegalAction,
+        payload: JsonObject,
+        additionalRequiredFields: Set<String> = emptySet(),
+    ): List<String> = requiredPayloadFields(action, additionalRequiredFields)
+        .filterNot(payload::containsKey)
 
     /**
      * Enforce the V1 target contract at the server-owned action seam.

@@ -68,6 +68,7 @@ import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
+import com.wingedsheep.engine.mechanics.cost.DeterministicAdditionalCostPayment
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -100,6 +101,7 @@ import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCost
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
@@ -564,7 +566,7 @@ class ObservationBuilder(
         val sacrificeInfo = la.additionalCostInfo
             ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
         val singleRequirement = targetDomain.requirements.singleOrNull()
-        val requiredPayloadFields = ActionPayloadRequirements.requiredPayloadFields(la)
+        val requiredPayloadFields = requiredPayloadFieldsFor(state, la)
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
@@ -597,6 +599,24 @@ class ObservationBuilder(
         )
     }
 
+    internal fun requiredPayloadFieldsFor(state: GameState, legalAction: LegalAction): List<String> {
+        val additionalRequiredFields = if (requiresDeterministicSourceCostPayment(state, legalAction)) {
+            setOf("costPayment")
+        } else {
+            emptySet()
+        }
+        return ActionPayloadRequirements.requiredPayloadFields(legalAction, additionalRequiredFields)
+    }
+
+    internal fun requiresStructuredActionFor(state: GameState, legalAction: LegalAction): Boolean =
+        requiredPayloadFieldsFor(state, legalAction).isNotEmpty()
+
+    internal fun missingRequiredFieldsFor(
+        state: GameState,
+        legalAction: LegalAction,
+        payload: JsonObject,
+    ): List<String> = requiredPayloadFieldsFor(state, legalAction).filterNot(payload::containsKey)
+
     /**
      * Canonical action-level payment-domain publication used by both observations and the trusted
      * Gym submission guard. A null result is meaningful: a payable action without a complete V2
@@ -607,13 +627,14 @@ class ObservationBuilder(
         return when (val action = legalAction.action) {
             is ActivateAbility -> {
                 val ability = resolveActivatedAbility(state, action) ?: return null
+                val expectedAdditionalCostPayment =
+                    deterministicAdditionalCostPaymentFor(state, legalAction) ?: return null
                 if (legalAction.hasXCost ||
                     legalAction.hasConvoke ||
                     legalAction.hasTapForGeneric ||
                     action.alternativePayment != null ||
                     ability.hasConvoke ||
                     ability.hasWaterbend ||
-                    legalAction.additionalCostInfo != null ||
                     (ability.isEquipAbility &&
                         !isSupportedEquipPayment(state, legalAction, action, ability, requiredCost)) ||
                     (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
@@ -632,7 +653,11 @@ class ObservationBuilder(
                     sourceId = action.sourceId,
                     ability = ability,
                 )
-                val excludeSources = if (hasTapCost(ability.cost)) setOf(action.sourceId) else emptySet()
+                val excludeSources = if (expectedAdditionalCostPayment.tappedPermanents.isNotEmpty()) {
+                    setOf(action.sourceId)
+                } else {
+                    emptySet()
+                }
                 paymentDomainBuilder.build(
                     state = state,
                     playerId = action.playerId,
@@ -949,6 +974,30 @@ class ObservationBuilder(
         else -> false
     }
 
+    private fun deterministicAdditionalCostPaymentFor(
+        state: GameState,
+        legalAction: LegalAction,
+    ): AdditionalCostPayment? {
+        val action = legalAction.action as? ActivateAbility ?: return null
+        val ability = resolveActivatedAbility(state, action) ?: return null
+        val effectiveCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            ability = ability,
+            targets = action.targets,
+            equipPayment = action.alternativePayment?.equipPayment,
+        )
+        return DeterministicAdditionalCostPayment.expectedFor(effectiveCost, action.sourceId)
+    }
+
+    private fun requiresDeterministicSourceCostPayment(
+        state: GameState,
+        legalAction: LegalAction,
+    ): Boolean = deterministicAdditionalCostPaymentFor(state, legalAction)?.let {
+        it.tappedPermanents.isNotEmpty() || it.sacrificedPermanents.isNotEmpty()
+    } == true
+
     /** Resolve the same printed/granted/intrinsic ability provenance used by [stableAbilityKey]. */
     private fun resolveActivatedAbility(state: GameState, action: ActivateAbility): ActivatedAbility? {
         val source = state.getEntity(action.sourceId)
@@ -980,13 +1029,6 @@ class ObservationBuilder(
 
         return IntrinsicManaAbilities.forEntity(state, state.projectedState, action.sourceId)
             .firstOrNull { it.id == action.abilityId }
-    }
-
-    /** Match ActivateAbilityHandler's outer-source exclusion for a tap-bearing ability cost. */
-    private fun hasTapCost(cost: AbilityCost): Boolean = when (cost) {
-        is AbilityCost.Tap -> true
-        is AbilityCost.Composite -> cost.costs.any(::hasTapCost)
-        else -> false
     }
 
     private fun actionSemantic(state: GameState, action: GameAction): JsonObject {
