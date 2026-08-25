@@ -43,10 +43,12 @@ import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
@@ -326,6 +328,148 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         )
         check(choice is SemanticChoice.Action) { "Expected a public mana-color action, got $choice" }
         choice.payload?.get("manaColorChoice") shouldBe JsonPrimitive("WHITE")
+    }
+
+    test("the external policy maps source-bound costPayment from public cost semantics") {
+        val player = EntityId("player-0")
+        val source = EntityId("source-permanent")
+        val sourceBoundCost = buildJsonObject {
+            put("type", "CostComposite")
+            put(
+                "costs",
+                JsonArray(
+                    listOf(
+                        buildJsonObject { put("type", "CostTap") },
+                        buildJsonObject { put("type", "CostSacrificeSelf") },
+                    ),
+                ),
+            )
+        }
+        val action = LegalActionView(
+            actionId = 101,
+            kind = "ActivateAbility",
+            description = "opaque source-bound activation",
+            affordable = true,
+            sourceEntityId = source,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("costPayment"),
+            actionSemantics = buildJsonObject {
+                put("type", "ActivateAbility")
+                put("abilityKey", buildJsonObject {
+                    put("ability", buildJsonObject {
+                        put("cost", sourceBoundCost)
+                    })
+                })
+            },
+        )
+        val observation = TrainingObservation(
+            schemaHash = "test-schema",
+            perspectivePlayerId = player,
+            agentToAct = player,
+            turnNumber = 1,
+            phase = com.wingedsheep.sdk.core.Phase.PRECOMBAT_MAIN,
+            step = com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN,
+            activePlayerId = player,
+            priorityPlayerId = player,
+            players = emptyList(),
+            zones = emptyList(),
+            stack = emptyList(),
+            pendingDecision = null,
+            legalActions = listOf(action),
+            terminated = false,
+            truncated = false,
+            winnerId = null,
+            stateDigest = "digest",
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            observation,
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        check(choice is SemanticChoice.Action) {
+            "Expected a source-bound cost-payment action, got $choice"
+        }
+        val payload = choice.payload ?: error("Cost-payment action did not publish a payload")
+        check("additionalCostPayment" !in payload) {
+            "costPayment must not be emitted through the additional-cost field"
+        }
+        val payment = Json {
+            ignoreUnknownKeys = true
+        }.decodeFromJsonElement(
+            AdditionalCostPayment.serializer(),
+            payload["costPayment"] ?: error("Cost-payment action omitted costPayment"),
+        )
+        payment.sacrificedPermanents shouldBe listOf(source)
+        payment.tappedPermanents shouldBe listOf(source)
+        payment.discardedCards.shouldBeEmpty()
+        payment.exiledCards.shouldBeEmpty()
+        payment.variableCostPermanents.shouldBeEmpty()
+        payment.beheldCards.shouldBeEmpty()
+        payment.bouncedPermanents.shouldBeEmpty()
+        payment.blightTargets.shouldBeEmpty()
+        payment.distributedCounterRemovals.shouldBeEmpty()
+        payment.lifePaid shouldBe 0
+        payment.blightAmount shouldBe 0
+        payment.payXLifeAmount shouldBe 0
+    }
+
+    test("the external policy retains the published additionalCostPayment domain") {
+        val player = EntityId("player-0")
+        val source = EntityId("source-permanent")
+        val firstTarget = EntityId("sacrifice-target-a")
+        val secondTarget = EntityId("sacrifice-target-b")
+        val action = LegalActionView(
+            actionId = 102,
+            kind = "CastSpell",
+            description = "opaque additional-cost action",
+            affordable = true,
+            sourceEntityId = source,
+            validSacrificeTargets = listOf(secondTarget, firstTarget),
+            sacrificeCount = 2,
+            sacrificeMinCount = 2,
+            sacrificeMaxCount = 2,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("additionalCostPayment"),
+            actionSemantics = buildJsonObject {
+                put("type", "CastSpell")
+            },
+        )
+        val observation = TrainingObservation(
+            schemaHash = "test-schema",
+            perspectivePlayerId = player,
+            agentToAct = player,
+            turnNumber = 1,
+            phase = com.wingedsheep.sdk.core.Phase.PRECOMBAT_MAIN,
+            step = com.wingedsheep.sdk.core.Step.PRECOMBAT_MAIN,
+            activePlayerId = player,
+            priorityPlayerId = player,
+            players = emptyList(),
+            zones = emptyList(),
+            stack = emptyList(),
+            pendingDecision = null,
+            legalActions = listOf(action),
+            terminated = false,
+            truncated = false,
+            winnerId = null,
+            stateDigest = "digest",
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            observation,
+            DeterministicPolicyState(policySeed = 1L),
+        )
+        check(choice is SemanticChoice.Action) {
+            "Expected an additional-cost action, got $choice"
+        }
+        val payment = Json {
+            ignoreUnknownKeys = true
+        }.decodeFromJsonElement(
+            AdditionalCostPayment.serializer(),
+            choice.payload?.get("additionalCostPayment")
+                ?: error("Additional-cost action omitted additionalCostPayment"),
+        )
+        payment.sacrificedPermanents shouldBe listOf(firstTarget, secondTarget)
+        payment.tappedPermanents.shouldBeEmpty()
     }
 
     test("seed zero original reproducer stops at the first current finding") {

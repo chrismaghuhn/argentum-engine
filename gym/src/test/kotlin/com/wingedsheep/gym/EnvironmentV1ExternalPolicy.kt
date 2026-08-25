@@ -273,12 +273,7 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        val additionalCostField = when {
-            "additionalCostPayment" in requiredFieldSet -> "additionalCostPayment"
-            "costPayment" in requiredFieldSet -> "costPayment"
-            else -> null
-        }
-        if (additionalCostField != null) {
+        if ("additionalCostPayment" in requiredFieldSet) {
             val count = when {
                 action.sacrificeCount > 0 -> action.sacrificeCount
                 action.sacrificeMinCount > 0 -> action.sacrificeMinCount
@@ -302,12 +297,31 @@ class DeterministicExternalPolicy {
                     actionKind = action.kind,
                 )
             }
-            payload[additionalCostField] = buildJsonObject {
+            payload["additionalCostPayment"] = buildJsonObject {
                 put(
                     "sacrificedPermanents",
                     JsonArray(choices.map { id -> JsonPrimitive(id.value) }),
                 )
             }
+            completedChoice = true
+        }
+
+        if ("costPayment" in requiredFieldSet) {
+            val costPayment = sourceBoundCostPayment(action)
+                ?: return SemanticChoice.Gap(
+                    family = "COST_PAYMENT",
+                    code = "A5_DECISION_GAP",
+                    reason =
+                        "Public costPayment is not a deterministic source-bound cost",
+                    actionKind = action.kind,
+                    publicDomain =
+                        "requiredPayloadFields=$requiredFields; " +
+                            "sourceEntityId=${action.sourceEntityId}; " +
+                            "actionSemantics=${action.actionSemantics}",
+                    proposedFollowUp =
+                        "Publish a complete public domain for non-source-bound cost payment",
+                )
+            payload["costPayment"] = costPayment
             completedChoice = true
         }
 
@@ -880,6 +894,66 @@ class DeterministicExternalPolicy {
         return colors.sortedBy(Color::ordinal)
     }
 
+    /**
+     * Confirms only source-bound cost legs that are explicit in the published ability-cost JSON.
+     * Mana, life, and every other additional-cost leg remain owned by their respective public
+     * domains or Rules execution; this helper never invents them.
+     */
+    private fun sourceBoundCostPayment(
+        action: com.wingedsheep.gym.contract.LegalActionView,
+    ): JsonObject? {
+        val sourceId = action.sourceEntityId ?: return null
+        val cost = (((action.actionSemantics?.get("abilityKey") as? JsonObject)
+            ?.get("ability") as? JsonObject)
+            ?.get("cost")) ?: return null
+        val shape = sourceBoundCostShape(cost) ?: return null
+        if (!shape.tapSelf && !shape.sacrificeSelf) return null
+
+        return buildJsonObject {
+            put(
+                "sacrificedPermanents",
+                JsonArray(
+                    if (shape.sacrificeSelf) {
+                        listOf(JsonPrimitive(sourceId.value))
+                    } else {
+                        emptyList()
+                    },
+                ),
+            )
+            put(
+                "tappedPermanents",
+                JsonArray(
+                    if (shape.tapSelf) {
+                        listOf(JsonPrimitive(sourceId.value))
+                    } else {
+                        emptyList()
+                    },
+                ),
+            )
+        }
+    }
+
+    /**
+     * Reads only serialized public cost-node types. Non-source-bound cost nodes are deliberately
+     * ignored; malformed public structure fails closed instead of being completed heuristically.
+     */
+    private fun sourceBoundCostShape(element: JsonElement): SourceBoundCostShape? {
+        val objectValue = element as? JsonObject ?: return null
+        val type = (objectValue["type"] as? JsonPrimitive)?.content ?: return null
+        return when (type) {
+            "CostTap" -> SourceBoundCostShape(tapSelf = true)
+            "CostSacrificeSelf" -> SourceBoundCostShape(sacrificeSelf = true)
+            "CostComposite" -> {
+                val costs = objectValue["costs"] as? JsonArray ?: return null
+                costs.fold(SourceBoundCostShape()) { accumulated, child ->
+                    val childShape = sourceBoundCostShape(child) ?: return null
+                    accumulated + childShape
+                }
+            }
+            else -> SourceBoundCostShape()
+        }
+    }
+
     private fun parseSpecificColors(colorSet: JsonObject): List<Color>? {
         val encodedColors = colorSet["colors"] as? JsonArray ?: return null
         val colors = encodedColors.mapNotNull { element ->
@@ -971,6 +1045,16 @@ class DeterministicExternalPolicy {
         val symbolIndex: Int,
         val allowedColors: Set<PaymentManaColor>,
     )
+
+    private data class SourceBoundCostShape(
+        val tapSelf: Boolean = false,
+        val sacrificeSelf: Boolean = false,
+    ) {
+        operator fun plus(other: SourceBoundCostShape): SourceBoundCostShape = SourceBoundCostShape(
+            tapSelf = tapSelf || other.tapSelf,
+            sacrificeSelf = sacrificeSelf || other.sacrificeSelf,
+        )
+    }
 
     private data class PublicSourceChoice(
         val sourceId: EntityId,
