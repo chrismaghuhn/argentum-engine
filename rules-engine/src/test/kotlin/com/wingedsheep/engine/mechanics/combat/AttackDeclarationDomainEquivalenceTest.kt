@@ -14,6 +14,7 @@ import com.wingedsheep.engine.state.components.combat.MustAttackPlayerComponent
 import com.wingedsheep.engine.state.components.combat.MustAttackThisTurnComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
@@ -96,6 +97,39 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
             (fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) == null) shouldBe false
             domain.attackerToDefenders.getValue(attacker).contains(defender) shouldBe false
         }
+    }
+
+    test("publishes an AttackMode-accepted Battle when its controller is left but protector is not") {
+        val fixture = attackModeBattleFixture(controllerIndex = 1, protectorIndex = 2)
+        val attacker = fixture.attackerIds.single()
+        val battle = fixture.defenderIds.single()
+        val declaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to battle),
+        )
+
+        fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) shouldBe null
+        // The legacy validAttackTargets hint remains AttackMode-filtered; the certificate must not
+        // reuse it because the current Rules validator evaluates this Battle by its controller.
+        CombatDefenders
+            .getAttackDeclarationCandidateDefenders(fixture.state, fixture.player)
+            .contains(battle) shouldBe false
+        fixture.certificate().attackerToDefenders.getValue(attacker) shouldContain battle
+        assertEquivalent(fixture)
+    }
+
+    test("keeps AttackMode Battle controller and protector semantics distinct") {
+        val fixture = attackModeBattleFixture(controllerIndex = 2, protectorIndex = 1)
+        val attacker = fixture.attackerIds.single()
+        val battle = fixture.defenderIds.single()
+        val declaration = DeclareAttackers(
+            playerId = fixture.player,
+            attackers = mapOf(attacker to battle),
+        )
+
+        (fixture.manager.validateDeclarationBeforeTax(fixture.state, declaration) == null) shouldBe false
+        fixture.certificate().attackerToDefenders.getValue(attacker).contains(battle) shouldBe false
+        assertEquivalent(fixture)
     }
 
     test("retains a Battle-only attacker when every player and planeswalker is restricted") {
@@ -182,13 +216,21 @@ private fun Fixture.certificate() = when (val result = manager.getAttackDeclarat
 }
 
 private fun assertEquivalent(fixture: Fixture) {
-    // Capture both universes before constructing or inspecting the certificate. In particular,
-    // this test never uses certificate relation keys or defender values as a generation source.
-    val candidateAttackers = fixture.manager
-        .getAttackDeclarationCandidateAttackers(fixture.state, fixture.player)
+    // Build both universes directly from the fixture state before constructing or inspecting the
+    // certificate. In particular, this test never uses certificate relation keys/values or either
+    // Rules candidate helper as a generation source, so helper underpublication is observable.
+    val projected = fixture.state.projectedState
+    val candidateAttackers = fixture.state.getBattlefield()
+        .filter { attackerId ->
+            projected.isCreature(attackerId) && projected.getController(attackerId) == fixture.player
+        }
         .sortedBy(EntityId::value)
-    val candidateDefenders = CombatDefenders
-        .getAttackDeclarationCandidateDefenders(fixture.state, fixture.player)
+    val candidateDefenders = (
+        fixture.state.getOpponents(fixture.player) +
+            fixture.state.getBattlefield().filter { defenderId ->
+                projected.isPlaneswalker(defenderId) || projected.isBattle(defenderId)
+            }
+        )
         .sortedBy(EntityId::value)
     val certificate = fixture.certificate()
 
@@ -391,6 +433,30 @@ private fun illegalPlaneswalkerAndBattleDefenderFixture(): Fixture {
         players = players,
         attackerIds = listOf(attacker),
         defenderIds = listOf(planeswalker, battle),
+    )
+}
+
+private fun attackModeBattleFixture(controllerIndex: Int, protectorIndex: Int): Fixture {
+    val (driver, players) = newDriver(
+        playerCount = 3,
+        extraCards = listOf(attackDomainSiege),
+    )
+    val active = players[0]
+    val attacker = driver.putCreatureOnBattlefield(active, "Grizzly Bears")
+    val battle = driver.putPermanentOnBattlefield(players[controllerIndex], attackDomainSiege.name)
+    driver.replaceState(
+        driver.state.updateEntity(battle) {
+            it.with(ProtectorComponent(players[protectorIndex]))
+        }.copy(attackMode = AttackMode.LEFT),
+    )
+    driver.removeSummoningSickness(attacker)
+
+    return fixture(
+        name = "attack-mode-battle-controller-$controllerIndex-protector-$protectorIndex",
+        driver = driver,
+        players = players,
+        attackerIds = listOf(attacker),
+        defenderIds = listOf(battle),
     )
 }
 

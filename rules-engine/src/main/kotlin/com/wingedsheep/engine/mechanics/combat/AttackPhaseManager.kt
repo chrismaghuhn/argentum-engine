@@ -808,7 +808,7 @@ internal class AttackPhaseManager(
         val opponents = state.activePlayers.filter { it !in attackingTeam }
         val candidateAttackers = getAttackDeclarationCandidateAttackers(state, attackingPlayer)
         val candidateDefenders = CombatDefenders
-            .getAttackDeclarationCandidateDefenders(state, attackingPlayer)
+            .getAttackDeclarationCertificateCandidateDefenders(state, attackingPlayer)
         val mustAttackPlayer = state.getEntity(attackingPlayer)
             ?.get<MustAttackPlayerComponent>()
             ?.takeIf { it.activeThisTurn }
