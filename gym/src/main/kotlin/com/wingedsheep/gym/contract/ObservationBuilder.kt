@@ -68,6 +68,7 @@ import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
+import com.wingedsheep.engine.mechanics.cost.DeterministicAdditionalCostPayment
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -607,13 +608,23 @@ class ObservationBuilder(
         return when (val action = legalAction.action) {
             is ActivateAbility -> {
                 val ability = resolveActivatedAbility(state, action) ?: return null
+                val effectiveCost = activatedAbilityCostCalculator.calculate(
+                    state = state,
+                    sourceId = action.sourceId,
+                    controllerId = action.playerId,
+                    ability = ability,
+                    targets = action.targets,
+                    equipPayment = action.alternativePayment?.equipPayment,
+                )
+                val expectedAdditionalCostPayment =
+                    DeterministicAdditionalCostPayment.expectedFor(effectiveCost, action.sourceId)
+                        ?: return null
                 if (legalAction.hasXCost ||
                     legalAction.hasConvoke ||
                     legalAction.hasTapForGeneric ||
                     action.alternativePayment != null ||
                     ability.hasConvoke ||
                     ability.hasWaterbend ||
-                    legalAction.additionalCostInfo != null ||
                     (ability.isEquipAbility &&
                         !isSupportedEquipPayment(state, legalAction, action, ability, requiredCost)) ||
                     (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
@@ -632,7 +643,11 @@ class ObservationBuilder(
                     sourceId = action.sourceId,
                     ability = ability,
                 )
-                val excludeSources = if (hasTapCost(ability.cost)) setOf(action.sourceId) else emptySet()
+                val excludeSources = if (expectedAdditionalCostPayment.tappedPermanents.isNotEmpty()) {
+                    setOf(action.sourceId)
+                } else {
+                    emptySet()
+                }
                 paymentDomainBuilder.build(
                     state = state,
                     playerId = action.playerId,
@@ -980,13 +995,6 @@ class ObservationBuilder(
 
         return IntrinsicManaAbilities.forEntity(state, state.projectedState, action.sourceId)
             .firstOrNull { it.id == action.abilityId }
-    }
-
-    /** Match ActivateAbilityHandler's outer-source exclusion for a tap-bearing ability cost. */
-    private fun hasTapCost(cost: AbilityCost): Boolean = when (cost) {
-        is AbilityCost.Tap -> true
-        is AbilityCost.Composite -> cost.costs.any(::hasTapCost)
-        else -> false
     }
 
     private fun actionSemantic(state: GameState, action: GameAction): JsonObject {

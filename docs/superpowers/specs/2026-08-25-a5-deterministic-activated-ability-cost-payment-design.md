@@ -102,4 +102,3 @@ The implementation must include tests proving:
 The existing Wayfarer's Bauble Rules scenario remains a direct/legacy compatibility test and must not
 be converted into a card-definition workaround. No deck, corpus, PR #73, schema, or replay changes are
 in scope.
-

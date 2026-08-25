@@ -798,8 +798,20 @@ Rules materialization; `ability = null` in that context does not disable mana re
 Non-mana structured cast choices may be submitted alongside the plan when they do not alter the
 effective mana cost or the published source set; cost-changing or source-affecting choices remain
 fail-closed.
-The public payment and replay schemas are unchanged by the CycleCard and deterministic mana
-side-effect slices. `PaymentSourceActivationDomain.manaAbilityKey` remains the structural identity
+For the existing `ActivateAbility.costPayment` field, there is one deliberately narrow additional-
+cost exception: when the authoritative effective ability cost contains only ordinary mana,
+`TapSelf`, and `SacrificeSelf`, Rules may certify the source-bound payment for Gym. The public
+`LegalActionView` already provides `sourceEntityId` and the existing `requiredPayloadFields` already
+requires `costPayment` when the enumerated action has `additionalCostInfo`. The controller
+materializes the canonical acknowledgement as `tappedPermanents: [sourceEntityId]` and/or
+`sacrificedPermanents: [sourceEntityId]`; every other `AdditionalCostPayment` field must remain at
+its empty/default value. This is not a selection domain: Rules derives the expected value from the
+authoritative effective `AbilityCost` plus the activated source ID, then checks exact equality before
+any mana, tap, or sacrifice mutation. `PaymentDomainV4` remains mana-only, and no serialized DTO,
+schema hash, or replay version changes for this contract.
+The public payment and replay schemas are unchanged by the CycleCard, deterministic mana
+side-effect, and source-bound activated self-cost slices. `PaymentSourceActivationDomain.manaAbilityKey`
+remains the structural identity
 of the entire selected activated ability (excluding runtime `id` and `descriptionOverride`); the
 side-effect certificate is an internal closure proof, not a second execution authority.
 The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
@@ -870,10 +882,12 @@ validates and materializes those choices but does not fill in a missing ability,
 unit, generic/hybrid/X allocation, restriction bucket, or rider-bearing path. The trusted Gym
 boundary rejects `AutoPay`, `FromPool`, and the legacy source-ID-only form for these actions.
 
-Secondary mana-ability choices, sacrifice or other secondary sub-costs, bonus/restricted mana,
-riders, hybrid/X shapes, and other exotic payment forms fail closed until their choices have a
-corresponding public V1 field. Such a reachable shape is an unsupported Gym diagnostic, not a
-partial domain.
+Choice-bearing secondary costs — selecting one of several permanents or cards, variable quantities,
+target/domain-dependent payments, and other sacrifice/tap choices — plus bonus/restricted mana,
+riders, hybrid/X shapes, and other exotic payment forms remain fail-closed. Such a reachable shape
+is an unsupported Gym diagnostic, not a partial domain. A deterministic `TapSelf` or `SacrificeSelf`
+is supported only through the source-bound `costPayment` acknowledgement described above; Rules does
+not infer it when the externally controlled Explicit path requires the field.
 
 #### Historical PaymentDomainV3 floating provenance
 

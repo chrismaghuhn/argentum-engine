@@ -1,0 +1,52 @@
+package com.wingedsheep.engine.mechanics.cost
+
+import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
+import com.wingedsheep.sdk.scripting.costs.CostAtom
+
+/**
+ * Derives the canonical public acknowledgement for the narrow source-bound activated-cost slice.
+ *
+ * This is deliberately a Rules-owned certificate: it accepts only the authoritative effective
+ * ability cost and the activated source ID. It does not inspect legal-action metadata or complete a
+ * client payload. Selection-bearing costs remain uncertified and therefore fail closed at public
+ * payment-domain publication.
+ */
+object DeterministicAdditionalCostPayment {
+
+    fun expectedFor(cost: AbilityCost, sourceId: EntityId): AdditionalCostPayment? {
+        val counts = collect(cost) ?: return null
+        if (counts.tapCount > 1 || counts.sacrificeCount > 1) return null
+
+        return AdditionalCostPayment(
+            tappedPermanents = List(counts.tapCount) { sourceId },
+            sacrificedPermanents = List(counts.sacrificeCount) { sourceId },
+        )
+    }
+
+    private fun collect(cost: AbilityCost): Counts? = when (cost) {
+        is AbilityCost.Atom ->
+            if (cost.atom is CostAtom.Mana) Counts() else null
+
+        AbilityCost.Tap -> Counts(tapCount = 1)
+        AbilityCost.SacrificeSelf -> Counts(sacrificeCount = 1)
+
+        is AbilityCost.Composite -> {
+            cost.costs.fold(Counts()) { accumulated, child ->
+                val next = collect(child) ?: return null
+                Counts(
+                    tapCount = accumulated.tapCount + next.tapCount,
+                    sacrificeCount = accumulated.sacrificeCount + next.sacrificeCount,
+                )
+            }
+        }
+
+        else -> null
+    }
+
+    private data class Counts(
+        val tapCount: Int = 0,
+        val sacrificeCount: Int = 0,
+    )
+}
