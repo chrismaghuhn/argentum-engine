@@ -100,10 +100,11 @@ data class CompactReplay(
          * [pinnedCards] and legacy [checkpoints]; v3 defines the complete transition-semantic
          * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint; v4 adds
          * the joint floating-mana provenance state and the explicitly versioned
-         * PaymentStrategy.ExplicitV2 action carrier. The action-level target-domain fields are an
-         * additive Gym observation contract and do not change replay reconstruction semantics. The
-         * codec still tolerates unknown fields on supported versions, but rejects versions newer
-         * than this constant before deserialization.
+         * PaymentStrategy.ExplicitV2 action carrier. The action-level target-domain fields,
+         * AttackDeclarationDomainV1, and the v1.20 SchemaHash are additive Gym observation
+         * contract data and do not change replay reconstruction semantics. The codec still
+         * tolerates unknown fields on supported versions, but rejects versions newer than this
+         * constant before deserialization.
          */
         const val CURRENT_VERSION = 4
 
