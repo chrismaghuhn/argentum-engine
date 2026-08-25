@@ -1153,7 +1153,7 @@ class CastSpellHandler(
                 .firstOrNull { it.manaCost != null }
                 ?.manaCost
             if (kickerManaCost != null) {
-                effectiveCost = ManaCost(effectiveCost.symbols + kickerManaCost.symbols)
+                effectiveCost += kickerManaCost
             }
         }
 
@@ -2757,7 +2757,7 @@ class CastSpellHandler(
                 .firstOrNull { it.manaCost != null }
                 ?.manaCost
             if (kickerManaCost != null) {
-                effectiveCost = ManaCost(effectiveCost.symbols + kickerManaCost.symbols)
+                effectiveCost += kickerManaCost
             }
         }
 
