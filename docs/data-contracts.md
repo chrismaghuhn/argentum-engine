@@ -840,8 +840,8 @@ Non-mana structured cast choices may be submitted alongside the plan when they d
 effective mana cost or the published source set; cost-changing or source-affecting choices remain
 fail-closed.
 For the existing `ActivateAbility.costPayment` field, there is one deliberately narrow additional-
-cost exception: when the authoritative effective ability cost contains one positive fixed ordinary
-mana atom, optional `TapSelf` and/or `SacrificeSelf`, and the explicitly certified
+cost exception: when the authoritative effective ability cost contains one fixed ordinary mana atom
+(including `{0}`), optional `TapSelf` and/or `SacrificeSelf`, and the explicitly certified
 `PayLife(CommanderColorIdentityCount)` expression, Rules may certify the source-bound payment for
 Gym. The public `LegalActionView` already provides `sourceEntityId`; the existing
 `requiredPayloadFields` requires `costPayment` when the enumerated action has `additionalCostInfo`,
@@ -853,7 +853,9 @@ payload field and is not a player decision: Rules resolves and pays it through t
 authoritative life-payment path. This is not a selection domain: Rules derives the expected value
 from the authoritative effective `AbilityCost` plus the activated source ID, then checks exact
 equality before any mana, tap, sacrifice, or life mutation. `PaymentDomainV4` remains mana-only,
-and no serialized DTO, schema hash, or replay version changes for this contract.
+and a `{0}` atom is represented by an explicit `PaymentPlanV2` zero-spend allocation rather than
+by omitting the payment object or allowing an implicit source choice. No serialized DTO, schema
+hash, or replay version changes for this contract.
 The public payment and replay schemas are unchanged by the CycleCard, deterministic mana
 side-effect, and source-bound activated self-cost slices. `PaymentSourceActivationDomain.manaAbilityKey`
 remains the structural identity
