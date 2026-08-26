@@ -15,10 +15,15 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldContain
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+
+private const val HIDDEN_HAND_FIXTURE_SEED = 70L
 
 class ObservationCanonicalizationTest : FunSpec({
 
@@ -27,7 +32,7 @@ class ObservationCanonicalizationTest : FunSpec({
         it.register(PortalSet.basicLands)
     }
 
-    fun environment(): GameEnvironment {
+    fun environment(seed: Long? = null): GameEnvironment {
         val env = GameEnvironment.create(registry())
         env.reset(
             GameConfig(
@@ -36,10 +41,42 @@ class ObservationCanonicalizationTest : FunSpec({
                     PlayerConfig("Bob", Deck.of("Mountain" to 20))
                 ),
                 skipMulligans = true,
-                startingPlayerIndex = 0
+                startingPlayerIndex = 0,
+                seed = seed,
             )
         )
         return env
+    }
+
+    fun exactJsonStringPaths(
+        element: JsonElement,
+        expected: String,
+        path: String = "$"
+    ): List<String> = when (element) {
+        is JsonObject -> element.entries.flatMap { (key, value) ->
+            val keyPath = "$path.<key:$key>"
+            val keyMatch = if (key == expected) listOf(keyPath) else emptyList()
+            keyMatch + exactJsonStringPaths(value, expected, "$path.$key")
+        }
+
+        is JsonArray -> element.mapIndexed { index, child ->
+            exactJsonStringPaths(child, expected, "$path[$index]")
+        }.flatten()
+
+        is JsonPrimitive -> if (element.content == expected) listOf(path) else emptyList()
+    }
+
+    fun assertNoExactJsonStringReference(
+        serialized: String,
+        expected: String,
+        label: String,
+    ) {
+        val paths = exactJsonStringPaths(Json.parseToJsonElement(serialized), expected)
+        if (paths.isNotEmpty()) {
+            throw AssertionError(
+                "$label contains exact JSON string '$expected' at ${paths.joinToString()}",
+            )
+        }
     }
 
     fun observation(env: GameEnvironment): TrainingObservation =
@@ -600,8 +637,18 @@ class ObservationCanonicalizationTest : FunSpec({
             ObservationCanonicalizer.semanticJson(reversed)
     }
 
+    test("seeded hidden-hand fixture has stable entity placement") {
+        val first = environment(seed = HIDDEN_HAND_FIXTURE_SEED)
+        val second = environment(seed = HIDDEN_HAND_FIXTURE_SEED)
+
+        first.playerIds shouldBe second.playerIds
+        first.state shouldBe second.state
+        first.state.getHand(first.playerIds[1]).first() shouldBe
+            second.state.getHand(second.playerIds[1]).first()
+    }
+
     test("hidden hand identity is absent from both canonical forms") {
-        val env = environment()
+        val env = environment(seed = HIDDEN_HAND_FIXTURE_SEED)
         val opponent = env.playerIds[1]
         val hiddenId = env.state.getHand(opponent).first()
         val replacement = CardEntityFactory
@@ -619,11 +666,70 @@ class ObservationCanonicalizationTest : FunSpec({
 
         val wireA = ObservationCanonicalizer.wireJson(maskedA)
         val wireB = ObservationCanonicalizer.wireJson(maskedB)
-        wireA.contains("Raging Goblin") shouldBe false
-        wireB.contains("Raging Goblin") shouldBe false
-        wireA.contains(hiddenId.value) shouldBe false
-        wireB.contains(hiddenId.value) shouldBe false
-        ObservationCanonicalizer.semanticJson(maskedA) shouldBe
-            ObservationCanonicalizer.semanticJson(maskedB)
+        val semanticA = ObservationCanonicalizer.semanticJson(maskedA)
+        val semanticB = ObservationCanonicalizer.semanticJson(maskedB)
+
+        listOf(
+            "wireA" to wireA,
+            "wireB" to wireB,
+            "semanticA" to semanticA,
+            "semanticB" to semanticB,
+        ).forEach { (label, serialized) ->
+            assertNoExactJsonStringReference(serialized, hiddenId.value, label)
+            assertNoExactJsonStringReference(serialized, "Raging Goblin", label)
+        }
+
+        semanticA shouldBe semanticB
+        maskedA.stateDigest shouldBe maskedB.stateDigest
+        StateDigest.compute(maskedA) shouldBe StateDigest.compute(maskedB)
+    }
+
+    test("structural hidden-identity assertion detects exact references, not substrings") {
+        val hiddenId = EntityId("e2")
+        val decoy = buildJsonObject {
+            put("visibleEntityId", "e20")
+        }
+
+        assertNoExactJsonStringReference(decoy.toString(), hiddenId.value, "decoy")
+
+        val leaked = buildJsonObject {
+            put("zones", buildJsonArray {
+                add(buildJsonObject {
+                    put("cards", buildJsonArray {
+                        add(buildJsonObject {
+                            put("entityId", hiddenId.value)
+                            put("attachments", buildJsonArray { add(JsonPrimitive(hiddenId.value)) })
+                        })
+                    })
+                })
+            })
+            put("stack", buildJsonArray {
+                add(buildJsonObject { put("sourceEntityId", hiddenId.value) })
+            })
+            put("legalActions", buildJsonArray {
+                add(buildJsonObject {
+                    put("sourceEntityId", hiddenId.value)
+                    put("targetEntityIds", buildJsonArray { add(JsonPrimitive(hiddenId.value)) })
+                    put("targetDomain", buildJsonObject {
+                        put("requirements", buildJsonArray {
+                            add(buildJsonObject {
+                                put("candidates", buildJsonArray { add(JsonPrimitive(hiddenId.value)) })
+                            })
+                        })
+                    })
+                })
+            })
+            put("pendingDecision", buildJsonObject {
+                put("structuredDomain", buildJsonObject {
+                    put("options", buildJsonArray { add(JsonPrimitive(hiddenId.value)) })
+                })
+            })
+            put("diagnostics", buildJsonObject { put("entityId", hiddenId.value) })
+        }
+
+        val failure = shouldThrow<AssertionError> {
+            assertNoExactJsonStringReference(leaked.toString(), hiddenId.value, "negative control")
+        }
+        failure.message shouldContain "$.zones[0].cards[0].entityId"
     }
 })
