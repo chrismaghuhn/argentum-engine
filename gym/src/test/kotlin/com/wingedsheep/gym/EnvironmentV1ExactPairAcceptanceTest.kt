@@ -1196,6 +1196,12 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
     test("static reachable decision-family closure is explicit") {
         val evidence = decisionClosureEvidence()
         println(evidence.render())
+        if (evidence.uncovered.isNotEmpty()) {
+            System.err.println(
+                "DECISION_CLOSURE_UNCOVERED=${evidence.uncovered}; " +
+                    "rows=${evidence.rows}; source=${evidence.sourceBoundary}",
+            )
+        }
         check(evidence.uncovered.isEmpty()) {
             "Decision-family closure has uncovered entries: ${evidence.uncovered}"
         }
@@ -2313,6 +2319,16 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             val uncovered = buildList {
                 addAll(missingFieldHandlers.map { "requiredPayloadFields.$it" })
                 addAll(derivedFamilies.filter { it !in dispositionByFamily })
+            }
+            if (definitionScan.digest != corpusSnapshot.definitionDigest) {
+                System.err.println(
+                    "DECISION_CLOSURE_DEFINITION_DIGEST_MISMATCH=" +
+                        "recorded=${corpusSnapshot.definitionDigest}; " +
+                        "current=${definitionScan.digest}; " +
+                        "staticActionFamilies=${definitionScan.staticallyReachableActionFamilies}; " +
+                        "staticDecisionFamilies=${definitionScan.staticallyReachableDecisionFamilies}; " +
+                        "staticRequiredFields=${definitionScan.staticallyReachableRequiredPayloadFields}",
+                )
             }
             check(definitionScan.digest == corpusSnapshot.definitionDigest) {
                 "Decision closure corpus telemetry is stale for the current locked definitions: " +
