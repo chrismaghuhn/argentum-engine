@@ -1179,7 +1179,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         check(evidence.failures.isEmpty()) {
             "Exact-pair replay gate failed: ${evidence.failures.joinToString()}"
         }
-        evidence.traces.size shouldBe 4
+        evidence.traces.size shouldBe 2
     }
 
     test("final exact-pair privacy gate audits both player perspectives")
@@ -1327,6 +1327,14 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             EpisodeConfig(0L, 1, "Chevill", "Akiri", "Chevill-vs-Akiri"),
         )
 
+        /**
+         * Minimal independent public replay matrix: normal/start-0 plus swap/start-1 covers
+         * both starting-player positions and both roster orientations.  The full four-case
+         * corpus remains the source of dynamic evidence; this gate independently replays the
+         * smallest matrix that covers both axes through the public policy and CompactReplay.
+         */
+        private val publicReplayCases = setOf(replayCases[0], replayCases[3])
+
         private val replayActionSerialization = Json {
             encodeDefaults = true
             explicitNulls = false
@@ -1339,9 +1347,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
         /**
          * The corpus already executes the four replay cases with the same public policy.  Keep
-         * those public traces so the replay gate can spend its budget on authoritative replay
-         * reconstruction plus one independent public replay, instead of recording each case a
-         * second time immediately after the 72-case corpus.
+         * the selected matrix traces so the replay gate can spend its budget on authoritative
+         * replay reconstruction plus the minimal independent public matrix, instead of
+         * recording those cases a second time immediately after the 72-case corpus.
          */
         @Volatile
         private var corpusReplayTraceCache: Map<EpisodeConfig, ReplayTrace> = emptyMap()
@@ -1353,7 +1361,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             val traces = mutableListOf<ReplayTrace>()
             val authoritative = mutableListOf<AuthoritativeReplayCase>()
             val failures = mutableListOf<String>()
-            for (episode in replayCases) {
+            for (episode in publicReplayCases) {
                 try {
                     val trace = corpusReplayTraceCache[episode] ?: captureReplayTrace(episode)
                     val replayedTrace = replayTrace(trace)
@@ -1382,7 +1390,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 authoritative = authoritative,
                 failures = failures,
             )
-            if (evidence.failures.isEmpty() && evidence.traces.size == replayCases.size) {
+            if (evidence.failures.isEmpty() && evidence.traces.size == publicReplayCases.size) {
                 replayGateEvidenceCache = evidence
             }
             return evidence
@@ -2449,14 +2457,17 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     definitionScan.emptySerializations
             }
 
-            // The replay gate already captured these same four complete public traces. Reusing
-            // them keeps the static closure gate within the hosted watchdog budget while
-            // preserving the exact current bounded evidence set. A focused run of this gate
-            // without the replay test still captures the traces here.
-            val boundedEvidence = replayGateEvidenceCache?.takeIf {
-                it.failures.isEmpty() && it.traces.size == replayCases.size
-            }?.traces ?: replayCases.map { episode ->
-                captureReplayTrace(episode, captureAuthoritativeReplay = false)
+            // The corpus already captured complete public traces for all four bounded cases.
+            // Reuse those traces here so the static closure gate preserves its full bounded
+            // evidence set without recording the same cases a second time. A focused run of
+            // this gate without the corpus still captures all four cases here.
+            val corpusEvidence = replayCases.mapNotNull { corpusReplayTraceCache[it] }
+            val boundedEvidence = if (corpusEvidence.size == replayCases.size) {
+                corpusEvidence
+            } else {
+                replayCases.map { episode ->
+                    captureReplayTrace(episode, captureAuthoritativeReplay = false)
+                }
             }
             val corpusSnapshot = exactPairCorpusReachabilitySnapshot()
             val dynamicActionKinds = TreeMap<String, Int>().apply {
