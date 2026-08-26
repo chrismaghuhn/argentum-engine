@@ -1337,6 +1337,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         @Volatile
         private var replayGateEvidenceCache: ReplayGateEvidence? = null
 
+        /**
+         * The corpus already executes the four replay cases with the same public policy.  Keep
+         * those public traces so the replay gate can spend its budget on authoritative replay
+         * reconstruction plus one independent public replay, instead of recording each case a
+         * second time immediately after the 72-case corpus.
+         */
+        @Volatile
+        private var corpusReplayTraceCache: Map<EpisodeConfig, ReplayTrace> = emptyMap()
+
         @Synchronized
         fun runExactPairReplayGate(): ReplayGateEvidence {
             replayGateEvidenceCache?.let { return it }
@@ -1346,14 +1355,23 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             val failures = mutableListOf<String>()
             for (episode in replayCases) {
                 try {
-                    val trace = captureReplayTrace(episode)
+                    val trace = corpusReplayTraceCache[episode] ?: captureReplayTrace(episode)
+                    val replayedTrace = replayTrace(trace)
+                    if (trace.checkpoints.isNotEmpty()) {
+                        check(trace.checkpoints == replayedTrace.checkpoints) {
+                            "Public replay checkpoints differ from the captured replay for $episode"
+                        }
+                    }
                     traces += trace
                     authoritative += CompactReplayBridge.verify(
-                        trace = trace,
+                        // The complete public replay above supplies the authoritative checkpoint
+                        // stream when the source trace came from the already-running corpus.  The
+                        // reconstructed replay still folds those same actions through the existing
+                        // CompactReplay implementation and must reach EXACT fidelity.
+                        trace = replayedTrace,
                         registry = exactPairRegistry(),
                         repositoryRoot = repositoryRoot(),
                     )
-                    replayTrace(trace)
                 } catch (failure: Exception) {
                     failures += "${episode.rosterLabel}/seed=${episode.seed}/" +
                         "starting=${episode.startingPlayerIndex}: ${failure.message}"
@@ -1410,6 +1428,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         (observedDecisionFamilies[family] ?: 0) + 1
                 }
             }
+            fun recordFrame(game: TrainingObservation) {
+                frames += replayFrame(game)
+                recordPublicReachability(game)
+            }
             val checkpointCadence = if (captureAuthoritativeReplay) {
                 CompactReplayBridge.checkpointCadence(repositoryRoot())
             } else {
@@ -1419,8 +1441,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var observation = result.observation as? TrainingObservation
                 ?: error("Replay capture requires a TrainingObservation after reset")
             assertEnvironmentDiagnosticsZero(environment)
-            frames += replayFrame(observation)
-            recordPublicReachability(observation)
+            recordFrame(observation)
             if (captureAuthoritativeReplay) {
                 checkpoints += ReplayCheckpointData(
                     afterActionCount = 0,
@@ -1497,8 +1518,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 assertEnvironmentDiagnosticsZero(environment)
                 observation = result.observation as? TrainingObservation
                     ?: error("Replay capture lost TrainingObservation after transition $transitions")
-                frames += replayFrame(observation)
-                recordPublicReachability(observation)
+                recordFrame(observation)
                 if (captureAuthoritativeReplay && transitions % checkpointCadence == 0) {
                     checkpoints += ReplayCheckpointData(
                         afterActionCount = transitions,
@@ -1537,7 +1557,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             )
         }
 
-        private fun replayTrace(trace: ReplayTrace) {
+        private fun replayTrace(trace: ReplayTrace): ReplayTrace {
             val registry = exactPairRegistry()
             val environment = GameEnvironment.create(
                 registry,
@@ -1553,6 +1573,13 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var observation = result.observation as? TrainingObservation
                 ?: error("Replay requires a TrainingObservation after reset")
             assertReplayFrame(trace, 0, observation, environment)
+            val checkpoints = mutableListOf(
+                ReplayCheckpointData(
+                    afterActionCount = 0,
+                    fingerprint = authoritativeReplayFingerprint(environment.state),
+                ),
+            )
+            val checkpointCadence = CompactReplayBridge.checkpointCadence(repositoryRoot())
 
             trace.decisions.forEachIndexed { index, decision ->
                 result = when (decision) {
@@ -1594,11 +1621,24 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 observation = result.observation as? TrainingObservation
                     ?: error("Replay lost TrainingObservation at transition ${index + 1}")
                 assertReplayFrame(trace, index + 1, observation, environment)
+                if ((index + 1) % checkpointCadence == 0) {
+                    checkpoints += ReplayCheckpointData(
+                        afterActionCount = index + 1,
+                        fingerprint = authoritativeReplayFingerprint(environment.state),
+                    )
+                }
             }
 
             check(observation.terminated || observation.truncated) {
                 "Replay ended before the captured terminal/truncated result"
             }
+            if (checkpoints.lastOrNull()?.afterActionCount != trace.actions.size) {
+                checkpoints += ReplayCheckpointData(
+                    afterActionCount = trace.actions.size,
+                    fingerprint = authoritativeReplayFingerprint(environment.state),
+                )
+            }
+            return trace.copy(checkpoints = checkpoints)
         }
 
         private fun assertReplayFrame(
@@ -2729,8 +2769,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             return sites
         }
 
-        private fun EpisodeConfig.gameConfig(resolver: DeckResolver): GameConfig {
-            val config = envConfig()
+        private fun EpisodeConfig.gameConfig(
+            resolver: DeckResolver,
+            config: EnvConfig = envConfig(),
+        ): GameConfig {
             return GameConfig(
                 players = config.players.map { player ->
                     PlayerConfig(
@@ -2755,8 +2797,11 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
          * recording and reconstruction so GameInitializer's entity counter advances identically
          * on both sides of the authoritative replay contract.
          */
-        private fun EpisodeConfig.replayGameConfig(resolver: DeckResolver): GameConfig =
-            gameConfig(resolver).let { config ->
+        private fun EpisodeConfig.replayGameConfig(
+            resolver: DeckResolver,
+            envConfig: EnvConfig = envConfig(),
+        ): GameConfig =
+            gameConfig(resolver, envConfig).let { config ->
                 config.copy(
                     players = config.players.mapIndexed { index, player ->
                         player.copy(playerId = EntityId("a5-replay-player-$index"))
@@ -2768,14 +2813,28 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             val evidence = CorpusEvidence()
             val policy = DeterministicExternalPolicy()
             val service = MultiEnvService(exactPairRegistry())
+            val replayTraces = mutableMapOf<EpisodeConfig, ReplayTrace>()
+            corpusReplayTraceCache = emptyMap()
             try {
                 for (episode in corpusCases()) {
                     if (evidence.firstFailure != null) break
-                    val result = runEpisode(service, policy, episode)
+                    val replayConfig = episode.replayEnvConfig().takeIf { episode in replayCases }
+                    val result = runEpisode(
+                        service = service,
+                        policy = policy,
+                        episode = episode,
+                        envConfig = replayConfig ?: episode.envConfig(),
+                        replayTraceSink = replayCases
+                            .takeIf { episode in it }
+                            ?.let { { trace -> replayTraces[episode] = trace } },
+                    )
                     evidence.record(result)
                 }
             } finally {
                 service.dispose(service.listEnvs())
+            }
+            if (evidence.firstFailure == null && replayTraces.size == replayCases.size) {
+                corpusReplayTraceCache = replayTraces.toMap()
             }
             return evidence
         }
@@ -2784,6 +2843,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             service: MultiEnvService,
             policy: DeterministicExternalPolicy,
             episode: EpisodeConfig,
+            envConfig: EnvConfig = episode.envConfig(),
+            replayTraceSink: ((ReplayTrace) -> Unit)? = null,
         ): EpisodeResult {
             val policyState = DeterministicPolicyState(policySeed(episode))
             var state = policyState
@@ -2795,6 +2856,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var lastChoicePayload: JsonObject? = null
             var lastPreTransitionObservation: TrainingObservation? = null
             var transitions = 0
+            var serviceObservation: ObservationResult? = null
+            val replayFrames = mutableListOf<ReplayFrame>()
+            val replayDecisions = mutableListOf<ReplayDecision>()
+            val replayActions = mutableListOf<GameAction>()
+            val replayRequiredPayloadFields = mutableSetOf<String>()
+            val replayObservedActionKinds = TreeMap<String, Int>()
+            val replayObservedDecisionFamilies = TreeMap<String, Int>()
+            var replayGameConfig: GameConfig? = null
+            var replayPlayerIds: List<EntityId> = emptyList()
             val actionKinds = TreeMap<String, Int>()
             val decisionFamilies = TreeMap<String, Int>()
             var commanderZoneDecisions = 0
@@ -2953,10 +3023,33 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 }
             }
 
+            fun recordReplayObservation(game: TrainingObservation) {
+                if (replayTraceSink == null) return
+                replayFrames += replayFrame(game)
+                game.legalActions.forEach { candidate ->
+                    replayObservedActionKinds[candidate.kind] =
+                        (replayObservedActionKinds[candidate.kind] ?: 0) + 1
+                    replayRequiredPayloadFields += candidate.requiredPayloadFields
+                }
+                game.pendingDecision?.let { pending ->
+                    val family = pending.kind.name
+                    replayObservedDecisionFamilies[family] =
+                        (replayObservedDecisionFamilies[family] ?: 0) + 1
+                }
+            }
+
             return try {
-                val created = service.create(episode.envConfig())
+                val created = service.create(envConfig)
                 envId = created.envId
+                serviceObservation = created.observation
                 var game = observe(created.observation)
+                if (replayTraceSink != null) {
+                    replayGameConfig = episode.replayGameConfig(service.deckResolver, envConfig)
+                    replayPlayerIds = replayGameConfig!!.players.map { player ->
+                        checkNotNull(player.playerId)
+                    }
+                    recordReplayObservation(game)
+                }
                 assertDiagnosticsZero()?.let { failure ->
                     return EpisodeResult(
                         episode = episode,
@@ -3070,7 +3163,41 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                                 )
                             )
                             transitions++
+                            if (replayTraceSink != null) {
+                                val resolved = checkNotNull(serviceObservation).registry.resolve(
+                                    choice.actionId,
+                                )
+                                when (resolved) {
+                                    is ResolvedAction.Legal -> {
+                                        replayActions += materializeReplayAction(
+                                            resolved.action,
+                                            choice.payload,
+                                        )
+                                    }
+
+                                    is ResolvedAction.Decision -> {
+                                        val actor = game.agentToAct
+                                            ?: error("Folded decision action has no public actor")
+                                        replayActions += SubmitDecision(actor, resolved.response)
+                                    }
+
+                                    ResolvedAction.Unknown -> error(
+                                        "Corpus replay action handle did not resolve in the public registry",
+                                    )
+                                }
+                                val action = lastActionView
+                                    ?: error("Corpus replay action view was not captured")
+                                val semanticKey = semanticActionKey(action)
+                                replayDecisions += ReplayDecision.Action(
+                                    kind = action.kind,
+                                    semanticKey = semanticKey,
+                                    semanticOrdinal = semanticActionOrdinal(game, action, semanticKey),
+                                    payload = choice.payload,
+                                )
+                            }
+                            serviceObservation = result
                             game = observe(result)
+                            recordReplayObservation(game)
                         }
 
                         is SemanticChoice.Structured -> {
@@ -3086,7 +3213,16 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                                 actorId = game.agentToAct,
                             )
                             transitions++
+                            if (replayTraceSink != null) {
+                                replayDecisions += ReplayDecision.Structured(
+                                    family = pending.kind.name,
+                                    selection = choice.selection,
+                                )
+                                replayActions += SubmitDecision(pending.playerId, response)
+                            }
+                            serviceObservation = result
                             game = observe(result)
+                            recordReplayObservation(game)
                         }
                     }
 
@@ -3109,6 +3245,20 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     if (game.terminated || game.truncated) break
                 }
 
+                replayTraceSink?.invoke(
+                    ReplayTrace(
+                        episode = episode,
+                        frames = replayFrames,
+                        decisions = replayDecisions,
+                        actions = replayActions,
+                        checkpoints = emptyList(),
+                        gameConfig = checkNotNull(replayGameConfig),
+                        playerIds = replayPlayerIds,
+                        requiredPayloadFields = replayRequiredPayloadFields,
+                        observedActionKinds = replayObservedActionKinds,
+                        observedDecisionFamilies = replayObservedDecisionFamilies,
+                    ),
+                )
                 EpisodeResult(
                     episode = episode,
                     transitions = transitions,
@@ -3276,6 +3426,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 perspectivePlayerIndex = 0,
             )
         }
+
+        private fun EpisodeConfig.replayEnvConfig(): EnvConfig =
+            envConfig().let { config ->
+                config.copy(
+                    players = config.players.mapIndexed { index, player ->
+                        player.copy(playerId = EntityId("a5-replay-player-$index"))
+                    },
+                )
+            }
 
         fun exactPairRegistry(): CardRegistry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
