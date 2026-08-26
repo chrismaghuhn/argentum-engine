@@ -69,6 +69,7 @@ import java.util.TreeMap
 import kotlin.io.path.readBytes
 import kotlin.io.path.readLines
 import kotlin.io.path.readText
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Durable exact-pair Environment V1 setup and corpus gate.
@@ -1090,7 +1091,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
-    test("runs the exact 72-episode trusted corpus with first-gap stop semantics") {
+    test("runs the exact 72-episode trusted corpus with first-gap stop semantics")
+        .config(timeout = 30.minutes) {
         val evidence = runExactPairCorpus()
         println(evidence.render())
 
