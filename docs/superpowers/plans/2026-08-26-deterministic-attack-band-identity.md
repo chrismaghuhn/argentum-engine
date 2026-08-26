@@ -47,6 +47,10 @@
   snapshot/fork, replay, canonicalization/digest, relevant module, and scenario
   gates. Use `just` first and separately label the documented Windows native
   Gradle fallback if `just` cannot invoke its wrapper.
+- Keep the heavyweight `EnvironmentV1ExactPairAcceptanceTest` out of the normal
+  `:gym:test` PR path. Run it only through the dedicated
+  `:gym:environmentV1AcceptanceTest` task and its explicit manual GitHub
+  workflow; do not wire that task into `check` or `build`.
 
 ## A6 audit, review, and delivery
 
