@@ -57,4 +57,3 @@ atomic rejection, fork/snapshot/serialization, cleanup, and no-band behavior.
 The production `CompactReplay` codec, `ReplayReconstructor`, checkpoints, and
 exact-fidelity path are exercised with a non-empty band. Existing A5 attack
 domain tests are retained.
-
