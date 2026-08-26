@@ -1231,6 +1231,20 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
+    test("static closure derives mode choices from current replacement definitions") {
+        val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
+            readLockedDeck("chevill-v0.1.txt").cards).distinct()
+        val resolvedCards = lockedCards.mapNotNull(exactPairRegistry()::getCard).distinctBy { it.name }
+        val definitionScan = scanLockedDefinitions(resolvedCards)
+
+        check("CHOOSE_MODE" in definitionScan.staticallyReachableDecisionFamilies) {
+            "Current locked definitions did not derive the mode-choice family"
+        }
+        check("CHOOSE_MODE" !in exactPairCorpusReachabilitySnapshot().decisionFamilies) {
+            "The regression must prove this family is not supplied by historical telemetry"
+        }
+    }
+
     test("Issue 56 is proven unreachable from the locked exact pair") {
         val evidence = issue56ReachabilityEvidence()
         println(evidence.render())
@@ -2046,6 +2060,27 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             else -> false
         }
 
+        private fun JsonElement.containsJsonTypeWithPrimitiveField(
+            typeName: String,
+            fieldName: String,
+            expected: String,
+        ): Boolean = when (this) {
+            is JsonObject -> {
+                val type = (this["type"] as? JsonPrimitive)?.content
+                val field = (this[fieldName] as? JsonPrimitive)?.content
+                (type == typeName && field == expected) ||
+                    values.any {
+                        it.containsJsonTypeWithPrimitiveField(typeName, fieldName, expected)
+                    }
+            }
+
+            is JsonArray -> any {
+                it.containsJsonTypeWithPrimitiveField(typeName, fieldName, expected)
+            }
+
+            else -> false
+        }
+
         private fun JsonElement.containsControllerChosenLibraryMove(): Boolean = when (this) {
             is JsonObject -> {
                 val type = (this["type"] as? JsonPrimitive)?.content
@@ -2060,6 +2095,26 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
             is JsonArray -> any { it.containsControllerChosenLibraryMove() }
             else -> false
+        }
+
+        /**
+         * The static reachability fingerprint is a definition-membership fingerprint, not a
+         * replay/Rules semantic fingerprint.  Ignore JSON object and collection iteration order
+         * so a HashSet serialized by a different test worker cannot invalidate the evidence.
+         */
+        private fun canonicalDefinitionJson(element: JsonElement): String = when (element) {
+            is JsonObject -> element.keys
+                .sorted()
+                .joinToString(prefix = "{", postfix = "}") { key ->
+                    "${JsonPrimitive(key)}:${canonicalDefinitionJson(element.getValue(key))}"
+                }
+
+            is JsonArray -> element
+                .map(::canonicalDefinitionJson)
+                .sorted()
+                .joinToString(prefix = "[", postfix = "]")
+
+            else -> element.toString()
         }
 
         private fun JsonElement.containsJsonKey(key: String): Boolean = when (this) {
@@ -2232,7 +2287,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     "bands",
                 ),
                 totalTransitions = 140_238,
-                definitionDigest = "6953A60BEC45B96383942087CB1D95D2CF76F9444A894E8E0916F4E15D27DC19",
+                definitionDigest = "EC08F440768C8DD64F3E00086593EFBA3281167B7E7C0DF1692003E26E1FA337",
             )
 
         private fun scanLockedDefinitions(cards: List<CardDefinition>): DefinitionScanEvidence {
@@ -2289,7 +2344,13 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             val hasAdditionalCost = cards.any { it.script.additionalCosts.isNotEmpty() } ||
                 hasKey("additionalCost") || hasKey("additionalCosts")
             val hasColorChoice = hasType("AddManaOfChoice") ||
-                hasTypePrefix("ManaColorSet.") || hasType("ChooseColorThen")
+                hasTypePrefix("ManaColorSet.") || hasType("ChooseColorThen") ||
+                jsonDefinitions.any {
+                    it.containsJsonTypeWithPrimitiveField("EntersWithChoice", "choiceType", "COLOR")
+                }
+            val hasModeChoice = jsonDefinitions.any {
+                it.containsJsonTypeWithPrimitiveField("EntersWithChoice", "choiceType", "MODE")
+            }
             val hasLibraryReorderingMacro = hasType("Scry", "Surveil")
             val hasControllerChosenLibraryMove = jsonDefinitions.any {
                 it.containsControllerChosenLibraryMove()
@@ -2312,6 +2373,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     add("REORDER_LIBRARY")
                 }
                 if (hasColorChoice) add("CHOOSE_COLOR")
+                if (hasModeChoice) add("CHOOSE_MODE")
                 if (hasYesNo) add("YES_NO")
             }
             val staticActionFamilies = sortedSetOf<String>().apply {
@@ -2339,7 +2401,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     add("bands")
                 }
             }
-            val digestInput = serialized.joinToString("\n") { (name, json) -> "$name:$json" }
+            val digestInput = serialized.joinToString("\n") { (name, json) ->
+                "$name:${canonicalDefinitionJson(json)}"
+            }
             return DefinitionScanEvidence(
                 cardCount = serialized.size,
                 emptySerializations = serialized.filter { it.second.toString().isBlank() }.map { it.first },
@@ -3709,6 +3773,7 @@ private val PUBLIC_ACTION_DOMAIN_FAMILIES = setOf(
 
 private val STRUCTURED_DECISION_DOMAIN_FAMILIES = setOf(
     "CHOOSE_COLOR",
+    "CHOOSE_MODE",
     "CHOOSE_TARGETS",
     "REORDER_LIBRARY",
     "SELECT_CARDS",
