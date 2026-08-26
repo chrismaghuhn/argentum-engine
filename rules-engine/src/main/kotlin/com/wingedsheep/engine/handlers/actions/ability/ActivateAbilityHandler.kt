@@ -44,6 +44,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -439,6 +440,7 @@ class ActivateAbilityHandler(
                 return "$planVersion does not support X or alternative resource payment choices"
             }
             val paymentCost = extractManaCost(costAfterConvokeReduction)
+                ?.canonicalPaymentManaCost()
                 ?: return "$planVersion requires an ordinary mana cost"
             when (
                 val paymentValidation = if (submittedPaymentPlanV2 != null) {
@@ -1302,7 +1304,7 @@ class ActivateAbilityHandler(
                         val paymentValidation = paymentPlanValidator.validate(
                             state = currentState,
                             playerId = action.playerId,
-                            cost = manaCost,
+                            cost = manaCost.canonicalPaymentManaCost(),
                             plan = paymentPlan,
                             spellContext = executeAbilityContext,
                             excludeSources = selfExcludedSources,
@@ -1395,7 +1397,7 @@ class ActivateAbilityHandler(
                     val paymentValidation = paymentPlanValidator.validateV2(
                         state = currentState,
                         playerId = action.playerId,
-                        cost = manaCost,
+                        cost = manaCost.canonicalPaymentManaCost(),
                         plan = paymentPlan,
                         spellContext = executeAbilityContext,
                         excludeSources = selfExcludedSources,

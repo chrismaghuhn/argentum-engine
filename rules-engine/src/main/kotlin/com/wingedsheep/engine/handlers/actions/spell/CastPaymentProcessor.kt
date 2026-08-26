@@ -11,6 +11,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ExplicitPaymentPlanExecutor
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.Color
@@ -177,7 +178,7 @@ class CastPaymentProcessor(
         val validation = paymentPlanValidator.validate(
             state = state,
             playerId = playerId,
-            cost = cost,
+            cost = cost.canonicalPaymentManaCost(),
             plan = plan,
             spellContext = spellContext,
         )
@@ -208,7 +209,7 @@ class CastPaymentProcessor(
         val execution = explicitPaymentPlanExecutor.executeV2(
             state = state,
             playerId = playerId,
-            cost = cost,
+            cost = cost.canonicalPaymentManaCost(),
             plan = plan,
             paymentContext = spellContext,
             reason = "Cast $cardName",
