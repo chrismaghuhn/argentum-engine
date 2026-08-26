@@ -1214,6 +1214,23 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
+    test("static closure derives library reordering from current library definitions") {
+        val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
+            readLockedDeck("chevill-v0.1.txt").cards).distinct()
+        val resolvedCards = lockedCards.mapNotNull(exactPairRegistry()::getCard).distinctBy { it.name }
+        val definitionScan = scanLockedDefinitions(resolvedCards)
+
+        check("SELECT_CARDS" in definitionScan.staticallyReachableDecisionFamilies) {
+            "Current locked definitions did not derive the library selection family"
+        }
+        check("REORDER_LIBRARY" in definitionScan.staticallyReachableDecisionFamilies) {
+            "Current locked definitions did not derive the library reordering family"
+        }
+        check("REORDER_LIBRARY" !in exactPairCorpusReachabilitySnapshot().decisionFamilies) {
+            "The regression must prove this family is not supplied by historical telemetry"
+        }
+    }
+
     test("Issue 56 is proven unreachable from the locked exact pair") {
         val evidence = issue56ReachabilityEvidence()
         println(evidence.render())
@@ -2022,6 +2039,29 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             else -> false
         }
 
+        private fun JsonElement.containsJsonPrimitiveContent(expected: String): Boolean = when (this) {
+            is JsonObject -> values.any { it.containsJsonPrimitiveContent(expected) }
+            is JsonArray -> any { it.containsJsonPrimitiveContent(expected) }
+            is JsonPrimitive -> content == expected
+            else -> false
+        }
+
+        private fun JsonElement.containsControllerChosenLibraryMove(): Boolean = when (this) {
+            is JsonObject -> {
+                val type = (this["type"] as? JsonPrimitive)?.content
+                val order = (this["order"] as? JsonPrimitive)?.content
+                val destination = this["destination"]
+                val isControllerChosenLibraryMove =
+                    type == "MoveCollection" &&
+                        order == "ControllerChooses" &&
+                        destination?.containsJsonPrimitiveContent("LIBRARY") == true
+                isControllerChosenLibraryMove || values.any { it.containsControllerChosenLibraryMove() }
+            }
+
+            is JsonArray -> any { it.containsControllerChosenLibraryMove() }
+            else -> false
+        }
+
         private fun JsonElement.containsJsonKey(key: String): Boolean = when (this) {
             is JsonObject -> containsKey(key) || values.any { it.containsJsonKey(key) }
             is JsonArray -> any { it.containsJsonKey(key) }
@@ -2250,11 +2290,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 hasKey("additionalCost") || hasKey("additionalCosts")
             val hasColorChoice = hasType("AddManaOfChoice") ||
                 hasTypePrefix("ManaColorSet.") || hasType("ChooseColorThen")
+            val hasLibraryReorderingMacro = hasType("Scry", "Surveil")
+            val hasControllerChosenLibraryMove = jsonDefinitions.any {
+                it.containsControllerChosenLibraryMove()
+            }
             val hasCardSelection = hasType(
                 "SelectFromCollection",
                 "SearchLibrary",
                 "ChooseOnePerCategory",
-            )
+            ) || hasLibraryReorderingMacro
             val hasYesNo = hasTypePrefix("Gate.May") || hasType(
                 "PlayerChooses",
                 "ChooseAction",
@@ -2264,6 +2308,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 add("PRIORITY")
                 if (hasMultipleTargetRequirements || hasResolutionTargetChoice) add("CHOOSE_TARGETS")
                 if (hasCardSelection) add("SELECT_CARDS")
+                if (hasLibraryReorderingMacro || hasControllerChosenLibraryMove) {
+                    add("REORDER_LIBRARY")
+                }
                 if (hasColorChoice) add("CHOOSE_COLOR")
                 if (hasYesNo) add("YES_NO")
             }
@@ -3663,6 +3710,7 @@ private val PUBLIC_ACTION_DOMAIN_FAMILIES = setOf(
 private val STRUCTURED_DECISION_DOMAIN_FAMILIES = setOf(
     "CHOOSE_COLOR",
     "CHOOSE_TARGETS",
+    "REORDER_LIBRARY",
     "SELECT_CARDS",
     "YES_NO",
 )
