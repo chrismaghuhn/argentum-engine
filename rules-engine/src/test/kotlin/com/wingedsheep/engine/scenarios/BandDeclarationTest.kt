@@ -6,6 +6,7 @@ import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.GameRng
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -96,5 +97,30 @@ class BandDeclarationTest : FunSpec({
         val result = driver.declareAttackingBand(active, listOf(courserA, courserB), opponent)
         result.isSuccess shouldBe false
         result.error shouldNotBe null
+    }
+
+    test("equivalent seeded band declarations receive the same semantic identity") {
+        fun executeEquivalentDeclaration(): String {
+            val driver = createDriver()
+            driver.initMirrorMatch(deck = Deck.of("Plains" to 20, "Forest" to 20), startingLife = 20)
+            val active = driver.activePlayer!!
+            val opponent = driver.getOpponent(active)
+
+            driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+            val scout = driver.putCreatureOnBattlefield(active, "Banding Scout")
+            val courser = driver.putCreatureOnBattlefield(active, "Centaur Courser")
+            driver.removeSummoningSickness(scout)
+            driver.removeSummoningSickness(courser)
+
+            // The initialized fixtures intentionally have different transient EntityIds. Make the
+            // declaration boundary use the same explicit seed before submitting the same choice.
+            driver.replaceState(driver.state.copy(rng = GameRng(7L)))
+            driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+            driver.declareAttackingBand(active, listOf(scout, courser), opponent).isSuccess shouldBe true
+
+            return checkNotNull(driver.state.getEntity(scout)?.get<AttackingComponent>()?.bandId)
+        }
+
+        executeEquivalentDeclaration() shouldBe executeEquivalentDeclaration()
     }
 })
