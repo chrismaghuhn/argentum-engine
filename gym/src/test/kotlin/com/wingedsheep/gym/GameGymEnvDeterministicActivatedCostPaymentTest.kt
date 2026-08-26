@@ -32,7 +32,6 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.mrd.cards.LightningGreaves
 import com.wingedsheep.mtg.sets.definitions.`5dn`.cards.WayfarersBauble
@@ -41,6 +40,7 @@ import com.wingedsheep.mtg.sets.definitions.c17.cards.RamosDragonEngine
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.wth.cards.MindStone
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
@@ -52,7 +52,9 @@ import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ReduceEquipCost
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
@@ -122,6 +124,18 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
     val zeroManaEquipment = card("Gym Zero-Mana Equipment") {
         typeLine = "Artifact — Equipment"
         equipAbility("{0}")
+    }
+
+    val reducedToZeroEquipment = card("Gym Reduced-To-Zero Equipment") {
+        typeLine = "Artifact — Equipment"
+        equipAbility("{1}")
+    }
+
+    val genericEquipCostReduction = card("Gym Generic Equip Cost Reduction") {
+        typeLine = "Enchantment"
+        staticAbility {
+            ability = ReduceEquipCost(amount = 1)
+        }
     }
 
     val zeroManaEquipTarget = card("Gym Zero-Mana Equip Target") {
@@ -250,6 +264,17 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         manaSourceCount = 1,
     )
 
+    fun preparedReducedToZeroEquip() = preparedActivatedAbility(
+        sourceCard = reducedToZeroEquipment,
+        battlefieldCardNames = listOf(zeroManaEquipTarget.name, genericEquipCostReduction.name),
+        extraCards = listOf(
+            reducedToZeroEquipment,
+            zeroManaEquipTarget,
+            genericEquipCostReduction,
+        ),
+        manaSourceCount = 1,
+    )
+
     fun preparedLightningGreaves() = preparedActivatedAbility(
         sourceCard = LightningGreaves,
         battlefieldCardNames = listOf(zeroManaEquipTarget.name),
@@ -281,6 +306,15 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
     fun explicitV2FromPublic(view: LegalActionView): PaymentStrategy.ExplicitV2 {
         val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        if (domain.costUnits.isEmpty()) {
+            return PaymentStrategy.ExplicitV2(
+                paymentPlan = PaymentPlanV2(
+                    sourceActivations = emptyList(),
+                    poolSpend = PoolSpend(),
+                    spendAllocation = SpendAllocationV2(),
+                ),
+            )
+        }
         val costUnit = domain.costUnits.single()
         val selected = domain.sourceActivations.take(costUnit.amount)
         selected.size shouldBe costUnit.amount
@@ -390,7 +424,6 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
     fun explicitV2WithExtraSource(view: LegalActionView): PaymentStrategy.ExplicitV2 {
         val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val costUnit = domain.costUnits.single()
         val source = domain.sourceActivations.first()
         return PaymentStrategy.ExplicitV2(
             paymentPlan = PaymentPlanV2(
@@ -402,46 +435,34 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
                     ),
                 ),
                 poolSpend = PoolSpend(),
-                spendAllocation = SpendAllocationV2(
-                    costUnits = listOf(
-                        CostUnitAllocationV2(
-                            symbolIndex = costUnit.symbolIndex,
-                            spends = emptyList(),
-                        ),
-                    ),
-                ),
+                spendAllocation = SpendAllocationV2(),
             ),
         )
     }
 
-    fun explicitV2WithNonEmptyZeroSpend(view: LegalActionView): PaymentStrategy.ExplicitV2 {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val costUnit = domain.costUnits.single()
+    fun explicitV2WithArtificialZeroSymbolAllocation(
+        nonEmptySpend: Boolean,
+    ): PaymentStrategy.ExplicitV2 {
         return PaymentStrategy.ExplicitV2(
             paymentPlan = PaymentPlanV2(
                 poolSpend = PoolSpend(),
                 spendAllocation = SpendAllocationV2(
                     costUnits = listOf(
                         CostUnitAllocationV2(
-                            symbolIndex = costUnit.symbolIndex,
-                            spends = listOf(
-                                ManaSpendReferenceV2(
-                                    poolColor = PaymentManaColor.RED,
-                                    amount = 1,
-                                ),
-                            ),
+                            symbolIndex = 0,
+                            spends = if (nonEmptySpend) {
+                                listOf(
+                                    ManaSpendReferenceV2(
+                                        poolColor = PaymentManaColor.RED,
+                                        amount = 1,
+                                    ),
+                                )
+                            } else {
+                                emptyList()
+                            },
                         ),
                     ),
                 ),
-            ),
-        )
-    }
-
-    fun explicitV2WithoutZeroSymbolAllocation(view: LegalActionView): PaymentStrategy.ExplicitV2 {
-        val validPayment = explicitV2FromPublic(view)
-        return validPayment.copy(
-            paymentPlan = validPayment.paymentPlan!!.copy(
-                spendAllocation = SpendAllocationV2(),
             ),
         )
     }
@@ -550,13 +571,10 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         val prepared = preparedZeroManaEquip()
         val view = gymActivatedView(prepared, requiredCost = "{0}")
         val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val costUnit = domain.costUnits.single()
 
         domain.version shouldBe 4
         domain.requiredCost shouldBe "{0}"
-        costUnit.symbolIndex shouldBe 0
-        costUnit.kind shouldBe PaymentCostKind.GENERIC
-        costUnit.amount shouldBe 0
+        domain.costUnits shouldBe emptyList()
         view.requiredPayloadFields shouldContain "paymentStrategy"
         view.requiredPayloadFields shouldContain "targets"
 
@@ -568,8 +586,50 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         val zeroPayment = explicitV2FromPublic(view)
         zeroPayment.paymentPlan!!.sourceActivations shouldBe emptyList()
         zeroPayment.paymentPlan!!.poolSpend shouldBe PoolSpend()
-        zeroPayment.paymentPlan!!.spendAllocation.costUnits.single().symbolIndex shouldBe 0
-        zeroPayment.paymentPlan!!.spendAllocation.costUnits.single().spends shouldBe emptyList()
+        zeroPayment.paymentPlan!!.spendAllocation.costUnits shouldBe emptyList()
+
+        prepared.gym.step(
+            view.actionId,
+            targetedPayload(view, target, zeroPayment),
+        )
+
+        prepared.environment.stepCount shouldBe stepCountBefore + 1
+        prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe false
+        prepared.mountainIds.forEach { mountainId ->
+            prepared.environment.state.getEntity(mountainId)?.has<TappedComponent>() shouldBe false
+        }
+        prepared.environment.state.getEntity(prepared.playerId)
+            ?.get<ManaPoolComponent>() shouldBe poolBefore
+
+        var passes = 0
+        while (prepared.environment.state.stack.isNotEmpty() && passes++ < 8) {
+            val pass = prepared.environment.legalActions().first { it.action is PassPriority }
+            prepared.environment.step(pass.action)
+        }
+        prepared.environment.state.stack shouldBe emptyList()
+        prepared.environment.state.getEntity(prepared.sourceId)
+            ?.get<AttachedToComponent>()
+            ?.targetId shouldBe target
+    }
+
+    test("reduced positive Equip cost publishes canonical zero and executes an explicit empty plan") {
+        val prepared = preparedReducedToZeroEquip()
+        val view = gymActivatedView(prepared, requiredCost = "{0}")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val target = publicTarget(view)
+
+        reducedToZeroEquipment.activatedAbilities.single().cost.manaCostOrNull shouldBe ManaCost.parse("{1}")
+        domain.version shouldBe 4
+        domain.requiredCost shouldBe "{0}"
+        domain.costUnits shouldBe emptyList()
+
+        val stepCountBefore = prepared.environment.stepCount
+        val poolBefore = prepared.environment.state.getEntity(prepared.playerId)
+            ?.get<ManaPoolComponent>()
+        val zeroPayment = explicitV2FromPublic(view)
+        zeroPayment.paymentPlan!!.sourceActivations shouldBe emptyList()
+        zeroPayment.paymentPlan!!.poolSpend shouldBe PoolSpend()
+        zeroPayment.paymentPlan!!.spendAllocation.costUnits shouldBe emptyList()
 
         prepared.gym.step(
             view.actionId,
@@ -608,8 +668,8 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         }
 
         freshCase(::explicitV2WithExtraSource)
-        freshCase(::explicitV2WithNonEmptyZeroSpend)
-        freshCase(::explicitV2WithoutZeroSymbolAllocation)
+        freshCase { explicitV2WithArtificialZeroSymbolAllocation(nonEmptySpend = true) }
+        freshCase { explicitV2WithArtificialZeroSymbolAllocation(nonEmptySpend = false) }
         freshCase { PaymentStrategy.AutoPay }
         freshCase { PaymentStrategy.FromPool }
         freshCase {
@@ -644,7 +704,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
         domain.version shouldBe 4
         domain.requiredCost shouldBe "{0}"
-        domain.costUnits.single().amount shouldBe 0
+        domain.costUnits shouldBe emptyList()
         view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(target)
 
         prepared.gym.step(

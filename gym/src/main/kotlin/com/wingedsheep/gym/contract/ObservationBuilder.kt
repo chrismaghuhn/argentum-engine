@@ -64,6 +64,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
@@ -867,19 +868,19 @@ class ObservationBuilder(
         }
         val parsedPublicCost = runCatching { ManaCost.parse(requiredCost) }
             .getOrNull()
-            ?.canonicalZero() ?: return false
+            ?.canonicalPaymentManaCost() ?: return false
         if (parsedPublicCost.symbols.any {
                 it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
             }
         ) return false
 
-        val advertisedCost = AbilityCost.Atom(CostAtom.Mana(parsedPublicCost)).canonicalZero()
+        val advertisedCost = AbilityCost.Atom(CostAtom.Mana(parsedPublicCost)).canonicalPaymentCost()
         val unboundCost = activatedAbilityCostCalculator.calculate(
             state = state,
             sourceId = action.sourceId,
             controllerId = action.playerId,
             ability = ability,
-        ).canonicalZero()
+        ).canonicalPaymentCost()
         if (unboundCost != advertisedCost) return false
 
         return publicTargetRequirement.candidates.all { candidateId ->
@@ -889,20 +890,17 @@ class ObservationBuilder(
                 controllerId = action.playerId,
                 ability = ability,
                 targets = listOf(ChosenTarget.Permanent(candidateId)),
-            ).canonicalZero() == advertisedCost
+            ).canonicalPaymentCost() == advertisedCost
         }
     }
 
-    private fun AbilityCost.canonicalZero(): AbilityCost = when (this) {
+    private fun AbilityCost.canonicalPaymentCost(): AbilityCost = when (this) {
         is AbilityCost.Atom -> when (val atom = atom) {
-            is CostAtom.Mana -> AbilityCost.Atom(CostAtom.Mana(atom.cost.canonicalZero()))
+            is CostAtom.Mana -> AbilityCost.Atom(CostAtom.Mana(atom.cost.canonicalPaymentManaCost()))
             else -> this
         }
         else -> this
     }
-
-    private fun ManaCost.canonicalZero(): ManaCost =
-        if (symbols.all { it is ManaSymbol.Generic && it.amount == 0 }) ManaCost.ZERO else this
 
     private fun isSupportedCastSpellPayment(
         legalAction: LegalAction,

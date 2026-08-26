@@ -46,7 +46,7 @@ class ExplicitPaymentPlanExecutor(
         val validation = validator.validateV2(
             state = state,
             playerId = playerId,
-            cost = cost,
+            cost = cost.canonicalPaymentManaCost(),
             plan = plan,
             spellContext = paymentContext,
             excludeSources = excludeSources,
