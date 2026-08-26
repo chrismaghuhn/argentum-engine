@@ -106,6 +106,12 @@ internal class AttackPhaseManager(
         val bandValidation = validateBands(state, attackers, declaration.bands, projected)
         if (bandValidation != null) return bandValidation
 
+        if (declaration.bands.isNotEmpty() &&
+            CombatAttackerOrder.canonicalizeBands(state, declaration.bands) == null
+        ) {
+            return "Attack bands cannot be deterministically ordered"
+        }
+
         for ((attackerId, defenderId) in attackers) {
             val attackerValidation = validateAttacker(state, attackingPlayer, attackerId)
             if (attackerValidation != null) return attackerValidation
@@ -152,13 +158,17 @@ internal class AttackPhaseManager(
         taxEvents: List<com.wingedsheep.engine.core.GameEvent>,
         bands: List<Set<EntityId>> = emptyList()
     ): ExecutionResult {
-        // Assign each band a shared id, then map every banded attacker to it (CR 702.22).
-        val bandIdByAttacker: Map<EntityId, String> = buildMap {
-            for (band in bands) {
-                val bandId = java.util.UUID.randomUUID().toString()
-                for (attackerId in band) put(attackerId, bandId)
+        // Assign each band a shared id, then map every banded attacker to it (CR 702.22). The
+        // declaration was already validated before any mutation; repeat only the pure ordering
+        // computation here because the tax continuation calls this method later with the paid
+        // state. Never use EntityId/UUID or collection iteration as the band identity authority.
+        val canonicalBands = CombatAttackerOrder.canonicalizeBands(state, bands)
+            ?: return ExecutionResult.error(state, "Attack bands cannot be deterministically ordered")
+        val bandIdByAttacker: Map<EntityId, String> = canonicalBands
+            .flatMapIndexed { index, band ->
+                band.map { attackerId -> attackerId to "combat-band-$index" }
             }
-        }
+            .toMap()
 
         var newState = state
         val tapEvents = mutableListOf<TappedEvent>()

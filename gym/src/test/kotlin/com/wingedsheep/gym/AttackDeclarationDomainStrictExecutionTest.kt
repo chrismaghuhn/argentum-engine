@@ -16,6 +16,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.mtg.sets.definitions.arn.ArabianNightsSet
 import com.wingedsheep.mtg.sets.definitions.lgn.LegionsSet
 import com.wingedsheep.mtg.sets.definitions.inv.InvasionSet
@@ -110,6 +111,37 @@ class AttackDeclarationDomainStrictExecutionTest : FunSpec({
         }
         bandIds.first() shouldNotBe null
         bandIds.distinct().size shouldBe 1
+    }
+
+    test("Gym snapshot restore preserves the deterministic band identity") {
+        val prepared = prepareAttack(includeBandAttackers = true)
+        val initialAttack = attackView(prepared.gym)
+        val domain = checkNotNull(initialAttack.attackDeclarationDomain)
+        val defender = domain.attackerToDefenders.getValue(prepared.bandAttackers.first()).single()
+        val assignments = prepared.bandAttackers.associateWith { defender }
+        val codec = SnapshotCodec()
+        val handle = prepared.gym.snapshot(codec)
+
+        prepared.gym.step(
+            initialAttack.actionId,
+            attackPayload(initialAttack, assignments, listOf(prepared.bandAttackers.toSet())),
+        )
+        val firstBandIds = prepared.bandAttackers.map { attacker ->
+            prepared.environment.state.getEntity(attacker)?.get<AttackingComponent>()?.bandId
+        }
+
+        prepared.gym.restore(codec, handle)
+        val restoredAttack = attackView(prepared.gym)
+        prepared.gym.step(
+            restoredAttack.actionId,
+            attackPayload(restoredAttack, assignments, listOf(prepared.bandAttackers.toSet())),
+        )
+        val restoredBandIds = prepared.bandAttackers.map { attacker ->
+            prepared.environment.state.getEntity(attacker)?.get<AttackingComponent>()?.bandId
+        }
+
+        firstBandIds shouldBe restoredBandIds
+        restoredBandIds shouldBe listOf("combat-band-0", "combat-band-0")
     }
 
     test("an invalid non-empty band is rejected atomically before Rules execution") {
