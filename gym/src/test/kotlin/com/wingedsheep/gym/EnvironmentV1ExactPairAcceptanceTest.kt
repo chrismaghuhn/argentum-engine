@@ -8,11 +8,13 @@ import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DistributionResponse
+import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.PilesSplitResponse
@@ -22,6 +24,8 @@ import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.registry.CardDefinitionMissingException
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationResult
+import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.ObservationCanonicalizer
 import com.wingedsheep.gym.contract.AttackBandConstraintsV1
 import com.wingedsheep.gym.contract.AttackCoAttackerRequirementV1
 import com.wingedsheep.gym.contract.AttackDeclarationDomainV1
@@ -36,8 +40,11 @@ import com.wingedsheep.gym.contract.PaymentSourceActivationDomain
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.EntityFeatures
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.gym.contract.StateDigest
 import com.wingedsheep.gym.contract.TargetRequirementDomain
 import com.wingedsheep.gym.contract.ZoneView
+import com.wingedsheep.gym.contract.*
+import com.wingedsheep.gym.service.DeckResolver
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
 import com.wingedsheep.gym.service.EnvId
@@ -48,13 +55,16 @@ import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
+import com.wingedsheep.sdk.serialization.CardSerialization
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -1104,6 +1114,41 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         evidence.terminalEpisodes + evidence.truncatedEpisodes shouldBe 72
         evidence.totalExternalTransitions shouldBe evidence.episodeTransitions.sum()
     }
+
+    test("exact-pair replay gate replays complete semantic trajectories")
+        .config(timeout = 15.minutes) {
+        val evidence = runExactPairReplayGate()
+        println(evidence.render())
+        check(evidence.failures.isEmpty()) {
+            "Exact-pair replay gate failed: ${evidence.failures.joinToString()}"
+        }
+        evidence.traces.size shouldBe 4
+    }
+
+    test("final exact-pair privacy gate audits both player perspectives")
+        .config(timeout = 15.minutes) {
+        val evidence = runExactPairPrivacyGate()
+        println(evidence.render())
+        check(evidence.failures.isEmpty()) {
+            "Exact-pair privacy gate failed: ${evidence.failures.joinToString()}"
+        }
+        evidence.perspectives.size shouldBe 2
+        check(evidence.observations > 0) { "Privacy gate did not inspect any observations" }
+    }
+
+    test("static reachable decision-family closure is explicit") {
+        val evidence = decisionClosureEvidence()
+        println(evidence.render())
+        check(evidence.uncovered.isEmpty()) {
+            "Decision-family closure has uncovered entries: ${evidence.uncovered}"
+        }
+    }
+
+    test("Issue 56 is proven unreachable from the locked exact pair") {
+        val evidence = issue56ReachabilityEvidence()
+        println(evidence.render())
+        evidence.result shouldBe Issue56Result.PROVEN_UNREACHABLE_EXACT_PAIR
+    }
 }) {
     private companion object {
         const val AKIRI_SHA256 =
@@ -1111,6 +1156,844 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         const val CHEVILL_SHA256 =
             "D158760D404F32C32110C377B1CA6E3EF9406FD6E0CC29B620CB5BCF573AC8B2"
         const val MAX_STEPS = 2_000
+
+        private val replayCases = listOf(
+            EpisodeConfig(0L, 0, "Akiri", "Chevill", "Akiri-vs-Chevill"),
+            EpisodeConfig(0L, 1, "Akiri", "Chevill", "Akiri-vs-Chevill"),
+            EpisodeConfig(0L, 0, "Chevill", "Akiri", "Chevill-vs-Akiri"),
+            EpisodeConfig(0L, 1, "Chevill", "Akiri", "Chevill-vs-Akiri"),
+        )
+
+        fun runExactPairReplayGate(): ReplayGateEvidence {
+            val traces = mutableListOf<ReplayTrace>()
+            val failures = mutableListOf<String>()
+            for (episode in replayCases) {
+                try {
+                    val trace = captureReplayTrace(episode)
+                    traces += trace
+                    replayTrace(trace)
+                } catch (failure: Exception) {
+                    failures += "${episode.rosterLabel}/seed=${episode.seed}/" +
+                        "starting=${episode.startingPlayerIndex}: ${failure.message}"
+                }
+            }
+            return ReplayGateEvidence(
+                traces = traces,
+                failures = failures,
+            )
+        }
+
+        private fun captureReplayTrace(episode: EpisodeConfig): ReplayTrace {
+            val service = MultiEnvService(exactPairRegistry())
+            val decisions = mutableListOf<ReplayDecision>()
+            val frames = mutableListOf<ReplayFrame>()
+            var envId: EnvId? = null
+            try {
+                val created = service.create(episode.envConfig())
+                envId = created.envId
+                var observation = created.observation.observation as? TrainingObservation
+                    ?: error("Replay capture requires a TrainingObservation after reset")
+                assertNoForbiddenDiagnostics(service, envId)
+                frames += replayFrame(observation)
+
+                val policy = DeterministicExternalPolicy()
+                var policyState = DeterministicPolicyState(policySeed(episode))
+                var transitions = 0
+                while (!observation.terminated && !observation.truncated) {
+                    check(transitions < MAX_STEPS) {
+                        "Replay capture exceeded configured maxSteps=$MAX_STEPS"
+                    }
+                    val choice = policy.choose(observation, policyState)
+                    policyState = policyState.afterChoice()
+                    val result = when (choice) {
+                        is SemanticChoice.Action -> {
+                            val action = observation.legalActions.singleOrNull {
+                                it.actionId == choice.actionId
+                            } ?: error(
+                                "Replay capture policy action handle was not in the current public list",
+                            )
+                            val semanticKey = semanticActionKey(action)
+                            val semanticOrdinal = semanticActionOrdinal(observation, action, semanticKey)
+                            decisions += ReplayDecision.Action(
+                                kind = action.kind,
+                                semanticKey = semanticKey,
+                                semanticOrdinal = semanticOrdinal,
+                                payload = choice.payload,
+                            )
+                            service.step(
+                                StepRequest(
+                                    envId = envId,
+                                    actionId = action.actionId,
+                                    action = choice.payload,
+                                ),
+                            )
+                        }
+
+                        is SemanticChoice.Structured -> {
+                            val pending = observation.pendingDecision
+                                ?: error("Replay capture structured choice has no pending decision")
+                            val decisionId = pending.decisionId
+                                ?: error("Replay capture structured choice has no decision ID")
+                            decisions += ReplayDecision.Structured(
+                                family = pending.kind.name,
+                                selection = choice.selection,
+                            )
+                            service.submitDecision(
+                                envId = envId,
+                                response = toDecisionResponse(decisionId, choice.selection),
+                                actorId = observation.agentToAct,
+                            )
+                        }
+
+                        is SemanticChoice.Gap -> error(
+                            "Replay capture encountered policy gap at transition $transitions: $choice",
+                        )
+                    }
+                    transitions++
+                    assertNoForbiddenDiagnostics(service, envId)
+                    observation = result.observation as? TrainingObservation
+                        ?: error("Replay capture lost TrainingObservation after transition $transitions")
+                    frames += replayFrame(observation)
+                }
+
+                check(frames.size == decisions.size + 1) {
+                    "Replay capture frame/decision cardinality mismatch"
+                }
+                return ReplayTrace(episode, frames, decisions)
+            } finally {
+                envId?.let { service.dispose(listOf(it)) }
+            }
+        }
+
+        private fun replayTrace(trace: ReplayTrace) {
+            val service = MultiEnvService(exactPairRegistry())
+            var envId: EnvId? = null
+            try {
+                val created = service.create(trace.episode.envConfig())
+                envId = created.envId
+                var observation = created.observation.observation as? TrainingObservation
+                    ?: error("Replay requires a TrainingObservation after reset")
+                assertReplayFrame(trace, 0, observation, service, envId)
+
+                trace.decisions.forEachIndexed { index, decision ->
+                    val result = when (decision) {
+                        is ReplayDecision.Action -> {
+                            val candidates = externallySelectableActions(observation)
+                                .filter { semanticActionKey(it) == decision.semanticKey }
+                            val action = candidates.getOrNull(decision.semanticOrdinal)
+                                ?: error(
+                                    "Replay action semantic candidate missing at transition $index: " +
+                                        "${decision.semanticKey} ordinal=${decision.semanticOrdinal}",
+                                )
+                            check(action.kind == decision.kind) {
+                                "Replay action kind changed at transition $index: " +
+                                    "${action.kind} != ${decision.kind}"
+                            }
+                            service.step(
+                                StepRequest(
+                                    envId = envId,
+                                    actionId = action.actionId,
+                                    action = decision.payload,
+                                ),
+                            )
+                        }
+
+                        is ReplayDecision.Structured -> {
+                            val pending = observation.pendingDecision
+                                ?: error("Replay structured decision missing at transition $index")
+                            check(pending.kind.name == decision.family) {
+                                "Replay decision family changed at transition $index: " +
+                                    "${pending.kind.name} != ${decision.family}"
+                            }
+                            val decisionId = pending.decisionId
+                                ?: error("Replay decision has no current public decision ID")
+                            service.submitDecision(
+                                envId = envId,
+                                response = toDecisionResponse(decisionId, decision.selection),
+                                actorId = observation.agentToAct,
+                            )
+                        }
+                    }
+                    assertNoForbiddenDiagnostics(service, envId)
+                    observation = result.observation as? TrainingObservation
+                        ?: error("Replay lost TrainingObservation at transition ${index + 1}")
+                    assertReplayFrame(trace, index + 1, observation, service, envId)
+                }
+
+                check(observation.terminated || observation.truncated) {
+                    "Replay ended before the captured terminal/truncated result"
+                }
+            } finally {
+                envId?.let { service.dispose(listOf(it)) }
+            }
+        }
+
+        private fun assertReplayFrame(
+            trace: ReplayTrace,
+            index: Int,
+            observation: TrainingObservation,
+            service: MultiEnvService,
+            envId: EnvId,
+        ) {
+            val expected = trace.frames.getOrNull(index)
+                ?: error("Replay produced an unexpected frame at index $index")
+            val actual = replayFrame(observation)
+            check(actual == expected) {
+                "Replay semantic frame mismatch at index $index for ${trace.episode}: " +
+                    "expectedDigest=${expected.stateDigest}, actualDigest=${actual.stateDigest}"
+            }
+            check(StateDigest.compute(observation) == observation.stateDigest) {
+                "Replay observation digest is not self-consistent at frame $index"
+            }
+            assertNoForbiddenDiagnostics(service, envId)
+        }
+
+        private fun assertNoForbiddenDiagnostics(service: MultiEnvService, envId: EnvId) {
+            val diagnostics = service.diagnostics(envId)
+            check(diagnostics.unsupportedCardCount == 0) {
+                "Replay observed UNSUPPORTED_CARD=${diagnostics.unsupportedCardCount}"
+            }
+            check(diagnostics.unsupportedDecisionCount == 0) {
+                "Replay observed UNSUPPORTED_DECISION=${diagnostics.unsupportedDecisionCount}"
+            }
+            check(diagnostics.unsupportedRuleOrMechanicCount == 0) {
+                "Replay observed UNSUPPORTED_RULE_OR_MECHANIC=" +
+                    diagnostics.unsupportedRuleOrMechanicCount
+            }
+            check(diagnostics.nativePolicyFallbackCount == 0) {
+                "Replay observed NATIVE_POLICY_FALLBACK=${diagnostics.nativePolicyFallbackCount}"
+            }
+        }
+
+        private fun replayFrame(observation: TrainingObservation): ReplayFrame = ReplayFrame(
+            semanticObservation = ObservationCanonicalizer.semanticJson(observation),
+            stateDigest = observation.stateDigest,
+            terminated = observation.terminated,
+            truncated = observation.truncated,
+        )
+
+        private fun semanticActionOrdinal(
+            observation: TrainingObservation,
+            selected: LegalActionView,
+            semanticKey: String,
+        ): Int = externallySelectableActions(observation)
+            .filter { semanticActionKey(it) == semanticKey }
+            .indexOfFirst { it.actionId == selected.actionId }
+            .also { check(it >= 0) { "Selected public action was not semantically indexed" } }
+
+        private fun semanticActionKey(action: LegalActionView): String =
+            canonicalSemanticJson(ObservationCanonicalizer.semanticActionFingerprint(action))
+
+        private fun externallySelectableActions(
+            observation: TrainingObservation,
+        ): List<LegalActionView> = observation.legalActions
+            .filter { it.affordable || it.isDecisionOption }
+            .sortedWith(
+                compareBy(
+                    { if (it.kind.contains("Pass", ignoreCase = true) ||
+                        it.description.contains("pass priority", ignoreCase = true)
+                    ) 1 else 0 },
+                    { it.kind },
+                    { canonicalSemanticJson(it.actionSemantics ?: JsonNull) },
+                    { it.sourceEntityId?.value ?: "" },
+                    { it.targetEntityIds.joinToString(",") { id -> id.value } },
+                ),
+            )
+
+        private fun canonicalSemanticJson(element: JsonElement, propertyName: String? = null): String =
+            when (element) {
+                is JsonObject -> JsonObject(
+                    element.entries
+                        .sortedBy { it.key }
+                        .associate { (key, value) ->
+                            key to Json.parseToJsonElement(
+                                canonicalSemanticJson(value, key),
+                            )
+                        },
+                ).toString()
+
+                is JsonArray -> {
+                    val values = element.map { canonicalSemanticJson(it) }
+                    val ordered = if (propertyName in semanticUnorderedArrayKeys) {
+                        values.sorted()
+                    } else {
+                        values
+                    }
+                    "[${ordered.joinToString(",")}]"
+                }
+
+                else -> element.toString()
+            }
+
+        private val semanticUnorderedArrayKeys = setOf(
+            "types",
+            "subtypes",
+            "colors",
+            "keywords",
+            "availableColors",
+            "attachments",
+            "targetEntityIds",
+            "validSacrificeTargets",
+            "candidates",
+            "nonSelectableOptions",
+            "matchingOptions",
+            "availableSources",
+            "waterbendPermanents",
+            "producesColors",
+            "sourceSubtypes",
+            "sourceBuckets",
+            "sourceColorBuckets",
+            "certifiedFloatingBuckets",
+            "blockedByIds",
+            "blockedAttackerIds",
+        )
+
+        fun runExactPairPrivacyGate(): PrivacyGateEvidence {
+            val cases = listOf(
+                EpisodeConfig(0L, 0, "Akiri", "Chevill", "Akiri-vs-Chevill"),
+                EpisodeConfig(0L, 1, "Chevill", "Akiri", "Chevill-vs-Akiri"),
+            )
+            val registry = exactPairRegistry()
+            val resolver = DeckResolver(registry)
+            val observations = mutableListOf<TrainingObservation>()
+            val failures = mutableListOf<String>()
+            for (episode in cases) {
+                val environment = GameEnvironment.create(
+                    registry,
+                    executionMode = GameEnvironmentMode.TRUSTED,
+                )
+                try {
+                    environment.reset(episode.gameConfig(resolver), MAX_STEPS)
+                    val builder = ObservationBuilder(cardRegistry = registry)
+                    val gym = GameGymEnv(
+                        environment = environment,
+                        perspectivePlayerIndex = 0,
+                        observationBuilder = builder,
+                    )
+                    var policyObservation = gym.observe().observation as? TrainingObservation
+                        ?: error("Privacy run requires a TrainingObservation after reset")
+                    var policyState = DeterministicPolicyState(policySeed(episode))
+                    var transitions = 0
+
+                    fun auditAllPerspectives() {
+                        val legalActions = environment.legalActions()
+                        environment.playerIds.forEach { perspective ->
+                            val result = builder.build(
+                                state = environment.state,
+                                perspectivePlayerId = perspective,
+                                legalActions = legalActions,
+                                truncated = environment.isTruncated,
+                            )
+                            check(result.diagnostics.isEmpty()) {
+                                "Privacy projection diagnostics for $perspective: " +
+                                    result.diagnostics
+                            }
+                            val observation = result.observation as? TrainingObservation
+                                ?: error("Privacy projection requires TrainingObservation")
+                            auditPublicObservation(observation)
+                            observations += observation
+                        }
+                        check(environment.diagnostics.events.isEmpty()) {
+                            "Privacy audit observed diagnostics: ${environment.diagnostics.events}"
+                        }
+                    }
+
+                    auditAllPerspectives()
+                    while (!policyObservation.terminated && !policyObservation.truncated) {
+                        check(transitions < MAX_STEPS) {
+                            "Privacy run exceeded configured maxSteps=$MAX_STEPS"
+                        }
+                        val choice = DeterministicExternalPolicy().choose(
+                            policyObservation,
+                            policyState,
+                        )
+                        policyState = policyState.afterChoice()
+                        val result = when (choice) {
+                            is SemanticChoice.Action -> choice.payload?.let { payload ->
+                                gym.step(choice.actionId, payload)
+                            } ?: gym.step(choice.actionId)
+
+                            is SemanticChoice.Structured -> {
+                                val pending = policyObservation.pendingDecision
+                                    ?: error("Privacy structured choice has no pending decision")
+                                val decisionId = pending.decisionId
+                                    ?: error("Privacy structured choice has no decision ID")
+                                gym.submitDecision(
+                                    toDecisionResponse(decisionId, choice.selection),
+                                    actorId = policyObservation.agentToAct,
+                                )
+                            }
+
+                            is SemanticChoice.Gap -> error(
+                                "Privacy run encountered policy gap at transition $transitions: $choice",
+                            )
+                        }
+                        transitions++
+                        policyObservation = result.observation as? TrainingObservation
+                            ?: error("Privacy run lost TrainingObservation after transition $transitions")
+                        auditAllPerspectives()
+                    }
+                    check(policyObservation.terminated || policyObservation.truncated) {
+                        "Privacy run did not reach terminal/truncated state"
+                    }
+                } catch (failure: Exception) {
+                    failures += "${episode.rosterLabel}/starting=${episode.startingPlayerIndex}: " +
+                        (failure.message ?: failure::class.simpleName.orEmpty())
+                } finally {
+                    // The direct environment is a test oracle only; policy input above is always
+                    // the remapped public observation returned by GameGymEnv.
+                }
+            }
+            return PrivacyGateEvidence(
+                perspectives = observations.map { it.perspectivePlayerId.value }.toSet(),
+                observations = observations.size,
+                failures = failures,
+            )
+        }
+
+        private fun auditPublicObservation(observation: TrainingObservation) {
+            val players = observation.players.map { it.id }.toSet()
+            check(players.size == observation.players.size) {
+                "Privacy observation contains duplicate player IDs"
+            }
+            val addressable = buildSet {
+                addAll(players)
+                observation.zones.flatMapTo(this) { zone -> zone.cards.map { it.entityId } }
+                observation.stack.forEach { item ->
+                    add(item.entityId)
+                    item.controllerId?.let(::add)
+                    item.sourceEntityId?.let(::add)
+                    addAll(item.targets)
+                }
+            }
+
+            fun requireAddressable(id: EntityId?, path: String) {
+                if (id != null) {
+                    check(id in addressable) {
+                        "Privacy observation leaked an unaddressable reference at $path: $id"
+                    }
+                }
+            }
+
+            check(observation.perspectivePlayerId in players) {
+                "Privacy perspective is not one of the public players"
+            }
+            requireAddressable(observation.agentToAct, "agentToAct")
+            requireAddressable(observation.activePlayerId, "activePlayerId")
+            requireAddressable(observation.priorityPlayerId, "priorityPlayerId")
+            requireAddressable(observation.winnerId, "winnerId")
+
+            observation.zones.forEach { zone ->
+                requireAddressable(zone.ownerId, "zone.ownerId")
+                zone.cards.forEach { card ->
+                    requireAddressable(card.entityId, "zone.${zone.zoneType}.card.entityId")
+                    requireAddressable(card.ownerId, "zone.${zone.zoneType}.card.ownerId")
+                    requireAddressable(card.controllerId, "zone.${zone.zoneType}.card.controllerId")
+                    requireAddressable(card.attachedTo, "zone.${zone.zoneType}.card.attachedTo")
+                    card.attachments.forEach { id -> requireAddressable(id, "card.attachments") }
+                    if (zone.zoneType == Zone.HAND || zone.zoneType == Zone.LIBRARY) {
+                        check(!zone.hidden || card.cardDefinitionId != null) {
+                            "Publicly emitted hidden-zone card has no visibility marker"
+                        }
+                    }
+                    if (card.faceDown && card.ownerId != observation.perspectivePlayerId) {
+                        check(card.cardDefinitionId == null) {
+                            "Opponent face-down card identity was published"
+                        }
+                    }
+                }
+            }
+
+            observation.legalActions.forEachIndexed { index, action ->
+                requireAddressable(action.sourceEntityId, "legalActions[$index].sourceEntityId")
+                action.targetEntityIds.forEach { id ->
+                    requireAddressable(id, "legalActions[$index].targetEntityIds")
+                }
+                action.validSacrificeTargets.forEach { id ->
+                    requireAddressable(id, "legalActions[$index].validSacrificeTargets")
+                }
+                action.targetDomain?.requirements.orEmpty().forEach { requirement ->
+                    requirement.candidates.forEach { id ->
+                        requireAddressable(id, "legalActions[$index].targetDomain.candidates")
+                    }
+                }
+                action.attackDeclarationDomain?.let { domain ->
+                    domain.attackerToDefenders.forEach { (attacker, defenders) ->
+                        requireAddressable(attacker, "attackDeclarationDomain.attacker")
+                        defenders.forEach { id ->
+                            requireAddressable(id, "attackDeclarationDomain.defender")
+                        }
+                    }
+                    domain.mandatoryAttackers.forEach { id ->
+                        requireAddressable(id, "attackDeclarationDomain.mandatory")
+                    }
+                    domain.coAttackerRequirements.values.flatten().flatMap { it.anyOf }
+                        .forEach { id -> requireAddressable(id, "attackDeclarationDomain.anyOf") }
+                    domain.bandConstraints.bandingAttackersByDefender.forEach { (defender, attackers) ->
+                        requireAddressable(defender, "attackDeclarationDomain.band.defender")
+                        attackers.forEach { id ->
+                            requireAddressable(id, "attackDeclarationDomain.band.attacker")
+                        }
+                    }
+                    domain.bandConstraints.nonBandingAttackersByDefender.forEach { (defender, attackers) ->
+                        requireAddressable(defender, "attackDeclarationDomain.nonBand.defender")
+                        attackers.forEach { id ->
+                            requireAddressable(id, "attackDeclarationDomain.nonBand.attacker")
+                        }
+                    }
+                }
+                action.paymentDomain?.let { domain ->
+                    domain.sourceActivations.forEach { source ->
+                        requireAddressable(source.sourceId, "paymentDomain.sourceActivations")
+                    }
+                    domain.currentPool.certifiedFloatingBuckets.forEach { bucket ->
+                        requireAddressable(bucket.sourceId, "paymentDomain.floatingBucket")
+                    }
+                }
+                action.actionSemantics?.let { semantics ->
+                    semanticEntityReferences(semantics).forEach { id ->
+                        requireAddressable(id, "legalActions[$index].actionSemantics")
+                    }
+                }
+            }
+
+            observation.pendingDecision?.let { pending ->
+                requireAddressable(pending.playerId, "pendingDecision.playerId")
+                requireAddressable(pending.sourceEntityId, "pendingDecision.sourceEntityId")
+                requireAddressable(pending.triggeringEntityId, "pendingDecision.triggeringEntityId")
+                pending.structuredDomain?.let { domain ->
+                    structuredEntityReferences(domain).forEach { id ->
+                        requireAddressable(id, "pendingDecision.structuredDomain")
+                    }
+                }
+                if (pending.playerId != observation.perspectivePlayerId) {
+                    check(pending.structuredDomain == null) {
+                        "Non-owner perspective received a structured decision domain"
+                    }
+                    check(observation.legalActions.isEmpty()) {
+                        "Non-owner perspective received legal actions"
+                    }
+                }
+            }
+
+            val wire = Json.parseToJsonElement(ObservationCanonicalizer.wireJson(observation))
+            val forbiddenKeys = collectJsonKeys(wire).filter {
+                it.equals("diagnostics", ignoreCase = true) ||
+                    it.equals("registry", ignoreCase = true) ||
+                    it.equals("gameState", ignoreCase = true) ||
+                    it.equals("internalState", ignoreCase = true) ||
+                    it.equals("debugState", ignoreCase = true)
+            }
+            check(forbiddenKeys.isEmpty()) {
+                "Privacy wire observation contains internal/debug fields: $forbiddenKeys"
+            }
+            check(StateDigest.compute(observation) == observation.stateDigest) {
+                "Privacy observation stateDigest is not self-consistent"
+            }
+        }
+
+        private fun semanticEntityReferences(element: JsonElement): Set<EntityId> {
+            val referenceKeys = setOf(
+                "entityId",
+                "entityIds",
+                "sourceEntityId",
+                "targetEntityId",
+                "targetEntityIds",
+                "playerId",
+                "sourceId",
+                "triggeringEntityId",
+                "cardId",
+                "spellEntityId",
+                "permanentId",
+                "attackerId",
+                "defenderId",
+                "sacrificedPermanents",
+                "tappedPermanents",
+            )
+
+            fun values(value: JsonElement): List<String> = when (value) {
+                is JsonPrimitive -> if (value.isString) listOf(value.content) else emptyList()
+                is JsonArray -> value.flatMap(::values)
+                is JsonObject -> value.values.flatMap(::values)
+                JsonNull -> emptyList()
+            }
+
+            fun walk(value: JsonElement): Set<EntityId> = when (value) {
+                is JsonObject -> value.entries.flatMapTo(mutableSetOf()) { (key, child) ->
+                    val direct = if (key in referenceKeys) {
+                        values(child).map(::EntityId)
+                    } else {
+                        emptyList()
+                    }
+                    direct + walk(child)
+                }
+                is JsonArray -> value.flatMapTo(mutableSetOf(), ::walk)
+                else -> emptySet()
+            }
+            return walk(element)
+        }
+
+        private fun structuredEntityReferences(domain: StructuredDecisionDomain): Set<EntityId> =
+            buildSet {
+                when (domain) {
+                    is TargetsDomain -> domain.requirements.flatMapTo(this) { it.candidates }
+                    is CardSelectionDomain -> {
+                        addAll(domain.options)
+                        addAll(domain.nonSelectableOptions)
+                        domain.cardInfo?.keys?.let(::addAll)
+                        domain.conditionalMinimums.flatMapTo(this) { it.matchingOptions }
+                    }
+                    is ModeSelectionDomain -> Unit
+                    is DistributionDomain -> {
+                        addAll(domain.targets)
+                        addAll(domain.maxPerTarget.keys)
+                    }
+                    is OrderingDomain -> {
+                        addAll(domain.objects)
+                        domain.cardInfo?.keys?.let(::addAll)
+                        domain.objectLabels?.keys?.let(::addAll)
+                    }
+                    is SplitPilesDomain -> {
+                        addAll(domain.cards)
+                        domain.cardInfo?.keys?.let(::addAll)
+                    }
+                    is SearchLibraryDomain -> {
+                        addAll(domain.options)
+                        addAll(domain.cards.keys)
+                    }
+                    is ReorderLibraryDomain -> {
+                        addAll(domain.cards)
+                        addAll(domain.cardInfo.keys)
+                    }
+                    is CombatResolutionDomain -> {
+                        domain.attackers.flatMapTo(this) { attacker ->
+                            buildList {
+                                add(attacker.id)
+                                addAll(attacker.blockedByIds)
+                                add(attacker.attackedDefenderId)
+                            }
+                        }
+                        domain.blockers.flatMapTo(this) { blocker ->
+                            buildList {
+                                add(blocker.id)
+                                addAll(blocker.blockedAttackerIds)
+                            }
+                        }
+                        domain.defenders.forEach { add(it.id) }
+                        domain.edges.forEach { edge ->
+                            add(edge.sourceId)
+                            add(edge.targetId)
+                            add(edge.editableBy)
+                        }
+                        domain.coChooserId?.let(::add)
+                    }
+                    is ManaSourcesDomain -> {
+                        domain.availableSources.mapTo(this) { it.entityId }
+                        domain.waterbendPermanents.mapTo(this) { it.entityId }
+                    }
+                    is ReplacementDomain -> domain.fromMetadata
+                        .plus(domain.toMetadata)
+                        .mapNotNullTo(this) { it.triggeringPlayerId }
+                    is BudgetModalDomain -> Unit
+                }
+            }
+
+        private fun collectJsonKeys(element: JsonElement): Set<String> = when (element) {
+            is JsonObject -> element.entries.flatMapTo(mutableSetOf()) { (key, value) ->
+                setOf(key) + collectJsonKeys(value)
+            }
+            is JsonArray -> element.flatMapTo(mutableSetOf(), ::collectJsonKeys)
+            else -> emptySet()
+        }
+
+        fun decisionClosureEvidence(): DecisionClosureEvidence {
+            val source = repositoryRoot()
+                .resolve("gym/src/test/kotlin/com/wingedsheep/gym/EnvironmentV1ExternalPolicy.kt")
+                .readText()
+            val requiredFieldHandlers = listOf(
+                "paymentStrategy",
+                "xValue",
+                "targets",
+                "manaColorChoice",
+                "additionalCostPayment",
+                "costPayment",
+                "attackers",
+                "bands",
+                "damageDistribution",
+            )
+            val missingFieldHandlers = requiredFieldHandlers.filterNot { field ->
+                source.contains("\"$field\"")
+            }
+
+            val actionRows = listOf(
+                ClosureRow("ActivateAbility", 48_522, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("CastSpell", 690, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("CastSpellMode", 76, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("CastWithKicker", 6, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("CycleCard", 44, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("DECISION", 2_697, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
+                ClosureRow("DeclareAttackers", 410, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("PassPriority", 85_006, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("PlayLand", 2_435, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+            )
+            val decisionRows = listOf(
+                ClosureRow("CHOOSE_COLOR", 112, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
+                ClosureRow("CHOOSE_TARGETS", 74, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
+                ClosureRow("PRIORITY", 137_189, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
+                ClosureRow("SELECT_CARDS", 2_759, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
+                ClosureRow("YES_NO", 104, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
+            )
+            val rows = actionRows + decisionRows
+            val uncovered = buildList {
+                addAll(missingFieldHandlers.map { "requiredPayloadFields.$it" })
+                addAll(rows.filter { it.disposition !in SUPPORTED_CLOSURE_DISPOSITIONS }
+                    .map { it.family })
+            }
+
+            val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
+                readLockedDeck("chevill-v0.1.txt").cards).distinct()
+            val resolvedCards = lockedCards.mapNotNull(exactPairRegistry()::getCard).distinctBy { it.name }
+            check(resolvedCards.size == 146) {
+                "Decision closure static card set resolved ${resolvedCards.size}, expected 146"
+            }
+
+            return DecisionClosureEvidence(
+                rows = rows,
+                resolvedCards = resolvedCards.size,
+                uncovered = uncovered,
+                sourceBoundary = listOf(
+                    "policy-input=TrainingObservation",
+                    "policy-input=public legal action/actionSemantics",
+                    "policy-input=public PendingDecision structuredDomain",
+                    "unknown required fields fail closed",
+                ),
+            )
+        }
+
+        fun issue56ReachabilityEvidence(): Issue56Evidence {
+            val registry = exactPairRegistry()
+            val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
+                readLockedDeck("chevill-v0.1.txt").cards).distinct()
+            val cards = lockedCards.map { registry.requireCard(it) }.distinctBy { it.name }
+            val retargetingTypes = setOf(
+                "Storm",
+                "StormCopy",
+                "CopyTargetSpell",
+                "CopyTargetTriggeredAbility",
+                "CopyTargetSpellOrAbility",
+                "CopyEachTargetSpell",
+                "ChainCopy",
+            )
+            val sites = cards.flatMap { card ->
+                serializedCopyRetargetingSites(card, retargetingTypes)
+            }.sortedWith(compareBy<Issue56CopySite> { it.cardName }
+                .thenBy { it.type }
+                .thenBy { it.path })
+            val partialRetargetingCandidates = sites.filter { site ->
+                site.targetRequirementCount == null || site.targetRequirementCount > 1
+            }
+
+            return Issue56Evidence(
+                result = if (partialRetargetingCandidates.isEmpty()) {
+                    Issue56Result.PROVEN_UNREACHABLE_EXACT_PAIR
+                } else {
+                    Issue56Result.REACHABLE_BLOCKER
+                },
+                resolvedCards = cards.size,
+                retargetingSites = sites,
+                evidence = listOf(
+                    "static locked-card script walk uses CardSerialization with nearest enclosing targetRequirements",
+                    "copy-retargeting effect/keyword nodes inspected=${sites.size}",
+                    "partial-retargeting candidates=${partialRetargetingCandidates.size}",
+                    "partial retargeting requires more than one target slot on the copied spell/ability",
+                    "current issue #56 remains an open general Rules issue",
+                ),
+            )
+        }
+
+        private fun serializedCopyRetargetingSites(
+            card: CardDefinition,
+            retargetingTypes: Set<String>,
+        ): List<Issue56CopySite> {
+            val sites = mutableListOf<Issue56CopySite>()
+            val scopedTargetRequirementCollections = setOf(
+                "activatedAbilities",
+                "triggeredAbilities",
+                "stateTriggeredAbilities",
+                "costPaidLinkedTriggers",
+                "classLevels",
+                "sagaChapters",
+            )
+            fun targetRequirementCount(element: JsonObject): Int? =
+                (element["targetRequirements"] as? JsonArray)?.size
+
+            fun walk(
+                element: JsonElement,
+                path: String,
+                inheritedTargetRequirementCount: Int?,
+                scopedTargetRequirementCount: Int? = null,
+            ) {
+                when (element) {
+                    is JsonObject -> {
+                        val targetCount = targetRequirementCount(element)
+                            ?: scopedTargetRequirementCount
+                            ?: inheritedTargetRequirementCount
+                        val type = (element["type"] as? JsonPrimitive)?.content
+                        if (type in retargetingTypes) {
+                            val copyType = type ?: return
+                            sites += Issue56CopySite(
+                                cardName = card.name,
+                                type = copyType,
+                                targetRequirementCount = targetCount,
+                                path = path,
+                            )
+                        }
+                        element.keys.sorted().forEach { key ->
+                            val childScope = when (key) {
+                                "script" -> card.script.targetRequirements.size
+                                in scopedTargetRequirementCollections -> 0
+                                else -> null
+                            }
+                            walk(element.getValue(key), "$path.$key", targetCount, childScope)
+                        }
+                    }
+
+                    is JsonArray -> element.forEachIndexed { index, child ->
+                        walk(child, "$path[$index]", inheritedTargetRequirementCount, scopedTargetRequirementCount)
+                    }
+
+                    else -> Unit
+                }
+            }
+
+            walk(
+                CardSerialization.json.encodeToJsonElement(CardDefinition.serializer(), card),
+                "$",
+                null,
+            )
+            return sites
+        }
+
+        private fun EpisodeConfig.gameConfig(resolver: DeckResolver): GameConfig {
+            val config = envConfig()
+            return GameConfig(
+                players = config.players.map { player ->
+                    PlayerConfig(
+                        name = player.name,
+                        deck = resolver.resolve(player.deck),
+                        startingLife = player.startingLife,
+                        playerId = player.playerId,
+                        commanderCardName = player.commanderCardName,
+                    )
+                },
+                startingHandSize = config.startingHandSize,
+                skipMulligans = config.skipMulligans,
+                useHandSmoother = config.useHandSmoother,
+                startingPlayerIndex = config.startingPlayerIndex,
+                format = config.format,
+                seed = config.seed,
+            )
+        }
 
         fun runExactPairCorpus(): CorpusEvidence {
             val evidence = CorpusEvidence()
@@ -1859,6 +2742,118 @@ private fun decodeCostPayment(choice: SemanticChoice): AdditionalCostPayment {
 private data class LockedDeck(
     val commander: String,
     val cards: List<String>,
+)
+
+private data class ReplayFrame(
+    val semanticObservation: String,
+    val stateDigest: String,
+    val terminated: Boolean,
+    val truncated: Boolean,
+)
+
+private sealed interface ReplayDecision {
+    data class Action(
+        val kind: String,
+        val semanticKey: String,
+        val semanticOrdinal: Int,
+        val payload: JsonObject?,
+    ) : ReplayDecision
+
+    data class Structured(
+        val family: String,
+        val selection: SemanticDecision,
+    ) : ReplayDecision
+}
+
+private data class ReplayTrace(
+    val episode: EpisodeConfig,
+    val frames: List<ReplayFrame>,
+    val decisions: List<ReplayDecision>,
+)
+
+private data class ReplayGateEvidence(
+    val traces: List<ReplayTrace>,
+    val failures: List<String>,
+) {
+    fun render(): String = buildString {
+        appendLine("EXACT_PAIR_REPLAY_GATE")
+        appendLine("cases=${traces.size}; failures=${failures.size}")
+        traces.forEach { trace ->
+            appendLine(
+                "case=${trace.episode.rosterLabel}/seed=${trace.episode.seed}/" +
+                    "starting=${trace.episode.startingPlayerIndex}; " +
+                    "frames=${trace.frames.size}; decisions=${trace.decisions.size}; " +
+                    "terminal=${trace.frames.last().terminated}; " +
+                    "truncated=${trace.frames.last().truncated}",
+            )
+        }
+        failures.forEach { appendLine("failure=$it") }
+    }
+}
+
+private data class PrivacyGateEvidence(
+    val perspectives: Set<String>,
+    val observations: Int,
+    val failures: List<String>,
+) {
+    fun render(): String =
+        "PRIVACY_FINAL_GATE\nperspectives=$perspectives; observations=$observations; " +
+            "failures=${failures.size}\n" + failures.joinToString("\n") { "failure=$it" }
+}
+
+private data class ClosureRow(
+    val family: String,
+    val observedCount: Int,
+    val disposition: String,
+)
+
+private data class DecisionClosureEvidence(
+    val rows: List<ClosureRow>,
+    val resolvedCards: Int,
+    val uncovered: List<String>,
+    val sourceBoundary: List<String>,
+) {
+    fun render(): String = buildString {
+        appendLine("DECISION_CLOSURE_GATE")
+        appendLine("resolvedCards=$resolvedCards; uncovered=$uncovered")
+        rows.forEach { row ->
+            appendLine("${row.family}: ${row.disposition} (observed=${row.observedCount})")
+        }
+        sourceBoundary.forEach { appendLine(it) }
+    }
+}
+
+private enum class Issue56Result {
+    PROVEN_UNREACHABLE_EXACT_PAIR,
+    REACHABLE_BLOCKER,
+}
+
+private data class Issue56CopySite(
+    val cardName: String,
+    val type: String,
+    val targetRequirementCount: Int?,
+    val path: String,
+) {
+    override fun toString(): String =
+        "$cardName:$type:targetRequirements=${targetRequirementCount ?: "UNKNOWN"}@$path"
+}
+
+private data class Issue56Evidence(
+    val result: Issue56Result,
+    val resolvedCards: Int,
+    val retargetingSites: List<Issue56CopySite>,
+    val evidence: List<String>,
+) {
+    fun render(): String = buildString {
+        appendLine("ISSUE_56_GATE: $result")
+        appendLine("resolvedCards=$resolvedCards; retargetingSites=$retargetingSites")
+        evidence.forEach { appendLine(it) }
+    }
+}
+
+private val SUPPORTED_CLOSURE_DISPOSITIONS = setOf(
+    "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN",
+    "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN",
 )
 
 private data class EpisodeConfig(
