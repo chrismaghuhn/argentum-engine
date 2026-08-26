@@ -23,6 +23,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -109,7 +110,7 @@ class CycleCardHandler(
                 val validation = paymentPlanValidator.validateV2(
                     state = state,
                     playerId = action.playerId,
-                    cost = cyclingAbility.cost,
+                    cost = cyclingAbility.cost.canonicalPaymentManaCost(),
                     plan = plan,
                     spellContext = paymentContext,
                 )
@@ -234,7 +235,7 @@ class CycleCardHandler(
             explicitPaymentPlanExecutor.executeV2(
                 state = state,
                 playerId = action.playerId,
-                cost = cyclingAbility.cost,
+                cost = cyclingAbility.cost.canonicalPaymentManaCost(),
                 plan = plan,
                 paymentContext = paymentContext,
                 reason = "Cycle ${cardComponent.name}",

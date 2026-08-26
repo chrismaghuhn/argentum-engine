@@ -852,10 +852,13 @@ as `tappedPermanents: [sourceEntityId]` and/or `sacrificedPermanents: [sourceEnt
 payload field and is not a player decision: Rules resolves and pays it through the existing
 authoritative life-payment path. This is not a selection domain: Rules derives the expected value
 from the authoritative effective `AbilityCost` plus the activated source ID, then checks exact
-equality before any mana, tap, sacrifice, or life mutation. `PaymentDomainV4` remains mana-only,
-and a `{0}` atom is represented by an explicit `PaymentPlanV2` zero-spend allocation rather than
-by omitting the payment object or allowing an implicit source choice. No serialized DTO, schema
-hash, or replay version changes for this contract.
+equality before any mana, tap, sacrifice, or life mutation. `PaymentDomainV4` remains mana-only.
+On the trusted A5 external-policy path, a zero-mana action uses an explicit
+`PaymentStrategy.ExplicitV2` object with an empty `PaymentPlanV2`; canonical `ManaCost.ZERO` has no
+cost symbols, so its `PaymentPlanV2.spendAllocation.costUnits` list is empty. The general Gym
+contract retains the existing representable `PaymentStrategy.Explicit` / `PaymentPlanV1`
+compatibility path. Neither path makes payment implicit or permits an implicit source choice, and
+no serialized DTO, schema hash, or replay version changes for this contract.
 The public payment and replay schemas are unchanged by the CycleCard, deterministic mana
 side-effect, and source-bound activated self-cost slices. `PaymentSourceActivationDomain.manaAbilityKey`
 remains the structural identity

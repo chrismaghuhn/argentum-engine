@@ -506,11 +506,7 @@ class EnvControllerTest : FunSpec() {
                     PaymentStrategy.serializer(),
                     PaymentStrategy.Explicit(
                         paymentPlan = PaymentPlanV1(
-                            spendAllocation = SpendAllocation(
-                                costUnits = listOf(
-                                    CostUnitAllocation(symbolIndex = 0, spends = emptyList())
-                                ),
-                            ),
+                            spendAllocation = SpendAllocation(),
                         ),
                     ),
                 )

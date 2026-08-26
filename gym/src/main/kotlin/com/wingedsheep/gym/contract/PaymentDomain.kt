@@ -9,6 +9,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
 import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -268,7 +269,10 @@ class PaymentDomainBuilder(
         spellContext: SpellPaymentContext,
         excludeSources: Set<EntityId> = emptySet(),
     ): PaymentDomainV4? {
-        val cost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
+        val cost = runCatching { ManaCost.parse(requiredCost) }
+            .getOrNull()
+            ?.canonicalPaymentManaCost()
+            ?: return null
         val costUnits = cost.symbols.mapIndexed { index, symbol -> symbol.toDomain(index) ?: return null }
 
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()

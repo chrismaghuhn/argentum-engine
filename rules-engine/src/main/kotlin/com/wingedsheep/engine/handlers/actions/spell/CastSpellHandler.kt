@@ -70,6 +70,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
@@ -1346,7 +1347,7 @@ class CastSpellHandler(
                     paymentPlanValidator.validateV2(
                         state = state,
                         playerId = action.playerId,
-                        cost = effectiveCost,
+                        cost = effectiveCost.canonicalPaymentManaCost(),
                         plan = explicitV2Plan,
                         spellContext = spellCtx,
                     )
@@ -1354,7 +1355,7 @@ class CastSpellHandler(
                     paymentPlanValidator.validate(
                         state = state,
                         playerId = action.playerId,
-                        cost = effectiveCost,
+                        cost = effectiveCost.canonicalPaymentManaCost(),
                         plan = explicitPlan!!,
                         spellContext = spellCtx,
                     )
