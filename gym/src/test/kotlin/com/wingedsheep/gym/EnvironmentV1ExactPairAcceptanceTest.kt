@@ -1245,6 +1245,43 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
+    test("definition digest ignores insertion order of a known unordered collection") {
+        fun digestFor(flags: Set<String>): String = sha256Text(
+            canonicalDefinitionJson(
+                buildJsonObject {
+                    put("name", "fixture")
+                    put("manaCost", "{0}")
+                    put("typeLine", "Artifact")
+                    put("flags", JsonArray(flags.map(::JsonPrimitive)))
+                },
+            ),
+        )
+
+        val firstInsertionOrder = digestFor(linkedSetOf("A", "B"))
+        val secondInsertionOrder = digestFor(linkedSetOf("B", "A"))
+
+        check(firstInsertionOrder == secondInsertionOrder) {
+            "Known unordered collection order changed the definition digest"
+        }
+    }
+
+    test("definition digest preserves semantic order of effect arrays") {
+        fun digestFor(effects: List<String>): String = sha256Text(
+            canonicalDefinitionJson(
+                buildJsonObject {
+                    put("effects", JsonArray(effects.map(::JsonPrimitive)))
+                },
+            ),
+        )
+
+        val firstSemanticOrder = digestFor(listOf("A", "B"))
+        val secondSemanticOrder = digestFor(listOf("B", "A"))
+
+        check(firstSemanticOrder != secondSemanticOrder) {
+            "Semantic effect-array order was erased from the definition digest"
+        }
+    }
+
     test("Issue 56 is proven unreachable from the locked exact pair") {
         val evidence = issue56ReachabilityEvidence()
         println(evidence.render())
@@ -2098,21 +2135,82 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
 
         /**
-         * The static reachability fingerprint is a definition-membership fingerprint, not a
-         * replay/Rules semantic fingerprint.  Ignore JSON object and collection iteration order
-         * so a HashSet serialized by a different test worker cannot invalidate the evidence.
+         * JSON object key order is not definition semantics, but array order normally is.  Only
+         * arrays whose owning SDK property is a Set are normalized here.  In particular, effect
+         * pipelines, target requirements, mode lists, and other List-backed properties retain
+         * their serialized order so a semantic [A, B] -> [B, A] change changes the fingerprint.
          */
-        private fun canonicalDefinitionJson(element: JsonElement): String = when (element) {
+        private val ROOT_UNORDERED_DEFINITION_ARRAY_KEYS = setOf(
+            "colorIdentityOverride",
+            "colorIndicator",
+            "flags",
+            "keywords",
+            "legalFormats",
+        )
+
+        /**
+         * These names are Set-backed throughout the serialized SDK definition graph.  Ambiguous
+         * names that also have List-backed SDK properties (colors, subtypes, zones, addCardTypes)
+         * are intentionally not included without a type/path-specific proof.
+         */
+        private val NESTED_UNORDERED_DEFINITION_ARRAY_KEYS = setOf(
+            "activeZones",
+            "addedCardTypes",
+            "addedColors",
+            "addedKeywords",
+            "addedSubtypes",
+            "addedSupertypes",
+            "addedTokenKeywords",
+            "addTypes",
+            "allowedColors",
+            "creatureTypes",
+            "directions",
+            "fromZones",
+            "gainLifeFromColors",
+            "landTypes",
+            "overrideCardTypes",
+            "overrideColors",
+            "overrideSubtypes",
+            "properties",
+            "protectionColors",
+            "removedSupertypes",
+            "removeTypes",
+            "requires",
+            "riders",
+            "setCardTypes",
+            "setColors",
+            "setSubtypes",
+            "sourceCardTypes",
+            "tapForGenericPermanents",
+            "triggerZones",
+            "types",
+            "xManaRestriction",
+        )
+
+        private fun JsonObject.isSerializedCardDefinition(): Boolean =
+            containsKey("name") && containsKey("manaCost") && containsKey("typeLine")
+
+        private fun canonicalDefinitionJson(
+            element: JsonElement,
+            propertyName: String? = null,
+            owner: JsonObject? = null,
+        ): String = when (element) {
             is JsonObject -> element.keys
                 .sorted()
                 .joinToString(prefix = "{", postfix = "}") { key ->
-                    "${JsonPrimitive(key)}:${canonicalDefinitionJson(element.getValue(key))}"
+                    "${JsonPrimitive(key)}:${canonicalDefinitionJson(element.getValue(key), key, element)}"
                 }
 
-            is JsonArray -> element
-                .map(::canonicalDefinitionJson)
-                .sorted()
-                .joinToString(prefix = "[", postfix = "]")
+            is JsonArray -> {
+                val canonicalElements = element.map {
+                    canonicalDefinitionJson(it, owner = owner)
+                }
+                val isUnordered = propertyName in NESTED_UNORDERED_DEFINITION_ARRAY_KEYS ||
+                    (owner?.isSerializedCardDefinition() == true &&
+                        propertyName in ROOT_UNORDERED_DEFINITION_ARRAY_KEYS)
+                val elements = if (isUnordered) canonicalElements.sorted() else canonicalElements
+                elements.joinToString(prefix = "[", postfix = "]")
+            }
 
             else -> element.toString()
         }
@@ -2287,7 +2385,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     "bands",
                 ),
                 totalTransitions = 140_238,
-                definitionDigest = "EC08F440768C8DD64F3E00086593EFBA3281167B7E7C0DF1692003E26E1FA337",
+                definitionDigest = "9A652738D6FA95324AB2FE4DB4B1DD9946C3E0B0DB3DEBA5B6F7D8C95322F8B0",
             )
 
         private fun scanLockedDefinitions(cards: List<CardDefinition>): DefinitionScanEvidence {
