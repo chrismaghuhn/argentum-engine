@@ -1201,6 +1201,19 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
+    test("static closure derives an action family absent from historical telemetry") {
+        val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
+            readLockedDeck("chevill-v0.1.txt").cards).distinct()
+        val resolvedCards = lockedCards.mapNotNull(exactPairRegistry()::getCard).distinctBy { it.name }
+        val definitionScan = scanLockedDefinitions(resolvedCards)
+        check("CastWithFlashback" in definitionScan.staticallyReachableActionFamilies) {
+            "Current locked definitions did not derive CastWithFlashback"
+        }
+        check("CastWithFlashback" !in exactPairCorpusReachabilitySnapshot().actionKinds) {
+            "The regression must prove this family is not supplied by historical telemetry"
+        }
+    }
+
     test("Issue 56 is proven unreachable from the locked exact pair") {
         val evidence = issue56ReachabilityEvidence()
         println(evidence.render())
@@ -1275,7 +1288,25 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             val frames = mutableListOf<ReplayFrame>()
             val actions = mutableListOf<GameAction>()
             val checkpoints = mutableListOf<ReplayCheckpointData>()
+            val observedActionKinds = TreeMap<String, Int>()
+            val observedDecisionFamilies = TreeMap<String, Int>()
             val requiredPayloadFields = mutableSetOf<String>()
+            fun recordPublicReachability(game: TrainingObservation) {
+                // Closure evidence is about the public action surface, not only the action the
+                // deliberately weak policy happened to choose.  Keep unaffordable legal actions
+                // too: they are still published candidates whose shape must be understood before
+                // a future policy can choose them when the same action becomes affordable.
+                game.legalActions.forEach { candidate ->
+                    observedActionKinds[candidate.kind] =
+                        (observedActionKinds[candidate.kind] ?: 0) + 1
+                    requiredPayloadFields += candidate.requiredPayloadFields
+                }
+                game.pendingDecision?.let { pending ->
+                    val family = pending.kind.name
+                    observedDecisionFamilies[family] =
+                        (observedDecisionFamilies[family] ?: 0) + 1
+                }
+            }
             val checkpointCadence = if (captureAuthoritativeReplay) {
                 CompactReplayBridge.checkpointCadence(repositoryRoot())
             } else {
@@ -1286,6 +1317,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 ?: error("Replay capture requires a TrainingObservation after reset")
             assertEnvironmentDiagnosticsZero(environment)
             frames += replayFrame(observation)
+            recordPublicReachability(observation)
             if (captureAuthoritativeReplay) {
                 checkpoints += ReplayCheckpointData(
                     afterActionCount = 0,
@@ -1311,11 +1343,6 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         )
                         val semanticKey = semanticActionKey(action)
                         val semanticOrdinal = semanticActionOrdinal(observation, action, semanticKey)
-                        // Only fields on the action actually selected by the external policy are
-                        // reachability evidence.  Other legal candidates are public alternatives,
-                        // not executed corpus decisions; counting their template-only fields here
-                        // would turn an unselected optional action shape into a false closure gap.
-                        requiredPayloadFields += action.requiredPayloadFields
                         decisions += ReplayDecision.Action(
                             kind = action.kind,
                             semanticKey = semanticKey,
@@ -1368,6 +1395,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 observation = result.observation as? TrainingObservation
                     ?: error("Replay capture lost TrainingObservation after transition $transitions")
                 frames += replayFrame(observation)
+                recordPublicReachability(observation)
                 if (captureAuthoritativeReplay && transitions % checkpointCadence == 0) {
                     checkpoints += ReplayCheckpointData(
                         afterActionCount = transitions,
@@ -1401,6 +1429,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 gameConfig = gameConfig,
                 playerIds = environment.playerIds,
                 requiredPayloadFields = requiredPayloadFields,
+                observedActionKinds = observedActionKinds,
+                observedDecisionFamilies = observedDecisionFamilies,
             )
         }
 
@@ -1972,58 +2002,53 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             else -> emptySet()
         }
 
-        fun decisionClosureEvidence(): DecisionClosureEvidence {
-            val boundedEvidence = replayCases.map { episode ->
-                captureReplayTrace(episode, captureAuthoritativeReplay = false)
-            }
-            val corpusSnapshot = exactPairCorpusReachabilitySnapshot()
-            val observedActionKinds = corpusSnapshot.actionKinds.toMutableMap()
-            val observedDecisionFamilies = corpusSnapshot.decisionFamilies.toMutableMap()
-            boundedEvidence.flatMap { trace ->
-                trace.decisions.mapNotNull { decision ->
-                    (decision as? ReplayDecision.Action)?.kind
-                }
-            }.forEach { kind ->
-                observedActionKinds[kind] = (observedActionKinds[kind] ?: 0) + 1
-            }
-            boundedEvidence.flatMap { trace ->
-                trace.decisions.mapNotNull { decision ->
-                    (decision as? ReplayDecision.Structured)?.family
-                }
-            }.forEach { family ->
-                observedDecisionFamilies[family] = (observedDecisionFamilies[family] ?: 0) + 1
-            }
-            val observedRequiredPayloadFields = buildSet {
-                addAll(corpusSnapshot.requiredPayloadFields)
-                boundedEvidence.forEach { addAll(it.requiredPayloadFields) }
-            }
-            val missingFieldHandlers = observedRequiredPayloadFields
-                .filterNot { it in EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS }
-                .toList()
-                .sorted()
-            val observedFamilies = (observedActionKinds.keys + observedDecisionFamilies.keys)
-                .toSortedSet()
-            val dispositionByFamily = buildMap {
-                PUBLIC_ACTION_DOMAIN_FAMILIES.forEach {
-                    put(it, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN")
-                }
-                STRUCTURED_DECISION_DOMAIN_FAMILIES.forEach {
-                    put(it, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN")
-                }
-            }
-            val rows = observedFamilies.map { family ->
-                ClosureRow(
-                    family = family,
-                    observedCount = (observedActionKinds[family] ?: 0) +
-                        (observedDecisionFamilies[family] ?: 0),
-                    disposition = dispositionByFamily[family] ?: "UNCLASSIFIED",
-                )
-            }
-            val uncovered = buildList {
-                addAll(missingFieldHandlers.map { "requiredPayloadFields.$it" })
-                addAll(observedFamilies.filter { it !in dispositionByFamily })
+        private fun JsonElement.containsJsonType(types: Set<String>): Boolean = when (this) {
+            is JsonObject -> {
+                val type = (this["type"] as? JsonPrimitive)?.content
+                type in types || values.any { it.containsJsonType(types) }
             }
 
+            is JsonArray -> any { it.containsJsonType(types) }
+            else -> false
+        }
+
+        private fun JsonElement.containsJsonTypePrefix(prefix: String): Boolean = when (this) {
+            is JsonObject -> {
+                val type = (this["type"] as? JsonPrimitive)?.content
+                type?.startsWith(prefix) == true || values.any { it.containsJsonTypePrefix(prefix) }
+            }
+
+            is JsonArray -> any { it.containsJsonTypePrefix(prefix) }
+            else -> false
+        }
+
+        private fun JsonElement.containsJsonKey(key: String): Boolean = when (this) {
+            is JsonObject -> containsKey(key) || values.any { it.containsJsonKey(key) }
+            is JsonArray -> any { it.containsJsonKey(key) }
+            else -> false
+        }
+
+        private fun JsonElement.maxJsonArraySizeForKey(key: String): Int = when (this) {
+            is JsonObject -> maxOf(
+                (this[key] as? JsonArray)?.size ?: 0,
+                values.maxOfOrNull { it.maxJsonArraySizeForKey(key) } ?: 0,
+            )
+
+            is JsonArray -> maxOf(
+                0,
+                maxOfOrNull { it.maxJsonArraySizeForKey(key) } ?: 0,
+            )
+
+            else -> 0
+        }
+
+        private fun JsonElement.containsManaCostX(): Boolean = when (this) {
+            is JsonObject -> values.any { it.containsManaCostX() }
+            is JsonArray -> any { it.containsManaCostX() }
+            is JsonPrimitive -> content == "X" || content.matches(MANA_COST_WITH_X_PATTERN)
+        }
+
+        fun decisionClosureEvidence(): DecisionClosureEvidence {
             val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
                 readLockedDeck("chevill-v0.1.txt").cards).distinct()
             val resolvedCards = lockedCards.mapNotNull(exactPairRegistry()::getCard).distinctBy { it.name }
@@ -2038,6 +2063,64 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 "Decision closure found empty serialized definitions: " +
                     definitionScan.emptySerializations
             }
+
+            val boundedEvidence = replayCases.map { episode ->
+                captureReplayTrace(episode, captureAuthoritativeReplay = false)
+            }
+            val corpusSnapshot = exactPairCorpusReachabilitySnapshot()
+            val dynamicActionKinds = TreeMap<String, Int>().apply {
+                putAll(corpusSnapshot.actionKinds)
+                boundedEvidence.forEach { trace ->
+                    trace.observedActionKinds.forEach { (kind, count) ->
+                        this[kind] = (this[kind] ?: 0) + count
+                    }
+                }
+            }
+            val dynamicDecisionFamilies = TreeMap<String, Int>().apply {
+                putAll(corpusSnapshot.decisionFamilies)
+                boundedEvidence.forEach { trace ->
+                    trace.observedDecisionFamilies.forEach { (family, count) ->
+                        this[family] = (this[family] ?: 0) + count
+                    }
+                }
+            }
+            val derivedActionFamilies = (
+                dynamicActionKinds.keys + definitionScan.staticallyReachableActionFamilies
+                ).toSortedSet()
+            val derivedDecisionFamilies = (
+                dynamicDecisionFamilies.keys + definitionScan.staticallyReachableDecisionFamilies
+                ).toSortedSet()
+            val observedRequiredPayloadFields = buildSet {
+                addAll(corpusSnapshot.requiredPayloadFields)
+                boundedEvidence.forEach { addAll(it.requiredPayloadFields) }
+            }
+            val derivedRequiredPayloadFields = observedRequiredPayloadFields +
+                definitionScan.staticallyReachableRequiredPayloadFields
+            val missingFieldHandlers = derivedRequiredPayloadFields
+                .filterNot { it in EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS }
+                .toList()
+                .sorted()
+            val dispositionByFamily = buildMap {
+                PUBLIC_ACTION_DOMAIN_FAMILIES.forEach {
+                    put(it, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN")
+                }
+                STRUCTURED_DECISION_DOMAIN_FAMILIES.forEach {
+                    put(it, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN")
+                }
+            }
+            val derivedFamilies = (derivedActionFamilies + derivedDecisionFamilies).toSortedSet()
+            val rows = derivedFamilies.map { family ->
+                ClosureRow(
+                    family = family,
+                    observedCount = (dynamicActionKinds[family] ?: 0) +
+                        (dynamicDecisionFamilies[family] ?: 0),
+                    disposition = dispositionByFamily[family] ?: "UNCLASSIFIED",
+                )
+            }
+            val uncovered = buildList {
+                addAll(missingFieldHandlers.map { "requiredPayloadFields.$it" })
+                addAll(derivedFamilies.filter { it !in dispositionByFamily })
+            }
             check(definitionScan.digest == corpusSnapshot.definitionDigest) {
                 "Decision closure corpus telemetry is stale for the current locked definitions: " +
                     "recorded=${corpusSnapshot.definitionDigest}, " +
@@ -2049,16 +2132,21 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 resolvedCards = resolvedCards.size,
                 uncovered = uncovered,
                 sourceBoundary = listOf(
-                    "derived-action-families=${observedActionKinds.keys.sorted()}",
-                    "derived-decision-families=${observedDecisionFamilies.keys.sorted()}",
+                    "derived-action-families=$derivedActionFamilies",
+                    "derived-decision-families=$derivedDecisionFamilies",
+                    "derived-required-payload-fields=${derivedRequiredPayloadFields.sorted()}",
                     "corpus-snapshot-total-transitions=${corpusSnapshot.totalTransitions}",
                     "bounded-current-evidence-cases=${boundedEvidence.size}",
+                    "bounded-evidence=all-public-legal-candidates-and-pending-domains",
                     "static-definition-scan=${definitionScan.cardCount}; " +
-                        "digest=${definitionScan.digest}",
+                        "digest=${definitionScan.digest}; " +
+                        "action-families=${definitionScan.staticallyReachableActionFamilies}; " +
+                        "decision-families=${definitionScan.staticallyReachableDecisionFamilies}; " +
+                        "required-fields=${definitionScan.staticallyReachableRequiredPayloadFields}",
                     "recorded-corpus-telemetry-bound-to-definition-digest=" +
                         corpusSnapshot.definitionDigest,
-                    "closure-families-derived-from-recorded-and-bounded-observations",
-                    "closure-counts-are-snapshot-evidence-not-family-authority",
+                    "closure-families-derived-from-current-static-scan-plus-dynamic-evidence",
+                    "snapshot-counts-are-historical-evidence-not-family-authority",
                     "policy-supported-required-fields=" +
                         EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS.sorted(),
                     "policy-input=TrainingObservation",
@@ -2112,13 +2200,106 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 card.name to CardSerialization.json.encodeToJsonElement(
                     CardDefinition.serializer(),
                     card,
-                ).toString()
+                )
             }.sortedBy { it.first }
+            val jsonDefinitions = serialized.map { it.second }
+            fun hasType(vararg types: String): Boolean =
+                jsonDefinitions.any { definition -> definition.containsJsonType(types.toSet()) }
+
+            fun hasTypePrefix(prefix: String): Boolean =
+                jsonDefinitions.any { definition -> definition.containsJsonTypePrefix(prefix) }
+
+            fun hasKey(key: String): Boolean =
+                jsonDefinitions.any { definition -> definition.containsJsonKey(key) }
+            val hasManaCostX = cards.any { it.manaCost.hasX } ||
+                jsonDefinitions.any { it.containsManaCostX() }
+            val hasLand = cards.any { it.typeLine.isLand }
+            val hasCastableSpell = cards.any { !it.typeLine.isLand && !it.hasNoManaCost }
+            val hasActivatedAbility = cards.any {
+                it.equipCost != null || it.script.activatedAbilities.isNotEmpty()
+            }
+            val hasCycling = cards.any { card ->
+                card.keywordAbilities.any {
+                    it is com.wingedsheep.sdk.scripting.KeywordAbility.Cycling
+                }
+            }
+            val hasTypedCycling = cards.any { card ->
+                card.keywordAbilities
+                    .filterIsInstance<com.wingedsheep.sdk.scripting.KeywordAbility.Cycling>()
+                    .any { it.searchFilter != null }
+            }
+            val hasFlashback = cards.any { card ->
+                card.keywordAbilities.any {
+                    it is com.wingedsheep.sdk.scripting.KeywordAbility.Flashback
+                }
+            }
+            val hasKicker = cards.any { card ->
+                card.keywordAbilities.any {
+                    it is com.wingedsheep.sdk.scripting.KeywordAbility.OptionalAdditionalCost
+                }
+            }
+            val hasModalSpell = cards.any {
+                it.script.spellEffect is com.wingedsheep.sdk.scripting.effects.ModalEffect
+            }
+            val hasTargetRequirement = hasKey("targetRequirements")
+            val hasMultipleTargetRequirements = jsonDefinitions.any {
+                it.maxJsonArraySizeForKey("targetRequirements") > 1
+            }
+            val hasResolutionTargetChoice = hasType("SelectTarget")
+            val hasAdditionalCost = cards.any { it.script.additionalCosts.isNotEmpty() } ||
+                hasKey("additionalCost") || hasKey("additionalCosts")
+            val hasColorChoice = hasType("AddManaOfChoice") ||
+                hasTypePrefix("ManaColorSet.") || hasType("ChooseColorThen")
+            val hasCardSelection = hasType(
+                "SelectFromCollection",
+                "SearchLibrary",
+                "ChooseOnePerCategory",
+            )
+            val hasYesNo = hasTypePrefix("Gate.May") || hasType(
+                "PlayerChooses",
+                "ChooseAction",
+                "AnyPlayerMayPay",
+            )
+            val staticDecisionFamilies = sortedSetOf<String>().apply {
+                add("PRIORITY")
+                if (hasMultipleTargetRequirements || hasResolutionTargetChoice) add("CHOOSE_TARGETS")
+                if (hasCardSelection) add("SELECT_CARDS")
+                if (hasColorChoice) add("CHOOSE_COLOR")
+                if (hasYesNo) add("YES_NO")
+            }
+            val staticActionFamilies = sortedSetOf<String>().apply {
+                add("PassPriority")
+                if (hasCastableSpell) add("CastSpell")
+                if (hasLand) add("PlayLand")
+                if (hasActivatedAbility) add("ActivateAbility")
+                if (hasCycling) add("CycleCard")
+                if (hasTypedCycling) add("TypecycleCard")
+                if (hasFlashback) add("CastWithFlashback")
+                if (hasKicker) add("CastWithKicker")
+                if (hasModalSpell) add("CastSpellMode")
+                if (staticDecisionFamilies.any { it != "PRIORITY" }) add("DECISION")
+                if (cards.any { it.typeLine.isCreature }) add("DeclareAttackers")
+            }
+            val staticRequiredPayloadFields = sortedSetOf<String>().apply {
+                if (hasCastableSpell || hasActivatedAbility || hasCycling) add("paymentStrategy")
+                if (hasTargetRequirement) add("targets")
+                if (hasAdditionalCost) add("additionalCostPayment")
+                if (hasActivatedAbility) add("costPayment")
+                if (hasManaCostX) add("xValue")
+                if (hasColorChoice) add("manaColorChoice")
+                if (cards.any { it.typeLine.isCreature }) {
+                    add("attackers")
+                    add("bands")
+                }
+            }
             val digestInput = serialized.joinToString("\n") { (name, json) -> "$name:$json" }
             return DefinitionScanEvidence(
                 cardCount = serialized.size,
-                emptySerializations = serialized.filter { it.second.isBlank() }.map { it.first },
+                emptySerializations = serialized.filter { it.second.toString().isBlank() }.map { it.first },
                 digest = sha256Text(digestInput),
+                staticallyReachableActionFamilies = staticActionFamilies,
+                staticallyReachableDecisionFamilies = staticDecisionFamilies,
+                staticallyReachableRequiredPayloadFields = staticRequiredPayloadFields,
             )
         }
 
@@ -3044,6 +3225,8 @@ private data class ReplayTrace(
     val gameConfig: GameConfig,
     val playerIds: List<EntityId>,
     val requiredPayloadFields: Set<String>,
+    val observedActionKinds: Map<String, Int>,
+    val observedDecisionFamilies: Map<String, Int>,
 )
 
 private data class ReplayGateEvidence(
@@ -3467,6 +3650,7 @@ private val PUBLIC_ACTION_DOMAIN_FAMILIES = setOf(
     "ActivateAbility",
     "CastSpell",
     "CastSpellMode",
+    "CastWithFlashback",
     "CastWithKicker",
     "CycleCard",
     "DECISION",
@@ -3482,6 +3666,8 @@ private val STRUCTURED_DECISION_DOMAIN_FAMILIES = setOf(
     "SELECT_CARDS",
     "YES_NO",
 )
+
+private val MANA_COST_WITH_X_PATTERN = Regex("^\\{[^{}]*X[^{}]*}(?:\\{[^{}]*})*$")
 
 private data class EpisodeConfig(
     val seed: Long,
@@ -3503,6 +3689,9 @@ private data class DefinitionScanEvidence(
     val cardCount: Int,
     val emptySerializations: List<String>,
     val digest: String,
+    val staticallyReachableActionFamilies: Set<String>,
+    val staticallyReachableDecisionFamilies: Set<String>,
+    val staticallyReachableRequiredPayloadFields: Set<String>,
 )
 
 private data class AcceptanceFailure(
