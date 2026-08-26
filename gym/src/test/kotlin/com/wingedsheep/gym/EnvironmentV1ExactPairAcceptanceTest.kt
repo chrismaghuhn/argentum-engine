@@ -1288,6 +1288,25 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
     }
 
+    test("definition digest ignores process-local generated ability IDs") {
+        fun digestFor(abilityId: String): String = sha256Text(
+            canonicalDefinitionJson(
+                buildJsonObject {
+                    put("id", abilityId)
+                    put("cost", "{1}")
+                    put("effect", "opaque")
+                },
+            ),
+        )
+
+        check(digestFor("ability_1") == digestFor("ability_999999")) {
+            "Process-local generated ability IDs changed the definition digest"
+        }
+        check(digestFor("stable-ability") != digestFor("another-stable-ability")) {
+            "Stable ability IDs must remain definition-relevant"
+        }
+    }
+
     test("Issue 56 is proven unreachable from the locked exact pair") {
         val evidence = issue56ReachabilityEvidence()
         println(evidence.render())
@@ -2195,6 +2214,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
          * arrays whose owning SDK property is a Set are normalized here.  In particular, effect
          * pipelines, target requirements, mode lists, and other List-backed properties retain
          * their serialized order so a semantic [A, B] -> [B, A] change changes the fingerprint.
+         * Generated AbilityIds are process-local allocation metadata and are normalized below;
+         * stable authored IDs remain definition-relevant.
          */
         private val ROOT_UNORDERED_DEFINITION_ARRAY_KEYS = setOf(
             "colorIdentityOverride",
@@ -2243,6 +2264,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             "xManaRestriction",
         )
 
+        private val GENERATED_ABILITY_ID_PATTERN = Regex("ability_[0-9]+")
+
         private fun JsonObject.isSerializedCardDefinition(): Boolean =
             containsKey("name") && containsKey("manaCost") && containsKey("typeLine")
 
@@ -2268,7 +2291,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 elements.joinToString(prefix = "[", postfix = "]")
             }
 
-            else -> element.toString()
+            is JsonPrimitive -> if (
+                propertyName == "id" &&
+                    element.isString &&
+                    element.content.matches(GENERATED_ABILITY_ID_PATTERN)
+            ) {
+                JsonPrimitive("ability_<generated>").toString()
+            } else {
+                element.toString()
+            }
         }
 
         private fun JsonElement.containsJsonKey(key: String): Boolean = when (this) {
@@ -2451,7 +2482,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     "bands",
                 ),
                 totalTransitions = 140_238,
-                definitionDigest = "9A652738D6FA95324AB2FE4DB4B1DD9946C3E0B0DB3DEBA5B6F7D8C95322F8B0",
+                definitionDigest = "3C3C2DF4993D875D1239F49D4D3DACF059D8842BC2A6E0D03DDF31CDB7901E23",
             )
 
         private fun scanLockedDefinitions(cards: List<CardDefinition>): DefinitionScanEvidence {
