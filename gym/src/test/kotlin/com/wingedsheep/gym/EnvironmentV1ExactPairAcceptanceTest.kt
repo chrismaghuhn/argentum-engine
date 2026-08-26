@@ -1334,7 +1334,13 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             ignoreUnknownKeys = false
         }
 
+        @Volatile
+        private var replayGateEvidenceCache: ReplayGateEvidence? = null
+
+        @Synchronized
         fun runExactPairReplayGate(): ReplayGateEvidence {
+            replayGateEvidenceCache?.let { return it }
+
             val traces = mutableListOf<ReplayTrace>()
             val authoritative = mutableListOf<AuthoritativeReplayCase>()
             val failures = mutableListOf<String>()
@@ -1353,11 +1359,15 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         "starting=${episode.startingPlayerIndex}: ${failure.message}"
                 }
             }
-            return ReplayGateEvidence(
+            val evidence = ReplayGateEvidence(
                 traces = traces,
                 authoritative = authoritative,
                 failures = failures,
             )
+            if (evidence.failures.isEmpty() && evidence.traces.size == replayCases.size) {
+                replayGateEvidenceCache = evidence
+            }
+            return evidence
         }
 
         private fun captureReplayTrace(
@@ -2344,7 +2354,13 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     definitionScan.emptySerializations
             }
 
-            val boundedEvidence = replayCases.map { episode ->
+            // The replay gate already captured these same four complete public traces. Reusing
+            // them keeps the static closure gate within the hosted watchdog budget while
+            // preserving the exact current bounded evidence set. A focused run of this gate
+            // without the replay test still captures the traces here.
+            val boundedEvidence = replayGateEvidenceCache?.takeIf {
+                it.failures.isEmpty() && it.traces.size == replayCases.size
+            }?.traces ?: replayCases.map { episode ->
                 captureReplayTrace(episode, captureAuthoritativeReplay = false)
             }
             val corpusSnapshot = exactPairCorpusReachabilitySnapshot()
