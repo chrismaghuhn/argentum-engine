@@ -36,13 +36,21 @@ The submitted `List<Set<EntityId>>` and member collection iteration order never
 chooses an identity. Rules semantics of membership, defender equality, banding,
 and the existing validation order are unchanged.
 
+Band ordinals are allocated against the existing canonical `AttackingComponent`
+band IDs in the current combat. They therefore continue across separate valid
+declarations in one combat (such as one declaration from each teammate in a
+shared-team combat), rather than resetting for each handler call. Legacy or
+ephemeral non-canonical IDs are not parsed or counted. End-of-combat cleanup
+removes the components, so the next combat starts again at `combat-band-0`.
+
 ## Invariants
 
 1. Complete declaration validation, including deterministic band ordering, runs
    before `AttackingComponent` mutation.
 2. Equivalent declarations with different map/set/list insertion order produce
    the same band mapping.
-3. Distinct disjoint bands receive distinct deterministic ordinals.
+3. Distinct disjoint bands receive distinct deterministic ordinals, including
+   bands submitted by separate declarations in one combat.
 4. Reconstructed states with different transient entity ID values but the same
    object-identity ranks receive the same ordinals.
 5. Fork/snapshot/serialization preserve the rank inputs and band semantics.

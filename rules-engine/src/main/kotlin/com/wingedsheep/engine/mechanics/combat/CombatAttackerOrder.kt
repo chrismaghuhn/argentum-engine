@@ -2,6 +2,7 @@ package com.wingedsheep.engine.mechanics.combat
 
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
+import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.sdk.model.EntityId
 
 /**
@@ -14,6 +15,8 @@ import com.wingedsheep.sdk.model.EntityId
  * iteration, allocation order, or object identity.
  */
 internal object CombatAttackerOrder {
+
+    private const val BAND_ID_PREFIX = "combat-band-"
 
     /**
      * Return bands with members sorted by their canonical rank and bands sorted lexicographically
@@ -47,11 +50,36 @@ internal object CombatAttackerOrder {
         return ordered.map { it.members }
     }
 
+    /**
+     * Return the first ordinal available to a new declaration in this combat. Existing
+     * [AttackingComponent] values are part of the current combat state, so the ordinal lifetime
+     * extends across separate declarations (for example, one submitted by each teammate in a
+     * shared-team combat). Only IDs in the canonical form produced here participate; legacy or
+     * otherwise ephemeral IDs are deliberately ignored rather than allowed to influence identity.
+     */
+    fun nextBandOrdinal(state: GameState): Long? {
+        val highestExistingOrdinal = state.entities.values.asSequence()
+            .mapNotNull { it.get<AttackingComponent>()?.bandId }
+            .mapNotNull(::parseBandOrdinal)
+            .maxOrNull()
+            ?: -1L
+        return if (highestExistingOrdinal == Long.MAX_VALUE) null else highestExistingOrdinal + 1
+    }
+
+    fun bandId(ordinal: Long): String = "$BAND_ID_PREFIX$ordinal"
+
     private fun rank(state: GameState, attackerId: EntityId): Long? =
         state.objectIdentityStamps[attackerId]
             ?: state.getEntity(attackerId)
                 ?.get<BattlefieldEntryTimestampComponent>()
                 ?.timestamp
+
+    private fun parseBandOrdinal(bandId: String): Long? {
+        if (!bandId.startsWith(BAND_ID_PREFIX)) return null
+        val decimal = bandId.removePrefix(BAND_ID_PREFIX)
+        if (decimal.isEmpty() || decimal.any { it !in '0'..'9' }) return null
+        return decimal.toLongOrNull()
+    }
 
     private fun compareRankSequences(left: List<Long>, right: List<Long>): Int {
         for (index in 0 until minOf(left.size, right.size)) {

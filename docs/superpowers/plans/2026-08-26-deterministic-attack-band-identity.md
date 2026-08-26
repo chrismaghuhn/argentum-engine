@@ -27,7 +27,10 @@
 - Invoke canonical rank validation after complete `validateBands` and before any
   tax pause or attacker mutation.
 - Canonicalize every submitted band by rank, sort bands lexicographically by
-  rank sequence, and assign `combat-band-0`, `combat-band-1`, etc. in that order.
+  rank sequence, and assign the next available `combat-band-N` ordinals in that
+  order. Existing canonical IDs in the current combat provide the offset so
+  separate declarations cannot reuse an earlier band's identity; legacy/random
+  IDs are ignored rather than used as an authority.
 - Keep the existing `AttackingComponent`, continuation payload, and cleanup
   lifecycle. Do not hash IDs, add a schema field, or change attack legality.
 
