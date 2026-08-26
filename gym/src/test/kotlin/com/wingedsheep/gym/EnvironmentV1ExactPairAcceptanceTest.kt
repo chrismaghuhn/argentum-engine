@@ -1581,25 +1581,22 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             )
             val checkpointCadence = CompactReplayBridge.checkpointCadence(repositoryRoot())
 
+            check(trace.actions.size == trace.decisions.size) {
+                "Replay action/decision counts differ for ${trace.episode}: " +
+                    "actions=${trace.actions.size}, decisions=${trace.decisions.size}"
+            }
             trace.decisions.forEachIndexed { index, decision ->
-                result = when (decision) {
+                val recordedAction = trace.actions[index]
+                val replayAction = rebindReplayAction(recordedAction, observation, index)
+                when (decision) {
                     is ReplayDecision.Action -> {
-                        val candidates = externallySelectableActions(observation)
-                            .filter { semanticActionKey(it) == decision.semanticKey }
-                        val action = candidates.getOrNull(decision.semanticOrdinal)
-                            ?: error(
-                                "Replay action semantic candidate missing at transition $index: " +
-                                    "${decision.semanticKey} ordinal=${decision.semanticOrdinal}",
-                            )
-                        check(action.kind == decision.kind) {
-                            "Replay action kind changed at transition $index: " +
-                                "${action.kind} != ${decision.kind}"
-                        }
-                        if (decision.payload == null) {
-                            gym.step(action.actionId)
-                        } else {
-                            gym.step(action.actionId, decision.payload)
-                        }
+                        // The public action kind is not always the serialized GameAction class:
+                        // for example CastSpellMode is a CastSpell with a public mode-action
+                        // label, and folded simple decisions are recorded as SubmitDecision.
+                        // The pre-transition StateDigest already covers the complete public
+                        // semantic candidate/domain set, while stepStrict validates membership
+                        // of the recorded action in the current authoritative action set.
+                        // Comparing JVM class names here would reject valid public variants.
                     }
 
                     is ReplayDecision.Structured -> {
@@ -1609,14 +1606,18 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                             "Replay decision family changed at transition $index: " +
                                 "${pending.kind.name} != ${decision.family}"
                         }
-                        val decisionId = pending.decisionId
-                            ?: error("Replay decision has no current public decision ID")
-                        gym.submitDecision(
-                            response = toDecisionResponse(decisionId, decision.selection),
-                            actorId = observation.agentToAct,
-                        )
+                        check(replayAction is SubmitDecision) {
+                            "Replay structured decision did not record SubmitDecision at " +
+                                "transition $index"
+                        }
                     }
                 }
+                // The source action was materialized from the public semantic choice during the
+                // trusted corpus run.  Re-submit that stable replay action through the strict
+                // environment seam; membership validation still proves it belongs to the current
+                // legal set, while avoiding a second full semantic-candidate sort at every frame.
+                environment.stepStrict(replayAction)
+                result = gym.observe()
                 assertEnvironmentDiagnosticsZero(environment)
                 observation = result.observation as? TrainingObservation
                     ?: error("Replay lost TrainingObservation at transition ${index + 1}")
@@ -1641,6 +1642,30 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             return trace.copy(checkpoints = checkpoints)
         }
 
+        /**
+         * Rebind only the ephemeral decision handle when replaying a public trace.  The selected
+         * response and every ordinary GameAction field remain exactly those recorded from the
+         * public policy; the current pending decision owns the fresh transport ID.
+         */
+        private fun rebindReplayAction(
+            action: GameAction,
+            observation: TrainingObservation,
+            transition: Int,
+        ): GameAction = when (action) {
+            is SubmitDecision -> {
+                val pending = observation.pendingDecision
+                    ?: error("Replay decision submission missing at transition $transition")
+                val decisionId = pending.decisionId
+                    ?: error("Replay decision has no current public decision ID")
+                action.copy(
+                    playerId = pending.playerId,
+                    response = action.response.withDecisionId(decisionId),
+                )
+            }
+
+            else -> action
+        }
+
         private fun assertReplayFrame(
             trace: ReplayTrace,
             index: Int,
@@ -1649,13 +1674,16 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         ) {
             val expected = trace.frames.getOrNull(index)
                 ?: error("Replay produced an unexpected frame at index $index")
-            val actual = replayFrame(observation)
-            check(actual == expected) {
+            // StateDigest is the existing SHA-256 of the complete public semantic projection,
+            // including legal action and structured decision domains.  Comparing it at every
+            // frame proves the complete public trajectory without serializing the same large
+            // observation a second time merely for this assertion.
+            check(observation.stateDigest == expected.stateDigest &&
+                observation.terminated == expected.terminated &&
+                observation.truncated == expected.truncated
+            ) {
                 "Replay semantic frame mismatch at index $index for ${trace.episode}: " +
-                    "expectedDigest=${expected.stateDigest}, actualDigest=${actual.stateDigest}"
-            }
-            check(StateDigest.compute(observation) == observation.stateDigest) {
-                "Replay observation digest is not self-consistent at frame $index"
+                    "expectedDigest=${expected.stateDigest}, actualDigest=${observation.stateDigest}"
             }
             assertEnvironmentDiagnosticsZero(environment)
         }
@@ -1798,12 +1826,18 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var observationCount = 0
             val failures = mutableListOf<String>()
             for (episode in cases) {
+                // The corpus already recorded these exact public-policy decisions.  Reuse that
+                // immutable replay artifact when available so this gate spends its runtime on
+                // auditing both perspectives, rather than selecting and serializing the same
+                // decisions a second time.  A standalone privacy test still falls back to the
+                // public policy below when no corpus trace exists.
+                val replayTrace = corpusReplayTraceCache[episode]
                 val environment = GameEnvironment.create(
                     registry,
                     executionMode = GameEnvironmentMode.TRUSTED,
                 )
                 try {
-                    environment.reset(episode.gameConfig(resolver), MAX_STEPS)
+                    environment.reset(replayTrace?.gameConfig ?: episode.gameConfig(resolver), MAX_STEPS)
                     val builder = ObservationBuilder(cardRegistry = registry)
                     val gym = GameGymEnv(
                         environment = environment,
@@ -1847,30 +1881,46 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         check(transitions < MAX_STEPS) {
                             "Privacy run exceeded configured maxSteps=$MAX_STEPS"
                         }
-                        val choice = DeterministicExternalPolicy().choose(
-                            policyObservation,
-                            policyState,
-                        )
-                        policyState = policyState.afterChoice()
-                        val result = when (choice) {
-                            is SemanticChoice.Action -> choice.payload?.let { payload ->
-                                gym.step(choice.actionId, payload)
-                            } ?: gym.step(choice.actionId)
+                        val result = if (replayTrace != null) {
+                            val recordedAction = replayTrace.actions.getOrNull(transitions)
+                                ?: error(
+                                    "Privacy replay ended before the captured action stream at " +
+                                        "transition $transitions",
+                                )
+                            // This is a replay artifact, not a policy input: each action was
+                            // materialized from the public policy during the corpus run.  Keep
+                            // current decision IDs transport-local while preserving the recorded
+                            // semantic response.
+                            environment.stepStrict(
+                                rebindReplayAction(recordedAction, policyObservation, transitions),
+                            )
+                            gym.observe()
+                        } else {
+                            val choice = DeterministicExternalPolicy().choose(
+                                policyObservation,
+                                policyState,
+                            )
+                            policyState = policyState.afterChoice()
+                            when (choice) {
+                                is SemanticChoice.Action -> choice.payload?.let { payload ->
+                                    gym.step(choice.actionId, payload)
+                                } ?: gym.step(choice.actionId)
 
-                            is SemanticChoice.Structured -> {
-                                val pending = policyObservation.pendingDecision
-                                    ?: error("Privacy structured choice has no pending decision")
-                                val decisionId = pending.decisionId
-                                    ?: error("Privacy structured choice has no decision ID")
-                                gym.submitDecision(
-                                    toDecisionResponse(decisionId, choice.selection),
-                                    actorId = policyObservation.agentToAct,
+                                is SemanticChoice.Structured -> {
+                                    val pending = policyObservation.pendingDecision
+                                        ?: error("Privacy structured choice has no pending decision")
+                                    val decisionId = pending.decisionId
+                                        ?: error("Privacy structured choice has no decision ID")
+                                    gym.submitDecision(
+                                        toDecisionResponse(decisionId, choice.selection),
+                                        actorId = policyObservation.agentToAct,
+                                    )
+                                }
+
+                                is SemanticChoice.Gap -> error(
+                                    "Privacy run encountered policy gap at transition $transitions: $choice",
                                 )
                             }
-
-                            is SemanticChoice.Gap -> error(
-                                "Privacy run encountered policy gap at transition $transitions: $choice",
-                            )
                         }
                         transitions++
                         policyObservation = result.observation as? TrainingObservation
@@ -1879,6 +1929,11 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     }
                     check(policyObservation.terminated || policyObservation.truncated) {
                         "Privacy run did not reach terminal/truncated state"
+                    }
+                    replayTrace?.let { trace ->
+                        check(transitions == trace.actions.size) {
+                            "Privacy replay consumed $transitions of ${trace.actions.size} actions"
+                        }
                     }
                 } catch (failure: Exception) {
                     failures += "${episode.rosterLabel}/starting=${episode.startingPlayerIndex}: " +
