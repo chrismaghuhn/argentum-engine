@@ -114,4 +114,47 @@ class SharedTeamAttackBandIdentityTest : FunSpec({
         bandIds.filterNotNull().toSet() shouldHaveSize 2
         bandIds.filterNotNull().toSet() shouldBe setOf("combat-band-0", "combat-band-1")
     }
+
+    test("a multi-band ordinal range is rejected atomically when it would overflow") {
+        val (base, players) = init2hg()
+        val (state1, first) = base.withBandedBear(players[0])
+        val (state2, second) = state1.withBandedBear(players[0])
+        val (state3, third) = state2.withBandedBear(players[1])
+        val (state4, fourth) = state3.withBandedBear(players[1])
+        val state = state4.copy(step = Step.DECLARE_ATTACKERS, phase = Phase.COMBAT)
+            .withPriority(players[0])
+        val processor = ActionProcessor(registry())
+
+        val firstDeclaration = processor.process(
+            state,
+            DeclareAttackers(
+                players[0],
+                mapOf(first to players[2], second to players[2]),
+                bands = listOf(setOf(first, second)),
+            ),
+        ).result
+        check(firstDeclaration.isSuccess) { "first declaration failed: ${firstDeclaration.error}" }
+
+        val exhaustedBandId = "combat-band-${Long.MAX_VALUE}"
+        val exhaustedState = firstDeclaration.newState
+            .updateEntity(first) {
+                it.with(it.get<AttackingComponent>()!!.copy(bandId = exhaustedBandId))
+            }
+            .updateEntity(second) {
+                it.with(it.get<AttackingComponent>()!!.copy(bandId = exhaustedBandId))
+            }
+            .withPriority(players[1])
+        val before = exhaustedState
+        val rejected = processor.process(
+            exhaustedState,
+            DeclareAttackers(
+                players[1],
+                mapOf(third to players[3], fourth to players[3]),
+                bands = listOf(setOf(third, fourth)),
+            ),
+        ).result
+
+        rejected.isSuccess shouldBe false
+        rejected.newState shouldBe before
+    }
 })

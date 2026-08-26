@@ -106,10 +106,12 @@ internal class AttackPhaseManager(
         val bandValidation = validateBands(state, attackers, declaration.bands, projected)
         if (bandValidation != null) return bandValidation
 
-        if (declaration.bands.isNotEmpty() &&
-            CombatAttackerOrder.canonicalizeBands(state, declaration.bands) == null
-        ) {
+        val canonicalBands = CombatAttackerOrder.canonicalizeBands(state, declaration.bands)
+        if (canonicalBands == null) {
             return "Attack bands cannot be deterministically ordered"
+        }
+        if (CombatAttackerOrder.firstBandOrdinal(state, canonicalBands.size) == null) {
+            return "Attack band ordinal space is exhausted"
         }
 
         for ((attackerId, defenderId) in attackers) {
@@ -164,12 +166,8 @@ internal class AttackPhaseManager(
         // state. Never use EntityId/UUID or collection iteration as the band identity authority.
         val canonicalBands = CombatAttackerOrder.canonicalizeBands(state, bands)
             ?: return ExecutionResult.error(state, "Attack bands cannot be deterministically ordered")
-        val firstBandOrdinal = if (canonicalBands.isEmpty()) {
-            0L
-        } else {
-            CombatAttackerOrder.nextBandOrdinal(state)
-                ?: return ExecutionResult.error(state, "Attack band ordinal space is exhausted")
-        }
+        val firstBandOrdinal = CombatAttackerOrder.firstBandOrdinal(state, canonicalBands.size)
+            ?: return ExecutionResult.error(state, "Attack band ordinal space is exhausted")
         val bandIdByAttacker: Map<EntityId, String> = canonicalBands
             .flatMapIndexed { index, band ->
                 band.map { attackerId ->

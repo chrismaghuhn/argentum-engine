@@ -51,19 +51,28 @@ internal object CombatAttackerOrder {
     }
 
     /**
-     * Return the first ordinal available to a new declaration in this combat. Existing
-     * [AttackingComponent] values are part of the current combat state, so the ordinal lifetime
-     * extends across separate declarations (for example, one submitted by each teammate in a
-     * shared-team combat). Only IDs in the canonical form produced here participate; legacy or
-     * otherwise ephemeral IDs are deliberately ignored rather than allowed to influence identity.
+     * Return the first ordinal in a contiguous range of [bandCount] IDs available to a new
+     * declaration in this combat. Existing [AttackingComponent] values are part of the current
+     * combat state, so the ordinal lifetime extends across separate declarations (for example,
+     * one submitted by each teammate in a shared-team combat). Only IDs in the canonical form
+     * produced here participate; legacy or otherwise ephemeral IDs are deliberately ignored
+     * rather than allowed to influence identity. `null` means the whole requested range cannot
+     * be represented without overflow.
      */
-    fun nextBandOrdinal(state: GameState): Long? {
+    fun firstBandOrdinal(state: GameState, bandCount: Int): Long? {
+        require(bandCount >= 0) { "Band count cannot be negative" }
+        if (bandCount == 0) return 0L
+
         val highestExistingOrdinal = state.entities.values.asSequence()
             .mapNotNull { it.get<AttackingComponent>()?.bandId }
             .mapNotNull(::parseBandOrdinal)
             .maxOrNull()
             ?: -1L
-        return if (highestExistingOrdinal == Long.MAX_VALUE) null else highestExistingOrdinal + 1
+        if (highestExistingOrdinal == Long.MAX_VALUE) return null
+
+        val first = highestExistingOrdinal + 1
+        val lastOffset = bandCount.toLong() - 1
+        return if (lastOffset <= Long.MAX_VALUE - first) first else null
     }
 
     fun bandId(ordinal: Long): String = "$BAND_ID_PREFIX$ordinal"
