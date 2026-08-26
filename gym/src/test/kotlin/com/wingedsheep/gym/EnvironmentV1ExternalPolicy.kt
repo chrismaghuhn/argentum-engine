@@ -43,6 +43,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -116,6 +117,24 @@ sealed interface SemanticDecision {
 data class EdgeAmount(val edgeId: String, val amount: Int)
 
 /**
+ * Required payload fields for which this deliberately small acceptance policy has an explicit
+ * public construction rule.  Keeping this allowlist separate from the generic semantic payload
+ * echo is important: a newly added required field must not become accepted merely because the
+ * transport template happens to contain a value for it.
+ */
+internal val EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS = setOf(
+    "attackers",
+    "bands",
+    "paymentStrategy",
+    "xValue",
+    "targets",
+    "manaColorChoice",
+    "additionalCostPayment",
+    "costPayment",
+    "repeatCount",
+)
+
+/**
  * Deterministic controller for the exact-pair acceptance corpus.
  *
  * This class intentionally has no environment, rules state, registry, action registry, or
@@ -181,6 +200,32 @@ class DeterministicExternalPolicy {
         }
         if (!action.requiresStructuredAction) {
             return SemanticChoice.Action(action.actionId, semanticKey, action.kind, null)
+        }
+
+        if ("damageDistribution" in requiredFieldSet) {
+            return SemanticChoice.Gap(
+                family = "DAMAGE_ASSIGNMENT",
+                code = "A5_DECISION_GAP",
+                reason = "Flat action does not publish a complete damage-distribution domain",
+                actionKind = action.kind,
+                publicDomain = "requiredPayloadFields=$requiredFields",
+            )
+        }
+
+        val unsupportedRequiredFields = requiredFieldSet -
+            EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS
+        if (unsupportedRequiredFields.isNotEmpty()) {
+            return SemanticChoice.Gap(
+                family = action.kind,
+                code = "A5_DECISION_GAP",
+                reason = "Public requiredPayloadFields contain an unsupported field",
+                actionKind = action.kind,
+                publicDomain =
+                    "requiredPayloadFields=$requiredFields; " +
+                        "unsupported=$unsupportedRequiredFields",
+                proposedFollowUp =
+                    "Publish a public domain and add an explicit policy handler for every required field",
+            )
         }
 
         val payload = linkedMapOf<String, JsonElement>().apply {
@@ -266,6 +311,25 @@ class DeterministicExternalPolicy {
                     actionKind = action.kind,
                 )
             payload["xValue"] = JsonPrimitive(maxX.coerceAtLeast(0))
+            completedChoice = true
+        }
+
+        if ("repeatCount" in requiredFieldSet) {
+            val publicRepeatCount = action.actionSemantics
+                ?.get("repeatCount")
+                ?.jsonPrimitive
+                ?.intOrNull
+                ?.takeIf { it >= 1 }
+                ?: return SemanticChoice.Gap(
+                    family = action.kind,
+                    code = "A5_DECISION_GAP",
+                    reason = "repeatCount is required but is absent from public action semantics",
+                    actionKind = action.kind,
+                    publicDomain =
+                        "requiredPayloadFields=$requiredFields; " +
+                            "actionSemantics=${action.actionSemantics}",
+                )
+            payload["repeatCount"] = JsonPrimitive(publicRepeatCount)
             completedChoice = true
         }
 
@@ -358,15 +422,6 @@ class DeterministicExternalPolicy {
                 )
             payload["costPayment"] = costPayment
             completedChoice = true
-        }
-
-        if ("damageDistribution" in requiredFieldSet) {
-            return SemanticChoice.Gap(
-                family = "DAMAGE_ASSIGNMENT",
-                code = "A5_DECISION_GAP",
-                reason = "Flat action does not publish a complete damage-distribution domain",
-                actionKind = action.kind,
-            )
         }
 
         val missingFields = requiredFields.filterNot(payload::containsKey)

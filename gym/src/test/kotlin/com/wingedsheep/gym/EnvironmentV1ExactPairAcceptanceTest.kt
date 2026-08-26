@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DiagnosticKind
 import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -19,6 +20,7 @@ import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
+import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.registry.CardDefinitionMissingException
@@ -43,6 +45,7 @@ import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.StateDigest
 import com.wingedsheep.gym.contract.TargetRequirementDomain
 import com.wingedsheep.gym.contract.ZoneView
+import com.wingedsheep.gym.contract.ResolvedAction
 import com.wingedsheep.gym.contract.*
 import com.wingedsheep.gym.service.DeckResolver
 import com.wingedsheep.gym.service.DeckSpec
@@ -74,8 +77,11 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import java.nio.file.Path
+import java.nio.file.Files
+import java.net.URLClassLoader
 import java.security.MessageDigest
 import java.util.TreeMap
+import java.util.concurrent.TimeUnit
 import kotlin.io.path.readBytes
 import kotlin.io.path.readLines
 import kotlin.io.path.readText
@@ -681,6 +687,57 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         selectedIds shouldBe listOf(firstTarget.value, secondTarget.value)
     }
 
+    test("the external policy completes repeatCount from public action semantics") {
+        val action = LegalActionView(
+            actionId = 111,
+            kind = "ActivateAbility",
+            description = "public repeatable activation",
+            affordable = true,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("repeatCount"),
+            actionSemantics = buildJsonObject {
+                put("type", "ActivateAbility")
+                put("repeatCount", 1)
+            },
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        val payload = policyPayload(choice)
+        payload["repeatCount"] shouldBe JsonPrimitive(1)
+    }
+
+    test("the external policy fails closed for an unknown required payload field") {
+        val action = LegalActionView(
+            actionId = 112,
+            kind = "ActivateAbility",
+            description = "public action with an unknown field",
+            affordable = true,
+            validSacrificeTargets = emptyList(),
+            sacrificeCount = 0,
+            sacrificeMinCount = 0,
+            sacrificeMaxCount = 0,
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("additionalCostPayment", "futurePayload"),
+            actionSemantics = buildJsonObject {
+                put("type", "ActivateAbility")
+                put("futurePayload", 1)
+            },
+        )
+
+        val choice = DeterministicExternalPolicy().choose(
+            publicActionObservation(action),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        val gap = choice as? SemanticChoice.Gap
+            ?: error("Unknown required payload field was not rejected: $choice")
+        gap.code shouldBe "A5_DECISION_GAP"
+    }
+
     test("ATTACKPOL-01 chooses an explicit zero-attacker declaration") {
         val action = attackPolicyAction(
             domain = attackPolicyDomain(
@@ -1164,13 +1221,26 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             EpisodeConfig(0L, 1, "Chevill", "Akiri", "Chevill-vs-Akiri"),
         )
 
+        private val replayActionSerialization = Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+            ignoreUnknownKeys = false
+        }
+
         fun runExactPairReplayGate(): ReplayGateEvidence {
             val traces = mutableListOf<ReplayTrace>()
+            val authoritative = mutableListOf<AuthoritativeReplayCase>()
             val failures = mutableListOf<String>()
             for (episode in replayCases) {
                 try {
                     val trace = captureReplayTrace(episode)
                     traces += trace
+                    authoritative += CompactReplayBridge.verify(
+                        trace = trace,
+                        registry = exactPairRegistry(),
+                        repositoryRoot = repositoryRoot(),
+                    )
                     replayTrace(trace)
                 } catch (failure: Exception) {
                     failures += "${episode.rosterLabel}/seed=${episode.seed}/" +
@@ -1179,152 +1249,222 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             }
             return ReplayGateEvidence(
                 traces = traces,
+                authoritative = authoritative,
                 failures = failures,
             )
         }
 
-        private fun captureReplayTrace(episode: EpisodeConfig): ReplayTrace {
-            val service = MultiEnvService(exactPairRegistry())
+        private fun captureReplayTrace(
+            episode: EpisodeConfig,
+            captureAuthoritativeReplay: Boolean = true,
+        ): ReplayTrace {
+            val registry = exactPairRegistry()
+            val resolver = DeckResolver(registry)
+            val gameConfig = episode.replayGameConfig(resolver)
+            val environment = GameEnvironment.create(
+                registry,
+                executionMode = GameEnvironmentMode.TRUSTED,
+            )
+            environment.reset(gameConfig, MAX_STEPS)
+            val gym = GameGymEnv(
+                environment = environment,
+                perspectivePlayerIndex = 0,
+                observationBuilder = ObservationBuilder(cardRegistry = registry),
+            )
             val decisions = mutableListOf<ReplayDecision>()
             val frames = mutableListOf<ReplayFrame>()
-            var envId: EnvId? = null
-            try {
-                val created = service.create(episode.envConfig())
-                envId = created.envId
-                var observation = created.observation.observation as? TrainingObservation
-                    ?: error("Replay capture requires a TrainingObservation after reset")
-                assertNoForbiddenDiagnostics(service, envId)
-                frames += replayFrame(observation)
-
-                val policy = DeterministicExternalPolicy()
-                var policyState = DeterministicPolicyState(policySeed(episode))
-                var transitions = 0
-                while (!observation.terminated && !observation.truncated) {
-                    check(transitions < MAX_STEPS) {
-                        "Replay capture exceeded configured maxSteps=$MAX_STEPS"
-                    }
-                    val choice = policy.choose(observation, policyState)
-                    policyState = policyState.afterChoice()
-                    val result = when (choice) {
-                        is SemanticChoice.Action -> {
-                            val action = observation.legalActions.singleOrNull {
-                                it.actionId == choice.actionId
-                            } ?: error(
-                                "Replay capture policy action handle was not in the current public list",
-                            )
-                            val semanticKey = semanticActionKey(action)
-                            val semanticOrdinal = semanticActionOrdinal(observation, action, semanticKey)
-                            decisions += ReplayDecision.Action(
-                                kind = action.kind,
-                                semanticKey = semanticKey,
-                                semanticOrdinal = semanticOrdinal,
-                                payload = choice.payload,
-                            )
-                            service.step(
-                                StepRequest(
-                                    envId = envId,
-                                    actionId = action.actionId,
-                                    action = choice.payload,
-                                ),
-                            )
-                        }
-
-                        is SemanticChoice.Structured -> {
-                            val pending = observation.pendingDecision
-                                ?: error("Replay capture structured choice has no pending decision")
-                            val decisionId = pending.decisionId
-                                ?: error("Replay capture structured choice has no decision ID")
-                            decisions += ReplayDecision.Structured(
-                                family = pending.kind.name,
-                                selection = choice.selection,
-                            )
-                            service.submitDecision(
-                                envId = envId,
-                                response = toDecisionResponse(decisionId, choice.selection),
-                                actorId = observation.agentToAct,
-                            )
-                        }
-
-                        is SemanticChoice.Gap -> error(
-                            "Replay capture encountered policy gap at transition $transitions: $choice",
-                        )
-                    }
-                    transitions++
-                    assertNoForbiddenDiagnostics(service, envId)
-                    observation = result.observation as? TrainingObservation
-                        ?: error("Replay capture lost TrainingObservation after transition $transitions")
-                    frames += replayFrame(observation)
-                }
-
-                check(frames.size == decisions.size + 1) {
-                    "Replay capture frame/decision cardinality mismatch"
-                }
-                return ReplayTrace(episode, frames, decisions)
-            } finally {
-                envId?.let { service.dispose(listOf(it)) }
+            val actions = mutableListOf<GameAction>()
+            val checkpoints = mutableListOf<ReplayCheckpointData>()
+            val requiredPayloadFields = mutableSetOf<String>()
+            val checkpointCadence = if (captureAuthoritativeReplay) {
+                CompactReplayBridge.checkpointCadence(repositoryRoot())
+            } else {
+                0
             }
+            var result = gym.observe()
+            var observation = result.observation as? TrainingObservation
+                ?: error("Replay capture requires a TrainingObservation after reset")
+            assertEnvironmentDiagnosticsZero(environment)
+            frames += replayFrame(observation)
+            if (captureAuthoritativeReplay) {
+                checkpoints += ReplayCheckpointData(
+                    afterActionCount = 0,
+                    fingerprint = authoritativeReplayFingerprint(environment.state),
+                )
+            }
+
+            val policy = DeterministicExternalPolicy()
+            var policyState = DeterministicPolicyState(policySeed(episode))
+            var transitions = 0
+            while (!observation.terminated && !observation.truncated) {
+                check(transitions < MAX_STEPS) {
+                    "Replay capture exceeded configured maxSteps=$MAX_STEPS"
+                }
+                val choice = policy.choose(observation, policyState)
+                policyState = policyState.afterChoice()
+                result = when (choice) {
+                    is SemanticChoice.Action -> {
+                        val action = observation.legalActions.singleOrNull {
+                            it.actionId == choice.actionId
+                        } ?: error(
+                            "Replay capture policy action handle was not in the current public list",
+                        )
+                        val semanticKey = semanticActionKey(action)
+                        val semanticOrdinal = semanticActionOrdinal(observation, action, semanticKey)
+                        // Only fields on the action actually selected by the external policy are
+                        // reachability evidence.  Other legal candidates are public alternatives,
+                        // not executed corpus decisions; counting their template-only fields here
+                        // would turn an unselected optional action shape into a false closure gap.
+                        requiredPayloadFields += action.requiredPayloadFields
+                        decisions += ReplayDecision.Action(
+                            kind = action.kind,
+                            semanticKey = semanticKey,
+                            semanticOrdinal = semanticOrdinal,
+                            payload = choice.payload,
+                        )
+                        val resolved = result.registry.resolve(action.actionId)
+                        when (resolved) {
+                            is ResolvedAction.Legal -> {
+                                actions += materializeReplayAction(resolved.action, choice.payload)
+                            }
+
+                            is ResolvedAction.Decision -> {
+                                val actor = observation.agentToAct
+                                    ?: error("Folded decision action has no public actor")
+                                actions += SubmitDecision(actor, resolved.response)
+                            }
+
+                            ResolvedAction.Unknown -> error(
+                                "Replay capture action handle did not resolve in the public registry",
+                            )
+                        }
+                        if (choice.payload == null) {
+                            gym.step(action.actionId)
+                        } else {
+                            gym.step(action.actionId, choice.payload)
+                        }
+                    }
+
+                    is SemanticChoice.Structured -> {
+                        val pending = observation.pendingDecision
+                            ?: error("Replay capture structured choice has no pending decision")
+                        val decisionId = pending.decisionId
+                            ?: error("Replay capture structured choice has no decision ID")
+                        val response = toDecisionResponse(decisionId, choice.selection)
+                        decisions += ReplayDecision.Structured(
+                            family = pending.kind.name,
+                            selection = choice.selection,
+                        )
+                        actions += SubmitDecision(pending.playerId, response)
+                        gym.submitDecision(response, actorId = observation.agentToAct)
+                    }
+
+                    is SemanticChoice.Gap -> error(
+                        "Replay capture encountered policy gap at transition $transitions: $choice",
+                    )
+                }
+                transitions++
+                assertEnvironmentDiagnosticsZero(environment)
+                observation = result.observation as? TrainingObservation
+                    ?: error("Replay capture lost TrainingObservation after transition $transitions")
+                frames += replayFrame(observation)
+                if (captureAuthoritativeReplay && transitions % checkpointCadence == 0) {
+                    checkpoints += ReplayCheckpointData(
+                        afterActionCount = transitions,
+                        fingerprint = authoritativeReplayFingerprint(environment.state),
+                    )
+                }
+            }
+
+            check(frames.size == decisions.size + 1) {
+                "Replay capture frame/decision cardinality mismatch"
+            }
+            if (captureAuthoritativeReplay &&
+                checkpoints.lastOrNull()?.afterActionCount != actions.size
+            ) {
+                checkpoints += ReplayCheckpointData(
+                    afterActionCount = actions.size,
+                    fingerprint = authoritativeReplayFingerprint(environment.state),
+                )
+            }
+            if (captureAuthoritativeReplay) {
+                check(checkpoints.lastOrNull()?.afterActionCount == actions.size) {
+                    "Replay capture is missing the authoritative tail checkpoint"
+                }
+            }
+            return ReplayTrace(
+                episode = episode,
+                frames = frames,
+                decisions = decisions,
+                actions = actions,
+                checkpoints = checkpoints,
+                gameConfig = gameConfig,
+                playerIds = environment.playerIds,
+                requiredPayloadFields = requiredPayloadFields,
+            )
         }
 
         private fun replayTrace(trace: ReplayTrace) {
-            val service = MultiEnvService(exactPairRegistry())
-            var envId: EnvId? = null
-            try {
-                val created = service.create(trace.episode.envConfig())
-                envId = created.envId
-                var observation = created.observation.observation as? TrainingObservation
-                    ?: error("Replay requires a TrainingObservation after reset")
-                assertReplayFrame(trace, 0, observation, service, envId)
+            val registry = exactPairRegistry()
+            val environment = GameEnvironment.create(
+                registry,
+                executionMode = GameEnvironmentMode.TRUSTED,
+            )
+            environment.reset(trace.gameConfig, MAX_STEPS)
+            val gym = GameGymEnv(
+                environment = environment,
+                perspectivePlayerIndex = 0,
+                observationBuilder = ObservationBuilder(cardRegistry = registry),
+            )
+            var result = gym.observe()
+            var observation = result.observation as? TrainingObservation
+                ?: error("Replay requires a TrainingObservation after reset")
+            assertReplayFrame(trace, 0, observation, environment)
 
-                trace.decisions.forEachIndexed { index, decision ->
-                    val result = when (decision) {
-                        is ReplayDecision.Action -> {
-                            val candidates = externallySelectableActions(observation)
-                                .filter { semanticActionKey(it) == decision.semanticKey }
-                            val action = candidates.getOrNull(decision.semanticOrdinal)
-                                ?: error(
-                                    "Replay action semantic candidate missing at transition $index: " +
-                                        "${decision.semanticKey} ordinal=${decision.semanticOrdinal}",
-                                )
-                            check(action.kind == decision.kind) {
-                                "Replay action kind changed at transition $index: " +
-                                    "${action.kind} != ${decision.kind}"
-                            }
-                            service.step(
-                                StepRequest(
-                                    envId = envId,
-                                    actionId = action.actionId,
-                                    action = decision.payload,
-                                ),
+            trace.decisions.forEachIndexed { index, decision ->
+                result = when (decision) {
+                    is ReplayDecision.Action -> {
+                        val candidates = externallySelectableActions(observation)
+                            .filter { semanticActionKey(it) == decision.semanticKey }
+                        val action = candidates.getOrNull(decision.semanticOrdinal)
+                            ?: error(
+                                "Replay action semantic candidate missing at transition $index: " +
+                                    "${decision.semanticKey} ordinal=${decision.semanticOrdinal}",
                             )
+                        check(action.kind == decision.kind) {
+                            "Replay action kind changed at transition $index: " +
+                                "${action.kind} != ${decision.kind}"
                         }
-
-                        is ReplayDecision.Structured -> {
-                            val pending = observation.pendingDecision
-                                ?: error("Replay structured decision missing at transition $index")
-                            check(pending.kind.name == decision.family) {
-                                "Replay decision family changed at transition $index: " +
-                                    "${pending.kind.name} != ${decision.family}"
-                            }
-                            val decisionId = pending.decisionId
-                                ?: error("Replay decision has no current public decision ID")
-                            service.submitDecision(
-                                envId = envId,
-                                response = toDecisionResponse(decisionId, decision.selection),
-                                actorId = observation.agentToAct,
-                            )
+                        if (decision.payload == null) {
+                            gym.step(action.actionId)
+                        } else {
+                            gym.step(action.actionId, decision.payload)
                         }
                     }
-                    assertNoForbiddenDiagnostics(service, envId)
-                    observation = result.observation as? TrainingObservation
-                        ?: error("Replay lost TrainingObservation at transition ${index + 1}")
-                    assertReplayFrame(trace, index + 1, observation, service, envId)
-                }
 
-                check(observation.terminated || observation.truncated) {
-                    "Replay ended before the captured terminal/truncated result"
+                    is ReplayDecision.Structured -> {
+                        val pending = observation.pendingDecision
+                            ?: error("Replay structured decision missing at transition $index")
+                        check(pending.kind.name == decision.family) {
+                            "Replay decision family changed at transition $index: " +
+                                "${pending.kind.name} != ${decision.family}"
+                        }
+                        val decisionId = pending.decisionId
+                            ?: error("Replay decision has no current public decision ID")
+                        gym.submitDecision(
+                            response = toDecisionResponse(decisionId, decision.selection),
+                            actorId = observation.agentToAct,
+                        )
+                    }
                 }
-            } finally {
-                envId?.let { service.dispose(listOf(it)) }
+                assertEnvironmentDiagnosticsZero(environment)
+                observation = result.observation as? TrainingObservation
+                    ?: error("Replay lost TrainingObservation at transition ${index + 1}")
+                assertReplayFrame(trace, index + 1, observation, environment)
+            }
+
+            check(observation.terminated || observation.truncated) {
+                "Replay ended before the captured terminal/truncated result"
             }
         }
 
@@ -1332,8 +1472,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             trace: ReplayTrace,
             index: Int,
             observation: TrainingObservation,
-            service: MultiEnvService,
-            envId: EnvId,
+            environment: GameEnvironment,
         ) {
             val expected = trace.frames.getOrNull(index)
                 ?: error("Replay produced an unexpected frame at index $index")
@@ -1345,25 +1484,52 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             check(StateDigest.compute(observation) == observation.stateDigest) {
                 "Replay observation digest is not self-consistent at frame $index"
             }
-            assertNoForbiddenDiagnostics(service, envId)
+            assertEnvironmentDiagnosticsZero(environment)
         }
 
-        private fun assertNoForbiddenDiagnostics(service: MultiEnvService, envId: EnvId) {
-            val diagnostics = service.diagnostics(envId)
+        private fun assertEnvironmentDiagnosticsZero(environment: GameEnvironment) {
+            val diagnostics = environment.diagnostics
             check(diagnostics.unsupportedCardCount == 0) {
                 "Replay observed UNSUPPORTED_CARD=${diagnostics.unsupportedCardCount}"
             }
             check(diagnostics.unsupportedDecisionCount == 0) {
                 "Replay observed UNSUPPORTED_DECISION=${diagnostics.unsupportedDecisionCount}"
             }
-            check(diagnostics.unsupportedRuleOrMechanicCount == 0) {
+            check(diagnostics.unsupportedRuleCount == 0) {
                 "Replay observed UNSUPPORTED_RULE_OR_MECHANIC=" +
-                    diagnostics.unsupportedRuleOrMechanicCount
+                    diagnostics.unsupportedRuleCount
             }
             check(diagnostics.nativePolicyFallbackCount == 0) {
                 "Replay observed NATIVE_POLICY_FALLBACK=${diagnostics.nativePolicyFallbackCount}"
             }
         }
+
+        /**
+         * Records the exact engine action accepted by the trusted Gym adapter.  This is a replay
+         * recorder, not policy logic: the policy has already chosen through the public observation
+         * and the current ActionRegistry is used only to obtain the transport-bound template that
+         * the Gym adapter itself will execute.
+         */
+        private fun materializeReplayAction(
+            template: GameAction,
+            payload: JsonObject?,
+        ): GameAction {
+            if (payload == null) return template
+            val templateJson = replayActionSerialization
+                .encodeToJsonElement(GameAction.serializer(), template)
+                .jsonObject
+            val merged = buildJsonObject {
+                templateJson.forEach { (key, value) -> put(key, value) }
+                payload.forEach { (key, value) ->
+                    if (key != "abilityKey") put(key, value)
+                }
+            }
+            return replayActionSerialization.decodeFromJsonElement(GameAction.serializer(), merged)
+        }
+
+        /** Fingerprints are obtained from the existing CompactReplay implementation, not copied. */
+        private fun authoritativeReplayFingerprint(state: com.wingedsheep.engine.state.GameState): String =
+            CompactReplayBridge.fingerprint(state)
 
         private fun replayFrame(observation: TrainingObservation): ReplayFrame = ReplayFrame(
             semanticObservation = ObservationCanonicalizer.semanticJson(observation),
@@ -1807,47 +1973,55 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         }
 
         fun decisionClosureEvidence(): DecisionClosureEvidence {
-            val source = repositoryRoot()
-                .resolve("gym/src/test/kotlin/com/wingedsheep/gym/EnvironmentV1ExternalPolicy.kt")
-                .readText()
-            val requiredFieldHandlers = listOf(
-                "paymentStrategy",
-                "xValue",
-                "targets",
-                "manaColorChoice",
-                "additionalCostPayment",
-                "costPayment",
-                "attackers",
-                "bands",
-                "damageDistribution",
-            )
-            val missingFieldHandlers = requiredFieldHandlers.filterNot { field ->
-                source.contains("\"$field\"")
+            val boundedEvidence = replayCases.map { episode ->
+                captureReplayTrace(episode, captureAuthoritativeReplay = false)
             }
-
-            val actionRows = listOf(
-                ClosureRow("ActivateAbility", 48_522, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("CastSpell", 690, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("CastSpellMode", 76, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("CastWithKicker", 6, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("CycleCard", 44, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("DECISION", 2_697, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
-                ClosureRow("DeclareAttackers", 410, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("PassPriority", 85_006, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("PlayLand", 2_435, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-            )
-            val decisionRows = listOf(
-                ClosureRow("CHOOSE_COLOR", 112, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
-                ClosureRow("CHOOSE_TARGETS", 74, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
-                ClosureRow("PRIORITY", 137_189, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN"),
-                ClosureRow("SELECT_CARDS", 2_759, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
-                ClosureRow("YES_NO", 104, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN"),
-            )
-            val rows = actionRows + decisionRows
+            val corpusSnapshot = exactPairCorpusReachabilitySnapshot()
+            val observedActionKinds = corpusSnapshot.actionKinds.toMutableMap()
+            val observedDecisionFamilies = corpusSnapshot.decisionFamilies.toMutableMap()
+            boundedEvidence.flatMap { trace ->
+                trace.decisions.mapNotNull { decision ->
+                    (decision as? ReplayDecision.Action)?.kind
+                }
+            }.forEach { kind ->
+                observedActionKinds[kind] = (observedActionKinds[kind] ?: 0) + 1
+            }
+            boundedEvidence.flatMap { trace ->
+                trace.decisions.mapNotNull { decision ->
+                    (decision as? ReplayDecision.Structured)?.family
+                }
+            }.forEach { family ->
+                observedDecisionFamilies[family] = (observedDecisionFamilies[family] ?: 0) + 1
+            }
+            val observedRequiredPayloadFields = buildSet {
+                addAll(corpusSnapshot.requiredPayloadFields)
+                boundedEvidence.forEach { addAll(it.requiredPayloadFields) }
+            }
+            val missingFieldHandlers = observedRequiredPayloadFields
+                .filterNot { it in EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS }
+                .toList()
+                .sorted()
+            val observedFamilies = (observedActionKinds.keys + observedDecisionFamilies.keys)
+                .toSortedSet()
+            val dispositionByFamily = buildMap {
+                PUBLIC_ACTION_DOMAIN_FAMILIES.forEach {
+                    put(it, "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN")
+                }
+                STRUCTURED_DECISION_DOMAIN_FAMILIES.forEach {
+                    put(it, "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN")
+                }
+            }
+            val rows = observedFamilies.map { family ->
+                ClosureRow(
+                    family = family,
+                    observedCount = (observedActionKinds[family] ?: 0) +
+                        (observedDecisionFamilies[family] ?: 0),
+                    disposition = dispositionByFamily[family] ?: "UNCLASSIFIED",
+                )
+            }
             val uncovered = buildList {
                 addAll(missingFieldHandlers.map { "requiredPayloadFields.$it" })
-                addAll(rows.filter { it.disposition !in SUPPORTED_CLOSURE_DISPOSITIONS }
-                    .map { it.family })
+                addAll(observedFamilies.filter { it !in dispositionByFamily })
             }
 
             val lockedCards = (readLockedDeck("akiri-v0.1.txt").cards +
@@ -1856,17 +2030,95 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             check(resolvedCards.size == 146) {
                 "Decision closure static card set resolved ${resolvedCards.size}, expected 146"
             }
+            val definitionScan = scanLockedDefinitions(resolvedCards)
+            check(definitionScan.cardCount == 146) {
+                "Decision closure scanned ${definitionScan.cardCount} definitions, expected 146"
+            }
+            check(definitionScan.emptySerializations.isEmpty()) {
+                "Decision closure found empty serialized definitions: " +
+                    definitionScan.emptySerializations
+            }
+            check(definitionScan.digest == corpusSnapshot.definitionDigest) {
+                "Decision closure corpus telemetry is stale for the current locked definitions: " +
+                    "recorded=${corpusSnapshot.definitionDigest}, " +
+                    "current=${definitionScan.digest}"
+            }
 
             return DecisionClosureEvidence(
                 rows = rows,
                 resolvedCards = resolvedCards.size,
                 uncovered = uncovered,
                 sourceBoundary = listOf(
+                    "derived-action-families=${observedActionKinds.keys.sorted()}",
+                    "derived-decision-families=${observedDecisionFamilies.keys.sorted()}",
+                    "corpus-snapshot-total-transitions=${corpusSnapshot.totalTransitions}",
+                    "bounded-current-evidence-cases=${boundedEvidence.size}",
+                    "static-definition-scan=${definitionScan.cardCount}; " +
+                        "digest=${definitionScan.digest}",
+                    "recorded-corpus-telemetry-bound-to-definition-digest=" +
+                        corpusSnapshot.definitionDigest,
+                    "closure-families-derived-from-recorded-and-bounded-observations",
+                    "closure-counts-are-snapshot-evidence-not-family-authority",
+                    "policy-supported-required-fields=" +
+                        EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS.sorted(),
                     "policy-input=TrainingObservation",
                     "policy-input=public legal action/actionSemantics",
                     "policy-input=public PendingDecision structuredDomain",
                     "unknown required fields fail closed",
+                    "unknown observed families fail closed",
                 ),
+            )
+        }
+
+        private fun exactPairCorpusReachabilitySnapshot(): ExactPairCorpusReachabilitySnapshot =
+            ExactPairCorpusReachabilitySnapshot(
+                // These counts are retained as the last completed 72/72 run's evidence only. The
+                // family set in decisionClosureEvidence is derived from this recorded telemetry
+                // and current bounded observations, never from hand-authored ClosureRow entries.
+                actionKinds = mapOf(
+                    "ActivateAbility" to 48_522,
+                    "CastSpell" to 690,
+                    "CastSpellMode" to 76,
+                    "CastWithKicker" to 6,
+                    "CycleCard" to 44,
+                    "DECISION" to 2_697,
+                    "DeclareAttackers" to 410,
+                    "PassPriority" to 85_006,
+                    "PlayLand" to 2_435,
+                ),
+                decisionFamilies = mapOf(
+                    "CHOOSE_COLOR" to 112,
+                    "CHOOSE_TARGETS" to 74,
+                    "PRIORITY" to 137_189,
+                    "SELECT_CARDS" to 2_759,
+                    "YES_NO" to 104,
+                ),
+                requiredPayloadFields = setOf(
+                    "paymentStrategy",
+                    "xValue",
+                    "targets",
+                    "manaColorChoice",
+                    "additionalCostPayment",
+                    "costPayment",
+                    "attackers",
+                    "bands",
+                ),
+                totalTransitions = 140_238,
+                definitionDigest = "6953A60BEC45B96383942087CB1D95D2CF76F9444A894E8E0916F4E15D27DC19",
+            )
+
+        private fun scanLockedDefinitions(cards: List<CardDefinition>): DefinitionScanEvidence {
+            val serialized = cards.map { card ->
+                card.name to CardSerialization.json.encodeToJsonElement(
+                    CardDefinition.serializer(),
+                    card,
+                ).toString()
+            }.sortedBy { it.first }
+            val digestInput = serialized.joinToString("\n") { (name, json) -> "$name:$json" }
+            return DefinitionScanEvidence(
+                cardCount = serialized.size,
+                emptySerializations = serialized.filter { it.second.isBlank() }.map { it.first },
+                digest = sha256Text(digestInput),
             )
         }
 
@@ -1994,6 +2246,20 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 seed = config.seed,
             )
         }
+
+        /**
+         * ReplaySetup persists player identities.  Use the same explicit identities for the
+         * recording and reconstruction so GameInitializer's entity counter advances identically
+         * on both sides of the authoritative replay contract.
+         */
+        private fun EpisodeConfig.replayGameConfig(resolver: DeckResolver): GameConfig =
+            gameConfig(resolver).let { config ->
+                config.copy(
+                    players = config.players.mapIndexed { index, player ->
+                        player.copy(playerId = EntityId("a5-replay-player-$index"))
+                    },
+                )
+            }
 
         fun runExactPairCorpus(): CorpusEvidence {
             val evidence = CorpusEvidence()
@@ -2541,6 +2807,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 .digest(canonicalBytes)
                 .joinToString("") { byte -> "%02X".format(byte) }
         }
+
+        fun sha256Text(value: String): String = MessageDigest.getInstance("SHA-256")
+            .digest(value.toByteArray())
+            .joinToString("") { byte -> "%02X".format(byte) }
     }
 }
 
@@ -2769,25 +3039,367 @@ private data class ReplayTrace(
     val episode: EpisodeConfig,
     val frames: List<ReplayFrame>,
     val decisions: List<ReplayDecision>,
+    val actions: List<GameAction>,
+    val checkpoints: List<ReplayCheckpointData>,
+    val gameConfig: GameConfig,
+    val playerIds: List<EntityId>,
+    val requiredPayloadFields: Set<String>,
 )
 
 private data class ReplayGateEvidence(
     val traces: List<ReplayTrace>,
+    val authoritative: List<AuthoritativeReplayCase>,
     val failures: List<String>,
 ) {
     fun render(): String = buildString {
         appendLine("EXACT_PAIR_REPLAY_GATE")
-        appendLine("cases=${traces.size}; failures=${failures.size}")
+        appendLine(
+            "cases=${traces.size}; authoritativeCompactReplay=${authoritative.size}; " +
+                "failures=${failures.size}",
+        )
         traces.forEach { trace ->
             appendLine(
                 "case=${trace.episode.rosterLabel}/seed=${trace.episode.seed}/" +
                     "starting=${trace.episode.startingPlayerIndex}; " +
                     "frames=${trace.frames.size}; decisions=${trace.decisions.size}; " +
                     "terminal=${trace.frames.last().terminated}; " +
-                    "truncated=${trace.frames.last().truncated}",
+                "truncated=${trace.frames.last().truncated}",
+            )
+        }
+        authoritative.forEach { replay ->
+            appendLine(
+                "compactReplay=${replay.caseLabel}; codecRoundTrip=${replay.codecRoundTrip}; " +
+                    "fidelity=${replay.fidelity}; frames=${replay.frameCount}; " +
+                    "checkpoints=${replay.checkpointCount}",
             )
         }
         failures.forEach { appendLine("failure=$it") }
+    }
+}
+
+private data class AuthoritativeReplayCase(
+    val caseLabel: String,
+    val codecRoundTrip: Boolean,
+    val fidelity: String,
+    val frameCount: Int,
+    val checkpointCount: Int,
+)
+
+private data class ReplayCheckpointData(
+    val afterActionCount: Int,
+    val fingerprint: String,
+)
+
+/**
+ * Test-only bridge to the replay module.  :gym intentionally does not depend on :game-server, so
+ * this loads the already-built game-server replay classes instead of copying their codec or
+ * verifier into the acceptance harness.  A clean checkout compiles that existing main output on
+ * demand; no source or build-file change is made by the gate.
+ */
+private object CompactReplayBridge {
+    private const val COMPACT_REPLAY = "com.wingedsheep.gameserver.replay.CompactReplay"
+    private const val REPLAY_CODEC = "com.wingedsheep.gameserver.replay.ReplayCodec"
+    private const val REPLAY_FINGERPRINT = "com.wingedsheep.gameserver.replay.ReplayFingerprint"
+    private const val REPLAY_RECONSTRUCTOR = "com.wingedsheep.gameserver.replay.ReplayReconstructor"
+    private const val REPLAY_SETUP = "com.wingedsheep.gameserver.replay.ReplaySetup"
+    private const val REPLAY_PLAYER_SETUP = "com.wingedsheep.gameserver.replay.ReplayPlayerSetup"
+    private const val REPLAY_PLAYER_INFO = "com.wingedsheep.gameserver.replay.ReplayPlayerInfo"
+    private const val REPLAY_CHECKPOINT = "com.wingedsheep.gameserver.replay.ReplayCheckpoint"
+    private const val SEAT_INFO =
+        "com.wingedsheep.gameserver.protocol.ServerMessage\$PlayerSeatInfo"
+
+    @Volatile
+    private var cachedRuntime: ReplayRuntime? = null
+
+    fun fingerprint(state: com.wingedsheep.engine.state.GameState): String =
+        runtime(repositoryRoot = findRepositoryRoot()).fingerprint(state)
+
+    fun checkpointCadence(repositoryRoot: Path): Int =
+        runtime(repositoryRoot).checkpointCadence()
+
+    fun verify(
+        trace: ReplayTrace,
+        registry: CardRegistry,
+        repositoryRoot: Path,
+    ): AuthoritativeReplayCase {
+        val replayRuntime = runtime(repositoryRoot)
+        val replay = replayRuntime.compactReplay(trace)
+        val codec = replayRuntime.singleton(REPLAY_CODEC)
+        val encoded = replayRuntime.invoke(codec, "encode", replay) as String
+        val decoded = replayRuntime.invoke(codec, "decode", encoded)
+        check(decoded == replay) {
+            "CompactReplay codec round-trip changed the captured replay for ${trace.episode}"
+        }
+
+        val reconstructor = replayRuntime.newInstance(
+            REPLAY_RECONSTRUCTOR,
+            arrayOf(
+                CardRegistry::class.java,
+                com.wingedsheep.engine.registry.PrintingRegistry::class.java,
+                com.wingedsheep.engine.registry.TokenArtRegistry::class.java,
+            ),
+            arrayOf(registry, null, null),
+        )
+        val reconstructed = replayRuntime.invoke(reconstructor, "reconstruct", decoded)
+        val replayResult = checkNotNull(reconstructed)
+        val fidelity = checkNotNull(replayRuntime.invoke(replayResult, "getFidelity")).toString()
+        val frameCount = checkNotNull(replayRuntime.invoke(replayResult, "getFrameCount")) as Int
+        check(fidelity == "EXACT") {
+            "CompactReplay reconstruction was $fidelity for ${trace.episode}: " +
+                replayRuntime.invoke(replayResult, "getDivergenceReason")
+        }
+        check(frameCount == trace.frames.size) {
+            "CompactReplay reconstructed $frameCount frames; captured ${trace.frames.size}"
+        }
+
+        return AuthoritativeReplayCase(
+            caseLabel = "${trace.episode.rosterLabel}/seed=${trace.episode.seed}/" +
+                "starting=${trace.episode.startingPlayerIndex}",
+            codecRoundTrip = true,
+            fidelity = fidelity,
+            frameCount = frameCount,
+            checkpointCount = trace.checkpoints.size,
+        )
+    }
+
+    private fun runtime(repositoryRoot: Path): ReplayRuntime {
+        cachedRuntime?.let { return it }
+        synchronized(this) {
+            cachedRuntime?.let { return it }
+            val parent = Thread.currentThread().contextClassLoader
+                ?: CompactReplayBridge::class.java.classLoader
+            val loadedByParent = runCatching {
+                Class.forName(COMPACT_REPLAY, false, parent)
+            }.isSuccess
+            val replayRuntime = if (loadedByParent) {
+                ReplayRuntime(parent)
+            } else {
+                ReplayRuntime(replayClassLoader(repositoryRoot, parent))
+            }
+            replayRuntime.loadClass(COMPACT_REPLAY)
+            cachedRuntime = replayRuntime
+            return replayRuntime
+        }
+    }
+
+    private fun replayClassLoader(repositoryRoot: Path, parent: ClassLoader): ClassLoader {
+        val kotlinClasses = repositoryRoot.resolve("game-server/build/classes/kotlin/main")
+        val replayClass = kotlinClasses.resolve(
+            "com/wingedsheep/gameserver/replay/CompactReplay.class",
+        )
+        if (!Files.exists(replayClass)) {
+            compileGameServer(repositoryRoot)
+        }
+        check(Files.exists(replayClass)) {
+            "Existing game-server replay classes are unavailable after compilation"
+        }
+        val urls = listOf(
+            kotlinClasses,
+            repositoryRoot.resolve("game-server/build/classes/java/main"),
+            repositoryRoot.resolve("game-server/build/resources/main"),
+        ).filter(Files::exists)
+            .map { it.toUri().toURL() }
+        return URLClassLoader(urls.toTypedArray(), parent)
+    }
+
+    private fun compileGameServer(repositoryRoot: Path) {
+        val windows = System.getProperty("os.name").contains("Windows", ignoreCase = true)
+        val wrapper = repositoryRoot.resolve(if (windows) "gradlew.bat" else "gradlew")
+        check(Files.exists(wrapper)) { "Gradle wrapper not found at $wrapper" }
+        val command = if (windows) {
+            listOf(
+                "cmd.exe",
+                "/d",
+                "/c",
+                "\"$wrapper\" :game-server:compileKotlin --no-daemon --console=plain",
+            )
+        } else {
+            listOf(
+                wrapper.toString(),
+                ":game-server:compileKotlin",
+                "--no-daemon",
+                "--console=plain",
+            )
+        }
+        val process = ProcessBuilder(command)
+            .directory(repositoryRoot.toFile())
+            .redirectError(ProcessBuilder.Redirect.DISCARD)
+            .redirectOutput(ProcessBuilder.Redirect.DISCARD)
+            .start()
+        check(process.waitFor(15, TimeUnit.MINUTES)) {
+            process.destroyForcibly()
+            "Compiling existing game-server replay classes timed out"
+        }
+        check(process.exitValue() == 0) {
+            "Compiling existing game-server replay classes failed with exit=${process.exitValue()}"
+        }
+    }
+
+    private fun findRepositoryRoot(): Path {
+        val workingDirectory = Path.of(System.getProperty("user.dir"))
+        return generateSequence(workingDirectory) { it.parent }
+            .first { it.resolve("docs/ml/curriculum").toFile().isDirectory }
+    }
+
+    private class ReplayRuntime(private val loader: ClassLoader) {
+        fun loadClass(name: String): Class<*> = loader.loadClass(name)
+
+        fun singleton(name: String): Any =
+            loadClass(name).getField("INSTANCE").get(null)
+
+        fun invoke(target: Any, name: String, vararg arguments: Any?): Any? {
+            val method = target.javaClass.methods.firstOrNull {
+                it.name == name && it.parameterCount == arguments.size
+            } ?: error("No $name/${arguments.size} method on ${target.javaClass.name}")
+            return try {
+                method.invoke(target, *arguments)
+            } catch (failure: java.lang.reflect.InvocationTargetException) {
+                throw (failure.targetException as? Exception ?: failure)
+            }
+        }
+
+        fun newInstance(
+            name: String,
+            parameterTypes: Array<Class<*>>,
+            arguments: Array<Any?>,
+        ): Any = try {
+            loadClass(name).getConstructor(*parameterTypes).newInstance(*arguments)
+        } catch (failure: java.lang.reflect.InvocationTargetException) {
+            throw (failure.targetException as? Exception ?: failure)
+        }
+
+        fun fingerprint(state: com.wingedsheep.engine.state.GameState): String {
+            val fingerprint = singleton(REPLAY_FINGERPRINT)
+            return invoke(
+                fingerprint,
+                "of",
+                state,
+            ) as String
+        }
+
+        fun checkpointCadence(): Int {
+            val policy = loadClass(
+                "com.wingedsheep.gameserver.replay.ReplayRecordingPolicy",
+            )
+            return policy.getField("CHECKPOINT_EVERY_ACTIONS").getInt(null)
+        }
+
+        fun compactReplay(trace: ReplayTrace): Any {
+            val config = trace.gameConfig
+            val playerSetups = trace.playerIds.zip(config.players).map { (playerId, player) ->
+                newInstance(
+                    REPLAY_PLAYER_SETUP,
+                    arrayOf(
+                        String::class.java,
+                        String::class.java,
+                        com.wingedsheep.sdk.model.Deck::class.java,
+                        Int::class.javaPrimitiveType!!,
+                        String::class.java,
+                    ),
+                    arrayOf(
+                        playerId.value,
+                        player.name,
+                        player.deck,
+                        player.startingLife,
+                        player.commanderCardName,
+                    ),
+                )
+            }
+            val playerInfos = trace.playerIds.zip(config.players).map { (playerId, player) ->
+                newInstance(
+                    REPLAY_PLAYER_INFO,
+                    arrayOf(String::class.java, String::class.java),
+                    arrayOf(playerId.value, player.name),
+                )
+            }
+            val seatInfos = trace.playerIds.zip(config.players).mapIndexed { index, (playerId, player) ->
+                newInstance(
+                    SEAT_INFO,
+                    arrayOf(
+                        String::class.java,
+                        String::class.java,
+                        Int::class.javaPrimitiveType!!,
+                        Boolean::class.javaPrimitiveType!!,
+                        Boolean::class.javaPrimitiveType!!,
+                        Integer::class.java,
+                        Boolean::class.javaPrimitiveType!!,
+                    ),
+                    arrayOf(playerId.value, player.name, index, false, false, null, false),
+                )
+            }
+            val setup = newInstance(
+                REPLAY_SETUP,
+                arrayOf(
+                    Long::class.javaPrimitiveType!!,
+                    com.wingedsheep.sdk.core.Format::class.java,
+                    com.wingedsheep.sdk.core.AttackMode::class.java,
+                    Int::class.javaPrimitiveType!!,
+                    Boolean::class.javaPrimitiveType!!,
+                    Boolean::class.javaPrimitiveType!!,
+                    Int::class.javaPrimitiveType!!,
+                    Integer::class.java,
+                    List::class.java,
+                    List::class.java,
+                    List::class.java,
+                ),
+                arrayOf(
+                    config.seed!!,
+                    config.format,
+                    config.attackMode,
+                    config.startingHandSize,
+                    config.skipMulligans,
+                    config.useHandSmoother,
+                    config.handSmootherCandidates,
+                    config.startingPlayerIndex,
+                    config.teams,
+                    playerSetups,
+                    seatInfos,
+                ),
+            )
+            val checkpoints = trace.checkpoints.map { checkpoint ->
+                newInstance(
+                    REPLAY_CHECKPOINT,
+                    arrayOf(Int::class.javaPrimitiveType!!, String::class.java),
+                    arrayOf(checkpoint.afterActionCount, checkpoint.fingerprint),
+                )
+            }
+            return newInstance(
+                COMPACT_REPLAY,
+                arrayOf(
+                    Int::class.javaPrimitiveType!!,
+                    String::class.java,
+                    List::class.java,
+                    String::class.java,
+                    String::class.java,
+                    String::class.java,
+                    String::class.java,
+                    Integer::class.java,
+                    setup.javaClass,
+                    List::class.java,
+                    List::class.java,
+                    String::class.java,
+                    List::class.java,
+                    List::class.java,
+                ),
+                arrayOf(
+                    4,
+                    "a5-exact-pair-${trace.episode.rosterLabel}-${trace.episode.seed}-" +
+                        trace.episode.startingPlayerIndex,
+                    playerInfos,
+                    "2026-01-01T00:00:00Z",
+                    "2026-01-01T00:00:00Z",
+                    null,
+                    null,
+                    null,
+                    setup,
+                    trace.actions,
+                    emptyList<Any>(),
+                    "test",
+                    emptyList<String>(),
+                    checkpoints,
+                ),
+            )
+        }
     }
 }
 
@@ -2851,9 +3463,24 @@ private data class Issue56Evidence(
     }
 }
 
-private val SUPPORTED_CLOSURE_DISPOSITIONS = setOf(
-    "SUPPORTED_BY_PUBLIC_ACTION_DOMAIN",
-    "SUPPORTED_BY_STRUCTURED_DECISION_DOMAIN",
+private val PUBLIC_ACTION_DOMAIN_FAMILIES = setOf(
+    "ActivateAbility",
+    "CastSpell",
+    "CastSpellMode",
+    "CastWithKicker",
+    "CycleCard",
+    "DECISION",
+    "DeclareAttackers",
+    "PassPriority",
+    "PlayLand",
+    "PRIORITY",
+)
+
+private val STRUCTURED_DECISION_DOMAIN_FAMILIES = setOf(
+    "CHOOSE_COLOR",
+    "CHOOSE_TARGETS",
+    "SELECT_CARDS",
+    "YES_NO",
 )
 
 private data class EpisodeConfig(
@@ -2862,6 +3489,20 @@ private data class EpisodeConfig(
     val seat0: String,
     val seat1: String,
     val rosterLabel: String,
+)
+
+private data class ExactPairCorpusReachabilitySnapshot(
+    val actionKinds: Map<String, Int>,
+    val decisionFamilies: Map<String, Int>,
+    val requiredPayloadFields: Set<String>,
+    val totalTransitions: Int,
+    val definitionDigest: String,
+)
+
+private data class DefinitionScanEvidence(
+    val cardCount: Int,
+    val emptySerializations: List<String>,
+    val digest: String,
 )
 
 private data class AcceptanceFailure(
