@@ -1725,7 +1725,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             )
             val registry = exactPairRegistry()
             val resolver = DeckResolver(registry)
-            val observations = mutableListOf<TrainingObservation>()
+            val observedPerspectives = mutableSetOf<String>()
+            var observationCount = 0
             val failures = mutableListOf<String>()
             for (episode in cases) {
                 val environment = GameEnvironment.create(
@@ -1744,6 +1745,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         ?: error("Privacy run requires a TrainingObservation after reset")
                     var policyState = DeterministicPolicyState(policySeed(episode))
                     var transitions = 0
+                    val wireSchemaAuditedPerspectives = mutableSetOf<EntityId>()
 
                     fun auditAllPerspectives() {
                         val legalActions = environment.legalActions()
@@ -1760,8 +1762,11 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                             }
                             val observation = result.observation as? TrainingObservation
                                 ?: error("Privacy projection requires TrainingObservation")
-                            auditPublicObservation(observation)
-                            observations += observation
+                            val auditWireSchema = perspective !in wireSchemaAuditedPerspectives
+                            auditPublicObservation(observation, auditWireSchema)
+                            if (auditWireSchema) wireSchemaAuditedPerspectives += perspective
+                            observedPerspectives += observation.perspectivePlayerId.value
+                            observationCount++
                         }
                         check(environment.diagnostics.events.isEmpty()) {
                             "Privacy audit observed diagnostics: ${environment.diagnostics.events}"
@@ -1815,13 +1820,16 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 }
             }
             return PrivacyGateEvidence(
-                perspectives = observations.map { it.perspectivePlayerId.value }.toSet(),
-                observations = observations.size,
+                perspectives = observedPerspectives,
+                observations = observationCount,
                 failures = failures,
             )
         }
 
-        private fun auditPublicObservation(observation: TrainingObservation) {
+        private fun auditPublicObservation(
+            observation: TrainingObservation,
+            auditWireSchema: Boolean,
+        ) {
             val players = observation.players.map { it.id }.toSet()
             check(players.size == observation.players.size) {
                 "Privacy observation contains duplicate player IDs"
@@ -1946,21 +1954,63 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 }
             }
 
-            val wire = Json.parseToJsonElement(ObservationCanonicalizer.wireJson(observation))
-            val forbiddenKeys = collectJsonKeys(wire).filter {
-                it.equals("diagnostics", ignoreCase = true) ||
-                    it.equals("registry", ignoreCase = true) ||
-                    it.equals("gameState", ignoreCase = true) ||
-                    it.equals("internalState", ignoreCase = true) ||
-                    it.equals("debugState", ignoreCase = true)
+            val dynamicPublicJson = buildList {
+                observation.legalActions.mapNotNullTo(this) { it.actionSemantics }
+                observation.pendingDecision?.let { pending ->
+                    add(
+                        privacySerialization.encodeToJsonElement(
+                            PendingDecisionView.serializer(),
+                            pending,
+                        ),
+                    )
+                }
             }
+            val forbiddenKeys = dynamicPublicJson
+                .flatMapTo(mutableSetOf()) { element -> collectJsonKeys(element) }
+                .filter {
+                    it.equals("diagnostics", ignoreCase = true) ||
+                        it.equals("registry", ignoreCase = true) ||
+                        it.equals("gameState", ignoreCase = true) ||
+                        it.equals("internalState", ignoreCase = true) ||
+                        it.equals("debugState", ignoreCase = true)
+                }
             check(forbiddenKeys.isEmpty()) {
-                "Privacy wire observation contains internal/debug fields: $forbiddenKeys"
+                "Privacy public JSON contains internal/debug fields: $forbiddenKeys"
             }
-            check(StateDigest.compute(observation) == observation.stateDigest) {
-                "Privacy observation stateDigest is not self-consistent"
+
+            // The complete wire serialization checks the fixed DTO schema once per perspective;
+            // dynamic action semantics and the typed pending-decision payload are still checked
+            // on every frame above. The replay gate separately recomputes the state digest for
+            // every frame, so this gate only needs the cheap digest-shape check on the hot path.
+            if (auditWireSchema) {
+                val wire = Json.parseToJsonElement(ObservationCanonicalizer.wireJson(observation))
+                val wireForbiddenKeys = collectJsonKeys(wire).filter {
+                    it.equals("diagnostics", ignoreCase = true) ||
+                        it.equals("registry", ignoreCase = true) ||
+                        it.equals("gameState", ignoreCase = true) ||
+                        it.equals("internalState", ignoreCase = true) ||
+                        it.equals("debugState", ignoreCase = true)
+                }
+                check(wireForbiddenKeys.isEmpty()) {
+                    "Privacy wire observation contains internal/debug fields: $wireForbiddenKeys"
+                }
+                check(StateDigest.compute(observation) == observation.stateDigest) {
+                    "Privacy observation stateDigest is not self-consistent"
+                }
+            }
+            check(observation.stateDigest.matches(SHA256_HEX_REGEX)) {
+                "Privacy observation stateDigest is not a SHA-256 hex digest"
             }
         }
+
+        private val privacySerialization = Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+            allowStructuredMapKeys = true
+        }
+
+        private val SHA256_HEX_REGEX = Regex("[0-9a-fA-F]{64}")
 
         private fun semanticEntityReferences(element: JsonElement): Set<EntityId> {
             val referenceKeys = setOf(
