@@ -4,9 +4,11 @@ import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.engine.legalactions.ActionEnumerator
 import com.wingedsheep.engine.legalactions.AttackDeclarationDomainSupport
+import com.wingedsheep.engine.legalactions.BlockerDeclarationDomainSupport
 import com.wingedsheep.engine.legalactions.EnumerationContext
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
+import com.wingedsheep.engine.legalactions.RulesBlockerDeclarationDomainResult
 import com.wingedsheep.engine.state.components.combat.AttackersDeclaredThisCombatComponent
 import com.wingedsheep.engine.state.components.combat.BlockersDeclaredThisCombatComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -112,13 +114,22 @@ class CombatEnumerator : ActionEnumerator {
                     }
                 }
                 val mandatoryAssignments = context.turnManager.getMandatoryBlockerAssignments(state, playerId)
+                val blockerDeclarationDomain = context.turnManager.getBlockerDeclarationDomain(state, playerId)
+                val (domain, domainSupport) = when (blockerDeclarationDomain) {
+                    is RulesBlockerDeclarationDomainResult.Supported ->
+                        blockerDeclarationDomain.domain to BlockerDeclarationDomainSupport.SUPPORTED
+                    is RulesBlockerDeclarationDomainResult.Unsupported ->
+                        null to BlockerDeclarationDomainSupport.UNSUPPORTED(blockerDeclarationDomain.reason)
+                }
                 return listOf(LegalAction(
                     actionType = "DeclareBlockers",
                     description = "Declare blockers",
                     action = DeclareBlockers(playerId, emptyMap()),
                     validBlockers = validBlockers,
                     blockerMaxBlockCounts = blockerMaxBlockCounts.ifEmpty { null },
-                    mandatoryBlockerAssignments = mandatoryAssignments.ifEmpty { null }
+                    mandatoryBlockerAssignments = mandatoryAssignments.ifEmpty { null },
+                    blockerDeclarationDomain = domain,
+                    blockerDeclarationDomainSupport = domainSupport,
                 ))
             }
         }

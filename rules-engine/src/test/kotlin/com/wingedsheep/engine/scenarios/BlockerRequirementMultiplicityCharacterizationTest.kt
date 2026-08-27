@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.scenarios
 
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.legalactions.RulesBlockRequirement
 import com.wingedsheep.engine.mechanics.layers.Layer
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
@@ -13,12 +14,11 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
 /**
- * Characterizes the CR 509.1c requirement-instance gap in the current blocker validator.
+ * Regression coverage for the CR 509.1c requirement-instance semantics in the blocker validator.
  *
  * Requirements are counted as instances, not as a duplicate-free set of affected attackers.
- * The production validator currently calls `distinct()` while collecting
- * MustBeBlockedIfAble effects, so the two cases below deliberately expose the current RED
- * behavior before the Rules-owned certificate is implemented.
+ * These cases retain duplicate instances and verify that competing requirements are evaluated
+ * through the Rules-owned maximum-satisfaction calculation.
  */
 class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
 
@@ -74,7 +74,7 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
         val third = attackers[2]
 
         // Two independent requirements for first, and one each for second and third. Two
-        // blockers can satisfy only two distinct attacker relations, but blocking second and
+        // blockers can satisfy only two attacker relations, but blocking second and
         // third leaves the duplicate first requirement instances unsatisfied. CR 509.1c therefore
         // rejects this declaration because three requirement instances were simultaneously
         // satisfiable (first plus either second or third, with first counted twice).
@@ -98,8 +98,8 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
 
         // The blocker can block either attacker. Provoke contributes one requirement for
         // blocker -> provokedAttacker; the other attacker contributes a second requirement. With
-        // one blocker, either assignment satisfies the maximum possible count of one. The current
-        // validator's separate validateProvokeRequirements pass incorrectly hard-pins the choice.
+        // one blocker, either assignment satisfies the maximum possible count of one. Provoke is
+        // therefore a competing requirement instance, not an unconditional hard pin.
         addRequirement(
             driver,
             blocker,
@@ -114,6 +114,44 @@ class BlockerRequirementMultiplicityCharacterizationTest : FunSpec({
         driver.declareBlockers(
             defendingPlayer,
             mapOf(blocker to listOf(otherRequiredAttacker)),
+        ).isSuccess shouldBe true
+    }
+
+    test("Lure-style requirements remain blocker-scoped and preserve duplicate instances") {
+        val (driver, attackers, blockers) = combatWith(attackerCount = 2, blockerCount = 2)
+        val defendingPlayer = driver.getOpponent(driver.activePlayer!!)
+
+        // Each effect creates a separate all-able-blocker requirement. The first attacker has two
+        // identical source instances, so each of the two eligible blockers receives two equal
+        // blocker-scoped requirements. These are not collapsed into one attacker-level relation.
+        addRequirement(driver, attackers[0], SerializableModification.MustBeBlockedByAll)
+        addRequirement(driver, attackers[0], SerializableModification.MustBeBlockedByAll)
+        addRequirement(driver, attackers[1], SerializableModification.MustBeBlockedByAll)
+
+        val declareBlockers = driver.legalActions(defendingPlayer)
+            .single { it.action is com.wingedsheep.engine.core.DeclareBlockers }
+        val domain = declareBlockers.blockerDeclarationDomain!!
+        val lureRequirements = domain.requirements.filterIsInstance<RulesBlockRequirement.BlockOneOf>()
+
+        // Two blockers × (two requirements for the first attacker + one for the second).
+        lureRequirements.size shouldBe 6
+        lureRequirements.count { it.attackerIds == listOf(attackers[0]) } shouldBe 4
+        lureRequirements.count { it.attackerIds == listOf(attackers[1]) } shouldBe 2
+        // Blocking both blockers on the first attacker satisfies four duplicate requirement
+        // instances, which is the exact maximum. Blocking one on each attacker satisfies only
+        // three and is therefore illegal.
+        domain.minimumSatisfiedRequirementCount shouldBe 4
+
+        driver.declareBlockers(
+            defendingPlayer,
+            mapOf(blockers[0] to listOf(attackers[0]), blockers[1] to listOf(attackers[1])),
+        ).isSuccess shouldBe false
+
+        // Both normal blockers can satisfy all four duplicate instances for the first attacker;
+        // the declaration reaches the exact Rules-owned maximum without a hard pin.
+        driver.declareBlockers(
+            defendingPlayer,
+            mapOf(blockers[0] to listOf(attackers[0]), blockers[1] to listOf(attackers[0])),
         ).isSuccess shouldBe true
     }
 })

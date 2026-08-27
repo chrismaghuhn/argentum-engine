@@ -90,8 +90,11 @@ class FearRule : BlockEvasionRule {
     override fun check(ctx: BlockCheckContext): String? {
         if (ctx.projected.hasKeyword(ctx.attackerId, Keyword.FEAR)) {
             val blockerCard = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>() ?: return null
-            val isArtifactCreature = blockerCard.typeLine.isArtifactCreature
-            val isBlackCreature = Color.BLACK in blockerCard.colors
+            // Use projected characteristics: a face-down blocker is the public 2/2 colorless
+            // creature, not the hidden CardComponent underneath it (CR 708.2a).
+            val isArtifactCreature = ctx.projected.hasType(ctx.blockerId, "ARTIFACT") &&
+                ctx.projected.isCreature(ctx.blockerId)
+            val isBlackCreature = ctx.projected.hasColor(ctx.blockerId, Color.BLACK)
             if (!isArtifactCreature && !isBlackCreature) {
                 val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
                 return "${blockerCard.name} cannot block $attackerName (fear)"
@@ -136,24 +139,30 @@ class LandwalkRule : BlockEvasionRule {
 
     private fun playerControlsNonbasicLand(ctx: BlockCheckContext): Boolean {
         return ctx.state.getBattlefield().any { entityId ->
-            val container = ctx.state.getEntity(entityId) ?: return@any false
-            val cardComponent = container.get<CardComponent>() ?: return@any false
             val controller = ctx.projected.getController(entityId)
             controller == ctx.blockingPlayer &&
-                cardComponent.typeLine.isLand &&
-                !cardComponent.typeLine.isBasicLand
+                ctx.projected.hasType(entityId, "LAND") &&
+                !ctx.projected.getSubtypes(entityId).any { it in BASIC_LAND_SUBTYPES }
         }
     }
 
     private fun playerControlsLandWithSubtype(ctx: BlockCheckContext, landSubtype: Subtype): Boolean {
         return ctx.state.getBattlefield().any { entityId ->
-            val container = ctx.state.getEntity(entityId) ?: return@any false
-            val cardComponent = container.get<CardComponent>() ?: return@any false
             val controller = ctx.projected.getController(entityId)
             controller == ctx.blockingPlayer &&
-                cardComponent.typeLine.isLand &&
-                cardComponent.typeLine.hasSubtype(landSubtype)
+                ctx.projected.hasType(entityId, "LAND") &&
+                ctx.projected.hasSubtype(entityId, landSubtype.value)
         }
+    }
+
+    private companion object {
+        val BASIC_LAND_SUBTYPES = setOf(
+            Subtype.FOREST.value,
+            Subtype.SWAMP.value,
+            Subtype.ISLAND.value,
+            Subtype.MOUNTAIN.value,
+            Subtype.PLAINS.value,
+        )
     }
 }
 
@@ -167,13 +176,18 @@ class CantBeBlockedByRule(
 ) : BlockEvasionRule {
     override fun check(ctx: BlockCheckContext): String? {
         val attackerCard = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>() ?: return null
+        val faceDown = ctx.state.getEntity(ctx.attackerId)?.has<FaceDownComponent>() == true
         // Printed restrictions. cardDef may be null for tokens/copies without a registered
         // definition — the granted form below still applies.
-        val cardDef = ctx.cardRegistry.getCard(attackerCard.cardDefinitionId)
-        val printed = cardDef?.staticAbilities
-            ?.filterIsInstance<CantBeBlockedBy>()
-            ?.filter { it.filter.scope is Scope.Self }
-            .orEmpty()
+        val printed = if (faceDown) {
+            emptyList()
+        } else {
+            val cardDef = ctx.cardRegistry.getCard(attackerCard.cardDefinitionId)
+            cardDef?.staticAbilities
+                ?.filterIsInstance<CantBeBlockedBy>()
+                ?.filter { it.filter.scope is Scope.Self }
+                .orEmpty()
+        }
         // Granted (floating) restrictions land in state.grantedStaticAbilities keyed to the
         // attacker — e.g. Cavern Stomper's "{3}{G}: this creature can't be blocked by creatures
         // with power 2 or less this turn" grants CantBeBlockedBy to itself via
@@ -252,9 +266,9 @@ class CantBeBlockedExceptByColorRule : BlockEvasionRule {
             .firstOrNull()
             ?: return null
 
-        val blockerCard = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>() ?: return null
         val requiredColor = Color.valueOf(colorRestriction.color)
-        if (!blockerCard.colors.contains(requiredColor)) {
+        if (!ctx.projected.hasColor(ctx.blockerId, requiredColor)) {
+            val blockerCard = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>() ?: return null
             val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
             return "${blockerCard.name} cannot block $attackerName (can only be blocked by ${requiredColor.displayName.lowercase()} creatures)"
         }
@@ -276,9 +290,9 @@ class CantBeBlockedByColorRule : BlockEvasionRule {
             .firstOrNull()
             ?: return null
 
-        val blockerCard = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>() ?: return null
         val forbiddenColor = Color.valueOf(colorRestriction.color)
-        if (blockerCard.colors.contains(forbiddenColor)) {
+        if (ctx.projected.hasColor(ctx.blockerId, forbiddenColor)) {
+            val blockerCard = ctx.state.getEntity(ctx.blockerId)?.get<CardComponent>() ?: return null
             val attackerName = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>()?.name ?: "Creature"
             return "${blockerCard.name} cannot block $attackerName (can't be blocked by ${forbiddenColor.displayName.lowercase()} creatures)"
         }
@@ -333,6 +347,9 @@ class CantBeBlockedExceptByRule(
  */
 class CantBeBlockedUnlessDefenderSharesCreatureTypeRule : BlockEvasionRule {
     override fun check(ctx: BlockCheckContext): String? {
+        // CR 708.2a: a face-down attacker has only its face-down characteristics and no hidden
+        // printed static abilities. Granted effects remain represented by projected state.
+        if (ctx.state.getEntity(ctx.attackerId)?.has<FaceDownComponent>() == true) return null
         val attackerCard = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>() ?: return null
         val cardDef = ctx.cardRegistry.getCard(attackerCard.cardDefinitionId) ?: return null
         val restriction = cardDef.staticAbilities
@@ -606,6 +623,10 @@ class CantBeBlockedWhilePropertyAtMostRule : BlockEvasionRule {
 
         // Scan the attacking player's battlefield for permanents with this ability
         for (entityId in ctx.projected.getBattlefieldControlledBy(attackerController)) {
+            // A face-down permanent has no printed static abilities. Publicly granted/projection
+            // effects are handled by the projected state and must not be recovered from its hidden
+            // CardDefinition.
+            if (ctx.state.getEntity(entityId)?.has<FaceDownComponent>() == true) continue
             val card = ctx.state.getEntity(entityId)?.get<CardComponent>() ?: continue
             val cardDef = ctx.cardRegistry.getCard(card.cardDefinitionId) ?: continue
             for (ability in cardDef.staticAbilities.filterIsInstance<CantBeBlockedWhilePropertyAtMost>()) {
@@ -632,6 +653,8 @@ class CantBeBlockedIfCastSpellTypeRule(
     private val predicateEvaluator: com.wingedsheep.engine.handlers.PredicateEvaluator
 ) : BlockEvasionRule {
     override fun check(ctx: BlockCheckContext): String? {
+        // CR 708.2a: do not inspect a face-down attacker's hidden printed ability.
+        if (ctx.state.getEntity(ctx.attackerId)?.has<FaceDownComponent>() == true) return null
         val attackerCard = ctx.state.getEntity(ctx.attackerId)?.get<CardComponent>() ?: return null
         val cardDef = ctx.cardRegistry.getCard(attackerCard.cardDefinitionId) ?: return null
         val restriction = cardDef.staticAbilities.filterIsInstance<CantBeBlockedIfCastSpellType>().firstOrNull()

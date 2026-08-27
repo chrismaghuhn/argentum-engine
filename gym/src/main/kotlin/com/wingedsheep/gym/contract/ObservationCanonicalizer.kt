@@ -81,6 +81,9 @@ internal object ObservationCanonicalizer {
         action.attackDeclarationDomain?.let {
             put("attackDeclarationDomain", semanticAttackDeclarationDomain(it))
         }
+        action.blockerDeclarationDomain?.let {
+            put("blockerDeclarationDomain", semanticBlockerDeclarationDomain(it))
+        }
         put("manaCost", action.manaCost)
         action.paymentDomain?.let {
             put("paymentDomain", json.encodeToJsonElement(PaymentDomainV4.serializer(), it))
@@ -206,6 +209,98 @@ internal object ObservationCanonicalizer {
                 )
             })
         }
+    }
+
+    /** Canonical semantic identity for the complete Rules-owned blocker declaration domain. */
+    private fun semanticBlockerDeclarationDomain(domain: BlockerDeclarationDomainV1): JsonObject {
+        require(domain.version == BLOCKER_DECLARATION_DOMAIN_VERSION) {
+            "Unsupported blocker declaration domain version: ${domain.version}"
+        }
+
+        return buildJsonObject {
+            put("version", domain.version)
+            put("blockerOrder", entityArray(domain.blockerOrder))
+            put("attackerOrder", entityArray(domain.attackerOrder))
+            put("blockerToAttackers", orderedEntityRelation(domain.blockerOrder) { blockerId ->
+                domain.blockerToAttackers.getValue(blockerId)
+            })
+            put("maxAttackersByBlocker", orderedEntityIntMap(domain.blockerOrder) { blockerId ->
+                domain.maxAttackersByBlocker.getValue(blockerId)
+            })
+            put("minBlockersByAttacker", orderedPresentEntityIntMap(domain.attackerOrder, domain.minBlockersByAttacker))
+            put("maxBlockersByAttacker", orderedPresentEntityIntMap(domain.attackerOrder, domain.maxBlockersByAttacker))
+            put("globalMaxBlockers", domain.globalMaxBlockers)
+            put("coBlockerRequirements", buildJsonObject {
+                domain.blockerOrder
+                    .filter { it in domain.coBlockerRequirements }
+                    .forEach { blockerId ->
+                        put(blockerId.value, buildJsonArray {
+                            domain.coBlockerRequirements.getValue(blockerId).forEach { requirement ->
+                                add(entityArray(requirement.eligibleCoBlockers))
+                            }
+                        })
+                    }
+            })
+            put("requirements", buildJsonArray {
+                domain.requirements.forEach { requirement ->
+                    add(semanticBlockRequirement(requirement))
+                }
+            })
+            put("minimumSatisfiedRequirementCount", domain.minimumSatisfiedRequirementCount)
+            put("canDeclareZeroBlockers", domain.canDeclareZeroBlockers)
+        }
+    }
+
+    private fun semanticBlockRequirement(requirement: BlockRequirementV1): JsonObject = when (requirement) {
+        is BlockRequirementV1.BlockSpecific -> buildJsonObject {
+            put("type", "block-specific")
+            put("blockerId", requirement.blockerId.value)
+            put("attackerId", requirement.attackerId.value)
+        }
+        is BlockRequirementV1.BlockOneOf -> buildJsonObject {
+            put("type", "block-one-of")
+            put("blockerId", requirement.blockerId.value)
+            put("attackerIds", entityArray(requirement.attackerIds))
+        }
+        is BlockRequirementV1.AttackerMustBeBlockedIfAble -> buildJsonObject {
+            put("type", "attacker-must-be-blocked-if-able")
+            put("attackerId", requirement.attackerId.value)
+        }
+        is BlockRequirementV1.AttackerMustBeBlockedByAll -> buildJsonObject {
+            put("type", "attacker-must-be-blocked-by-all")
+            put("attackerId", requirement.attackerId.value)
+        }
+        is BlockRequirementV1.BlockerMustBlockIfAble -> buildJsonObject {
+            put("type", "blocker-must-block-if-able")
+            put("blockerId", requirement.blockerId.value)
+        }
+    }
+
+    private fun entityArray(entityIds: List<EntityId>) = buildJsonArray {
+        entityIds.forEach { add(JsonPrimitive(it.value)) }
+    }
+
+    private fun orderedEntityRelation(
+        order: List<EntityId>,
+        related: (EntityId) -> List<EntityId>,
+    ) = buildJsonObject {
+        order.forEach { entityId ->
+            put(entityId.value, entityArray(related(entityId)))
+        }
+    }
+
+    private fun orderedEntityIntMap(
+        order: List<EntityId>,
+        value: (EntityId) -> Int,
+    ) = buildJsonObject {
+        order.forEach { entityId -> put(entityId.value, value(entityId)) }
+    }
+
+    private fun orderedPresentEntityIntMap(
+        order: List<EntityId>,
+        values: Map<EntityId, Int>,
+    ) = buildJsonObject {
+        order.filter { it in values }.forEach { entityId -> put(entityId.value, values.getValue(entityId)) }
     }
 
     private fun semanticEntityRelation(

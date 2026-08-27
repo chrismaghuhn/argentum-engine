@@ -189,6 +189,7 @@ class ObservationBuilder(
                     action,
                     targetResult = mapPublicTargetDomain(state, action, perspectivePlayerId),
                     attackResult = mapPublicAttackDeclarationDomain(state, action, perspectivePlayerId),
+                    blockerResult = mapPublicBlockerDeclarationDomain(state, action, perspectivePlayerId),
                 )
             }
         } else {
@@ -197,10 +198,11 @@ class ObservationBuilder(
         val supportedActionMappings = actionDomainMappings.mapNotNull { mapping ->
             val target = mapping.targetResult as? ActionTargetDomainMapper.Result.Supported
             val attack = mapping.attackResult as? AttackDeclarationDomainMapper.Result.Supported
-            if (target == null || attack == null) {
+            val blocker = mapping.blockerResult as? BlockerDeclarationDomainMapper.Result.Supported
+            if (target == null || attack == null || blocker == null) {
                 null
             } else {
-                SupportedActionDomain(mapping.action, target.domain, attack.domain)
+                SupportedActionDomain(mapping.action, target.domain, attack.domain, blocker.domain)
             }
         }
         val targetDomainDiagnostics = actionDomainMappings
@@ -211,6 +213,11 @@ class ObservationBuilder(
         val attackDeclarationDomainDiagnostics = actionDomainMappings
             .mapNotNull { mapping ->
                 (mapping.attackResult as? AttackDeclarationDomainMapper.Result.Unsupported)?.diagnostic
+            }
+            .distinct()
+        val blockerDeclarationDomainDiagnostics = actionDomainMappings
+            .mapNotNull { mapping ->
+                (mapping.blockerResult as? BlockerDeclarationDomainMapper.Result.Unsupported)?.diagnostic
             }
             .distinct()
         val diagnostics = buildList {
@@ -233,6 +240,7 @@ class ObservationBuilder(
             // silently reduced action list.
             addAll(targetDomainDiagnostics)
             addAll(attackDeclarationDomainDiagnostics)
+            addAll(blockerDeclarationDomainDiagnostics)
         }
 
         // Build legal-action views and their registry. When mid-decision the
@@ -254,6 +262,7 @@ class ObservationBuilder(
                     mapped.action,
                     mapped.targetDomain,
                     mapped.attackDeclarationDomain,
+                    mapped.blockerDeclarationDomain,
                 )
             }
             actionRegistry = ActionRegistry.ofLegalActions(supportedActionMappings.map { it.action })
@@ -583,6 +592,7 @@ class ObservationBuilder(
         la: LegalAction,
         targetDomain: ActionTargetDomainV1,
         attackDeclarationDomain: AttackDeclarationDomainV1?,
+        blockerDeclarationDomain: BlockerDeclarationDomainV1?,
     ): LegalActionView {
         val sacrificeInfo = la.additionalCostInfo
             ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
@@ -597,6 +607,7 @@ class ObservationBuilder(
             targetEntityIds = singleRequirement?.candidates ?: emptyList(),
             targetDomain = targetDomain,
             attackDeclarationDomain = attackDeclarationDomain,
+            blockerDeclarationDomain = blockerDeclarationDomain,
             manaCost = la.manaCostString,
             paymentDomain = if (la.affordable) paymentDomainFor(state, la) else null,
             hasXCost = la.hasXCost,
@@ -818,6 +829,19 @@ class ObservationBuilder(
         viewingPlayerId: EntityId,
     ): AttackDeclarationDomainMapper.Result =
         AttackDeclarationDomainMapper.map(legalAction) { entityId ->
+            visibility.isEntityReferenceAddressableTo(
+                state = state,
+                entityId = entityId,
+                viewingPlayerId = viewingPlayerId,
+            )
+        }
+
+    private fun mapPublicBlockerDeclarationDomain(
+        state: GameState,
+        legalAction: LegalAction,
+        viewingPlayerId: EntityId,
+    ): BlockerDeclarationDomainMapper.Result =
+        BlockerDeclarationDomainMapper.map(legalAction) { entityId ->
             visibility.isEntityReferenceAddressableTo(
                 state = state,
                 entityId = entityId,
@@ -1830,10 +1854,12 @@ private data class ActionDomainMapping(
     val action: LegalAction,
     val targetResult: ActionTargetDomainMapper.Result,
     val attackResult: AttackDeclarationDomainMapper.Result,
+    val blockerResult: BlockerDeclarationDomainMapper.Result,
 )
 
 private data class SupportedActionDomain(
     val action: LegalAction,
     val targetDomain: ActionTargetDomainV1,
     val attackDeclarationDomain: AttackDeclarationDomainV1?,
+    val blockerDeclarationDomain: BlockerDeclarationDomainV1?,
 )

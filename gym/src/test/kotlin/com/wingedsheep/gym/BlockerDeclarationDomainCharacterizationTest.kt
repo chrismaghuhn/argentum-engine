@@ -26,8 +26,8 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.int
 
 /**
- * RED characterization for issue #102: a real DeclareBlockers action requires a blockers payload,
- * but the current strict public observation has no complete blocker-declaration domain.
+ * Issue #102 regression characterization: a real DeclareBlockers action requires a blockers
+ * payload, and the strict public observation now publishes the complete blocker-declaration domain.
  */
 class BlockerDeclarationDomainCharacterizationTest : FunSpec({
 
@@ -71,7 +71,7 @@ class BlockerDeclarationDomainCharacterizationTest : FunSpec({
         error("Could not reach $step for ${playerId.value}")
     }
 
-    test("required blockers payload has no complete public domain on the current main path") {
+    test("required blockers payload has a complete public domain on the strict path") {
         val environment = GameEnvironment.create(registry())
         environment.reset(
             GameConfig(
@@ -135,7 +135,10 @@ class BlockerDeclarationDomainCharacterizationTest : FunSpec({
             it.jsonObject["actionId"]!!.jsonPrimitive.int == blockerAction.actionId
         }.jsonObject
 
-        // RED: the future complete blocker domain is not published by the current contract.
         encodedAction.containsKey("blockerDeclarationDomain") shouldBe true
+        val domain = checkNotNull(blockerAction.blockerDeclarationDomain)
+        domain.attackerOrder shouldContain aliceCommander
+        domain.blockerOrder.isNotEmpty() shouldBe true
+        domain.blockerToAttackers.values.flatten() shouldContain aliceCommander
     }
 })

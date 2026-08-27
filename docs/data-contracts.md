@@ -749,7 +749,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.20-attack-declaration-domain`.
+The Gym contract is currently `argentum-gym-contract@v1.21-blocker-declaration-domain`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -815,6 +815,87 @@ The explicit replay-wire audit confirmed that `CompactReplay` serializes only th
 does not contain `LegalActionView`, `AttackDeclarationDomainV1`, `schemaHash`, or any observation
 domain. Replay reconstruction therefore remains independent of Gym observation data and stays at
 `CompactReplay` v4; this additive observation contract does not require a replay bump.
+
+### DeclareBlockers choice domain (BlockerDeclarationDomainV1)
+
+`LegalActionView.blockerDeclarationDomain` is present only for a supported `DeclareBlockers`
+action. It is version `1` and is a perspective-safe projection of the Rules-owned
+`RulesBlockerDeclarationDomain` certificate. The DTO is complete for the current supported
+blocker machinery; if Rules cannot resolve a represented constraint or a public reference cannot
+be addressed by the defending player, the whole action domain fails closed with
+`BLOCKER_DECLARATION_DOMAIN_UNSUPPORTED`.
+
+The fields are:
+
+- `blockerOrder`: the producer-owned canonical order of all current blocker candidates. It is not
+  an ordering choice exposed to the controller.
+- `attackerOrder`: the producer-owned canonical order of all current attacking entities.
+- `blockerToAttackers`: for each blocker candidate, the complete Rules-resolved set of attacking
+  entities that blocker may block. Pairwise evasion, controller/team, projected characteristics,
+  and blocker restrictions have already been resolved by Rules.
+- `maxAttackersByBlocker`: the maximum number of attacking entities each blocker may block in
+  this declaration, including the current supported direct `CanBlockAnyNumber` and projected
+  additional-capacity forms. An active conditional or granted shape that the producer cannot
+  resolve into this bound makes the whole blocker domain unsupported.
+- `minBlockersByAttacker` and `maxBlockersByAttacker`: resolved per-attacker declaration bounds.
+  A minimum applies only when that attacker is chosen to be blocked; an attacker may still remain
+  unblocked. Menace and the supported printed minimum forms, together with supported printed,
+  conditional, direct-granted, and projected maximum forms, are resolved here rather than
+  reconstructed by Gym. An active unsupported filter or grant fails closed instead of being
+  omitted from the certificate.
+- `globalMaxBlockers`: the active global blocker cap, or `null` when no such cap applies.
+- `coBlockerRequirements`: for each restricted blocker, all resolved co-blocker groups. Each group
+  is an `eligibleCoBlockers` any-of list, and every group must be satisfied when that blocker is
+  selected.
+- `requirements`: the resolved CR 509.1c requirement instances. This is a multiset represented
+  as a list: identical `BlockSpecific`, `BlockOneOf`, `AttackerMustBeBlockedIfAble`,
+  `AttackerMustBeBlockedByAll`, or `BlockerMustBlockIfAble` entries are retained as separate
+  instances and each occurrence counts independently. Current Lure-style all-able effects are
+  resolved into blocker-scoped `BlockOneOf` instances, so multiple eligible blockers and repeated
+  effects remain explicit rather than collapsing into one attacker relation.
+- `minimumSatisfiedRequirementCount`: the exact Rules-owned maximum number of those requirement
+  instances that can be satisfied simultaneously without violating the published 509.1a-b
+  restrictions. A submitted declaration must satisfy at least this count. Gym does not compute a
+  deduplicated matching or interpret Provoke as an unconditional pin.
+- `canDeclareZeroBlockers`: the direct Rules-owned result for the empty declaration under the
+  complete 509.1a-c certificate. It is explicit and is not inferred from an empty candidate list
+  or from the absence of a legacy mandatory-assignment hint.
+
+The defender constructs the existing semantic carrier directly from this domain:
+
+```text
+BlockerDeclarationDomainV1
+  -> { blockerEntityId: [attackerEntityId, ...], ... }
+  -> DeclareBlockers.blockers
+```
+
+The public mapper preserves the producer's canonical order and never sorts by `EntityId.value`,
+hash iteration, allocation order, UUID, or hidden-state-dependent metadata. Assignment maps and
+per-blocker attacker lists are semantically unordered gameplay relations; the published order is
+only the deterministic contract representation. Requirement-list order and multiplicity are
+semantic and are preserved exactly. A future/unknown domain version is rejected rather than
+interpreted as V1.
+
+The strict Gym boundary validates the submitted blocker map against the exact Rules certificate
+registered for the selected action before calling `ActionProcessor`. It checks shape, public
+membership, pair relations, per-blocker and per-attacker bounds, global/co-blocker restrictions,
+empty-declaration legality, and the published requirement-instance threshold. Rules then performs
+its stateful final checks and remains authoritative for commitment and events. A rejected or
+stale submission is not a gameplay transition and cannot advance the state, RNG, continuation,
+replay, turn/priority, or accepted-transition counters. Strict execution also rejects the old
+action handle when the live Rules producer can no longer publish a supported certificate; it
+cannot fall through to the legacy blocker path.
+
+Blocking costs are intentionally not part of this assignment domain. Under the existing Rules
+flow, a domain-valid assignment may be followed by a separate externally controlled blocking-cost
+decision under CR 509.1d-f before the block is committed. CompactReplay remains unchanged: it
+stores the semantic `DeclareBlockers.blockers` action carrier, and reconstruction regenerates the
+domain from the deterministic Rules state instead of recording the observation DTO.
+
+The domain publishes only public battlefield/combat information addressable to the acting
+defender. It does not expose hidden hand/library/exile identity, unrecognized face-down identity,
+raw `GameState`, `CardRegistry`, evaluator internals, private provenance, or future policy
+choices.
 
 ### Action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
 
@@ -1027,7 +1108,7 @@ Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` iden
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
 The Gym `SchemaHash` is
-`argentum-gym-contract@v1.20-attack-declaration-domain`. A client must compare the hash
+`argentum-gym-contract@v1.21-blocker-declaration-domain`. A client must compare the hash
 before interpreting the payment domain and fail closed on mismatch; the historical V3 DTO also
 rejects a V4 version, so an old client cannot silently treat the new bucket list as V3.
 

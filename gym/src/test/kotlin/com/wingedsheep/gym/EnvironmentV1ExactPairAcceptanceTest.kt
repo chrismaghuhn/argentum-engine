@@ -1382,7 +1382,8 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     )
                 } catch (failure: Exception) {
                     failures += "${episode.rosterLabel}/seed=${episode.seed}/" +
-                        "starting=${episode.startingPlayerIndex}: ${failure.message}"
+                        "starting=${episode.startingPlayerIndex}: " +
+                        (failure.message ?: failure::class.simpleName.orEmpty())
                 }
             }
             val evidence = ReplayGateEvidence(
