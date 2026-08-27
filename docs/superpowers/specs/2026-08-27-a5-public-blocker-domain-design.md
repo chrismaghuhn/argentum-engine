@@ -19,8 +19,8 @@ This work is isolated from the dirty user checkout and all existing recovery/B0 
 - repository: `https://github.com/chrismaghuhn/argentum-engine.git`
 - base `origin/main`: `adf8516b36d24819ee815ae254e858f3ba995425`
 - live `upstream/main`: `e3708751f4769627ddccd732225185a86c049dcb`
-- pinned upstream reference for the current roadmap/B0 cycle:
-  `d66a5d7f1b46b0ed8891c34ccfe163d491c4ff3d`
+- pinned upstream reference for the current roadmap/B0 cycle (as recorded by B0 issue #98):
+  `35693e754a8a281da07b8a764a609425dce06d07`
 - branch: `agent/a5-public-blocker-domain`
 - worktree: `C:\argentum-engine-a5-blocker-domain`
 - issue: #102
@@ -38,9 +38,10 @@ Normative authority:
 - relevant starting section: CR 509, especially 509.1a–i
 
 CR 509.1 treats declaring blockers as one turn-based action. 509.1a chooses blockers and their
-attacking creatures; 509.1b checks restrictions; 509.1c checks requirements against the maximum
-simultaneously satisfiable set; 509.1d–f determine and pay blocking costs. This design therefore
-separates the assignment domain from any later cost or mana decision.
+attacking creatures; 509.1b checks restrictions; 509.1c checks each resolved requirement instance
+against the maximum simultaneously satisfiable set; 509.1d–f determine and pay blocking costs.
+This design therefore separates the assignment domain from any later cost or mana decision while
+preserving requirement multiplicity.
 
 The implementation must inspect the current source for every blocker check actually used by
 `BlockPhaseManager` and add no new Magic semantics unless a RED characterization proves a Rules
@@ -81,8 +82,8 @@ The current authoritative declaration checks include, at minimum:
 - active `BlockerCountLimit` global declaration caps;
 - `CantBlockUnlessCoBlocker` requirements resolved against the full selected blocker set;
 - `MustBeBlockedByAll`/Lure-style requirements;
-- `MustBeBlockedIfAble` requirements and their declaration-wide maximum matching;
-- floating Provoke/`MustBlockSpecificAttacker` assignments; and
+- `MustBeBlockedIfAble` requirement instances and their declaration-wide maximum matching;
+- floating Provoke/`MustBlockSpecificAttacker` requirement instances; and
 - projected `mustBlock` requirements.
 
 The new certificate must either represent every supported one of these constraints or return a
@@ -108,6 +109,13 @@ so that `BlockPhaseManager` delegates the same declaration-wide checks where pra
 checks that require the live `GameState` (object presence, current zone/incarnation, projected
 characteristics, and cost calculation) remain in `BlockPhaseManager` as defense in depth.
 
+The shared evaluator must consume the resolved requirement-instance list without deduplicating it.
+It counts every occurrence, including identical occurrences, and compares the submitted
+declaration's satisfied count with the Rules-owned `minimumSatisfiedRequirementCount` threshold.
+`Provoke`/`MustBlockSpecificAttacker` is represented as a requirement instance in this 509.1c
+optimization; it is not silently converted into an unconditional hard pin merely because one
+current helper exposes a blocker-to-attacker assignment map.
+
 If that consolidation would be too invasive, the Rules processor may retain its final checks, but
 the implementation must add differential contract tests for every characterized fixture:
 
@@ -121,6 +129,22 @@ No Gym-side interpretation of Menace, Provoke, Lure, evasion, or any other block
 allowed. A mismatch is an implementation defect or an unsupported certificate shape, never a
 reason to weaken the public domain.
 
+### Mandatory 509.1c source audit
+
+Before the certificate can be marked supported, RED and differential tests must characterize any
+current Rules code that collapses requirement sources. In particular, `distinct()`, `toSet()`,
+map-key overwrites, or any equivalent operation is forbidden for requirement instances unless the
+Rules owner proves that the source is a restriction whose duplicate is semantically inert. The
+current `findMustBeBlockedIfAbleAttackers` deduplication, the `getMandatoryBlockerAssignments`
+compatibility map, and the per-attacker `satisfied` count are explicit audit points. Likewise,
+the current Provoke validation must be reconciled with 509.1c competition rather than assumed to
+be a hard-pin authority.
+
+If the current Rules validator loses multiplicity or hard-pins a supported competing requirement,
+the implementation must either make the smallest generic shared Rules repair or classify the
+smallest `CORE_RULE/ENGINE_GAP` before publishing V1. The public DTO must not encode a lossy
+approximation of the current behavior.
+
 ## Rules-owned certificate
 
 Add a Rules-only `RulesBlockerDeclarationDomain` under `rules-engine`'s legal-action package,
@@ -132,17 +156,38 @@ semantic categories:
 data class RulesBlockerDeclarationDomain(
     val blockerToAttackers: Map<EntityId, List<EntityId>>,
     val maxAttackersByBlocker: Map<EntityId, Int>,
-    val blockerMustBlockOneOf: Map<EntityId, List<EntityId>>,
-    val blockerMustBlockSpecific: Map<EntityId, List<EntityId>>,
     val minBlockersByAttacker: Map<EntityId, Int>,
     val maxBlockersByAttacker: Map<EntityId, Int>,
     val globalMaxBlockers: Int?,
     val coBlockerRequirements: Map<EntityId, List<RulesCoBlockerRequirement>>,
-    val mustBeBlockedByAllAttackers: List<EntityId>,
-    val mustBeBlockedIfAbleAttackers: List<EntityId>,
-    val mustBlockIfAbleBlockers: List<EntityId>,
+    val requirements: List<RulesBlockRequirement>,
+    val minimumSatisfiedRequirementCount: Int,
     val canDeclareZeroBlockers: Boolean,
 )
+
+sealed interface RulesBlockRequirement {
+    data class BlockSpecific(
+        val blockerId: EntityId,
+        val attackerId: EntityId,
+    ) : RulesBlockRequirement
+
+    data class BlockOneOf(
+        val blockerId: EntityId,
+        val attackerIds: List<EntityId>,
+    ) : RulesBlockRequirement
+
+    data class AttackerMustBeBlockedIfAble(
+        val attackerId: EntityId,
+    ) : RulesBlockRequirement
+
+    data class AttackerMustBeBlockedByAll(
+        val attackerId: EntityId,
+    ) : RulesBlockRequirement
+
+    data class BlockerMustBlockIfAble(
+        val blockerId: EntityId,
+    ) : RulesBlockRequirement
+}
 
 data class RulesCoBlockerRequirement(
     val anyOf: List<EntityId>,
@@ -157,24 +202,32 @@ The names are semantic rather than copied blindly from the legacy fields:
 - `maxAttackersByBlocker` has an explicit entry for every blocker candidate. A normal blocker is
   represented by `1`; `CanBlockAnyNumber` and the current supported unbounded shape use the
   Rules-defined unbounded value. Projected additional-block capacity is already resolved.
-- `blockerMustBlockOneOf` represents Lure/`MustBeBlockedByAll` obligations after resolving each
-  eligible blocker to concrete attacker IDs. The declaration must select the blocker and at least
-  one applicable attacker from its choice set.
-- `blockerMustBlockSpecific` represents concrete Provoke/`MustBlockSpecificAttacker` pins. A
-  selected pinned blocker must include its pinned attacker; the field is separate so a Lure choice
-  cannot accidentally satisfy a Provoke pin.
 - `minBlockersByAttacker` and `maxBlockersByAttacker` represent the resolved per-attacker
   declaration restrictions, including Menace and the supported printed/granted/conditional forms.
 - `globalMaxBlockers` represents the smallest active Rules global cap, or `null` when none applies.
 - `coBlockerRequirements` resolves each supported `CantBlockUnlessCoBlocker` filter to one or more
   concrete `anyOf` sets of other public blocker candidates. Every group is an all-of requirement;
   one selected member of each group is required.
-- `mustBeBlockedByAllAttackers` identifies attackers whose all-able-blocker requirement is active.
-- `mustBeBlockedIfAbleAttackers` identifies attackers participating in the Rules maximum-matching
-  requirement. The validator uses the published relation and published Provoke/Lure constraints
-  to reproduce the current matching semantics; it does not reduce this to independent booleans.
-- `mustBlockIfAbleBlockers` contains concrete projected `mustBlock` blockers that must be selected
-  when the published relation shows they are able to block.
+- `requirements` is the canonical list of all resolved, active 509.1c requirement instances. It
+  is a multiset represented as a list: identical entries may occur more than once, and every
+  occurrence contributes separately to requirement satisfaction. No source object, card ID, or
+  hidden provenance is exposed.
+- `RulesBlockRequirement.BlockSpecific` represents one concrete Provoke/
+  `MustBlockSpecificAttacker` requirement instance. It competes with all other instances and must
+  never be treated as an unconditional assignment pin by the public validator.
+- `RulesBlockRequirement.BlockOneOf` represents one resolved requirement that a concrete blocker
+  block at least one attacker from its concrete choice set, including a Lure-style resolution.
+- `RulesBlockRequirement.AttackerMustBeBlockedIfAble` represents one resolved attacker requirement
+  that participates in the 509.1c maximum-satisfaction calculation.
+- `RulesBlockRequirement.AttackerMustBeBlockedByAll` represents one resolved all-able-blocker
+  requirement. Multiple effects resolving to the same attacker remain multiple list entries.
+- `RulesBlockRequirement.BlockerMustBlockIfAble` represents one resolved projected must-block
+  requirement for a concrete blocker.
+- `minimumSatisfiedRequirementCount` is Rules-owned. It is the maximum number of the listed
+  requirement instances that can be satisfied simultaneously under this certificate's complete
+  509.1a–b restrictions and declaration-wide constraints, and is published as the minimum count
+  the submitted declaration must satisfy under 509.1c. It is not recomputed by Gym from a
+  deduplicated relation.
 - `canDeclareZeroBlockers` is the direct result of the Rules-owned 509.1a–c pre-cost evaluation of
   an empty declaration. It is not derived from the absence of a list or from
   `mandatoryBlockerAssignments.isEmpty()`.
@@ -191,11 +244,16 @@ The Rules certificate is complete only when all of the following hold:
 - every blocker key has a non-empty legal attacker list;
 - every attacker relation is duplicate-free and only names a current attacking entity;
 - max counts are non-negative and cover every blocker key;
-- all requirement references are concrete relation members;
+- every requirement instance is resolved, active, and references only concrete published relation
+  members where applicable;
+- `minimumSatisfiedRequirementCount` is non-negative, no greater than `requirements.size`, and is
+  the exact Rules-owned maximum satisfiable requirement-instance count;
 - co-blocker groups are non-empty, exclude the owning blocker, and contain only blocker keys;
 - per-attacker min/max bounds are non-negative and mutually consistent;
 - the global cap is null or non-negative;
-- the required/matching lists are duplicate-free and refer to published entities; and
+- restriction relations and groups are duplicate-free where duplicate restrictions are
+  semantically inert; the `requirements` list is explicitly **not** duplicate-free, and its
+  producer-owned canonical order preserves every repeated instance; and
 - the certificate can be consumed by the shared Rules-owned validator without consulting hidden
   state or re-evaluating a private filter.
 
@@ -206,9 +264,11 @@ never registered as a supported legal action.
 ## Zero-block declaration and blocking costs
 
 `canDeclareZeroBlockers` is calculated by the Rules-owned 509.1a–c evaluator for
-`DeclareBlockers(playerId, emptyMap())`. Blocking costs are intentionally excluded from that
-calculation. A domain-valid assignment may still require a later externally controlled blocking-
-cost decision before the declaration completes:
+`DeclareBlockers(playerId, emptyMap())`, using the complete restriction set and the full
+requirement-instance multiplicity. Blocking costs are intentionally excluded from that
+calculation. A blocker that could satisfy a requirement only after paying a blocking cost does
+not become a hard 509.1c assignment solely for that reason. A domain-valid assignment may still
+require a later externally controlled blocking-cost decision before the declaration completes:
 
 ```text
 BLOCKER_DECLARATION (509.1a-c)
@@ -256,17 +316,44 @@ data class BlockerDeclarationDomainV1(
     val version: Int = BLOCKER_DECLARATION_DOMAIN_VERSION,
     val blockerToAttackers: Map<EntityId, List<EntityId>>,
     val maxAttackersByBlocker: Map<EntityId, Int>,
-    val blockerMustBlockOneOf: Map<EntityId, List<EntityId>>,
-    val blockerMustBlockSpecific: Map<EntityId, List<EntityId>>,
     val minBlockersByAttacker: Map<EntityId, Int>,
     val maxBlockersByAttacker: Map<EntityId, Int>,
     val globalMaxBlockers: Int?,
     val coBlockerRequirements: Map<EntityId, List<BlockerCoBlockerRequirementV1>>,
-    val mustBeBlockedByAllAttackers: List<EntityId>,
-    val mustBeBlockedIfAbleAttackers: List<EntityId>,
-    val mustBlockIfAbleBlockers: List<EntityId>,
+    val requirements: List<BlockRequirementV1>,
+    val minimumSatisfiedRequirementCount: Int,
     val canDeclareZeroBlockers: Boolean,
 )
+
+@Serializable
+sealed interface BlockRequirementV1 {
+    @Serializable
+    data class BlockSpecific(
+        val blockerId: EntityId,
+        val attackerId: EntityId,
+    ) : BlockRequirementV1
+
+    @Serializable
+    data class BlockOneOf(
+        val blockerId: EntityId,
+        val attackerIds: List<EntityId>,
+    ) : BlockRequirementV1
+
+    @Serializable
+    data class AttackerMustBeBlockedIfAble(
+        val attackerId: EntityId,
+    ) : BlockRequirementV1
+
+    @Serializable
+    data class AttackerMustBeBlockedByAll(
+        val attackerId: EntityId,
+    ) : BlockRequirementV1
+
+    @Serializable
+    data class BlockerMustBlockIfAble(
+        val blockerId: EntityId,
+    ) : BlockRequirementV1
+}
 
 @Serializable
 data class BlockerCoBlockerRequirementV1(
@@ -286,7 +373,9 @@ The pure mapper:
 3. checks every reference with the existing perspective-safe
    `Visibility.isEntityReferenceAddressableTo` authority;
 4. applies the already-proven producer ordering key; and
-5. returns the complete V1 DTO.
+5. preserves every requirement-list occurrence, including identical occurrences, while applying
+   the producer-owned canonical order; and
+6. returns the complete V1 DTO.
 
 It never filters hidden IDs into a smaller domain, reconstructs a card predicate, exposes raw
 engine state, or silently drops an unaddressable relation. A failed projection returns the stable
@@ -317,15 +406,22 @@ complete payload shape and membership, including:
 - each per-blocker max count;
 - minimum and maximum blockers per selected attacker;
 - global blocker cap;
-- concrete mandatory one-of and specific assignments;
+- every resolved requirement instance, including duplicate instances;
+- the Rules-owned `minimumSatisfiedRequirementCount` threshold;
 - every co-blocker all-of group;
 - Lure all-able coverage;
-- `mustBeBlockedIfAble` maximum matching using the certificate's resolved relation and pins;
-- projected must-block blockers; and
+- `mustBeBlockedIfAble` satisfaction using the certificate's resolved requirement instances;
+- Provoke/`MustBlockSpecificAttacker` as a competing requirement, never as an implicit hard pin;
+- projected must-block requirement instances; and
 - empty declaration legality from `canDeclareZeroBlockers`.
 
 Malformed certificates and unknown future DTO versions are rejected. The validator must not call a
 Gym policy, read hidden state, or choose missing assignments.
+
+The strict pre-validator delegates requirement satisfaction and restriction checks to the shared
+Rules-owned evaluator. It does not independently reconstruct a maximum matching or reinterpret
+Provoke, Lure, Menace, or any other Magic mechanic. The evaluator counts duplicate requirement
+instances separately and compares the result with the published threshold.
 
 `GameGymEnv.step(actionId, payload)` invokes this seam after required-field/decoding checks and
 before `GameEnvironment.stepFromCandidateStrict`. The existing current-candidate/freshness guard
@@ -388,14 +484,20 @@ The RED matrix includes:
 - a supported global blocker cap;
 - a supported `CantBlockUnlessCoBlocker` relation;
 - `MustBeBlockedIfAble` matching and conflicting requirements;
+- concurrent requirement instances whose resolved relations overlap, including duplicate
+  `BlockSpecific` instances plus a competing requirement under a per-blocker cap;
+- competing Provoke/`BlockSpecific` and other requirements, proving Provoke is not a hard-pin
+  shortcut;
 - projected must-block;
 - an explicit legal no-block declaration;
 - blocking-cost interaction; and
 - privacy-equivalent paired states.
 
 For small characterized fixtures only, test code may enumerate candidate declarations and compare
-the shared Rules certificate predicate with `BlockPhaseManager`'s 509.1a–c result. This is a
-differential test, not a production full-enumeration strategy.
+the shared Rules certificate predicate with `BlockPhaseManager`'s 509.1a–c result. The comparison
+must be per requirement instance, must preserve duplicate list entries, and must include the
+overlapping/multiplicity and competing-Provoke cases above. This is a differential test, not a
+production full-enumeration strategy.
 
 ## Execution and regression gates
 
@@ -452,4 +554,3 @@ heuristic assignment, B1 performance, B2 trajectories, or unrelated combat seman
 The design does not claim global A5 acceptance. It establishes only the issue #102 implementation,
 hosted-CI, code-review, and final-acceptance statuses after their respective gates close. Final
 acceptance cannot be reported YES before merge and independent final review.
-
