@@ -76,6 +76,7 @@ private fun legalAction(): LegalAction = LegalAction(
     description = "attack",
     attackDeclarationDomain = RulesAttackDeclarationDomain(
         attackerOrder = listOf(attacker),
+        defenderOrder = listOf(defender),
         attackerToDefenders = mapOf(attacker to listOf(defender)),
         mandatoryAttackers = emptyList(),
         canDeclareZeroAttackers = true,

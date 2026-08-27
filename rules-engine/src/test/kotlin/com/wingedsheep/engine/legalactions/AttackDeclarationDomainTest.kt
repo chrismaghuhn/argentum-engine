@@ -288,6 +288,7 @@ private fun declaration(
 private fun domain(
     relation: Map<EntityId, List<EntityId>>,
     attackerOrder: List<EntityId> = relation.keys.toList(),
+    defenderOrder: List<EntityId> = relation.values.flatten().distinct(),
     mandatoryAttackers: List<EntityId> = emptyList(),
     canDeclareZeroAttackers: Boolean = true,
     maxAttackers: Int? = null,
@@ -296,6 +297,7 @@ private fun domain(
     nonBanding: Map<EntityId, List<EntityId>> = emptyMap(),
 ): RulesAttackDeclarationDomain = RulesAttackDeclarationDomain(
     attackerOrder = attackerOrder,
+    defenderOrder = defenderOrder,
     attackerToDefenders = relation,
     mandatoryAttackers = mandatoryAttackers,
         canDeclareZeroAttackers = canDeclareZeroAttackers,

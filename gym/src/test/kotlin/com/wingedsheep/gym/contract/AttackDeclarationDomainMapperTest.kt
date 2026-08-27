@@ -41,6 +41,7 @@ class AttackDeclarationDomainMapperTest : FunSpec({
         val action = action(
             RulesAttackDeclarationDomain(
                 attackerOrder = listOf(attackerB, attackerA),
+                defenderOrder = listOf(defenderTwo, defenderOne),
                 attackerToDefenders = linkedMapOf(
                     attackerB to listOf(defenderTwo, defenderOne),
                     attackerA to listOf(defenderOne),
@@ -78,6 +79,7 @@ class AttackDeclarationDomainMapperTest : FunSpec({
         val action = action(
             RulesAttackDeclarationDomain(
                 attackerOrder = listOf(attackerB, attackerA),
+                defenderOrder = listOf(defenderTwo, defenderOne),
                 attackerToDefenders = linkedMapOf(
                     attackerB to listOf(defenderTwo, defenderOne),
                     attackerA to listOf(defenderOne),
@@ -102,6 +104,39 @@ class AttackDeclarationDomainMapperTest : FunSpec({
         domain!!.attackerToDefenders.keys.toList() shouldBe listOf(attackerB, attackerA)
         domain.attackerToDefenders.getValue(attackerB) shouldBe listOf(defenderTwo, defenderOne)
         domain.mandatoryAttackers shouldBe listOf(attackerB, attackerA)
+    }
+
+    test("mapper preserves the certificate defender order when filtered lists hide its prefix") {
+        val action = action(
+            RulesAttackDeclarationDomain(
+                attackerOrder = listOf(attackerA, attackerB),
+                defenderOrder = listOf(defenderOne, defenderTwo),
+                attackerToDefenders = linkedMapOf(
+                    attackerA to listOf(defenderTwo),
+                    attackerB to listOf(defenderOne, defenderTwo),
+                ),
+                mandatoryAttackers = emptyList(),
+                canDeclareZeroAttackers = true,
+                maxAttackers = 2,
+                coAttackerRequirements = emptyMap(),
+                bandConstraints = RulesAttackBandConstraints(
+                    bandingAttackersByDefender = emptyMap(),
+                    nonBandingAttackersByDefender = linkedMapOf(
+                        defenderTwo to listOf(attackerA, attackerB),
+                        defenderOne to listOf(attackerB),
+                    ),
+                ),
+            ),
+        )
+
+        val mapped = AttackDeclarationDomainMapper.map(action) { true } as
+            AttackDeclarationDomainMapper.Result.Supported
+        val domain = mapped.domain
+        domain shouldNotBe null
+        domain!!.attackerToDefenders[attackerA] shouldBe listOf(defenderTwo)
+        domain.attackerToDefenders[attackerB] shouldBe listOf(defenderOne, defenderTwo)
+        domain.bandConstraints.nonBandingAttackersByDefender.keys.toList() shouldBe
+            listOf(defenderOne, defenderTwo)
     }
 
     test("rejects every hidden reference family without filtering it") {
@@ -217,6 +252,7 @@ private fun action(domain: RulesAttackDeclarationDomain): LegalAction = LegalAct
 
 private fun completeDomain(): RulesAttackDeclarationDomain = RulesAttackDeclarationDomain(
     attackerOrder = listOf(attackerA, attackerB),
+    defenderOrder = listOf(defenderOne, defenderTwo),
     attackerToDefenders = linkedMapOf(
         attackerA to listOf(defenderOne),
         attackerB to listOf(defenderOne, defenderTwo),

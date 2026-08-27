@@ -456,6 +456,7 @@ class ObservationPrivacyTest : FunSpec({
         val opponent = base.playerIds[1]
         val domain = RulesAttackDeclarationDomain(
             attackerOrder = listOf(perspective),
+            defenderOrder = listOf(opponent),
             attackerToDefenders = linkedMapOf(perspective to listOf(opponent)),
             mandatoryAttackers = emptyList(),
             canDeclareZeroAttackers = true,

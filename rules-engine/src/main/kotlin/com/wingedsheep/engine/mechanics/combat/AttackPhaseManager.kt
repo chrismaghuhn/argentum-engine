@@ -915,6 +915,10 @@ internal class AttackPhaseManager(
             }
             .filterValues { it.isNotEmpty() }
         val attackerOrder = candidateAttackers.filter { it in relation }
+        val defendersInRelation = attackerOrder
+            .flatMap { attackerId -> relation.getValue(attackerId) }
+            .toSet()
+        val defenderOrder = candidateDefenders.filter { it in defendersInRelation }
 
         val mandatoryCandidates = getMandatoryAttackers(state, attackingPlayer).toSet()
         if (mandatoryCandidates.any { it !in relation }) {
@@ -958,6 +962,7 @@ internal class AttackPhaseManager(
 
         val domain = RulesAttackDeclarationDomain(
             attackerOrder = attackerOrder,
+            defenderOrder = defenderOrder,
             attackerToDefenders = relation,
             mandatoryAttackers = mandatoryAttackers,
             canDeclareZeroAttackers = validateDeclarationBeforeTax(

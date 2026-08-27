@@ -72,6 +72,13 @@ comparisons. It never defines canonicality using `EntityId.value`. The registere
 remains the only input to the pure strict-domain validator; stateful Rules validation still runs
 after the trusted boundary.
 
+The certificate also retains the producer's global `defenderOrder`, reduced to defenders that occur
+in at least one relation list. The validator uses this retained sequence to verify every filtered
+relation list as an ordered subsequence; it never reconstructs the sequence from first occurrences.
+The mapper uses the same certificate authority for ordered defender-key containers, while V2 does
+not publish a separate `defenderOrder` field because each per-attacker defender list already carries
+the complete policy-facing choice sequence.
+
 ## Mixed defender order
 
 Rules constructs one mixed defender sequence for the current attack declaration:
@@ -118,7 +125,7 @@ attacker and defender sequences:
 - relation defender lists are copied unchanged;
 - mandatory, co-attacker, and band lists are copied unchanged;
 - map keys for the band partitions are emitted in the defender order derived from the published
-  relation, never from source-map iteration.
+  Rules certificate, never from source-map iteration.
 
 The mapper does not choose or sort attackers, defenders, requirements, mandatory members, or band
 members.

@@ -71,6 +71,22 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
         assertEquivalent(asymmetricDefenderFixture())
     }
 
+    test("preserves global defender order when an early attacker sees only the later defender") {
+        val fixture = asymmetricDefenderFixture(islandDefenderIndex = 2)
+        val result = fixture.manager.getAttackDeclarationDomain(fixture.state, fixture.player)
+
+        (result is RulesAttackDeclarationDomainResult.Supported) shouldBe true
+        val domain = (result as RulesAttackDeclarationDomainResult.Supported).domain
+        val earlyDefender = fixture.state.activePlayers[1]
+        val lateDefender = fixture.state.activePlayers[2]
+
+        domain.defenderOrder shouldBe listOf(earlyDefender, lateDefender)
+        domain.attackerToDefenders.getValue(fixture.attackerIds[0]) shouldBe listOf(lateDefender)
+        domain.attackerToDefenders.getValue(fixture.attackerIds[1]) shouldBe
+            listOf(earlyDefender, lateDefender)
+        AttackDeclarationDomainValidator.isStructurallyValid(domain) shouldBe true
+    }
+
     test("matches Rules for co-attacker requirements and a global cap") {
         assertEquivalent(coAttackerAndCapFixture())
     }
@@ -398,10 +414,10 @@ private fun orderedBandLists(
     }
 }
 
-private fun asymmetricDefenderFixture(): Fixture {
+private fun asymmetricDefenderFixture(islandDefenderIndex: Int = 1): Fixture {
     val (driver, players) = newDriver(playerCount = 3)
     val active = players[0]
-    val islandDefender = players[1]
+    val islandDefender = players[islandDefenderIndex]
     driver.putLandOnBattlefield(islandDefender, "Island")
     val dandan = driver.putCreatureOnBattlefield(active, "Dandân")
     val courser = driver.putCreatureOnBattlefield(active, "Centaur Courser")

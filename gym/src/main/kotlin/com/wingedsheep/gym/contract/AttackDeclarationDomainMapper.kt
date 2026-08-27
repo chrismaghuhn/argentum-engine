@@ -66,9 +66,7 @@ object AttackDeclarationDomainMapper {
     }
 
     private fun RulesAttackDeclarationDomain.toWireDomain(): AttackDeclarationDomainV2 {
-        val defenderOrder = attackerOrder
-            .flatMap { attackerId -> attackerToDefenders.getValue(attackerId) }
-            .distinct()
+        val defenderOrder = this.defenderOrder
         val relation = linkedMapOf<EntityId, List<EntityId>>()
         attackerOrder.forEach { attackerId ->
             relation[attackerId] = attackerToDefenders.getValue(attackerId).toList()

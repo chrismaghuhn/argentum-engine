@@ -57,6 +57,7 @@ class AttackDeclarationDomainContractTest : FunSpec({
                     description = "Declare attackers",
                     attackDeclarationDomain = RulesAttackDeclarationDomain(
                         attackerOrder = emptyList(),
+                        defenderOrder = emptyList(),
                         attackerToDefenders = emptyMap(),
                         mandatoryAttackers = emptyList(),
                         canDeclareZeroAttackers = true,

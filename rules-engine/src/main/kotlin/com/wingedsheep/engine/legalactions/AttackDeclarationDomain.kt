@@ -11,6 +11,8 @@ import com.wingedsheep.sdk.model.EntityId
  */
 data class RulesAttackDeclarationDomain(
     val attackerOrder: List<EntityId>,
+    /** Producer-owned defender order retained for exact certificate validation/projection. */
+    val defenderOrder: List<EntityId>,
     val attackerToDefenders: Map<EntityId, List<EntityId>>,
     val mandatoryAttackers: List<EntityId>,
     val canDeclareZeroAttackers: Boolean,
@@ -191,7 +193,11 @@ object AttackDeclarationDomainValidator {
             relation.keys != attackerOrder.toSet()
         ) return false
 
-        val defenderOrder = buildDefenderOrder(attackerOrder, relation) ?: return false
+        val defenderOrder = domain.defenderOrder
+        val relationDefenders = relation.values.flatten().toSet()
+        if (defenderOrder.size != defenderOrder.distinct().size ||
+            defenderOrder.toSet() != relationDefenders
+        ) return false
         if (attackerOrder.any { attackerId ->
                 val defenders = relation[attackerId] ?: return@any true
                 defenders.isEmpty() || !defenders.isOrderedSubsequenceOf(defenderOrder)
@@ -254,20 +260,6 @@ object AttackDeclarationDomainValidator {
         return attackers.all { attacker ->
             relation[attacker]?.contains(defender) == true
         }
-    }
-
-    private fun buildDefenderOrder(
-        attackerOrder: List<EntityId>,
-        relation: Map<EntityId, List<EntityId>>,
-    ): List<EntityId>? {
-        val defenderOrder = mutableListOf<EntityId>()
-        for (attacker in attackerOrder) {
-            val defenders = relation[attacker] ?: return null
-            for (defender in defenders) {
-                if (defender !in defenderOrder) defenderOrder += defender
-            }
-        }
-        return defenderOrder
     }
 
     private fun List<EntityId>.isOrderedSubsequenceOf(order: List<EntityId>): Boolean {
