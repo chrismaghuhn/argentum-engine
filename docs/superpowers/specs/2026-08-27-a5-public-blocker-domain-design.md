@@ -225,12 +225,18 @@ The names are semantic rather than copied blindly from the legacy fields:
   requirement for a concrete blocker.
 - `minimumSatisfiedRequirementCount` is Rules-owned. It is the maximum number of the listed
   requirement instances that can be satisfied simultaneously under this certificate's complete
-  509.1a–b restrictions and declaration-wide constraints, and is published as the minimum count
-  the submitted declaration must satisfy under 509.1c. It is not recomputed by Gym from a
-  deduplicated relation.
+  509.1a–c restrictions and declaration-wide constraints, and is published as the minimum count
+  the submitted declaration must satisfy under 509.1c. A relation that would require a blocking
+  cost is excluded from this maximum because 509.1c does not require paying that cost merely to
+  obey more requirements. It is not recomputed by Gym from a deduplicated relation.
 - `canDeclareZeroBlockers` is the direct result of the Rules-owned 509.1a–c pre-cost evaluation of
   an empty declaration. It is not derived from the absence of a list or from
   `mandatoryBlockerAssignments.isEmpty()`.
+
+The public `blockerToAttackers` relation remains complete for voluntary choices, including
+assignments that lead to the later 509.1d–f blocking-cost continuation. The cost-free relation
+used by Rules for the requirement threshold is certificate-internal and is not projected to the
+public V1 DTO.
 
 The certificate builder is responsible for resolving all filters, conditions, projections,
 conditional abilities, team/defender relationships, and matching inputs needed by these fields.

@@ -8,6 +8,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
+import com.wingedsheep.sdk.core.Supertype
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.scripting.CantBeBlockedBy
 import com.wingedsheep.sdk.scripting.CantBeBlockedExceptBy
@@ -142,7 +143,7 @@ class LandwalkRule : BlockEvasionRule {
             val controller = ctx.projected.getController(entityId)
             controller == ctx.blockingPlayer &&
                 ctx.projected.hasType(entityId, "LAND") &&
-                !ctx.projected.getSubtypes(entityId).any { it in BASIC_LAND_SUBTYPES }
+                Supertype.BASIC.name !in ctx.projected.getSupertypes(entityId)
         }
     }
 
@@ -153,16 +154,6 @@ class LandwalkRule : BlockEvasionRule {
                 ctx.projected.hasType(entityId, "LAND") &&
                 ctx.projected.hasSubtype(entityId, landSubtype.value)
         }
-    }
-
-    private companion object {
-        val BASIC_LAND_SUBTYPES = setOf(
-            Subtype.FOREST.value,
-            Subtype.SWAMP.value,
-            Subtype.ISLAND.value,
-            Subtype.MOUNTAIN.value,
-            Subtype.PLAINS.value,
-        )
     }
 }
 

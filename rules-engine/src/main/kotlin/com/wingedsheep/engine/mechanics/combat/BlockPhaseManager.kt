@@ -166,6 +166,14 @@ internal class BlockPhaseManager(
                 BlockerDeclarationDomainUnsupportedReason.CANONICAL_ORDER_UNAVAILABLE,
             )
         val relation = blockerOrder.associateWith { relationByBlocker.getValue(it) }
+        val projected = state.projectedState
+        val requirementRelation = blockerOrder.associateWith { blockerId ->
+            if (CombatTaxes.blockTax(state, cardRegistry, setOf(blockerId), projected) == 0) {
+                relation.getValue(blockerId)
+            } else {
+                emptyList()
+            }
+        }
 
         val maxAttackersByBlocker = blockerOrder.associateWith { blockerId ->
             maxAttackersForBlocker(state, blockerId, relation.getValue(blockerId).size)
@@ -218,6 +226,7 @@ internal class BlockPhaseManager(
             requirements = requirements,
             minimumSatisfiedRequirementCount = 0,
             canDeclareZeroBlockers = false,
+            requirementBlockerToAttackers = requirementRelation,
         )
         val threshold = BlockerDeclarationDomainValidator.maximumSatisfiedRequirementCount(
             certificateWithoutThreshold,
@@ -230,7 +239,7 @@ internal class BlockPhaseManager(
                 BlockerDeclarationDomainValidator.satisfiesDeclarationConstraints(
                     certificateWithoutThreshold,
                     emptyMap(),
-                ) && BlockerDeclarationDomainValidator.satisfiedRequirementCount(
+                ) && BlockerDeclarationDomainValidator.satisfiedRequirementCountWithoutBlockingCosts(
                     certificateWithoutThreshold,
                     emptyMap(),
                 ) >= threshold,

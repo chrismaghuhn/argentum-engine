@@ -8,6 +8,7 @@ import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.model.EntityId
@@ -104,6 +105,10 @@ object CombatTaxes {
         var totalTax = 0
         for (entityId in state.getBattlefield()) {
             val container = state.getEntity(entityId) ?: continue
+            // CR 708.2a: a face-down permanent has no printed abilities. In particular, a
+            // hidden opponent permanent must not make the public blocker domain depend on its
+            // underlying BlockTax definition.
+            if (container.has<FaceDownComponent>()) continue
             val cardComponent = container.get<CardComponent>() ?: continue
             val cardDef = cardRegistry.getCard(cardComponent.cardDefinitionId) ?: continue
             for (ability in cardDef.staticAbilities) {

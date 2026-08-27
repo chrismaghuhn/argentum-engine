@@ -87,6 +87,32 @@ class BlockerDeclarationDomainTest : FunSpec({
         ) shouldBe BlockerDeclarationValidationResult.Accepted
     }
 
+    test("a blocking-cost edge does not satisfy the 509.1c threshold") {
+        val domain = domain(
+            blockers = listOf(blockerA),
+            attackers = listOf(attackerA),
+            relation = mapOf(blockerA to listOf(attackerA)),
+            requirementRelation = mapOf(blockerA to emptyList()),
+            requirements = listOf(
+                RulesBlockRequirement.BlockSpecific(blockerA, attackerA),
+            ),
+            minimumSatisfiedRequirementCount = 0,
+            canDeclareZeroBlockers = true,
+        )
+
+        BlockerDeclarationDomainValidator.maximumSatisfiedRequirementCount(domain) shouldBe 0
+        BlockerDeclarationDomainValidator.validate(
+            domain,
+            declaration(),
+        ) shouldBe BlockerDeclarationValidationResult.Accepted
+        // The same relation remains a voluntary declaration and is accepted before the separate
+        // blocking-cost continuation is entered.
+        BlockerDeclarationDomainValidator.validate(
+            domain,
+            declaration(blockerA to listOf(attackerA)),
+        ) shouldBe BlockerDeclarationValidationResult.Accepted
+    }
+
     test("enforces attacker bounds, global caps, and co-blocker restrictions") {
         val domain = domain(
             blockers = listOf(blockerA, blockerB),
@@ -152,7 +178,7 @@ class BlockerDeclarationDomainTest : FunSpec({
         ) shouldBe rejected(BlockerDeclarationRejection.MIN_BLOCKERS_UNSATISFIED)
     }
 
-    test("must-be-blocked-if-able is satisfied when no blocker is able") {
+    test("must-be-blocked-if-able contributes no requirement when no blocker is able") {
         val domain = domain(
             blockers = emptyList(),
             attackers = listOf(attackerA),
@@ -160,11 +186,11 @@ class BlockerDeclarationDomainTest : FunSpec({
             requirements = listOf(
                 RulesBlockRequirement.AttackerMustBeBlockedIfAble(attackerA),
             ),
-            minimumSatisfiedRequirementCount = 1,
+            minimumSatisfiedRequirementCount = 0,
             canDeclareZeroBlockers = true,
         )
 
-        BlockerDeclarationDomainValidator.maximumSatisfiedRequirementCount(domain) shouldBe 1
+        BlockerDeclarationDomainValidator.maximumSatisfiedRequirementCount(domain) shouldBe 0
         BlockerDeclarationDomainValidator.validate(domain, declaration()) shouldBe
             BlockerDeclarationValidationResult.Accepted
     }
@@ -191,6 +217,7 @@ private fun domain(
     globalMaxBlockers: Int? = null,
     coBlockerRequirements: Map<EntityId, List<RulesCoBlockerRequirement>> = emptyMap(),
     requirements: List<RulesBlockRequirement> = emptyList(),
+    requirementRelation: Map<EntityId, List<EntityId>> = relation,
     minimumSatisfiedRequirementCount: Int = 0,
     canDeclareZeroBlockers: Boolean = true,
 ): RulesBlockerDeclarationDomain = RulesBlockerDeclarationDomain(
@@ -205,6 +232,7 @@ private fun domain(
     requirements = requirements,
     minimumSatisfiedRequirementCount = minimumSatisfiedRequirementCount,
     canDeclareZeroBlockers = canDeclareZeroBlockers,
+    requirementBlockerToAttackers = blockers.associateWith { requirementRelation.getValue(it) },
 )
 
 private fun rejected(reason: BlockerDeclarationRejection): BlockerDeclarationValidationResult =

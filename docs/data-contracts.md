@@ -854,12 +854,19 @@ The fields are:
   resolved into blocker-scoped `BlockOneOf` instances, so multiple eligible blockers and repeated
   effects remain explicit rather than collapsing into one attacker relation.
 - `minimumSatisfiedRequirementCount`: the exact Rules-owned maximum number of those requirement
-  instances that can be satisfied simultaneously without violating the published 509.1a-b
-  restrictions. A submitted declaration must satisfy at least this count. Gym does not compute a
-  deduplicated matching or interpret Provoke as an unconditional pin.
+  instances that can be satisfied simultaneously without violating the published 509.1a-c
+  restrictions and requirements. Relations that would require a blocking cost are not included
+  in this maximum: CR 509.1c does not require paying that cost merely to obey more requirements.
+  A submitted declaration must satisfy at least this count. Gym does not compute a deduplicated
+  matching or interpret Provoke as an unconditional pin.
 - `canDeclareZeroBlockers`: the direct Rules-owned result for the empty declaration under the
   complete 509.1a-c certificate. It is explicit and is not inferred from an empty candidate list
   or from the absence of a legacy mandatory-assignment hint.
+
+`blockerToAttackers` still contains every pairwise legal assignment, including assignments that
+will require a later blocking-cost decision. The cost-free relation used internally by Rules to
+evaluate the 509.1c maximum is not part of `BlockerDeclarationDomainV1`; blocking costs remain a
+separate 509.1d-f continuation after a selected assignment is accepted.
 
 The defender constructs the existing semantic carrier directly from this domain:
 

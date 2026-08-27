@@ -33,6 +33,13 @@ data class RulesBlockerDeclarationDomain(
     val minimumSatisfiedRequirementCount: Int,
     /** Direct result of evaluating the empty declaration against this certificate. */
     val canDeclareZeroBlockers: Boolean,
+    /**
+     * Rules-only relation used while evaluating CR 509.1c requirements. A relation that would
+     * require a blocking cost remains in [blockerToAttackers] as a voluntary public choice, but
+     * is omitted here because the defender is not required to pay that cost merely to satisfy
+     * more requirements. This certificate detail is deliberately not projected to Gym.
+     */
+    internal val requirementBlockerToAttackers: Map<EntityId, List<EntityId>> = blockerToAttackers,
 )
 
 data class RulesCoBlockerRequirement(
@@ -233,7 +240,11 @@ object BlockerDeclarationDomainValidator {
         return BlockerDeclarationValidationResult.Accepted
     }
 
-    /** Return the exact maximum number of requirement instances satisfiable under 509.1a-b. */
+    /**
+     * Return the exact maximum number of requirement instances satisfiable under 509.1a-c.
+     * Relations that require a blocking cost are excluded from this maximum because CR 509.1c
+     * does not require the defender to pay that cost merely to obey more requirements.
+     */
     fun maximumSatisfiedRequirementCount(domain: RulesBlockerDeclarationDomain): Int? {
         if (!isCanonicalCertificate(domain, allowThresholdMismatch = true)) return null
 
@@ -241,7 +252,11 @@ object BlockerDeclarationDomainValidator {
         // Keep the exact search bounded without materializing the power set of each blocker. A
         // large CanBlockAnyNumber board must fail closed once the exact certificate search is
         // beyond the supported budget; it must not allocate millions of intermediate subsets.
-        if (blockers.any { domain.blockerToAttackers.getValue(it).size > MAX_EXACT_CANDIDATES_PER_BLOCKER }) {
+        if (blockers.any {
+                domain.requirementBlockerToAttackers.getValue(it).size >
+                    MAX_EXACT_CANDIDATES_PER_BLOCKER
+            }
+        ) {
             return null
         }
 
@@ -255,12 +270,12 @@ object BlockerDeclarationDomainValidator {
             }
             if (index == blockers.size) {
                 if (!satisfiesDeclarationConstraints(domain, selected)) return
-                best = maxOf(best, satisfiedRequirementCount(domain, selected))
+                best = maxOf(best, satisfiedRequirementCountWithoutBlockingCosts(domain, selected))
                 return
             }
 
             val blockerId = blockers[index]
-            val candidates = domain.blockerToAttackers.getValue(blockerId)
+            val candidates = domain.requirementBlockerToAttackers.getValue(blockerId)
             val cap = minOf(domain.maxAttackersByBlocker.getValue(blockerId), candidates.size)
             val assignment = ArrayList<EntityId>(cap)
 
@@ -305,26 +320,54 @@ object BlockerDeclarationDomainValidator {
     internal fun satisfiedRequirementCount(
         domain: RulesBlockerDeclarationDomain,
         blockers: Map<EntityId, List<EntityId>>,
+    ): Int = satisfiedRequirementCount(domain, blockers, domain.blockerToAttackers)
+
+    /**
+     * Count requirements for the exact 509.1c maximum. A blocking-cost relation is not an able
+     * relation for this calculation, but remains available to [satisfiedRequirementCount] when a
+     * submitted declaration voluntarily chooses and later pays for that block.
+     */
+    internal fun satisfiedRequirementCountWithoutBlockingCosts(
+        domain: RulesBlockerDeclarationDomain,
+        blockers: Map<EntityId, List<EntityId>>,
+    ): Int = satisfiedRequirementCount(domain, blockers, domain.requirementBlockerToAttackers)
+
+    private fun satisfiedRequirementCount(
+        domain: RulesBlockerDeclarationDomain,
+        blockers: Map<EntityId, List<EntityId>>,
+        abilityRelation: Map<EntityId, List<EntityId>>,
     ): Int = domain.requirements.count { requirement ->
         when (requirement) {
             is RulesBlockRequirement.BlockSpecific ->
-                blockers[requirement.blockerId].orEmpty().contains(requirement.attackerId)
+                requirement.attackerId in blockers[requirement.blockerId].orEmpty()
 
             is RulesBlockRequirement.BlockOneOf ->
-                blockers[requirement.blockerId].orEmpty().any { it in requirement.attackerIds }
+                blockers[requirement.blockerId].orEmpty().any {
+                    it in requirement.attackerIds
+                }
 
             is RulesBlockRequirement.AttackerMustBeBlockedIfAble ->
-                domain.blockerOrder.none {
-                    requirement.attackerId in domain.blockerToAttackers.getValue(it)
-                } || blockers.values.any { requirement.attackerId in it }
+                domain.blockerOrder
+                    .filter { blockerId ->
+                        requirement.attackerId in abilityRelation.getValue(blockerId)
+                    }
+                    .let { ableBlockers ->
+                        ableBlockers.isNotEmpty() && ableBlockers.any { blockerId ->
+                            requirement.attackerId in blockers[blockerId].orEmpty()
+                        }
+                    }
 
             is RulesBlockRequirement.AttackerMustBeBlockedByAll ->
                 domain.blockerOrder
-                    .filter { requirement.attackerId in domain.blockerToAttackers.getValue(it) }
-                    .all { requirement.attackerId in blockers[it].orEmpty() }
+                    .filter { requirement.attackerId in abilityRelation.getValue(it) }
+                    .let { ableBlockers ->
+                        ableBlockers.isNotEmpty() &&
+                            ableBlockers.all { requirement.attackerId in blockers[it].orEmpty() }
+                    }
 
             is RulesBlockRequirement.BlockerMustBlockIfAble ->
-                !blockers[requirement.blockerId].isNullOrEmpty()
+                abilityRelation.getValue(requirement.blockerId).isNotEmpty() &&
+                    !blockers[requirement.blockerId].isNullOrEmpty()
         }
     }
 
@@ -372,6 +415,7 @@ object BlockerDeclarationDomainValidator {
         val attackers = domain.attackerOrder
         if (blockers.size != blockers.toSet().size || attackers.size != attackers.toSet().size) return false
         if (domain.blockerToAttackers.keys != blockers.toSet()) return false
+        if (domain.requirementBlockerToAttackers.keys != blockers.toSet()) return false
         if (domain.maxAttackersByBlocker.keys != blockers.toSet()) return false
         if (domain.maxAttackersByBlocker.values.any { it < 0 }) return false
         if (domain.minBlockersByAttacker.keys.any { it !in attackers } ||
@@ -391,6 +435,16 @@ object BlockerDeclarationDomainValidator {
         if (domain.blockerToAttackers.any { (blockerId, candidateAttackers) ->
                 candidateAttackers.isEmpty() ||
                     candidateAttackers.size != candidateAttackers.toSet().size ||
+                    candidateAttackers.any { it !in attackerRanks } ||
+                    candidateAttackers.zipWithNext().any { (left, right) ->
+                        attackerRanks.getValue(left) >= attackerRanks.getValue(right)
+                    } ||
+                    blockerRanks[blockerId] == null
+            }
+        ) return false
+        if (domain.requirementBlockerToAttackers.any { (blockerId, candidateAttackers) ->
+                candidateAttackers.size != candidateAttackers.toSet().size ||
+                    candidateAttackers.any { it !in domain.blockerToAttackers.getValue(blockerId) } ||
                     candidateAttackers.any { it !in attackerRanks } ||
                     candidateAttackers.zipWithNext().any { (left, right) ->
                         attackerRanks.getValue(left) >= attackerRanks.getValue(right)
@@ -452,7 +506,8 @@ object BlockerDeclarationDomainValidator {
             val empty = emptyMap<EntityId, List<EntityId>>()
             if (domain.canDeclareZeroBlockers !=
                 (satisfiesDeclarationConstraints(domain, empty) &&
-                    satisfiedRequirementCount(domain, empty) >= domain.minimumSatisfiedRequirementCount)
+                    satisfiedRequirementCountWithoutBlockingCosts(domain, empty) >=
+                        domain.minimumSatisfiedRequirementCount)
             ) return false
         }
 

@@ -1,11 +1,23 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.mechanics.layers.Layer
+import com.wingedsheep.engine.mechanics.layers.SerializableModification
+import com.wingedsheep.engine.mechanics.layers.addFloatingEffect
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.sdk.core.CardType
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.TypeLine
+import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.BlockTax
+import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -17,6 +29,14 @@ import io.kotest.matchers.shouldBe
  * blocker constraint from that hidden definition.
  */
 class BlockerDomainPrivacyCharacterizationTest : FunSpec({
+
+    val HiddenBlockTaxSource = CardDefinition(
+        name = "Hidden Block Tax Source",
+        manaCost = ManaCost.ZERO,
+        typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+        oracleText = "Creatures can't block unless their controller pays {2}.",
+        script = CardScript(staticAbilities = listOf(BlockTax(amountPerBlocker = DynamicAmount.Fixed(2)))),
+    )
 
     test("a face-down opponent permanent cannot change the public global blocker domain") {
         val driver = GameTestDriver()
@@ -81,6 +101,44 @@ class BlockerDomainPrivacyCharacterizationTest : FunSpec({
         restrictedFaceDownDomain.attackerOrder shouldBe neutralFaceDownDomain.attackerOrder
         restrictedFaceDownDomain.blockerOrder shouldBe neutralFaceDownDomain.blockerOrder
         restrictedFaceDownDomain.blockerToAttackers shouldBe neutralFaceDownDomain.blockerToAttackers
+    }
+
+    test("a face-down opponent permanent cannot change the blocker requirement threshold") {
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + HiddenBlockTaxSource)
+        driver.initMirrorMatch(Deck.of("Forest" to 40))
+
+        val attackerPlayer = driver.activePlayer!!
+        val defendingPlayer = driver.getOpponent(attackerPlayer)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val attacker = driver.putCreatureOnBattlefield(attackerPlayer, "Grizzly Bears")
+        driver.putCreatureOnBattlefield(defendingPlayer, "Grizzly Bears")
+        driver.removeSummoningSickness(attacker)
+        val hiddenPermanent = driver.putPermanentOnBattlefield(attackerPlayer, "Forest")
+        driver.passPriorityUntil(Step.DECLARE_ATTACKERS)
+        driver.declareAttackers(attackerPlayer, listOf(attacker), defendingPlayer).isSuccess shouldBe true
+        driver.passPriorityUntil(Step.DECLARE_BLOCKERS)
+
+        driver.replaceState(
+            driver.state
+                .updateEntity(hiddenPermanent) { it.with(FaceDownComponent) }
+                .addFloatingEffect(
+                    layer = Layer.ABILITY,
+                    modification = SerializableModification.MustBeBlockedIfAble,
+                    affectedEntities = setOf(attacker),
+                    duration = Duration.EndOfTurn,
+                    context = EffectContext(sourceId = attacker, controllerId = attackerPlayer),
+                ),
+        )
+        val forestDomain = blockerDomain(driver, defendingPlayer)
+
+        replaceHiddenDefinition(driver, hiddenPermanent, "Hidden Block Tax Source")
+        val blockTaxDomain = blockerDomain(driver, defendingPlayer)
+
+        forestDomain.minimumSatisfiedRequirementCount shouldBe 1
+        blockTaxDomain.minimumSatisfiedRequirementCount shouldBe forestDomain.minimumSatisfiedRequirementCount
+        blockTaxDomain.canDeclareZeroBlockers shouldBe forestDomain.canDeclareZeroBlockers
+        blockTaxDomain.blockerToAttackers shouldBe forestDomain.blockerToAttackers
     }
 })
 
