@@ -170,4 +170,3 @@ Tests are written and observed RED before production implementation. The focused
 
 The existing `EnvironmentV1ExternalPolicy` is not modified to sort or infer candidates. Acceptance
 requires the exact policy path to consume the published V2 `attackerOrder`.
-

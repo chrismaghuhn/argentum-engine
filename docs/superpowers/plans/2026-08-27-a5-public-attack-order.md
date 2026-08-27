@@ -90,7 +90,7 @@ Use a deliberately non-lexical relation/list order in the current Rules-shaped f
 
 - [ ] **Step 4: Add the primitive RED test file without adding production code.**
 
-Create the test file as part of the RED commit, but do not add a production stub merely to make it compile. The direct 
+Create the test file as part of the RED commit, but do not add a production stub merely to make it compile. The direct
 `CombatObjectOrder` assertions are intentionally completed in Task 2 after the first RED result has been recorded. The
 producer-level RED tests in Steps 1 and 2 must already fail against the untouched base behavior.
 
