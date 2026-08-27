@@ -3,6 +3,20 @@ plugins {
     alias(libs.plugins.kotlinPluginSerialization)
 }
 
+tasks.named<Test>("test") {
+    // The exact-pair acceptance suite is an explicit heavyweight trust gate, not part of the
+    // normal PR/unit-test critical path. Run it through :environmentV1AcceptanceTest instead.
+    exclude("**/EnvironmentV1ExactPairAcceptanceTest*")
+}
+
+tasks.register<Test>("environmentV1AcceptanceTest") {
+    description = "Runs the heavy Environment V1 exact-pair acceptance suite."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/EnvironmentV1ExactPairAcceptanceTest*")
+}
+
 dependencies {
     // Wraps the rules engine with a stateful RL/MCTS-friendly environment.
     implementation(project(":rules-engine"))
