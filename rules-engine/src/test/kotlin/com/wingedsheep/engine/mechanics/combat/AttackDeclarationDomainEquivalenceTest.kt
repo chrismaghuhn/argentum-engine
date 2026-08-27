@@ -32,6 +32,41 @@ import io.kotest.matchers.shouldBe
  * non-monetary declaration language as the Rules pre-tax validator.
  */
 class AttackDeclarationDomainEquivalenceTest : FunSpec({
+    test("RED: attack candidates follow combat object rank instead of EntityId value") {
+        val fixture = asymmetricDefenderFixture()
+        val idsByEntityId = fixture.attackerIds.sortedBy(EntityId::value)
+        val rankById = mapOf(
+            idsByEntityId[0] to 200L,
+            idsByEntityId[1] to 100L,
+        )
+        val rankedFixture = fixture.copy(
+            state = fixture.state.copy(
+                objectIdentityStamps = fixture.state.objectIdentityStamps + rankById,
+            )
+        )
+
+        rankedFixture.certificate().attackerToDefenders.keys.toList() shouldBe
+            idsByEntityId.sortedBy { rankedFixture.state.objectIdentityStamps.getValue(it) }
+    }
+
+    test("RED: mixed attack defenders follow seat order then combat object order") {
+        val fixture = planeswalkerAndBattleDefenderFixture()
+        val attacker = fixture.attackerIds.single()
+        val playerDefender = fixture.state.activePlayers.first { it != fixture.player }
+        val objectDefenders = fixture.defenderIds.sortedBy(EntityId::value).reversed()
+        val rankById = objectDefenders.mapIndexed { index, entityId ->
+            entityId to (100L + index)
+        }.toMap()
+        val rankedFixture = fixture.copy(
+            state = fixture.state.copy(
+                objectIdentityStamps = fixture.state.objectIdentityStamps + rankById,
+            )
+        )
+
+        rankedFixture.certificate().attackerToDefenders.getValue(attacker) shouldBe
+            listOf(playerDefender) + objectDefenders
+    }
+
     test("matches Rules for an asymmetric defender relation") {
         assertEquivalent(asymmetricDefenderFixture())
     }

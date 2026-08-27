@@ -388,6 +388,41 @@ class ObservationCanonicalizationTest : FunSpec({
         }
     }
 
+    test("RED: attack candidate sequence is not erased from semantic identity") {
+        val base = observation(environment())
+        val attackerA = EntityId("attacker-a")
+        val attackerB = EntityId("attacker-b")
+        val defenderA = EntityId("defender-a")
+        val defenderB = EntityId("defender-b")
+        val first = AttackDeclarationDomainV1(
+            attackerToDefenders = linkedMapOf(
+                attackerB to listOf(defenderB, defenderA),
+                attackerA to listOf(defenderA),
+            ),
+            mandatoryAttackers = listOf(attackerB, attackerA),
+            canDeclareZeroAttackers = false,
+            maxAttackers = 2,
+            coAttackerRequirements = emptyMap(),
+            bandConstraints = AttackBandConstraintsV1(
+                bandingAttackersByDefender = emptyMap(),
+                nonBandingAttackersByDefender = linkedMapOf(
+                    defenderB to listOf(attackerB),
+                    defenderA to listOf(attackerA, attackerB),
+                ),
+            ),
+        )
+        val reversed = first.copy(
+            attackerToDefenders = linkedMapOf(
+                attackerA to listOf(defenderA),
+                attackerB to listOf(defenderA, defenderB),
+            ),
+            mandatoryAttackers = listOf(attackerA, attackerB),
+        )
+
+        ObservationCanonicalizer.semanticJson(withAttackDeclarationDomain(base, first)) shouldNotBe
+            ObservationCanonicalizer.semanticJson(withAttackDeclarationDomain(base, reversed))
+    }
+
     test("unknown future action target versions fail before canonicalization") {
         val json = Json { encodeDefaults = true; explicitNulls = false }
         val encoded = json.encodeToString(ActionTargetDomainV1.serializer(), ActionTargetDomainV1())

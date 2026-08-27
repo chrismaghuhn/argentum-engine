@@ -70,6 +70,35 @@ class AttackDeclarationDomainMapperTest : FunSpec({
         domain.bandConstraints.bandingAttackersByDefender.keys.toList() shouldBe listOf(defenderTwo)
     }
 
+    test("RED: mapper preserves the Rules relation and list sequence") {
+        val action = action(
+            RulesAttackDeclarationDomain(
+                attackerToDefenders = linkedMapOf(
+                    attackerB to listOf(defenderTwo, defenderOne),
+                    attackerA to listOf(defenderOne),
+                ),
+                mandatoryAttackers = listOf(attackerB, attackerA),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 2,
+                coAttackerRequirements = emptyMap(),
+                bandConstraints = RulesAttackBandConstraints(
+                    bandingAttackersByDefender = linkedMapOf(defenderTwo to listOf(attackerB)),
+                    nonBandingAttackersByDefender = linkedMapOf(
+                        defenderOne to listOf(attackerB, attackerA),
+                    ),
+                ),
+            ),
+        )
+
+        val mapped = AttackDeclarationDomainMapper.map(action) { true } as
+            AttackDeclarationDomainMapper.Result.Supported
+        val domain = mapped.domain
+        domain shouldNotBe null
+        domain!!.attackerToDefenders.keys.toList() shouldBe listOf(attackerB, attackerA)
+        domain.attackerToDefenders.getValue(attackerB) shouldBe listOf(defenderTwo, defenderOne)
+        domain.mandatoryAttackers shouldBe listOf(attackerB, attackerA)
+    }
+
     test("rejects every hidden reference family without filtering it") {
         val domain = completeDomain()
         val references = listOf(
