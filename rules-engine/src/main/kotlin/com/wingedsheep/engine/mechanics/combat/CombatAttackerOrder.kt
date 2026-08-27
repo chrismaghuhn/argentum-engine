@@ -1,7 +1,6 @@
 package com.wingedsheep.engine.mechanics.combat
 
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.combat.AttackingComponent
 import com.wingedsheep.sdk.model.EntityId
 
@@ -33,7 +32,7 @@ internal object CombatAttackerOrder {
         val seenRanks = mutableSetOf<Long>()
         for (band in bands) {
             val rankedMembers = band.map { attackerId ->
-                val rank = rank(state, attackerId) ?: return null
+                val rank = CombatObjectOrder.rank(state, attackerId) ?: return null
                 if (!seenRanks.add(rank)) return null
                 RankedAttacker(attackerId, rank)
             }.sortedBy { it.rank }
@@ -76,12 +75,6 @@ internal object CombatAttackerOrder {
     }
 
     fun bandId(ordinal: Long): String = "$BAND_ID_PREFIX$ordinal"
-
-    private fun rank(state: GameState, attackerId: EntityId): Long? =
-        state.objectIdentityStamps[attackerId]
-            ?: state.getEntity(attackerId)
-                ?.get<BattlefieldEntryTimestampComponent>()
-                ?.timestamp
 
     private fun parseBandOrdinal(bandId: String): Long? {
         if (!bandId.startsWith(BAND_ID_PREFIX)) return null

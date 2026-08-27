@@ -44,7 +44,6 @@ import com.wingedsheep.sdk.scripting.StaticAbility
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.filters.unified.Scope
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
-import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.legalactions.BlockerDeclarationDomainValidator
 import com.wingedsheep.engine.legalactions.BlockerDeclarationDomainUnsupportedReason
 import com.wingedsheep.engine.legalactions.RulesBlockRequirement
@@ -148,7 +147,7 @@ internal class BlockPhaseManager(
     ): RulesBlockerDeclarationDomainResult {
         val attackerIds = state.getBattlefield()
             .filter { state.getEntity(it)?.has<AttackingComponent>() == true }
-        val attackerOrder = canonicalCombatOrder(state, attackerIds)
+        val attackerOrder = CombatObjectOrder.order(state, attackerIds)
             ?: return RulesBlockerDeclarationDomainResult.Unsupported(
                 BlockerDeclarationDomainUnsupportedReason.CANONICAL_ORDER_UNAVAILABLE,
             )
@@ -161,7 +160,7 @@ internal class BlockPhaseManager(
             }
             if (legalAttackers.isNotEmpty()) relationByBlocker[blockerId] = legalAttackers
         }
-        val blockerOrder = canonicalCombatOrder(state, relationByBlocker.keys.toList())
+        val blockerOrder = CombatObjectOrder.order(state, relationByBlocker.keys)
             ?: return RulesBlockerDeclarationDomainResult.Unsupported(
                 BlockerDeclarationDomainUnsupportedReason.CANONICAL_ORDER_UNAVAILABLE,
             )
@@ -669,17 +668,6 @@ internal class BlockPhaseManager(
         return order.flatMap { entityId ->
             List(counts.getOrDefault(entityId, 0)) { entityId }
         }
-    }
-
-    private fun canonicalCombatOrder(state: GameState, entityIds: List<EntityId>): List<EntityId>? {
-        val ranked = entityIds.map { entityId ->
-            val rank = state.objectIdentityStamps[entityId]
-                ?: state.getEntity(entityId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp
-                ?: return null
-            entityId to rank
-        }
-        if (ranked.map { it.second }.size != ranked.map { it.second }.toSet().size) return null
-        return ranked.sortedBy { it.second }.map { it.first }
     }
 
     private fun validateLegacyDeclarationConstraints(
