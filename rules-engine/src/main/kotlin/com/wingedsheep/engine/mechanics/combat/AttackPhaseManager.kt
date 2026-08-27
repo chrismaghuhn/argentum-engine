@@ -436,13 +436,15 @@ internal class AttackPhaseManager(
         projected: ProjectedState,
         attackerIds: Set<EntityId>
     ): String? {
-        for (attackerId in attackerIds) {
+        val orderedAttackers = CombatObjectOrder.order(state, attackerIds)
+            ?: return "Attackers cannot be deterministically ordered"
+        for (attackerId in orderedAttackers) {
             val cardComponent = state.getEntity(attackerId)?.get<CardComponent>() ?: continue
             val resolvedRequirements = resolveConcreteCoAttackerRequirements(
                 state = state,
                 projected = projected,
                 attackingPlayer = state.projectedState.getController(attackerId) ?: attackerId,
-                candidateAttackers = attackerIds,
+                candidateAttackers = orderedAttackers,
             )[attackerId].orEmpty()
             for ((index, requirement) in resolvedRequirements.withIndex()) {
                 if (requirement.anyOf.none { it in attackerIds }) {
@@ -463,33 +465,30 @@ internal class AttackPhaseManager(
     internal fun getConcreteCoAttackerRequirements(
         state: GameState,
         attackingPlayer: EntityId,
-    ): Map<EntityId, List<RulesCoAttackerRequirement>> =
-        resolveConcreteCoAttackerRequirements(
+    ): Map<EntityId, List<RulesCoAttackerRequirement>> {
+        val attackerOrder = orderedAttackDeclarationCandidateAttackers(state, attackingPlayer).orEmpty()
+        return resolveConcreteCoAttackerRequirements(
             state = state,
             projected = state.projectedState,
             attackingPlayer = attackingPlayer,
-            candidateAttackers = getAttackDeclarationCandidateAttackers(state, attackingPlayer),
-        )
+            candidateAttackers = attackerOrder,
+        ).mapValues { (_, requirements) -> requirements.orderedByAttackerOrder(attackerOrder) }
+    }
 
     private fun resolveConcreteCoAttackerRequirements(
         state: GameState,
         projected: ProjectedState,
         attackingPlayer: EntityId,
-        candidateAttackers: Collection<EntityId>,
+        candidateAttackers: List<EntityId>,
     ): Map<EntityId, List<RulesCoAttackerRequirement>> {
-        val candidates = candidateAttackers.toSet()
-        return candidates.sortedBy(EntityId::value).associateWith { attackerId ->
+        return candidateAttackers.associateWith { attackerId ->
             val context = PredicateContext(controllerId = projected.getController(attackerId) ?: attackerId)
             getCoAttackerRestrictions(state, attackerId).map { restriction ->
                 RulesCoAttackerRequirement(
-                    anyOf = candidates
-                        .asSequence()
-                        .filter { otherId ->
+                    anyOf = candidateAttackers.filter { otherId ->
                             otherId != attackerId &&
                                 predicateEvaluator.matches(state, projected, otherId, restriction.coAttackerFilter, context)
-                        }
-                        .sortedBy(EntityId::value)
-                        .toList(),
+                        },
                 )
             }
         }.filterValues { it.isNotEmpty() }
@@ -510,6 +509,35 @@ internal class AttackPhaseManager(
         return (printed + granted)
             .filterIsInstance<CantAttackUnlessCoAttacker>()
             .filter { it.filter.scope is Scope.Self }
+    }
+
+    /**
+     * Give repeated co-attacker requirement instances a deterministic Rules-owned order without
+     * deduplicating them. Each [anyOf] list is already a subsequence of [attackerOrder]; this only
+     * orders the requirement instances by their attacker-rank sequences and keeps equal sequences
+     * stable so multiplicity and source distinctions survive publication.
+     */
+    private fun List<RulesCoAttackerRequirement>.orderedByAttackerOrder(
+        attackerOrder: List<EntityId>,
+    ): List<RulesCoAttackerRequirement> {
+        val ranks = attackerOrder.withIndex().associate { (index, attackerId) -> attackerId to index }
+        return mapIndexed { sourceIndex, requirement ->
+            sourceIndex to requirement
+        }.sortedWith { left, right ->
+            val leftRanks = left.second.anyOf.map { ranks.getValue(it) }
+            val rightRanks = right.second.anyOf.map { ranks.getValue(it) }
+            compareAttackerRankSequences(leftRanks, rightRanks)
+                .takeUnless { it == 0 }
+                ?: left.first.compareTo(right.first)
+        }.map { it.second }
+    }
+
+    private fun compareAttackerRankSequences(left: List<Int>, right: List<Int>): Int {
+        for (index in 0 until minOf(left.size, right.size)) {
+            val comparison = left[index].compareTo(right[index])
+            if (comparison != 0) return comparison
+        }
+        return left.size.compareTo(right.size)
     }
 
     /**
@@ -785,10 +813,15 @@ internal class AttackPhaseManager(
     internal fun getAttackDeclarationCandidateAttackers(
         state: GameState,
         playerId: EntityId,
-    ): List<EntityId> {
+    ): List<EntityId> = orderedAttackDeclarationCandidateAttackers(state, playerId).orEmpty()
+
+    private fun orderedAttackDeclarationCandidateAttackers(
+        state: GameState,
+        playerId: EntityId,
+    ): List<EntityId>? {
         val projected = state.projectedState
 
-        return state.getBattlefield().filter { entityId ->
+        val candidates = state.getBattlefield().filter { entityId ->
             state.getEntity(entityId)?.get<CardComponent>() ?: return@filter false
 
             val ctx = AttackCheckContext(state, projected, entityId, playerId, cardRegistry)
@@ -797,6 +830,7 @@ internal class AttackPhaseManager(
 
             true
         }
+        return CombatObjectOrder.order(state, candidates)
     }
 
     /**
@@ -822,16 +856,21 @@ internal class AttackPhaseManager(
         val projected = state.projectedState
         val attackingTeam = state.teamOf(attackingPlayer)
         val opponents = state.activePlayers.filter { it !in attackingTeam }
-        val candidateAttackers = getAttackDeclarationCandidateAttackers(state, attackingPlayer)
+        val candidateAttackers = orderedAttackDeclarationCandidateAttackers(state, attackingPlayer)
+            ?: return RulesAttackDeclarationDomainResult.Unsupported(
+                AttackDeclarationDomainUnsupportedReason.CANONICAL_ORDER_UNAVAILABLE,
+            )
         val candidateDefenders = CombatDefenders
             .getAttackDeclarationCertificateCandidateDefenders(state, attackingPlayer)
+            ?: return RulesAttackDeclarationDomainResult.Unsupported(
+                AttackDeclarationDomainUnsupportedReason.CANONICAL_ORDER_UNAVAILABLE,
+            )
         val mustAttackPlayer = state.getEntity(attackingPlayer)
             ?.get<MustAttackPlayerComponent>()
             ?.takeIf { it.activeThisTurn }
             ?.defenderId
 
         val relation = candidateAttackers
-            .sortedBy(EntityId::value)
             .associateWith { attackerId ->
                 var legalDefenders = candidateDefenders.filter { defenderId ->
                     validateAttackDefender(
@@ -872,35 +911,31 @@ internal class AttackPhaseManager(
                     }
                 }
 
-                legalDefenders.sortedBy(EntityId::value)
+                legalDefenders
             }
             .filterValues { it.isNotEmpty() }
+        val attackerOrder = candidateAttackers.filter { it in relation }
 
-        val mandatoryAttackers = getMandatoryAttackers(state, attackingPlayer)
-            .distinct()
-            .sortedBy(EntityId::value)
-        if (mandatoryAttackers.any { it !in relation }) {
+        val mandatoryCandidates = getMandatoryAttackers(state, attackingPlayer).toSet()
+        if (mandatoryCandidates.any { it !in relation }) {
             return RulesAttackDeclarationDomainResult.Unsupported(
                 AttackDeclarationDomainUnsupportedReason.INCOMPLETE_DECLARATION_CONSTRAINTS,
             )
         }
+        val mandatoryAttackers = attackerOrder.filter { it in mandatoryCandidates }
 
-        val resolvedCoAttackers = getConcreteCoAttackerRequirements(state, attackingPlayer)
-            .filterKeys { it in relation }
-            .mapValues { (_, requirements) ->
-                requirements
-                    .map { requirement ->
-                        RulesCoAttackerRequirement(
-                            anyOf = requirement.anyOf
-                                .filter { it in relation }
-                                .distinct()
-                                .sortedBy(EntityId::value),
-                        )
-                    }
-                    .sortedBy { requirement ->
-                        requirement.anyOf.joinToString(separator = "\u0000") { it.value }
-                    }
-            }
+        val resolvedCoAttackers = resolveConcreteCoAttackerRequirements(
+            state = state,
+            projected = projected,
+            attackingPlayer = attackingPlayer,
+            candidateAttackers = attackerOrder,
+        ).mapValues { (_, requirements) ->
+            requirements.map { requirement ->
+                RulesCoAttackerRequirement(
+                    anyOf = requirement.anyOf.filter { it in relation },
+                )
+            }.orderedByAttackerOrder(attackerOrder)
+        }
         if (resolvedCoAttackers.values.any { requirements -> requirements.any { it.anyOf.isEmpty() } }) {
             return RulesAttackDeclarationDomainResult.Unsupported(
                 AttackDeclarationDomainUnsupportedReason.UNRESOLVED_CO_ATTACKER_REQUIREMENTS,
@@ -909,7 +944,8 @@ internal class AttackPhaseManager(
 
         val bandingAttackersByDefender = mutableMapOf<EntityId, MutableList<EntityId>>()
         val nonBandingAttackersByDefender = mutableMapOf<EntityId, MutableList<EntityId>>()
-        for ((attackerId, defenders) in relation) {
+        for (attackerId in attackerOrder) {
+            val defenders = relation.getValue(attackerId)
             for (defenderId in defenders) {
                 val destination = if (projected.hasKeyword(attackerId, Keyword.BANDING)) {
                     bandingAttackersByDefender
@@ -921,6 +957,7 @@ internal class AttackPhaseManager(
         }
 
         val domain = RulesAttackDeclarationDomain(
+            attackerOrder = attackerOrder,
             attackerToDefenders = relation,
             mandatoryAttackers = mandatoryAttackers,
             canDeclareZeroAttackers = validateDeclarationBeforeTax(
@@ -931,11 +968,9 @@ internal class AttackPhaseManager(
             coAttackerRequirements = resolvedCoAttackers,
             bandConstraints = RulesAttackBandConstraints(
                 bandingAttackersByDefender = bandingAttackersByDefender
-                    .mapValues { (_, attackers) -> attackers.sortedBy(EntityId::value) }
-                    .toSortedEntityIdMap(),
+                    .mapValues { (_, attackers) -> attackers.toList() },
                 nonBandingAttackersByDefender = nonBandingAttackersByDefender
-                    .mapValues { (_, attackers) -> attackers.sortedBy(EntityId::value) }
-                    .toSortedEntityIdMap(),
+                    .mapValues { (_, attackers) -> attackers.toList() },
             ),
         )
 
@@ -995,7 +1030,8 @@ internal class AttackPhaseManager(
             }
         }
 
-        return mandatory.toList()
+        val attackerOrder = CombatObjectOrder.order(state, validAttackers) ?: return emptyList()
+        return attackerOrder.filter { it in mandatory }
     }
 
     // =========================================================================
@@ -1014,8 +1050,4 @@ internal class AttackPhaseManager(
         projected: ProjectedState
     ): Int = CombatTaxes.attackTax(state, cardRegistry, attackers, projected)
 
-    private fun Map<EntityId, List<EntityId>>.toSortedEntityIdMap(): Map<EntityId, List<EntityId>> =
-        entries.sortedBy { (entityId, _) -> entityId.value }.associate { (entityId, ids) ->
-            entityId to ids
-        }
 }

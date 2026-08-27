@@ -10,6 +10,7 @@ import com.wingedsheep.sdk.model.EntityId
  * the versioned wire DTO; this type remains a Rules concern and contains no presentation data.
  */
 data class RulesAttackDeclarationDomain(
+    val attackerOrder: List<EntityId>,
     val attackerToDefenders: Map<EntityId, List<EntityId>>,
     val mandatoryAttackers: List<EntityId>,
     val canDeclareZeroAttackers: Boolean,
@@ -30,6 +31,7 @@ enum class AttackDeclarationDomainUnsupportedReason {
     INCOMPLETE_DECLARATION_CONSTRAINTS,
     UNRESOLVED_CO_ATTACKER_REQUIREMENTS,
     INCOMPLETE_BAND_CONSTRAINTS,
+    CANONICAL_ORDER_UNAVAILABLE,
 }
 
 sealed interface AttackDeclarationDomainSupport {
@@ -77,6 +79,10 @@ sealed interface AttackDeclarationValidationResult {
  * Rules performs the stateful execution validation separately after this trusted boundary.
  */
 object AttackDeclarationDomainValidator {
+    /** Structural certificate check shared by pure projections before addressability validation. */
+    fun isStructurallyValid(domain: RulesAttackDeclarationDomain): Boolean =
+        isCanonicalCertificate(domain)
+
     fun validate(
         domain: RulesAttackDeclarationDomain,
         action: DeclareAttackers,
@@ -180,15 +186,19 @@ object AttackDeclarationDomainValidator {
 
     private fun isCanonicalCertificate(domain: RulesAttackDeclarationDomain): Boolean {
         val relation = domain.attackerToDefenders
-        if (!relation.keys.isCanonical()) return false
-        if (relation.any { (_, defenders) ->
-                defenders.isEmpty() || !defenders.isCanonical()
-            }
-        ) {
-            return false
-        }
+        val attackerOrder = domain.attackerOrder
+        if (attackerOrder.size != attackerOrder.distinct().size ||
+            relation.keys != attackerOrder.toSet()
+        ) return false
 
-        if (!domain.mandatoryAttackers.isCanonical() ||
+        val defenderOrder = buildDefenderOrder(attackerOrder, relation) ?: return false
+        if (attackerOrder.any { attackerId ->
+                val defenders = relation[attackerId] ?: return@any true
+                defenders.isEmpty() || !defenders.isOrderedSubsequenceOf(defenderOrder)
+            }
+        ) return false
+
+        if (!domain.mandatoryAttackers.isOrderedSubsequenceOf(attackerOrder) ||
             domain.mandatoryAttackers.any { it !in relation }
         ) {
             return false
@@ -196,11 +206,10 @@ object AttackDeclarationDomainValidator {
 
         if (domain.maxAttackers != null && domain.maxAttackers < 0) return false
 
-        if (!domain.coAttackerRequirements.keys.isCanonical()) return false
         for ((attacker, requirements) in domain.coAttackerRequirements) {
-            if (attacker !in relation || !requirements.isCanonicalRequirements()) return false
+            if (attacker !in relation || !requirements.isCanonicalRequirements(attackerOrder)) return false
             for (requirement in requirements) {
-                if (!requirement.anyOf.isCanonical() ||
+                if (!requirement.anyOf.isOrderedSubsequenceOf(attackerOrder) ||
                     requirement.anyOf.any { it == attacker || it !in relation }
                 ) {
                     return false
@@ -210,11 +219,9 @@ object AttackDeclarationDomainValidator {
 
         val banding = domain.bandConstraints.bandingAttackersByDefender
         val nonBanding = domain.bandConstraints.nonBandingAttackersByDefender
-        if (!banding.keys.isCanonical() || !nonBanding.keys.isCanonical()) return false
-
         val partitionEntries = mutableMapOf<Pair<EntityId, EntityId>, Int>()
         for ((defender, attackers) in banding) {
-            if (!isCanonicalPartition(defender, attackers, relation)) return false
+            if (!isCanonicalPartition(defender, attackers, relation, attackerOrder)) return false
             for (attacker in attackers) {
                 val edge = attacker to defender
                 if (partitionEntries[edge] == 1) return false
@@ -222,7 +229,7 @@ object AttackDeclarationDomainValidator {
             }
         }
         for ((defender, attackers) in nonBanding) {
-            if (!isCanonicalPartition(defender, attackers, relation)) return false
+            if (!isCanonicalPartition(defender, attackers, relation, attackerOrder)) return false
             for (attacker in attackers) {
                 val edge = attacker to defender
                 if (partitionEntries[edge] != null) return false
@@ -230,8 +237,10 @@ object AttackDeclarationDomainValidator {
             }
         }
 
-        return relation.all { (attacker, defenders) ->
-            defenders.all { defender -> partitionEntries[attacker to defender] == 1 }
+        return attackerOrder.all { attacker ->
+            relation.getValue(attacker).all { defender -> partitionEntries[attacker to defender] == 1 }
+        } && partitionEntries.keys.all { (attacker, defender) ->
+            relation[attacker]?.contains(defender) == true
         }
     }
 
@@ -239,26 +248,55 @@ object AttackDeclarationDomainValidator {
         defender: EntityId,
         attackers: List<EntityId>,
         relation: Map<EntityId, List<EntityId>>,
+        attackerOrder: List<EntityId>,
     ): Boolean {
-        if (attackers.isEmpty() || !attackers.isCanonical()) return false
+        if (attackers.isEmpty() || !attackers.isOrderedSubsequenceOf(attackerOrder)) return false
         return attackers.all { attacker ->
             relation[attacker]?.contains(defender) == true
         }
     }
 
-    private fun List<EntityId>.isCanonical(): Boolean =
-        size == distinct().size && zipWithNext().all { (left, right) ->
-            left.value < right.value
+    private fun buildDefenderOrder(
+        attackerOrder: List<EntityId>,
+        relation: Map<EntityId, List<EntityId>>,
+    ): List<EntityId>? {
+        val defenderOrder = mutableListOf<EntityId>()
+        for (attacker in attackerOrder) {
+            val defenders = relation[attacker] ?: return null
+            for (defender in defenders) {
+                if (defender !in defenderOrder) defenderOrder += defender
+            }
         }
+        return defenderOrder
+    }
 
-    private fun Collection<EntityId>.isCanonical(): Boolean =
-        toList().isCanonical()
-
-    private fun List<RulesCoAttackerRequirement>.isCanonicalRequirements(): Boolean {
+    private fun List<EntityId>.isOrderedSubsequenceOf(order: List<EntityId>): Boolean {
         if (size != distinct().size) return false
-        val keys = map { requirement ->
-            requirement.anyOf.joinToString(separator = "\u0000") { it.value }
+        var previousIndex = -1
+        for (entityId in this) {
+            val index = order.indexOf(entityId)
+            if (index <= previousIndex) return false
+            previousIndex = index
         }
-        return keys.zipWithNext().all { (left, right) -> left < right }
+        return true
+    }
+
+    private fun List<RulesCoAttackerRequirement>.isCanonicalRequirements(
+        attackerOrder: List<EntityId>,
+    ): Boolean {
+        val rankSequences = map { requirement ->
+            requirement.anyOf.map(attackerOrder::indexOf)
+        }
+        return rankSequences.zipWithNext().all { (left, right) ->
+            compareRankSequences(left, right) <= 0
+        }
+    }
+
+    private fun compareRankSequences(left: List<Int>, right: List<Int>): Int {
+        for (index in 0 until minOf(left.size, right.size)) {
+            val comparison = left[index].compareTo(right[index])
+            if (comparison != 0) return comparison
+        }
+        return left.size.compareTo(right.size)
     }
 }

@@ -12,6 +12,9 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import kotlinx.serialization.decodeFromString
+import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.Json
 
 class AttackDeclarationDomainMapperTest : FunSpec({
     test("noncombat actions carry no attack domain") {
@@ -34,9 +37,10 @@ class AttackDeclarationDomainMapperTest : FunSpec({
             AttackDeclarationDomainMapper.Result.Unsupported
     }
 
-    test("projects all certificate fields into deterministic canonical wire order") {
+    test("projects all certificate fields in Rules-owned wire order") {
         val action = action(
             RulesAttackDeclarationDomain(
+                attackerOrder = listOf(attackerB, attackerA),
                 attackerToDefenders = linkedMapOf(
                     attackerB to listOf(defenderTwo, defenderOne),
                     attackerA to listOf(defenderOne),
@@ -50,7 +54,7 @@ class AttackDeclarationDomainMapperTest : FunSpec({
                 bandConstraints = RulesAttackBandConstraints(
                     bandingAttackersByDefender = linkedMapOf(defenderTwo to listOf(attackerB)),
                     nonBandingAttackersByDefender = linkedMapOf(
-                        defenderOne to listOf(attackerA, attackerB),
+                        defenderOne to listOf(attackerB, attackerA),
                     ),
                 ),
             ),
@@ -60,19 +64,20 @@ class AttackDeclarationDomainMapperTest : FunSpec({
             AttackDeclarationDomainMapper.Result.Supported
         val domain = mapped.domain
         domain shouldNotBe null
-        domain!!.attackerToDefenders.keys.map(EntityId::value) shouldBe listOf("attacker-a", "attacker-b")
-        domain.attackerToDefenders[attackerB]?.map(EntityId::value) shouldBe
-            listOf("defender-1", "defender-2")
-        domain.mandatoryAttackers shouldBe listOf(attackerA, attackerB)
+        domain!!.attackerOrder shouldBe listOf(attackerB, attackerA)
+        domain.attackerToDefenders.keys.toList() shouldBe listOf(attackerB, attackerA)
+        domain.attackerToDefenders[attackerB] shouldBe listOf(defenderTwo, defenderOne)
+        domain.mandatoryAttackers shouldBe listOf(attackerB, attackerA)
         domain.coAttackerRequirements.keys.toList() shouldBe listOf(attackerB)
         domain.bandConstraints.nonBandingAttackersByDefender.keys.toList() shouldBe
             listOf(defenderOne)
         domain.bandConstraints.bandingAttackersByDefender.keys.toList() shouldBe listOf(defenderTwo)
     }
 
-    test("RED: mapper preserves the Rules relation and list sequence") {
+    test("mapper preserves the Rules relation and list sequence") {
         val action = action(
             RulesAttackDeclarationDomain(
+                attackerOrder = listOf(attackerB, attackerA),
                 attackerToDefenders = linkedMapOf(
                     attackerB to listOf(defenderTwo, defenderOne),
                     attackerA to listOf(defenderOne),
@@ -139,6 +144,61 @@ class AttackDeclarationDomainMapperTest : FunSpec({
             )
         }
     }
+
+    test("rejects unknown future V2 wire versions at DTO construction") {
+        shouldThrow<IllegalArgumentException> {
+            AttackDeclarationDomainV2(
+                version = ATTACK_DECLARATION_DOMAIN_V2_VERSION + 1,
+                attackerOrder = emptyList(),
+                attackerToDefenders = emptyMap(),
+                mandatoryAttackers = emptyList(),
+                canDeclareZeroAttackers = true,
+                maxAttackers = null,
+                coAttackerRequirements = emptyMap(),
+                bandConstraints = AttackBandConstraintsV1(emptyMap(), emptyMap()),
+            )
+        }
+    }
+
+    test("round-trips V2 attacker order exactly through its codec") {
+        val domain = AttackDeclarationDomainV2(
+            attackerOrder = listOf(attackerB, attackerA),
+            attackerToDefenders = linkedMapOf(
+                attackerB to listOf(defenderTwo, defenderOne),
+                attackerA to listOf(defenderOne),
+            ),
+            mandatoryAttackers = listOf(attackerB, attackerA),
+            canDeclareZeroAttackers = false,
+            maxAttackers = 2,
+            coAttackerRequirements = linkedMapOf(
+                attackerB to listOf(AttackCoAttackerRequirementV1(listOf(attackerA))),
+            ),
+            bandConstraints = AttackBandConstraintsV1(
+                bandingAttackersByDefender = linkedMapOf(defenderTwo to listOf(attackerB)),
+                nonBandingAttackersByDefender = linkedMapOf(
+                    defenderOne to listOf(attackerB, attackerA),
+                ),
+            ),
+        )
+        val json = Json { encodeDefaults = true; explicitNulls = false }
+        val encoded = json.encodeToString(AttackDeclarationDomainV2.serializer(), domain)
+
+        json.decodeFromString(AttackDeclarationDomainV2.serializer(), encoded) shouldBe domain
+        val unknownVersion = encoded.replace("\"version\":2", "\"version\":99")
+        shouldThrow<IllegalArgumentException> {
+            json.decodeFromString(AttackDeclarationDomainV2.serializer(), unknownVersion)
+        }
+    }
+
+    test("rejects malformed attacker order before public projection") {
+        val duplicate = completeDomain().copy(attackerOrder = listOf(attackerA, attackerA))
+        val mismatch = completeDomain().copy(attackerOrder = listOf(attackerA))
+
+        AttackDeclarationDomainMapper.map(action(duplicate)) { true } shouldBe
+            AttackDeclarationDomainMapper.Result.Unsupported
+        AttackDeclarationDomainMapper.map(action(mismatch)) { true } shouldBe
+            AttackDeclarationDomainMapper.Result.Unsupported
+    }
 })
 
 private val player = EntityId("player")
@@ -156,6 +216,7 @@ private fun action(domain: RulesAttackDeclarationDomain): LegalAction = LegalAct
 )
 
 private fun completeDomain(): RulesAttackDeclarationDomain = RulesAttackDeclarationDomain(
+    attackerOrder = listOf(attackerA, attackerB),
     attackerToDefenders = linkedMapOf(
         attackerA to listOf(defenderOne),
         attackerB to listOf(defenderOne, defenderTwo),

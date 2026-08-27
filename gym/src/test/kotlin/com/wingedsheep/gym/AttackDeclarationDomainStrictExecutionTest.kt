@@ -221,7 +221,7 @@ class AttackDeclarationDomainStrictExecutionTest : FunSpec({
         prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
     }
 
-    test("stale snapshot reaches live Rules rejection when an attacker cap appears") {
+    test("stale snapshot is rejected before live Rules mutation when an attacker cap appears") {
         val prepared = prepareAttack(
             includeBandAttackers = true,
             includeDuelingGrounds = true,
@@ -250,7 +250,7 @@ class AttackDeclarationDomainStrictExecutionTest : FunSpec({
             )
         }
 
-        failure.message shouldContain "No more than 1 creature can attack each combat"
+        failure.message shouldBe "Structured attack declaration domain is stale for the current action"
         prepared.environment.state shouldBe stateBefore
         prepared.environment.stepCount shouldBe stepCountBefore
         prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
@@ -271,6 +271,75 @@ class AttackDeclarationDomainStrictExecutionTest : FunSpec({
             .shouldBeInstanceOf<SelectManaSourcesDecision>()
         pending.context.sourceName shouldBe "Attack tax"
         pending.requiredCost shouldBe "{1}{1}"
+    }
+
+    test("two legal attackers are published in one explicit producer-owned order") {
+        val prepared = prepareAttack(includeBandAttackers = true)
+        val domain = checkNotNull(attackView(prepared.gym).attackDeclarationDomain)
+
+        domain.attackerOrder.size shouldBe 3
+        domain.attackerOrder.distinct().size shouldBe domain.attackerOrder.size
+        domain.attackerToDefenders.keys.toList() shouldBe domain.attackerOrder
+    }
+
+    test("unknown attacker rejection remains zero-mutation") {
+        val prepared = prepareAttack()
+        val attack = attackView(prepared.gym)
+        val domain = checkNotNull(attack.attackDeclarationDomain)
+        val defender = domain.attackerToDefenders.values.single().single()
+        val payload = attackPayload(
+            attack,
+            mapOf(EntityId("unknown-attacker") to defender),
+            emptyList(),
+        )
+        val stateBefore = prepared.environment.state
+        val stepCountBefore = prepared.environment.stepCount
+        val lastStepEventsBefore = prepared.environment.lastStepEvents
+
+        val failure = shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(attack.actionId, payload)
+        }
+
+        failure.message shouldContain "UNKNOWN_ATTACKER"
+        prepared.environment.state shouldBe stateBefore
+        prepared.environment.stepCount shouldBe stepCountBefore
+        prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
+    }
+
+    test("a changed producer order rejects the stale domain before mutation") {
+        val prepared = prepareAttack(includeBandAttackers = true)
+        val attack = attackView(prepared.gym)
+        val domain = checkNotNull(attack.attackDeclarationDomain)
+        val assignments = domain.attackerOrder.associateWith { attacker ->
+            domain.attackerToDefenders.getValue(attacker).single()
+        }
+        val first = prepared.bandAttackers[0]
+        val second = prepared.bandAttackers[1]
+        val changedState = prepared.environment.state.copy(
+            objectIdentityStamps = prepared.environment.state.objectIdentityStamps +
+                (first to 200L) +
+                (second to 100L),
+        )
+        prepared.environment.restore(
+            changedState,
+            prepared.environment.playerIds,
+            prepared.environment.stepCount,
+        )
+        val stateBefore = prepared.environment.state
+        val stepCountBefore = prepared.environment.stepCount
+        val lastStepEventsBefore = prepared.environment.lastStepEvents
+
+        val failure = shouldThrow<IllegalArgumentException> {
+            prepared.gym.step(
+                attack.actionId,
+                attackPayload(attack, assignments, emptyList()),
+            )
+        }
+
+        failure.message shouldContain "stale"
+        prepared.environment.state shouldBe stateBefore
+        prepared.environment.stepCount shouldBe stepCountBefore
+        prepared.environment.lastStepEvents shouldBe lastStepEventsBefore
     }
 })
 

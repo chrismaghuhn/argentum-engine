@@ -32,6 +32,7 @@ class AttackDeclarationReplayWireAuditTest : FunSpec({
         listOf(
             "LegalActionView",
             "AttackDeclarationDomainV1",
+            "AttackDeclarationDomainV2",
             "attackDeclarationDomain",
             "schemaHash",
             "targetDomain",

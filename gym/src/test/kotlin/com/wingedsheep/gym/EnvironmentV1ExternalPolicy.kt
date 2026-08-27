@@ -15,8 +15,8 @@ import com.wingedsheep.gym.contract.BlockRequirementV1
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainV1
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.DistributionDomain
-import com.wingedsheep.gym.contract.ATTACK_DECLARATION_DOMAIN_VERSION
-import com.wingedsheep.gym.contract.AttackDeclarationDomainV1
+import com.wingedsheep.gym.contract.ATTACK_DECLARATION_DOMAIN_V2_VERSION
+import com.wingedsheep.gym.contract.AttackDeclarationDomainV2
 import com.wingedsheep.gym.contract.ACTION_TARGET_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
@@ -246,7 +246,7 @@ class DeterministicExternalPolicy {
                 return SemanticChoice.Gap(
                     family = "DECLARE_ATTACKERS",
                     code = "A5_DECISION_GAP",
-                    reason = "DeclareAttackers required fields are not the supported public V1 shape",
+                    reason = "DeclareAttackers required fields are not the supported public V2 shape",
                     actionKind = action.kind,
                     publicDomain = "requiredPayloadFields=$requiredFields",
                 )
@@ -255,13 +255,13 @@ class DeterministicExternalPolicy {
                 ?: return SemanticChoice.Gap(
                     family = "DECLARE_ATTACKERS",
                     code = "A5_DECISION_GAP",
-                    reason = "DeclareAttackers published no complete AttackDeclarationDomainV1",
+                    reason = "DeclareAttackers published no complete AttackDeclarationDomainV2",
                     actionKind = action.kind,
                     publicDomain =
                         "requiredPayloadFields=$requiredFields; " +
                             "attackDeclarationDomain=${action.attackDeclarationDomain}",
                     proposedFollowUp =
-                        "Publish a complete perspective-safe AttackDeclarationDomainV1",
+                        "Publish a complete perspective-safe AttackDeclarationDomainV2",
                 )
             payload["attackers"] = attackPayload["attackers"]
                 ?: return SemanticChoice.Gap(
@@ -516,15 +516,17 @@ class DeterministicExternalPolicy {
     /**
      * Selects an attack declaration only from the versioned public certificate. This adapter does
      * not evaluate combat rules; it searches the published attacker relation and constraints in a
-     * stable EntityId order, then chooses the first published defender for each selected attacker.
+     * published attacker order, then chooses the first defender in each producer-owned relation
+     * list for each selected attacker.
      */
     private fun publicAttackDeclarationPayload(
-        domain: AttackDeclarationDomainV1?,
+        domain: AttackDeclarationDomainV2?,
     ): JsonObject? {
-        if (domain == null || domain.version != ATTACK_DECLARATION_DOMAIN_VERSION) return null
+        if (domain == null || domain.version != ATTACK_DECLARATION_DOMAIN_V2_VERSION) return null
 
-        val attackers = domain.attackerToDefenders.keys.sortedBy { it.value }
+        val attackers = domain.attackerOrder
         if (attackers.distinct().size != attackers.size) return null
+        if (domain.attackerToDefenders.keys != attackers.toSet()) return null
         if (domain.attackerToDefenders.values.any { defenders ->
                 defenders.isEmpty() || defenders.distinct().size != defenders.size
             }
@@ -569,14 +571,14 @@ class DeterministicExternalPolicy {
         val attackerPayload = linkedMapOf<String, JsonElement>()
         for (attacker in selected) {
             val defender = domain.attackerToDefenders.getValue(attacker)
-                .minByOrNull { it.value }
+                .firstOrNull()
                 ?: return null
             attackerPayload[attacker.value] = JsonPrimitive(defender.value)
         }
 
         return buildJsonObject {
             put("attackers", JsonObject(attackerPayload))
-            // V1 lets this deterministic acceptance policy choose the explicit empty band list.
+            // V2 lets this deterministic acceptance policy choose the explicit empty band list.
             put("bands", JsonArray(emptyList()))
         }
     }

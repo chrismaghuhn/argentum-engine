@@ -5,12 +5,16 @@ import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.CardEntityFactory
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DecisionContext
 import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.ChooseOptionDecision
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.AttackDeclarationDomainSupport
+import com.wingedsheep.engine.legalactions.RulesAttackBandConstraints
+import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomain
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.registry.CardRegistry
@@ -444,6 +448,42 @@ class ObservationPrivacyTest : FunSpec({
             mountainLibrary.size shouldBe goblinLibrary.size
             mountainObservation.stateDigest shouldBe goblinObservation.stateDigest
         }
+    }
+
+    test("public attack order is unchanged when only hidden opponent cards differ") {
+        val base = environment()
+        val perspective = base.playerIds[0]
+        val opponent = base.playerIds[1]
+        val domain = RulesAttackDeclarationDomain(
+            attackerOrder = listOf(perspective),
+            attackerToDefenders = linkedMapOf(perspective to listOf(opponent)),
+            mandatoryAttackers = emptyList(),
+            canDeclareZeroAttackers = true,
+            maxAttackers = null,
+            coAttackerRequirements = emptyMap(),
+            bandConstraints = RulesAttackBandConstraints(
+                bandingAttackersByDefender = emptyMap(),
+                nonBandingAttackersByDefender = linkedMapOf(opponent to listOf(perspective)),
+            ),
+        )
+        val action = LegalAction(
+            action = DeclareAttackers(perspective, emptyMap()),
+            actionType = "DeclareAttackers",
+            description = "public attack privacy probe",
+            attackDeclarationDomain = domain,
+            attackDeclarationDomainSupport = AttackDeclarationDomainSupport.SUPPORTED,
+        )
+        val hiddenVariant = replaceOpponentHiddenCards(base.state, opponent, "Raging Goblin")
+
+        val first = ObservationBuilder(cardRegistry = registry())
+            .build(base.state, perspective, listOf(action)).observation as TrainingObservation
+        val second = ObservationBuilder(cardRegistry = registry())
+            .build(hiddenVariant, perspective, listOf(action)).observation as TrainingObservation
+
+        first.legalActions.single().attackDeclarationDomain!!.attackerOrder shouldBe
+            second.legalActions.single().attackDeclarationDomain!!.attackerOrder
+        ObservationCanonicalizer.semanticJson(first) shouldBe ObservationCanonicalizer.semanticJson(second)
+        first.stateDigest shouldBe second.stateDigest
     }
 
     test("individually revealed library cards are visible without exposing other cards") {

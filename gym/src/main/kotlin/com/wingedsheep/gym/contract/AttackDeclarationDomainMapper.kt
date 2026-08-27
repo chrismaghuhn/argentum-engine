@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.DiagnosticSignal
 import com.wingedsheep.engine.legalactions.AttackDeclarationDomainSupport
+import com.wingedsheep.engine.legalactions.AttackDeclarationDomainValidator
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomain
 import com.wingedsheep.sdk.model.EntityId
@@ -16,7 +17,7 @@ import com.wingedsheep.sdk.model.EntityId
 object AttackDeclarationDomainMapper {
 
     sealed interface Result {
-        data class Supported(val domain: AttackDeclarationDomainV1?) : Result
+        data class Supported(val domain: AttackDeclarationDomainV2?) : Result
 
         data object Unsupported : Result {
             val diagnostic: DiagnosticSignal = DiagnosticSignal(
@@ -37,9 +38,10 @@ object AttackDeclarationDomainMapper {
             return Result.Unsupported
         }
         val domain = action.attackDeclarationDomain ?: return Result.Unsupported
-        if (!isStructurallyRepresentable(domain)) return Result.Unsupported
+        if (!AttackDeclarationDomainValidator.isStructurallyValid(domain)) return Result.Unsupported
 
         val references = buildSet {
+            addAll(domain.attackerOrder)
             domain.attackerToDefenders.forEach { (attacker, defenders) ->
                 add(attacker)
                 addAll(defenders)
@@ -63,92 +65,45 @@ object AttackDeclarationDomainMapper {
         return Result.Supported(domain.toWireDomain())
     }
 
-    private fun isStructurallyRepresentable(domain: RulesAttackDeclarationDomain): Boolean {
-        val relation = domain.attackerToDefenders
-        if (relation.any { (_, defenders) ->
-                defenders.isEmpty() || defenders.size != defenders.toSet().size
-            }
-        ) return false
-        val attackers = relation.keys
+    private fun RulesAttackDeclarationDomain.toWireDomain(): AttackDeclarationDomainV2 {
+        val defenderOrder = attackerOrder
+            .flatMap { attackerId -> attackerToDefenders.getValue(attackerId) }
+            .distinct()
+        val relation = linkedMapOf<EntityId, List<EntityId>>()
+        attackerOrder.forEach { attackerId ->
+            relation[attackerId] = attackerToDefenders.getValue(attackerId).toList()
+        }
 
-        if (domain.mandatoryAttackers.size != domain.mandatoryAttackers.toSet().size ||
-            domain.mandatoryAttackers.any { it !in attackers }
-        ) return false
-        if (domain.maxAttackers?.let { it < 0 } == true) return false
-
-        for ((attacker, requirements) in domain.coAttackerRequirements) {
-            if (attacker !in attackers) return false
-            val requirementKeys = requirements.map { it.anyOf.toSet() }
-            if (requirementKeys.size != requirementKeys.toSet().size) return false
-            if (requirements.any { requirement ->
-                    requirement.anyOf.isEmpty() ||
-                        requirement.anyOf.size != requirement.anyOf.toSet().size ||
-                        requirement.anyOf.any { it == attacker || it !in attackers }
+        val coAttackers = linkedMapOf<EntityId, List<AttackCoAttackerRequirementV1>>()
+        attackerOrder.forEach { attackerId ->
+            coAttackerRequirements[attackerId]?.let { requirements ->
+                coAttackers[attackerId] = requirements.map { requirement ->
+                    AttackCoAttackerRequirementV1(anyOf = requirement.anyOf.toList())
                 }
-            ) return false
-        }
-
-        val banding = domain.bandConstraints.bandingAttackersByDefender
-        val nonBanding = domain.bandConstraints.nonBandingAttackersByDefender
-        val partitionEntries = mutableSetOf<Pair<EntityId, EntityId>>()
-        for ((defender, members) in banding) {
-            if (!isPartitionEntryValid(defender, members, relation)) return false
-            for (attacker in members) {
-                if (!partitionEntries.add(attacker to defender)) return false
-            }
-        }
-        for ((defender, members) in nonBanding) {
-            if (!isPartitionEntryValid(defender, members, relation)) return false
-            for (attacker in members) {
-                if (!partitionEntries.add(attacker to defender)) return false
             }
         }
 
-        return relation.all { (attacker, defenders) ->
-            defenders.all { defender -> attacker to defender in partitionEntries }
-        }
-    }
-
-    private fun isPartitionEntryValid(
-        defender: EntityId,
-        members: List<EntityId>,
-        relation: Map<EntityId, List<EntityId>>,
-    ): Boolean = members.isNotEmpty() &&
-        members.size == members.toSet().size &&
-        members.all { attacker -> relation[attacker]?.contains(defender) == true }
-
-    private fun RulesAttackDeclarationDomain.toWireDomain(): AttackDeclarationDomainV1 =
-        AttackDeclarationDomainV1(
-            attackerToDefenders = attackerToDefenders.canonicalEntityMap(),
-            mandatoryAttackers = mandatoryAttackers.sortedBy(EntityId::value),
+        return AttackDeclarationDomainV2(
+            attackerOrder = attackerOrder.toList(),
+            attackerToDefenders = relation,
+            mandatoryAttackers = mandatoryAttackers.toList(),
             canDeclareZeroAttackers = canDeclareZeroAttackers,
             maxAttackers = maxAttackers,
-            coAttackerRequirements = coAttackerRequirements
-                .entries
-                .sortedBy { (attacker, _) -> attacker.value }
-                .associate { (attacker, requirements) ->
-                    attacker to requirements
-                        .map { requirement ->
-                            AttackCoAttackerRequirementV1(
-                                anyOf = requirement.anyOf.sortedBy(EntityId::value),
-                            )
-                        }
-                        .sortedBy { requirement ->
-                            requirement.anyOf.joinToString(separator = "\u0000") { it.value }
-                        }
-                },
+            coAttackerRequirements = coAttackers,
             bandConstraints = AttackBandConstraintsV1(
                 bandingAttackersByDefender = bandConstraints.bandingAttackersByDefender
-                    .canonicalEntityMap(),
+                    .orderedBy(defenderOrder),
                 nonBandingAttackersByDefender = bandConstraints.nonBandingAttackersByDefender
-                    .canonicalEntityMap(),
+                    .orderedBy(defenderOrder),
             ),
         )
+    }
 
-    private fun Map<EntityId, List<EntityId>>.canonicalEntityMap(): Map<EntityId, List<EntityId>> =
-        entries
-            .sortedBy { (entityId, _) -> entityId.value }
-            .associate { (entityId, ids) ->
-                entityId to ids.sortedBy(EntityId::value)
-            }
+    private fun Map<EntityId, List<EntityId>>.orderedBy(
+        order: List<EntityId>,
+    ): Map<EntityId, List<EntityId>> = linkedMapOf<EntityId, List<EntityId>>().also { ordered ->
+        order.forEach { entityId ->
+            this[entityId]?.let { ids -> ordered[entityId] = ids.toList() }
+        }
+    }
 }

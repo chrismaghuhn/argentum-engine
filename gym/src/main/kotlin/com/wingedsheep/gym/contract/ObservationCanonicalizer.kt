@@ -159,53 +159,47 @@ internal object ObservationCanonicalizer {
     }
 
     /** Canonical semantic identity for the complete Rules-owned attacker declaration domain. */
-    private fun semanticAttackDeclarationDomain(domain: AttackDeclarationDomainV1): JsonObject {
-        require(domain.version == ATTACK_DECLARATION_DOMAIN_VERSION) {
+    private fun semanticAttackDeclarationDomain(domain: AttackDeclarationDomainV2): JsonObject {
+        require(domain.version == ATTACK_DECLARATION_DOMAIN_V2_VERSION) {
             "Unsupported attack declaration domain version: ${domain.version}"
         }
 
+        val defenderOrder = domain.attackerOrder
+            .flatMap { attackerId -> domain.attackerToDefenders.getValue(attackerId) }
+            .distinct()
         return buildJsonObject {
             put("version", domain.version)
-            put("attackerToDefenders", semanticEntityRelation(domain.attackerToDefenders))
+            put("attackerOrder", entityArray(domain.attackerOrder))
+            put("attackerToDefenders", orderedEntityRelation(domain.attackerOrder) { attackerId ->
+                domain.attackerToDefenders.getValue(attackerId)
+            })
             put(
                 "mandatoryAttackers",
                 buildJsonArray {
-                    domain.mandatoryAttackers
-                        .sortedBy(EntityId::value)
-                        .forEach { add(JsonPrimitive(it.value)) }
+                    domain.mandatoryAttackers.forEach { add(JsonPrimitive(it.value)) }
                 },
             )
             put("canDeclareZeroAttackers", domain.canDeclareZeroAttackers)
             put("maxAttackers", domain.maxAttackers)
             put("coAttackerRequirements", buildJsonObject {
-                domain.coAttackerRequirements
-                    .entries
-                    .sortedBy { (attacker, _) -> attacker.value }
-                    .forEach { (attacker, requirements) ->
+                domain.attackerOrder
+                    .filter { it in domain.coAttackerRequirements }
+                    .forEach { attacker ->
                         put(attacker.value, buildJsonArray {
-                            requirements
-                                .sortedBy { requirement ->
-                                    requirement.anyOf.sortedBy(EntityId::value)
-                                        .joinToString(separator = "\u0000") { it.value }
-                                }
-                                .forEach { requirement ->
-                                    add(buildJsonArray {
-                                        requirement.anyOf
-                                            .sortedBy(EntityId::value)
-                                            .forEach { add(JsonPrimitive(it.value)) }
-                                    })
-                                }
+                            domain.coAttackerRequirements.getValue(attacker).forEach { requirement ->
+                                add(entityArray(requirement.anyOf))
+                            }
                         })
                     }
             })
             put("bandConstraints", buildJsonObject {
                 put(
                     "bandingAttackersByDefender",
-                    semanticEntityRelation(domain.bandConstraints.bandingAttackersByDefender),
+                    orderedEntityListMap(defenderOrder, domain.bandConstraints.bandingAttackersByDefender),
                 )
                 put(
                     "nonBandingAttackersByDefender",
-                    semanticEntityRelation(domain.bandConstraints.nonBandingAttackersByDefender),
+                    orderedEntityListMap(defenderOrder, domain.bandConstraints.nonBandingAttackersByDefender),
                 )
             })
         }
@@ -303,16 +297,13 @@ internal object ObservationCanonicalizer {
         order.filter { it in values }.forEach { entityId -> put(entityId.value, values.getValue(entityId)) }
     }
 
-    private fun semanticEntityRelation(
-        relation: Map<EntityId, List<EntityId>>,
-    ): JsonObject = buildJsonObject {
-        relation.entries
-            .sortedBy { (entityId, _) -> entityId.value }
-            .forEach { (entityId, related) ->
-                put(entityId.value, buildJsonArray {
-                    related.sortedBy(EntityId::value).forEach { add(JsonPrimitive(it.value)) }
-                })
-            }
+    private fun orderedEntityListMap(
+        order: List<EntityId>,
+        values: Map<EntityId, List<EntityId>>,
+    ) = buildJsonObject {
+        order.filter { it in values }.forEach { entityId ->
+            put(entityId.value, entityArray(values.getValue(entityId)))
+        }
     }
 
     /**

@@ -591,7 +591,7 @@ class ObservationBuilder(
         actionId: Int,
         la: LegalAction,
         targetDomain: ActionTargetDomainV1,
-        attackDeclarationDomain: AttackDeclarationDomainV1?,
+        attackDeclarationDomain: AttackDeclarationDomainV2?,
         blockerDeclarationDomain: BlockerDeclarationDomainV1?,
     ): LegalActionView {
         val sacrificeInfo = la.additionalCostInfo
@@ -1860,6 +1860,6 @@ private data class ActionDomainMapping(
 private data class SupportedActionDomain(
     val action: LegalAction,
     val targetDomain: ActionTargetDomainV1,
-    val attackDeclarationDomain: AttackDeclarationDomainV1?,
+    val attackDeclarationDomain: AttackDeclarationDomainV2?,
     val blockerDeclarationDomain: BlockerDeclarationDomainV1?,
 )

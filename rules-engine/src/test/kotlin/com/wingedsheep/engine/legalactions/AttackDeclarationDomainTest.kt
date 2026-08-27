@@ -22,12 +22,36 @@ class AttackDeclarationDomainTest : FunSpec({
         ) shouldBe AttackDeclarationValidationResult.Accepted
     }
 
-    test("rejects a non-canonical certificate before evaluating the declaration") {
+    test("accepts relation map insertion order different from attacker order") {
         val domain = domain(
             relation = linkedMapOf(
                 attackerB to listOf(defenderOne),
                 attackerA to listOf(defenderOne),
             ),
+            attackerOrder = listOf(attackerA, attackerB),
+        )
+
+        AttackDeclarationDomainValidator.validate(domain, declaration(attackerA to defenderOne)) shouldBe
+            AttackDeclarationValidationResult.Accepted
+    }
+
+    test("rejects duplicate attacker order elements") {
+        val domain = domain(
+            relation = linkedMapOf(
+                attackerA to listOf(defenderOne),
+                attackerB to listOf(defenderOne),
+            ),
+            attackerOrder = listOf(attackerA, attackerA),
+        )
+
+        AttackDeclarationDomainValidator.validate(domain, declaration(attackerA to defenderOne)) shouldBe
+            rejected(AttackDeclarationRejection.MALFORMED_CERTIFICATE)
+    }
+
+    test("rejects attacker order and relation membership mismatch") {
+        val domain = domain(
+            relation = linkedMapOf(attackerA to listOf(defenderOne)),
+            attackerOrder = listOf(attackerB),
         )
 
         AttackDeclarationDomainValidator.validate(domain, declaration(attackerA to defenderOne)) shouldBe
@@ -119,6 +143,31 @@ class AttackDeclarationDomainTest : FunSpec({
             domain,
             declaration(attackerA to defenderOne, attackerB to defenderOne),
         ) shouldBe AttackDeclarationValidationResult.Accepted
+    }
+
+    test("canonicalizes co-attacker requirement instances by attacker ranks without deduplication") {
+        val requirements = listOf(
+            RulesCoAttackerRequirement(anyOf = listOf(attackerB)),
+            RulesCoAttackerRequirement(anyOf = listOf(attackerB)),
+            RulesCoAttackerRequirement(anyOf = listOf(attackerC)),
+        )
+        val domain = domain(
+            relation = linkedMapOf(
+                attackerA to listOf(defenderOne),
+                attackerB to listOf(defenderOne),
+                attackerC to listOf(defenderOne),
+            ),
+            attackerOrder = listOf(attackerA, attackerB, attackerC),
+            coAttackerRequirements = mapOf(attackerA to requirements),
+        )
+
+        AttackDeclarationDomainValidator.isStructurallyValid(domain) shouldBe true
+        AttackDeclarationDomainValidator.isStructurallyValid(
+            domain.copy(
+                coAttackerRequirements = mapOf(attackerA to requirements.reversed()),
+            ),
+        ) shouldBe false
+        domain.coAttackerRequirements.getValue(attackerA).count { it.anyOf == listOf(attackerB) } shouldBe 2
     }
 
     test("rejects duplicate band membership") {
@@ -238,6 +287,7 @@ private fun declaration(
 
 private fun domain(
     relation: Map<EntityId, List<EntityId>>,
+    attackerOrder: List<EntityId> = relation.keys.toList(),
     mandatoryAttackers: List<EntityId> = emptyList(),
     canDeclareZeroAttackers: Boolean = true,
     maxAttackers: Int? = null,
@@ -245,16 +295,19 @@ private fun domain(
     banding: Map<EntityId, List<EntityId>> = emptyMap(),
     nonBanding: Map<EntityId, List<EntityId>> = emptyMap(),
 ): RulesAttackDeclarationDomain = RulesAttackDeclarationDomain(
+    attackerOrder = attackerOrder,
     attackerToDefenders = relation,
     mandatoryAttackers = mandatoryAttackers,
-    canDeclareZeroAttackers = canDeclareZeroAttackers,
-    maxAttackers = maxAttackers,
-    coAttackerRequirements = coAttackerRequirements,
-    bandConstraints = RulesAttackBandConstraints(
-        bandingAttackersByDefender = banding.toCanonicalMap(),
-        nonBandingAttackersByDefender = nonBanding.completeFor(relation, banding).toCanonicalMap(),
-    ),
-)
+        canDeclareZeroAttackers = canDeclareZeroAttackers,
+        maxAttackers = maxAttackers,
+        coAttackerRequirements = coAttackerRequirements,
+        bandConstraints = RulesAttackBandConstraints(
+            bandingAttackersByDefender = banding.toCanonicalMap(attackerOrder),
+            nonBandingAttackersByDefender = nonBanding
+                .completeFor(relation, banding, attackerOrder)
+                .toCanonicalMap(attackerOrder),
+        ),
+    )
 
 private fun rejected(reason: AttackDeclarationRejection): AttackDeclarationValidationResult =
     AttackDeclarationValidationResult.Rejected(reason)
@@ -262,19 +315,26 @@ private fun rejected(reason: AttackDeclarationRejection): AttackDeclarationValid
 private fun Map<EntityId, List<EntityId>>.completeFor(
     relation: Map<EntityId, List<EntityId>>,
     banding: Map<EntityId, List<EntityId>>,
+    attackerOrder: List<EntityId>,
 ): Map<EntityId, List<EntityId>> {
-    val result = entries.associate { (defender, attackers) -> defender to attackers.toMutableList() }.toMutableMap()
-    relation.forEach { (attacker, defenders) ->
+    val result = linkedMapOf<EntityId, MutableSet<EntityId>>()
+    entries.forEach { (defender, attackers) ->
+        result.getOrPut(defender) { linkedSetOf() }.addAll(attackers)
+    }
+    attackerOrder.forEach { attacker ->
+        val defenders = relation[attacker].orEmpty()
         defenders.forEach { defender ->
             if (attacker !in banding[defender].orEmpty() && attacker !in this[defender].orEmpty()) {
-                result.getOrPut(defender) { mutableListOf() }.add(attacker)
+                result.getOrPut(defender) { linkedSetOf() }.add(attacker)
             }
         }
     }
-    return result.mapValues { (_, attackers) -> attackers.distinct().sortedBy(EntityId::value) }
+    return result.mapValues { (_, attackers) -> attackerOrder.filter(attackers::contains) }
 }
 
-private fun Map<EntityId, List<EntityId>>.toCanonicalMap(): Map<EntityId, List<EntityId>> =
-    entries.sortedBy { (defender, _) -> defender.value }.associate { (defender, attackers) ->
-        defender to attackers.distinct().sortedBy(EntityId::value)
+private fun Map<EntityId, List<EntityId>>.toCanonicalMap(
+    attackerOrder: List<EntityId>,
+): Map<EntityId, List<EntityId>> =
+    entries.associate { (defender, attackers) ->
+        defender to attackerOrder.filter(attackers::contains)
     }

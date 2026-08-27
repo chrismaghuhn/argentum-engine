@@ -32,7 +32,7 @@ import io.kotest.matchers.shouldBe
  * non-monetary declaration language as the Rules pre-tax validator.
  */
 class AttackDeclarationDomainEquivalenceTest : FunSpec({
-    test("RED: attack candidates follow combat object rank instead of EntityId value") {
+    test("attack candidates follow combat object rank instead of EntityId value") {
         val fixture = asymmetricDefenderFixture()
         val idsByEntityId = fixture.attackerIds.sortedBy(EntityId::value)
         val rankById = mapOf(
@@ -45,11 +45,11 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
             )
         )
 
-        rankedFixture.certificate().attackerToDefenders.keys.toList() shouldBe
+        rankedFixture.certificate().attackerOrder shouldBe
             idsByEntityId.sortedBy { rankedFixture.state.objectIdentityStamps.getValue(it) }
     }
 
-    test("RED: mixed attack defenders follow seat order then combat object order") {
+    test("mixed attack defenders follow seat order then combat object order") {
         val fixture = planeswalkerAndBattleDefenderFixture()
         val attacker = fixture.attackerIds.single()
         val playerDefender = fixture.state.activePlayers.first { it != fixture.player }
@@ -83,6 +83,62 @@ class AttackDeclarationDomainEquivalenceTest : FunSpec({
 
     test("matches Rules for generic, projected, and this-turn mandatory attackers") {
         assertEquivalent(mandatoryFixture())
+    }
+
+    test("mandatory attackers preserve attackerOrder rank") {
+        val fixture = mandatoryFixture()
+        val first = fixture.attackerIds[0]
+        val second = fixture.attackerIds[1]
+        val ranked = fixture.copy(
+            state = fixture.state.copy(
+                objectIdentityStamps = fixture.state.objectIdentityStamps +
+                    (first to 200L) +
+                    (second to 100L),
+            ),
+        )
+        val domain = ranked.certificate()
+
+        domain.attackerOrder shouldBe listOf(second, first)
+        domain.mandatoryAttackers shouldBe domain.attackerOrder
+    }
+
+    test("co-attacker candidates preserve attackerOrder rank") {
+        val fixture = coAttackerOrderingFixture()
+        val puma = fixture.attackerIds[0]
+        val firstQualifying = fixture.attackerIds[1]
+        val secondQualifying = fixture.attackerIds[2]
+        val ranked = fixture.copy(
+            state = fixture.state.copy(
+                objectIdentityStamps = fixture.state.objectIdentityStamps +
+                    (puma to 300L) +
+                    (firstQualifying to 100L) +
+                    (secondQualifying to 200L),
+            ),
+        )
+        val domain = ranked.certificate()
+
+        domain.coAttackerRequirements.getValue(puma).single().anyOf shouldBe
+            listOf(firstQualifying, secondQualifying)
+    }
+
+    test("band partitions preserve attackerOrder rank") {
+        val fixture = fourAttackerBandFixture()
+        val ranked = fixture.copy(
+            state = fixture.state.copy(
+                objectIdentityStamps = fixture.state.objectIdentityStamps +
+                    fixture.attackerIds.mapIndexed { index, attackerId ->
+                        attackerId to (400L - index * 100L)
+                    },
+            ),
+        )
+        val domain = ranked.certificate()
+        val defender = ranked.state.activePlayers.first { it != ranked.player }
+        val projected = ranked.state.projectedState
+
+        domain.bandConstraints.bandingAttackersByDefender.getValue(defender) shouldBe
+            domain.attackerOrder.filter { projected.hasKeyword(it, Keyword.BANDING) }
+        domain.bandConstraints.nonBandingAttackersByDefender.getValue(defender) shouldBe
+            domain.attackerOrder.filterNot { projected.hasKeyword(it, Keyword.BANDING) }
     }
 
     test("matches Rules for Goad when a non-goader defender is available") {
@@ -259,14 +315,14 @@ private fun assertEquivalent(fixture: Fixture) {
         .filter { attackerId ->
             projected.isCreature(attackerId) && projected.getController(attackerId) == fixture.player
         }
-        .sortedBy(EntityId::value)
+        .distinct()
     val candidateDefenders = (
-        fixture.state.getOpponents(fixture.player) +
+        fixture.state.activePlayers.filter { it != fixture.player } +
             fixture.state.getBattlefield().filter { defenderId ->
                 projected.isPlaneswalker(defenderId) || projected.isBattle(defenderId)
             }
         )
-        .sortedBy(EntityId::value)
+        .distinct()
     val certificate = fixture.certificate()
 
     for ((index, declaration) in declarationUniverse(fixture.player, candidateAttackers, candidateDefenders)
@@ -363,6 +419,21 @@ private fun coAttackerAndCapFixture(): Fixture {
     driver.removeSummoningSickness(puma)
     driver.removeSummoningSickness(courser)
     return fixture("co-attacker-and-cap", driver, players, listOf(puma, courser))
+}
+
+private fun coAttackerOrderingFixture(): Fixture {
+    val (driver, players) = newDriver()
+    val active = players[0]
+    val puma = driver.putCreatureOnBattlefield(active, "Scarred Puma")
+    val firstQualifying = driver.putCreatureOnBattlefield(active, "Centaur Courser")
+    val secondQualifying = driver.putCreatureOnBattlefield(active, "Centaur Courser")
+    listOf(puma, firstQualifying, secondQualifying).forEach(driver::removeSummoningSickness)
+    return fixture(
+        "co-attacker-ordering",
+        driver,
+        players,
+        listOf(puma, firstQualifying, secondQualifying),
+    )
 }
 
 private fun tauntFixture(): Fixture {
