@@ -10,6 +10,9 @@ import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.gym.contract.CardSelectionDomain
+import com.wingedsheep.gym.contract.BLOCKER_DECLARATION_DOMAIN_VERSION
+import com.wingedsheep.gym.contract.BlockRequirementV1
+import com.wingedsheep.gym.contract.BlockerDeclarationDomainV1
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.DistributionDomain
 import com.wingedsheep.gym.contract.ATTACK_DECLARATION_DOMAIN_VERSION
@@ -125,6 +128,7 @@ data class EdgeAmount(val edgeId: String, val amount: Int)
 internal val EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS = setOf(
     "attackers",
     "bands",
+    "blockers",
     "paymentStrategy",
     "xValue",
     "targets",
@@ -133,6 +137,9 @@ internal val EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS = setOf(
     "costPayment",
     "repeatCount",
 )
+
+private const val MAX_PUBLIC_BLOCKER_OPTIONS_PER_BLOCKER = 1_000_000
+private const val MAX_PUBLIC_BLOCKER_SEARCH_NODES = 4_000_000L
 
 /**
  * Deterministic controller for the exact-pair acceptance corpus.
@@ -268,6 +275,38 @@ class DeterministicExternalPolicy {
                     family = "DECLARE_ATTACKERS",
                     code = "A5_DECISION_GAP",
                     reason = "Public attack declaration omitted bands",
+                    actionKind = action.kind,
+                )
+            completedChoice = true
+        }
+
+        if ("blockers" in requiredFieldSet) {
+            if (action.kind != "DeclareBlockers" || requiredFields != listOf("blockers")) {
+                return SemanticChoice.Gap(
+                    family = "DECLARE_BLOCKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "DeclareBlockers required fields are not the supported public V1 shape",
+                    actionKind = action.kind,
+                    publicDomain = "requiredPayloadFields=$requiredFields",
+                )
+            }
+            val blockerPayload = publicBlockerDeclarationPayload(action.blockerDeclarationDomain)
+                ?: return SemanticChoice.Gap(
+                    family = "DECLARE_BLOCKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "DeclareBlockers published no complete BlockerDeclarationDomainV1",
+                    actionKind = action.kind,
+                    publicDomain =
+                        "requiredPayloadFields=$requiredFields; " +
+                            "blockerDeclarationDomain=${action.blockerDeclarationDomain}",
+                    proposedFollowUp =
+                        "Publish a complete perspective-safe BlockerDeclarationDomainV1",
+                )
+            payload["blockers"] = blockerPayload["blockers"]
+                ?: return SemanticChoice.Gap(
+                    family = "DECLARE_BLOCKERS",
+                    code = "A5_DECISION_GAP",
+                    reason = "Public blocker declaration omitted blockers",
                     actionKind = action.kind,
                 )
             completedChoice = true
@@ -540,6 +579,153 @@ class DeterministicExternalPolicy {
             // V1 lets this deterministic acceptance policy choose the explicit empty band list.
             put("bands", JsonArray(emptyList()))
         }
+    }
+
+    /**
+     * Construct one legal blocker declaration using only the published V1 certificate. This is a
+     * test-only external controller, not a Rules validator: it searches the finite public choice
+     * space and applies only the constraints explicitly published by Rules. It never sees
+     * private engine state, registry internals, engine IDs outside the DTO, or a native combat
+     * policy.
+     */
+    private fun publicBlockerDeclarationPayload(
+        domain: BlockerDeclarationDomainV1?,
+    ): JsonObject? {
+        if (domain == null || domain.version != BLOCKER_DECLARATION_DOMAIN_VERSION) return null
+        if (domain.blockerOrder.distinct().size != domain.blockerOrder.size ||
+            domain.attackerOrder.distinct().size != domain.attackerOrder.size
+        ) return null
+        if (domain.blockerToAttackers.keys.toList() != domain.blockerOrder ||
+            domain.maxAttackersByBlocker.keys.toList() != domain.blockerOrder
+        ) return null
+
+        val options = domain.blockerOrder.map { blockerId ->
+            publicBlockerAssignmentOptions(
+                domain.blockerToAttackers[blockerId] ?: return null,
+                domain.maxAttackersByBlocker[blockerId] ?: return null,
+            ) ?: return null
+        }
+
+        val selected = if (domain.canDeclareZeroBlockers) {
+            linkedMapOf()
+        } else {
+            val result = linkedMapOf<EntityId, List<EntityId>>()
+            var nodes = 0L
+            fun search(index: Int, selectedBlockerCount: Int): Boolean {
+                if (nodes++ >= MAX_PUBLIC_BLOCKER_SEARCH_NODES) return false
+                if (index == domain.blockerOrder.size) {
+                    return publicBlockerDeclarationSatisfies(domain, result)
+                }
+                val blockerId = domain.blockerOrder[index]
+                for (assignment in options[index]) {
+                    val nextCount = selectedBlockerCount + if (assignment.isEmpty()) 0 else 1
+                    if (domain.globalMaxBlockers != null && nextCount > domain.globalMaxBlockers) continue
+                    if (assignment.isEmpty()) {
+                        if (search(index + 1, nextCount)) return true
+                    } else {
+                        result[blockerId] = assignment
+                        if (search(index + 1, nextCount)) return true
+                        result.remove(blockerId)
+                    }
+                }
+                return false
+            }
+            if (!search(0, 0)) return null
+            result.toMap()
+        }
+
+        return buildJsonObject {
+            put("blockers", buildJsonObject {
+                domain.blockerOrder.forEach { blockerId ->
+                    selected[blockerId]?.let { attackers ->
+                        put(
+                            blockerId.value,
+                            JsonArray(attackers.map { attackerId -> JsonPrimitive(attackerId.value) }),
+                        )
+                    }
+                }
+            })
+        }
+    }
+
+    private fun publicBlockerAssignmentOptions(
+        candidates: List<EntityId>,
+        maxCount: Int,
+    ): List<List<EntityId>>? {
+        if (candidates.distinct().size != candidates.size || maxCount < 0) return null
+        val cap = minOf(maxCount, candidates.size)
+        val result = mutableListOf<List<EntityId>>()
+        val current = mutableListOf<EntityId>()
+        fun visit(index: Int) {
+            if (result.size >= MAX_PUBLIC_BLOCKER_OPTIONS_PER_BLOCKER) return
+            if (index == candidates.size) {
+                result += current.toList()
+                return
+            }
+            visit(index + 1)
+            if (current.size < cap) {
+                current += candidates[index]
+                visit(index + 1)
+                current.removeAt(current.lastIndex)
+            }
+        }
+        visit(0)
+        return result.takeIf { it.isNotEmpty() &&
+            (candidates.size < 20 || result.size < MAX_PUBLIC_BLOCKER_OPTIONS_PER_BLOCKER)
+        }
+    }
+
+    private fun publicBlockerDeclarationSatisfies(
+        domain: BlockerDeclarationDomainV1,
+        blockers: Map<EntityId, List<EntityId>>,
+    ): Boolean {
+        if (blockers.keys.any { it !in domain.blockerOrder }) return false
+        if (blockers.any { (blockerId, attackers) ->
+                attackers.isEmpty() ||
+                    attackers.distinct().size != attackers.size ||
+                    attackers.any { it !in domain.blockerToAttackers.getValue(blockerId) } ||
+                    attackers.size > domain.maxAttackersByBlocker.getValue(blockerId)
+            }
+        ) return false
+
+        val counts = blockers.values.flatten().groupingBy { it }.eachCount()
+        if (domain.minBlockersByAttacker.any { (attackerId, minimum) ->
+                counts.getOrDefault(attackerId, 0).let { count ->
+                    count > 0 && count < minimum
+                }
+            }
+        ) return false
+        if (counts.any { (attackerId, count) ->
+                count > domain.maxBlockersByAttacker.getOrDefault(attackerId, Int.MAX_VALUE)
+            }
+        ) return false
+        if (domain.globalMaxBlockers != null && blockers.keys.size > domain.globalMaxBlockers) return false
+        if (domain.coBlockerRequirements.any { (blockerId, requirements) ->
+                blockerId in blockers && requirements.any { requirement ->
+                    requirement.eligibleCoBlockers.none { it in blockers }
+                }
+            }
+        ) return false
+
+        val satisfied = domain.requirements.count { requirement ->
+            when (requirement) {
+                is BlockRequirementV1.BlockSpecific ->
+                    requirement.attackerId in blockers[requirement.blockerId].orEmpty()
+                is BlockRequirementV1.BlockOneOf ->
+                    blockers[requirement.blockerId].orEmpty().any { it in requirement.attackerIds }
+                is BlockRequirementV1.AttackerMustBeBlockedIfAble ->
+                    domain.blockerOrder.none {
+                        requirement.attackerId in domain.blockerToAttackers.getValue(it)
+                    } || blockers.values.any { requirement.attackerId in it }
+                is BlockRequirementV1.AttackerMustBeBlockedByAll ->
+                    domain.blockerOrder
+                        .filter { requirement.attackerId in domain.blockerToAttackers.getValue(it) }
+                        .all { requirement.attackerId in blockers[it].orEmpty() }
+                is BlockRequirementV1.BlockerMustBlockIfAble ->
+                    !blockers[requirement.blockerId].isNullOrEmpty()
+            }
+        }
+        return satisfied >= domain.minimumSatisfiedRequirementCount
     }
 
     private fun firstAttackSubset(

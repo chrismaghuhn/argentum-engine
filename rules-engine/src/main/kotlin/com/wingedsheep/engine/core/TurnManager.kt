@@ -48,6 +48,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.replacement.ReplacementEffectProcessor
 import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
+import com.wingedsheep.engine.legalactions.RulesBlockerDeclarationDomainResult
 import com.wingedsheep.sdk.scripting.Duration
 
 /**
@@ -1050,6 +1051,12 @@ class TurnManager(
         playerId: EntityId,
     ): RulesAttackDeclarationDomainResult =
         combatManager.getAttackDeclarationDomain(state, playerId)
+
+    internal fun getBlockerDeclarationDomain(
+        state: GameState,
+        playerId: EntityId,
+    ): RulesBlockerDeclarationDomainResult =
+        combatManager.getBlockerDeclarationDomain(state, playerId)
 
     fun getMandatoryBlockerAssignments(state: GameState, playerId: EntityId): Map<EntityId, List<EntityId>> {
         return combatManager.getMandatoryBlockerAssignments(state, playerId)

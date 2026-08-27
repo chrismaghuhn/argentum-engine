@@ -2,6 +2,7 @@ package com.wingedsheep.engine.legalactions
 
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.DeclareAttackers
+import com.wingedsheep.engine.core.DeclareBlockers
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.targets.TargetChooser
@@ -105,6 +106,15 @@ data class LegalAction(
     override val validBlockers: List<EntityId>? = null,
     val blockerMaxBlockCounts: Map<EntityId, Int>? = null,
     val mandatoryBlockerAssignments: Map<EntityId, List<EntityId>>? = null,
+    /** Complete Rules-owned blocker declaration certificate, when this is a supported action. */
+    val blockerDeclarationDomain: RulesBlockerDeclarationDomain? = null,
+    val blockerDeclarationDomainSupport: BlockerDeclarationDomainSupport = if (action is DeclareBlockers) {
+        BlockerDeclarationDomainSupport.UNSUPPORTED(
+            BlockerDeclarationDomainUnsupportedReason.CERTIFICATE_MISSING,
+        )
+    } else {
+        BlockerDeclarationDomainSupport.SUPPORTED
+    },
 
     // Costs
     val manaCostString: String? = null,

@@ -14,6 +14,7 @@ import com.wingedsheep.engine.mechanics.combat.rules.defaultAttackDefenderRules
 import com.wingedsheep.engine.mechanics.combat.rules.defaultAttackRestrictionRules
 import com.wingedsheep.engine.mechanics.combat.rules.defaultBlockEvasionRules
 import com.wingedsheep.engine.legalactions.RulesAttackDeclarationDomainResult
+import com.wingedsheep.engine.legalactions.RulesBlockerDeclarationDomainResult
 
 /**
  * Manages combat flow: attackers, blockers, damage.
@@ -80,6 +81,12 @@ class CombatManager(
 
     fun getMandatoryBlockerAssignments(state: GameState, blockingPlayer: EntityId): Map<EntityId, List<EntityId>> =
         blockPhase.getMandatoryBlockerAssignments(state, blockingPlayer)
+
+    internal fun getBlockerDeclarationDomain(
+        state: GameState,
+        blockingPlayer: EntityId,
+    ): RulesBlockerDeclarationDomainResult =
+        blockPhase.getBlockerDeclarationDomain(state, blockingPlayer)
 
     fun getMandatoryAttackers(state: GameState, attackingPlayer: EntityId): List<EntityId> =
         attackPhase.getMandatoryAttackers(state, attackingPlayer)

@@ -17,6 +17,7 @@ import com.wingedsheep.engine.legalactions.LegalActionEnumerator
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
 
 /**
  * A stateful game environment for AI agents, MCTS, and reinforcement learning.
@@ -215,6 +216,12 @@ class GameEnvironment private constructor(
         check(!isTruncated) { "Cannot step a truncated environment" }
 
         validateActionMembership(action)
+        if (action is DeclareBlockers) {
+            val current = legalActions().firstOrNull {
+                isCurrentActionCandidate(it.action, action)
+            }
+            if (current != null) BlockerDeclarationDomainSubmission.requireSupported(current)
+        }
         return processAndCommit(action)
     }
 
@@ -247,19 +254,37 @@ class GameEnvironment private constructor(
     }
 
     /** Strict counterpart of [stepFromCandidate] for the trusted Gym adapter. */
-    internal fun stepFromCandidateStrict(candidate: GameAction, submitted: GameAction): StepResult {
+    internal fun stepFromCandidateStrict(candidate: LegalAction, submitted: GameAction): StepResult {
         check(playerIds.isNotEmpty()) { "Call reset() before stepStrict()" }
         check(!isTerminal) { "Cannot step a terminal environment" }
         check(!isTruncated) { "Cannot step a truncated environment" }
-        require(candidate !is SubmitDecision && submitted !is SubmitDecision) {
+        require(candidate.action !is SubmitDecision && submitted !is SubmitDecision) {
             "Structured action payloads are only valid for legal game actions"
         }
 
         val currentActions = legalActions()
-        require(currentActions.any { it.action == candidate }) {
-            "Action candidate is not in the current legal action set for ${agentToAct}: $candidate"
+        val current = currentActions.firstOrNull {
+            isCurrentActionCandidate(it.action, candidate.action)
         }
-        require(isCurrentActionCandidate(candidate, submitted)) {
+        require(current != null) {
+            "Action candidate is not in the current legal action set for ${agentToAct}: ${candidate.action}"
+        }
+
+        // A strict blocker submission must never reach BlockPhaseManager's compatibility path if
+        // the live producer can no longer publish a supported certificate. Compare the complete
+        // registered Rules certificate as well: the action handle may still be current by actor
+        // identity while its old domain snapshot is no longer the live contract.
+        if (candidate.action is DeclareBlockers) {
+            BlockerDeclarationDomainSubmission.requireSupported(current)
+            BlockerDeclarationDomainSubmission.requireSupported(candidate)
+            require(
+                candidate.blockerDeclarationDomain == current.blockerDeclarationDomain &&
+                    candidate.blockerDeclarationDomainSupport == current.blockerDeclarationDomainSupport
+            ) {
+                "Structured blocker declaration domain is stale for the current action"
+            }
+        }
+        require(isCurrentActionCandidate(candidate.action, submitted)) {
             "Structured action does not belong to the selected current legal candidate: $submitted"
         }
 
