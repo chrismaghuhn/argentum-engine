@@ -101,7 +101,7 @@ data class CompactReplay(
          * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint; v4 adds
          * the joint floating-mana provenance state and the explicitly versioned
          * PaymentStrategy.ExplicitV2 action carrier. The action-level target-domain fields,
-         * AttackDeclarationDomainV1, and the v1.20 SchemaHash are additive Gym observation
+         * attack-declaration domain DTOs, and Gym schema hashes are additive observation
          * contract data and do not change replay reconstruction semantics. The codec still
          * tolerates unknown fields on supported versions, but rejects versions newer than this
          * constant before deserialization.

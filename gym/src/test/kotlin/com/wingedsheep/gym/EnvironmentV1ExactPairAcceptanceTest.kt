@@ -30,7 +30,7 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationCanonicalizer
 import com.wingedsheep.gym.contract.AttackBandConstraintsV1
 import com.wingedsheep.gym.contract.AttackCoAttackerRequirementV1
-import com.wingedsheep.gym.contract.AttackDeclarationDomainV1
+import com.wingedsheep.gym.contract.AttackDeclarationDomainV2
 import com.wingedsheep.gym.contract.ActionTargetDomainV1
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PaymentCostKind
@@ -742,6 +742,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         val action = attackPolicyAction(
             domain = attackPolicyDomain(
                 attackerToDefenders = emptyMap(),
+                attackerOrder = emptyList(),
                 canDeclareZeroAttackers = true,
             ),
         )
@@ -762,6 +763,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         val action = attackPolicyAction(
             domain = attackPolicyDomain(
                 attackerToDefenders = mapOf(attacker to listOf(defender)),
+                attackerOrder = listOf(attacker),
                 mandatoryAttackers = listOf(attacker),
                 canDeclareZeroAttackers = false,
                 maxAttackers = 1,
@@ -791,6 +793,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     required to listOf(requiredDefender),
                     coAttacker to listOf(coAttackerDefender),
                 ),
+                attackerOrder = listOf(required, coAttacker),
                 mandatoryAttackers = listOf(required),
                 canDeclareZeroAttackers = false,
                 maxAttackers = 2,
@@ -825,6 +828,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     attackerB to listOf(defender),
                     attackerC to listOf(defender),
                 ),
+                attackerOrder = listOf(attackerA, attackerB, attackerC),
                 canDeclareZeroAttackers = false,
                 maxAttackers = 1,
             ),
@@ -840,7 +844,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         payload.getValue("attackers").jsonObject.size shouldBe 1
     }
 
-    test("ATTACKPOL-05 chooses each defender only from that attacker's relation") {
+    test("ATTACKPOL-05 uses the first published defender for each attacker") {
         val attackerA = EntityId("attacker-a")
         val attackerB = EntityId("attacker-b")
         val defenderA = EntityId("defender-a")
@@ -850,8 +854,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             domain = attackPolicyDomain(
                 attackerToDefenders = mapOf(
                     attackerA to listOf(wrongForB, defenderA),
-                    attackerB to listOf(wrongForB, defenderB),
+                    attackerB to listOf(defenderB, wrongForB),
                 ),
+                attackerOrder = listOf(attackerA, attackerB),
                 mandatoryAttackers = listOf(attackerA, attackerB),
                 canDeclareZeroAttackers = false,
                 maxAttackers = 2,
@@ -867,10 +872,38 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
         payload["attackers"] shouldBe JsonObject(
             mapOf(
-                attackerA.value to JsonPrimitive(defenderA.value),
+                attackerA.value to JsonPrimitive(wrongForB.value),
                 attackerB.value to JsonPrimitive(defenderB.value),
             ),
         )
+    }
+
+    test("ATTACKPOL-10 preserves the published attacker sequence in the payload") {
+        val attackerB = EntityId("attacker-b")
+        val attackerA = EntityId("attacker-a")
+        val defender = EntityId("defender")
+        val action = attackPolicyAction(
+            domain = attackPolicyDomain(
+                attackerToDefenders = linkedMapOf(
+                    attackerB to listOf(defender),
+                    attackerA to listOf(defender),
+                ),
+                attackerOrder = listOf(attackerB, attackerA),
+                mandatoryAttackers = listOf(attackerB, attackerA),
+                canDeclareZeroAttackers = false,
+                maxAttackers = 2,
+            ),
+        )
+
+        val payload = policyPayload(
+            DeterministicExternalPolicy().choose(
+                publicActionObservation(action),
+                DeterministicPolicyState(policySeed = 1L),
+            ),
+        )
+
+        payload.getValue("attackers").jsonObject.keys.toList() shouldBe
+            listOf(attackerB.value, attackerA.value)
     }
 
     test("ATTACKPOL-06 fails closed when the public attack domain is missing") {
@@ -890,6 +923,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 attackPolicyAction(
                     domain = attackPolicyDomain(
                         attackerToDefenders = mapOf(attacker to emptyList()),
+                        attackerOrder = listOf(attacker),
                         mandatoryAttackers = listOf(attacker),
                         canDeclareZeroAttackers = false,
                         maxAttackers = 1,
@@ -910,6 +944,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         val action = attackPolicyAction(
             domain = attackPolicyDomain(
                 attackerToDefenders = mapOf(attacker to listOf(domainDefender)),
+                attackerOrder = listOf(attacker),
                 mandatoryAttackers = listOf(attacker),
                 canDeclareZeroAttackers = false,
                 maxAttackers = 1,
@@ -934,6 +969,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         val action = attackPolicyAction(
             domain = attackPolicyDomain(
                 attackerToDefenders = mapOf(attacker to listOf(EntityId("defender-bands"))),
+                attackerOrder = listOf(attacker),
                 mandatoryAttackers = listOf(attacker),
                 canDeclareZeroAttackers = false,
                 maxAttackers = 1,
@@ -1148,6 +1184,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     seat1 = "Chevill",
                     rosterLabel = "Akiri-vs-Chevill",
                 ),
+                policySeedOverride = -1059386116538784978L,
             )
             println("ENVIRONMENT_V1_SEED_ZERO_REPRODUCER\n$result")
             result.failure?.let { failure ->
@@ -2912,8 +2949,9 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             episode: EpisodeConfig,
             envConfig: EnvConfig = episode.envConfig(),
             replayTraceSink: ((ReplayTrace) -> Unit)? = null,
+            policySeedOverride: Long? = null,
         ): EpisodeResult {
-            val policyState = DeterministicPolicyState(policySeed(episode))
+            val policyState = DeterministicPolicyState(policySeedOverride ?: policySeed(episode))
             var state = policyState
             var envId: EnvId? = null
             var observation: TrainingObservation? = null
@@ -3601,7 +3639,7 @@ private fun choiceBearingCostPaymentAction(
 )
 
 private fun attackPolicyAction(
-    domain: AttackDeclarationDomainV1?,
+    domain: AttackDeclarationDomainV2?,
     targetEntityIds: List<EntityId> = emptyList(),
 ): LegalActionView = LegalActionView(
     actionId = 201,
@@ -3621,19 +3659,22 @@ private fun attackPolicyAction(
 
 private fun attackPolicyDomain(
     attackerToDefenders: Map<EntityId, List<EntityId>>,
+    attackerOrder: List<EntityId>,
     mandatoryAttackers: List<EntityId> = emptyList(),
     canDeclareZeroAttackers: Boolean = false,
     maxAttackers: Int? = null,
     coAttackerRequirements: Map<EntityId, List<AttackCoAttackerRequirementV1>> = emptyMap(),
-): AttackDeclarationDomainV1 {
-    val nonBandingAttackersByDefender = attackerToDefenders.entries
-        .flatMap { (attacker, defenders) ->
-            defenders.map { defender -> defender to attacker }
+): AttackDeclarationDomainV2 {
+    val nonBandingAttackersByDefender = linkedMapOf<EntityId, List<EntityId>>()
+    for (attacker in attackerOrder) {
+        for (defender in attackerToDefenders.getValue(attacker)) {
+            nonBandingAttackersByDefender[defender] =
+                nonBandingAttackersByDefender[defender].orEmpty() + attacker
         }
-        .groupBy({ it.first }, { it.second })
-        .mapValues { (_, attackers) -> attackers.sortedBy(EntityId::value) }
+    }
 
-    return AttackDeclarationDomainV1(
+    return AttackDeclarationDomainV2(
+        attackerOrder = attackerOrder,
         attackerToDefenders = attackerToDefenders,
         mandatoryAttackers = mandatoryAttackers,
         canDeclareZeroAttackers = canDeclareZeroAttackers,

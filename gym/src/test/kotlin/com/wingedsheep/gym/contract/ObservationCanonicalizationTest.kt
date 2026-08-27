@@ -139,7 +139,7 @@ class ObservationCanonicalizationTest : FunSpec({
 
     fun withAttackDeclarationDomain(
         base: TrainingObservation,
-        domain: AttackDeclarationDomainV1?,
+        domain: AttackDeclarationDomainV2?,
     ): TrainingObservation = base.copy(
         legalActions = listOf(
             base.legalActions.first().copy(
@@ -321,9 +321,10 @@ class ObservationCanonicalizationTest : FunSpec({
         val attackerB = EntityId("attacker-b")
         val defenderA = EntityId("defender-a")
         val defenderB = EntityId("defender-b")
-        val domain = AttackDeclarationDomainV1(
+        val domain = AttackDeclarationDomainV2(
+            attackerOrder = listOf(attackerB, attackerA),
             attackerToDefenders = linkedMapOf(
-                attackerB to listOf(defenderB, defenderA),
+                attackerB to listOf(defenderA, defenderB),
                 attackerA to listOf(defenderA),
             ),
             mandatoryAttackers = listOf(attackerB, attackerA),
@@ -345,7 +346,6 @@ class ObservationCanonicalizationTest : FunSpec({
                 attackerA to listOf(defenderA),
                 attackerB to listOf(defenderA, defenderB),
             ),
-            mandatoryAttackers = listOf(attackerA, attackerB),
             bandConstraints = AttackBandConstraintsV1(
                 bandingAttackersByDefender = linkedMapOf(defenderA to listOf(attackerB)),
                 nonBandingAttackersByDefender = linkedMapOf(
@@ -364,6 +364,7 @@ class ObservationCanonicalizationTest : FunSpec({
 
         val wire = ObservationCanonicalizer.wireJson(first)
         wire shouldContain "\"attackDeclarationDomain\""
+        wire shouldContain "\"attackerOrder\""
         wire shouldContain "\"attackerToDefenders\""
         wire shouldContain "\"coAttackerRequirements\""
         wire shouldContain "\"bandConstraints\""
@@ -386,6 +387,49 @@ class ObservationCanonicalizationTest : FunSpec({
         ).forEach { variant ->
             StateDigest.compute(withAttackDeclarationDomain(base, variant)) shouldNotBe baselineDigest
         }
+    }
+
+    test("attack candidate sequence is not erased from semantic identity") {
+        val base = observation(environment())
+        val attackerA = EntityId("attacker-a")
+        val attackerB = EntityId("attacker-b")
+        val defenderA = EntityId("defender-a")
+        val defenderB = EntityId("defender-b")
+        val first = AttackDeclarationDomainV2(
+            attackerOrder = listOf(attackerB, attackerA),
+            attackerToDefenders = linkedMapOf(
+                attackerB to listOf(defenderA, defenderB),
+                attackerA to listOf(defenderA),
+            ),
+            mandatoryAttackers = listOf(attackerB, attackerA),
+            canDeclareZeroAttackers = false,
+            maxAttackers = 2,
+            coAttackerRequirements = emptyMap(),
+            bandConstraints = AttackBandConstraintsV1(
+                bandingAttackersByDefender = emptyMap(),
+                nonBandingAttackersByDefender = linkedMapOf(
+                    defenderB to listOf(attackerB),
+                    defenderA to listOf(attackerB, attackerA),
+                ),
+            ),
+        )
+        val reversed = first.copy(
+            attackerOrder = listOf(attackerA, attackerB),
+            attackerToDefenders = linkedMapOf(
+                attackerA to listOf(defenderA),
+                attackerB to listOf(defenderA, defenderB),
+            ),
+            mandatoryAttackers = listOf(attackerA, attackerB),
+            bandConstraints = first.bandConstraints.copy(
+                nonBandingAttackersByDefender = linkedMapOf(
+                    defenderB to listOf(attackerB),
+                    defenderA to listOf(attackerA, attackerB),
+                ),
+            ),
+        )
+
+        ObservationCanonicalizer.semanticJson(withAttackDeclarationDomain(base, first)) shouldNotBe
+            ObservationCanonicalizer.semanticJson(withAttackDeclarationDomain(base, reversed))
     }
 
     test("unknown future action target versions fail before canonicalization") {

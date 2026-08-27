@@ -276,9 +276,8 @@ object CombatDefenders {
                 else -> false
             }
         }
-        return (attackableOpponents + attackablePermanents)
-            .distinct()
-            .sortedBy(EntityId::value)
+        val orderedPermanents = CombatObjectOrder.order(state, attackablePermanents) ?: return emptyList()
+        return state.activePlayers.filter { it in attackableOpponents } + orderedPermanents
     }
 
     /**
@@ -294,7 +293,7 @@ object CombatDefenders {
     fun getAttackDeclarationCertificateCandidateDefenders(
         state: GameState,
         attackingPlayer: EntityId,
-    ): List<EntityId> {
+    ): List<EntityId>? {
         val projected = state.projectedState
         val candidateOpponents = state.getOpponents(attackingPlayer).toSet()
         val candidatePermanents = state.getBattlefield().filter { entityId ->
@@ -307,9 +306,8 @@ object CombatDefenders {
                 else -> false
             }
         }
-        return (candidateOpponents + candidatePermanents)
-            .distinct()
-            .sortedBy(EntityId::value)
+        val orderedPermanents = CombatObjectOrder.order(state, candidatePermanents) ?: return null
+        return state.activePlayers.filter { it in candidateOpponents } + orderedPermanents
     }
 
     /**

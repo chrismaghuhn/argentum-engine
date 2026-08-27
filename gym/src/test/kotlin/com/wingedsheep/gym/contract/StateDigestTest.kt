@@ -100,7 +100,8 @@ class StateDigestTest : FunSpec({
         val base = observation(environment())
         val attacker = EntityId("digest-attacker")
         val defender = EntityId("digest-defender")
-        val domain = AttackDeclarationDomainV1(
+        val domain = AttackDeclarationDomainV2(
+            attackerOrder = listOf(attacker),
             attackerToDefenders = mapOf(attacker to listOf(defender)),
             mandatoryAttackers = listOf(attacker),
             canDeclareZeroAttackers = false,

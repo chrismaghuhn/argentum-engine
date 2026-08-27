@@ -749,7 +749,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.21-blocker-declaration-domain`.
+The Gym contract is currently `argentum-gym-contract@v1.22-attack-declaration-order`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -775,10 +775,14 @@ the pending decision. `decisionId` is a routing value and is not part of `stateD
 sets are canonicalized while ordered library sequences remain ordered. The same DTOs and JSON
 configuration are used by the JVM service and HTTP server.
 
-### DeclareAttackers choice domain (AttackDeclarationDomainV1)
+### DeclareAttackers choice domain (AttackDeclarationDomainV2)
 
 `LegalActionView.attackDeclarationDomain` is present only for `DeclareAttackers` and is a
-versioned, complete public choice domain. Its `version` is `1`, and its fields are:
+versioned, complete public choice domain. Its current `version` is `2`, and its fields are:
+
+- `attackerOrder`: the Rules-owned candidate sequence. It is the authoritative order for every
+  attacker-related list in this domain; it is not reconstructed from a map, set, `EntityId`, or
+  allocation order.
 
 - `attackerToDefenders`: every attacker maps to every Rules-resolved legal defender reference;
   this includes individual attack/defender legality and state-resolved Taunt/Goad defender
@@ -795,12 +799,25 @@ versioned, complete public choice domain. Its `version` is `1`, and its fields a
   semantics remain authoritative for band size, common defender, declared membership, at-most-one
   non-banding member, and no multi-band membership.
 
-The DTO is a pure canonical projection of the Rules-owned certificate. Maps and set-like entity
-collections are ordered by `EntityId.value` for stable wire and semantic identity. Before Rules
-execution, the trusted Gym boundary validates the submitted `DeclareAttackers` against the exact
-certificate snapshot registered on the selected `LegalAction`; it does not rebuild the domain from
-the current `GameState`. Rules then performs its existing stateful pre-tax Magic validation, and
-Attack Tax remains a later explicit payment decision boundary rather than an implicit Gym choice.
+The DTO is a pure projection of the Rules-owned certificate. The mixed defender universe is ordered
+by active opponent seat order first, followed by attackable battlefield objects in the shared
+combat-object order (`objectIdentityStamps`, with `BattlefieldEntryTimestampComponent.timestamp`
+as the bounded compatibility fallback). Every `attackerToDefenders[attacker]` list is a filtered
+subsequence of that one Rules-owned defender order. Mandatory attackers, co-attacker `anyOf`
+lists, and band partitions preserve the corresponding `attackerOrder` ranks; requirement
+multiplicity remains intact.
+
+The mapper preserves those sequences and may use insertion-ordered containers only to serialize
+them. It never chooses an attacker or defender order. Missing or duplicate combat ranks and
+unaddressable references fail the complete domain closed. Before Rules execution, the trusted Gym
+boundary validates the submitted `DeclareAttackers` against the exact certificate snapshot
+registered on the selected `LegalAction`; it does not rebuild the domain from the current
+`GameState`. Rules then performs its existing stateful pre-tax Magic validation, and Attack Tax
+remains a later explicit payment decision boundary rather than an implicit Gym choice.
+
+`AttackDeclarationDomainV1` remains historical codec material only. The current strict live path
+publishes and accepts `AttackDeclarationDomainV2`; a V1 live request or unknown future version is
+unsupported and is never silently reinterpreted.
 
 If the complete certificate cannot be projected, or any reference is not perspective-addressable,
 the whole trusted observation fails closed with `ATTACK_DECLARATION_DOMAIN_UNSUPPORTED`. The Gym
@@ -812,9 +829,11 @@ contracts are unchanged.
 
 The explicit replay-wire audit confirmed that `CompactReplay` serializes only the existing
 `GameAction` carrier (`attackers` and `bands`) plus its setup/yield/pin/checkpoint metadata; it
-does not contain `LegalActionView`, `AttackDeclarationDomainV1`, `schemaHash`, or any observation
-domain. Replay reconstruction therefore remains independent of Gym observation data and stays at
-`CompactReplay` v4; this additive observation contract does not require a replay bump.
+does not contain `LegalActionView`, either attack-domain DTO, `schemaHash`, or any observation
+domain. Replay reconstruction therefore regenerates the Rules attack domain/order from rebuilt
+state and validates the recorded semantic `DeclareAttackers` action. It remains independent of Gym
+observation data and stays at `CompactReplay` v4; this additive observation contract does not
+require a replay bump.
 
 ### DeclareBlockers choice domain (BlockerDeclarationDomainV1)
 
@@ -1115,7 +1134,7 @@ Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` iden
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
 The Gym `SchemaHash` is
-`argentum-gym-contract@v1.21-blocker-declaration-domain`. A client must compare the hash
+`argentum-gym-contract@v1.22-attack-declaration-order`. A client must compare the hash
 before interpreting the payment domain and fail closed on mismatch; the historical V3 DTO also
 rejects a V4 version, so an old client cannot silently treat the new bucket list as V3.
 
