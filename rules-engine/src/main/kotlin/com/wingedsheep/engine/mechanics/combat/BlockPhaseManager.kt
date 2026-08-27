@@ -717,6 +717,9 @@ internal class BlockPhaseManager(
         }
 
         val detail = when (reason) {
+            com.wingedsheep.engine.legalactions.BlockerDeclarationRejection.ZERO_BLOCKERS_FORBIDDEN ->
+                "at least one creature must block when able"
+
             com.wingedsheep.engine.legalactions.BlockerDeclarationRejection.MAX_BLOCKERS_EXCEEDED -> {
                 val counts = blockers.values.flatten().groupingBy { it }.eachCount()
                 val violation = domain.attackerOrder.firstNotNullOfOrNull { attackerId ->
