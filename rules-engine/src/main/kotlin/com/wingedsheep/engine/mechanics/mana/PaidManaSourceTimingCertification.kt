@@ -59,6 +59,14 @@ private class FixedFirstSlicePaidManaSourceTimingCertifier(
     private val cardRegistry: CardRegistry,
 ) : PaidManaSourceTimingCertifier {
     override fun certify(candidate: PaidManaSourceTimingCandidate): Boolean {
+        if (!candidate.ability.isManaAbility ||
+            candidate.ability.targetRequirements.isNotEmpty() ||
+            candidate.ability.restrictions.isNotEmpty() ||
+            candidate.ability.hasConvoke ||
+            candidate.ability.hasWaterbend
+        ) {
+            return false
+        }
         if (!candidate.effectiveCost.isFixedOrdinaryManaAndOneTap()) return false
         if (candidate.productionProfile !is PaymentManaProductionProfile.FixedOutputBundle) {
             return false
