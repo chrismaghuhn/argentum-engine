@@ -31,12 +31,15 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.PlayersCantActivateAbilities
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
+import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldContain
@@ -122,6 +125,35 @@ class PaymentDomainV5ContractTest : FunSpec({
                 condition = Conditions.YouControl(GameObjectFilter.Land.untapped()),
                 ifTrue = DynamicAmount.Fixed(1),
                 ifFalse = DynamicAmount.Fixed(0),
+            )
+        }
+    }
+
+    val permissionTargetManaSource = card("PAY106 V5 Permission Target Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.BLACK)
+            manaAbility = true
+        }
+    }
+
+    /** Tapping this source turns on a live permission lock for the other mana source. */
+    val permissionGuardingManaSource = card("PAY106 V5 Permission Guarding Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.GREEN)
+            manaAbility = true
+        }
+        staticAbility {
+            ability = PlayersCantActivateAbilities(
+                affected = Player.You,
+                permanentFilter = GameObjectFilter.Artifact.named(permissionTargetManaSource.name),
+                condition = Conditions.EntityMatches(
+                    EffectTarget.Self,
+                    GameObjectFilter.Any.tapped(),
+                ),
             )
         }
     }
@@ -359,6 +391,14 @@ class PaymentDomainV5ContractTest : FunSpec({
 
     test("PAY106-EXECUTOR-SEQ-02: V5 rejects a source whose effective cost can change after an earlier node") {
         val fixture = prepared(listOf(sequenceCostChangingManaSource))
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("PAY106-EXECUTOR-STABILITY-03: V5 rejects external activation-permission closure") {
+        val fixture = prepared(listOf(permissionGuardingManaSource, permissionTargetManaSource))
         val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
             .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
 

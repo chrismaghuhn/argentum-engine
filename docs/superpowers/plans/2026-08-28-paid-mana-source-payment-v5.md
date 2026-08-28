@@ -760,9 +760,15 @@ legality check for an uncertified later node. V5 therefore requires a Rules-owne
 
 The certificate proves that each published mana-ability candidate remains legal, retains the same
 effective activation cost and production profile, and remains within the deterministic side-effect
-contract throughout any ordered program made from the certified V5 slice. For the first slice this
-is deliberately conservative: a source is unsupported when its mana ability has an activation
-restriction, dynamic or otherwise non-fixed activation cost, an applicable activated-ability cost
+contract throughout any ordered program made from the certified V5 slice. This legality proof
+includes the authoritative external activation-permission closure: printed and durationally
+granted `PlayersCantActivateAbilities` / `PreventActivatedAbilities` shapes are read at activation
+time and can change when an earlier `TapSelf` node changes live state. The first slice therefore
+rejects every recognized external activation-permission shape until a Rules-owned permission
+closure certificate exists; it must never let the executor bypass `CastPermissionUtils`. This
+first-slice decision is deliberately conservative: a source is unsupported when its mana ability
+has an activation restriction, dynamic or otherwise non-fixed activation cost, an applicable
+activated-ability cost
 modifier exists on the battlefield, or another represented legality/cost/production fact cannot be
 proved stable. The complete action domain is then `null`; the source MUST NOT be silently omitted.
 
@@ -812,7 +818,7 @@ The implementation and RED suite MUST demonstrate all of these:
 | Complete legal source domain | Every legal, non-excluded source and legal ability option is published when representable; otherwise the entire action domain is unsupported. |
 | Ability-key uniqueness | Within one source, every published legal mana-ability option has a unique stable `manaAbilityKey`; collisions fail closed without a runtime-ID tie-break. |
 | Paid-source timing | A paid source is publishable only after `PAY106-MANA-WINDOW-01` certifies pre-generation and nested 601.2g mana timing equivalent for its represented case. |
-| Ordered-program execution stability | Every V5 source is published only after the Rules-owned execution-stability certificate proves later-node legality, effective cost, production, and side-effect stability across earlier certified nodes; publisher and validator use the same certificate, otherwise the complete domain is unsupported. |
+| Ordered-program execution stability | Every V5 source is published only after the Rules-owned execution-stability certificate proves later-node legality, effective cost, production, supported side effects, and external activation-permission stability across earlier certified nodes; recognized printed or granted activation-permission statics are unsupported in the first slice, and publisher and validator use the same certificate, otherwise the complete domain is unsupported. |
 | No filtering of legal sources | Unsupported sources are never silently omitted to make a domain pass. |
 | No AutoPay/native fallback | Public V5 policy and environment accept only a complete explicit V3 plan. |
 | External choices | Source, ability, production, activation subset, order, resource, and allocation choices come from the plan. |
@@ -914,6 +920,7 @@ These are required tests for the later RED phase. They are specified here but we
 | PAY106-KEY-01 | Two distinct legal mana abilities on one source produce the same structural `manaAbilityKey` | Whole action domain is unsupported; no runtime `AbilityId`, description, or collection-order tie-break is allowed. |
 | PAY106-EXECUTOR-SEQ-01 | A later mana ability is initially legal but its activation restriction becomes false after an earlier node changes state | The stability certificate makes the complete V5 domain unsupported, or `validateV3()` rejects before the first mutation; original state and events are unchanged. |
 | PAY106-EXECUTOR-SEQ-02 | A later mana ability's effective activation cost changes after an earlier node changes state | The stability certificate makes the complete V5 domain unsupported, or `validateV3()` rejects before the first mutation; original state and events are unchanged. |
+| PAY106-EXECUTOR-STABILITY-03 | An earlier `TapSelf` activates an external `PlayersCantActivateAbilities` or `PreventActivatedAbilities` permission lock for a later mana source | The complete V5 domain is unsupported, or `validateV3()` rejects before the first mutation; the executor must not bypass authoritative activation permission, and original state/events remain unchanged. |
 | PAY106-03 | Forest output pays Signet's atomic `{1}` target; Signet output pays outer atomic cost units | Complete `ExplicitV3` is accepted and resolves with the selected outputs. |
 | PAY106-04 | Signet output is assigned to its own `{1}` | Rejected; original state and event list are unchanged. |
 | PAY106-05 | A later activation output is assigned to an earlier activation cost | Rejected by the forward-reference rule; zero mutation. |

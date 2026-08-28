@@ -10,6 +10,8 @@ import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.CompositeStaticAbility
 import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
 import com.wingedsheep.sdk.scripting.IncreaseActivatedAbilityCost
+import com.wingedsheep.sdk.scripting.PlayersCantActivateAbilities
+import com.wingedsheep.sdk.scripting.PreventActivatedAbilities
 import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 
@@ -21,7 +23,9 @@ import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
  * selected ability has no activation restriction or dynamic cost input, and the battlefield has
  * no supported activated-ability cost modifier. Together with V5's NoSideEffect/TapSelf source
  * contract, an earlier node can then change only its own tapped state and cannot invalidate a
- * later node after the single preflight boundary.
+ * later node after the single preflight boundary. External activation-permission statics are
+ * also outside this first slice: their truth is read at activation time and may depend on the
+ * state changed by an earlier TapSelf node, including printed or durationally granted locks.
  */
 data class PaymentProgramExecutionStabilityCandidate(
     val state: GameState,
@@ -74,6 +78,14 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         // nested cost-lock witness, so any such modifier closes the complete public domain.
         if (hasActivatedAbilityCostModifier(candidate.state)) return false
 
+        // Authoritative activation legality also includes permission statics that are not carried
+        // by the selected ability itself. Their filters/conditions are read against live state by
+        // CastPermissionUtils, so an earlier TapSelf node can make a later node illegal even when
+        // the later ability has no own restriction. The first V5 slice has no permission-closure
+        // certificate; reject every recognized printed or granted permission shape instead of
+        // allowing the executor to bypass that authoritative check.
+        if (hasExternalActivationPermission(candidate.state)) return false
+
         return true
     }
 
@@ -121,6 +133,31 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         -> true
         is ConditionalStaticAbility -> containsActivatedAbilityCostModifier(ability.ability)
         is CompositeStaticAbility -> ability.abilities.any(::containsActivatedAbilityCostModifier)
+        else -> false
+    }
+
+    private fun hasExternalActivationPermission(state: GameState): Boolean {
+        for (entityId in state.getBattlefield()) {
+            val card = state.getEntity(entityId)?.get<CardComponent>() ?: continue
+            val cardDefinition = cardRegistry.getCard(card.cardDefinitionId)
+                ?: return true
+            if (cardDefinition.script.staticAbilities.any(::containsExternalActivationPermission)) {
+                return true
+            }
+        }
+        return state.grantedStaticAbilities.any { grant ->
+            containsExternalActivationPermission(grant.ability)
+        }
+    }
+
+    private fun containsExternalActivationPermission(
+        ability: com.wingedsheep.sdk.scripting.StaticAbility,
+    ): Boolean = when (ability) {
+        is PlayersCantActivateAbilities,
+        is PreventActivatedAbilities,
+        -> true
+        is ConditionalStaticAbility -> containsExternalActivationPermission(ability.ability)
+        is CompositeStaticAbility -> ability.abilities.any(::containsExternalActivationPermission)
         else -> false
     }
 }

@@ -31,7 +31,10 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
+import com.wingedsheep.sdk.scripting.PlayersCantActivateAbilities
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
@@ -86,6 +89,39 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         }
     }
 
+    val permissionTargetManaSource = card("PAY106 Permission Target Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(com.wingedsheep.sdk.core.Color.BLACK)
+            manaAbility = true
+        }
+    }
+
+    /**
+     * Its own mana ability is ordinary, but tapping this source turns on an external permission
+     * lock for the other source. The V5 stability certificate must reject the whole slice before
+     * an ordered A -> B program can mutate A and bypass B's authoritative activation check.
+     */
+    val permissionGuardingManaSource = card("PAY106 Permission Guarding Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(com.wingedsheep.sdk.core.Color.GREEN)
+            manaAbility = true
+        }
+        staticAbility {
+            ability = PlayersCantActivateAbilities(
+                affected = Player.You,
+                permanentFilter = GameObjectFilter.Artifact.named(permissionTargetManaSource.name),
+                condition = Conditions.EntityMatches(
+                    EffectTarget.Self,
+                    GameObjectFilter.Any.tapped(),
+                ),
+            )
+        }
+    }
+
     val executorSpell = card("PAY106 Executor Spell") {
         manaCost = "{1}{B}"
         typeLine = "Sorcery"
@@ -102,6 +138,15 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val forestKey: String,
         val signetKey: String,
         val signetOutputs: List<FixedManaOutput>,
+    )
+
+    data class PermissionFixture(
+        val driver: GameTestDriver,
+        val player: EntityId,
+        val guardingSourceId: EntityId,
+        val targetSourceId: EntityId,
+        val guardingKey: String,
+        val targetKey: String,
     )
 
     fun signetFixture(forestCount: Int = 1, includePool: ManaPoolComponent? = null): SignetFixture {
@@ -142,6 +187,71 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             },
         )
     }
+
+    fun permissionFixture(): PermissionFixture {
+        val driver = GameTestDriver()
+        driver.registerCards(
+            TestCards.all + permissionGuardingManaSource + permissionTargetManaSource
+        )
+        driver.initMirrorMatch(Deck.of("Forest" to 40), startingPlayer = 0)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val player = driver.activePlayer!!
+        val guardingSourceId = driver.putPermanentOnBattlefield(
+            player,
+            permissionGuardingManaSource.name,
+        )
+        val targetSourceId = driver.putPermanentOnBattlefield(
+            player,
+            permissionTargetManaSource.name,
+        )
+        val sources = ManaSolver(driver.cardRegistry).findAvailableManaSources(
+            state = driver.state,
+            playerId = player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        )
+        return PermissionFixture(
+            driver = driver,
+            player = player,
+            guardingSourceId = guardingSourceId,
+            targetSourceId = targetSourceId,
+            guardingKey = sources.single { it.entityId == guardingSourceId }
+                .paymentManaAbilityOrder.single(),
+            targetKey = sources.single { it.entityId == targetSourceId }
+                .paymentManaAbilityOrder.single(),
+        )
+    }
+
+    fun permissionPlan(fixture: PermissionFixture): PaymentPlanV3 = PaymentPlanV3(
+        activations = listOf(
+            SourceActivationV2(
+                sourceId = fixture.guardingSourceId,
+                manaAbilityKey = fixture.guardingKey,
+                productionChoice = ProductionChoice(PaymentManaColor.GREEN),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+            SourceActivationV2(
+                sourceId = fixture.targetSourceId,
+                manaAbilityKey = fixture.targetKey,
+                productionChoice = ProductionChoice(PaymentManaColor.BLACK),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+        ),
+        outerAllocation = listOf(
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(0, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+            ),
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(1, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+            ),
+        ),
+    )
 
     fun forestActivation(fixture: SignetFixture): SourceActivationV2 =
         SourceActivationV2(
@@ -517,6 +627,43 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             plan = plan,
             paymentContext = SpellPaymentContext(),
             reason = "PAY106 sequence cost stability",
+        )
+
+        result.error shouldNotBe null
+        result.state shouldBe before
+        result.events shouldBe emptyList()
+    }
+
+    test("PAY106-EXECUTOR-STABILITY-03: external activation permission cannot change between nodes") {
+        val fixture = permissionFixture()
+        val services = EngineServices(fixture.driver.cardRegistry)
+
+        services.castPermissionUtils.isActivationPreventedForPlayer(
+            state = fixture.driver.state,
+            sourceId = fixture.targetSourceId,
+            activatingPlayerId = fixture.player,
+        ) shouldBe false
+
+        val stateAfterGuardingSourceTap = fixture.driver.state.updateEntity(fixture.guardingSourceId) {
+            it.with(TappedComponent)
+        }
+        services.castPermissionUtils.isActivationPreventedForPlayer(
+            state = stateAfterGuardingSourceTap,
+            sourceId = fixture.targetSourceId,
+            activatingPlayerId = fixture.player,
+        ) shouldBe true
+
+        val before = fixture.driver.state
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{B}"),
+            plan = permissionPlan(fixture),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 external activation permission stability",
         )
 
         result.error shouldNotBe null
