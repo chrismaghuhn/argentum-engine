@@ -74,6 +74,9 @@ class SuspendCardFromHandHandler(
     }
 
     override fun validate(state: GameState, action: SuspendCardFromHand): String? {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return "PaymentStrategy.ExplicitV3 is not supported for suspend"
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return "PaymentStrategy.ExplicitV2 is not supported for suspend"
         }
@@ -148,6 +151,9 @@ class SuspendCardFromHandHandler(
     }
 
     override fun execute(state: GameState, action: SuspendCardFromHand): ExecutionResult {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for suspend")
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return ExecutionResult.error(state, "PaymentStrategy.ExplicitV2 is not supported for suspend")
         }

@@ -148,7 +148,11 @@ class ObservationBuilder(
         CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
     }
     private val paymentDomainBuilder by lazy {
-        PaymentDomainBuilder(ManaSolver(cardRegistry), visibility)
+        PaymentDomainBuilder(
+            manaSolver = ManaSolver(cardRegistry),
+            visibility = visibility,
+            activatedAbilityCostCalculator = activatedAbilityCostCalculator,
+        )
     }
     private val costCalculator by lazy { CostCalculator(cardRegistry) }
     private val manaSolver by lazy { ManaSolver(cardRegistry) }
@@ -650,12 +654,22 @@ class ObservationBuilder(
         payload: JsonObject,
     ): List<String> = requiredPayloadFieldsFor(state, legalAction).filterNot(payload::containsKey)
 
+    private data class PaymentDomainRequest(
+        val playerId: EntityId,
+        val requiredCost: String,
+        val spellContext: SpellPaymentContext,
+        val excludeSources: Set<EntityId> = emptySet(),
+    )
+
     /**
-     * Canonical action-level payment-domain publication used by both observations and the trusted
-     * Gym submission guard. A null result is meaningful: a payable action without a complete V2
-     * V4 domain is unsupported and must not fall back to an engine-selected policy.
+     * Resolves the action-owned cost/context/exclusion tuple shared by the historical V4 and
+     * current V5 publication paths. This is intentionally before either DTO builder so the source
+     * exclusion semantics cannot drift between observation and strict submission validation.
      */
-    internal fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV4? {
+    private fun paymentDomainRequestFor(
+        state: GameState,
+        legalAction: LegalAction,
+    ): PaymentDomainRequest? {
         val requiredCost = legalAction.manaCostString ?: return null
         return when (val action = legalAction.action) {
             is ActivateAbility -> {
@@ -691,8 +705,7 @@ class ObservationBuilder(
                 } else {
                     emptySet()
                 }
-                paymentDomainBuilder.build(
-                    state = state,
+                PaymentDomainRequest(
                     playerId = action.playerId,
                     requiredCost = requiredCost,
                     spellContext = spellContext,
@@ -756,17 +769,11 @@ class ObservationBuilder(
                         isFromHand = isInZone(state, action.cardId, Zone.HAND),
                     )
                 }
-                val paymentDomain = paymentDomainBuilder.build(
-                    state = state,
+                PaymentDomainRequest(
                     playerId = action.playerId,
                     requiredCost = effectivePaymentCost.toString(),
                     spellContext = spellContext,
                 )
-                if (paymentDomain == null || hasUnrepresentableAdditionalPayment(legalAction, paymentDomain)) {
-                    null
-                } else {
-                    paymentDomain
-                }
             }
 
             is CycleCard -> {
@@ -793,8 +800,7 @@ class ObservationBuilder(
                     sourceId = action.cardId,
                     ability = null,
                 )
-                paymentDomainBuilder.build(
-                    state = state,
+                PaymentDomainRequest(
                     playerId = action.playerId,
                     requiredCost = requiredCost,
                     spellContext = paymentContext,
@@ -802,6 +808,53 @@ class ObservationBuilder(
             }
 
             else -> null
+        }
+    }
+
+    /**
+     * Historical V4 publication retained for V1/V2-compatible callers and fixtures. The V4
+     * source predicate remains unchanged; paid activation costs therefore still fail closed here.
+     */
+    internal fun paymentDomainFor(state: GameState, legalAction: LegalAction): PaymentDomainV4? {
+        val request = paymentDomainRequestFor(state, legalAction) ?: return null
+        val domain = paymentDomainBuilder.build(
+            state = state,
+            playerId = request.playerId,
+            requiredCost = request.requiredCost,
+            spellContext = request.spellContext,
+            excludeSources = request.excludeSources,
+        ) ?: return null
+        return if (legalAction.action is CastSpell &&
+            hasUnrepresentableAdditionalPayment(legalAction, domain.sourceActivations.mapTo(mutableSetOf()) { it.sourceId })
+        ) {
+            null
+        } else {
+            domain
+        }
+    }
+
+    /**
+     * Current V5 publication path. A null result is a strict unsupported boundary: no partial
+     * source list, solver-selected fallback, or legacy AutoPay interpretation is permitted.
+     */
+    internal fun paymentDomainV5For(state: GameState, legalAction: LegalAction): PaymentDomainV5? {
+        val request = paymentDomainRequestFor(state, legalAction) ?: return null
+        val domain = paymentDomainBuilder.buildV5(
+            state = state,
+            playerId = request.playerId,
+            requiredCost = request.requiredCost,
+            spellContext = request.spellContext,
+            excludeSources = request.excludeSources,
+        ) ?: return null
+        return if (legalAction.action is CastSpell &&
+            hasUnrepresentableAdditionalPayment(
+                legalAction,
+                domain.sourceActivationOptions.mapTo(mutableSetOf()) { it.sourceId },
+            )
+        ) {
+            null
+        } else {
+            domain
         }
     }
 
@@ -996,7 +1049,7 @@ class ObservationBuilder(
      */
     private fun hasUnrepresentableAdditionalPayment(
         legalAction: LegalAction,
-        paymentDomain: PaymentDomainV4,
+        publishedSources: Set<EntityId>,
     ): Boolean {
         val info = legalAction.additionalCostInfo ?: return false
         if (info.costAfterSacrifice.isNotEmpty() ||
@@ -1005,7 +1058,6 @@ class ObservationBuilder(
             (info.costType == "PayXLife" && info.payXLifeMaxX > 0)
         ) return true
 
-        val publishedSources = paymentDomain.sourceActivations.mapTo(mutableSetOf()) { it.sourceId }
         val additionalCostCandidates = buildSet {
             addAll(info.validSacrificeTargets)
             addAll(info.validTapTargets)

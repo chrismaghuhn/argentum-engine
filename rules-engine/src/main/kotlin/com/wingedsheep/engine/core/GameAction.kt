@@ -372,6 +372,13 @@ sealed interface PaymentStrategy {
         val manaAbilitiesToActivate: List<EntityId> = emptyList(),
         val paymentPlan: PaymentPlanV2? = null,
     ) : PaymentStrategy
+
+    /** Explicit ordered payment program for the V5 public paid-mana-source contract. */
+    @Serializable
+    @SerialName("ExplicitV3")
+    data class ExplicitV3(
+        val paymentPlan: PaymentPlanV3? = null,
+    ) : PaymentStrategy
 }
 
 // =============================================================================

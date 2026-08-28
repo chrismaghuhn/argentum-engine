@@ -71,6 +71,9 @@ class ForetellCardHandler(
     }
 
     override fun validate(state: GameState, action: ForetellCard): String? {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return "PaymentStrategy.ExplicitV3 is not supported for foretell"
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return "PaymentStrategy.ExplicitV2 is not supported for foretell"
         }
@@ -103,6 +106,9 @@ class ForetellCardHandler(
     }
 
     override fun execute(state: GameState, action: ForetellCard): ExecutionResult {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for foretell")
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return ExecutionResult.error(state, "PaymentStrategy.ExplicitV2 is not supported for foretell")
         }

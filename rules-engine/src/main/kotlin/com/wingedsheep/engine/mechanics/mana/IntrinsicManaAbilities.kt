@@ -9,6 +9,7 @@ import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.effects.AddColorlessManaEffect
 import com.wingedsheep.sdk.scripting.effects.AddManaEffect
 
 /**
@@ -68,6 +69,20 @@ object IntrinsicManaAbilities {
         val color = Color.fromSymbol(symbol) ?: return null
         return build(color)
     }
+
+    /**
+     * Returns the synthesized `{T}: Add {C}` ability used for Wastes-like lands without an
+     * explicit card-defined mana ability. Unlike basic-land subtype abilities, this fallback is
+     * not returned by [forEntity]; it is exposed so public payment-domain publication can resolve
+     * the Rules-owned colorless source identity without inventing a second ability shape.
+     */
+    fun colorlessFallback(): ActivatedAbility = ActivatedAbility(
+        id = AbilityId.intrinsicMana('C'),
+        cost = AbilityCost.Tap,
+        effect = AddColorlessManaEffect(1),
+        isManaAbility = true,
+        timing = TimingRule.ManaAbility,
+    )
 
     private fun build(color: Color): ActivatedAbility = ActivatedAbility(
         id = AbilityId.intrinsicMana(color.symbol),

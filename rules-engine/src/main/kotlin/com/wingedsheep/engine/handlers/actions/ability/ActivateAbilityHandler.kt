@@ -146,6 +146,9 @@ class ActivateAbilityHandler(
     }
 
     override fun validate(state: GameState, action: ActivateAbility): String? {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return "PaymentStrategy.ExplicitV3 is not supported for ability activation"
+        }
         // `opponentTargetsChosen` is an internal resume marker for "… of an opponent's choice"
         // targets (Cuombajj Witches). Only the engine's resumer sets it, and the resumer re-enters
         // via execute() directly — never through validate() — so any action carrying it here came
@@ -599,6 +602,9 @@ class ActivateAbilityHandler(
     }
 
     override fun execute(state: GameState, action: ActivateAbility): ExecutionResult {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for ability activation")
+        }
         val window = ManaPaymentWindow.openFor(state, action.playerId)
             ?: return executeActivation(state, action)
         return executeInManaPaymentWindow(state, action, window)

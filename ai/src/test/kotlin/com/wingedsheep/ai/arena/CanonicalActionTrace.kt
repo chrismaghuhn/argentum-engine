@@ -203,6 +203,10 @@ private fun canonicalPaymentStrategy(strategy: PaymentStrategy): String = when (
         "ExplicitV2",
         "manaAbilitiesToActivate=${strategy.manaAbilitiesToActivate}",
     )
+    is PaymentStrategy.ExplicitV3 -> fields(
+        "ExplicitV3",
+        "paymentPlan=${strategy.paymentPlan}",
+    )
 }
 
 private fun canonicalAlternativePayment(payment: AlternativePaymentChoice?): String =

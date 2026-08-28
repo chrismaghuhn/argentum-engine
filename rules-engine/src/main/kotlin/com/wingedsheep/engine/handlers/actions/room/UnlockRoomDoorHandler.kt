@@ -132,6 +132,8 @@ class UnlockRoomDoorHandler(
             }
             is PaymentStrategy.ExplicitV2 ->
                 return "PaymentStrategy.ExplicitV2 is not supported for room unlocking"
+            is PaymentStrategy.ExplicitV3 ->
+                return "PaymentStrategy.ExplicitV3 is not supported for room unlocking"
         }
 
         return null
@@ -244,6 +246,11 @@ class UnlockRoomDoorHandler(
                 return ExecutionResult.error(
                     currentState,
                     "PaymentStrategy.ExplicitV2 is not supported for room unlocking",
+                )
+            is PaymentStrategy.ExplicitV3 ->
+                return ExecutionResult.error(
+                    currentState,
+                    "PaymentStrategy.ExplicitV3 is not supported for room unlocking",
                 )
         }
 

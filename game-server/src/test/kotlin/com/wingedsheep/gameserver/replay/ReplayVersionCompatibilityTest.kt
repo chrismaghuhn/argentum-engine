@@ -2,6 +2,7 @@ package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.PaymentPlanV2
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.gameserver.persistence.persistenceJson
@@ -93,5 +94,17 @@ class ReplayVersionCompatibilityTest : FunSpec({
         val original = replay(version = 4).copy(actions = listOf(action))
 
         ReplayCodec.decode(ReplayCodec.encode(original)) shouldBe original
+    }
+
+    test("ExplicitV3 cannot be carried under the historical CompactReplay-v4 label") {
+        val action = CastSpell(
+            playerId = com.wingedsheep.sdk.model.EntityId("p1"),
+            cardId = com.wingedsheep.sdk.model.EntityId("spell"),
+            paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = PaymentPlanV3()),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            replay(version = 4).copy(actions = listOf(action))
+        }
     }
 })

@@ -12,7 +12,7 @@ import com.wingedsheep.sdk.model.EntityId
  * duplicate ranks, and duplicate requested objects fail closed. EntityId values and collection
  * iteration order are never used as an ordering authority.
  */
-internal object CombatObjectOrder {
+object CombatObjectOrder {
 
     fun order(state: GameState, entityIds: Collection<EntityId>): List<EntityId>? {
         val requested = entityIds.toList()

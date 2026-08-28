@@ -156,6 +156,11 @@ class CastPaymentProcessor(
                 events = emptyList(),
                 error = "PaymentStrategy.ExplicitV2 requires PaymentPlanV2",
             )
+            is PaymentStrategy.ExplicitV3 -> PaymentResult(
+                state = state,
+                events = emptyList(),
+                error = "PaymentStrategy.ExplicitV3 requires PaymentPlanV3",
+            )
         }
     }
 

@@ -88,6 +88,9 @@ data class CompactReplay(
         require(version >= 4 || actions.none(GameAction::usesPaymentPlanV2)) {
             "PaymentStrategy.ExplicitV2 requires CompactReplay v4 or newer"
         }
+        require(version >= 5 || actions.none(GameAction::usesPaymentPlanV3)) {
+            "PaymentStrategy.ExplicitV3 requires CompactReplay v5 or newer"
+        }
     }
 
     /** Number of reconstructable frames: the initial state plus one per applied action. */
@@ -123,6 +126,20 @@ private fun GameAction.usesPaymentPlanV2(): Boolean = when (this) {
     is TurnFaceUp -> paymentStrategy is PaymentStrategy.ExplicitV2
     is TypecycleCard -> paymentStrategy is PaymentStrategy.ExplicitV2
     is UnlockRoomDoor -> paymentStrategy is PaymentStrategy.ExplicitV2
+    else -> false
+}
+
+/** V3 payment actions cannot be carried under the historical CompactReplay-v4 label. */
+private fun GameAction.usesPaymentPlanV3(): Boolean = when (this) {
+    is ActivateAbility -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is CastSpell -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is CycleCard -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is ForetellCard -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is PlotCard -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is SuspendCardFromHand -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is TurnFaceUp -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is TypecycleCard -> paymentStrategy is PaymentStrategy.ExplicitV3
+    is UnlockRoomDoor -> paymentStrategy is PaymentStrategy.ExplicitV3
     else -> false
 }
 

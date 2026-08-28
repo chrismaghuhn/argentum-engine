@@ -100,6 +100,9 @@ class CycleCardHandler(
             ability = null,
         )
 
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return "PaymentStrategy.ExplicitV3 is not supported for cycling"
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             if (action.xValue != null || !cyclingAbility.cost.isFixedOrdinaryManaCost()) {
                 return "PaymentStrategy.ExplicitV2 supports only fixed ordinary cycling costs"
@@ -151,6 +154,9 @@ class CycleCardHandler(
     }
 
     override fun execute(state: GameState, action: CycleCard): ExecutionResult {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for cycling")
+        }
         val container = state.getEntity(action.cardId)
             ?: return ExecutionResult.error(state, "Card not found")
 

@@ -167,6 +167,12 @@ data class ManaSource(
     /** Every currently usable explicit mana ability for colorless production. */
     val manaAbilityOptionsForColorless: List<ActivatedAbility> = emptyList(),
     /**
+     * Rules-owned presentation order for the complete payment-profile key set. Public payment
+     * domains must not reconstruct this order from entity IDs, runtime ability IDs, or collection
+     * iteration.
+     */
+    val paymentManaAbilityOrder: List<String> = emptyList(),
+    /**
      * Rules-owned PaymentPlanV1 production profile for each stable mana-ability identity. The
      * profile is resolved after the current source discovery pass and is invalidated by any
      * production-transforming runtime modifier.
@@ -1289,6 +1295,9 @@ class ManaSolver(
                             hasPainCost = false,
                             painAmount = 0,
                             canAttack = canAttack,
+                            paymentManaAbilityOrder = effectiveColors
+                                .sortedBy(Color::ordinal)
+                                .map(ManaAbilityIdentity::intrinsic),
                             paymentManaProductionProfiles = productionProfiles,
                             paymentManaSideEffectCertificates = productionProfiles.mapValues {
                                 PaymentManaSideEffectCertificate.NoSideEffect
@@ -1359,6 +1368,10 @@ class ManaSolver(
             val perColorRiders = mutableMapOf<Color, MutableSet<ManaSpellRider>>()
             val paymentProductionProfiles = linkedMapOf<String, PaymentManaProductionProfile>()
             val paymentSideEffectCertificates = linkedMapOf<String, PaymentManaSideEffectCertificate>()
+            // This is the Rules-owned ability presentation order consumed by public payment
+            // domains. It follows stable card-definition order, then stable Rules grant order;
+            // it is deliberately not reconstructed from a map or runtime ability id later.
+            val paymentManaAbilityOrder = mutableListOf<String>()
 
             // Seed the accumulators with a basic land's intrinsic subtype mana (Rule 305.7) when a
             // static grant kept us out of the short-circuit above. The intrinsic ability is
@@ -1367,15 +1380,17 @@ class ManaSolver(
             landSubtypeSeedColors?.let { seed ->
                 combinedColors.addAll(seed)
                 sacrificeFreeColors.addAll(seed)
-                for (color in seed) {
+                for (color in seed.sortedBy(Color::ordinal)) {
                     perColorRestrictions[color] = null
                     perColorPainCost[color] = 0
-                    paymentProductionProfiles[ManaAbilityIdentity.intrinsic(color)] =
+                    val abilityKey = ManaAbilityIdentity.intrinsic(color)
+                    paymentManaAbilityOrder.add(abilityKey)
+                    paymentProductionProfiles[abilityKey] =
                         landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
                             ?: PaymentManaProductionProfile.SelectableSingleOutput(
                                 setOf(PaymentManaColor.fromEngine(color))
                             )
-                    paymentSideEffectCertificates[ManaAbilityIdentity.intrinsic(color)] =
+                    paymentSideEffectCertificates[abilityKey] =
                         PaymentManaSideEffectCertificate.NoSideEffect
                 }
                 hasUnrestrictedAbility = true
@@ -1603,10 +1618,14 @@ class ManaSolver(
                     else -> null
                 }
 
-                paymentProductionProfiles[ManaAbilityIdentity.key(ability)] =
+                val abilityKey = ManaAbilityIdentity.key(ability)
+                if (abilityKey !in paymentManaAbilityOrder) {
+                    paymentManaAbilityOrder.add(abilityKey)
+                }
+                paymentProductionProfiles[abilityKey] =
                     landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
                         ?: PaymentManaProductionProfileResolver.resolve(ability.effect, effectColors)
-                paymentSideEffectCertificates[ManaAbilityIdentity.key(ability)] = sideEffectCertificate
+                paymentSideEffectCertificates[abilityKey] = sideEffectCertificate
 
                 // Record the cheapest activation mana cost per color this ability produces.
                 for (color in effectColors) {
@@ -1773,6 +1792,7 @@ class ManaSolver(
                         abilities.distinctBy { it.id.value }
                     },
                     manaAbilityOptionsForColorless = colorlessManaAbilities.distinctBy { it.id.value },
+                    paymentManaAbilityOrder = paymentManaAbilityOrder,
                     paymentManaProductionProfiles = paymentProductionProfiles,
                     paymentManaSideEffectCertificates = paymentSideEffectCertificates,
                     requiresSacrifice = requiresSacrifice,
@@ -1803,6 +1823,7 @@ class ManaSolver(
                 hasPainCost = false,
                 painAmount = 0,
                 canAttack = false,
+                paymentManaAbilityOrder = listOf(ManaAbilityIdentity.intrinsic(null)),
                 paymentManaProductionProfiles = mapOf(
                     ManaAbilityIdentity.intrinsic(null) to
                         PaymentManaProductionProfile.SelectableSingleOutput(

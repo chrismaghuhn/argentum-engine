@@ -149,6 +149,8 @@ class TurnFaceUpHandler(
                     }
                     is PaymentStrategy.ExplicitV2 ->
                         return "PaymentStrategy.ExplicitV2 is not supported for turn-face-up payment"
+                    is PaymentStrategy.ExplicitV3 ->
+                        return "PaymentStrategy.ExplicitV3 is not supported for turn-face-up payment"
                 }
             }
             // Every other morph cost (life, sacrifice, discard, reveal, exile, return, tap,
@@ -324,6 +326,11 @@ class TurnFaceUpHandler(
                         return ExecutionResult.error(
                             currentState,
                             "PaymentStrategy.ExplicitV2 is not supported for turn-face-up payment",
+                        )
+                    is PaymentStrategy.ExplicitV3 ->
+                        return ExecutionResult.error(
+                            currentState,
+                            "PaymentStrategy.ExplicitV3 is not supported for turn-face-up payment",
                         )
                 }
             }

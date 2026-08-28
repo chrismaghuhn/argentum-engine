@@ -1440,6 +1440,8 @@ class CastSpellHandler(
             }
             is PaymentStrategy.ExplicitV2 ->
                 "PaymentStrategy.ExplicitV2 requires PaymentPlanV2"
+            is PaymentStrategy.ExplicitV3 ->
+                "PaymentStrategy.ExplicitV3 requires PaymentPlanV3"
         }
     }
 

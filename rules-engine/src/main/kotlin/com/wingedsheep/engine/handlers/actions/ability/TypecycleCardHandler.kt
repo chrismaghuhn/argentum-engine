@@ -52,6 +52,9 @@ class TypecycleCardHandler(
     override val actionType: KClass<TypecycleCard> = TypecycleCard::class
 
     override fun validate(state: GameState, action: TypecycleCard): String? {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return "PaymentStrategy.ExplicitV3 is not supported for typecycling"
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return "PaymentStrategy.ExplicitV2 is not supported for typecycling"
         }
@@ -97,6 +100,9 @@ class TypecycleCardHandler(
     }
 
     override fun execute(state: GameState, action: TypecycleCard): ExecutionResult {
+        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for typecycling")
+        }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             return ExecutionResult.error(state, "PaymentStrategy.ExplicitV2 is not supported for typecycling")
         }

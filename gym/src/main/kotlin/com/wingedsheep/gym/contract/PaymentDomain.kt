@@ -1,8 +1,17 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.FixedManaOutput
+import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.ActivationCostOrderV1
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
+import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
+import com.wingedsheep.engine.core.InitialPoolBucketV1
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PaymentCostKindV1
 import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.mechanics.combat.CombatObjectOrder
+import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
+import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
 import com.wingedsheep.engine.mechanics.mana.FloatingManaProvenanceClassification
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -10,6 +19,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSource
 import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
+import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -18,11 +28,16 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityCost
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.costs.CostAtom
 import kotlinx.serialization.Serializable
 
 const val PAYMENT_DOMAIN_V2_VERSION: Int = 2
 const val PAYMENT_DOMAIN_V3_VERSION: Int = 3
 const val PAYMENT_DOMAIN_V4_VERSION: Int = 4
+const val PAYMENT_DOMAIN_V5_VERSION: Int = 5
 const val PAYMENT_DOMAIN_VERSION: Int = PAYMENT_DOMAIN_V4_VERSION
 
 @Serializable
@@ -252,6 +267,117 @@ data class PaymentDomainV4(
     }
 }
 
+/** The first qualified paid-mana-source shape published by PaymentDomain V5. */
+@Serializable
+enum class PaymentActivationSupportKindV1 {
+    @kotlinx.serialization.SerialName("FixedManaAndTapSelf")
+    FIXED_MANA_AND_TAP_SELF;
+
+    companion object {
+        /** Readable alias matching the public contract terminology. */
+        val FixedManaAndTapSelf: PaymentActivationSupportKindV1 = FIXED_MANA_AND_TAP_SELF
+    }
+}
+
+/** Deterministic non-mana cost components currently expressible in V5. */
+@Serializable
+enum class PaymentDeterministicNonManaCostKindV1 {
+    @kotlinx.serialization.SerialName("TapSelf")
+    TAP_SELF;
+
+    companion object {
+        /** Readable alias matching the Rules cost terminology. */
+        val TapSelf: PaymentDeterministicNonManaCostKindV1 = TAP_SELF
+    }
+}
+
+/**
+ * Public capability entry for one complete source/ability option in PaymentDomain V5.
+ *
+ * This is a capability description only. It contains no selected resources or allocations and
+ * never asks a policy to infer a missing activation-cost payment.
+ */
+@Serializable
+data class PaymentSourceActivationDomainV2(
+    val sourceId: EntityId,
+    val sourceName: String,
+    val manaAbilityKey: String,
+    val productionChoices: List<ProductionChoice>,
+    val atomicActivationManaCostUnits: List<AtomicManaCostUnitV1>,
+    val activationSupportKind: PaymentActivationSupportKindV1,
+    val deterministicNonManaCosts: List<PaymentDeterministicNonManaCostKindV1>,
+    val activationCostOrderOptions: List<ActivationCostOrderV1>,
+) {
+    init {
+        require(productionChoices.isNotEmpty()) {
+            "PaymentSourceActivationDomainV2 must publish at least one production choice"
+        }
+        require(atomicActivationManaCostUnits.map {
+            it.symbolIndex to it.unitIndexWithinSymbol
+        }.toSet().size == atomicActivationManaCostUnits.size) {
+            "PaymentSourceActivationDomainV2 cannot publish duplicate activation cost units"
+        }
+        require(deterministicNonManaCosts.distinct().size == deterministicNonManaCosts.size) {
+            "PaymentSourceActivationDomainV2 cannot publish duplicate deterministic cost components"
+        }
+        require(activationCostOrderOptions.isNotEmpty()) {
+            "PaymentSourceActivationDomainV2 must publish at least one cost order"
+        }
+        val requiredComponents = buildList<ActivationCostComponentRefV1> {
+            if (atomicActivationManaCostUnits.isNotEmpty()) {
+                add(ActivationCostComponentRefV1.ManaComponent)
+            }
+            deterministicNonManaCosts.indices.forEach { index ->
+                add(ActivationCostComponentRefV1.DeterministicNonManaComponent(index))
+            }
+        }.toSet()
+        require(activationCostOrderOptions.all { order ->
+            order.distinct().size == order.size &&
+                order.size == requiredComponents.size &&
+                order.toSet() == requiredComponents &&
+                order.all { component ->
+                    component == ActivationCostComponentRefV1.ManaComponent ||
+                        (component as? ActivationCostComponentRefV1.DeterministicNonManaComponent)
+                            ?.index in deterministicNonManaCosts.indices
+                }
+        }) {
+            "PaymentSourceActivationDomainV2 contains an invalid activation cost order"
+        }
+    }
+}
+
+/** Current complete action-level public payment domain for the ordered V3 program. */
+@Serializable
+data class PaymentDomainV5(
+    val version: Int = PAYMENT_DOMAIN_V5_VERSION,
+    val requiredCost: String,
+    val outerAtomicCostUnits: List<AtomicManaCostUnitV1>,
+    val initialPoolBuckets: List<InitialPoolBucketV1>,
+    val sourceActivationOptions: List<PaymentSourceActivationDomainV2>,
+) {
+    init {
+        require(version == PAYMENT_DOMAIN_V5_VERSION) {
+            "Unsupported PaymentDomainV5 version: $version"
+        }
+        require(initialPoolBuckets.all { it.availableAmount > 0 }) {
+            "PaymentDomainV5 initial-pool bucket amounts must be positive"
+        }
+        require(initialPoolBuckets.map { it.key }.toSet().size == initialPoolBuckets.size) {
+            "PaymentDomainV5 cannot publish duplicate initial-pool buckets"
+        }
+        require(outerAtomicCostUnits.map {
+            it.symbolIndex to it.unitIndexWithinSymbol
+        }.toSet().size == outerAtomicCostUnits.size) {
+            "PaymentDomainV5 cannot publish duplicate outer cost units"
+        }
+        require(sourceActivationOptions.map { it.sourceId to it.manaAbilityKey }.toSet().size ==
+            sourceActivationOptions.size
+        ) {
+            "PaymentDomainV5 cannot publish duplicate source/ability options"
+        }
+    }
+}
+
 /**
  * Builds the public action-level domain from the existing engine mana-source discovery. The caller
  * must pass the same ability payment context and source exclusion that the authoritative ability
@@ -261,6 +387,7 @@ data class PaymentDomainV4(
 class PaymentDomainBuilder(
     private val manaSolver: ManaSolver,
     private val visibility: Visibility,
+    private val activatedAbilityCostCalculator: ActivatedAbilityCostCalculator? = null,
 ) {
     fun build(
         state: GameState,
@@ -345,11 +472,282 @@ class PaymentDomainBuilder(
         )
     }
 
+    /**
+     * Builds the complete V5 ordered-program capability domain.
+     *
+     * V5 is intentionally a separate builder path. The historical V4 source predicate rejects
+     * paid mana abilities and its DTO remains unchanged; this path qualifies only the reviewed
+     * fixed-mana-plus-TapSelf support kind and still fails closed for every other discovered legal
+     * source or ability option.
+     */
+    fun buildV5(
+        state: GameState,
+        playerId: EntityId,
+        requiredCost: String,
+        spellContext: SpellPaymentContext,
+        excludeSources: Set<EntityId> = emptySet(),
+    ): PaymentDomainV5? {
+        val cost = runCatching { ManaCost.parse(requiredCost) }
+            .getOrNull()
+            ?.canonicalPaymentManaCost()
+            ?: return null
+        if (!cost.isFixedOrdinaryManaCost()) return null
+        val outerAtomicCostUnits = cost.toAtomicDomain() ?: return null
+
+        val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
+        val initialPoolBuckets = pool.toV5InitialPoolBuckets(state, playerId) ?: return null
+
+        val discovered = manaSolver.findAvailableManaSources(state, playerId, spellContext)
+            .filter { it.entityId !in excludeSources }
+        val orderedIds = CombatObjectOrder.order(state, discovered.map { it.entityId }) ?: return null
+        val sourcesById = discovered.associateBy { it.entityId }
+        val sourceActivationOptions = buildList {
+            for (sourceId in orderedIds) {
+                val source = sourcesById[sourceId] ?: return null
+                if (!isPerspectiveSafeSource(state, playerId, sourceId)) return null
+                addAll(
+                    source.toV5Domain(
+                        state = state,
+                        playerId = playerId,
+                        spellContext = spellContext,
+                        costCalculator = activatedAbilityCostCalculator ?: return null,
+                    ) ?: return null,
+                )
+            }
+        }
+
+        return PaymentDomainV5(
+            requiredCost = cost.toString(),
+            outerAtomicCostUnits = outerAtomicCostUnits,
+            initialPoolBuckets = initialPoolBuckets,
+            sourceActivationOptions = sourceActivationOptions,
+        )
+    }
+
     private fun isPerspectiveSafeSource(
         state: GameState,
         playerId: EntityId,
         sourceId: EntityId,
     ): Boolean = visibility.isEntityIdentityVisibleTo(state, sourceId, playerId)
+
+    private fun ManaPoolComponent.toV5InitialPoolBuckets(
+        state: GameState,
+        playerId: EntityId,
+    ): List<InitialPoolBucketV1>? {
+        if (restrictedMana.isNotEmpty()) return null
+        return when (val classification = FloatingManaProvenanceClassification.classify(this)) {
+            FloatingManaProvenanceClassification.NoTrackedProvenance -> buildList {
+                val amounts = listOf(
+                    PaymentManaColor.WHITE to white,
+                    PaymentManaColor.BLUE to blue,
+                    PaymentManaColor.BLACK to black,
+                    PaymentManaColor.RED to red,
+                    PaymentManaColor.GREEN to green,
+                    PaymentManaColor.COLORLESS to colorless,
+                )
+                amounts.filter { it.second > 0 }.forEach { (color, amount) ->
+                    add(
+                        InitialPoolBucketV1(
+                            key = InitialPoolBucketKeyV1.UnrestrictedPoolBucket(color),
+                            availableAmount = amount,
+                        )
+                    )
+                }
+            }
+
+            is FloatingManaProvenanceClassification.CertifiedJoint -> {
+                if (playerId !in manaProvenanceKnownTo) return null
+                if (classification.candidate.buckets.any {
+                        !isPerspectiveSafeSource(state, playerId, it.key.sourceId)
+                    }
+                ) return null
+                classification.candidate.buckets
+                    .filter { it.amount > 0 }
+                    .map {
+                        InitialPoolBucketV1(
+                            key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(it.key),
+                            availableAmount = it.amount,
+                        )
+                    }
+            }
+
+            is FloatingManaProvenanceClassification.CertifiedHomogeneous,
+            is FloatingManaProvenanceClassification.CertifiedHeterogeneous,
+            is FloatingManaProvenanceClassification.Ambiguous -> null
+        }
+    }
+
+    private fun ManaCost.toAtomicDomain(): List<AtomicManaCostUnitV1>? = buildList {
+        for ((symbolIndex, symbol) in symbols.withIndex()) {
+            when (symbol) {
+                is ManaSymbol.Colored -> add(
+                    AtomicManaCostUnitV1(
+                        symbolIndex = symbolIndex,
+                        unitIndexWithinSymbol = 0,
+                        kind = PaymentCostKindV1.COLORED,
+                        allowedColors = setOf(PaymentManaColor.fromEngine(symbol.color)),
+                    )
+                )
+
+                is ManaSymbol.Colorless -> add(
+                    AtomicManaCostUnitV1(
+                        symbolIndex = symbolIndex,
+                        unitIndexWithinSymbol = 0,
+                        kind = PaymentCostKindV1.COLORLESS,
+                        allowedColors = setOf(PaymentManaColor.COLORLESS),
+                    )
+                )
+
+                is ManaSymbol.Generic -> {
+                    if (symbol.amount < 0) return null
+                    repeat(symbol.amount) { unitIndex ->
+                        add(
+                            AtomicManaCostUnitV1(
+                                symbolIndex = symbolIndex,
+                                unitIndexWithinSymbol = unitIndex,
+                                kind = PaymentCostKindV1.GENERIC,
+                            )
+                        )
+                    }
+                }
+
+                else -> return null
+            }
+        }
+    }
+
+    private data class V5ActivationCostShape(
+        val manaCost: ManaCost,
+        val atomicManaCostUnits: List<AtomicManaCostUnitV1>,
+        val activationCostOrder: ActivationCostOrderV1,
+    )
+
+    private fun AbilityCost.toV5ActivationCostShape(): V5ActivationCostShape? {
+        val components = when (this) {
+            AbilityCost.Tap -> listOf(this)
+            is AbilityCost.Composite -> costs
+            else -> return null
+        }
+        var manaCost: ManaCost? = null
+        var tapCount = 0
+        for (component in components) {
+            when (component) {
+                AbilityCost.Tap -> tapCount++
+                is AbilityCost.Atom -> when (val atom = component.atom) {
+                    is CostAtom.Mana -> {
+                        if (manaCost != null) return null
+                        manaCost = atom.cost.canonicalPaymentManaCost()
+                    }
+
+                    else -> return null
+                }
+
+                else -> return null
+            }
+        }
+        if (tapCount != 1) return null
+        val ordinaryManaCost = manaCost ?: ManaCost.ZERO
+        if (!ordinaryManaCost.isFixedOrdinaryManaCost()) return null
+        val atomicUnits = ordinaryManaCost.toAtomicDomain() ?: return null
+        val order = buildList {
+            if (manaCost != null) add(ActivationCostComponentRefV1.ManaComponent)
+            add(ActivationCostComponentRefV1.DeterministicNonManaComponent(0))
+        }
+        return V5ActivationCostShape(ordinaryManaCost, atomicUnits, order)
+    }
+
+    private fun ManaSource.toV5Domain(
+        state: GameState,
+        playerId: EntityId,
+        spellContext: SpellPaymentContext,
+        costCalculator: ActivatedAbilityCostCalculator,
+    ): List<PaymentSourceActivationDomainV2>? {
+        if (paymentManaProductionProfiles.isEmpty() || paymentManaAbilityOrder.isEmpty()) return null
+        if (paymentManaProductionProfiles.keys != paymentManaSideEffectCertificates.keys) return null
+        if (paymentManaAbilityOrder.distinct().size != paymentManaAbilityOrder.size ||
+            paymentManaAbilityOrder.toSet() != paymentManaProductionProfiles.keys
+        ) return null
+
+        // One ActivatedAbility appears in more than one output-color map for fixed bundles. The
+        // runtime ID is used only to deduplicate that same in-memory object; it is never exposed
+        // or used to order distinct options.
+        val explicitAbilities = manaAbilityOptionsForColor.values
+            .flatten()
+            .plus(manaAbilityOptionsForColorless)
+            .distinctBy { it.id.value }
+        val abilitiesByKey = explicitAbilities.groupBy(ManaAbilityIdentity::key)
+        if (abilitiesByKey.values.any { candidates -> candidates.size != 1 }) return null
+
+        // Basic-land and Wastes abilities are Rules-synthesized identities. Their serialized
+        // structural payload is intentionally not the public identity, so resolve those keys
+        // through the same intrinsic identity helper used by source discovery and V1/V2
+        // validation. Explicit abilities continue to use the structural key path below.
+        val intrinsicAbilities = IntrinsicManaAbilities
+            .forEntity(state, state.projectedState, entityId)
+            .associateBy { ability ->
+                val symbol = ability.id.value.removePrefix("intrinsic_mana_").singleOrNull()
+                    ?: return null
+                ManaAbilityIdentity.intrinsic(Color.fromSymbol(symbol))
+            }
+            .toMutableMap()
+        val colorlessIntrinsicKey = ManaAbilityIdentity.intrinsic(null)
+        if (colorlessIntrinsicKey in paymentManaAbilityOrder) {
+            intrinsicAbilities[colorlessIntrinsicKey] = IntrinsicManaAbilities.colorlessFallback()
+        }
+
+        return paymentManaAbilityOrder.map { manaAbilityKey ->
+            val profile = paymentManaProductionProfiles[manaAbilityKey] ?: return null
+            if (paymentManaSideEffectCertificates[manaAbilityKey] !is
+                com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate.NoSideEffect
+            ) return null
+            val ability = if (manaAbilityKey.startsWith("intrinsic:")) {
+                intrinsicAbilities[manaAbilityKey] ?: return null
+            } else {
+                abilitiesByKey[manaAbilityKey]?.singleOrNull() ?: return null
+            }
+            val effectiveCost = costCalculator.calculate(
+                state = state,
+                sourceId = entityId,
+                controllerId = playerId,
+                ability = ability,
+            )
+            val shape = effectiveCost.toV5ActivationCostShape() ?: return null
+            val productionChoices = when (profile) {
+                is PaymentManaProductionProfile.SelectableSingleOutput ->
+                    profile.allowedColors.sortedBy(PaymentManaColor::ordinal).map {
+                        ProductionChoice(producedColor = it)
+                    }
+
+                is PaymentManaProductionProfile.FixedOutputBundle -> {
+                    if (profile.outputs.size < 2) return null
+                    val outputs = profile.outputs.mapIndexed { index, output ->
+                        FixedManaOutput(index = index, color = output.color, amount = 1)
+                    }
+                    listOf(
+                        ProductionChoice(
+                            producedColor = outputs.first().color,
+                            fixedOutputs = outputs,
+                        )
+                    )
+                }
+
+                is PaymentManaProductionProfile.Unsupported -> return null
+            }
+            if (productionChoices.isEmpty()) return null
+            PaymentSourceActivationDomainV2(
+                sourceId = entityId,
+                sourceName = name,
+                manaAbilityKey = manaAbilityKey,
+                productionChoices = productionChoices,
+                atomicActivationManaCostUnits = shape.atomicManaCostUnits,
+                activationSupportKind = PaymentActivationSupportKindV1.FIXED_MANA_AND_TAP_SELF,
+                deterministicNonManaCosts = listOf(
+                    PaymentDeterministicNonManaCostKindV1.TAP_SELF,
+                ),
+                activationCostOrderOptions = listOf(shape.activationCostOrder),
+            )
+        }
+    }
 
     private fun ManaSymbol.toDomain(index: Int): PaymentCostUnitDomain? = when (this) {
         is ManaSymbol.Colored -> PaymentCostUnitDomain(
