@@ -6,13 +6,13 @@
 
 **Architecture:** The public seam is a new `PaymentDomainV5` paired with `PaymentPlanV3`. The plan is an ordered list of `SourceActivationV2` nodes; each node may consume only initial-pool resources or outputs of earlier nodes, and all activation-cost and outer-cost allocations are normalized into one Rules-owned resource ledger. A deep Rules module validates and executes this complete program atomically; public policy may search only the published domain and never calls `ManaSolver`, reads `GameState`, or supplies hidden choices.
 
-**Tech Stack:** Kotlin, kotlinx.serialization, immutable ECS `GameState`, the existing `ManaSource`/mana-ability profile machinery, Gym JSON contracts, `PaymentStrategy`, and `CompactReplay`. Verification runs through the repository's `just` recipes after implementation; this turn writes documentation only.
+**Tech Stack:** Kotlin, kotlinx.serialization, immutable ECS `GameState`, the existing `ManaSource`/mana-ability profile machinery, Gym JSON contracts, `PaymentStrategy`, and `CompactReplay`. Verification is recorded per implementation task; `just` remains the repository-level gate, with native Gradle runs reported separately when the Windows wrapper cannot start.
 
 ---
 
 ## Status, authority, and hard scope
 
-**Status:** Revised written design proposal with the requested review delta applied. It remains pending reviewer sign-off; this document is a handoff specification, not an implementation authorization. All implementation and RED checkboxes are intentionally unchecked.
+**Status:** Approved normative design proposal. The implementation is being delivered in isolated tasks on the branch for PR #107; this document remains the contract and does not authorize changes to B0 policy, locked decks, or historical payment/replay versions.
 
 **Base:** `origin/main = 7db6ea409f93580bf83ab0bc0ca86f3384d33a9a`.
 
@@ -33,11 +33,11 @@ The following are fixed decisions for implementation review:
 - `SINGLE_GLOBAL_RESOURCE_LEDGER=REQUIRED`.
 - `COMPACT_REPLAY_V5=REQUIRED`.
 - `GYM_SCHEMA_BUMP=REQUIRED`.
-- `WRITTEN_SPEC_APPROVED=PENDING_REVIEW`.
-- `GO_TO_RED=NO` pending that review.
-- `GO_TO_RED_AFTER_SPEC_REVIEW=CONDITIONAL_ON_APPROVAL`.
-- `GO_TO_IMPLEMENTATION=NO` for this turn.
-- B0 policy, locked decks, card definitions, and production code are out of scope for this document-only change.
+- `WRITTEN_SPEC_APPROVED=YES`.
+- `GO_TO_RED=COMPLETE` for the characterized V5 contract.
+- `GO_TO_IMPLEMENTATION=YES` for the approved task sequence.
+- B0 policy, locked decks, and card definitions remain out of scope. Historical payment/replay
+  contracts remain unchanged.
 
 Normative words such as **MUST**, **MUST NOT**, **SHOULD**, and **MAY** describe the contract that a later implementation and its tests must satisfy.
 
@@ -424,10 +424,10 @@ Rules modifications therefore participate in V5 qualification and validation thr
 cost calculation path used by legal-action enumeration and trusted activation handling.
 
 The cost-component order is an explicit contract seam. The canonical source is the
-[official Wizards Comprehensive Rules page](https://magic.wizards.com/en/rules). At this review date,
-that page links `MagicCompRules 20260819.txt`, whose header says it is effective August 7, 2026. The
-rules permit a player to pay non-random cost components in any order (601.2h); activated-ability payment
-follows that procedure (602.2b); and mana abilities may be activated while paying a mana cost (605.3a).
+[official Wizards Comprehensive Rules page](https://magic.wizards.com/en/rules), whose currently linked
+rules are effective August 7, 2026. The rules permit a player to pay non-random cost components in any
+order (601.2h); activated-ability payment follows that procedure (602.2b); and mana abilities may be
+activated while paying a mana cost (605.3a).
 V5 therefore MUST NOT silently impose `ManaComponent` before `TapSelf`. `activationCostOrderOptions`
 publishes the legal order values, and `SourceActivationV2.activationCostOrder` carries the selected
 value. If an order characterization proves the supported state class makes the legal orders equivalent,
@@ -486,12 +486,15 @@ The first slice MUST reject the entire action domain as unsupported when a disco
 - discard, forage, or another hand/graveyard choice;
 - dynamic `X`, target-dependent, context-dependent, or unresolved activation mana;
 - a hidden or ambiguous production profile;
-- an unrepresented restriction, rider, or side effect;
+- an unrepresented restriction, rider, or side effect. `NoSideEffect` is supported directly. A
+  `PaymentManaSideEffectCertificate.FixedSelfDamage` shape is supported only when the shared
+  Rules-owned execution-stability certificate also proves that its life mutation cannot change
+  any later payment fact in the certified ordered-program state class;
 - a non-deterministic non-mana cost not represented by a public contract.
 
 The source MUST NOT be omitted merely because one legal option is unsupported. If the complete discovered source set cannot be represented, the whole action domain remains `PAYMENT_DOMAIN_UNSUPPORTED`. This is the same fail-closed completeness rule that makes V4 safe for A5.
 
-The first slice does not attempt to solve every paid mana ability in Magic. It creates a reusable seam that can later add a separately versioned support kind for another fully characterized deterministic cost. It does not add a fake generic life field to the mana domain; life costs remain Rules-owned and only enter a future public contract when their exact deterministic semantics are explicitly represented.
+The first slice does not attempt to solve every paid mana ability in Magic. It creates a reusable seam that can later add a separately versioned support kind for another fully characterized deterministic cost. Fixed self-damage is not treated as a boolean `NoSideEffect` exception: the Rules-owned certificate must account for the source tap, the controller's life total, the canonical damage/life-history facts that later payment discovery could observe, and the relevant live damage environment. Prevention, redirection, replacement, amplification, protection, lifelink, dynamic, or otherwise additional side effects outside that certificate remain unsupported. The contract does not add a fake generic life field to the mana domain; life costs remain Rules-owned and only enter a future public contract when their exact deterministic semantics are explicitly represented.
 
 ---
 
@@ -518,7 +521,9 @@ A V5 builder MUST follow this sequence:
    cannot be promoted into a wire order. Verify that `manaAbilityKey` is unique among that source's
    distinct legal options; a collision makes the whole action domain unsupported.
    The paid-source timing certification from `PAY106-MANA-WINDOW-01` is also required before such an
-   option is published.
+   option is published. Its side-effect certificate must be `NoSideEffect`, or `FixedSelfDamage`
+   paired with a successful life-mutation execution-stability certificate for the complete
+   discovered source set; a bare side-effect-type check is insufficient.
 8. Publish complete initial-pool bucket capacities and outer atomic cost units.
 
 The builder MUST NOT:
@@ -760,7 +765,13 @@ legality check for an uncertified later node. V5 therefore requires a Rules-owne
 
 The certificate proves that each published mana-ability candidate remains legal, retains the same
 effective activation cost and production profile, and remains within the deterministic side-effect
-contract throughout any ordered program made from the certified V5 slice. This legality proof
+contract throughout any ordered program made from the certified V5 slice. For
+`FixedSelfDamage`, the certificate additionally probes the complete deterministic mutation footprint
+(source tap, life total, damage/life-history markers, and source-specific canonical trackers) for
+every positive cumulative loss up to a conservative upper bound across the discovered painful
+sources. It re-discovers the remaining payment sources and compares their availability, ordering,
+production, side-effect certificates, restrictions, and effective-cost facts; any difference makes
+the complete domain unsupported. This legality proof
 includes the authoritative external activation-permission closure: printed and durationally
 granted `PlayersCantActivateAbilities` / `PreventActivatedAbilities` shapes are read at activation
 time and can change when an earlier `TapSelf` node changes live state. The first slice therefore
@@ -909,7 +920,8 @@ published ordering. Differences visible only to the private seat MUST NOT alter 
 
 ## 11. RED/acceptance matrix
 
-These are required tests for the later RED phase. They are specified here but were not run in this documentation-only turn.
+These are the required RED and acceptance tests. The implementation status and the separately
+reported verification commands are recorded in the current-turn boundary below and in the PR.
 
 | ID | Scenario | Expected result |
 |---|---|---|
@@ -921,6 +933,12 @@ These are required tests for the later RED phase. They are specified here but we
 | PAY106-EXECUTOR-SEQ-01 | A later mana ability is initially legal but its activation restriction becomes false after an earlier node changes state | The stability certificate makes the complete V5 domain unsupported, or `validateV3()` rejects before the first mutation; original state and events are unchanged. |
 | PAY106-EXECUTOR-SEQ-02 | A later mana ability's effective activation cost changes after an earlier node changes state | The stability certificate makes the complete V5 domain unsupported, or `validateV3()` rejects before the first mutation; original state and events are unchanged. |
 | PAY106-EXECUTOR-STABILITY-03 | An earlier `TapSelf` activates an external `PlayersCantActivateAbilities` or `PreventActivatedAbilities` permission lock for a later mana source | The complete V5 domain is unsupported, or `validateV3()` rejects before the first mutation; the executor must not bypass authoritative activation permission, and original state/events remain unchanged. |
+| PAY106-SIDEEFFECT-01 | Locked-deck-shaped `Battlefield Forge`/`Llanowar Wastes` and generic fixed-self-damage sources are discovered beside an ordinary payable action | Every representable source publishes its `FixedSelfDamage`/`NoSideEffect` profile; the complete `PaymentDomainV5` exists. |
+| PAY106-SIDEEFFECT-02 | Select a painful colored activation from a fixed-self-damage source | The ordered V3 executor produces the selected mana, applies exactly one canonical self-damage mutation and its events, completes payment, and never uses native fallback. |
+| PAY106-SIDEEFFECT-03 | A painful source is ordered before a later node whose legality observes life history | The shared life-mutation stability certificate rejects the complete domain, or `validateV3()` rejects before mutation; no later illegal node executes. |
+| PAY106-SIDEEFFECT-04 | A later node is invalid after the represented pain mutation | The full program is rejected transactionally with the original `GameState` and an empty event list. |
+| PAY106-SIDEEFFECT-05 | Select the pain-free colorless output of a mixed pain source | The source produces the selected colorless mana and applies no damage or life-change event. |
+| PAY106-SIDEEFFECT-06 | A live damage replacement is present beside a fixed-self-damage source | The damage-environment certificate closes the complete V5 domain before execution; no replacement is approximated and no state/event mutation occurs. |
 | PAY106-03 | Forest output pays Signet's atomic `{1}` target; Signet output pays outer atomic cost units | Complete `ExplicitV3` is accepted and resolves with the selected outputs. |
 | PAY106-04 | Signet output is assigned to its own `{1}` | Rejected; original state and event list are unchanged. |
 | PAY106-05 | A later activation output is assigned to an earlier activation cost | Rejected by the forward-reference rule; zero mutation. |
@@ -975,7 +993,8 @@ No file in this section is modified by this turn. The list defines the later imp
 
 ### Later bite-sized execution sequence
 
-Each task is independently reviewable. No task below is executed now.
+Each task is independently reviewable. The task list is the normative implementation sequence; the
+current execution boundary is recorded in §14.
 
 #### Task 1: Freeze the V5 domain and ledger RED tests
 
@@ -1050,6 +1069,7 @@ Each task is independently reviewable. No task below is executed now.
 - [ ] Preflight the entire V3 plan before applying any tap, mana, life, sacrifice, event, or action effect.
 - [ ] Execute each node's submitted or Rules-approved canonical cost-component order, consuming assigned mana resources and applying deterministic `TapSelf` through the side-effect authority; expose fixed output units only after every component succeeds.
 - [ ] Require the Rules-owned execution-stability certificate for every discovered V5 source in both publication and `validateV3()`; reject the complete domain or plan before mutation when a later node's legality, effective cost, production, or supported side effects could change after an earlier node.
+- [ ] Support `FixedSelfDamage` only through the same life-mutation stability certificate used by publication and `validateV3()`; prove the canonical damage/life-history footprint, exact selected output behavior, later-node stability, and transactional rejection evidence. Do not widen support with a bare side-effect-type check.
 - [ ] Preserve the certified timing model from `PAY106-MANA-WINDOW-01`; do not emulate a nested 601.2g activation with an illegal forward resource reference or silently relock the activation cost.
 - [ ] Pay the outer allocation from the same ledger and continue into the action only after all payment stages succeed.
 - [ ] Return the original state and no events for every rejected/stale path.
@@ -1109,21 +1129,29 @@ The result is the smallest reusable deep module that solves #106 and remains aud
 
 ## 14. Current-turn verification boundary
 
-This document-only turn intentionally does not run RED, production implementation, Gradle, B0, replay migration, or Gym execution.
+The current Task 5 delta covers only the generic `FixedSelfDamage` side-effect qualification and
+execution evidence. It does not change B0 policy, locked decks, card definitions, historical V1/V2/V4
+contracts, CompactReplay v5, Gym schema migration, `ManaSpentEvent`, or outer non-mana-cost atomicity.
+Task 6 and exact-B0 resumption remain out of scope until the remaining Task 5 review questions are
+closed.
 
-Expected handoff status:
+Current handoff status:
 
 ```
 SPEC_WRITE=PASS
 SPEC_REVIEW_DELTA=APPLIED
-WRITTEN_SPEC_APPROVED=PENDING_REVIEW
-GO_TO_RED=NO
-PRODUCTION_CHANGES=NONE
-RED=NOT_RUN
-IMPLEMENTATION=NOT_RUN
+WRITTEN_SPEC_APPROVED=YES
+GO_TO_RED=COMPLETE
+PAY106_SIDEEFFECT_RED=CONFIRMED
+PAY106_SIDEEFFECT_DELTA=IMPLEMENTED
+PAY106_SIDEEFFECT_EVIDENCE=FOCUSED_PASS
+PRODUCTION_CHANGES=TASK5_SIDEEFFECT_ONLY
+TASK5_FINAL_REVIEW=PENDING
+GO_TO_TASK6=NO
 DECKS=UNCHANGED
-COMMIT=NONE
-PR=NONE
+COMPACT_REPLAY=UNCHANGED
+MANA_SPENT_EVENT=NOT_CLASSIFIED
+OUTER_NON_MANA_ATOMICITY=NOT_CLASSIFIED
 B0_READY_TO_RESUME=NO
 DATA_TRUSTED=NO
 ```

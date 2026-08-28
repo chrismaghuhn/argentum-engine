@@ -466,8 +466,14 @@ class PaymentPlanValidator(
                 ?: return PaymentPlanValidation.Rejected(
                     "Mana ability identity is not in the current source order"
                 )
-            if (source.paymentManaSideEffectCertificates[activation.manaAbilityKey] !is
-                PaymentManaSideEffectCertificate.NoSideEffect
+            val advertisedSideEffectCertificate =
+                source.paymentManaSideEffectCertificates[activation.manaAbilityKey]
+                    ?: return PaymentPlanValidation.Rejected(
+                        "Mana ability side-effect certificate is missing"
+                    )
+            val currentSideEffectCertificate = PaymentManaSideEffectCertificateResolver.resolve(ability.effect)
+            if (advertisedSideEffectCertificate != currentSideEffectCertificate ||
+                !currentSideEffectCertificate.isSupportedByPaymentProgramV3()
             ) {
                 return PaymentPlanValidation.Rejected(
                     "PaymentPlanV3 source has an unrepresented deterministic side effect"
@@ -564,6 +570,8 @@ class PaymentPlanValidator(
                         ability = ability,
                         effectiveCost = effectiveCost,
                         productionProfile = profile,
+                        sideEffectCertificate = currentSideEffectCertificate,
+                        lifeMutationStabilityCertified = source.paymentManaExecutionStabilityCertified,
                     )
                 )
             ) {

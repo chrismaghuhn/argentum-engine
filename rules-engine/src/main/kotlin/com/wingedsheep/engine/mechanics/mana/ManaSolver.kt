@@ -7,19 +7,23 @@ import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.effects.DamageUtils
 import com.wingedsheep.engine.mechanics.combat.CombatObjectOrder
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.tap
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedEverComponent
 import com.wingedsheep.engine.state.components.battlefield.AbilityActivatedThisTurnComponent
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
+import com.wingedsheep.engine.state.components.battlefield.HasDealtDamageComponent
 import com.wingedsheep.engine.state.components.battlefield.SummoningSicknessComponent
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.RedNoncombatDamageDealtThisTurnComponent
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.ManaCost
@@ -266,6 +270,44 @@ data class TapPermanentsSubCost(
     val count: Int,
     val filter: GameObjectFilter,
     val excludeSelf: Boolean
+)
+
+/**
+ * The source facts whose change after a fixed self-damage mutation could invalidate an ordered V5
+ * program. The entity identity is the map key supplied by the caller; the execution-stability bit
+ * is intentionally absent because this snapshot is also used by the non-recursive probe.
+ */
+private data class PaymentSourceLifeStabilitySnapshot(
+    val sourceSubtypes: Set<Subtype>,
+    val producesColors: Set<Color>,
+    val producesColorless: Boolean,
+    val isBasicLand: Boolean,
+    val isLand: Boolean,
+    val intrinsicManaColors: Set<Color>,
+    val isCreature: Boolean,
+    val hasNonManaAbilities: Boolean,
+    val manaAmount: Int,
+    val bonusManaPerTap: Int,
+    val bonusManaColor: Color?,
+    val bonusManaIsAnyColor: Boolean,
+    val bonusManaColorlessPerTap: Int,
+    val restriction: ManaRestriction?,
+    val colorRiders: Map<Color, Set<ManaSpellRider>>,
+    val colorRestrictions: Map<Color, ManaRestriction>,
+    val paymentManaSpendingRestrictionsCertified: Boolean,
+    val hasContextSensitiveAbilities: Boolean,
+    val colorActivationManaCost: Map<Color, Int>,
+    val colorPainCost: Map<Color, Int>,
+    val colorlessPainCost: Int,
+    val requiresSacrifice: Boolean,
+    val colorsRequiringSacrifice: Set<Color>,
+    val tapPermanentsSubCost: TapPermanentsSubCost?,
+    val manaAbilityOptionsForColor: Map<Color, List<String>>,
+    val manaAbilityOptionsForColorless: List<String>,
+    val paymentManaAbilityOrder: List<String>,
+    val paymentManaAbilityOrderCertified: Boolean,
+    val paymentManaProductionProfiles: Map<String, PaymentManaProductionProfile>,
+    val paymentManaSideEffectCertificates: Map<String, PaymentManaSideEffectCertificate>,
 )
 
 /**
@@ -1217,6 +1259,25 @@ class ManaSolver(
         playerId: EntityId,
         spellContext: SpellPaymentContext? = null,
         paymentOrderRequired: Boolean = false,
+    ): List<ManaSource> = findAvailableManaSourcesInternal(
+        state = state,
+        playerId = playerId,
+        spellContext = spellContext,
+        paymentOrderRequired = paymentOrderRequired,
+        certifyExecutionStability = true,
+    )
+
+    /**
+     * Internal discovery seam used by the life-mutation certificate. It keeps the Rules-owned
+     * payment ordering and all source/profile facts, but suppresses the final stability pass so a
+     * probe cannot recursively ask whether its own probe is stable.
+     */
+    private fun findAvailableManaSourcesInternal(
+        state: GameState,
+        playerId: EntityId,
+        spellContext: SpellPaymentContext?,
+        paymentOrderRequired: Boolean,
+        certifyExecutionStability: Boolean,
     ): List<ManaSource> {
         // Project state once to get all keywords and projected controllers
         val projected = state.projectedState
@@ -1235,7 +1296,7 @@ class ManaSolver(
         // (accounts for control-changing effects like Annex)
         val battlefieldCards = projected.getBattlefieldControlledBy(playerId)
 
-        return battlefieldCards.mapNotNull { entityId ->
+        val discoveredSources = battlefieldCards.mapNotNull { entityId ->
             val container = state.getEntity(entityId) ?: return@mapNotNull null
 
             // Must be untapped
@@ -1920,13 +1981,23 @@ class ManaSolver(
                 if (hasDampLandManaProduction(state)) applyLandManaDampening(sources) else sources
             }
             .map(ManaSource::authorizePaymentManaProductionProfiles)
-            .map { source ->
-                if (paymentOrderRequired) {
-                    certifyPaymentProgramExecutionStability(state, playerId, source)
-                } else {
-                    source
-                }
-            }
+            .toList()
+
+        if (!paymentOrderRequired || !certifyExecutionStability) return discoveredSources
+
+        val lifeMutationStabilityCertified = certifyFixedSelfDamageLifeMutation(
+            state = state,
+            playerId = playerId,
+            sources = discoveredSources,
+        )
+        return discoveredSources.map { source ->
+            certifyPaymentProgramExecutionStability(
+                state = state,
+                playerId = playerId,
+                source = source,
+                lifeMutationStabilityCertified = lifeMutationStabilityCertified,
+            )
+        }
     }
 
     /**
@@ -1939,6 +2010,7 @@ class ManaSolver(
         state: GameState,
         playerId: EntityId,
         source: ManaSource,
+        lifeMutationStabilityCertified: Boolean,
     ): ManaSource {
         if (!source.paymentManaExecutionStabilityCertified) return source
         if (!source.paymentManaAbilityOrderCertified ||
@@ -1974,9 +2046,9 @@ class ManaSolver(
             val profile = source.paymentManaProductionProfiles[manaAbilityKey]
                 ?: return@candidate false
             if (profile is PaymentManaProductionProfile.Unsupported) return@candidate false
-            if (source.paymentManaSideEffectCertificates[manaAbilityKey] !is
-                PaymentManaSideEffectCertificate.NoSideEffect
-            ) {
+            val sideEffectCertificate = source.paymentManaSideEffectCertificates[manaAbilityKey]
+                ?: return@candidate false
+            if (!sideEffectCertificate.isSupportedByPaymentProgramV3()) {
                 return@candidate false
             }
             val ability = if (manaAbilityKey.startsWith("intrinsic:")) {
@@ -1999,11 +2071,165 @@ class ManaSolver(
                     ability = ability,
                     effectiveCost = effectiveCost,
                     productionProfile = profile,
+                    sideEffectCertificate = sideEffectCertificate,
+                    lifeMutationStabilityCertified = lifeMutationStabilityCertified,
                 )
             )
         }
         return source.copy(paymentManaExecutionStabilityCertified = certified)
     }
+
+    /**
+     * Certifies that the only newly supported V5 mutation, fixed self-damage, cannot change any
+     * Rules-owned payment fact that a later activation node could observe. Each probe applies the
+     * full deterministic state footprint of the supported damage shape: the source becomes tapped,
+     * the controller loses life, and the canonical damage/life history markers are updated. The
+     * same ordered source discovery then runs without recursively certifying it. Any source-set,
+     * production, side-effect, order, restriction, or effective-cost change closes the complete
+     * V5 domain.
+     *
+     * A source can occur only once in a V3 program, so the conservative upper bound is the sum of
+     * the largest fixed self-damage certificate on each discovered source. We probe every positive
+     * intermediate loss up to that bound for every painful source. Applying the aggregate amount to
+     * one source is intentionally conservative for source-specific damage trackers: it can reject
+     * a state whose real program would distribute the loss across sources, but it cannot publish a
+     * state whose later payment facts change under a smaller represented mutation.
+     */
+    private fun certifyFixedSelfDamageLifeMutation(
+        state: GameState,
+        playerId: EntityId,
+        sources: List<ManaSource>,
+    ): Boolean {
+        val totalDamage = sources.fold(0L) { total, source ->
+            val sourceDamage = source.paymentManaSideEffectCertificates.values
+                .filterIsInstance<PaymentManaSideEffectCertificate.FixedSelfDamage>()
+                .maxOfOrNull { it.amount }
+                ?.toLong()
+                ?: 0L
+            total + sourceDamage
+        }
+        if (totalDamage == 0L) return true
+        if (totalDamage > Int.MAX_VALUE || state.lifeTotal(playerId).toLong() <= totalDamage) return false
+
+        val painfulSourceIds = sources.filter { source ->
+            source.paymentManaSideEffectCertificates.values.any {
+                it is PaymentManaSideEffectCertificate.FixedSelfDamage
+            }
+        }.map(ManaSource::entityId)
+        val baseline = sources.associate { it.entityId to paymentSourceLifeStabilitySnapshot(it) }
+        for (sourceId in painfulSourceIds) {
+            repeat(totalDamage.toInt()) { offset ->
+                val probedState = simulateFixedSelfDamageMutation(
+                    state = state,
+                    playerId = playerId,
+                    sourceId = sourceId,
+                    amount = offset + 1,
+                )
+                val probedSources = findAvailableManaSourcesInternal(
+                    state = probedState,
+                    playerId = playerId,
+                    spellContext = null,
+                    paymentOrderRequired = true,
+                    certifyExecutionStability = false,
+                )
+                // The selected source is expected to disappear after the simulated TapSelf. It
+                // cannot be a later node because V3 rejects duplicate source activation.
+                val probed = probedSources
+                    .filter { it.entityId != sourceId }
+                    .associate { it.entityId to paymentSourceLifeStabilitySnapshot(it) }
+                val remainingBaseline = baseline.filterKeys { it != sourceId }
+                if (probed != remainingBaseline) return false
+            }
+        }
+        return true
+    }
+
+    /**
+     * Conservative, Rules-owned model of the exact state mutation represented by
+     * [PaymentManaSideEffectCertificate.FixedSelfDamage]. The first-slice execution certifier
+     * rejects every currently modelled damage/prevention/replacement/amplification/protection/
+     * lifelink channel before this probe, so the certified amount is dealt in full. A larger,
+     * smaller, redirected, replaced, or life-gaining mutation is outside the certificate and
+     * remains unsupported.
+     *
+     * This is not an execution path: no events are emitted and no triggers or state-based actions
+     * are processed. It only installs the state facts that the canonical damage primitive records
+     * before later payment discovery runs. The real executor remains the sole authority for the
+     * actual side effect and its events.
+     */
+    private fun simulateFixedSelfDamageMutation(
+        state: GameState,
+        playerId: EntityId,
+        sourceId: EntityId,
+        amount: Int,
+    ): GameState {
+        val (tappedState, _) = tap(state, sourceId)
+        var probedState = tappedState.adjustLife(playerId, -amount)
+        probedState = DamageUtils.trackDamageReceivedByPlayer(
+            state = probedState,
+            playerId = playerId,
+            amount = amount,
+            sourceId = sourceId,
+        )
+        if (sourceId in probedState.getBattlefield()) {
+            val turnNumber = probedState.turnNumber
+            probedState = probedState.updateEntity(sourceId) { container ->
+                container.with(HasDealtDamageComponent(turnNumber))
+            }
+        }
+
+        val sourceColors = probedState.projectedState.getColors(sourceId) +
+            (probedState.getEntity(sourceId)?.get<CardComponent>()?.colors?.map { it.name }.orEmpty())
+        if (Color.RED.name in sourceColors) {
+            probedState = probedState.updateEntity(playerId) { container ->
+                val previous = container.get<RedNoncombatDamageDealtThisTurnComponent>()?.amount ?: 0
+                container.with(RedNoncombatDamageDealtThisTurnComponent(previous + amount))
+            }
+        }
+        return probedState
+    }
+
+    /**
+     * Snapshot only the public payment facts. Do not compare [ManaSource] itself: its final
+     * execution-stability bit is the result being computed, and must not make a non-recursive
+     * probe appear different from the baseline.
+     */
+    private fun paymentSourceLifeStabilitySnapshot(source: ManaSource): PaymentSourceLifeStabilitySnapshot =
+        PaymentSourceLifeStabilitySnapshot(
+            sourceSubtypes = source.sourceSubtypes,
+            producesColors = source.producesColors,
+            producesColorless = source.producesColorless,
+            isBasicLand = source.isBasicLand,
+            isLand = source.isLand,
+            intrinsicManaColors = source.intrinsicManaColors,
+            isCreature = source.isCreature,
+            hasNonManaAbilities = source.hasNonManaAbilities,
+            manaAmount = source.manaAmount,
+            bonusManaPerTap = source.bonusManaPerTap,
+            bonusManaColor = source.bonusManaColor,
+            bonusManaIsAnyColor = source.bonusManaIsAnyColor,
+            bonusManaColorlessPerTap = source.bonusManaColorlessPerTap,
+            restriction = source.restriction,
+            colorRiders = source.colorRiders,
+            colorRestrictions = source.colorRestrictions,
+            paymentManaSpendingRestrictionsCertified = source.paymentManaSpendingRestrictionsCertified,
+            hasContextSensitiveAbilities = source.hasContextSensitiveAbilities,
+            colorActivationManaCost = source.colorActivationManaCost,
+            colorPainCost = source.colorPainCost,
+            colorlessPainCost = source.colorlessPainCost,
+            requiresSacrifice = source.requiresSacrifice,
+            colorsRequiringSacrifice = source.colorsRequiringSacrifice,
+            tapPermanentsSubCost = source.tapPermanentsSubCost,
+            manaAbilityOptionsForColor = source.manaAbilityOptionsForColor.mapValues { (_, abilities) ->
+                abilities.map(ManaAbilityIdentity::key)
+            },
+            manaAbilityOptionsForColorless = source.manaAbilityOptionsForColorless
+                .map(ManaAbilityIdentity::key),
+            paymentManaAbilityOrder = source.paymentManaAbilityOrder,
+            paymentManaAbilityOrderCertified = source.paymentManaAbilityOrderCertified,
+            paymentManaProductionProfiles = source.paymentManaProductionProfiles,
+            paymentManaSideEffectCertificates = source.paymentManaSideEffectCertificates,
+        )
 
     /**
      * Returns true when every [ActivationRestriction] on the given mana ability is currently

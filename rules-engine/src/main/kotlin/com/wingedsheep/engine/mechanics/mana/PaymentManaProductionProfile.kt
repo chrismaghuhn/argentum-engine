@@ -77,6 +77,19 @@ sealed interface PaymentManaSideEffectCertificate {
 }
 
 /**
+ * Whether this exact side-effect certificate is representable by the V3 ordered payment program.
+ *
+ * [PaymentManaSideEffectCertificate.FixedSelfDamage] is only a production-side capability marker;
+ * the V3 execution-stability certificate must additionally prove that the life mutation cannot
+ * change any later payment fact before the source is published.
+ */
+fun PaymentManaSideEffectCertificate.isSupportedByPaymentProgramV3(): Boolean = when (this) {
+    PaymentManaSideEffectCertificate.NoSideEffect -> true
+    is PaymentManaSideEffectCertificate.FixedSelfDamage -> amount > 0
+    is PaymentManaSideEffectCertificate.Unsupported -> false
+}
+
+/**
  * Reconciles raw ability profiles with the final aggregate [ManaSource] semantics.
  *
  * Source discovery intentionally keeps its existing aggregate representation for auto-pay. A

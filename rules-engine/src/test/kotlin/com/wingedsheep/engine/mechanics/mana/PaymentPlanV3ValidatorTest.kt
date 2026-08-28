@@ -3,9 +3,12 @@ package com.wingedsheep.engine.mechanics.mana
 import com.wingedsheep.engine.core.ActivationCostComponentRefV1
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
+import com.wingedsheep.engine.core.LifeChangeReason
+import com.wingedsheep.engine.core.LifeChangedEvent
 import com.wingedsheep.engine.core.ManaResourceRefV1
 import com.wingedsheep.engine.core.PaymentAllocationV1
 import com.wingedsheep.engine.core.PaymentManaColor
@@ -20,8 +23,11 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.actions.spell.CastPaymentProcessor
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
+import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.mtg.sets.definitions.apc.cards.LlanowarWastes
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.Conditions
@@ -31,7 +37,9 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
+import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.PlayersCantActivateAbilities
+import com.wingedsheep.sdk.scripting.PreventDamage
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -122,6 +130,24 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         }
     }
 
+    /**
+     * Initially legal, but no longer legal after a painful mana ability records life loss. This
+     * models a later-node rule fact that is not an ability-local cost/restriction modifier.
+     */
+    val lifeHistoryGuardedManaSource = card("PAY106 Life History Guarded Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.BLACK)
+            manaAbility = true
+            restrictions = listOf(
+                ActivationRestriction.OnlyIfCondition(
+                    Conditions.Not(Conditions.YouLostLifeThisTurn),
+                )
+            )
+        }
+    }
+
     val executorSpell = card("PAY106 Executor Spell") {
         manaCost = "{1}{B}"
         typeLine = "Sorcery"
@@ -147,6 +173,23 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val targetSourceId: EntityId,
         val guardingKey: String,
         val targetKey: String,
+    )
+
+    data class PainFixture(
+        val driver: GameTestDriver,
+        val player: EntityId,
+        val sourceId: EntityId,
+        val greenKey: String,
+        val colorlessKey: String,
+    )
+
+    data class PainSequenceFixture(
+        val driver: GameTestDriver,
+        val player: EntityId,
+        val painSourceId: EntityId,
+        val painKey: String,
+        val guardedSourceId: EntityId,
+        val guardedKey: String,
     )
 
     fun signetFixture(forestCount: Int = 1, includePool: ManaPoolComponent? = null): SignetFixture {
@@ -221,6 +264,110 @@ class PaymentPlanV3ValidatorTest : FunSpec({
                 .paymentManaAbilityOrder.single(),
         )
     }
+
+    fun painFixture(): PainFixture {
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + LlanowarWastes)
+        driver.initMirrorMatch(Deck.of("Forest" to 40), startingPlayer = 0)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val player = driver.activePlayer!!
+        val sourceId = driver.putPermanentOnBattlefield(player, LlanowarWastes.name)
+        val source = ManaSolver(driver.cardRegistry)
+            .findAvailableManaSources(
+                state = driver.state,
+                playerId = player,
+                spellContext = null,
+                paymentOrderRequired = true,
+            )
+            .single { it.entityId == sourceId }
+        return PainFixture(
+            driver = driver,
+            player = player,
+            sourceId = sourceId,
+            greenKey = source.manaAbilityOptionsFor(Color.GREEN).single().let(ManaAbilityIdentity::key),
+            colorlessKey = source.manaAbilityOptionsFor(null).single().let(ManaAbilityIdentity::key),
+        )
+    }
+
+    fun painSequenceFixture(): PainSequenceFixture {
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + LlanowarWastes + lifeHistoryGuardedManaSource)
+        driver.initMirrorMatch(Deck.of("Forest" to 40), startingPlayer = 0)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val player = driver.activePlayer!!
+        val painSourceId = driver.putPermanentOnBattlefield(player, LlanowarWastes.name)
+        val guardedSourceId = driver.putPermanentOnBattlefield(player, lifeHistoryGuardedManaSource.name)
+        val sources = ManaSolver(driver.cardRegistry).findAvailableManaSources(
+            state = driver.state,
+            playerId = player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        )
+        val painSource = sources.single { it.entityId == painSourceId }
+        val guardedSource = sources.single { it.entityId == guardedSourceId }
+        return PainSequenceFixture(
+            driver = driver,
+            player = player,
+            painSourceId = painSourceId,
+            painKey = painSource.manaAbilityOptionsFor(Color.GREEN).single().let(ManaAbilityIdentity::key),
+            guardedSourceId = guardedSourceId,
+            guardedKey = guardedSource.paymentManaAbilityOrder.single(),
+        )
+    }
+
+    fun singlePainPlan(
+        fixture: PainFixture,
+        manaAbilityKey: String,
+        producedColor: PaymentManaColor,
+    ): PaymentPlanV3 = PaymentPlanV3(
+        activations = listOf(
+            SourceActivationV2(
+                sourceId = fixture.sourceId,
+                manaAbilityKey = manaAbilityKey,
+                productionChoice = ProductionChoice(producedColor),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+        ),
+        outerAllocation = listOf(
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(0, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+            ),
+        ),
+    )
+
+    fun painSequencePlan(fixture: PainSequenceFixture): PaymentPlanV3 = PaymentPlanV3(
+        activations = listOf(
+            SourceActivationV2(
+                sourceId = fixture.painSourceId,
+                manaAbilityKey = fixture.painKey,
+                productionChoice = ProductionChoice(PaymentManaColor.GREEN),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+            SourceActivationV2(
+                sourceId = fixture.guardedSourceId,
+                manaAbilityKey = fixture.guardedKey,
+                productionChoice = ProductionChoice(PaymentManaColor.BLACK),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+        ),
+        outerAllocation = listOf(
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(0, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+            ),
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(1, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+            ),
+        ),
+    )
 
     fun permissionPlan(fixture: PermissionFixture): PaymentPlanV3 = PaymentPlanV3(
         activations = listOf(
@@ -664,6 +811,150 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             plan = permissionPlan(fixture),
             paymentContext = SpellPaymentContext(),
             reason = "PAY106 external activation permission stability",
+        )
+
+        result.error shouldNotBe null
+        result.state shouldBe before
+        result.events shouldBe emptyList()
+    }
+
+    test("PAY106-SIDEEFFECT-02: a colored pain activation pays and deals exactly one damage") {
+        val fixture = painFixture()
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = fixture.driver.state,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singlePainPlan(fixture, fixture.greenKey, PaymentManaColor.GREEN),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 fixed self-damage payment",
+        )
+
+        result.error shouldBe null
+        result.state.getEntity(fixture.sourceId)?.has<TappedComponent>() shouldBe true
+        result.state.lifeTotal(fixture.player) shouldBe fixture.driver.state.lifeTotal(fixture.player) - 1
+        result.events.filterIsInstance<DamageDealtEvent>().single().let { damage ->
+            damage.sourceId shouldBe fixture.sourceId
+            damage.targetId shouldBe fixture.player
+            damage.amount shouldBe 1
+            damage.targetIsPlayer shouldBe true
+        }
+        result.events.filterIsInstance<LifeChangedEvent>().single().let { life ->
+            life.playerId shouldBe fixture.player
+            life.reason shouldBe LifeChangeReason.DAMAGE
+            life.newLife shouldBe life.oldLife - 1
+        }
+        result.events.filterIsInstance<ManaSpentEvent>().single().green shouldBe 1
+    }
+
+    test("PAY106-SIDEEFFECT-03: pain before a life-history-sensitive node is not certified") {
+        val fixture = painSequenceFixture()
+        val sources = ManaSolver(fixture.driver.cardRegistry).findAvailableManaSources(
+            state = fixture.driver.state,
+            playerId = fixture.player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        )
+
+        sources.single { it.entityId == fixture.guardedSourceId }
+            .paymentManaExecutionStabilityCertified shouldBe false
+        sources.single { it.entityId == fixture.painSourceId }
+            .paymentManaExecutionStabilityCertified shouldBe false
+
+        val before = fixture.driver.state
+        val rejected = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{B}"),
+            plan = painSequencePlan(fixture),
+            spellContext = SpellPaymentContext(),
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        rejected.reason shouldContain "not stable"
+        fixture.driver.state shouldBe before
+    }
+
+    test("PAY106-SIDEEFFECT-04: invalid later node after pain stays transactional") {
+        val fixture = painSequenceFixture()
+        val before = fixture.driver.state
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{B}"),
+            plan = painSequencePlan(fixture),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 fixed self-damage stability rejection",
+        )
+
+        result.error shouldNotBe null
+        result.state shouldBe before
+        result.events shouldBe emptyList()
+        result.state.getEntity(fixture.painSourceId)?.has<TappedComponent>() shouldBe false
+    }
+
+    test("PAY106-SIDEEFFECT-05: a pain source's colorless output remains damage-free") {
+        val fixture = painFixture()
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val before = fixture.driver.state
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{C}"),
+            plan = singlePainPlan(fixture, fixture.colorlessKey, PaymentManaColor.COLORLESS),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 pain-free mixed source payment",
+        )
+
+        result.error shouldBe null
+        result.state.getEntity(fixture.sourceId)?.has<TappedComponent>() shouldBe true
+        result.state.lifeTotal(fixture.player) shouldBe before.lifeTotal(fixture.player)
+        result.events.filterIsInstance<DamageDealtEvent>() shouldBe emptyList()
+        result.events.filterIsInstance<LifeChangedEvent>() shouldBe emptyList()
+        result.events.filterIsInstance<ManaSpentEvent>().single().colorless shouldBe 1
+    }
+
+    test("PAY106-SIDEEFFECT-06: a live damage replacement closes fixed self-damage V5") {
+        val fixture = painFixture()
+        val stateWithReplacement = fixture.driver.state.updateEntity(fixture.sourceId) { container ->
+            container.with(
+                ReplacementEffectSourceComponent(
+                    replacementEffects = listOf(PreventDamage(appliesTo = EventPattern.DamageEvent()))
+                )
+            )
+        }
+        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val source = solver.findAvailableManaSources(
+            state = stateWithReplacement,
+            playerId = fixture.player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        ).single { it.entityId == fixture.sourceId }
+
+        source.paymentManaExecutionStabilityCertified shouldBe false
+
+        val before = stateWithReplacement
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = solver,
+            manaAbilitySideEffectExecutor = EngineServices(
+                fixture.driver.cardRegistry,
+            ).manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singlePainPlan(fixture, fixture.greenKey, PaymentManaColor.GREEN),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 fixed self-damage replacement closure",
         )
 
         result.error shouldNotBe null

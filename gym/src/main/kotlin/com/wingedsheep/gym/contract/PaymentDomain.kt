@@ -19,9 +19,11 @@ import com.wingedsheep.engine.mechanics.mana.ManaSource
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCandidate
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
+import com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificateResolver
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
+import com.wingedsheep.engine.mechanics.mana.isSupportedByPaymentProgramV3
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
@@ -728,15 +730,18 @@ class PaymentDomainBuilder(
 
         return paymentManaAbilityOrder.map { manaAbilityKey ->
             val profile = paymentManaProductionProfiles[manaAbilityKey] ?: return null
-            if (paymentManaSideEffectCertificates[manaAbilityKey] !is
-                com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate.NoSideEffect
-            ) {
-                return null
-            }
             val ability = if (manaAbilityKey.startsWith("intrinsic:")) {
                 intrinsicAbilities[manaAbilityKey] ?: return null
             } else {
                 abilitiesByKey[manaAbilityKey]?.singleOrNull() ?: return null
+            }
+            val advertisedSideEffectCertificate =
+                paymentManaSideEffectCertificates[manaAbilityKey] ?: return null
+            val currentSideEffectCertificate = PaymentManaSideEffectCertificateResolver.resolve(ability.effect)
+            if (advertisedSideEffectCertificate != currentSideEffectCertificate ||
+                !currentSideEffectCertificate.isSupportedByPaymentProgramV3()
+            ) {
+                return null
             }
             val effectiveCost = costCalculator.calculate(
                 state = state,

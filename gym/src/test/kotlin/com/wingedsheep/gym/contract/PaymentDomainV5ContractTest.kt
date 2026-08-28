@@ -9,6 +9,8 @@ import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
+import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.state.ZoneKey
@@ -16,6 +18,10 @@ import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimes
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.GameEnvironment
+import com.wingedsheep.mtg.sets.definitions.apc.cards.BattlefieldForge
+import com.wingedsheep.mtg.sets.definitions.apc.cards.LlanowarWastes
+import com.wingedsheep.mtg.sets.definitions.mh1.cards.TalismanOfConviction
+import com.wingedsheep.mtg.sets.definitions.mh1.cards.TalismanOfResilience
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.sdk.core.Color
@@ -353,6 +359,42 @@ class PaymentDomainV5ContractTest : FunSpec({
                 com.wingedsheep.engine.core.PaymentManaColor.BLACK,
                 com.wingedsheep.engine.core.PaymentManaColor.GREEN,
         )
+    }
+
+    test("PAY106-SIDEEFFECT-01: locked-deck pain sources publish complete V5 domains") {
+        for (painSource in listOf(
+            BattlefieldForge,
+            LlanowarWastes,
+            TalismanOfConviction,
+            TalismanOfResilience,
+        )) {
+            val fixture = prepared(listOf(painSource))
+            val sourceId = fixture.extraIds[painSource.name]
+                ?: error("PAY106 fixture did not capture ${painSource.name}")
+            val discovered = ManaSolver(fixture.cardRegistry).findAvailableManaSources(
+                state = fixture.environment.state,
+                playerId = fixture.playerId,
+                spellContext = null,
+                paymentOrderRequired = true,
+            )
+            val source = discovered.single { it.entityId == sourceId }
+            source.paymentManaSideEffectCertificates.values.any {
+                it is PaymentManaSideEffectCertificate.FixedSelfDamage
+            } shouldBe true
+
+            val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+                .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+                .shouldNotBe(null)
+            val published = domain!!.sourceActivationOptions
+                .filter { it.sourceId == sourceId }
+            val publishedKeys = published.map { it.manaAbilityKey }
+            publishedKeys shouldBe source.paymentManaAbilityOrder
+            published.size shouldBe source.paymentManaProductionProfiles.size
+            source.paymentManaSideEffectCertificates
+                .filterValues { it is PaymentManaSideEffectCertificate.FixedSelfDamage }
+                .keys
+                .forEach { painKey -> publishedKeys shouldContain painKey }
+        }
     }
 
     test("PAY106-MANA-WINDOW-01: unavailable timing certification rejects a Signet-shaped source") {
