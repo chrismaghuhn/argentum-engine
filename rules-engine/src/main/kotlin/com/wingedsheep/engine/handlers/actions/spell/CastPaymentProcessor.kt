@@ -9,6 +9,7 @@ import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ExplicitPaymentPlanExecutor
+import com.wingedsheep.engine.mechanics.mana.OrderedPaymentProgramExecutor
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
@@ -73,6 +74,10 @@ class CastPaymentProcessor(
 ) {
     private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
     private val explicitPaymentPlanExecutor = ExplicitPaymentPlanExecutor(
+        manaSolver = manaSolver,
+        manaAbilitySideEffectExecutor = manaAbilitySideEffectExecutor,
+    )
+    private val orderedPaymentProgramExecutor = OrderedPaymentProgramExecutor(
         manaSolver = manaSolver,
         manaAbilitySideEffectExecutor = manaAbilitySideEffectExecutor,
     )
@@ -156,7 +161,22 @@ class CastPaymentProcessor(
                 events = emptyList(),
                 error = "PaymentStrategy.ExplicitV2 requires PaymentPlanV2",
             )
-            is PaymentStrategy.ExplicitV3 -> PaymentResult(
+            is PaymentStrategy.ExplicitV3 -> action.paymentStrategy.paymentPlan?.let { plan ->
+                spellContext?.let { context ->
+                    explicitPlanV3Pay(
+                        state = state,
+                        playerId = action.playerId,
+                        plan = plan,
+                        cost = effectiveCost,
+                        cardName = cardName,
+                        paymentContext = context,
+                    )
+                } ?: PaymentResult(
+                    state = state,
+                    events = emptyList(),
+                    error = "PaymentStrategy.ExplicitV3 requires SpellPaymentContext",
+                )
+            } ?: PaymentResult(
                 state = state,
                 events = emptyList(),
                 error = "PaymentStrategy.ExplicitV3 requires PaymentPlanV3",
@@ -217,6 +237,30 @@ class CastPaymentProcessor(
             cost = cost.canonicalPaymentManaCost(),
             plan = plan,
             paymentContext = spellContext,
+            reason = "Cast $cardName",
+        )
+        return PaymentResult(
+            state = execution.state,
+            events = execution.events,
+            error = execution.error,
+            spentManaProvenance = execution.spentManaProvenance,
+        )
+    }
+
+    private fun explicitPlanV3Pay(
+        state: GameState,
+        playerId: EntityId,
+        plan: com.wingedsheep.engine.core.PaymentPlanV3,
+        cost: ManaCost,
+        cardName: String,
+        paymentContext: SpellPaymentContext,
+    ): PaymentResult {
+        val execution = orderedPaymentProgramExecutor.executeV3(
+            state = state,
+            playerId = playerId,
+            cost = cost.canonicalPaymentManaCost(),
+            plan = plan,
+            paymentContext = paymentContext,
             reason = "Cast $cardName",
         )
         return PaymentResult(

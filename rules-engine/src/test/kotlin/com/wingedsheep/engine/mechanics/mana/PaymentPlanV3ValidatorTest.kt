@@ -1,25 +1,35 @@
 package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.ManaResourceRefV1
 import com.wingedsheep.engine.core.PaymentAllocationV1
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentPlanV3
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentTargetV1
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivationV2
+import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.handlers.CostHandler
+import com.wingedsheep.engine.handlers.actions.spell.CastPaymentProcessor
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
@@ -43,6 +53,14 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         }
     }
 
+    val executorSpell = card("PAY106 Executor Spell") {
+        manaCost = "{1}{B}"
+        typeLine = "Sorcery"
+        spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
     data class SignetFixture(
         val driver: GameTestDriver,
         val player: EntityId,
@@ -55,7 +73,7 @@ class PaymentPlanV3ValidatorTest : FunSpec({
 
     fun signetFixture(forestCount: Int = 1, includePool: ManaPoolComponent? = null): SignetFixture {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + GolgariSignet + activationCostModifier)
+        driver.registerCards(TestCards.all + GolgariSignet + activationCostModifier + executorSpell)
         driver.initMirrorMatch(Deck.of("Forest" to 40), startingPlayer = 0)
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val player = driver.activePlayer!!
@@ -157,6 +175,204 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         accepted.program.activations.map { it.source.entityId } shouldBe
             listOf(fixture.forestId, fixture.signetId)
         accepted.program.allocations.size shouldBe 3
+    }
+
+    test("PAY106-EXECUTOR-01: ExplicitV3 executes the validated ordered program") {
+        val fixture = signetFixture()
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val processor = CastPaymentProcessor(
+            manaSolver = services.manaSolver,
+            costHandler = CostHandler(fixture.driver.cardRegistry),
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        )
+        val action = CastSpell(
+            playerId = fixture.player,
+            cardId = fixture.signetId,
+            paymentStrategy = PaymentStrategy.ExplicitV3(validPlan(fixture)),
+        )
+        val before = fixture.driver.state
+
+        val result = processor.processPayment(
+            state = before,
+            action = action,
+            effectiveCost = ManaCost.parse("{1}{B}"),
+            cardName = "PAY106 Executor Test",
+            xValue = 0,
+            spellContext = SpellPaymentContext(),
+        )
+
+        result.error shouldBe null
+        result.state.getEntity(fixture.forestId)?.has<TappedComponent>() shouldBe true
+        result.state.getEntity(fixture.signetId)?.has<TappedComponent>() shouldBe true
+        result.state.getEntity(fixture.player)?.get<ManaPoolComponent>()?.unrestrictedTotal shouldBe 0
+    }
+
+    test("PAY106-EXECUTOR-02: unconsumed ordered output is published only after its source succeeds") {
+        val fixture = signetFixture()
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val processor = CastPaymentProcessor(
+            manaSolver = services.manaSolver,
+            costHandler = CostHandler(fixture.driver.cardRegistry),
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        )
+        val plan = validPlan(fixture).copy(
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+                ),
+            ),
+        )
+        val result = processor.processPayment(
+            state = fixture.driver.state,
+            action = CastSpell(
+                playerId = fixture.player,
+                cardId = fixture.signetId,
+                paymentStrategy = PaymentStrategy.ExplicitV3(plan),
+            ),
+            effectiveCost = ManaCost.parse("{B}"),
+            cardName = "PAY106 Executor Output Test",
+            xValue = 0,
+            spellContext = SpellPaymentContext(),
+        )
+
+        result.error shouldBe null
+        val pool = result.state.getEntity(fixture.player)?.get<ManaPoolComponent>()
+        pool?.black shouldBe 0
+        pool?.green shouldBe 1
+        pool?.manaBySource?.get(fixture.signetId) shouldBe 1
+        result.events.filterIsInstance<ManaSpentEvent>().single().black shouldBe 1
+    }
+
+    test("PAY106-EXECUTOR-03: an initial pool unit can fund an inner activation on the same ledger") {
+        val fixture = signetFixture(includePool = ManaPoolComponent(green = 1))
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val processor = CastPaymentProcessor(
+            manaSolver = services.manaSolver,
+            costHandler = CostHandler(fixture.driver.cardRegistry),
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        )
+        val green = ManaResourceRefV1.InitialPoolResource(
+            InitialPoolBucketKeyV1.UnrestrictedPoolBucket(PaymentManaColor.GREEN),
+        )
+        val plan = PaymentPlanV3(
+            activations = listOf(
+                signetActivation(
+                    fixture = fixture,
+                    activationIndex = 0,
+                    paymentResource = green,
+                ),
+            ),
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+                ),
+            ),
+        )
+        val result = processor.processPayment(
+            state = fixture.driver.state,
+            action = CastSpell(
+                playerId = fixture.player,
+                cardId = fixture.signetId,
+                paymentStrategy = PaymentStrategy.ExplicitV3(plan),
+            ),
+            effectiveCost = ManaCost.parse("{B}"),
+            cardName = "PAY106 Executor Shared Ledger Test",
+            xValue = 0,
+            spellContext = SpellPaymentContext(),
+        )
+
+        result.error shouldBe null
+        result.state.getEntity(fixture.signetId)?.has<TappedComponent>() shouldBe true
+        result.state.getEntity(fixture.player)?.get<ManaPoolComponent>()?.green shouldBe 1
+        result.state.getEntity(fixture.player)?.get<ManaPoolComponent>()?.black shouldBe 0
+    }
+
+    test("PAY106-EXECUTOR-04: a rejected V3 program returns the untouched state and no events") {
+        val fixture = signetFixture()
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val processor = CastPaymentProcessor(
+            manaSolver = services.manaSolver,
+            costHandler = CostHandler(fixture.driver.cardRegistry),
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        )
+        val invalidPlan = validPlan(fixture).copy(
+            activations = listOf(
+                forestActivation(fixture),
+                signetActivation(
+                    fixture = fixture,
+                    paymentResource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+                ),
+            ),
+        )
+        val before = fixture.driver.state
+
+        val result = processor.processPayment(
+            state = before,
+            action = CastSpell(
+                playerId = fixture.player,
+                cardId = fixture.signetId,
+                paymentStrategy = PaymentStrategy.ExplicitV3(invalidPlan),
+            ),
+            effectiveCost = ManaCost.parse("{1}{B}"),
+            cardName = "PAY106 Executor Rejection Test",
+            xValue = 0,
+            spellContext = SpellPaymentContext(),
+        )
+
+        result.error shouldNotBe null
+        result.state shouldBe before
+        result.events shouldBe emptyList()
+    }
+
+    test("PAY106-EXECUTOR-05: CastSpell dispatches ExplicitV3 without a legacy fallback") {
+        val fixture = signetFixture()
+        val spellId = fixture.driver.putCardInHand(fixture.player, executorSpell.name)
+
+        val result = fixture.driver.submit(
+            CastSpell(
+                playerId = fixture.player,
+                cardId = spellId,
+                paymentStrategy = PaymentStrategy.ExplicitV3(validPlan(fixture)),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        fixture.driver.state.getEntity(fixture.forestId)?.has<TappedComponent>() shouldBe true
+        fixture.driver.state.getEntity(fixture.signetId)?.has<TappedComponent>() shouldBe true
+        fixture.driver.state.getEntity(fixture.player)?.get<ManaPoolComponent>()?.unrestrictedTotal shouldBe 0
+    }
+
+    test("PAY106-EXECUTOR-06: ActivateAbility dispatches ExplicitV3 for a paid Signet activation") {
+        val fixture = signetFixture()
+        val signetAbilityId = GolgariSignet.activatedAbilities.single().id
+        val plan = PaymentPlanV3(
+            activations = listOf(forestActivation(fixture)),
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+                ),
+            ),
+        )
+
+        val result = fixture.driver.submit(
+            ActivateAbility(
+                playerId = fixture.player,
+                sourceId = fixture.signetId,
+                abilityId = signetAbilityId,
+                costPayment = AdditionalCostPayment(tappedPermanents = listOf(fixture.signetId)),
+                paymentStrategy = PaymentStrategy.ExplicitV3(plan),
+            ),
+        )
+
+        result.isSuccess shouldBe true
+        fixture.driver.state.getEntity(fixture.forestId)?.has<TappedComponent>() shouldBe true
+        fixture.driver.state.getEntity(fixture.signetId)?.has<TappedComponent>() shouldBe true
+        val pool = fixture.driver.state.getEntity(fixture.player)?.get<ManaPoolComponent>()
+        pool?.black shouldBe 1
+        pool?.green shouldBe 1
     }
 
     test("PAY106-ATOMIC-01: both units of an outer {2} cost are independently addressable") {

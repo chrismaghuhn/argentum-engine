@@ -41,6 +41,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
+import com.wingedsheep.engine.mechanics.mana.OrderedPaymentProgramExecutor
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
@@ -136,6 +137,10 @@ class ActivateAbilityHandler(
 ) : ActionHandler<ActivateAbility> {
     override val actionType: KClass<ActivateAbility> = ActivateAbility::class
     private val paymentPlanValidator = PaymentPlanValidator(manaSolver)
+    private val orderedPaymentProgramExecutor = OrderedPaymentProgramExecutor(
+        manaSolver = manaSolver,
+        manaAbilitySideEffectExecutor = manaAbilitySideEffectExecutor,
+    )
     private val activatedAbilityCostCalculator = ActivatedAbilityCostCalculator(castPermissionUtils)
 
     /** The first [CostAtom.TapPermanents] atom anywhere in this cost, or null if it has none. */
@@ -146,9 +151,6 @@ class ActivateAbilityHandler(
     }
 
     override fun validate(state: GameState, action: ActivateAbility): String? {
-        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
-            return "PaymentStrategy.ExplicitV3 is not supported for ability activation"
-        }
         // `opponentTargetsChosen` is an internal resume marker for "… of an opponent's choice"
         // targets (Cuombajj Witches). Only the engine's resumer sets it, and the resumer re-enters
         // via execute() directly — never through validate() — so any action carrying it here came
@@ -306,7 +308,8 @@ class ActivateAbilityHandler(
             (expectedAdditionalCostPayment.tappedPermanents.isNotEmpty() ||
                 expectedAdditionalCostPayment.sacrificedPermanents.isNotEmpty()) &&
             (action.paymentStrategy is PaymentStrategy.Explicit ||
-                action.paymentStrategy is PaymentStrategy.ExplicitV2)
+                action.paymentStrategy is PaymentStrategy.ExplicitV2 ||
+                action.paymentStrategy is PaymentStrategy.ExplicitV3)
         ) {
             return "Explicit activated-ability payment must include costPayment"
         }
@@ -437,38 +440,48 @@ class ActivateAbilityHandler(
 
         val submittedPaymentPlan = (action.paymentStrategy as? PaymentStrategy.Explicit)?.paymentPlan
         val submittedPaymentPlanV2 = (action.paymentStrategy as? PaymentStrategy.ExplicitV2)?.paymentPlan
-        if (submittedPaymentPlan != null || submittedPaymentPlanV2 != null) {
-            val planVersion = if (submittedPaymentPlanV2 != null) "PaymentPlanV2" else "PaymentPlanV1"
+        val submittedPaymentPlanV3 = (action.paymentStrategy as? PaymentStrategy.ExplicitV3)?.paymentPlan
+        if (submittedPaymentPlan != null || submittedPaymentPlanV2 != null || submittedPaymentPlanV3 != null) {
+            val planVersion = when {
+                submittedPaymentPlanV3 != null -> "PaymentPlanV3"
+                submittedPaymentPlanV2 != null -> "PaymentPlanV2"
+                else -> "PaymentPlanV1"
+            }
             if (action.xValue != null || action.alternativePayment?.hasResourcePayment == true) {
                 return "$planVersion does not support X or alternative resource payment choices"
             }
             val paymentCost = extractManaCost(costAfterConvokeReduction)
                 ?.canonicalPaymentManaCost()
                 ?: return "$planVersion requires an ordinary mana cost"
-            when (
-                val paymentValidation = if (submittedPaymentPlanV2 != null) {
-                    paymentPlanValidator.validateV2(
-                        state = state,
-                        playerId = action.playerId,
-                        cost = paymentCost,
-                        plan = submittedPaymentPlanV2,
-                        spellContext = abilityPaymentContext,
-                        excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
-                    )
-                } else {
-                    paymentPlanValidator.validate(
-                        state = state,
-                        playerId = action.playerId,
-                        cost = paymentCost,
-                        plan = submittedPaymentPlan!!,
-                        spellContext = abilityPaymentContext,
-                        excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
-                    )
-                }
-            ) {
+            val paymentValidation = when {
+                submittedPaymentPlanV3 != null -> paymentPlanValidator.validateV3(
+                    state = state,
+                    playerId = action.playerId,
+                    cost = paymentCost,
+                    plan = submittedPaymentPlanV3,
+                    spellContext = abilityPaymentContext,
+                    excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
+                )
+                submittedPaymentPlanV2 != null -> paymentPlanValidator.validateV2(
+                    state = state,
+                    playerId = action.playerId,
+                    cost = paymentCost,
+                    plan = submittedPaymentPlanV2,
+                    spellContext = abilityPaymentContext,
+                    excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
+                )
+                else -> paymentPlanValidator.validate(
+                    state = state,
+                    playerId = action.playerId,
+                    cost = paymentCost,
+                    plan = submittedPaymentPlan!!,
+                    spellContext = abilityPaymentContext,
+                    excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
+                )
+            }
+            when (paymentValidation) {
                 is PaymentPlanValidation.Accepted -> Unit
-                is PaymentPlanValidation.AcceptedV3 ->
-                    return "PaymentPlanV3 is not supported for ability activation yet"
+                is PaymentPlanValidation.AcceptedV3 -> Unit
                 is PaymentPlanValidation.Rejected -> return paymentValidation.reason
             }
         }
@@ -479,6 +492,7 @@ class ActivateAbilityHandler(
 
         if (action.paymentStrategy !is PaymentStrategy.Explicit &&
             action.paymentStrategy !is PaymentStrategy.ExplicitV2 &&
+            action.paymentStrategy !is PaymentStrategy.ExplicitV3 &&
             !canPayAbilityCostWithSources(state, costAfterConvokeReduction, action.sourceId, action.playerId, abilityPaymentContext, validationGranterId)
         ) {
             return when (effectiveCost) {
@@ -604,9 +618,6 @@ class ActivateAbilityHandler(
     }
 
     override fun execute(state: GameState, action: ActivateAbility): ExecutionResult {
-        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
-            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for ability activation")
-        }
         val window = ManaPaymentWindow.openFor(state, action.playerId)
             ?: return executeActivation(state, action)
         return executeInManaPaymentWindow(state, action, window)
@@ -1432,6 +1443,29 @@ class ActivateAbilityHandler(
                         exactExplicitPoolAfterSpend = manaPool
                     }
                 }
+                is PaymentStrategy.ExplicitV3 -> {
+                    val paymentPlan = action.paymentStrategy.paymentPlan
+                        ?: return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 requires PaymentPlanV3")
+                    val execution = orderedPaymentProgramExecutor.executeV3(
+                        state = currentState,
+                        playerId = action.playerId,
+                        cost = manaCost.canonicalPaymentManaCost(),
+                        plan = paymentPlan,
+                        paymentContext = executeAbilityContext,
+                        reason = "Activate ${cardComponent.name}",
+                        excludeSources = selfExcludedSources,
+                    )
+                    execution.error?.let { error ->
+                        return ExecutionResult.error(state, error)
+                    }
+                    currentState = execution.state
+                    events.addAll(execution.events)
+                    manaPool = currentState.getEntity(action.playerId)
+                        ?.get<ManaPoolComponent>()
+                        ?.toManaPool()
+                        ?: ManaPool()
+                    exactExplicitPoolAfterSpend = manaPool
+                }
                 else -> {
                     val autoTapResult = autoTapForManaCost(
                         currentState,
@@ -1563,7 +1597,8 @@ class ActivateAbilityHandler(
             bounceChoices = action.costPayment?.bouncedPermanents ?: emptyList(),
         )
         val costForPayment = if (action.paymentStrategy is PaymentStrategy.Explicit ||
-            action.paymentStrategy is PaymentStrategy.ExplicitV2
+            action.paymentStrategy is PaymentStrategy.ExplicitV2 ||
+            action.paymentStrategy is PaymentStrategy.ExplicitV3
         ) {
             stripManaCost(effectiveCostAfterPreResolvedMoves)
         } else if ((ability.hasConvoke || ability.hasWaterbend) && action.alternativePayment != null && action.alternativePayment.hasResourcePayment && manaCost != null) {
@@ -1615,6 +1650,7 @@ class ActivateAbilityHandler(
         // Skip for Explicit payment — sources were already tapped to cover the full cost including X.
         if (action.paymentStrategy !is PaymentStrategy.Explicit &&
             action.paymentStrategy !is PaymentStrategy.ExplicitV2 &&
+            action.paymentStrategy !is PaymentStrategy.ExplicitV3 &&
             manaCost != null && manaCost.hasX && xValue > 0
         ) {
             val xSymbolCount = manaCost.xCount.coerceAtLeast(1)

@@ -1310,9 +1310,11 @@ class CastSpellHandler(
 
         val explicitStrategy = action.paymentStrategy as? PaymentStrategy.Explicit
         val explicitV2Strategy = action.paymentStrategy as? PaymentStrategy.ExplicitV2
+        val explicitV3Strategy = action.paymentStrategy as? PaymentStrategy.ExplicitV3
         val explicitPlan = explicitStrategy?.paymentPlan
         val explicitV2Plan = explicitV2Strategy?.paymentPlan
-        if (explicitPlan != null || explicitV2Plan != null) {
+        val explicitV3Plan = explicitV3Strategy?.paymentPlan
+        if (explicitPlan != null || explicitV2Plan != null || explicitV3Plan != null) {
             val unsupportedReason = when {
                 action.castFaceDown -> "face-down payment choices are not representable"
                 action.xValue != null || cost.symbols.any {
@@ -1340,19 +1342,30 @@ class CastSpellHandler(
             val legacyHandles = explicitStrategy?.manaAbilitiesToActivate
                 ?: explicitV2Strategy?.manaAbilitiesToActivate.orEmpty()
             if (legacyHandles.isNotEmpty()) {
-                return "${if (explicitV2Plan != null) "PaymentPlanV2" else "PaymentPlanV1"} must not include legacy runtime mana source handles"
+                val planName = when {
+                    explicitV3Plan != null -> "PaymentPlanV3"
+                    explicitV2Plan != null -> "PaymentPlanV2"
+                    else -> "PaymentPlanV1"
+                }
+                return "$planName must not include legacy runtime mana source handles"
             }
             return when (
-                val paymentValidation = if (explicitV2Plan != null) {
-                    paymentPlanValidator.validateV2(
+                val paymentValidation = when {
+                    explicitV3Plan != null -> paymentPlanValidator.validateV3(
+                        state = state,
+                        playerId = action.playerId,
+                        cost = effectiveCost.canonicalPaymentManaCost(),
+                        plan = explicitV3Plan,
+                        spellContext = spellCtx,
+                    )
+                    explicitV2Plan != null -> paymentPlanValidator.validateV2(
                         state = state,
                         playerId = action.playerId,
                         cost = effectiveCost.canonicalPaymentManaCost(),
                         plan = explicitV2Plan,
                         spellContext = spellCtx,
                     )
-                } else {
-                    paymentPlanValidator.validate(
+                    else -> paymentPlanValidator.validate(
                         state = state,
                         playerId = action.playerId,
                         cost = effectiveCost.canonicalPaymentManaCost(),
@@ -1362,8 +1375,7 @@ class CastSpellHandler(
                 }
             ) {
                 is PaymentPlanValidation.Accepted -> null
-                is PaymentPlanValidation.AcceptedV3 ->
-                    "PaymentPlanV3 is not supported for this spell action yet"
+                is PaymentPlanValidation.AcceptedV3 -> null
                 is PaymentPlanValidation.Rejected -> paymentValidation.reason
             }
         }
