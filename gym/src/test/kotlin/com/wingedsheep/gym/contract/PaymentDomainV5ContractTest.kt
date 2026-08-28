@@ -32,6 +32,7 @@ import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.effects.ManaRestriction
 import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
@@ -59,6 +60,35 @@ class PaymentDomainV5ContractTest : FunSpec({
                 Costs.TapAnotherPermanent(),
             )
             effect = Effects.AddMana(Color.GREEN)
+            manaAbility = true
+        }
+    }
+
+    val innerOnlyManaSource = card("PAY106 V5 Inner-Only Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(
+                color = Color.GREEN,
+                restriction = ManaRestriction.AbilityActivationOnly,
+            )
+            manaAbility = true
+        }
+    }
+
+    val mixedContextManaSource = card("PAY106 V5 Mixed-Context Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(
+                color = Color.GREEN,
+                restriction = ManaRestriction.AbilityActivationOnly,
+            )
+            manaAbility = true
+        }
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.BLACK)
             manaAbility = true
         }
     }
@@ -266,6 +296,22 @@ class PaymentDomainV5ContractTest : FunSpec({
             cardRegistry = fixture.cardRegistry,
             paidManaSourceTimingCertifier = PaidManaSourceTimingCertifier { false },
         ).paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("PAY106-CONTEXT-01: V5 cannot omit a source usable for a paid activation") {
+        val fixture = prepared(listOf(innerOnlyManaSource))
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("PAY106-CONTEXT-02: V5 rejects a mixed restricted source after complete discovery") {
+        val fixture = prepared(listOf(mixedContextManaSource))
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
 
         domain shouldBe null
     }

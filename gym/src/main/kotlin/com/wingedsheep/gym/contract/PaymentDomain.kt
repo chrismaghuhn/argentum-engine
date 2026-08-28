@@ -500,10 +500,15 @@ class PaymentDomainBuilder(
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         val initialPoolBuckets = pool.toV5InitialPoolBuckets(state, playerId) ?: return null
 
+        // Inventory every currently usable mana ability before applying the outer action's
+        // spending context. A paid mana-source activation has its own ability context, so a
+        // source restricted to abilities may be legal for a Signet's {1} while illegal for the
+        // outer spell. V5 cannot represent that distinction yet; toV5Domain therefore rejects
+        // the complete source after discovery instead of letting this source disappear.
         val discovered = manaSolver.findAvailableManaSources(
             state = state,
             playerId = playerId,
-            spellContext = spellContext,
+            spellContext = null,
             paymentOrderRequired = true,
         )
             .filter { it.entityId !in excludeSources }
@@ -678,6 +683,7 @@ class PaymentDomainBuilder(
         timingCertifier: PaidManaSourceTimingCertifier,
     ): List<PaymentSourceActivationDomainV2>? {
         if (!paymentManaAbilityOrderCertified ||
+            !paymentManaSpendingRestrictionsCertified ||
             paymentManaProductionProfiles.isEmpty() ||
             paymentManaAbilityOrder.isEmpty()
         ) {

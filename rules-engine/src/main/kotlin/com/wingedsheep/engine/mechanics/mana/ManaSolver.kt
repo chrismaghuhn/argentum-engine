@@ -124,6 +124,12 @@ data class ManaSource(
     /** Per-color mana restrictions. Colors not in this map are unrestricted. */
     val colorRestrictions: Map<Color, ManaRestriction> = emptyMap(),
     /**
+     * Whether every discovered payment mana ability has no mana-spending restriction. The
+     * historical solver may still use restricted sources with a payment context; V5 must fail
+     * closed rather than publish a source whose restriction applies only to an inner activation.
+     */
+    val paymentManaSpendingRestrictionsCertified: Boolean = true,
+    /**
      * True when this source has multiple mana abilities with mutually-different
      * restrictions (e.g. Steelswarm Operator's two abilities), so the cached aggregate
      * collapses to "unrestricted" and is only correct without a spell/ability payment
@@ -1363,6 +1369,7 @@ class ManaSolver(
             // the cached aggregate then mis-represents what the source can produce for a
             // specific context, and the solver re-runs us with a context to disambiguate.
             var hasMixedRestrictions = false
+            var paymentManaSpendingRestrictionsCertified = true
             // Track per-color restrictions (for sources with mixed restricted/unrestricted abilities)
             val perColorRestrictions = mutableMapOf<Color, ManaRestriction?>()
             // Track the minimum mana-cost-to-activate per color (cheapest ability producing it)
@@ -1636,6 +1643,9 @@ class ManaSolver(
                     }
                     else -> null
                 }
+                if (effectRestriction != null) {
+                    paymentManaSpendingRestrictionsCertified = false
+                }
 
                 val abilityKey = ManaAbilityIdentity.key(ability)
                 if (abilityKey !in paymentManaAbilityOrder) {
@@ -1800,6 +1810,7 @@ class ManaSolver(
                     restriction = sourceRestriction,
                     colorRiders = perColorRiders.mapValues { (_, v) -> v.toSet() },
                     colorRestrictions = restrictedColors,
+                    paymentManaSpendingRestrictionsCertified = paymentManaSpendingRestrictionsCertified,
                     colorActivationManaCost = colorActivationCosts,
                     colorPainCost = colorPainCosts,
                     colorlessPainCost = if (producesColorless && cheapestColorlessPain != Int.MAX_VALUE) {
