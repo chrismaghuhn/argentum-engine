@@ -467,6 +467,8 @@ class ActivateAbilityHandler(
                 }
             ) {
                 is PaymentPlanValidation.Accepted -> Unit
+                is PaymentPlanValidation.AcceptedV3 ->
+                    return "PaymentPlanV3 is not supported for ability activation yet"
                 is PaymentPlanValidation.Rejected -> return paymentValidation.reason
             }
         }

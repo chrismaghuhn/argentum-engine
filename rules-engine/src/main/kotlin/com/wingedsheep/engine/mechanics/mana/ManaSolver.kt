@@ -28,8 +28,10 @@ import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.engine.mechanics.SummoningSicknessRules
+import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
 import com.wingedsheep.engine.mechanics.cost.CostPaymentService
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
+import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.PayCost
@@ -430,6 +432,32 @@ class ManaSolver(
 
     private val predicateEvaluator = PredicateEvaluator()
     private val conditionEvaluator = ConditionEvaluator()
+    private val activatedAbilityCostCalculator by lazy(LazyThreadSafetyMode.NONE) {
+        ActivatedAbilityCostCalculator(
+            CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator),
+        )
+    }
+    private val paidManaSourceTimingCertifier by lazy(LazyThreadSafetyMode.NONE) {
+        PaidManaSourceTimingCertifier.fixedFirstSlice(cardRegistry)
+    }
+
+    /** Rules-owned effective-cost seam shared by V5 validation and activation legality. */
+    internal fun calculateEffectiveActivatedAbilityCost(
+        state: GameState,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        ability: ActivatedAbility,
+    ): AbilityCost = activatedAbilityCostCalculator.calculate(
+        state = state,
+        sourceId = sourceId,
+        controllerId = controllerId,
+        ability = ability,
+    )
+
+    /** Rules-owned timing qualification for the V5 pre-generation program. */
+    internal fun isPaidManaSourceTimingCertified(
+        candidate: PaidManaSourceTimingCandidate,
+    ): Boolean = paidManaSourceTimingCertifier.certify(candidate)
 
     /** The five subtypes that grant a land its intrinsic `{T}: Add …` mana ability (CR 305.6). */
     private val basicLandSubtypeNames = setOf("Plains", "Island", "Swamp", "Mountain", "Forest")

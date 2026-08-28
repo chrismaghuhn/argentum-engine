@@ -1,8 +1,18 @@
 package com.wingedsheep.engine.mechanics.mana
 
-import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.ActivationCostOrderV1
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
 import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
+import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
+import com.wingedsheep.engine.core.InitialPoolBucketV1
+import com.wingedsheep.engine.core.ManaResourceRefV1
+import com.wingedsheep.engine.core.PaymentAllocationV1
+import com.wingedsheep.engine.core.PaymentCostKindV1
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.PaymentPlanV3
+import com.wingedsheep.engine.core.PaymentTargetV1
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
@@ -15,6 +25,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 
 /** Exact accounting for one selected source after an explicit plan is validated. */
 internal data class ExactPaymentSourceMaterialization(
@@ -86,7 +97,30 @@ internal data class ExactPaymentMaterialization(
     }
 }
 
-/** Exact result of validating a V1 plan; no solver choice is made after this boundary. */
+/** Rules-owned, fully resolved activation facts handed to the future ordered-program executor. */
+internal data class ValidatedPaymentActivationV3(
+    val source: ManaSource,
+    val ability: ActivatedAbility,
+    val productionChoice: ProductionChoice,
+    val outputs: List<PaymentManaColor>,
+    val effectiveCost: AbilityCost,
+    val activationCostUnits: List<AtomicManaCostUnitV1>,
+    val activationCostOrder: ActivationCostOrderV1,
+    val activationCostAllocation: List<PaymentAllocationV1>,
+)
+
+/** The immutable result of the V3 preflight, including the one-ledger accounting snapshot. */
+internal data class ValidatedPaymentProgramV3(
+    val outerCost: ManaCost,
+    val initialPoolBuckets: List<InitialPoolBucketV1>,
+    val activations: List<ValidatedPaymentActivationV3>,
+    /** All inner and outer allocations in their submitted program order. */
+    val allocations: List<PaymentAllocationV1>,
+    val consumedInitialPool: Map<InitialPoolBucketKeyV1, Int>,
+    val consumedActivationOutputs: Set<ManaResourceRefV1.ActivationOutputUnit>,
+)
+
+/** Exact result of validating a V1/V2/V3 plan; no solver choice is made after this boundary. */
 sealed interface PaymentPlanValidation {
     @ConsistentCopyVisibility
     data class Accepted internal constructor(
@@ -96,6 +130,16 @@ sealed interface PaymentPlanValidation {
     ) : PaymentPlanValidation {
         val poolAfterSpend: ManaPool get() = materialization.poolAfterSpend
     }
+
+    /**
+     * V3 has a different materialization shape: activation outputs are ordered program resources,
+     * not the legacy V1 source-to-one-mana adapter. Keeping a separate result preserves the V1/V2
+     * execution contract while giving the future ordered executor the exact preflight facts.
+     */
+    @ConsistentCopyVisibility
+    data class AcceptedV3 internal constructor(
+        internal val program: ValidatedPaymentProgramV3,
+    ) : PaymentPlanValidation
 
     data class Rejected(val reason: String) : PaymentPlanValidation
 }
@@ -293,6 +337,291 @@ class PaymentPlanValidator(
             plan = normalized,
             spellContext = spellContext,
             excludeSources = excludeSources,
+        )
+    }
+
+    /**
+     * Validates the complete ordered V3 payment program without selecting or executing anything.
+     *
+     * Source discovery deliberately has no outer [SpellPaymentContext]: a source that cannot pay
+     * the outer action may still be the only legal payer for an inner paid-mana activation. Any
+     * spending restriction is subsequently rejected by the V5 qualification certificate instead
+     * of being silently removed before the completeness boundary.
+     */
+    fun validateV3(
+        state: GameState,
+        playerId: EntityId,
+        cost: ManaCost,
+        plan: PaymentPlanV3,
+        spellContext: SpellPaymentContext? = null,
+        excludeSources: Set<EntityId> = emptySet(),
+    ): PaymentPlanValidation {
+        val outerCost = cost.canonicalPaymentManaCost()
+        if (!outerCost.isFixedOrdinaryManaCost()) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 supports only ordinary fixed mana symbols"
+            )
+        }
+        val outerUnits = outerCost.toV3AtomicManaCostUnits()
+            ?: return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 cannot atomize the outer mana cost"
+            )
+
+        val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
+        val initialBuckets = poolComponent.toV3InitialPoolBuckets()
+            ?: return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 cannot use the current floating-mana provenance"
+            )
+
+        val discoveredSources = manaSolver.findAvailableManaSources(
+            state = state,
+            playerId = playerId,
+            // See the method contract above: V3 must not drop an inner-only source here.
+            spellContext = null,
+            paymentOrderRequired = true,
+        ).filter { it.entityId !in excludeSources }
+        val sourcesById = discoveredSources.associateBy { it.entityId }
+        if (sourcesById.size != discoveredSources.size) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 source discovery returned duplicate source identities"
+            )
+        }
+
+        val resolvedActivations = mutableListOf<ValidatedPaymentActivationV3>()
+        val selectedSourceIds = mutableSetOf<EntityId>()
+        for ((activationIndex, activation) in plan.activations.withIndex()) {
+            if (!selectedSourceIds.add(activation.sourceId)) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 activates a source more than once"
+                )
+            }
+            val source = sourcesById[activation.sourceId]
+                ?: return PaymentPlanValidation.Rejected(
+                    "Payment source is not currently available: ${activation.sourceId}"
+                )
+            if (!source.paymentManaAbilityOrderCertified) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source ability order is not currently certified: ${activation.sourceId}"
+                )
+            }
+            if (!source.paymentManaSpendingRestrictionsCertified) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source has an unrepresented mana-spending restriction: ${activation.sourceId}"
+                )
+            }
+            if (source.paymentManaProductionProfiles.isEmpty() ||
+                source.paymentManaProductionProfiles.keys != source.paymentManaSideEffectCertificates.keys ||
+                !source.paymentProfileKeysAreComplete() ||
+                source.paymentManaAbilityOrder.isEmpty() ||
+                source.paymentManaAbilityOrder.distinct().size != source.paymentManaAbilityOrder.size ||
+                source.paymentManaAbilityOrder.toSet() != source.paymentManaProductionProfiles.keys
+            ) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source production contract is incomplete: ${activation.sourceId}"
+                )
+            }
+
+            val explicitAbilities = source.manaAbilityOptionsForColor.values
+                .flatten()
+                .plus(source.manaAbilityOptionsForColorless)
+                // One runtime ability can be listed under several output colors. This removes
+                // only that same in-memory ability; distinct structural options remain visible.
+                .distinctBy { it.id.value }
+            val abilitiesByKey = explicitAbilities.groupBy(ManaAbilityIdentity::key)
+            if (abilitiesByKey.values.any { candidates -> candidates.size != 1 }) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source has colliding mana ability identities: ${activation.sourceId}"
+                )
+            }
+
+            val intrinsicAbilities = IntrinsicManaAbilities
+                .forEntity(state, state.projectedState, source.entityId)
+                .mapNotNull { ability ->
+                    val symbol = ability.id.value.removePrefix("intrinsic_mana_").singleOrNull()
+                        ?: return@mapNotNull null
+                    val color = com.wingedsheep.sdk.core.Color.fromSymbol(symbol)
+                        ?: return@mapNotNull null
+                    ManaAbilityIdentity.intrinsic(color) to ability
+                }
+                .toMap()
+            val ability = if (activation.manaAbilityKey.startsWith("intrinsic:")) {
+                intrinsicAbilities[activation.manaAbilityKey]
+            } else {
+                abilitiesByKey[activation.manaAbilityKey]?.singleOrNull()
+            } ?: return PaymentPlanValidation.Rejected(
+                "Mana ability identity does not match the current source"
+            )
+
+            val profile = source.paymentManaProductionProfiles[activation.manaAbilityKey]
+                ?: return PaymentPlanValidation.Rejected(
+                    "Mana ability identity is not in the current source order"
+                )
+            if (source.paymentManaSideEffectCertificates[activation.manaAbilityKey] !is
+                PaymentManaSideEffectCertificate.NoSideEffect
+            ) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source has an unrepresented deterministic side effect"
+                )
+            }
+            val outputs = when (profile) {
+                is PaymentManaProductionProfile.SelectableSingleOutput -> {
+                    if (activation.productionChoice.amount != 1 ||
+                        activation.productionChoice.bonusChoice != null ||
+                        activation.productionChoice.fixedOutputs != null
+                    ) {
+                        return PaymentPlanValidation.Rejected(
+                            "PaymentPlanV3 single-output production choice is not canonical"
+                        )
+                    }
+                    if (activation.productionChoice.producedColor !in profile.allowedColors) {
+                        return PaymentPlanValidation.Rejected(
+                            "Payment source cannot produce ${activation.productionChoice.producedColor.name}: ${activation.sourceId}"
+                        )
+                    }
+                    listOf(activation.productionChoice.producedColor)
+                }
+
+                is PaymentManaProductionProfile.FixedOutputBundle -> {
+                    val submitted = activation.productionChoice.fixedOutputs
+                        ?: return PaymentPlanValidation.Rejected(
+                            "PaymentPlanV3 fixed-output source requires canonical fixedOutputs"
+                        )
+                    val expected = profile.outputs.map { it.color }
+                    if (submitted.size != expected.size ||
+                        submitted.map { it.index } != expected.indices.toList() ||
+                        submitted.any { it.amount != 1 } ||
+                        submitted.map { it.color } != expected ||
+                        activation.productionChoice.producedColor != expected.firstOrNull()
+                    ) {
+                        return PaymentPlanValidation.Rejected(
+                            "PaymentPlanV3 fixedOutputs do not match current source production"
+                        )
+                    }
+                    expected
+                }
+
+                is PaymentManaProductionProfile.Unsupported -> {
+                    return PaymentPlanValidation.Rejected(
+                        "Payment source production is unsupported: ${profile.reason}"
+                    )
+                }
+            }
+
+            if (!ability.isManaAbility) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 selected ability is not a mana ability"
+                )
+            }
+            val effectiveCost = manaSolver.calculateEffectiveActivatedAbilityCost(
+                state = state,
+                sourceId = source.entityId,
+                controllerId = playerId,
+                ability = ability,
+            )
+            val costShape = effectiveCost.toV3ActivationCostShape()
+                ?: return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 activation cost is outside the certified first slice"
+                )
+            if (activation.activationCostOrder != costShape.activationCostOrder) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 activation cost order does not match the current Rules cost"
+                )
+            }
+            if (costShape.atomicManaCostUnits.isNotEmpty() &&
+                !manaSolver.isPaidManaSourceTimingCertified(
+                    PaidManaSourceTimingCandidate(
+                        state = state,
+                        controllerId = playerId,
+                        sourceId = source.entityId,
+                        manaAbilityKey = activation.manaAbilityKey,
+                        ability = ability,
+                        effectiveCost = effectiveCost,
+                        productionProfile = profile,
+                        spellContext = spellContext ?: SpellPaymentContext(),
+                    )
+                )
+            ) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 paid-mana timing is not certified for source ${activation.sourceId}"
+                )
+            }
+
+            resolvedActivations += ValidatedPaymentActivationV3(
+                source = source,
+                ability = ability,
+                productionChoice = activation.productionChoice,
+                outputs = outputs,
+                effectiveCost = effectiveCost,
+                activationCostUnits = costShape.atomicManaCostUnits,
+                activationCostOrder = costShape.activationCostOrder,
+                activationCostAllocation = activation.activationCostAllocation,
+            )
+        }
+
+        val expectedTargets = linkedMapOf<PaymentTargetV1, AtomicManaCostUnitV1>()
+        for ((activationIndex, activation) in resolvedActivations.withIndex()) {
+            for (unit in activation.activationCostUnits) {
+                val target = PaymentTargetV1.ActivationCostUnit(
+                    activationIndex = activationIndex,
+                    symbolIndex = unit.symbolIndex,
+                    unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
+                )
+                if (expectedTargets.put(target, unit) != null) {
+                    return PaymentPlanValidation.Rejected(
+                        "PaymentPlanV3 generated duplicate activation cost targets"
+                    )
+                }
+            }
+        }
+        for (unit in outerUnits) {
+            val target = PaymentTargetV1.OuterCostUnit(
+                symbolIndex = unit.symbolIndex,
+                unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
+            )
+            if (expectedTargets.put(target, unit) != null) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 generated duplicate outer cost targets"
+                )
+            }
+        }
+
+        val ledger = PaymentResourceLedgerV3(
+            initialPoolCapacities = initialBuckets,
+            activations = resolvedActivations,
+            expectedTargets = expectedTargets,
+        )
+        val allAllocations = mutableListOf<PaymentAllocationV1>()
+        for ((activationIndex, activation) in resolvedActivations.withIndex()) {
+            for (allocation in activation.activationCostAllocation) {
+                val error = ledger.consume(
+                    allocation = allocation,
+                    currentActivationIndex = activationIndex,
+                )
+                if (error != null) return PaymentPlanValidation.Rejected(error)
+                allAllocations += allocation
+            }
+        }
+        for (allocation in plan.outerAllocation) {
+            val error = ledger.consume(
+                allocation = allocation,
+                currentActivationIndex = null,
+            )
+            if (error != null) return PaymentPlanValidation.Rejected(error)
+            allAllocations += allocation
+        }
+        ledger.finish()?.let { return PaymentPlanValidation.Rejected(it) }
+
+        return PaymentPlanValidation.AcceptedV3(
+            program = ValidatedPaymentProgramV3(
+                outerCost = outerCost,
+                initialPoolBuckets = initialBuckets.map { (key, amount) ->
+                    InitialPoolBucketV1(key = key, availableAmount = amount)
+                },
+                activations = resolvedActivations,
+                allocations = allAllocations,
+                consumedInitialPool = ledger.consumedInitialPool,
+                consumedActivationOutputs = ledger.consumedActivationOutputs,
+            ),
         )
     }
 
@@ -808,6 +1137,233 @@ class PaymentPlanValidator(
         val profile: PaymentManaProductionProfile,
         val outputs: List<PaymentManaColor>,
     )
+}
+
+/**
+ * The sole V3 resource ledger. It validates inner allocations as each ordered node is reached and
+ * validates outer allocations only after every node, so a resource can never be made available by
+ * a self/forward reference. The ledger is local and mutable only during preflight; no GameState
+ * component is changed by this class.
+ */
+private class PaymentResourceLedgerV3(
+    private val initialPoolCapacities: Map<InitialPoolBucketKeyV1, Int>,
+    private val activations: List<ValidatedPaymentActivationV3>,
+    private val expectedTargets: Map<PaymentTargetV1, AtomicManaCostUnitV1>,
+) {
+    private val consumedInitial = mutableMapOf<InitialPoolBucketKeyV1, Int>()
+    private val consumedOutputs = mutableSetOf<ManaResourceRefV1.ActivationOutputUnit>()
+    private val filledTargets = mutableSetOf<PaymentTargetV1>()
+
+    val consumedInitialPool: Map<InitialPoolBucketKeyV1, Int>
+        get() = consumedInitial.toMap()
+
+    val consumedActivationOutputs: Set<ManaResourceRefV1.ActivationOutputUnit>
+        get() = consumedOutputs.toSet()
+
+    /**
+     * Consume exactly one referenced resource for exactly one published atomic target. A null
+     * [currentActivationIndex] means the allocation belongs to the outer cost.
+     */
+    fun consume(
+        allocation: PaymentAllocationV1,
+        currentActivationIndex: Int?,
+    ): String? {
+        val target = allocation.target
+        val expected = expectedTargets[target]
+            ?: return "PaymentPlanV3 allocation references an unknown cost unit"
+        if (target in filledTargets) {
+            return "PaymentPlanV3 allocates a cost unit more than once"
+        }
+        when (target) {
+            is PaymentTargetV1.ActivationCostUnit -> {
+                if (currentActivationIndex != target.activationIndex) {
+                    return "PaymentPlanV3 activation allocation targets the wrong activation node"
+                }
+            }
+
+            is PaymentTargetV1.OuterCostUnit -> {
+                if (currentActivationIndex != null) {
+                    return "PaymentPlanV3 inner allocation cannot target the outer cost"
+                }
+            }
+        }
+
+        val color = when (val resource = allocation.resource) {
+            is ManaResourceRefV1.InitialPoolResource -> {
+                val capacity = initialPoolCapacities[resource.bucketKey]
+                    ?: return "PaymentPlanV3 allocation references an unavailable initial-pool bucket"
+                val consumed = consumedInitial[resource.bucketKey] ?: 0
+                if (consumed >= capacity) {
+                    return "PaymentPlanV3 initial-pool bucket capacity is exceeded"
+                }
+                resource.bucketKey.paymentColor()
+                    ?: return "PaymentPlanV3 initial-pool bucket has no ordinary mana color"
+            }
+
+            is ManaResourceRefV1.ActivationOutputUnit -> {
+                val producer = activations.getOrNull(resource.activationIndex)
+                    ?: return "PaymentPlanV3 allocation references an unknown activation output"
+                val lastAvailableActivation = currentActivationIndex ?: activations.size
+                if (resource.activationIndex >= lastAvailableActivation) {
+                    return "PaymentPlanV3 activation cost must reference an earlier activation output"
+                }
+                producer.outputs.getOrNull(resource.outputIndex)
+                    ?: return "PaymentPlanV3 allocation references an unavailable activation output"
+                if (resource in consumedOutputs) {
+                    return "PaymentPlanV3 activation output cannot be spent more than once"
+                }
+                producer.outputs[resource.outputIndex]
+            }
+        }
+        if (!expected.accepts(color)) {
+            return "PaymentPlanV3 resource color does not satisfy its cost unit"
+        }
+
+        when (val resource = allocation.resource) {
+            is ManaResourceRefV1.InitialPoolResource -> {
+                consumedInitial[resource.bucketKey] = (consumedInitial[resource.bucketKey] ?: 0) + 1
+            }
+
+            is ManaResourceRefV1.ActivationOutputUnit -> {
+                // The output was checked for availability and duplicate use above. Keep the
+                // resource identity, not its color, so differently colored outputs never alias.
+                consumedOutputs += resource
+            }
+        }
+        filledTargets += target
+        return null
+    }
+
+    fun finish(): String? {
+        if (filledTargets != expectedTargets.keys) {
+            val missing = expectedTargets.keys - filledTargets
+            return "PaymentPlanV3 does not allocate every cost unit exactly once; missing=$missing"
+        }
+        return null
+    }
+}
+
+private fun InitialPoolBucketKeyV1.paymentColor(): PaymentManaColor? = when (this) {
+    is InitialPoolBucketKeyV1.UnrestrictedPoolBucket -> color
+    is InitialPoolBucketKeyV1.CertifiedFloatingBucket -> key.poolColor
+}
+
+private fun AtomicManaCostUnitV1.accepts(color: PaymentManaColor): Boolean = when (kind) {
+    PaymentCostKindV1.COLORED -> color in allowedColors
+    PaymentCostKindV1.COLORLESS -> color == PaymentManaColor.COLORLESS
+    PaymentCostKindV1.GENERIC -> true
+}
+
+/** Build the exact fungible initial resources admitted by the V5 first slice. */
+private fun ManaPoolComponent.toV3InitialPoolBuckets(): Map<InitialPoolBucketKeyV1, Int>? {
+    return when (val classification = FloatingManaProvenanceClassification.classify(this)) {
+        FloatingManaProvenanceClassification.NoTrackedProvenance -> buildMap {
+            for (color in PaymentManaColor.entries) {
+                val amount = when (color) {
+                    PaymentManaColor.WHITE -> white
+                    PaymentManaColor.BLUE -> blue
+                    PaymentManaColor.BLACK -> black
+                    PaymentManaColor.RED -> red
+                    PaymentManaColor.GREEN -> green
+                    PaymentManaColor.COLORLESS -> colorless
+                }
+                if (amount < 0) return null
+                if (amount > 0) {
+                    put(InitialPoolBucketKeyV1.UnrestrictedPoolBucket(color), amount)
+                }
+            }
+        }
+
+        is FloatingManaProvenanceClassification.CertifiedJoint -> {
+            // V5 deliberately has no unstable multi-bucket ordering. The builder publishes only
+            // one certified bucket, so the validator accepts exactly that same shape.
+            val bucket = classification.candidate.buckets.singleOrNull() ?: return null
+            if (bucket.amount <= 0) return null
+            mapOf(
+                InitialPoolBucketKeyV1.CertifiedFloatingBucket(bucket.key) to bucket.amount,
+            )
+        }
+
+        is FloatingManaProvenanceClassification.CertifiedHomogeneous,
+        is FloatingManaProvenanceClassification.CertifiedHeterogeneous,
+        is FloatingManaProvenanceClassification.Ambiguous,
+        -> null
+    }
+}
+
+private data class V3ActivationCostShape(
+    val atomicManaCostUnits: List<AtomicManaCostUnitV1>,
+    val activationCostOrder: ActivationCostOrderV1,
+)
+
+/** Mirror the public V5 qualification shape using the current effective Rules cost. */
+private fun AbilityCost.toV3ActivationCostShape(): V3ActivationCostShape? {
+    val components = when (this) {
+        AbilityCost.Tap -> listOf(this)
+        is AbilityCost.Composite -> costs
+        else -> return null
+    }
+    var manaCost: ManaCost? = null
+    var tapCount = 0
+    for (component in components) {
+        when (component) {
+            AbilityCost.Tap -> tapCount++
+            is AbilityCost.Atom -> {
+                val componentManaCost = component.manaCostOrNull ?: return null
+                if (manaCost != null) return null
+                manaCost = componentManaCost.canonicalPaymentManaCost()
+            }
+
+            else -> return null
+        }
+    }
+    if (tapCount != 1) return null
+    val ordinaryManaCost = manaCost ?: ManaCost.ZERO
+    if (!ordinaryManaCost.isFixedOrdinaryManaCost()) return null
+    val atomicUnits = ordinaryManaCost.toV3AtomicManaCostUnits() ?: return null
+    val order = buildList {
+        if (manaCost != null) add(ActivationCostComponentRefV1.ManaComponent)
+        add(ActivationCostComponentRefV1.DeterministicNonManaComponent(0))
+    }
+    return V3ActivationCostShape(
+        atomicManaCostUnits = atomicUnits,
+        activationCostOrder = order,
+    )
+}
+
+private fun ManaCost.toV3AtomicManaCostUnits(): List<AtomicManaCostUnitV1>? {
+    val units = mutableListOf<AtomicManaCostUnitV1>()
+    for ((symbolIndex, symbol) in symbols.withIndex()) {
+        when (symbol) {
+            is ManaSymbol.Colored -> units += AtomicManaCostUnitV1(
+                symbolIndex = symbolIndex,
+                unitIndexWithinSymbol = 0,
+                kind = PaymentCostKindV1.COLORED,
+                allowedColors = setOf(PaymentManaColor.fromEngine(symbol.color)),
+            )
+
+            is ManaSymbol.Colorless -> units += AtomicManaCostUnitV1(
+                symbolIndex = symbolIndex,
+                unitIndexWithinSymbol = 0,
+                kind = PaymentCostKindV1.COLORLESS,
+                allowedColors = setOf(PaymentManaColor.COLORLESS),
+            )
+
+            is ManaSymbol.Generic -> {
+                if (symbol.amount < 0) return null
+                repeat(symbol.amount) { unitIndex ->
+                    units += AtomicManaCostUnitV1(
+                        symbolIndex = symbolIndex,
+                        unitIndexWithinSymbol = unitIndex,
+                        kind = PaymentCostKindV1.GENERIC,
+                    )
+                }
+            }
+
+            else -> return null
+        }
+    }
+    return units
 }
 
 private fun PaymentPlanV1.toInternal(): NormalizedPaymentPlan = NormalizedPaymentPlan(

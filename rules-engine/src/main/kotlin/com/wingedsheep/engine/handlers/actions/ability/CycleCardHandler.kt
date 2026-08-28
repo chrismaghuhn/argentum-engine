@@ -119,6 +119,8 @@ class CycleCardHandler(
                 )
             ) {
                 is PaymentPlanValidation.Accepted -> null
+                is PaymentPlanValidation.AcceptedV3 ->
+                    "PaymentPlanV3 is not supported for cycling yet"
                 is PaymentPlanValidation.Rejected -> validation.reason
             }
         }

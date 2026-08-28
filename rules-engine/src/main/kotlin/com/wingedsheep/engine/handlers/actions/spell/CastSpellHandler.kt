@@ -1362,6 +1362,8 @@ class CastSpellHandler(
                 }
             ) {
                 is PaymentPlanValidation.Accepted -> null
+                is PaymentPlanValidation.AcceptedV3 ->
+                    "PaymentPlanV3 is not supported for this spell action yet"
                 is PaymentPlanValidation.Rejected -> paymentValidation.reason
             }
         }
