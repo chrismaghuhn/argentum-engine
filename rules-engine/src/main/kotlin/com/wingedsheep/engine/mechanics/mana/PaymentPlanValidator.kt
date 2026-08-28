@@ -380,6 +380,11 @@ class PaymentPlanValidator(
             spellContext = null,
             paymentOrderRequired = true,
         ).filter { it.entityId !in excludeSources }
+        if (discoveredSources.any { !it.paymentManaExecutionStabilityCertified }) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 has a source whose activation legality or cost is not stable across the ordered program"
+            )
+        }
         val sourcesById = discoveredSources.associateBy { it.entityId }
         if (sourcesById.size != discoveredSources.size) {
             return PaymentPlanValidation.Rejected(
@@ -407,6 +412,11 @@ class PaymentPlanValidator(
             if (!source.paymentManaSpendingRestrictionsCertified) {
                 return PaymentPlanValidation.Rejected(
                     "PaymentPlanV3 source has an unrepresented mana-spending restriction: ${activation.sourceId}"
+                )
+            }
+            if (!source.paymentManaExecutionStabilityCertified) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source execution stability is not currently certified: ${activation.sourceId}"
                 )
             }
             if (source.paymentManaProductionProfiles.isEmpty() ||
@@ -543,6 +553,22 @@ class PaymentPlanValidator(
             ) {
                 return PaymentPlanValidation.Rejected(
                     "PaymentPlanV3 paid-mana timing is not certified for source ${activation.sourceId}"
+                )
+            }
+            if (!manaSolver.isPaymentProgramExecutionStabilityCertified(
+                    PaymentProgramExecutionStabilityCandidate(
+                        state = state,
+                        controllerId = playerId,
+                        sourceId = source.entityId,
+                        manaAbilityKey = activation.manaAbilityKey,
+                        ability = ability,
+                        effectiveCost = effectiveCost,
+                        productionProfile = profile,
+                    )
+                )
+            ) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source execution stability is not certified for source ${activation.sourceId}"
                 )
             }
 

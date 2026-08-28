@@ -684,6 +684,7 @@ class PaymentDomainBuilder(
     ): List<PaymentSourceActivationDomainV2>? {
         if (!paymentManaAbilityOrderCertified ||
             !paymentManaSpendingRestrictionsCertified ||
+            !paymentManaExecutionStabilityCertified ||
             paymentManaProductionProfiles.isEmpty() ||
             paymentManaAbilityOrder.isEmpty()
         ) {

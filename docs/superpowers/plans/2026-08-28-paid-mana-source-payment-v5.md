@@ -750,6 +750,28 @@ Decision: **selected and approved**, refined to ordered acyclic execution with o
 free-form graph, subject to the `PAY106-MANA-WINDOW-01` certification gate. A timing-observable case
 cannot be published through this V5 interface.
 
+### Ordered-program execution stability certificate
+
+The V3 validator performs one complete preflight before the executor applies any mutation. Because
+an earlier node may tap a different permanent, the executor MUST NOT rely on an initial-state
+legality check for an uncertified later node. V5 therefore requires a Rules-owned
+`PaymentProgramExecutionStabilityCertifier` for every published payment source. The publisher and
+`validateV3()` MUST consume the same certificate path.
+
+The certificate proves that each published mana-ability candidate remains legal, retains the same
+effective activation cost and production profile, and remains within the deterministic side-effect
+contract throughout any ordered program made from the certified V5 slice. For the first slice this
+is deliberately conservative: a source is unsupported when its mana ability has an activation
+restriction, dynamic or otherwise non-fixed activation cost, an applicable activated-ability cost
+modifier exists on the battlefield, or another represented legality/cost/production fact cannot be
+proved stable. The complete action domain is then `null`; the source MUST NOT be silently omitted.
+
+The executor may rely on this certificate instead of revalidating later nodes after mutation only
+because full preflight rejects every source outside the certified stability class. A future class
+whose legality or cost can change during the program requires an expanded certificate, a nested
+payment carrier, or a continuation-based contract. It MUST NOT silently relock a cost or fall back
+to a solver after execution has begun.
+
 ### C. Explicit continuation-based subpayment
 
 Shape:
@@ -790,6 +812,7 @@ The implementation and RED suite MUST demonstrate all of these:
 | Complete legal source domain | Every legal, non-excluded source and legal ability option is published when representable; otherwise the entire action domain is unsupported. |
 | Ability-key uniqueness | Within one source, every published legal mana-ability option has a unique stable `manaAbilityKey`; collisions fail closed without a runtime-ID tie-break. |
 | Paid-source timing | A paid source is publishable only after `PAY106-MANA-WINDOW-01` certifies pre-generation and nested 601.2g mana timing equivalent for its represented case. |
+| Ordered-program execution stability | Every V5 source is published only after the Rules-owned execution-stability certificate proves later-node legality, effective cost, production, and side-effect stability across earlier certified nodes; publisher and validator use the same certificate, otherwise the complete domain is unsupported. |
 | No filtering of legal sources | Unsupported sources are never silently omitted to make a domain pass. |
 | No AutoPay/native fallback | Public V5 policy and environment accept only a complete explicit V3 plan. |
 | External choices | Source, ability, production, activation subset, order, resource, and allocation choices come from the plan. |
@@ -889,6 +912,8 @@ These are required tests for the later RED phase. They are specified here but we
 | PAY106-ORDER-01 | Characterize `{1}, {T}: Add {B}{G}` payment-component order | If order is observable, both legal orders are published and replayed exactly; if provably equivalent, one canonical order is published with the Rules proof; if neither can be represented, classify `CORE_RULE/ENGINE_GAP` and stop #106 implementation. |
 | PAY106-MANA-WINDOW-01 | Characterize prerequisite mana timing: prerequisite resolves before paid-source announcement versus paid source cost locks before prerequisite activation in its 601.2g window | If equivalent for the certified first slice, backward-only V3 remains valid; if observably different, classify `CORE_RULE/ENGINE_GAP` and stop #106 implementation. No implementation may assume equivalence. |
 | PAY106-KEY-01 | Two distinct legal mana abilities on one source produce the same structural `manaAbilityKey` | Whole action domain is unsupported; no runtime `AbilityId`, description, or collection-order tie-break is allowed. |
+| PAY106-EXECUTOR-SEQ-01 | A later mana ability is initially legal but its activation restriction becomes false after an earlier node changes state | The stability certificate makes the complete V5 domain unsupported, or `validateV3()` rejects before the first mutation; original state and events are unchanged. |
+| PAY106-EXECUTOR-SEQ-02 | A later mana ability's effective activation cost changes after an earlier node changes state | The stability certificate makes the complete V5 domain unsupported, or `validateV3()` rejects before the first mutation; original state and events are unchanged. |
 | PAY106-03 | Forest output pays Signet's atomic `{1}` target; Signet output pays outer atomic cost units | Complete `ExplicitV3` is accepted and resolves with the selected outputs. |
 | PAY106-04 | Signet output is assigned to its own `{1}` | Rejected; original state and event list are unchanged. |
 | PAY106-05 | A later activation output is assigned to an earlier activation cost | Rejected by the forward-reference rule; zero mutation. |
@@ -1017,10 +1042,11 @@ Each task is independently reviewable. No task below is executed now.
 
 - [ ] Preflight the entire V3 plan before applying any tap, mana, life, sacrifice, event, or action effect.
 - [ ] Execute each node's submitted or Rules-approved canonical cost-component order, consuming assigned mana resources and applying deterministic `TapSelf` through the side-effect authority; expose fixed output units only after every component succeeds.
+- [ ] Require the Rules-owned execution-stability certificate for every discovered V5 source in both publication and `validateV3()`; reject the complete domain or plan before mutation when a later node's legality, effective cost, production, or supported side effects could change after an earlier node.
 - [ ] Preserve the certified timing model from `PAY106-MANA-WINDOW-01`; do not emulate a nested 601.2g activation with an illegal forward resource reference or silently relock the activation cost.
 - [ ] Pay the outer allocation from the same ledger and continue into the action only after all payment stages succeed.
 - [ ] Return the original state and no events for every rejected/stale path.
-- [ ] Run `just test-class GameGymEnvPaidManaSourcePaymentTest`. Expected result: PAY106-03 through PAY106-10 pass end-to-end, with no AutoPay/native fallback.
+- [ ] Run `just test-class GameGymEnvPaidManaSourcePaymentTest`. Expected result: PAY106-03 through PAY106-10 pass end-to-end, the sequential stability regressions fail closed before mutation, and there is no AutoPay/native fallback.
 
 #### Task 6: Add CompactReplay v5 and schema/replay acceptance
 

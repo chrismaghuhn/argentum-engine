@@ -196,6 +196,12 @@ data class ManaSource(
     /** Exact support certificate for the selected ability's non-mana side effects. */
     val paymentManaSideEffectCertificates: Map<String, PaymentManaSideEffectCertificate> = emptyMap(),
     /**
+     * Rules-owned proof that every published payment ability on this source remains legal across
+     * earlier V5 TapSelf activation nodes. Historical solver callers retain the default; V5
+     * discovery computes this certificate and fails closed when the state can affect a later node.
+     */
+    val paymentManaExecutionStabilityCertified: Boolean = true,
+    /**
      * Tapping this source also requires sacrificing it (e.g. Treasure tokens —
      * "{T}, Sacrifice this artifact: Add one mana of any color"). The auto-pay
      * solver (`solve()`) refuses to pick these because silently sacrificing a
@@ -440,6 +446,9 @@ class ManaSolver(
     private val paidManaSourceTimingCertifier by lazy(LazyThreadSafetyMode.NONE) {
         PaidManaSourceTimingCertifier.fixedFirstSlice(cardRegistry)
     }
+    private val paymentProgramExecutionStabilityCertifier by lazy(LazyThreadSafetyMode.NONE) {
+        PaymentProgramExecutionStabilityCertifier.fixedFirstSlice(cardRegistry)
+    }
 
     /** Rules-owned effective-cost seam shared by V5 validation and activation legality. */
     internal fun calculateEffectiveActivatedAbilityCost(
@@ -458,6 +467,11 @@ class ManaSolver(
     internal fun isPaidManaSourceTimingCertified(
         candidate: PaidManaSourceTimingCandidate,
     ): Boolean = paidManaSourceTimingCertifier.certify(candidate)
+
+    /** Rules-owned execution-stability qualification shared by V5 publication and validation. */
+    internal fun isPaymentProgramExecutionStabilityCertified(
+        candidate: PaymentProgramExecutionStabilityCandidate,
+    ): Boolean = paymentProgramExecutionStabilityCertifier.certify(candidate)
 
     /** The five subtypes that grant a land its intrinsic `{T}: Add …` mana ability (CR 305.6). */
     private val basicLandSubtypeNames = setOf("Plains", "Island", "Swamp", "Mountain", "Forest")
@@ -1854,6 +1868,8 @@ class ManaSolver(
                     paymentManaAbilityOrderCertified = staticGrantedManaAbilities.paymentOrderCertified,
                     paymentManaProductionProfiles = paymentProductionProfiles,
                     paymentManaSideEffectCertificates = paymentSideEffectCertificates,
+                    paymentManaExecutionStabilityCertified = !paymentOrderRequired ||
+                        rawManaAbilities.none { it.restrictions.isNotEmpty() },
                     requiresSacrifice = requiresSacrifice,
                     colorsRequiringSacrifice = colorsRequiringSacrifice,
                     hasContextSensitiveAbilities = hasMixedRestrictions,
@@ -1904,6 +1920,89 @@ class ManaSolver(
                 if (hasDampLandManaProduction(state)) applyLandManaDampening(sources) else sources
             }
             .map(ManaSource::authorizePaymentManaProductionProfiles)
+            .map { source ->
+                if (paymentOrderRequired) {
+                    certifyPaymentProgramExecutionStability(state, playerId, source)
+                } else {
+                    source
+                }
+            }
+    }
+
+    /**
+     * Resolve every published payment profile again and bind the V5 execution-stability
+     * certificate to the complete source, not just to the ability selected by one plan. This is
+     * intentionally done after all production augmentations and profile authorization so the
+     * public builder and [PaymentPlanValidator] consume the same Rules-owned source fact.
+     */
+    private fun certifyPaymentProgramExecutionStability(
+        state: GameState,
+        playerId: EntityId,
+        source: ManaSource,
+    ): ManaSource {
+        if (!source.paymentManaExecutionStabilityCertified) return source
+        if (!source.paymentManaAbilityOrderCertified ||
+            !source.paymentManaSpendingRestrictionsCertified ||
+            source.paymentManaAbilityOrder.isEmpty() ||
+            source.paymentManaAbilityOrder.distinct().size != source.paymentManaAbilityOrder.size ||
+            source.paymentManaAbilityOrder.toSet() != source.paymentManaProductionProfiles.keys ||
+            source.paymentManaProductionProfiles.keys != source.paymentManaSideEffectCertificates.keys
+        ) {
+            return source.copy(paymentManaExecutionStabilityCertified = false)
+        }
+
+        val explicitAbilities = source.manaAbilityOptionsForColor.values
+            .flatten()
+            .plus(source.manaAbilityOptionsForColorless)
+            .distinctBy { it.id.value }
+        val abilitiesByKey = explicitAbilities.groupBy(ManaAbilityIdentity::key)
+        if (abilitiesByKey.values.any { candidates -> candidates.size != 1 }) {
+            return source.copy(paymentManaExecutionStabilityCertified = false)
+        }
+
+        val intrinsicAbilities = IntrinsicManaAbilities
+            .forEntity(state, state.projectedState, source.entityId)
+            .mapNotNull { ability ->
+                val symbol = ability.id.value.removePrefix("intrinsic_mana_").singleOrNull()
+                    ?: return@mapNotNull null
+                val color = Color.fromSymbol(symbol) ?: return@mapNotNull null
+                ManaAbilityIdentity.intrinsic(color) to ability
+            }
+            .toMap()
+
+        val certified = source.paymentManaAbilityOrder.all candidate@{ manaAbilityKey ->
+            val profile = source.paymentManaProductionProfiles[manaAbilityKey]
+                ?: return@candidate false
+            if (profile is PaymentManaProductionProfile.Unsupported) return@candidate false
+            if (source.paymentManaSideEffectCertificates[manaAbilityKey] !is
+                PaymentManaSideEffectCertificate.NoSideEffect
+            ) {
+                return@candidate false
+            }
+            val ability = if (manaAbilityKey.startsWith("intrinsic:")) {
+                intrinsicAbilities[manaAbilityKey]
+            } else {
+                abilitiesByKey[manaAbilityKey]?.singleOrNull()
+            } ?: return@candidate false
+            val effectiveCost = calculateEffectiveActivatedAbilityCost(
+                state = state,
+                sourceId = source.entityId,
+                controllerId = playerId,
+                ability = ability,
+            )
+            isPaymentProgramExecutionStabilityCertified(
+                PaymentProgramExecutionStabilityCandidate(
+                    state = state,
+                    controllerId = playerId,
+                    sourceId = source.entityId,
+                    manaAbilityKey = manaAbilityKey,
+                    ability = ability,
+                    effectiveCost = effectiveCost,
+                    productionProfile = profile,
+                )
+            )
+        }
+        return source.copy(paymentManaExecutionStabilityCertified = certified)
     }
 
     /**

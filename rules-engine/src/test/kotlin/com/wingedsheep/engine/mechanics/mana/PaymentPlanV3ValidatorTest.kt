@@ -24,10 +24,13 @@ import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.dsl.Conditions
+import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
@@ -53,6 +56,36 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         }
     }
 
+    /** A free mana ability that is legal only while an untapped Forest remains. */
+    val sequenceGuardedManaSource = card("PAY106 Sequence Guarded Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(com.wingedsheep.sdk.core.Color.BLACK)
+            manaAbility = true
+            restrictions = listOf(
+                ActivationRestriction.OnlyIfCondition(
+                    Conditions.YouControl(GameObjectFilter.Land.untapped())
+                )
+            )
+        }
+    }
+
+    /** A mana ability whose generic cost is reduced only while an untapped Forest exists. */
+    val sequenceCostChangingManaSource = card("PAY106 Sequence Cost Changing Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.Tap)
+            effect = Effects.AddMana(com.wingedsheep.sdk.core.Color.BLACK)
+            manaAbility = true
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.YouControl(GameObjectFilter.Land.untapped()),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+        }
+    }
+
     val executorSpell = card("PAY106 Executor Spell") {
         manaCost = "{1}{B}"
         typeLine = "Sorcery"
@@ -73,7 +106,10 @@ class PaymentPlanV3ValidatorTest : FunSpec({
 
     fun signetFixture(forestCount: Int = 1, includePool: ManaPoolComponent? = null): SignetFixture {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + GolgariSignet + activationCostModifier + executorSpell)
+        driver.registerCards(
+            TestCards.all + GolgariSignet + activationCostModifier +
+                sequenceGuardedManaSource + sequenceCostChangingManaSource + executorSpell
+        )
         driver.initMirrorMatch(Deck.of("Forest" to 40), startingPlayer = 0)
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val player = driver.activePlayer!!
@@ -373,6 +409,119 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val pool = fixture.driver.state.getEntity(fixture.player)?.get<ManaPoolComponent>()
         pool?.black shouldBe 1
         pool?.green shouldBe 1
+    }
+
+    test("PAY106-EXECUTOR-SEQ-01: a later conditional mana node is rejected before mutation") {
+        val fixture = signetFixture()
+        val guardedId = fixture.driver.putPermanentOnBattlefield(
+            fixture.player,
+            sequenceGuardedManaSource.name,
+        )
+        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val guardedSource = solver.findAvailableManaSources(
+            state = fixture.driver.state,
+            playerId = fixture.player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        ).single { it.entityId == guardedId }
+        val guardedKey = guardedSource.paymentManaAbilityOrder.single()
+        val plan = PaymentPlanV3(
+            activations = listOf(
+                forestActivation(fixture),
+                SourceActivationV2(
+                    sourceId = guardedId,
+                    manaAbilityKey = guardedKey,
+                    productionChoice = ProductionChoice(PaymentManaColor.BLACK),
+                    activationCostOrder = listOf(
+                        ActivationCostComponentRefV1.DeterministicNonManaComponent(0)
+                    ),
+                ),
+            ),
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+                ),
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(1, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+                ),
+            ),
+        )
+        val before = fixture.driver.state
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{B}"),
+            plan = plan,
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 sequence stability",
+        )
+
+        result.error shouldNotBe null
+        result.state shouldBe before
+        result.events shouldBe emptyList()
+    }
+
+    test("PAY106-EXECUTOR-SEQ-02: a later cost-changing mana node is rejected before mutation") {
+        val fixture = signetFixture()
+        val changingId = fixture.driver.putPermanentOnBattlefield(
+            fixture.player,
+            sequenceCostChangingManaSource.name,
+        )
+        val solver = ManaSolver(fixture.driver.cardRegistry)
+        val changingSource = solver.findAvailableManaSources(
+            state = fixture.driver.state,
+            playerId = fixture.player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        ).single { it.entityId == changingId }
+        val changingKey = changingSource.paymentManaAbilityOrder.single()
+        val plan = PaymentPlanV3(
+            activations = listOf(
+                forestActivation(fixture),
+                SourceActivationV2(
+                    sourceId = changingId,
+                    manaAbilityKey = changingKey,
+                    productionChoice = ProductionChoice(PaymentManaColor.BLACK),
+                    activationCostOrder = listOf(
+                        ActivationCostComponentRefV1.ManaComponent,
+                        ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                    ),
+                ),
+            ),
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+                ),
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(1, 0),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+                ),
+            ),
+        )
+        val before = fixture.driver.state
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{B}"),
+            plan = plan,
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 sequence cost stability",
+        )
+
+        result.error shouldNotBe null
+        result.state shouldBe before
+        result.events shouldBe emptyList()
     }
 
     test("PAY106-ATOMIC-01: both units of an outer {2} cost are independently addressable") {

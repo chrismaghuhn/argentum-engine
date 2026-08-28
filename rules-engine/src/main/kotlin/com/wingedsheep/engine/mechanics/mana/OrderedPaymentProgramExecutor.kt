@@ -24,6 +24,12 @@ import com.wingedsheep.sdk.model.EntityId
  * All execution state is local until the complete program has succeeded. A failed source
  * activation, stale re-resolution, or unexpected runtime resource mismatch therefore returns the
  * exact input [GameState] and no events.
+ *
+ * Later nodes are not revalidated after an earlier node mutates the local state. That is safe only
+ * because [PaymentPlanValidator.validateV3] requires the Rules-owned execution-stability
+ * certificate for every discovered source before this method can reach the mutation boundary.
+ * Any source outside that certified slice must be rejected during preflight, never accepted here
+ * and reinterpreted after its activation cost has been locked.
  */
 class OrderedPaymentProgramExecutor(
     private val manaSolver: ManaSolver,

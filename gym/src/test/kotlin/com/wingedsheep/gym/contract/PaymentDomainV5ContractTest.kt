@@ -22,13 +22,16 @@ import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.TimingRule
@@ -90,6 +93,36 @@ class PaymentDomainV5ContractTest : FunSpec({
             cost = Costs.Tap
             effect = Effects.AddMana(Color.BLACK)
             manaAbility = true
+        }
+    }
+
+    /** A mana ability whose legality can change after an earlier ordered node taps a Forest. */
+    val sequenceGuardedManaSource = card("PAY106 V5 Sequence Guarded Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(Color.BLACK)
+            manaAbility = true
+            restrictions = listOf(
+                ActivationRestriction.OnlyIfCondition(
+                    Conditions.YouControl(GameObjectFilter.Land.untapped())
+                )
+            )
+        }
+    }
+
+    /** A mana ability whose effective generic cost changes after an earlier Forest tap. */
+    val sequenceCostChangingManaSource = card("PAY106 V5 Sequence Cost Changing Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.Tap)
+            effect = Effects.AddMana(Color.BLACK)
+            manaAbility = true
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.YouControl(GameObjectFilter.Land.untapped()),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
         }
     }
 
@@ -310,6 +343,22 @@ class PaymentDomainV5ContractTest : FunSpec({
 
     test("PAY106-CONTEXT-02: V5 rejects a mixed restricted source after complete discovery") {
         val fixture = prepared(listOf(mixedContextManaSource))
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("PAY106-EXECUTOR-SEQ-01: V5 rejects a source whose legality can change after an earlier node") {
+        val fixture = prepared(listOf(sequenceGuardedManaSource))
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("PAY106-EXECUTOR-SEQ-02: V5 rejects a source whose effective cost can change after an earlier node") {
+        val fixture = prepared(listOf(sequenceCostChangingManaSource))
         val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
             .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
 
