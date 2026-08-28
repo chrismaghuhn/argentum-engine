@@ -63,6 +63,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
+import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
@@ -139,7 +140,8 @@ import kotlinx.serialization.json.put
  */
 class ObservationBuilder(
     private val schemaHash: String = SchemaHash.CURRENT,
-    private val cardRegistry: CardRegistry
+    private val cardRegistry: CardRegistry,
+    private val paidManaSourceTimingCertifier: PaidManaSourceTimingCertifier? = null,
 ) {
     private val visibility = Visibility(cardRegistry)
     private val predicateEvaluator = PredicateEvaluator()
@@ -152,6 +154,8 @@ class ObservationBuilder(
             manaSolver = ManaSolver(cardRegistry),
             visibility = visibility,
             activatedAbilityCostCalculator = activatedAbilityCostCalculator,
+            paidManaSourceTimingCertifier = paidManaSourceTimingCertifier
+                ?: PaidManaSourceTimingCertifier.fixedFirstSlice(cardRegistry),
         )
     }
     private val costCalculator by lazy { CostCalculator(cardRegistry) }

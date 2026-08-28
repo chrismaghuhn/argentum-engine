@@ -5,24 +5,34 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.engineSerializersModule
 import com.wingedsheep.engine.core.PassPriority
+import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.GrantActivatedAbility
+import com.wingedsheep.sdk.scripting.TimingRule
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldContain
@@ -67,10 +77,6 @@ class PaymentDomainV5ContractTest : FunSpec({
         }
     }
 
-    val colorlessFallbackLand = card("PAY106 V5 Colorless Fallback Land") {
-        typeLine = "Land"
-    }
-
     val orderedManaArtifact = card("PAY106 V5 Ordered Mana Artifact") {
         typeLine = "Artifact"
         activatedAbility {
@@ -82,6 +88,46 @@ class PaymentDomainV5ContractTest : FunSpec({
             cost = Costs.Tap
             effect = Effects.AddMana(Color.BLACK)
             manaAbility = true
+        }
+    }
+
+    val grantTestLand = card("PAY106 V5 Grant Test Land") {
+        typeLine = "Land — Forest"
+    }
+
+    val greenGrantAbility = ActivatedAbility(
+        id = AbilityId.generate(),
+        cost = Costs.Tap,
+        effect = Effects.AddMana(Color.GREEN),
+        timing = TimingRule.ManaAbility,
+        isManaAbility = true,
+    )
+
+    val greenGrantor = card("PAY106 V5 Green Grantor") {
+        typeLine = "Enchantment"
+        staticAbility {
+            ability = GrantActivatedAbility(
+                ability = greenGrantAbility,
+                filter = GroupFilter(GameObjectFilter.Land.named(grantTestLand.name).youControl()),
+            )
+        }
+    }
+
+    val blackGrantAbility = ActivatedAbility(
+        id = AbilityId.generate(),
+        cost = Costs.Tap,
+        effect = Effects.AddMana(Color.BLACK),
+        timing = TimingRule.ManaAbility,
+        isManaAbility = true,
+    )
+
+    val blackGrantor = card("PAY106 V5 Black Grantor") {
+        typeLine = "Enchantment"
+        staticAbility {
+            ability = GrantActivatedAbility(
+                ability = blackGrantAbility,
+                filter = GroupFilter(GameObjectFilter.Land.named(grantTestLand.name).youControl()),
+            )
         }
     }
 
@@ -102,6 +148,7 @@ class PaymentDomainV5ContractTest : FunSpec({
         val signetId: EntityId,
         val forestId: EntityId,
         val swampId: EntityId,
+        val extraIds: Map<String, EntityId>,
     )
 
     fun prepared(extra: List<com.wingedsheep.sdk.model.CardDefinition> = emptyList()): Fixture {
@@ -155,7 +202,7 @@ class PaymentDomainV5ContractTest : FunSpec({
         val signetId = moveNamed(GolgariSignet.name, Zone.BATTLEFIELD)
         val forestId = moveNamed("Forest", Zone.BATTLEFIELD)
         val swampId = moveNamed("Swamp", Zone.BATTLEFIELD)
-        extra.forEach { moveNamed(it.name, Zone.BATTLEFIELD) }
+        val extraIds = extra.associate { it.name to moveNamed(it.name, Zone.BATTLEFIELD) }
         environment.restore(state, environment.playerIds, environment.stepCount)
 
         val legalAction = LegalAction(
@@ -173,6 +220,7 @@ class PaymentDomainV5ContractTest : FunSpec({
             signetId = signetId,
             forestId = forestId,
             swampId = swampId,
+            extraIds = extraIds,
         )
     }
 
@@ -209,11 +257,58 @@ class PaymentDomainV5ContractTest : FunSpec({
             listOf(
                 com.wingedsheep.engine.core.PaymentManaColor.BLACK,
                 com.wingedsheep.engine.core.PaymentManaColor.GREEN,
-            )
+        )
+    }
+
+    test("PAY106-MANA-WINDOW-01: unavailable timing certification rejects a Signet-shaped source") {
+        val fixture = prepared()
+        val domain = ObservationBuilder(
+            cardRegistry = fixture.cardRegistry,
+            paidManaSourceTimingCertifier = PaidManaSourceTimingCertifier { false },
+        ).paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
     }
 
     test("PAY106-11: an unsupported paid source makes the whole V5 domain unsupported") {
         val fixture = prepared(listOf(unsupportedPaidManaSource))
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("V5 rejects a certified joint pool with more than one provenance bucket") {
+        val fixture = prepared()
+        val pool = ManaPoolComponent()
+            .addTracked(
+                color = PaymentManaColor.GREEN,
+                sourceId = fixture.forestId,
+                subtypes = setOf(Subtype.FOREST),
+                knownToPlayers = setOf(fixture.playerId),
+            )
+            .addTracked(
+                color = PaymentManaColor.BLACK,
+                sourceId = fixture.swampId,
+                subtypes = setOf(Subtype.SWAMP),
+                knownToPlayers = setOf(fixture.playerId),
+            )
+        val stateWithPool = fixture.environment.state.updateEntity(fixture.playerId) {
+            it.with(pool)
+        }
+
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(stateWithPool, fixture.legalAction)
+
+        domain shouldBe null
+    }
+
+    test("V5 rejects the pre-existing synthetic colorless land fallback") {
+        val blankLand = card("PAY106 V5 Blank Land") {
+            typeLine = "Land"
+        }
+        val fixture = prepared(listOf(blankLand))
+
         val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
             .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
 
@@ -228,20 +323,6 @@ class PaymentDomainV5ContractTest : FunSpec({
         domain shouldBe null
     }
 
-    test("V5 resolves the Rules-synthesized colorless fallback source") {
-        val fixture = prepared(listOf(colorlessFallbackLand))
-        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
-            .paymentDomainV5For(fixture.environment.state, fixture.legalAction)!!
-        val fallback = domain.sourceActivationOptions.single {
-            it.sourceName == colorlessFallbackLand.name
-        }
-
-        fallback.manaAbilityKey shouldBe ManaAbilityIdentity.intrinsic(null)
-        fallback.atomicActivationManaCostUnits shouldBe emptyList()
-        fallback.productionChoices.single().producedColor shouldBe
-            com.wingedsheep.engine.core.PaymentManaColor.COLORLESS
-    }
-
     test("V5 preserves the Rules-owned ability presentation order") {
         val fixture = prepared(listOf(orderedManaArtifact))
         val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
@@ -251,6 +332,53 @@ class PaymentDomainV5ContractTest : FunSpec({
             .map { it.manaAbilityKey }
 
         publishedKeys shouldBe orderedManaArtifact.activatedAbilities.map(ManaAbilityIdentity::key)
+    }
+
+    test("V5 orders statically granted mana abilities by Rules object rank") {
+        val fixture = prepared(listOf(grantTestLand, greenGrantor, blackGrantor))
+        val battlefieldKey = ZoneKey(fixture.playerId, Zone.BATTLEFIELD)
+        val battlefield = fixture.environment.state.zones[battlefieldKey]
+            ?: error("PAY106 fixture has no battlefield")
+        val reversedState = fixture.environment.state.copy(
+            zones = fixture.environment.state.zones + (battlefieldKey to battlefield.reversed()),
+        )
+
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(reversedState, fixture.legalAction)!!
+        val forestKeys = domain.sourceActivationOptions
+            .filter { it.sourceId == fixture.extraIds[grantTestLand.name] }
+            .map { it.manaAbilityKey }
+
+        forestKeys shouldBe listOf(
+            ManaAbilityIdentity.intrinsic(Color.GREEN),
+            ManaAbilityIdentity.key(greenGrantAbility),
+            ManaAbilityIdentity.key(blackGrantAbility),
+        )
+    }
+
+    test("V5 rejects statically granted abilities when object ranks are missing or duplicated") {
+        val fixture = prepared(listOf(grantTestLand, greenGrantor, blackGrantor))
+        val greenGrantorId = fixture.extraIds[greenGrantor.name]
+            ?: error("PAY106 fixture did not capture the green grantor")
+        val blackGrantorId = fixture.extraIds[blackGrantor.name]
+            ?: error("PAY106 fixture did not capture the black grantor")
+        val state = fixture.environment.state
+        val ranklessState = state
+            .copy(objectIdentityStamps = state.objectIdentityStamps - greenGrantorId - blackGrantorId)
+            .updateEntity(greenGrantorId) { it.without<BattlefieldEntryTimestampComponent>() }
+            .updateEntity(blackGrantorId) { it.without<BattlefieldEntryTimestampComponent>() }
+        val greenRank = state.objectIdentityStamps[greenGrantorId]
+            ?: error("PAY106 fixture did not assign a green grantor object rank")
+        val duplicateRankState = state.copy(
+            objectIdentityStamps = state.objectIdentityStamps + (blackGrantorId to greenRank),
+        )
+
+        for (candidateState in listOf(ranklessState, duplicateRankState)) {
+            val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+                .paymentDomainV5For(candidateState, fixture.legalAction)
+
+            domain shouldBe null
+        }
     }
 
     test("activation cost order options must contain every declared component exactly once") {

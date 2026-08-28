@@ -16,6 +16,8 @@ import com.wingedsheep.engine.mechanics.mana.FloatingManaProvenanceClassificatio
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.ManaSource
+import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCandidate
+import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
@@ -388,6 +390,7 @@ class PaymentDomainBuilder(
     private val manaSolver: ManaSolver,
     private val visibility: Visibility,
     private val activatedAbilityCostCalculator: ActivatedAbilityCostCalculator? = null,
+    private val paidManaSourceTimingCertifier: PaidManaSourceTimingCertifier,
 ) {
     fun build(
         state: GameState,
@@ -497,7 +500,12 @@ class PaymentDomainBuilder(
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         val initialPoolBuckets = pool.toV5InitialPoolBuckets(state, playerId) ?: return null
 
-        val discovered = manaSolver.findAvailableManaSources(state, playerId, spellContext)
+        val discovered = manaSolver.findAvailableManaSources(
+            state = state,
+            playerId = playerId,
+            spellContext = spellContext,
+            paymentOrderRequired = true,
+        )
             .filter { it.entityId !in excludeSources }
         val orderedIds = CombatObjectOrder.order(state, discovered.map { it.entityId }) ?: return null
         val sourcesById = discovered.associateBy { it.entityId }
@@ -505,14 +513,15 @@ class PaymentDomainBuilder(
             for (sourceId in orderedIds) {
                 val source = sourcesById[sourceId] ?: return null
                 if (!isPerspectiveSafeSource(state, playerId, sourceId)) return null
-                addAll(
-                    source.toV5Domain(
-                        state = state,
-                        playerId = playerId,
-                        spellContext = spellContext,
-                        costCalculator = activatedAbilityCostCalculator ?: return null,
-                    ) ?: return null,
+                val sourceDomain = source.toV5Domain(
+                    state = state,
+                    playerId = playerId,
+                    spellContext = spellContext,
+                    costCalculator = activatedAbilityCostCalculator ?: return null,
+                    timingCertifier = paidManaSourceTimingCertifier,
                 )
+                if (sourceDomain == null) return null
+                addAll(sourceDomain)
             }
         }
 
@@ -561,6 +570,11 @@ class PaymentDomainBuilder(
                         !isPerspectiveSafeSource(state, playerId, it.key.sourceId)
                     }
                 ) return null
+                // V4 owns the historical multi-bucket ordering. V5 must not promote that
+                // EntityId-based order into a new public contract without a stable Rules-owned
+                // provenance order. A single fungible bucket has no ordering choice; multiple
+                // buckets remain unsupported until that Rules metadata exists.
+                if (classification.candidate.buckets.size > 1) return null
                 classification.candidate.buckets
                     .filter { it.amount > 0 }
                     .map {
@@ -661,12 +675,22 @@ class PaymentDomainBuilder(
         playerId: EntityId,
         spellContext: SpellPaymentContext,
         costCalculator: ActivatedAbilityCostCalculator,
+        timingCertifier: PaidManaSourceTimingCertifier,
     ): List<PaymentSourceActivationDomainV2>? {
-        if (paymentManaProductionProfiles.isEmpty() || paymentManaAbilityOrder.isEmpty()) return null
-        if (paymentManaProductionProfiles.keys != paymentManaSideEffectCertificates.keys) return null
+        if (!paymentManaAbilityOrderCertified ||
+            paymentManaProductionProfiles.isEmpty() ||
+            paymentManaAbilityOrder.isEmpty()
+        ) {
+            return null
+        }
+        if (paymentManaProductionProfiles.keys != paymentManaSideEffectCertificates.keys) {
+            return null
+        }
         if (paymentManaAbilityOrder.distinct().size != paymentManaAbilityOrder.size ||
             paymentManaAbilityOrder.toSet() != paymentManaProductionProfiles.keys
-        ) return null
+        ) {
+            return null
+        }
 
         // One ActivatedAbility appears in more than one output-color map for fixed bundles. The
         // runtime ID is used only to deduplicate that same in-memory object; it is never exposed
@@ -676,12 +700,16 @@ class PaymentDomainBuilder(
             .plus(manaAbilityOptionsForColorless)
             .distinctBy { it.id.value }
         val abilitiesByKey = explicitAbilities.groupBy(ManaAbilityIdentity::key)
-        if (abilitiesByKey.values.any { candidates -> candidates.size != 1 }) return null
+        if (abilitiesByKey.values.any { candidates -> candidates.size != 1 }) {
+            return null
+        }
 
-        // Basic-land and Wastes abilities are Rules-synthesized identities. Their serialized
-        // structural payload is intentionally not the public identity, so resolve those keys
-        // through the same intrinsic identity helper used by source discovery and V1/V2
-        // validation. Explicit abilities continue to use the structural key path below.
+        // Basic-land abilities are Rules-synthesized identities. Their serialized structural
+        // payload is intentionally not the public identity, so resolve those keys through the
+        // same intrinsic identity helper used by source discovery and V1/V2 validation. There is
+        // deliberately no intrinsic:null resolution here: the legacy blank-land colorless
+        // fallback is not a Rules-certified ability and V5 must fail closed. Explicit abilities
+        // continue to use the structural key path below.
         val intrinsicAbilities = IntrinsicManaAbilities
             .forEntity(state, state.projectedState, entityId)
             .associateBy { ability ->
@@ -690,16 +718,14 @@ class PaymentDomainBuilder(
                 ManaAbilityIdentity.intrinsic(Color.fromSymbol(symbol))
             }
             .toMutableMap()
-        val colorlessIntrinsicKey = ManaAbilityIdentity.intrinsic(null)
-        if (colorlessIntrinsicKey in paymentManaAbilityOrder) {
-            intrinsicAbilities[colorlessIntrinsicKey] = IntrinsicManaAbilities.colorlessFallback()
-        }
 
         return paymentManaAbilityOrder.map { manaAbilityKey ->
             val profile = paymentManaProductionProfiles[manaAbilityKey] ?: return null
             if (paymentManaSideEffectCertificates[manaAbilityKey] !is
                 com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate.NoSideEffect
-            ) return null
+            ) {
+                return null
+            }
             val ability = if (manaAbilityKey.startsWith("intrinsic:")) {
                 intrinsicAbilities[manaAbilityKey] ?: return null
             } else {
@@ -712,6 +738,20 @@ class PaymentDomainBuilder(
                 ability = ability,
             )
             val shape = effectiveCost.toV5ActivationCostShape() ?: return null
+            if (shape.atomicManaCostUnits.isNotEmpty() &&
+                !timingCertifier.certify(
+                    PaidManaSourceTimingCandidate(
+                        state = state,
+                        controllerId = playerId,
+                        sourceId = entityId,
+                        manaAbilityKey = manaAbilityKey,
+                        ability = ability,
+                        effectiveCost = effectiveCost,
+                        productionProfile = profile,
+                        spellContext = spellContext,
+                    )
+                )
+            ) return null
             val productionChoices = when (profile) {
                 is PaymentManaProductionProfile.SelectableSingleOutput ->
                     profile.allowedColors.sortedBy(PaymentManaColor::ordinal).map {

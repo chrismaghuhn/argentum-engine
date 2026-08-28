@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.mechanics.combat.CombatObjectOrder
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -172,6 +173,12 @@ data class ManaSource(
      * iteration.
      */
     val paymentManaAbilityOrder: List<String> = emptyList(),
+    /**
+     * Whether the Rules-owned order includes every matching static mana-ability grantor in a
+     * stable object order. Historical consumers may continue using the legacy collection order;
+     * V5 must fail closed when this qualification is unavailable.
+     */
+    val paymentManaAbilityOrderCertified: Boolean = true,
     /**
      * Rules-owned PaymentPlanV1 production profile for each stable mana-ability identity. The
      * profile is resolved after the current source discovery pass and is invalidated by any
@@ -1152,11 +1159,16 @@ class ManaSolver(
      * - hasNonManaAbilities: true if the source has activated abilities that aren't mana abilities
      * - hasPainCost/painAmount: true if the mana ability costs life
      * - canAttack: true for creatures that can attack (no summoning sickness or has haste)
+     *
+     * [paymentOrderRequired] is opt-in V5 qualification. Historical callers retain the legacy
+     * battlefield collection order for statically granted abilities; V5 requests Rules-owned
+     * object ordering and fail closed when the required rank is unavailable or duplicated.
      */
     fun findAvailableManaSources(
         state: GameState,
         playerId: EntityId,
         spellContext: SpellPaymentContext? = null,
+        paymentOrderRequired: Boolean = false,
     ): List<ManaSource> {
         // Project state once to get all keywords and projected controllers
         val projected = state.projectedState
@@ -1192,8 +1204,14 @@ class ManaSolver(
 
             // Include mana abilities granted by static effects from other permanents
             // (e.g., Clement, the Worrywort granting {T}: Add {G} or {U} to Frogs)
-            val staticGrantedManaAbilities = getStaticGrantedManaAbilities(entityId, state, manaStatics)
-            val rawManaAbilities = allAbilities.filter { it.isManaAbility } + staticGrantedManaAbilities
+            val staticGrantedManaAbilities = getStaticGrantedManaAbilities(
+                entityId = entityId,
+                state = state,
+                manaStatics = manaStatics,
+                paymentOrderRequired = paymentOrderRequired,
+            )
+            val rawManaAbilities = allAbilities.filter { it.isManaAbility } +
+                staticGrantedManaAbilities.abilities
 
             // When a spell/ability payment context is provided, drop mana abilities whose
             // restriction is incompatible. Otherwise the combiner below would treat a
@@ -1273,7 +1291,7 @@ class ManaSolver(
                         overrideColor != null -> setOf(overrideColor)
                         else -> subtypeColors
                     }
-                    if (staticGrantedManaAbilities.isEmpty()) {
+                    if (staticGrantedManaAbilities.abilities.isEmpty()) {
                         val productionProfiles = effectiveColors.associate { color ->
                             ManaAbilityIdentity.intrinsic(color) to
                                 (landProductionTransformReason?.let(PaymentManaProductionProfile::Unsupported)
@@ -1298,6 +1316,7 @@ class ManaSolver(
                             paymentManaAbilityOrder = effectiveColors
                                 .sortedBy(Color::ordinal)
                                 .map(ManaAbilityIdentity::intrinsic),
+                            paymentManaAbilityOrderCertified = staticGrantedManaAbilities.paymentOrderCertified,
                             paymentManaProductionProfiles = productionProfiles,
                             paymentManaSideEffectCertificates = productionProfiles.mapValues {
                                 PaymentManaSideEffectCertificate.NoSideEffect
@@ -1793,6 +1812,7 @@ class ManaSolver(
                     },
                     manaAbilityOptionsForColorless = colorlessManaAbilities.distinctBy { it.id.value },
                     paymentManaAbilityOrder = paymentManaAbilityOrder,
+                    paymentManaAbilityOrderCertified = staticGrantedManaAbilities.paymentOrderCertified,
                     paymentManaProductionProfiles = paymentProductionProfiles,
                     paymentManaSideEffectCertificates = paymentSideEffectCertificates,
                     requiresSacrifice = requiresSacrifice,
@@ -1823,6 +1843,7 @@ class ManaSolver(
                 hasPainCost = false,
                 painAmount = 0,
                 canAttack = false,
+                paymentManaAbilityOrderCertified = staticGrantedManaAbilities.paymentOrderCertified,
                 paymentManaAbilityOrder = listOf(ManaAbilityIdentity.intrinsic(null)),
                 paymentManaProductionProfiles = mapOf(
                     ManaAbilityIdentity.intrinsic(null) to
@@ -2252,14 +2273,22 @@ class ManaSolver(
      * here is matching [entityId] against each grant's filter, and on a board with no such grant
      * (nearly every board) that is no work at all.
      */
+    private data class StaticGrantedManaAbilities(
+        val abilities: List<ActivatedAbility>,
+        val paymentOrderCertified: Boolean,
+    )
+
     private fun getStaticGrantedManaAbilities(
         entityId: EntityId,
         state: GameState,
-        manaStatics: ManaStaticsIndex
-    ): List<ActivatedAbility> {
-        if (manaStatics.manaAbilityGrantors.isEmpty()) return emptyList()
+        manaStatics: ManaStaticsIndex,
+        paymentOrderRequired: Boolean = false,
+    ): StaticGrantedManaAbilities {
+        if (manaStatics.manaAbilityGrantors.isEmpty()) {
+            return StaticGrantedManaAbilities(emptyList(), paymentOrderCertified = true)
+        }
 
-        val result = mutableListOf<ActivatedAbility>()
+        val matchingGrantors = mutableListOf<ManaStaticsIndex.ManaAbilityGrantor>()
         for (grantor in manaStatics.manaAbilityGrantors) {
             val grant = grantor.grant
             if (grant.filter.excludeSelf && grantor.granterId == entityId) continue
@@ -2271,11 +2300,42 @@ class ManaSolver(
                 PredicateContext(controllerId = grantor.granterControllerId, sourceId = grantor.granterId)
             )
             if (matches) {
-                result.add(grant.ability)
+                matchingGrantors.add(grantor)
             }
         }
 
-        return result
+        val legacyAbilities = matchingGrantors.map { it.grant.ability }
+        if (!paymentOrderRequired) {
+            // The index intentionally retains its historical battlefield collection order for
+            // V1/V4 consumers. Only a V5 request opts into the Rules-owned ordering seam.
+            return StaticGrantedManaAbilities(
+                abilities = legacyAbilities,
+                paymentOrderCertified = true,
+            )
+        }
+
+        // V5 orders the matching grantor objects by Rules-owned object rank, then preserves the
+        // definition order of each grantor's statics. This is deliberately request-scoped so the
+        // historical V1/V4 solver order above cannot drift.
+        // If any required rank is unavailable or duplicated, retain the legacy list for those
+        // consumers but mark the payment presentation unsupported rather than inventing an order.
+        val orderedGranterIds = CombatObjectOrder.order(
+            state,
+            matchingGrantors.map { it.granterId }.distinct(),
+        )
+        val abilities = if (orderedGranterIds == null) {
+            legacyAbilities
+        } else {
+            orderedGranterIds.flatMap { granterId ->
+                matchingGrantors
+                    .filter { it.granterId == granterId }
+                    .map { it.grant.ability }
+            }
+        }
+        return StaticGrantedManaAbilities(
+            abilities = abilities,
+            paymentOrderCertified = orderedGranterIds != null,
+        )
     }
 
     /**
@@ -2694,7 +2754,7 @@ class ManaSolver(
 
             val ownAbilities = if (projected.hasLostAllAbilities(entityId)) emptyList()
                 else cardRegistry.getCard(card.cardDefinitionId)?.script?.activatedAbilities.orEmpty()
-            val abilities = ownAbilities + getStaticGrantedManaAbilities(entityId, state, manaStatics)
+            val abilities = ownAbilities + getStaticGrantedManaAbilities(entityId, state, manaStatics).abilities
 
             for (ability in abilities) {
                 if (!ability.isManaAbility) continue
