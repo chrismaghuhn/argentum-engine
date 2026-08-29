@@ -368,7 +368,13 @@ class PaymentPlanValidator(
                 "PaymentPlanV3 outer PayLife exceeds current life"
             )
         }
-        val fixedSelfDamageBudget = currentLife - reservedOuterLifePayment
+        // A zero outer PayLife reservation imposes no life floor: mana abilities resolve before
+        // priority/state-based-action checks, so legal pain mana may take life to zero or below.
+        // A positive reservation remains a shared budget because that later cost must still be
+        // payable under the current Rules cost.
+        val fixedSelfDamageBudget = reservedOuterLifePayment
+            .takeIf { it > 0 }
+            ?.let { currentLife - it }
         val outerCost = cost.canonicalPaymentManaCost()
         if (!outerCost.isFixedOrdinaryManaCost()) {
             return PaymentPlanValidation.Rejected(
@@ -407,7 +413,7 @@ class PaymentPlanValidator(
 
         val resolvedActivations = mutableListOf<ValidatedPaymentActivationV3>()
         val selectedSourceIds = mutableSetOf<EntityId>()
-        var selectedFixedSelfDamage = 0
+        var selectedFixedSelfDamage = 0L
         for ((activationIndex, activation) in plan.activations.withIndex()) {
             if (!selectedSourceIds.add(activation.sourceId)) {
                 return PaymentPlanValidation.Rejected(
@@ -500,13 +506,15 @@ class PaymentPlanValidator(
                     "PaymentPlanV3 source has an unrepresented deterministic side effect"
                 )
             }
-            val remainingFixedSelfDamageBudget = fixedSelfDamageBudget - selectedFixedSelfDamage
-            if (fixedSelfDamageAmount > remainingFixedSelfDamageBudget) {
+            val remainingFixedSelfDamageBudget = fixedSelfDamageBudget?.toLong()?.minus(selectedFixedSelfDamage)
+            if (remainingFixedSelfDamageBudget != null &&
+                fixedSelfDamageAmount.toLong() > remainingFixedSelfDamageBudget
+            ) {
                 return PaymentPlanValidation.Rejected(
                     "PaymentPlanV3 fixed self-damage exceeds life budget after outer PayLife reservation"
                 )
             }
-            selectedFixedSelfDamage += fixedSelfDamageAmount
+            selectedFixedSelfDamage += fixedSelfDamageAmount.toLong()
             val outputs = when (profile) {
                 is PaymentManaProductionProfile.SelectableSingleOutput -> {
                     if (activation.productionChoice.amount != 1 ||

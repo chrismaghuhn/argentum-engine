@@ -191,10 +191,13 @@ solver-preferred option.
 
 `fixedSelfDamageAmount` is the exact Rules-owned side-effect certificate for that source/ability
 option. `reservedOuterLifePayment` is the mandatory PayLife total of the current outer action, when
-the supported action path has one. The builder derives `fixedSelfDamageBudget` from the current life
-total as `currentLife - reservedOuterLifePayment`; it rejects an unpayable outer reservation rather
-than publishing a negative budget. The domain does not filter painful options by itself. Instead, a
-submitted V3 program is a member of the public legal plan space only when the cumulative
+the supported action path has one. When that reservation is positive, the builder derives
+`fixedSelfDamageBudget` from the current life total as `currentLife - reservedOuterLifePayment`; it
+rejects an unpayable outer reservation rather than publishing a negative budget. When the reservation
+is zero, `fixedSelfDamageBudget` is null and the public constraint is unbounded: V5 does not invent a
+life floor for mana-ability resolution or process state-based actions inside the payment program.
+The domain does not filter painful options by itself. Instead, a submitted V3 program with a positive
+outer reservation is a member of the public legal plan space only when the cumulative
 `fixedSelfDamageAmount` of all selected activation nodes is at most `fixedSelfDamageBudget`.
 The validator applies this same Rules-owned constraint before any mutation. This information is
 public because otherwise a policy could submit a structurally complete program that becomes unable
@@ -539,11 +542,13 @@ A V5 builder MUST follow this sequence:
    paired with a successful life-mutation execution-stability certificate for the complete
    discovered source set; a bare side-effect-type check is insufficient.
 8. Resolve the current action's deterministic outer PayLife total when that action path carries one.
-   Publish it as `reservedOuterLifePayment` together with the derived
-   `fixedSelfDamageBudget = currentLife - reservedOuterLifePayment`. An unresolvable or currently
-   unaffordable outer life reservation is unsupported; the builder MUST NOT publish a negative
-   budget. The builder does not remove individual painful options: the cumulative budget is a
-   public constraint on selected activation nodes.
+   Publish it as `reservedOuterLifePayment`. For a positive reservation, also publish the bounded
+   `fixedSelfDamageBudget = currentLife - reservedOuterLifePayment`; an unresolvable or currently
+   unaffordable outer life reservation is unsupported, and the builder MUST NOT publish a negative
+   budget. For zero reservation, publish an unbounded/null `fixedSelfDamageBudget`: the stability
+   probe and validator MUST allow the payment program to reach life zero or below without simulating
+   state-based actions. The builder does not remove individual painful options: any positive-reservation
+   budget is a public constraint on selected activation nodes.
 9. Publish complete initial-pool bucket capacities and outer atomic cost units.
 
 The builder MUST NOT:
@@ -593,8 +598,8 @@ It MUST:
 - reject a source/ability whose `PAY106-MANA-WINDOW-01` timing certification no longer holds for the
   current effective-cost/state class;
 - reject a submitted `reservedOuterLifePayment` that is negative, exceeds the current Rules-owned
-  life total, or leaves a selected cumulative `FixedSelfDamage` total above the current
-  `fixedSelfDamageBudget`;
+  life total, or, when positive, leaves a selected cumulative `FixedSelfDamage` total above the
+  current bounded `fixedSelfDamageBudget`; zero reservation has no fixed-self-damage life cap;
 - reject an `activationCostOrder` that is not in the current Rules-owned legal order set represented
   by the V5 domain and validate each selected cost component exactly once; this is a fresh
   re-resolution, not a Gym-domain hash comparison;
@@ -972,6 +977,9 @@ reported verification commands are recorded in the current-turn boundary below a
 | PAY106-OUTER-COST-01 | Chevill/BG at life 2 activates War Room with outer PayLife 2 while Llanowar Wastes offers painful mana | V5 publishes `reservedOuterLifePayment=2`, `fixedSelfDamageBudget=0`, and the exact pain amount; a safe plan remains expressible, while a painful plan exceeds the public budget and is rejected before execution. |
 | PAY106-OUTER-COST-02 | The same War Room/Wastes plan at life 3 | The public budget is 1, so one painful activation remains representable and the outer PayLife remains legal after the damage. |
 | PAY106-OUTER-COST-03 | Two painful activations each fit individually but exceed the shared life budget together | The cumulative global constraint rejects the combined program before mutation. |
+| PAY106-LETHAL-PAIN-01 | One fixed-self-damage activation at life 1 with no outer PayLife reservation | V5 remains supported, validates the painful plan, and the payment may finish at life 0; no state-based action is simulated inside the payment program. |
+| PAY106-LETHAL-PAIN-02 | Two one-damage activations at life 2 with no outer PayLife reservation | V5 remains supported and the cumulative painful plan remains representable through life 0. |
+| PAY106-LETHAL-PAIN-03 | Life 2, outer PayLife reservation 1, and two one-damage activations | The bounded public budget is 1: one painful activation is valid, while the combined plan is rejected before mutation. |
 | PAY106-03 | Forest output pays Signet's atomic `{1}` target; Signet output pays outer atomic cost units | Complete `ExplicitV3` is accepted and resolves with the selected outputs. |
 | PAY106-04 | Signet output is assigned to its own `{1}` | Rejected; original state and event list are unchanged. |
 | PAY106-05 | A later activation output is assigned to an earlier activation cost | Rejected by the forward-reference rule; zero mutation. |

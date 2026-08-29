@@ -33,9 +33,11 @@ import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
  * selected ability has no activation restriction or dynamic cost input, and the battlefield has
  * no supported activated-ability cost modifier. A fixed self-damage side effect is accepted only
  * when the Rules-owned life-mutation certificate has proved that every V5 payment fact remains
- * stable over the possible positive life losses. External activation-permission statics are also
- * outside this first slice: their truth is read at activation time and may depend on the state
- * changed by an earlier TapSelf node, including printed or durationally granted locks.
+ * stable over the possible positive life losses, including intermediate life totals at or below
+ * zero. This certificate does not impose a life floor or process state-based actions. External
+ * activation-permission statics are also outside this first slice: their truth is read at
+ * activation time and may depend on the state changed by an earlier TapSelf node, including
+ * printed or durationally granted locks.
  */
 data class PaymentProgramExecutionStabilityCandidate(
     val state: GameState,
@@ -87,7 +89,6 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
             PaymentManaSideEffectCertificate.NoSideEffect -> Unit
             is PaymentManaSideEffectCertificate.FixedSelfDamage -> {
                 if (sideEffect.amount <= 0 || !candidate.lifeMutationStabilityCertified ||
-                    candidate.state.lifeTotal(candidate.controllerId) <= sideEffect.amount ||
                     !fixedSelfDamageEnvironmentIsSupported(candidate)
                 ) {
                     return false

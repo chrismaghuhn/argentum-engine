@@ -1004,6 +1004,85 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         fixture.driver.state shouldBe before
     }
 
+    test("PAY106-LETHAL-PAIN-01: one fixed pain activation may reduce life to zero") {
+        val fixture = painFixture()
+        fixture.driver.setLifeTotal(fixture.player, 1)
+        val before = fixture.driver.state
+        val services = EngineServices(fixture.driver.cardRegistry)
+
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singlePainPlan(fixture, fixture.greenKey, PaymentManaColor.GREEN),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 lethal fixed self-damage payment",
+        )
+
+        result.error shouldBe null
+        result.state.lifeTotal(fixture.player) shouldBe 0
+        result.state.getEntity(fixture.sourceId)?.has<TappedComponent>() shouldBe true
+        result.events.filterIsInstance<DamageDealtEvent>().single().amount shouldBe 1
+        result.events.filterIsInstance<LifeChangedEvent>().single().newLife shouldBe 0
+    }
+
+    test("PAY106-LETHAL-PAIN-02: cumulative pain may finish at zero without an outer life payment") {
+        val fixture = doublePainFixture()
+        fixture.driver.setLifeTotal(fixture.player, 2)
+        val before = fixture.driver.state
+        val services = EngineServices(fixture.driver.cardRegistry)
+
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{G}"),
+            plan = doublePainPlan(fixture),
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 cumulative lethal fixed self-damage payment",
+        )
+
+        result.error shouldBe null
+        result.state.lifeTotal(fixture.player) shouldBe 0
+        result.state.getEntity(fixture.firstSourceId)?.has<TappedComponent>() shouldBe true
+        result.state.getEntity(fixture.secondSourceId)?.has<TappedComponent>() shouldBe true
+        result.events.filterIsInstance<DamageDealtEvent>().size shouldBe 2
+        result.events.filterIsInstance<LifeChangedEvent>().size shouldBe 2
+    }
+
+    test("PAY106-LETHAL-PAIN-03: an outer life payment still bounds cumulative pain") {
+        val fixture = doublePainFixture()
+        fixture.driver.setLifeTotal(fixture.player, 2)
+        val validator = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry))
+        val before = fixture.driver.state
+
+        validator.validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singleDoublePainSourcePlan(fixture),
+            spellContext = SpellPaymentContext(),
+            reservedOuterLifePayment = 1,
+        ).shouldBeInstanceOf<PaymentPlanValidation.AcceptedV3>()
+
+        validator.validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{G}"),
+            plan = doublePainPlan(fixture),
+            spellContext = SpellPaymentContext(),
+            reservedOuterLifePayment = 1,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>().reason
+            .shouldContain("life budget")
+
+        fixture.driver.state shouldBe before
+    }
+
     test("PAY106-SIDEEFFECT-03: pain before a life-history-sensitive node is not certified") {
         val fixture = painSequenceFixture()
         val sources = ManaSolver(fixture.driver.cardRegistry).findAvailableManaSources(

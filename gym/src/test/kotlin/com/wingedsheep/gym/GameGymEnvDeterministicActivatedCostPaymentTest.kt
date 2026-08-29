@@ -587,7 +587,10 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .filter { it.sourceId == wastesId && it.fixedSelfDamageAmount == 1 }
             .size shouldBe 2
         domain.sourceActivationOptions
-            .filter { it.sourceId == wastesId && it.fixedSelfDamageAmount > domain.fixedSelfDamageBudget }
+            .filter {
+                it.sourceId == wastesId &&
+                    it.fixedSelfDamageAmount > checkNotNull(domain.fixedSelfDamageBudget)
+            }
             .size shouldBe 2
     }
 

@@ -2109,7 +2109,7 @@ class ManaSolver(
             total + sourceDamage
         }
         if (totalDamage == 0L) return true
-        if (totalDamage > Int.MAX_VALUE || state.lifeTotal(playerId).toLong() <= totalDamage) return false
+        if (totalDamage > Int.MAX_VALUE) return false
 
         val painfulSourceIds = sources.filter { source ->
             source.paymentManaSideEffectCertificates.values.any {

@@ -366,15 +366,18 @@ data class PaymentDomainV5(
     val sourceActivationOptions: List<PaymentSourceActivationDomainV2>,
     /** Mandatory life paid by the outer action, resolved from the current Rules cost. */
     val reservedOuterLifePayment: Int = 0,
-    /** Life available to selected fixed-self-damage mana activations after the outer payment. */
-    val fixedSelfDamageBudget: Int = 0,
+    /**
+     * Life available to selected fixed-self-damage mana activations when the outer action has a
+     * positive mandatory PayLife reservation; null means there is no outer-life survival bound.
+     */
+    val fixedSelfDamageBudget: Int? = null,
 ) {
     init {
         require(reservedOuterLifePayment >= 0) {
             "PaymentDomainV5 reserved outer life payment must be non-negative"
         }
-        require(fixedSelfDamageBudget >= 0) {
-            "PaymentDomainV5 fixed self-damage budget must be non-negative"
+        require(fixedSelfDamageBudget == null || fixedSelfDamageBudget >= 0) {
+            "PaymentDomainV5 fixed self-damage budget must be non-negative when bounded"
         }
         require(version == PAYMENT_DOMAIN_V5_VERSION) {
             "Unsupported PaymentDomainV5 version: $version"
@@ -518,7 +521,9 @@ class PaymentDomainBuilder(
         if (reservedOuterLifePayment < 0) return null
         val currentLife = state.lifeTotal(playerId)
         if (reservedOuterLifePayment > currentLife) return null
-        val fixedSelfDamageBudget = currentLife - reservedOuterLifePayment
+        val fixedSelfDamageBudget = reservedOuterLifePayment
+            .takeIf { it > 0 }
+            ?.let { currentLife - it }
 
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         val initialPoolBuckets = pool.toV5InitialPoolBuckets(state, playerId) ?: return null

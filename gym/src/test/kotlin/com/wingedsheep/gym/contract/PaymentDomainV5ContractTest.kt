@@ -361,6 +361,22 @@ class PaymentDomainV5ContractTest : FunSpec({
         )
     }
 
+    test("PAY106-LETHAL-PAIN-01: V5 publishes pain at life one without an outer life reservation") {
+        val fixture = prepared(listOf(LlanowarWastes))
+        val state = fixture.environment.state.withLifeTotal(fixture.playerId, 1)
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction)
+
+        domain shouldNotBe null
+        domain!!.reservedOuterLifePayment shouldBe 0
+        domain.fixedSelfDamageBudget shouldBe null
+        val wastesId = fixture.extraIds[LlanowarWastes.name]
+            ?: error("PAY106 fixture did not capture Llanowar Wastes")
+        domain.sourceActivationOptions
+            .filter { it.sourceId == wastesId && it.fixedSelfDamageAmount == 1 }
+            .size shouldBe 2
+    }
+
     test("PAY106-SIDEEFFECT-01: locked-deck pain sources publish complete V5 domains") {
         for (painSource in listOf(
             BattlefieldForge,
