@@ -16,6 +16,7 @@ import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.PoolSpend
@@ -359,6 +360,14 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         )
     }
 
+    fun explicitV3FromPublic(view: LegalActionView): PaymentStrategy.ExplicitV3 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        return PaymentStrategy.ExplicitV3(
+            paymentPlan = paymentPlanV3FromPublic(domain)
+                ?: error("Expected a complete public PaymentDomainV5 plan"),
+        )
+    }
+
     fun explicitV1FromPublic(view: LegalActionView): PaymentStrategy.Explicit {
         val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
         val costUnit = domain.costUnits.single()
@@ -505,17 +514,17 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe false
     }
 
-    test("real Wayfarer's Bauble publishes a usable PaymentDomainV4") {
+    test("real Wayfarer's Bauble publishes a usable PaymentDomainV5") {
         val prepared = preparedWayfarer()
         val view = activatedView(prepared)
 
         view.requiredPayloadFields shouldBe listOf("paymentStrategy", "costPayment")
         view.sourceEntityId shouldBe prepared.sourceId
         view.validSacrificeTargets shouldBe listOf(prepared.sourceId)
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        domain.version shouldBe 4
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        domain.version shouldBe 5
         domain.requiredCost shouldBe "{2}"
-        domain.sourceActivations.any { it.sourceId == prepared.sourceId } shouldBe false
+        domain.sourceActivationOptions.any { it.sourceId == prepared.sourceId } shouldBe false
     }
 
     test("real Mind Stone uses the same deterministic certificate without a card-name branch") {
@@ -525,11 +534,11 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         view.requiredPayloadFields shouldBe listOf("paymentStrategy", "costPayment")
         view.sourceEntityId shouldBe prepared.sourceId
         view.validSacrificeTargets shouldBe listOf(prepared.sourceId)
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
         domain.requiredCost shouldBe "{1}"
     }
 
-    test("real War Room exposes its structural deterministic life cost through public V4 data") {
+    test("real War Room exposes its structural deterministic life cost through public V5 data") {
         val prepared = preparedWarRoom()
         val action = prepared.environment.legalActions().single { legalAction ->
             val activate = legalAction.action as? ActivateAbility
@@ -551,10 +560,10 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         commandCard.colors shouldBe emptySet()
         commandCard.oracleText.contains("{W}{W}{U}{U}{B}{B}{R}{R}{G}{G}") shouldBe true
 
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        domain.version shouldBe 4
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        domain.version shouldBe 5
         domain.requiredCost shouldBe "{3}"
-        domain.sourceActivations.any { it.sourceId == prepared.sourceId } shouldBe false
+        domain.sourceActivationOptions.any { it.sourceId == prepared.sourceId } shouldBe false
     }
 
     test("PAY106-OUTER-COST-01: V5 exposes War Room's life reservation and pain budget") {
@@ -623,35 +632,35 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
 
         view.requiredPayloadFields shouldBe listOf("paymentStrategy", "costPayment")
         view.sourceEntityId shouldBe prepared.sourceId
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
         domain.requiredCost shouldBe "{1}"
 
         val payment = AdditionalCostPayment(tappedPermanents = listOf(prepared.sourceId))
-        prepared.gym.step(view.actionId, payload(view, explicitV2FromPublic(view), payment))
+        prepared.gym.step(view.actionId, payload(view, explicitV3FromPublic(view), payment))
         prepared.environment.state.getZone(prepared.playerId, Zone.BATTLEFIELD)
             .contains(prepared.sourceId) shouldBe true
         prepared.environment.state.getEntity(prepared.sourceId)?.has<TappedComponent>() shouldBe true
     }
 
-    test("TapSelf-only ExplicitV2 without costPayment rejects atomically") {
+    test("TapSelf-only ExplicitV3 without costPayment rejects atomically") {
         val prepared = preparedTapSelf()
         val view = gymActivatedView(prepared)
 
         assertRejectedAtomically(
             prepared = prepared,
             view = view,
-            actionPayload = payload(view, explicitV2FromPublic(view), costPayment = null),
+            actionPayload = payload(view, explicitV3FromPublic(view), costPayment = null),
         )
     }
 
-    test("fixed ordinary zero-mana Equip publishes V4 and executes an explicit zero-spend plan") {
+    test("fixed ordinary zero-mana Equip publishes V5 and executes an explicit zero-spend plan") {
         val prepared = preparedZeroManaEquip()
         val view = gymActivatedView(prepared, requiredCost = "{0}")
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
 
-        domain.version shouldBe 4
+        domain.version shouldBe 5
         domain.requiredCost shouldBe "{0}"
-        domain.costUnits shouldBe emptyList()
+        domain.outerAtomicCostUnits shouldBe emptyList()
         view.requiredPayloadFields shouldContain "paymentStrategy"
         view.requiredPayloadFields shouldContain "targets"
 
@@ -660,10 +669,9 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         val stepCountBefore = prepared.environment.stepCount
         val poolBefore = prepared.environment.state.getEntity(prepared.playerId)
             ?.get<ManaPoolComponent>()
-        val zeroPayment = explicitV2FromPublic(view)
-        zeroPayment.paymentPlan!!.sourceActivations shouldBe emptyList()
-        zeroPayment.paymentPlan!!.poolSpend shouldBe PoolSpend()
-        zeroPayment.paymentPlan!!.spendAllocation.costUnits shouldBe emptyList()
+        val zeroPayment = explicitV3FromPublic(view)
+        zeroPayment.paymentPlan!!.activations shouldBe emptyList()
+        zeroPayment.paymentPlan!!.outerAllocation shouldBe emptyList()
 
         prepared.gym.step(
             view.actionId,
@@ -692,21 +700,20 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
     test("reduced positive Equip cost publishes canonical zero and executes an explicit empty plan") {
         val prepared = preparedReducedToZeroEquip()
         val view = gymActivatedView(prepared, requiredCost = "{0}")
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
         val target = publicTarget(view)
 
         reducedToZeroEquipment.activatedAbilities.single().cost.manaCostOrNull shouldBe ManaCost.parse("{1}")
-        domain.version shouldBe 4
+        domain.version shouldBe 5
         domain.requiredCost shouldBe "{0}"
-        domain.costUnits shouldBe emptyList()
+        domain.outerAtomicCostUnits shouldBe emptyList()
 
         val stepCountBefore = prepared.environment.stepCount
         val poolBefore = prepared.environment.state.getEntity(prepared.playerId)
             ?.get<ManaPoolComponent>()
-        val zeroPayment = explicitV2FromPublic(view)
-        zeroPayment.paymentPlan!!.sourceActivations shouldBe emptyList()
-        zeroPayment.paymentPlan!!.poolSpend shouldBe PoolSpend()
-        zeroPayment.paymentPlan!!.spendAllocation.costUnits shouldBe emptyList()
+        val zeroPayment = explicitV3FromPublic(view)
+        zeroPayment.paymentPlan!!.activations shouldBe emptyList()
+        zeroPayment.paymentPlan!!.outerAllocation shouldBe emptyList()
 
         prepared.gym.step(
             view.actionId,
@@ -732,7 +739,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             ?.targetId shouldBe target
     }
 
-    test("zero-mana ExplicitV2 rejects hidden payment choices and incomplete zero allocations atomically") {
+    test("zero-mana legacy ExplicitV2 rejects hidden payment choices and incomplete zero allocations atomically") {
         fun freshCase(strategyFor: (LegalActionView) -> PaymentStrategy) {
             val prepared = preparedZeroManaEquip()
             val view = gymActivatedView(prepared, requiredCost = "{0}")
@@ -768,7 +775,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             targetedPayload(
                 view,
                 EntityId("unpublished-target"),
-                explicitV2FromPublic(view),
+                explicitV3FromPublic(view),
             ),
         )
     }
@@ -776,17 +783,17 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
     test("real Lightning Greaves publishes and executes its generic zero-mana Equip contract") {
         val prepared = preparedLightningGreaves()
         val view = gymActivatedView(prepared, requiredCost = "{0}")
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
         val target = publicTarget(view)
 
-        domain.version shouldBe 4
+        domain.version shouldBe 5
         domain.requiredCost shouldBe "{0}"
-        domain.costUnits shouldBe emptyList()
+        domain.outerAtomicCostUnits shouldBe emptyList()
         view.targetDomain!!.requirements.single().candidates.toSet() shouldBe setOf(target)
 
         prepared.gym.step(
             view.actionId,
-            targetedPayload(view, target, explicitV2FromPublic(view)),
+            targetedPayload(view, target, explicitV3FromPublic(view)),
         )
         var passes = 0
         while (prepared.environment.state.stack.isNotEmpty() && passes++ < 8) {
@@ -799,13 +806,13 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             ?.targetId shouldBe target
     }
 
-    test("public PaymentPlanV2 pays Wayfarer's {2}, then Rules taps and sacrifices the source once") {
+    test("public PaymentPlanV3 pays Wayfarer's {2}, then Rules taps and sacrifices the source once") {
         val prepared = preparedWayfarer()
         val view = (prepared.gym.observe().observation as TrainingObservation).legalActions.single {
             it.kind == "ActivateAbility" && it.sourceEntityId == prepared.sourceId &&
                 it.paymentDomain?.requiredCost == "{2}"
         }
-        val payment = explicitV2FromPublic(view)
+        val payment = explicitV3FromPublic(view)
 
         prepared.gym.step(view.actionId, payload(view, payment))
 
@@ -821,7 +828,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             .map { it.entityId }.toSet() shouldBe prepared.mountainIds.toSet() + prepared.sourceId
     }
 
-    test("public PaymentPlanV2 pays War Room mana, then Rules pays commander life and resolves normally") {
+    test("public PaymentPlanV3 pays War Room mana, then Rules pays commander life and resolves normally") {
         val prepared = preparedWarRoom()
         val view = gymActivatedView(prepared, requiredCost = "{3}")
         val lifeBefore = prepared.environment.state.lifeTotal(prepared.playerId)
@@ -830,7 +837,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             view.actionId,
             payload(
                 view,
-                explicitV2FromPublic(view),
+                explicitV3FromPublic(view),
                 AdditionalCostPayment(
                     tappedPermanents = listOf(view.sourceEntityId ?: error("Expected sourceEntityId")),
                 ),
@@ -869,10 +876,10 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
     }
 
     test("War Room rejects missing or invalid structured payment atomically") {
-        fun freshCase(mutator: (LegalActionView, PaymentStrategy.ExplicitV2) -> JsonObject) {
+        fun freshCase(mutator: (LegalActionView, PaymentStrategy.ExplicitV3) -> JsonObject) {
             val prepared = preparedWarRoom()
             val view = gymActivatedView(prepared, requiredCost = "{3}")
-            val payment = explicitV2FromPublic(view)
+            val payment = explicitV3FromPublic(view)
             assertRejectedAtomically(prepared, view, mutator(view, payment))
         }
 
@@ -890,17 +897,17 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             payload(
                 view,
                 payment.copy(
-                    paymentPlan = payment.paymentPlan!!.copy(spendAllocation = SpendAllocationV2()),
+                    paymentPlan = payment.paymentPlan!!.copy(outerAllocation = emptyList()),
                 ),
             )
         }
     }
 
-    test("public PaymentPlanV1 remains accepted for the existing explicit compatibility path") {
+    test("public PaymentPlanV3 remains accepted for the current Gym payment path") {
         val prepared = preparedWayfarer()
         val view = gymActivatedView(prepared)
 
-        prepared.gym.step(view.actionId, payload(view, explicitV1FromPublic(view)))
+        prepared.gym.step(view.actionId, payload(view, explicitV3FromPublic(view)))
 
         prepared.environment.state.getZone(prepared.playerId, Zone.GRAVEYARD)
             .contains(prepared.sourceId) shouldBe true
@@ -960,7 +967,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             it.kind == "ActivateAbility" && it.sourceEntityId == prepared.sourceId &&
                 it.paymentDomain?.requiredCost == "{2}"
         }
-        val actionPayload = payload(view, explicitV2FromPublic(view))
+        val actionPayload = payload(view, explicitV3FromPublic(view))
         view.requiredPayloadFields.all(actionPayload::containsKey) shouldBe true
         prepared.gym.step(view.actionId, actionPayload)
 
@@ -989,13 +996,13 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
     }
 
     test("missing or invalid deterministic costPayment rejects atomically") {
-        fun freshCase(mutator: (LegalActionView, PaymentStrategy.ExplicitV2) -> JsonObject) {
+        fun freshCase(mutator: (LegalActionView, PaymentStrategy.ExplicitV3) -> JsonObject) {
             val prepared = preparedWayfarer()
             val view = (prepared.gym.observe().observation as TrainingObservation).legalActions.single {
                 it.kind == "ActivateAbility" && it.sourceEntityId == prepared.sourceId &&
                     it.paymentDomain?.requiredCost == "{2}"
             }
-            val payment = explicitV2FromPublic(view)
+            val payment = explicitV3FromPublic(view)
             assertRejectedAtomically(prepared, view, mutator(view, payment))
         }
 
@@ -1023,7 +1030,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
             payload(
                 view,
                 payment.copy(
-                    paymentPlan = payment.paymentPlan!!.copy(spendAllocation = SpendAllocationV2()),
+                    paymentPlan = payment.paymentPlan!!.copy(outerAllocation = emptyList()),
                 ),
             )
         }

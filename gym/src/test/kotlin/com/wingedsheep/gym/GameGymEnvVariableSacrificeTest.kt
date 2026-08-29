@@ -1,16 +1,9 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.GameConfig
-import com.wingedsheep.engine.core.CostUnitAllocation
-import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PassPriority
-import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.ProductionChoice
-import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -136,33 +129,14 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
 
     fun payload(view: LegalActionView, selected: List<EntityId>) = buildJsonObject {
         view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4 for ${view.description}")
-        val source = domain.sourceActivations.firstOrNull()
-            ?: error("Expected the Mountain payment source")
-        val costUnit = domain.costUnits.single()
-        val plan = PaymentPlanV1(
-            sourceActivations = listOf(
-                SourceActivation(
-                    sourceId = source.sourceId,
-                    manaAbilityKey = source.manaAbilityKey,
-                    productionChoice = ProductionChoice(source.productionChoices.first().producedColor),
-                ),
-            ),
-            poolSpend = PoolSpend(),
-            spendAllocation = SpendAllocation(
-                costUnits = listOf(
-                    CostUnitAllocation(
-                        symbolIndex = costUnit.symbolIndex,
-                        spends = listOf(ManaSpendReference(sourceId = source.sourceId)),
-                    ),
-                ),
-            ),
-        )
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5 for ${view.description}")
+        val plan = paymentPlanV3FromPublic(domain)
+            ?: error("Expected a complete PaymentDomainV5 plan for ${view.description}")
         put(
             "paymentStrategy",
             actionJson.encodeToJsonElement(
                 PaymentStrategy.serializer(),
-                PaymentStrategy.Explicit(paymentPlan = plan),
+                PaymentStrategy.ExplicitV3(paymentPlan = plan),
             ),
         )
         put(

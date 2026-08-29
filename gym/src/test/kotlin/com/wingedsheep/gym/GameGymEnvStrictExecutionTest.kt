@@ -2,15 +2,8 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.CastSpell
-import com.wingedsheep.engine.core.CostUnitAllocation
-import com.wingedsheep.engine.core.ManaSpendReference
-import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentStrategy
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SelectManaSourcesDecision
-import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
@@ -81,32 +74,9 @@ class GameGymEnvStrictExecutionTest : FunSpec({
         environment.state.getEntity(entityId)?.get<CardComponent>()?.name
 
     fun paymentPayload(view: LegalActionView): JsonObject {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4 for ${view.description}")
-        val source = domain.sourceActivations.firstOrNull()
-            ?: error("Expected a mana source for ${view.description}")
-        val costUnit = domain.costUnits.firstOrNull()
-            ?: error("Expected a mana cost unit for ${view.description}")
-        val production = source.productionChoices.firstOrNull { choice ->
-            choice.producedColor in costUnit.allowedColors
-        } ?: source.productionChoices.first()
-        val plan = PaymentPlanV1(
-            sourceActivations = listOf(
-                SourceActivation(
-                    sourceId = source.sourceId,
-                    manaAbilityKey = source.manaAbilityKey,
-                    productionChoice = ProductionChoice(production.producedColor),
-                ),
-            ),
-            poolSpend = PoolSpend(),
-            spendAllocation = SpendAllocation(
-                costUnits = listOf(
-                    CostUnitAllocation(
-                        symbolIndex = costUnit.symbolIndex,
-                        spends = listOf(ManaSpendReference(sourceId = source.sourceId)),
-                    ),
-                ),
-            ),
-        )
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5 for ${view.description}")
+        val plan = paymentPlanV3FromPublic(domain)
+            ?: error("Expected a complete PaymentDomainV5 plan for ${view.description}")
         val json = Json {
             encodeDefaults = true
             explicitNulls = false
@@ -116,7 +86,7 @@ class GameGymEnvStrictExecutionTest : FunSpec({
             view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
             put(
                 "paymentStrategy",
-                json.encodeToJsonElement(PaymentStrategy.serializer(), PaymentStrategy.Explicit(paymentPlan = plan)),
+                json.encodeToJsonElement(PaymentStrategy.serializer(), PaymentStrategy.ExplicitV3(plan)),
             )
         }
     }

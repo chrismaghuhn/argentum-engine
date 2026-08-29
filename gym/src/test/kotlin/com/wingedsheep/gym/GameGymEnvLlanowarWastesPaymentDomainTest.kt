@@ -1,18 +1,17 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.CastSpell
-import com.wingedsheep.engine.core.CostUnitAllocationV2
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV2
+import com.wingedsheep.engine.core.ManaResourceRefV1
+import com.wingedsheep.engine.core.PaymentAllocationV1
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocationV2
-import com.wingedsheep.engine.core.ManaSpendReferenceV2
+import com.wingedsheep.engine.core.PaymentTargetV1
+import com.wingedsheep.engine.core.SourceActivationV2
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
@@ -145,30 +144,29 @@ class GameGymEnvLlanowarWastesPaymentDomainTest : FunSpec({
         view: LegalActionView,
         sourceId: EntityId,
         color: PaymentManaColor,
-    ): PaymentStrategy.ExplicitV2 {
-        val domain = view.paymentDomain ?: error("Expected PaymentDomainV4")
-        val source = domain.sourceActivations.single { it.sourceId == sourceId &&
+    ): PaymentStrategy.ExplicitV3 {
+        val domain = view.paymentDomain ?: error("Expected PaymentDomainV5")
+        val source = domain.sourceActivationOptions.single { it.sourceId == sourceId &&
             it.productionChoices.single().producedColor == color }
         val choice = source.productionChoices.single()
-        val symbol = domain.costUnits.single()
-        return PaymentStrategy.ExplicitV2(
-            paymentPlan = PaymentPlanV2(
-                sourceActivations = listOf(
-                    SourceActivation(
+        val unit = domain.outerAtomicCostUnits.single()
+        return PaymentStrategy.ExplicitV3(
+            paymentPlan = PaymentPlanV3(
+                activations = listOf(
+                    SourceActivationV2(
                         sourceId = source.sourceId,
                         manaAbilityKey = source.manaAbilityKey,
                         productionChoice = choice,
+                        activationCostOrder = source.activationCostOrderOptions.single(),
                     ),
                 ),
-                poolSpend = PoolSpend(),
-                spendAllocation = SpendAllocationV2(
-                    costUnits = listOf(
-                        CostUnitAllocationV2(
-                            symbolIndex = symbol.symbolIndex,
-                            spends = listOf(
-                                ManaSpendReferenceV2(sourceId = sourceId, amount = 1),
-                            ),
+                outerAllocation = listOf(
+                    PaymentAllocationV1(
+                        target = PaymentTargetV1.OuterCostUnit(
+                            symbolIndex = unit.symbolIndex,
+                            unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
                         ),
+                        resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
                     ),
                 ),
             ),
@@ -178,10 +176,10 @@ class GameGymEnvLlanowarWastesPaymentDomainTest : FunSpec({
     test("real Llanowar Wastes publishes all exact current mana abilities") {
         val prepared = prepared()
         val view = spellView(prepared)
-        val domain = view.paymentDomain ?: error("Expected PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected PaymentDomainV5")
 
-        domain.version shouldBe 4
-        domain.sourceActivations.filter { it.sourceId == prepared.sourceId }
+        domain.version shouldBe 5
+        domain.sourceActivationOptions.filter { it.sourceId == prepared.sourceId }
             .map { it.productionChoices.single().producedColor }
             .shouldContainExactlyInAnyOrder(
                 PaymentManaColor.COLORLESS,
@@ -222,7 +220,7 @@ class GameGymEnvLlanowarWastesPaymentDomainTest : FunSpec({
         val stateBefore = prepared.environment.state
         val stepBefore = prepared.environment.stepCount
         val valid = paymentFor(view, prepared.sourceId, PaymentManaColor.BLACK)
-        val invalid = valid.copy(paymentPlan = valid.paymentPlan!!.copy(spendAllocation = SpendAllocationV2()))
+        val invalid = valid.copy(paymentPlan = valid.paymentPlan!!.copy(outerAllocation = emptyList()))
 
         shouldThrow<IllegalArgumentException> {
             prepared.gym.step(view.actionId, payload(view, invalid))

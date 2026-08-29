@@ -56,6 +56,10 @@ import kotlinx.serialization.json.Json
 /** Contract and publication coverage for the first paid-mana-source V5 slice. */
 class PaymentDomainV5ContractTest : FunSpec({
 
+    test("current Gym schema identifies the V5 paid-source contract") {
+        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.23-paid-mana-source-payment"
+    }
+
     val outerSpell = card("PAY106 V5 Outer Spell") {
         manaCost = "{2}{B}{B}"
         typeLine = "Sorcery"
@@ -338,6 +342,23 @@ class PaymentDomainV5ContractTest : FunSpec({
         domain.sourceActivationOptions.map { it.sourceId } shouldContain fixture.signetId
         domain.sourceActivationOptions.map { it.sourceId } shouldContain fixture.forestId
         domain.sourceActivationOptions.map { it.sourceId } shouldContain fixture.swampId
+    }
+
+    test("current Gym observations carry the V5 payment domain") {
+        val fixture = prepared()
+        val observation = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .build(
+                state = fixture.environment.state,
+                perspectivePlayerId = fixture.playerId,
+                legalActions = listOf(fixture.legalAction),
+            )
+            .observation as TrainingObservation
+
+        val action = observation.legalActions.single()
+        action.paymentDomain shouldNotBe null
+        action.paymentDomain!!.version shouldBe PAYMENT_DOMAIN_V5_VERSION
+        action.paymentDomain!!.sourceActivationOptions
+            .map { it.sourceId } shouldContain fixture.signetId
     }
 
     test("PAY106-02: Signet publishes its effective activation cost and fixed B/G bundle") {

@@ -1,14 +1,6 @@
 package com.wingedsheep.gym
 
-import com.wingedsheep.engine.core.CostUnitAllocationV2
-import com.wingedsheep.engine.core.ManaSpendReferenceV2
-import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentStrategy
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.ProductionChoice
-import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.BLOCKER_DECLARATION_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.BlockRequirementV1
@@ -22,10 +14,6 @@ import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.OrderingDomain
 import com.wingedsheep.gym.contract.PendingDecisionView
-import com.wingedsheep.gym.contract.PAYMENT_DOMAIN_V4_VERSION
-import com.wingedsheep.gym.contract.PaymentCostKind
-import com.wingedsheep.gym.contract.PaymentCostUnitDomain
-import com.wingedsheep.gym.contract.PaymentDomainV4
 import com.wingedsheep.gym.contract.ReorderLibraryDomain
 import com.wingedsheep.gym.contract.ReplacementDomain
 import com.wingedsheep.gym.contract.SearchLibraryDomain
@@ -317,26 +305,26 @@ class DeterministicExternalPolicy {
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
                     code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason = "Structured mana action published no PaymentDomainV4",
+                    reason = "Structured mana action published no PaymentDomainV5",
                     actionKind = action.kind,
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = "LegalActionView.paymentDomain=null; manaCost=${action.manaCost}",
-                    proposedFollowUp = "Publish a complete PaymentDomainV4 for this legal action",
+                    proposedFollowUp = "Publish a complete PaymentDomainV5 for this legal action",
                 )
-            val paymentPlan = explicitPaymentPlan(domain)
+            val paymentPlan = paymentPlanV3FromPublic(domain)
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
                     code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason = "Published PaymentDomainV4 cannot be completed deterministically",
+                    reason = "Published PaymentDomainV5 cannot be completed deterministically",
                     actionKind = action.kind,
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = domain.toString(),
                     proposedFollowUp =
-                        "Extend PaymentDomainV4 until source, production, pool, and allocation choices are representable",
+                        "Extend PaymentDomainV5 until source, production, pool, and allocation choices are representable",
                 )
             payload["paymentStrategy"] = paymentJson.encodeToJsonElement(
                 PaymentStrategy.serializer(),
-                PaymentStrategy.ExplicitV2(paymentPlan = paymentPlan),
+                PaymentStrategy.ExplicitV3(paymentPlan = paymentPlan),
             )
             completedChoice = true
         }
@@ -840,209 +828,6 @@ class DeterministicExternalPolicy {
         return candidates.take(min).takeIf { it.size == min }
     }
 
-    /**
-     * Enumerates only the concrete origins and production choices published by PaymentDomainV4.
-     * There is deliberately no cost parser, source discovery, or engine payment helper here.
-     */
-    private fun explicitPaymentPlan(domain: PaymentDomainV4): PaymentPlanV2? {
-        if (domain.version != PAYMENT_DOMAIN_V4_VERSION || domain.requiredCost.isBlank()) return null
-
-        val units = domain.costUnits.sortedBy { it.symbolIndex }
-        if (units.map { it.symbolIndex } != units.indices.toList()) return null
-
-        fun allowedColors(unit: PaymentCostUnitDomain): Set<PaymentManaColor>? = when (unit.kind) {
-            PaymentCostKind.COLORED -> unit.allowedColors.takeIf { it.isNotEmpty() }
-            PaymentCostKind.COLORLESS ->
-                unit.allowedColors.takeIf { it == setOf(PaymentManaColor.COLORLESS) }
-            PaymentCostKind.GENERIC ->
-                if (unit.allowedColors.isEmpty()) PaymentManaColor.entries.toSet()
-                else unit.allowedColors
-        }
-
-        if (units.any { unit ->
-            unit.amount < 0 ||
-                (unit.kind != PaymentCostKind.GENERIC && unit.amount != 1) ||
-                allowedColors(unit) == null
-        }) {
-            return null
-        }
-
-        val demands = buildList {
-            for (unit in units) {
-                repeat(unit.amount) {
-                    add(
-                        PaymentDemand(
-                            symbolIndex = unit.symbolIndex,
-                            allowedColors = checkNotNull(allowedColors(unit)),
-                        ),
-                    )
-                }
-            }
-        }
-
-        val paymentColors = PaymentManaColor.entries.toList()
-        val poolRemaining = linkedMapOf(
-            PaymentManaColor.WHITE to domain.currentPool.white,
-            PaymentManaColor.BLUE to domain.currentPool.blue,
-            PaymentManaColor.BLACK to domain.currentPool.black,
-            PaymentManaColor.RED to domain.currentPool.red,
-            PaymentManaColor.GREEN to domain.currentPool.green,
-            PaymentManaColor.COLORLESS to domain.currentPool.colorless,
-        )
-        if (poolRemaining.values.any { it < 0 }) return null
-
-        data class FloatingBucket(
-            val sourceId: EntityId,
-            val poolColor: PaymentManaColor,
-            val sourceSubtypes: List<String>,
-            val initialAmount: Int,
-            var remainingAmount: Int = initialAmount,
-        )
-
-        val floatingBuckets = domain.currentPool.certifiedFloatingBuckets.map {
-            FloatingBucket(
-                sourceId = it.sourceId,
-                poolColor = it.poolColor,
-                sourceSubtypes = it.sourceSubtypes,
-                initialAmount = it.amount,
-            )
-        }.toMutableList()
-        if (floatingBuckets.any { it.initialAmount <= 0 }) return null
-        val floatingByColor = PaymentManaColor.entries.associateWith { color ->
-            floatingBuckets
-                .filter { it.poolColor == color }
-                .sumOf { it.initialAmount }
-        }
-        if (floatingBuckets.isNotEmpty() && floatingByColor != poolRemaining) {
-            return null
-        }
-
-        val sourceChoices = domain.sourceActivations
-            .flatMap { source ->
-                source.productionChoices.flatMap { production ->
-                    val fixedOutputs = production.fixedOutputs
-                    if (fixedOutputs == null) {
-                        listOf(
-                            PublicSourceChoice(
-                                sourceId = source.sourceId,
-                                manaAbilityKey = source.manaAbilityKey,
-                                productionChoice = production,
-                                producedColor = production.producedColor,
-                                sourceOutputIndex = null,
-                            ),
-                        )
-                    } else if (
-                        fixedOutputs.size < 2 ||
-                        fixedOutputs.any { it.amount != 1 } ||
-                        fixedOutputs.map { it.index } != fixedOutputs.indices.toList()
-                    ) {
-                        emptyList()
-                    } else {
-                        fixedOutputs.map { output ->
-                            PublicSourceChoice(
-                                sourceId = source.sourceId,
-                                manaAbilityKey = source.manaAbilityKey,
-                                productionChoice = production,
-                                producedColor = output.color,
-                                sourceOutputIndex = output.index,
-                            )
-                        }
-                    }
-                }
-            }
-            .filter { it.productionChoice.amount == 1 && it.productionChoice.bonusChoice == null }
-            .sortedWith(
-                compareBy(
-                    { it.sourceId.value },
-                    { it.manaAbilityKey },
-                    { it.sourceOutputIndex ?: -1 },
-                    { it.producedColor.ordinal },
-                ),
-            )
-
-        val poolSpent = linkedMapOf<PaymentManaColor, Int>()
-        val allocations = linkedMapOf<Int, MutableList<ManaSpendReferenceV2>>()
-        val selectedSources = linkedMapOf<EntityId, SourceActivation>()
-        val selectedSourceChoices = linkedMapOf<EntityId, PublicSourceChoice>()
-        val usedSourceOutputs = linkedMapOf<EntityId, MutableSet<Int>>()
-
-        fun allocate(index: Int): Boolean {
-            if (index == demands.size) return true
-            val demand = demands[index]
-            val spends = allocations.getOrPut(demand.symbolIndex) { mutableListOf() }
-
-            for (color in paymentColors) {
-                if (color !in demand.allowedColors || (poolRemaining[color] ?: 0) <= 0) continue
-                val bucket = floatingBuckets
-                    .filter { it.poolColor == color && it.remainingAmount > 0 }
-                    .minByOrNull { it.sourceId.value }
-                if (floatingBuckets.isNotEmpty() && bucket == null) continue
-                poolRemaining[color] = poolRemaining.getValue(color) - 1
-                poolSpent[color] = (poolSpent[color] ?: 0) + 1
-                bucket?.let { it.remainingAmount-- }
-                spends += ManaSpendReferenceV2(
-                    poolColor = color,
-                    floatingSourceId = bucket?.sourceId,
-                    floatingSourceSubtypes = bucket?.sourceSubtypes,
-                )
-                if (allocate(index + 1)) return true
-                spends.removeAt(spends.lastIndex)
-                bucket?.let { it.remainingAmount++ }
-                poolSpent[color] = poolSpent.getValue(color) - 1
-                poolRemaining[color] = poolRemaining.getValue(color) + 1
-            }
-
-            for (choice in sourceChoices) {
-                if (choice.producedColor !in demand.allowedColors) continue
-                val selected = selectedSourceChoices[choice.sourceId]
-                if (selected != null &&
-                    (selected.manaAbilityKey != choice.manaAbilityKey ||
-                        selected.productionChoice != choice.productionChoice)
-                ) continue
-                val outputKey = choice.sourceOutputIndex ?: -1
-                val usedOutputs = usedSourceOutputs.getOrPut(choice.sourceId) { linkedSetOf() }
-                if (!usedOutputs.add(outputKey)) continue
-                val newlySelected = selected == null
-                if (newlySelected) {
-                    selectedSourceChoices[choice.sourceId] = choice
-                    selectedSources[choice.sourceId] = SourceActivation(
-                        sourceId = choice.sourceId,
-                        manaAbilityKey = choice.manaAbilityKey,
-                        productionChoice = choice.productionChoice,
-                    )
-                }
-                spends += ManaSpendReferenceV2(
-                    sourceId = choice.sourceId,
-                    sourceOutputIndex = choice.sourceOutputIndex,
-                )
-                if (allocate(index + 1)) return true
-                spends.removeAt(spends.lastIndex)
-                usedOutputs.remove(outputKey)
-                if (newlySelected) {
-                    usedSourceOutputs.remove(choice.sourceId)
-                    selectedSourceChoices.remove(choice.sourceId)
-                    selectedSources.remove(choice.sourceId)
-                }
-            }
-            return false
-        }
-
-        if (!allocate(0)) return null
-
-        return PaymentPlanV2(
-            sourceActivations = selectedSources.values.sortedBy { it.sourceId.value },
-            poolSpend = PoolSpend.fromAmounts(poolSpent),
-            spendAllocation = SpendAllocationV2(
-                costUnits = units.map { unit ->
-                    CostUnitAllocationV2(
-                        symbolIndex = unit.symbolIndex,
-                        spends = allocations[unit.symbolIndex]?.toList().orEmpty(),
-                    )
-                },
-            ),
-        )
-    }
-
     private fun chooseStructured(
         observation: TrainingObservation,
         pending: PendingDecisionView,
@@ -1211,7 +996,7 @@ class DeterministicExternalPolicy {
                     actionKind = "DECISION",
                     diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
                     publicDomain = domain.toString(),
-                    proposedFollowUp = "Publish PaymentDomainV4 for this pending payment",
+                    proposedFollowUp = "Publish PaymentDomainV5 for this pending payment",
                 )
             }
 
@@ -1519,11 +1304,6 @@ class DeterministicExternalPolicy {
         val BASIC_LAND_TYPES = setOf("PLAINS", "ISLAND", "SWAMP", "MOUNTAIN", "FOREST")
     }
 
-    private data class PaymentDemand(
-        val symbolIndex: Int,
-        val allowedColors: Set<PaymentManaColor>,
-    )
-
     private data class SourceBoundCostShape(
         val tapSelf: Boolean = false,
         val sacrificeSelf: Boolean = false,
@@ -1534,11 +1314,4 @@ class DeterministicExternalPolicy {
         )
     }
 
-    private data class PublicSourceChoice(
-        val sourceId: EntityId,
-        val manaAbilityKey: String,
-        val productionChoice: ProductionChoice,
-        val producedColor: PaymentManaColor,
-        val sourceOutputIndex: Int?,
-    )
 }

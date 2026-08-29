@@ -4,15 +4,9 @@ import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.UnsupportedPathFailure
-import com.wingedsheep.engine.core.CostUnitAllocation
-import com.wingedsheep.engine.core.ManaSpendReference
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.SpendAllocation
-import com.wingedsheep.engine.core.SourceActivation
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -44,7 +38,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-/** End-to-end Gym materialization tests for the public PaymentPlanV1 boundary. */
+/** End-to-end Gym materialization tests for the public PaymentPlanV3 boundary. */
 class GameGymEnvPaymentPlanTest : FunSpec({
 
     val anyColorSource = card("Gym Payment Any Color Source") {
@@ -207,33 +201,11 @@ class GameGymEnvPaymentPlanTest : FunSpec({
 
     fun paymentPayload(view: LegalActionView): JsonObject {
         val domain = view.paymentDomain ?: error("expected action-level payment domain")
-        domain.sourceActivations.shouldHaveSize(2)
-        val black = domain.sourceActivations[0]
-        val generic = domain.sourceActivations[1]
-        val plan = PaymentPlanV1(
-            sourceActivations = listOf(
-                SourceActivation(
-                    sourceId = black.sourceId,
-                    manaAbilityKey = black.manaAbilityKey,
-                    productionChoice = black.productionChoices.first { it.producedColor == PaymentManaColor.BLACK },
-                ),
-                SourceActivation(
-                    sourceId = generic.sourceId,
-                    manaAbilityKey = generic.manaAbilityKey,
-                    productionChoice = generic.productionChoices.first { it.producedColor == PaymentManaColor.GREEN },
-                ),
-            ),
-            poolSpend = PoolSpend(),
-            spendAllocation = SpendAllocation(
-                costUnits = listOf(
-                    CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = generic.sourceId))),
-                    CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = black.sourceId))),
-                ),
-            ),
-        )
+        val plan = paymentPlanV3FromPublic(domain)
+            ?: error("expected a complete public PaymentDomainV5 plan")
         val strategy = actionJson.encodeToJsonElement(
             PaymentStrategy.serializer(),
-            PaymentStrategy.Explicit(paymentPlan = plan),
+            PaymentStrategy.ExplicitV3(paymentPlan = plan),
         )
         return buildJsonObject {
             view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
@@ -243,42 +215,11 @@ class GameGymEnvPaymentPlanTest : FunSpec({
 
     fun borosCharmPaymentPayload(view: LegalActionView): JsonObject {
         val domain = view.paymentDomain ?: error("expected Boros Charm payment domain")
-        domain.sourceActivations.shouldHaveSize(2)
-        val red = domain.sourceActivations.first { activation ->
-            activation.productionChoices.any { it.producedColor == PaymentManaColor.RED }
-        }
-        val white = domain.sourceActivations.first { activation ->
-            activation.sourceId != red.sourceId &&
-            activation.productionChoices.any { it.producedColor == PaymentManaColor.WHITE }
-        }
-        val plan = PaymentPlanV1(
-            sourceActivations = listOf(
-                SourceActivation(
-                    sourceId = red.sourceId,
-                    manaAbilityKey = red.manaAbilityKey,
-                    productionChoice = red.productionChoices.first {
-                        it.producedColor == PaymentManaColor.RED
-                    },
-                ),
-                SourceActivation(
-                    sourceId = white.sourceId,
-                    manaAbilityKey = white.manaAbilityKey,
-                    productionChoice = white.productionChoices.first {
-                        it.producedColor == PaymentManaColor.WHITE
-                    },
-                ),
-            ),
-            poolSpend = PoolSpend(),
-            spendAllocation = SpendAllocation(
-                costUnits = listOf(
-                    CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = red.sourceId))),
-                    CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = white.sourceId))),
-                ),
-            ),
-        )
+        val plan = paymentPlanV3FromPublic(domain)
+            ?: error("expected a complete public PaymentDomainV5 plan")
         val strategy = actionJson.encodeToJsonElement(
             PaymentStrategy.serializer(),
-            PaymentStrategy.Explicit(paymentPlan = plan),
+            PaymentStrategy.ExplicitV3(paymentPlan = plan),
         )
         return buildJsonObject {
             view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
@@ -352,13 +293,13 @@ class GameGymEnvPaymentPlanTest : FunSpec({
         put("paymentStrategy", actionJson.encodeToJsonElement(PaymentStrategy.serializer(), strategy))
     }
 
-    test("Gym accepts a complete PaymentPlanV1 at the trusted action boundary") {
+    test("Gym accepts a complete PaymentPlanV3 at the trusted action boundary") {
         val (gym, view) = prepared()
 
         gym.step(view.actionId, paymentPayload(view))
     }
 
-    test("ordinary CastSpell publishes and accepts the complete PaymentPlanV1 domain") {
+    test("ordinary CastSpell publishes and accepts the complete PaymentPlanV3 domain") {
         val (gym, view) = preparedCast()
 
         view.kind shouldBe "CastSpell"
@@ -370,7 +311,7 @@ class GameGymEnvPaymentPlanTest : FunSpec({
         gym.step(view.actionId, paymentPayload(view))
     }
 
-    test("CastSpellMode publishes and accepts the complete PaymentPlanV1 domain") {
+    test("CastSpellMode publishes and accepts the complete PaymentPlanV3 domain") {
         val (gym, view) = preparedCastSpellMode()
 
         view.kind shouldBe "CastSpellMode"

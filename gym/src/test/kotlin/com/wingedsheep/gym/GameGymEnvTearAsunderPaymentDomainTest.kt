@@ -1,25 +1,25 @@
 package com.wingedsheep.gym
 
-import com.wingedsheep.engine.core.CostUnitAllocationV2
+import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.GameConfig
-import com.wingedsheep.engine.core.ManaSpendReferenceV2
 import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV2
+import com.wingedsheep.engine.core.PaymentAllocationV1
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.ManaResourceRefV1
+import com.wingedsheep.engine.core.PaymentTargetV1
+import com.wingedsheep.engine.core.SourceActivationV2
 import com.wingedsheep.engine.core.SpellCastEvent
-import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PaymentCostKind
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.apc.cards.LlanowarWastes
 import com.wingedsheep.mtg.sets.definitions.dmu.cards.TearAsunder
@@ -156,7 +156,7 @@ class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
         view: LegalActionView,
         sourceId: EntityId,
         color: PaymentManaColor,
-    ) = view.paymentDomain?.sourceActivations?.single { source ->
+    ) = view.paymentDomain?.sourceActivationOptions?.single { source ->
         source.sourceId == sourceId && source.productionChoices.single().producedColor == color
     } ?: error("Expected public source $sourceId producing $color")
 
@@ -164,22 +164,24 @@ class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
         prepared: PreparedTearAsunderGym,
         view: LegalActionView,
         kicked: Boolean,
-    ): PaymentStrategy.ExplicitV2 {
-        val domain = view.paymentDomain ?: error("Expected PaymentDomainV4")
-        val generic = domain.costUnits.single { it.kind == PaymentCostKind.GENERIC }
-        val green = domain.costUnits.single {
+    ): PaymentStrategy.ExplicitV3 {
+        val domain = view.paymentDomain ?: error("Expected PaymentDomainV5")
+        val genericUnits = domain.outerAtomicCostUnits.filter {
+            it.kind == com.wingedsheep.engine.core.PaymentCostKindV1.GENERIC
+        }
+        val green = domain.outerAtomicCostUnits.single {
             it.allowedColors == setOf(PaymentManaColor.GREEN)
         }
-        val black = domain.costUnits.singleOrNull {
+        val black = domain.outerAtomicCostUnits.singleOrNull {
             it.allowedColors == setOf(PaymentManaColor.BLACK)
         }
 
         val wastesColor = if (kicked) PaymentManaColor.BLACK else PaymentManaColor.GREEN
         val wastes = publicSource(view, prepared.wastesId, wastesColor)
-        val genericForests = prepared.forestIds.take(generic.amount)
+        val genericForests = prepared.forestIds.take(genericUnits.size)
             .map { publicSource(view, it, PaymentManaColor.GREEN) }
         val greenSource = if (kicked) {
-            publicSource(view, prepared.forestIds[generic.amount], PaymentManaColor.GREEN)
+            publicSource(view, prepared.forestIds[genericUnits.size], PaymentManaColor.GREEN)
         } else {
             wastes
         }
@@ -195,47 +197,57 @@ class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
             add(greenSource)
             add(wastes.takeUnless { it.sourceId == greenSource.sourceId })
         }.filterNotNull()
-
-        val allocations = buildList {
-            add(
-                CostUnitAllocationV2(
-                    symbolIndex = generic.symbolIndex,
-                    spends = genericForests.map { source ->
-                        ManaSpendReferenceV2(sourceId = source.sourceId, amount = 1)
-                    },
-                ),
+        val activations = selected.map { source ->
+            SourceActivationV2(
+                sourceId = source.sourceId,
+                manaAbilityKey = source.manaAbilityKey,
+                productionChoice = source.productionChoices.single(),
+                activationCostOrder = source.activationCostOrderOptions.single(),
             )
-            add(
-                CostUnitAllocationV2(
-                    symbolIndex = green.symbolIndex,
-                    spends = listOf(
-                        ManaSpendReferenceV2(sourceId = greenSource.sourceId, amount = 1),
+        }
+        val output = { activationIndex: Int ->
+            ManaResourceRefV1.ActivationOutputUnit(activationIndex, outputIndex = 0)
+        }
+        val allocations = buildList {
+            genericUnits.forEachIndexed { unitIndex, unit ->
+                add(
+                    PaymentAllocationV1(
+                        target = PaymentTargetV1.OuterCostUnit(
+                            symbolIndex = unit.symbolIndex,
+                            unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
+                        ),
+                        resource = output(unitIndex),
                     ),
+                )
+            }
+            val greenActivationIndex = genericForests.size
+            val greenResource = if (kicked) output(greenActivationIndex) else output(greenActivationIndex)
+            add(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(
+                        symbolIndex = green.symbolIndex,
+                        unitIndexWithinSymbol = green.unitIndexWithinSymbol,
+                    ),
+                    resource = greenResource,
                 ),
             )
             if (kicked) {
                 add(
-                    CostUnitAllocationV2(
-                        symbolIndex = black!!.symbolIndex,
-                        spends = listOf(
-                            ManaSpendReferenceV2(sourceId = wastes.sourceId, amount = 1),
+                    PaymentAllocationV1(
+                        target = PaymentTargetV1.OuterCostUnit(
+                            symbolIndex = black!!.symbolIndex,
+                            unitIndexWithinSymbol = black.unitIndexWithinSymbol,
                         ),
+                        resource = output(selected.lastIndex),
                     ),
                 )
             }
         }
 
-        return PaymentStrategy.ExplicitV2(
-            paymentPlan = PaymentPlanV2(
-                sourceActivations = selected.map { source ->
-                    SourceActivation(
-                        sourceId = source.sourceId,
-                        manaAbilityKey = source.manaAbilityKey,
-                        productionChoice = source.productionChoices.single(),
-                    )
-                },
-                poolSpend = PoolSpend(),
-                spendAllocation = SpendAllocationV2(costUnits = allocations),
+        return PaymentStrategy.ExplicitV3(
+            paymentPlan = PaymentPlanV3(
+                activations = activations,
+                outerAllocation = allocations,
             ),
         )
     }
@@ -278,19 +290,19 @@ class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
         prepared.environment.state.getEntity(prepared.wastesId)?.has<TappedComponent>() shouldBe false
     }
 
-    test("real Tear Asunder normal {1}{G} executes public V2 payment and exact Wastes G ability") {
+    test("real Tear Asunder normal {1}{G} executes public V3 payment and exact Wastes G ability") {
         val prepared = prepared()
         val view = viewFor(prepared, kicked = false)
-        val domain = view.paymentDomain ?: error("Expected PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected PaymentDomainV5")
         val target = publicTarget(view, prepared.targetArtifactId)
         val payment = paymentFromPublicDomain(prepared, view, kicked = false)
-        val selectedSourceIds = payment.paymentPlan!!.sourceActivations.map { it.sourceId }.toSet()
+        val selectedSourceIds = payment.paymentPlan!!.activations.map { it.sourceId }.toSet()
         val lifeBefore = prepared.environment.state.lifeTotal(prepared.playerId)
 
         view.manaCost shouldBe "{1}{G}"
         domain.requiredCost shouldBe view.manaCost
-        domain.version shouldBe 4
-        domain.costUnits.sumOf { it.amount } shouldBe 2
+        domain.version shouldBe 5
+        domain.outerAtomicCostUnits.size shouldBe 2
         assertRejectedAtomically(prepared, view, PaymentStrategy.AutoPay, target)
         assertRejectedAtomically(
             prepared,
@@ -324,19 +336,19 @@ class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
         }
     }
 
-    test("real Tear Asunder kicked {2}{G}{B} executes public V2 payment and exact Wastes B ability") {
+    test("real Tear Asunder kicked {2}{G}{B} executes public V3 payment and exact Wastes B ability") {
         val prepared = prepared()
         val view = viewFor(prepared, kicked = true)
-        val domain = view.paymentDomain ?: error("Expected PaymentDomainV4")
+        val domain = view.paymentDomain ?: error("Expected PaymentDomainV5")
         val target = publicTarget(view, prepared.targetArtifactId)
         val payment = paymentFromPublicDomain(prepared, view, kicked = true)
-        val selectedSourceIds = payment.paymentPlan!!.sourceActivations.map { it.sourceId }.toSet()
+        val selectedSourceIds = payment.paymentPlan!!.activations.map { it.sourceId }.toSet()
         val lifeBefore = prepared.environment.state.lifeTotal(prepared.playerId)
 
         view.manaCost shouldBe "{2}{G}{B}"
         domain.requiredCost shouldBe view.manaCost
-        domain.version shouldBe 4
-        domain.costUnits.sumOf { it.amount } shouldBe 4
+        domain.version shouldBe 5
+        domain.outerAtomicCostUnits.size shouldBe 4
         assertRejectedAtomically(prepared, view, PaymentStrategy.AutoPay, target)
         assertRejectedAtomically(
             prepared,
@@ -372,24 +384,23 @@ class GameGymEnvTearAsunderPaymentDomainTest : FunSpec({
         }
     }
 
-    test("real Tear Asunder kicked rejects a wrong-cost public V2 plan atomically") {
+    test("real Tear Asunder kicked rejects a wrong-cost public V3 plan atomically") {
         val prepared = prepared()
         val view = viewFor(prepared, kicked = true)
         val target = publicTarget(view, prepared.targetArtifactId)
         val valid = paymentFromPublicDomain(prepared, view, kicked = true)
-        val validPlan = valid.paymentPlan ?: error("Expected PaymentPlanV2")
-        val generic = view.paymentDomain!!.costUnits.single { it.kind == PaymentCostKind.GENERIC }
+        val validPlan = valid.paymentPlan ?: error("Expected PaymentPlanV3")
+        val generic = view.paymentDomain!!.outerAtomicCostUnits.first {
+            it.kind == com.wingedsheep.engine.core.PaymentCostKindV1.GENERIC
+        }
         val underpaid = valid.copy(
             paymentPlan = validPlan.copy(
-                spendAllocation = validPlan.spendAllocation.copy(
-                    costUnits = validPlan.spendAllocation.costUnits.map { allocation ->
-                        if (allocation.symbolIndex == generic.symbolIndex) {
-                            allocation.copy(spends = allocation.spends.dropLast(1))
-                        } else {
-                            allocation
-                        }
-                    },
-                ),
+                outerAllocation = validPlan.outerAllocation.filterNot {
+                    it.target == PaymentTargetV1.OuterCostUnit(
+                        symbolIndex = generic.symbolIndex,
+                        unitIndexWithinSymbol = generic.unitIndexWithinSymbol,
+                    )
+                },
             ),
         )
 

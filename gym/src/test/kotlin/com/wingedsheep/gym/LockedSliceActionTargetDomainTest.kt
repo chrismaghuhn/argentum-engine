@@ -2,19 +2,11 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ActivateAbility
-import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
-import com.wingedsheep.engine.core.ManaSpendReference
 import com.wingedsheep.engine.core.PassPriority
-import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV1
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.ProductionChoice
-import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocation
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
@@ -1100,27 +1092,8 @@ private fun bitePayload(
 
 private fun paymentPayload(view: LegalActionView): JsonObject {
     val domain = view.paymentDomain ?: error("Expected a public payment domain for ${view.description}")
-    domain.costUnits.map { it.symbolIndex } shouldBe listOf(0, 1)
-    val green = domain.sourceActivations.firstOrNull { activation ->
-        activation.productionChoices.any { it.producedColor == PaymentManaColor.GREEN }
-    } ?: error("Expected a green source in ${view.description}")
-    val generic = domain.sourceActivations.firstOrNull { it.sourceId != green.sourceId }
-        ?: error("Expected two distinct public mana sources in ${view.description}")
-    val greenChoice = green.productionChoices.first { it.producedColor == PaymentManaColor.GREEN }
-    val genericChoice = generic.productionChoices.first()
-    val plan = PaymentPlanV1(
-        sourceActivations = listOf(
-            SourceActivation(generic.sourceId, generic.manaAbilityKey, genericChoice),
-            SourceActivation(green.sourceId, green.manaAbilityKey, greenChoice),
-        ),
-        poolSpend = PoolSpend(),
-        spendAllocation = SpendAllocation(
-            costUnits = listOf(
-                CostUnitAllocation(0, listOf(ManaSpendReference(sourceId = generic.sourceId))),
-                CostUnitAllocation(1, listOf(ManaSpendReference(sourceId = green.sourceId))),
-            ),
-        ),
-    )
+    val plan = paymentPlanV3FromPublic(domain)
+        ?: error("Expected a complete public PaymentDomainV5 plan for ${view.description}")
     val json = Json {
         encodeDefaults = true
         explicitNulls = false
@@ -1131,7 +1104,7 @@ private fun paymentPayload(view: LegalActionView): JsonObject {
             "paymentStrategy",
             json.encodeToJsonElement(
                 PaymentStrategy.serializer(),
-                PaymentStrategy.Explicit(paymentPlan = plan),
+                PaymentStrategy.ExplicitV3(paymentPlan = plan),
             ),
         )
     }

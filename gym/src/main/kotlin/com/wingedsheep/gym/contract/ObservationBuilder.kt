@@ -239,7 +239,7 @@ class ObservationBuilder(
                 add(DiagnosticSignal(code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
             }
             if (mayReceiveActions && state.pendingDecision == null && legalActions.any { action ->
-                    action.affordable && action.manaCostString != null && paymentDomainFor(state, action) == null
+                    action.affordable && action.manaCostString != null && paymentDomainV5For(state, action) == null
                 }) {
                 add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             }
@@ -618,7 +618,7 @@ class ObservationBuilder(
             attackDeclarationDomain = attackDeclarationDomain,
             blockerDeclarationDomain = blockerDeclarationDomain,
             manaCost = la.manaCostString,
-            paymentDomain = if (la.affordable) paymentDomainFor(state, la) else null,
+            paymentDomain = if (la.affordable) paymentDomainV5For(state, la) else null,
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
             minTargets = singleRequirement?.minTargets ?: 0,

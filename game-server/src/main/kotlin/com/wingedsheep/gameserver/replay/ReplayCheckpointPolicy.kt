@@ -3,8 +3,9 @@ package com.wingedsheep.gameserver.replay
 /** Persistence-only checkpoint shaping. It never mutates a live GameSession recording list. */
 internal object ReplayCheckpointPolicy {
 
-    /** v3 has a persistence-only tail checkpoint; older formats retain their historical shape. */
-    fun requiresTailCheckpoint(replayVersion: Int): Boolean = replayVersion == 3 || replayVersion == 4
+    /** v3-v5 have a persistence-only tail checkpoint; older formats retain their historical shape. */
+    fun requiresTailCheckpoint(replayVersion: Int): Boolean =
+        replayVersion == 3 || replayVersion == 4 || replayVersion == 5
 
     /**
      * Return a de-duplicated, ordered checkpoint list with the current v3 tail materialized.

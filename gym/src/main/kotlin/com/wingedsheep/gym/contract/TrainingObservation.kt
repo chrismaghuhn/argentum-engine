@@ -260,8 +260,8 @@ data class LegalActionView(
     /** Complete fixed V1 blocker-to-attacker declaration domain for DeclareBlockers. */
     val blockerDeclarationDomain: BlockerDeclarationDomainV1? = null,
     val manaCost: String? = null,
-    /** Complete external payment choices for supported ordinary fixed-cost mana actions. */
-    val paymentDomain: PaymentDomainV4? = null,
+    /** Complete current external payment choices for the V5 ordered mana program. */
+    val paymentDomain: PaymentDomainV5? = null,
     val hasXCost: Boolean = false,
     val maxAffordableX: Int? = null,
     val minTargets: Int = 0,

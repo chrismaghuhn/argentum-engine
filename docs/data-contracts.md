@@ -679,10 +679,11 @@ if it diverged, serve the archived frames instead, flagged `degraded`. `ReplayFi
 `UNVERIFIED` / `DIVERGED`) and `stateReproducible` ride in the endpoint metadata, and the viewer
 shows a **From archive** badge and hides the scenario buttons when the position can't be rebuilt.
 
-`CompactReplay.version` is 4. Versions 1 through 3 remain historical labels; v4 is required for
+`CompactReplay.version` is 5. Versions 1 through 4 remain historical labels; v4 is required for
 actions carrying the explicitly versioned `PaymentStrategy.ExplicitV2` carrier and the joint floating
-provenance semantics. All additive fields default to empty and `persistenceJson` ignores unknown
-keys, so records round-trip in both directions across a rolling deploy. `engineVersion` (the git sha,
+provenance semantics, while v5 is required for the ordered `PaymentStrategy.ExplicitV3` carrier and
+its activation-cost ledger references. All additive fields default to empty and `persistenceJson`
+ignores unknown keys, so records round-trip in both directions across a rolling deploy. `engineVersion` (the git sha,
 passed to the backend image as `COMMIT_HASH`) is stamped on every record so a replay that stops
 re-simulating can be traced to the build that recorded it.
 
@@ -749,7 +750,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.22-attack-declaration-order`.
+The Gym contract is currently `argentum-gym-contract@v1.23-paid-mana-source-payment`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -832,8 +833,8 @@ The explicit replay-wire audit confirmed that `CompactReplay` serializes only th
 does not contain `LegalActionView`, either attack-domain DTO, `schemaHash`, or any observation
 domain. Replay reconstruction therefore regenerates the Rules attack domain/order from rebuilt
 state and validates the recorded semantic `DeclareAttackers` action. It remains independent of Gym
-observation data and stays at `CompactReplay` v4; this additive observation contract does not
-require a replay bump.
+observation data and does not itself require a replay bump; the current replay label is v5 because
+the payment action carrier changed.
 
 ### DeclareBlockers choice domain (BlockerDeclarationDomainV1)
 
@@ -923,7 +924,7 @@ defender. It does not expose hidden hand/library/exile identity, unrecognized fa
 raw `GameState`, `CardRegistry`, evaluator internals, private provenance, or future policy
 choices.
 
-### Action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
+### Historical action-level mana payment (PaymentDomainV4 / PaymentPlanV2)
 
 An affordable structured `ActivateAbility`, ordinary fixed-cost `CastSpell`, plain fixed-cost
 `CastWithKicker`, or plain fixed-cost `CycleCard` whose action-level mana cost is published in
@@ -965,8 +966,9 @@ On the trusted A5 external-policy path, a zero-mana action uses an explicit
 cost symbols, so its `PaymentPlanV2.spendAllocation.costUnits` list is empty. The general Gym
 contract retains the existing representable `PaymentStrategy.Explicit` / `PaymentPlanV1`
 compatibility path. Neither path makes payment implicit or permits an implicit source choice, and
-no serialized DTO, schema hash, or replay version changes for this contract.
-The public payment and replay schemas are unchanged by the CycleCard, deterministic mana
+no changes to the historical serialized DTO, schema hash, or replay version are made by this
+contract. The public payment and replay schemas for the current contract are versioned separately;
+the historical payment/replay schemas are unchanged by the CycleCard, deterministic mana
 side-effect, and source-bound activated self-cost slices. `PaymentSourceActivationDomain.manaAbilityKey`
 remains the structural identity
 of the entire selected activated ability (excluding runtime `id` and `descriptionOverride`); the
@@ -1105,7 +1107,7 @@ selected source counts. A unique single-bucket pool may retain the legacy source
 Rules decrements only selected source buckets and the common subtype counters, preserving unselected
 sources; it never delegates the external choice to greedy `consumeProvenance()`.
 
-#### Current PaymentDomainV4 joint buckets
+#### Historical PaymentDomainV4 joint buckets
 
 `PaymentPoolDomainV4.certifiedFloatingBuckets` is the single canonical representation for both
 homogeneous and heterogeneous pools. Each row is a complete Rules-issued semantic key, and rows
@@ -1134,11 +1136,40 @@ Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` iden
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
 The Gym `SchemaHash` is
-`argentum-gym-contract@v1.22-attack-declaration-order`. A client must compare the hash
-before interpreting the payment domain and fail closed on mismatch; the historical V3 DTO also
-rejects a V4 version, so an old client cannot silently treat the new bucket list as V3.
+`argentum-gym-contract@v1.23-paid-mana-source-payment`. A client must compare the hash
+before interpreting the current payment domain and fail closed on mismatch. Historical V4
+payloads remain decodable only through their historical DTO and are not reinterpreted as V5.
 
 The authoritative `GameState` persists the joint bucket map, completeness marker, and known-
 information metadata. State digests and the v4 transition-semantic replay fingerprint bind those
-fields. CompactReplay v4 is required for actions carrying the new serialized `ExplicitV2`
-discriminator; old v1-v3 action payloads remain decodable under their historical labels.
+fields. CompactReplay v4 is required for actions carrying the historical serialized `ExplicitV2`
+discriminator; old v1-v4 action payloads remain decodable under their historical labels.
+
+### Current action-level mana payment (PaymentDomainV5 / PaymentPlanV3)
+
+Current observations publish `PaymentDomainV5` for the complete ordered paid-mana-source slice.
+The domain contains atomic outer-cost units, fungible initial-pool bucket capacities, Rules-owned
+source/ability options, exact fixed activation-cost units, legal activation-cost orders, and the
+public outer-life constraint. It contains no policy-selected activation list, allocation, Gym
+identity hash, or automatic payment suggestion.
+
+The trusted external-policy path must submit `PaymentStrategy.ExplicitV3` with a complete
+`PaymentPlanV3`. The plan's activation list is ordered and list-indexed; each activation-cost
+allocation and outer allocation consumes one shared Rules ledger. Activation outputs are available
+only after their node succeeds, and references may target only initial-pool buckets or outputs of
+earlier nodes. Rules rejects missing, duplicate, forward, self-funding, stale, or otherwise
+unsupported plans before mutation and never falls back to AutoPay/native selection.
+
+`PaymentDomainV5` is published only when the complete discovered source set is representable and
+the certified timing, permission, production, side-effect, and ordering contracts hold. A source
+that cannot be represented makes the complete action domain unsupported; it is never silently
+omitted. Fixed self-damage may reach life 0 or a negative intermediate total during the mana
+ability window; state-based actions are not simulated until the ordinary priority boundary. When
+the outer action reserves positive PayLife, the public fixed-self-damage budget is the current
+life total minus that reservation; with no outer PayLife reservation the budget is unbounded.
+
+CompactReplay v5 is required for the persisted `ExplicitV3` action carrier. Replay v5 preserves
+the v4 transition-semantic fingerprint and checkpoint semantics while recording the complete V3
+program as part of the action stream. The replay payload does not serialize a Gym-domain hash or
+observation schema identity. Replay v4 plus `ExplicitV3` is rejected, and unknown future replay
+versions fail closed before action deserialization or reinterpretation.

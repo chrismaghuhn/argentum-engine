@@ -307,7 +307,7 @@ class GameGymEnv(
     private fun requireActionPaymentPlan(resolved: ResolvedAction.Legal, submitted: GameAction) {
         if (resolved.legalAction.manaCostString == null) return
 
-        if (observationBuilder.paymentDomainFor(environment.state, resolved.legalAction) == null) {
+        if (observationBuilder.paymentDomainV5For(environment.state, resolved.legalAction) == null) {
             throw UnsupportedPathFailure(
                 listOf(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             )
@@ -321,38 +321,24 @@ class GameGymEnv(
         }
 
         if (submitted is CycleCard) {
-            val explicitV2 = strategy as? PaymentStrategy.ExplicitV2
+            val explicitV3 = strategy as? PaymentStrategy.ExplicitV3
                 ?: throw IllegalArgumentException(
-                    "CycleCard payment must submit PaymentStrategy.ExplicitV2; automatic, pool, and legacy payments are not allowed"
+                    "CycleCard payment must submit PaymentStrategy.ExplicitV3; automatic, pool, and legacy payments are not allowed"
                 )
-            require(explicitV2.paymentPlan != null) {
-                "CycleCard payment must submit a complete PaymentPlanV2; source IDs alone are not sufficient"
-            }
-            require(explicitV2.manaAbilitiesToActivate.isEmpty()) {
-                "PaymentPlanV2 must not include legacy runtime mana source handles"
+            require(explicitV3.paymentPlan != null) {
+                "CycleCard payment must submit a complete PaymentPlanV3; source IDs alone are not sufficient"
             }
             return
         }
 
         when (strategy) {
-            is PaymentStrategy.Explicit -> {
+            is PaymentStrategy.ExplicitV3 -> {
                 require(strategy.paymentPlan != null) {
-                    "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1; source IDs alone are not sufficient"
-                }
-                require(strategy.manaAbilitiesToActivate.isEmpty()) {
-                    "PaymentPlanV1 must not include legacy runtime mana source handles"
-                }
-            }
-            is PaymentStrategy.ExplicitV2 -> {
-                require(strategy.paymentPlan != null) {
-                    "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV2; source IDs alone are not sufficient"
-                }
-                require(strategy.manaAbilitiesToActivate.isEmpty()) {
-                    "PaymentPlanV2 must not include legacy runtime mana source handles"
+                    "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV3; source IDs alone are not sufficient"
                 }
             }
             else -> throw IllegalArgumentException(
-                "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV1 or PaymentPlanV2; automatic payment is not allowed"
+                "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV3; automatic, pool, and legacy payments are not allowed"
             )
         }
     }

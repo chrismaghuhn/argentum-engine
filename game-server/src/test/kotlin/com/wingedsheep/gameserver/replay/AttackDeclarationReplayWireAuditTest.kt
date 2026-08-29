@@ -17,8 +17,8 @@ import io.kotest.matchers.string.shouldNotContain
 import kotlinx.serialization.encodeToString
 
 class AttackDeclarationReplayWireAuditTest : FunSpec({
-    test("CompactReplay v4 carries GameAction choices but no Gym observation contract") {
-        CompactReplay.CURRENT_VERSION shouldBe 4
+    test("current CompactReplay v5 carries GameAction choices but no Gym observation contract") {
+        CompactReplay.CURRENT_VERSION shouldBe 5
         val replay = replay()
         val json = persistenceJson.encodeToString(CompactReplay.serializer(), replay)
 

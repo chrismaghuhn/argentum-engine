@@ -26,7 +26,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
-/** Gym-level contract coverage for the canonical fixed-output PaymentDomainV4 wire shape. */
+/** Gym-level contract coverage for the canonical fixed-output PaymentDomainV5 wire shape. */
 class GameGymEnvPaymentBundleTest : FunSpec({
 
     val fixedCostSpell = card("Gym Fixed Bundle Payment Spell") {
@@ -171,7 +171,7 @@ class GameGymEnvPaymentBundleTest : FunSpec({
         return Triple(environment, player, spellId)
     }
 
-    test("PaymentDomainV4 publishes one ordered fixed bundle for Golgari Rot Farm") {
+    test("PaymentDomainV5 publishes one ordered fixed bundle for Golgari Rot Farm") {
         val (environment, player, ids) = prepared()
         val legalAction = environment.legalActions().first {
             it.actionType == "CastSpell" && (it.action as? CastSpell)?.cardId == ids.first
@@ -182,7 +182,7 @@ class GameGymEnvPaymentBundleTest : FunSpec({
             .legalActions
             .single()
 
-        val activation = view.paymentDomain!!.sourceActivations.single { it.sourceId == ids.second }
+        val activation = view.paymentDomain!!.sourceActivationOptions.single { it.sourceId == ids.second }
         activation.productionChoices.single().let { choice ->
             choice.producedColor shouldBe PaymentManaColor.BLACK
             choice.amount shouldBe 1
@@ -196,7 +196,7 @@ class GameGymEnvPaymentBundleTest : FunSpec({
         }
     }
 
-    test("DampLandManaProduction closes the domain for a fixed bundle with a colorless bonus") {
+    test("DampLandManaProduction closes the V5 domain for a fixed bundle with a colorless bonus") {
         val (environment, player, spellId) = preparedDampedBundle()
         val legalAction = environment.legalActions().first {
             it.actionType == "CastSpell" && (it.action as? CastSpell)?.cardId == spellId

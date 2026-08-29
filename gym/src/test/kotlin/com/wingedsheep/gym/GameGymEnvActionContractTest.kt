@@ -39,7 +39,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PaymentDomainV4
+import com.wingedsheep.gym.contract.PaymentDomainV5
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.sth.StrongholdSet
@@ -159,33 +159,10 @@ class GameGymEnvActionContractTest : FunSpec({
     }
 
     fun paymentStrategyPayload(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val source = domain.sourceActivations.first()
-        return PaymentStrategy.Explicit(
-            paymentPlan = PaymentPlanV1(
-                sourceActivations = listOf(
-                    SourceActivation(
-                        sourceId = source.sourceId,
-                        manaAbilityKey = source.manaAbilityKey,
-                        productionChoice = ProductionChoice(
-                            source.productionChoices.first().producedColor,
-                        ),
-                    ),
-                ),
-                poolSpend = PoolSpend(),
-                spendAllocation = SpendAllocation(
-                    costUnits = listOf(
-                        CostUnitAllocation(
-                            symbolIndex = domain.costUnits.first().symbolIndex,
-                            spends = listOf(
-                                ManaSpendReference(
-                                    sourceId = source.sourceId,
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        return PaymentStrategy.ExplicitV3(
+            paymentPlan = paymentPlanV3FromPublic(domain)
+                ?: error("Expected a complete public PaymentDomainV5 plan"),
         )
     }
 
@@ -249,100 +226,33 @@ class GameGymEnvActionContractTest : FunSpec({
         )
     }
 
-    fun explicitV2Payment(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy.ExplicitV2 {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val source = domain.sourceActivations.first()
-        val productionChoice = source.productionChoices.single()
-        val plan = PaymentPlanV2(
-            sourceActivations = listOf(
-                SourceActivation(
-                    sourceId = source.sourceId,
-                    manaAbilityKey = source.manaAbilityKey,
-                    productionChoice = productionChoice,
-                ),
-            ),
-            poolSpend = PoolSpend(),
-            spendAllocation = SpendAllocationV2(
-                costUnits = listOf(
-                    CostUnitAllocationV2(
-                        symbolIndex = domain.costUnits.single().symbolIndex,
-                        spends = listOf(
-                            ManaSpendReferenceV2(
-                                sourceId = source.sourceId,
-                                amount = 1,
-                                sourceOutputIndex = productionChoice.fixedOutputs?.first()?.index,
-                            ),
-                        ),
-                    ),
-                ),
-            ),
-        )
-        return PaymentStrategy.ExplicitV2(paymentPlan = plan)
-    }
-
-    fun incompleteExplicitV2Payment(
-        view: com.wingedsheep.gym.contract.LegalActionView,
-    ): PaymentStrategy.ExplicitV2 {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val source = domain.sourceActivations.first()
-        return PaymentStrategy.ExplicitV2(
-            paymentPlan = PaymentPlanV2(
-                sourceActivations = listOf(
-                    SourceActivation(
-                        sourceId = source.sourceId,
-                        manaAbilityKey = source.manaAbilityKey,
-                        productionChoice = source.productionChoices.single(),
-                    ),
-                ),
-                poolSpend = PoolSpend(),
-                spendAllocation = SpendAllocationV2(),
-            ),
+    fun explicitV3Payment(view: com.wingedsheep.gym.contract.LegalActionView): PaymentStrategy.ExplicitV3 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        return PaymentStrategy.ExplicitV3(
+            paymentPlan = paymentPlanV3FromPublic(domain)
+                ?: error("Expected a complete public PaymentDomainV5 plan"),
         )
     }
 
-    fun castV2MaterializationPayment(
+    fun incompleteLegacyPayment(
         view: com.wingedsheep.gym.contract.LegalActionView,
-    ): PaymentStrategy.ExplicitV2 {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val source = domain.sourceActivations.single()
-        val productionChoice = source.productionChoices.single()
-        val fixedOutputs = productionChoice.fixedOutputs ?: error("Expected fixed output metadata")
-        return PaymentStrategy.ExplicitV2(
-            paymentPlan = PaymentPlanV2(
-                sourceActivations = listOf(
-                    SourceActivation(
-                        sourceId = source.sourceId,
-                        manaAbilityKey = source.manaAbilityKey,
-                        productionChoice = productionChoice,
-                    ),
-                ),
-                poolSpend = PoolSpend(colorless = 1),
-                spendAllocation = SpendAllocationV2(
-                    costUnits = listOf(
-                        CostUnitAllocationV2(
-                            symbolIndex = domain.costUnits.single().symbolIndex,
-                            spends = listOf(
-                                ManaSpendReferenceV2(
-                                    poolColor = PaymentManaColor.COLORLESS,
-                                    amount = 1,
-                                ),
-                                ManaSpendReferenceV2(
-                                    sourceId = source.sourceId,
-                                    amount = 1,
-                                    sourceOutputIndex = fixedOutputs.first().index,
-                                ),
-                            ),
-                        ),
-                    ),
-                ),
-            ),
+    ): PaymentStrategy = PaymentStrategy.ExplicitV2()
+        .also { view.paymentDomain ?: error("Expected a PaymentDomainV5") }
+
+    fun castV3MaterializationPayment(
+        view: com.wingedsheep.gym.contract.LegalActionView,
+    ): PaymentStrategy.ExplicitV3 {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        return PaymentStrategy.ExplicitV3(
+            paymentPlan = paymentPlanV3FromPublic(domain)
+                ?: error("Expected a complete public PaymentDomainV5 plan"),
         )
     }
 
     fun equipPayload(
         view: com.wingedsheep.gym.contract.LegalActionView,
         targetId: EntityId,
-        payment: PaymentStrategy.ExplicitV2,
+        payment: PaymentStrategy,
     ) = buildJsonObject {
         view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
         put(
@@ -510,7 +420,7 @@ class GameGymEnvActionContractTest : FunSpec({
         environment.stepCount shouldBe stepCountBefore
     }
 
-    test("targetless CastSpell ExplicitV2 preserves shared payment materialization") {
+    test("targetless CastSpell ExplicitV3 preserves shared payment materialization") {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
         val setupGym = GameGymEnv(
@@ -568,7 +478,7 @@ class GameGymEnvActionContractTest : FunSpec({
                 "paymentStrategy",
                 actionJson.encodeToJsonElement(
                     PaymentStrategy.serializer(),
-                    castV2MaterializationPayment(targetless),
+                    castV3MaterializationPayment(targetless),
                 ),
             )
         }
@@ -586,7 +496,7 @@ class GameGymEnvActionContractTest : FunSpec({
             setOf(sourceId)
     }
 
-    test("payable structured ActivateAbility publishes an externally usable payment domain") {
+    test("payable structured ActivateAbility publishes an externally usable V5 payment domain") {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
         environment.reset(
@@ -649,16 +559,16 @@ class GameGymEnvActionContractTest : FunSpec({
         view.requiresStructuredAction shouldBe true
         view.requiredPayloadFields shouldBe listOf("paymentStrategy")
         view.requiresStructuredAction shouldBe view.requiredPayloadFields.isNotEmpty()
-        val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV4")
-        paymentDomain.sourceActivations.single().sourceId shouldBe mountainId
-        paymentDomain.sourceActivations.single().productionChoices
+        val paymentDomain = view.paymentDomain ?: error("expected PaymentDomainV5")
+        paymentDomain.sourceActivationOptions.single().sourceId shouldBe mountainId
+        paymentDomain.sourceActivationOptions.single().productionChoices
             .map { it.producedColor } shouldContain PaymentManaColor.RED
-        paymentDomain.sourceActivations.single().manaAbilityKey shouldBe "intrinsic:R"
+        paymentDomain.sourceActivationOptions.single().manaAbilityKey shouldBe "intrinsic:R"
         Json {
             encodeDefaults = true
             explicitNulls = false
             classDiscriminator = "type"
-        }.encodeToJsonElement(PaymentDomainV4.serializer(), paymentDomain)
+        }.encodeToJsonElement(PaymentDomainV5.serializer(), paymentDomain)
             .jsonObject.containsKey("autoPaySuggestion") shouldBe false
         Json {
             encodeDefaults = true
@@ -668,7 +578,7 @@ class GameGymEnvActionContractTest : FunSpec({
             .contains("\"paymentDomain\"") shouldBe true
     }
 
-    test("fixed Equip executes the complete public TargetDomain to ExplicitV2 to Attach path") {
+    test("fixed Equip executes the complete public TargetDomain to ExplicitV3 to Attach path") {
         val prepared = preparedFixedEquip()
         val observed = prepared.gym.observe().observation
         val view = observed.legalActions.firstOrNull { candidate ->
@@ -684,7 +594,7 @@ class GameGymEnvActionContractTest : FunSpec({
         val stepCountBefore = prepared.environment.stepCount
         prepared.gym.step(
             view.actionId,
-            equipPayload(view, submittedTarget, explicitV2Payment(view)),
+                    equipPayload(view, submittedTarget, explicitV3Payment(view)),
         )
         prepared.environment.stepCount shouldBe stepCountBefore + 1
 
@@ -699,7 +609,7 @@ class GameGymEnvActionContractTest : FunSpec({
             ?.targetId shouldBe submittedTarget
     }
 
-    test("fixed Equip rejects unpublished targets and incomplete ExplicitV2 without advancing") {
+    test("fixed Equip rejects unpublished targets and legacy payment without advancing") {
         val prepared = preparedFixedEquip()
         val observed = prepared.gym.observe().observation
         val view = observed.legalActions.firstOrNull { candidate ->
@@ -714,7 +624,7 @@ class GameGymEnvActionContractTest : FunSpec({
         shouldThrow<IllegalArgumentException> {
             prepared.gym.step(
                 view.actionId,
-                equipPayload(view, unpublishedTarget, explicitV2Payment(view)),
+                equipPayload(view, unpublishedTarget, explicitV3Payment(view)),
             )
         }
         prepared.environment.stepCount shouldBe stepCountBefore
@@ -725,7 +635,7 @@ class GameGymEnvActionContractTest : FunSpec({
                 equipPayload(
                     view,
                     prepared.targetIds.first(),
-                    incompleteExplicitV2Payment(view),
+                    incompleteLegacyPayment(view),
                 ),
             )
         }

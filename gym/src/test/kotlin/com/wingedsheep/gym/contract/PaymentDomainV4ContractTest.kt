@@ -17,9 +17,10 @@ import kotlinx.serialization.json.put
 /** RED/GREEN contract coverage for the single-list PaymentDomainV4 shape. */
 class PaymentDomainV4ContractTest : FunSpec({
 
-    test("current Gym schema identifies the V4 payment contract") {
-        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.22-attack-declaration-order"
-        PAYMENT_DOMAIN_VERSION shouldBe PAYMENT_DOMAIN_V4_VERSION
+    test("current Gym schema identifies V5 while V4 remains historical") {
+        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.23-paid-mana-source-payment"
+        PAYMENT_DOMAIN_VERSION shouldBe PAYMENT_DOMAIN_V5_VERSION
+        PAYMENT_DOMAIN_V4_VERSION shouldBe 4
     }
 
     test("PaymentDomainV4 round-trips canonical mixed joint buckets") {

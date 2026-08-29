@@ -19,6 +19,7 @@ import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.handlers.effects.drawing.DrawCardsExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaAbilitySideEffectExecutor
 import com.wingedsheep.engine.mechanics.mana.ExplicitPaymentPlanExecutor
+import com.wingedsheep.engine.mechanics.mana.OrderedPaymentProgramExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
@@ -64,6 +65,10 @@ class CycleCardHandler(
         manaSolver = manaSolver,
         manaAbilitySideEffectExecutor = manaAbilitySideEffectExecutor,
     )
+    private val orderedPaymentProgramExecutor = OrderedPaymentProgramExecutor(
+        manaSolver = manaSolver,
+        manaAbilitySideEffectExecutor = manaAbilitySideEffectExecutor,
+    )
 
     override fun validate(state: GameState, action: CycleCard): String? {
         if (state.priorityPlayerId != action.playerId) {
@@ -101,7 +106,25 @@ class CycleCardHandler(
         )
 
         if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
-            return "PaymentStrategy.ExplicitV3 is not supported for cycling"
+            if (action.xValue != null || !cyclingAbility.cost.isFixedOrdinaryManaCost()) {
+                return "PaymentStrategy.ExplicitV3 supports only fixed ordinary cycling costs"
+            }
+            val plan = action.paymentStrategy.paymentPlan
+                ?: return "PaymentStrategy.ExplicitV3 requires PaymentPlanV3"
+            return when (
+                val validation = paymentPlanValidator.validateV3(
+                    state = state,
+                    playerId = action.playerId,
+                    cost = cyclingAbility.cost.canonicalPaymentManaCost(),
+                    plan = plan,
+                    spellContext = paymentContext,
+                )
+            ) {
+                is PaymentPlanValidation.AcceptedV3 -> null
+                is PaymentPlanValidation.Accepted ->
+                    "PaymentPlanV1/V2 is not the current cycling payment contract"
+                is PaymentPlanValidation.Rejected -> validation.reason
+            }
         }
         if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             if (action.xValue != null || !cyclingAbility.cost.isFixedOrdinaryManaCost()) {
@@ -156,9 +179,6 @@ class CycleCardHandler(
     }
 
     override fun execute(state: GameState, action: CycleCard): ExecutionResult {
-        if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
-            return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 is not supported for cycling")
-        }
         val container = state.getEntity(action.cardId)
             ?: return ExecutionResult.error(state, "Card not found")
 
@@ -231,6 +251,25 @@ class CycleCardHandler(
         val announcedX = action.xValue?.takeIf { cyclingAbility.cost.hasX }
         val cyclingCost = cyclingAbility.cost.withXAs(announcedX ?: 0)
 
+        val explicitV3Payment = if (action.paymentStrategy is PaymentStrategy.ExplicitV3) {
+            if (action.xValue != null || !cyclingAbility.cost.isFixedOrdinaryManaCost()) {
+                return ExecutionResult.error(
+                    state,
+                    "PaymentStrategy.ExplicitV3 supports only fixed ordinary cycling costs",
+                )
+            }
+            val plan = action.paymentStrategy.paymentPlan
+                ?: return ExecutionResult.error(state, "PaymentStrategy.ExplicitV3 requires PaymentPlanV3")
+            orderedPaymentProgramExecutor.executeV3(
+                state = state,
+                playerId = action.playerId,
+                cost = cyclingAbility.cost.canonicalPaymentManaCost(),
+                plan = plan,
+                paymentContext = paymentContext,
+                reason = "Cycle ${cardComponent.name}",
+            )
+        } else null
+
         val explicitV2Payment = if (action.paymentStrategy is PaymentStrategy.ExplicitV2) {
             if (action.xValue != null || !cyclingAbility.cost.isFixedOrdinaryManaCost()) {
                 return ExecutionResult.error(
@@ -250,14 +289,17 @@ class CycleCardHandler(
             )
         } else null
 
+        explicitV3Payment?.error?.let { error ->
+            return ExecutionResult.error(state, error)
+        }
         explicitV2Payment?.error?.let { error ->
             return ExecutionResult.error(state, error)
         }
 
-        var currentState = explicitV2Payment?.state ?: state
-        val events = explicitV2Payment?.events?.toMutableList() ?: mutableListOf()
+        var currentState = explicitV3Payment?.state ?: explicitV2Payment?.state ?: state
+        val events = (explicitV3Payment?.events ?: explicitV2Payment?.events ?: emptyList()).toMutableList()
 
-        if (explicitV2Payment == null) {
+        if (explicitV3Payment == null && explicitV2Payment == null) {
             // Pay the cycling cost - use floating mana first, then tap lands. The same activated
             // ability context must govern restricted floating mana and source discovery.
             val poolComponent = currentState.getEntity(action.playerId)?.get<ManaPoolComponent>()

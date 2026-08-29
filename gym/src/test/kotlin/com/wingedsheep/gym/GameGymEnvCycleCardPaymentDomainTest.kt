@@ -10,11 +10,16 @@ import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.ManaSpendReferenceV2
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PaymentPlanV2
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.SourceActivationV2
 import com.wingedsheep.engine.core.SpendAllocationV2
+import com.wingedsheep.engine.core.ManaResourceRefV1
+import com.wingedsheep.engine.core.PaymentAllocationV1
+import com.wingedsheep.engine.core.PaymentTargetV1
 import com.wingedsheep.engine.core.TypecycleCard
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.legalactions.LegalAction
@@ -156,34 +161,36 @@ class GameGymEnvCycleCardPaymentDomainTest : FunSpec({
         }
     }
 
-    fun explicitV2FromPublic(
+    fun explicitV3FromPublic(
         view: com.wingedsheep.gym.contract.LegalActionView,
         sourceOffset: Int = 1,
-    ): Pair<PaymentStrategy.ExplicitV2, List<EntityId>> {
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV4")
-        val selected = domain.sourceActivations.drop(sourceOffset).take(2)
+    ): Pair<PaymentStrategy.ExplicitV3, List<EntityId>> {
+        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5")
+        val selected = domain.sourceActivationOptions.drop(sourceOffset).take(2)
         check(selected.size == 2) { "Expected at least three public source activations: $domain" }
-        val plan = PaymentPlanV2(
-            sourceActivations = selected.map { source ->
-                SourceActivation(
+        val plan = PaymentPlanV3(
+            activations = selected.map { source ->
+                SourceActivationV2(
                     sourceId = source.sourceId,
                     manaAbilityKey = source.manaAbilityKey,
                     productionChoice = source.productionChoices.single(),
+                    activationCostOrder = source.activationCostOrderOptions.single(),
                 )
             },
-            poolSpend = PoolSpend(),
-            spendAllocation = SpendAllocationV2(
-                costUnits = listOf(
-                    CostUnitAllocationV2(
-                        symbolIndex = domain.costUnits.single().symbolIndex,
-                        spends = selected.map { source ->
-                            ManaSpendReferenceV2(sourceId = source.sourceId, amount = 1)
-                        },
+            outerAllocation = domain.outerAtomicCostUnits.mapIndexed { index, unit ->
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(
+                        symbolIndex = unit.symbolIndex,
+                        unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
                     ),
-                ),
-            ),
+                    resource = ManaResourceRefV1.ActivationOutputUnit(
+                        activationIndex = index,
+                        outputIndex = 0,
+                    ),
+                )
+            },
         )
-        return PaymentStrategy.ExplicitV2(paymentPlan = plan) to selected.map { it.sourceId }
+        return PaymentStrategy.ExplicitV3(paymentPlan = plan) to selected.map { it.sourceId }
     }
 
     fun payload(
@@ -197,23 +204,22 @@ class GameGymEnvCycleCardPaymentDomainTest : FunSpec({
         )
     }
 
-    test("real Unearth fixed Cycling {2} publishes PaymentDomainV4") {
+    test("real Unearth fixed Cycling {2} publishes PaymentDomainV5") {
         val prepared = preparedCycleGym()
         val cycle = cycleView(prepared)
-        val domain = cycle.paymentDomain ?: error("Expected a PaymentDomainV4")
+        val domain = cycle.paymentDomain ?: error("Expected a PaymentDomainV5")
 
         cycle.manaCost shouldBe "{2}"
-        domain.version shouldBe 4
+        domain.version shouldBe 5
         domain.requiredCost shouldBe "{2}"
-        domain.costUnits.single().kind shouldBe PaymentCostKind.GENERIC
-        domain.costUnits.single().amount shouldBe 2
-        domain.sourceActivations.size shouldBe 3
+        domain.outerAtomicCostUnits.map { it.unitIndexWithinSymbol } shouldBe listOf(0, 1)
+        domain.sourceActivationOptions.size shouldBe 3
     }
 
-    test("PaymentPlanV2 can be built only from the public CycleCard domain and executes exact sources") {
+    test("PaymentPlanV3 can be built only from the public CycleCard domain and executes exact sources") {
         val prepared = preparedCycleGym()
         val view = cycleView(prepared)
-        val (payment, selectedSourceIds) = explicitV2FromPublic(view)
+        val (payment, selectedSourceIds) = explicitV3FromPublic(view)
         val playerId = prepared.environment.playerIds.first()
         val librarySizeBefore = prepared.environment.state.getZone(playerId, Zone.LIBRARY).size
         val stepCountBefore = prepared.environment.stepCount
@@ -255,9 +261,9 @@ class GameGymEnvCycleCardPaymentDomainTest : FunSpec({
 
         val prepared = preparedCycleGym()
         val view = cycleView(prepared)
-        val (validPayment, _) = explicitV2FromPublic(view)
+        val (validPayment, _) = explicitV3FromPublic(view)
         val incomplete = validPayment.copy(
-            paymentPlan = validPayment.paymentPlan!!.copy(spendAllocation = SpendAllocationV2()),
+            paymentPlan = validPayment.paymentPlan!!.copy(outerAllocation = emptyList()),
         )
         assertRejected(incomplete)
         assertRejected(PaymentStrategy.AutoPay)
@@ -265,30 +271,26 @@ class GameGymEnvCycleCardPaymentDomainTest : FunSpec({
         assertRejected(PaymentStrategy.Explicit(manaAbilitiesToActivate = listOf(prepared.sourceIds.first())))
 
         val domain = view.paymentDomain!!
-        val source = domain.sourceActivations.first()
-        val unpublished = PaymentStrategy.ExplicitV2(
-            paymentPlan = PaymentPlanV2(
-                sourceActivations = listOf(
-                    SourceActivation(
+        val source = domain.sourceActivationOptions.first()
+        val unpublished = PaymentStrategy.ExplicitV3(
+            paymentPlan = PaymentPlanV3(
+                activations = listOf(
+                    SourceActivationV2(
                         sourceId = EntityId("not-published"),
                         manaAbilityKey = source.manaAbilityKey,
                         productionChoice = source.productionChoices.single(),
+                        activationCostOrder = source.activationCostOrderOptions.single(),
                     ),
                 ),
-                poolSpend = PoolSpend(),
-                spendAllocation = SpendAllocationV2(
-                    costUnits = listOf(
-                        CostUnitAllocationV2(
-                            symbolIndex = domain.costUnits.single().symbolIndex,
-                            spends = listOf(
-                                ManaSpendReferenceV2(
-                                    sourceId = EntityId("not-published"),
-                                    amount = 2,
-                                ),
-                            ),
+                outerAllocation = domain.outerAtomicCostUnits.map { unit ->
+                    PaymentAllocationV1(
+                        target = PaymentTargetV1.OuterCostUnit(
+                            symbolIndex = unit.symbolIndex,
+                            unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
                         ),
-                    ),
-                ),
+                        resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+                    )
+                },
             ),
         )
         assertRejected(unpublished)

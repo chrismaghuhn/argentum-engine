@@ -43,7 +43,8 @@ const val PAYMENT_DOMAIN_V2_VERSION: Int = 2
 const val PAYMENT_DOMAIN_V3_VERSION: Int = 3
 const val PAYMENT_DOMAIN_V4_VERSION: Int = 4
 const val PAYMENT_DOMAIN_V5_VERSION: Int = 5
-const val PAYMENT_DOMAIN_VERSION: Int = PAYMENT_DOMAIN_V4_VERSION
+/** Current public observation version; historical V4 remains available by its explicit constant. */
+const val PAYMENT_DOMAIN_VERSION: Int = PAYMENT_DOMAIN_V5_VERSION
 
 @Serializable
 enum class PaymentCostKind {
@@ -61,7 +62,7 @@ data class PaymentCostUnitDomain(
 )
 
 @Serializable
-@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV4")
+@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV5")
 data class PaymentPoolDomainV1(
     val white: Int = 0,
     val blue: Int = 0,
@@ -124,7 +125,7 @@ data class PaymentSourceActivationDomain(
  * whose source, production, pool, and allocation choices are all explicit.
  */
 @Serializable
-@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV4")
+@Deprecated("Historical PaymentDomain V1 wire DTO; current observations use PaymentDomainV5")
 data class PaymentDomainV1(
     val version: Int = 1,
     val requiredCost: String,
@@ -196,7 +197,7 @@ data class PaymentPoolDomainV3(
 }
 
 /**
- * Historical action-level payment domain. Current observations use [PaymentDomainV4]; V3 remains
+ * Historical action-level payment domain. Current observations use [PaymentDomainV5]; V3 remains
  * decodable only under its own historical wire contract.
  */
 @Serializable
@@ -235,7 +236,7 @@ data class PaymentPoolDomainV4(
     val certifiedFloatingBuckets: List<CertifiedFloatingManaBucketDomainV4> = emptyList(),
 )
 
-/** Current action-level payment domain for exact joint floating-mana choices. */
+/** Historical action-level payment domain for exact joint floating-mana choices. */
 @Serializable
 data class PaymentDomainV4(
     val version: Int = PAYMENT_DOMAIN_V4_VERSION,
@@ -559,7 +560,10 @@ class PaymentDomainBuilder(
         }
 
         return PaymentDomainV5(
-            requiredCost = cost.toString(),
+            // Preserve the action's canonical advertised spelling. ManaCost.toString() renders
+            // the empty `{0}` cost as an empty string, while the action contract must retain the
+            // explicit zero-cost marker used by the registered LegalAction.
+            requiredCost = requiredCost,
             outerAtomicCostUnits = outerAtomicCostUnits,
             initialPoolBuckets = initialPoolBuckets,
             sourceActivationOptions = sourceActivationOptions,

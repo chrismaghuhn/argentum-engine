@@ -103,13 +103,15 @@ data class CompactReplay(
          * [pinnedCards] and legacy [checkpoints]; v3 defines the complete transition-semantic
          * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint; v4 adds
          * the joint floating-mana provenance state and the explicitly versioned
-         * PaymentStrategy.ExplicitV2 action carrier. The action-level target-domain fields,
+         * PaymentStrategy.ExplicitV2 action carrier. v5 adds the ordered
+         * PaymentStrategy.ExplicitV3 action carrier and its activation-cost ledger references. The
+         * action-level target-domain fields,
          * attack-declaration domain DTOs, and Gym schema hashes are additive observation
          * contract data and do not change replay reconstruction semantics. The codec still
          * tolerates unknown fields on supported versions, but rejects versions newer than this
          * constant before deserialization.
          */
-        const val CURRENT_VERSION = 4
+        const val CURRENT_VERSION = 5
 
         const val UNKNOWN_VERSION = "unknown"
     }
@@ -163,7 +165,7 @@ data class ReplayCheckpoint(
  * makes that a live race, since the game thread advances between calls.
  */
 data class ReplayRecordingSnapshot(
-    /** Replay semantics carried by the recording being flushed; new sessions use v3. */
+    /** Replay semantics carried by the recording being flushed; new sessions use v5. */
     val version: Int = CompactReplay.CURRENT_VERSION,
     val setup: ReplaySetup,
     val actions: List<com.wingedsheep.engine.core.GameAction>,

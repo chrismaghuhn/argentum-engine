@@ -65,11 +65,15 @@ class ReplayVersionCompatibilityTest : FunSpec({
         ReplayFingerprint.of(GameState(), decoded.version).length shouldBe 16
     }
 
-    test("checkpoint policy covers both historical v3 and current v4") {
+    test("checkpoint policy covers historical v3/v4 and current v5") {
         ReplayCheckpointPolicy.requiresTailCheckpoint(3) shouldBe true
         ReplayCheckpointPolicy.requiresTailCheckpoint(2) shouldBe false
         ReplayCheckpointPolicy.requiresTailCheckpoint(4) shouldBe true
-        ReplayCheckpointPolicy.requiresTailCheckpoint(5) shouldBe false
+        ReplayCheckpointPolicy.requiresTailCheckpoint(5) shouldBe true
+    }
+
+    test("current CompactReplay version is v5") {
+        CompactReplay.CURRENT_VERSION shouldBe 5
     }
 
     test("ExplicitV2 cannot be carried under the historical CompactReplay-v3 label") {
@@ -106,5 +110,16 @@ class ReplayVersionCompatibilityTest : FunSpec({
         shouldThrow<IllegalArgumentException> {
             replay(version = 4).copy(actions = listOf(action))
         }
+    }
+
+    test("ExplicitV3 round-trips under CompactReplay-v5") {
+        val action = CastSpell(
+            playerId = com.wingedsheep.sdk.model.EntityId("p1"),
+            cardId = com.wingedsheep.sdk.model.EntityId("spell"),
+            paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = PaymentPlanV3()),
+        )
+        val original = replay(version = 5).copy(actions = listOf(action))
+
+        ReplayCodec.decode(ReplayCodec.encode(original)) shouldBe original
     }
 })

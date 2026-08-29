@@ -15,8 +15,9 @@ import kotlinx.serialization.json.jsonObject
 
 class PaymentDomainContractTest : FunSpec({
 
-    test("the current payment domain version is V4") {
-        PAYMENT_DOMAIN_VERSION shouldBe 4
+    test("the current payment domain version is V5 and historical versions remain named") {
+        PAYMENT_DOMAIN_VERSION shouldBe PAYMENT_DOMAIN_V5_VERSION
+        PAYMENT_DOMAIN_V5_VERSION shouldBe 5
         PAYMENT_DOMAIN_V4_VERSION shouldBe 4
         PAYMENT_DOMAIN_V3_VERSION shouldBe 3
         PAYMENT_DOMAIN_V2_VERSION shouldBe 2

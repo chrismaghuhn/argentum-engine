@@ -1,10 +1,17 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.DecisionContext
+import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
 import com.wingedsheep.engine.core.FixedManaOutput
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
+import com.wingedsheep.engine.core.InitialPoolBucketV1
+import com.wingedsheep.engine.core.PaymentCostKindV1
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.GameEnvironment
@@ -178,19 +185,23 @@ class StateDigestTest : FunSpec({
         val withDomain = withoutDomain.copy(
             legalActions = withoutDomain.legalActions.map { action ->
                 if (action.actionId != candidate.actionId) action else action.copy(
-                    paymentDomain = PaymentDomainV4(
+                    paymentDomain = PaymentDomainV5(
                         requiredCost = "{1}{B}",
-                        costUnits = listOf(
-                            PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, 1),
-                            PaymentCostUnitDomain(
+                        outerAtomicCostUnits = listOf(
+                            AtomicManaCostUnitV1(
+                                symbolIndex = 0,
+                                unitIndexWithinSymbol = 0,
+                                kind = PaymentCostKindV1.GENERIC,
+                            ),
+                            AtomicManaCostUnitV1(
                                 symbolIndex = 1,
-                                kind = PaymentCostKind.COLORED,
-                                amount = 1,
+                                unitIndexWithinSymbol = 0,
+                                kind = PaymentCostKindV1.COLORED,
                                 allowedColors = setOf(PaymentManaColor.BLACK),
                             ),
                         ),
-                        currentPool = PaymentPoolDomainV4(),
-                        sourceActivations = emptyList(),
+                        initialPoolBuckets = emptyList(),
+                        sourceActivationOptions = emptyList(),
                     ),
                 )
             },
@@ -209,30 +220,36 @@ class StateDigestTest : FunSpec({
             manaCost = "{B}",
             requiresStructuredAction = true,
         )
-        val domain = PaymentDomainV4(
+        val domain = PaymentDomainV5(
             requiredCost = "{B}",
-            costUnits = listOf(
-                PaymentCostUnitDomain(
+            outerAtomicCostUnits = listOf(
+                AtomicManaCostUnitV1(
                     symbolIndex = 0,
-                    kind = PaymentCostKind.COLORED,
-                    amount = 1,
+                    unitIndexWithinSymbol = 0,
+                    kind = PaymentCostKindV1.COLORED,
                     allowedColors = setOf(PaymentManaColor.BLACK),
                 ),
             ),
-            currentPool = PaymentPoolDomainV4(),
-            sourceActivations = listOf(
-                PaymentSourceActivationDomain(
+            initialPoolBuckets = emptyList(),
+            sourceActivationOptions = listOf(
+                PaymentSourceActivationDomainV2(
                     sourceId = com.wingedsheep.sdk.model.EntityId("bundle-source"),
                     sourceName = "Bundle Source",
                     manaAbilityKey = "bundle-ability",
                     productionChoices = listOf(
-                        com.wingedsheep.engine.core.ProductionChoice(
+                        ProductionChoice(
                             producedColor = PaymentManaColor.BLACK,
                             fixedOutputs = listOf(
                                 FixedManaOutput(0, PaymentManaColor.BLACK),
                                 FixedManaOutput(1, PaymentManaColor.GREEN),
                             ),
                         ),
+                    ),
+                    atomicActivationManaCostUnits = emptyList(),
+                    activationSupportKind = PaymentActivationSupportKindV1.FixedManaAndTapSelf,
+                    deterministicNonManaCosts = listOf(PaymentDeterministicNonManaCostKindV1.TapSelf),
+                    activationCostOrderOptions = listOf(
+                        listOf(ActivationCostComponentRefV1.DeterministicNonManaComponent(0)),
                     ),
                 ),
             ),
@@ -243,10 +260,10 @@ class StateDigestTest : FunSpec({
         val reversed = base.copy(
             legalActions = base.legalActions + candidate.copy(
                 paymentDomain = domain.copy(
-                    sourceActivations = listOf(
-                        domain.sourceActivations.single().copy(
+                    sourceActivationOptions = listOf(
+                        domain.sourceActivationOptions.single().copy(
                             productionChoices = listOf(
-                                com.wingedsheep.engine.core.ProductionChoice(
+                                ProductionChoice(
                                     producedColor = PaymentManaColor.GREEN,
                                     fixedOutputs = listOf(
                                         FixedManaOutput(0, PaymentManaColor.GREEN),
@@ -273,42 +290,48 @@ class StateDigestTest : FunSpec({
             manaCost = "{G}",
             requiresStructuredAction = true,
         )
-        val domain = PaymentDomainV4(
+        val domain = PaymentDomainV5(
             requiredCost = "{G}",
-            costUnits = listOf(
-                PaymentCostUnitDomain(
+            outerAtomicCostUnits = listOf(
+                AtomicManaCostUnitV1(
                     symbolIndex = 0,
-                    kind = PaymentCostKind.COLORED,
-                    amount = 1,
+                    unitIndexWithinSymbol = 0,
+                    kind = PaymentCostKindV1.COLORED,
                     allowedColors = setOf(PaymentManaColor.GREEN),
                 ),
             ),
-            currentPool = PaymentPoolDomainV4(
-                green = 1,
-                certifiedFloatingBuckets = listOf(
-                    CertifiedFloatingManaBucketDomainV4(
-                        sourceId = com.wingedsheep.sdk.model.EntityId("forest-source"),
-                        poolColor = PaymentManaColor.GREEN,
-                        sourceSubtypes = listOf("Cave", "Forest"),
-                        amount = 1,
+            initialPoolBuckets = listOf(
+                InitialPoolBucketV1(
+                    key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+                        FloatingManaBucketKeyV1(
+                            sourceId = com.wingedsheep.sdk.model.EntityId("forest-source"),
+                            poolColor = PaymentManaColor.GREEN,
+                            sourceSubtypes = setOf(
+                                com.wingedsheep.sdk.core.Subtype.CAVE,
+                                com.wingedsheep.sdk.core.Subtype.FOREST,
+                            ),
+                        ),
                     ),
+                    availableAmount = 1,
                 ),
             ),
-            sourceActivations = emptyList(),
+            sourceActivationOptions = emptyList(),
         )
         val first = base.copy(legalActions = base.legalActions + candidate.copy(paymentDomain = domain))
         val second = first.copy(
             legalActions = first.legalActions.map { action ->
                 if (action.actionId != candidate.actionId) action else action.copy(
                     paymentDomain = domain.copy(
-                        currentPool = domain.currentPool.copy(
-                            certifiedFloatingBuckets = listOf(
-                                CertifiedFloatingManaBucketDomainV4(
-                                    sourceId = com.wingedsheep.sdk.model.EntityId("forest-source"),
-                                    poolColor = PaymentManaColor.GREEN,
-                                    sourceSubtypes = listOf("Forest"),
-                                    amount = 1,
+                        initialPoolBuckets = listOf(
+                            InitialPoolBucketV1(
+                                key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+                                    FloatingManaBucketKeyV1(
+                                        sourceId = com.wingedsheep.sdk.model.EntityId("forest-source"),
+                                        poolColor = PaymentManaColor.GREEN,
+                                        sourceSubtypes = setOf(com.wingedsheep.sdk.core.Subtype.FOREST),
+                                    ),
                                 ),
+                                availableAmount = 1,
                             ),
                         ),
                     ),
@@ -320,157 +343,100 @@ class StateDigestTest : FunSpec({
 
     }
 
-    test("certified floating source bucket order is not digest-relevant") {
+    test("V5 source candidate order is digest-relevant") {
         val base = observation(environment())
         val candidate = LegalActionView(
             actionId = 9004,
             kind = "CastSpell",
-            description = "Cast bucketed floating spell",
+            description = "Cast ordered-source spell",
             affordable = true,
             manaCost = "{1}",
             requiresStructuredAction = true,
         )
-        val domain = PaymentDomainV4(
+        fun option(sourceId: String, abilityKey: String) = PaymentSourceActivationDomainV2(
+            sourceId = EntityId(sourceId),
+            sourceName = "Source $sourceId",
+            manaAbilityKey = abilityKey,
+            productionChoices = listOf(ProductionChoice(PaymentManaColor.GREEN)),
+            atomicActivationManaCostUnits = emptyList(),
+            activationSupportKind = PaymentActivationSupportKindV1.FixedManaAndTapSelf,
+            deterministicNonManaCosts = listOf(PaymentDeterministicNonManaCostKindV1.TapSelf),
+            activationCostOrderOptions = listOf(
+                listOf(ActivationCostComponentRefV1.DeterministicNonManaComponent(0)),
+            ),
+        )
+        val domain = PaymentDomainV5(
             requiredCost = "{1}",
-            costUnits = listOf(PaymentCostUnitDomain(0, PaymentCostKind.GENERIC, 1)),
-            currentPool = PaymentPoolDomainV4(
-                green = 2,
-                certifiedFloatingBuckets = listOf(
-                    CertifiedFloatingManaBucketDomainV4(
-                        com.wingedsheep.sdk.model.EntityId("e108"),
-                        PaymentManaColor.GREEN,
-                        listOf("Forest"),
-                        1,
-                    ),
-                    CertifiedFloatingManaBucketDomainV4(
-                        com.wingedsheep.sdk.model.EntityId("e117"),
-                        PaymentManaColor.GREEN,
-                        listOf("Forest"),
-                        1,
-                    ),
-                ),
+            outerAtomicCostUnits = listOf(
+                AtomicManaCostUnitV1(0, 0, PaymentCostKindV1.GENERIC),
             ),
-            sourceActivations = emptyList(),
-        )
-        val first = base.copy(legalActions = base.legalActions + candidate.copy(paymentDomain = domain))
-        val second = first.copy(
-            legalActions = first.legalActions.map { action ->
-                if (action.actionId != candidate.actionId) action else action.copy(
-                    paymentDomain = domain.copy(
-                        currentPool = domain.currentPool.copy(
-                            certifiedFloatingBuckets = domain.currentPool.certifiedFloatingBuckets.reversed(),
-                        ),
-                    ),
-                )
-            },
-        )
-
-        StateDigest.compute(first) shouldBe StateDigest.compute(second)
-
-        val changed = first.copy(
-            legalActions = first.legalActions.map { action ->
-                if (action.actionId != candidate.actionId) action else action.copy(
-                    paymentDomain = domain.copy(
-                        currentPool = domain.currentPool.copy(
-                            certifiedFloatingBuckets = listOf(
-                                CertifiedFloatingManaBucketDomainV4(
-                                    com.wingedsheep.sdk.model.EntityId("different-source"),
-                                    PaymentManaColor.GREEN,
-                                    listOf("Forest"),
-                                    1,
-                                ),
-                                CertifiedFloatingManaBucketDomainV4(
-                                    com.wingedsheep.sdk.model.EntityId("e117"),
-                                    PaymentManaColor.GREEN,
-                                    listOf("Forest"),
-                                    1,
-                                ),
-                            ),
-                        ),
-                    ),
-                )
-            },
-        )
-        StateDigest.compute(first) shouldNotBe StateDigest.compute(changed)
-    }
-
-    test("heterogeneous source-color provenance is digest-relevant and order-canonical") {
-        val base = observation(environment())
-        val candidate = LegalActionView(
-            actionId = 9005,
-            kind = "CastSpell",
-            description = "Cast heterogeneous floating spell",
-            affordable = true,
-            manaCost = "{B}{G}",
-            requiresStructuredAction = true,
-        )
-        val domain = PaymentDomainV4(
-            requiredCost = "{B}{G}",
-            costUnits = listOf(
-                PaymentCostUnitDomain(
-                    0,
-                    PaymentCostKind.COLORED,
-                    1,
-                    setOf(PaymentManaColor.BLACK),
-                ),
-                PaymentCostUnitDomain(
-                    1,
-                    PaymentCostKind.COLORED,
-                    1,
-                    setOf(PaymentManaColor.GREEN),
-                ),
+            initialPoolBuckets = emptyList(),
+            sourceActivationOptions = listOf(
+                option("e108", "ability-a"),
+                option("e117", "ability-b"),
             ),
-            currentPool = PaymentPoolDomainV4(
-                black = 1,
-                green = 3,
-                certifiedFloatingBuckets = listOf(
-                    CertifiedFloatingManaBucketDomainV4(
-                        com.wingedsheep.sdk.model.EntityId("e108"),
-                        PaymentManaColor.BLACK,
-                        emptyList(),
-                        1,
-                    ),
-                    CertifiedFloatingManaBucketDomainV4(
-                        com.wingedsheep.sdk.model.EntityId("e117"),
-                        PaymentManaColor.GREEN,
-                        listOf("Forest"),
-                        1,
-                    ),
-                    CertifiedFloatingManaBucketDomainV4(
-                        com.wingedsheep.sdk.model.EntityId("e136"),
-                        PaymentManaColor.GREEN,
-                        listOf("Cave"),
-                        2,
-                    ),
-                ),
-            ),
-            sourceActivations = emptyList(),
         )
         val first = base.copy(legalActions = base.legalActions + candidate.copy(paymentDomain = domain))
         val reordered = first.copy(
             legalActions = first.legalActions.map { action ->
                 if (action.actionId != candidate.actionId) action else action.copy(
-                    paymentDomain = domain.copy(
-                        currentPool = domain.currentPool.copy(
-                            certifiedFloatingBuckets = domain.currentPool.certifiedFloatingBuckets.reversed(),
-                        ),
-                    ),
+                    paymentDomain = domain.copy(sourceActivationOptions = domain.sourceActivationOptions.reversed()),
                 )
             },
         )
+
+        StateDigest.compute(first) shouldNotBe StateDigest.compute(reordered)
+    }
+
+    test("V5 initial-pool resource identity is digest-relevant") {
+        val base = observation(environment())
+        val candidate = LegalActionView(
+            actionId = 9005,
+            kind = "CastSpell",
+            description = "Cast certified floating spell",
+            affordable = true,
+            manaCost = "{G}",
+            requiresStructuredAction = true,
+        )
+        val domain = PaymentDomainV5(
+            requiredCost = "{G}",
+            outerAtomicCostUnits = listOf(
+                AtomicManaCostUnitV1(
+                    symbolIndex = 0,
+                    unitIndexWithinSymbol = 0,
+                    kind = PaymentCostKindV1.COLORED,
+                    allowedColors = setOf(PaymentManaColor.GREEN),
+                ),
+            ),
+            initialPoolBuckets = listOf(
+                InitialPoolBucketV1(
+                    key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+                        FloatingManaBucketKeyV1(
+                            sourceId = EntityId("forest-source"),
+                            poolColor = PaymentManaColor.GREEN,
+                            sourceSubtypes = emptySet(),
+                        ),
+                    ),
+                    availableAmount = 1,
+                ),
+            ),
+            sourceActivationOptions = emptyList(),
+        )
+        val first = base.copy(legalActions = base.legalActions + candidate.copy(paymentDomain = domain))
         val changed = first.copy(
             legalActions = first.legalActions.map { action ->
                 if (action.actionId != candidate.actionId) action else action.copy(
                     paymentDomain = domain.copy(
-                        currentPool = domain.currentPool.copy(
-                            certifiedFloatingBuckets = listOf(
-                                domain.currentPool.certifiedFloatingBuckets[0].copy(
-                                    poolColor = PaymentManaColor.GREEN,
+                        initialPoolBuckets = listOf(
+                            InitialPoolBucketV1(
+                                key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+                                    FloatingManaBucketKeyV1(
+                                        sourceId = EntityId("different-source"),
+                                        poolColor = PaymentManaColor.GREEN,
+                                        sourceSubtypes = emptySet(),
+                                    ),
                                 ),
-                                domain.currentPool.certifiedFloatingBuckets[1].copy(
-                                    poolColor = PaymentManaColor.BLACK,
-                                ),
-                                domain.currentPool.certifiedFloatingBuckets[2],
+                                availableAmount = 1,
                             ),
                         ),
                     ),
@@ -478,7 +444,6 @@ class StateDigestTest : FunSpec({
             },
         )
 
-        StateDigest.compute(first) shouldBe StateDigest.compute(reordered)
         StateDigest.compute(first) shouldNotBe StateDigest.compute(changed)
     }
 

@@ -11,6 +11,7 @@ import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
+import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.mechanics.mana.supportsPaymentPlanV1
@@ -27,6 +28,7 @@ import com.wingedsheep.gym.contract.CertifiedFloatingManaBucketDomainV4
 import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.core.Keyword
@@ -59,9 +61,10 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.types.shouldBeInstanceOf
 
-/** Focused coverage for action-authoritative PaymentDomainV4 inputs. */
+/** Focused coverage for action-authoritative historical V4 and current V5 payment inputs. */
 class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
 
     val sourceWithTapPayment = card("Gym Action Payment Source") {
@@ -759,7 +762,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         return Triple(environment, player, cardId)
     }
 
-    test("PaymentDomainV4 excludes the ability source when the action also pays its tap cost") {
+    test("historical PaymentDomainV4 excludes the ability source when the action pays its tap cost") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val action = ActivateAbility(
             playerId = player,
@@ -773,14 +776,11 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             manaCostString = "{1}{R}",
         )
 
-        val view = ObservationBuilder(cardRegistry = registry())
-            .build(environment.state, player, listOf(legalAction))
-            .observation
-            .legalActions
-            .single()
+        val domain = ObservationBuilder(cardRegistry = registry())
+            .paymentDomainFor(environment.state, legalAction)
 
-        view.paymentDomain shouldNotBe null
-        view.paymentDomain!!.sourceActivations.any { it.sourceId == sourceId } shouldBe false
+        domain shouldNotBe null
+        domain!!.sourceActivations.any { it.sourceId == sourceId } shouldBe false
     }
 
     test("unsupported CastSpell payment shapes emit PAYMENT_DOMAIN_UNSUPPORTED") {
@@ -1099,7 +1099,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain!!.requiredCost shouldBe "{1}{U}"
     }
 
-    test("fixed Equip {1} publishes its target and PaymentDomainV4 contracts") {
+    test("fixed Equip {1} publishes its target and PaymentDomainV5 contracts") {
         val (environment, player, sourceId) = prepared(
             fixedCostEquipment.name,
             includeGroundTarget = true,
@@ -1131,7 +1131,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.manaCost shouldBe "{1}"
         view.affordable shouldBe true
         view.paymentDomain shouldNotBe null
-        view.paymentDomain!!.version shouldBe 4
+        view.paymentDomain!!.version shouldBe 5
         view.paymentDomain!!.requiredCost shouldBe "{1}"
     }
 
@@ -1225,7 +1225,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldBe null
     }
 
-    test("PaymentDomainV4 publishes a certified single-unit joint floating bucket") {
+    test("historical PaymentDomainV4 publishes a certified single-unit joint floating bucket") {
         val (environment, player, sourceId) = prepared(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1263,12 +1263,9 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             manaCostString = "{1}{R}",
         )
 
-        val view = ObservationBuilder(cardRegistry = registry())
-            .build(environment.state, player, listOf(legalAction))
-            .observation
-            .legalActions
-            .single()
-        val domain = view.paymentDomain ?: error("expected a certified payment domain")
+        val domain = ObservationBuilder(cardRegistry = registry())
+            .paymentDomainFor(environment.state, legalAction)
+            ?: error("expected a certified payment domain")
         domain.version shouldBe 4
         domain.currentPool.certifiedFloatingBuckets shouldBe listOf(
             CertifiedFloatingManaBucketDomainV4(
@@ -1280,7 +1277,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         )
     }
 
-    test("PaymentDomainV4 publishes every visible homogeneous joint bucket in stable order") {
+    test("historical PaymentDomainV4 publishes every visible homogeneous joint bucket in stable order") {
         val (environment, player, forestIds) = preparedWithTwoForests(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1324,12 +1321,10 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             manaCostString = "{1}{R}",
         )
 
-        val view = ObservationBuilder(cardRegistry = registry())
-            .build(environment.state, player, listOf(legalAction))
-            .observation
-            .legalActions
-            .single()
-        val candidate = view.paymentDomain?.currentPool?.certifiedFloatingBuckets
+        val candidate = ObservationBuilder(cardRegistry = registry())
+            .paymentDomainFor(environment.state, legalAction)
+            ?.currentPool
+            ?.certifiedFloatingBuckets
             ?: error("expected the V4 certified floating domain")
 
         candidate.map { it.sourceId } shouldBe forestIds.sortedBy { it.value }
@@ -1338,7 +1333,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         candidate.map { it.amount } shouldBe listOf(1, 1)
     }
 
-    test("PaymentDomainV4 publishes exact heterogeneous joint buckets") {
+    test("historical PaymentDomainV4 publishes exact heterogeneous joint buckets") {
         val (environment, player, forestIds) = preparedWithTwoForests(sourceWithTapPayment.name)
         val stateWithProvenance = environment.state.updateEntity(player) { container ->
             val pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
@@ -1383,12 +1378,9 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             manaCostString = "{1}{R}",
         )
 
-        val view = ObservationBuilder(cardRegistry = registry())
-            .build(environment.state, player, listOf(legalAction))
-            .observation
-            .legalActions
-            .single()
-        val domain = view.paymentDomain ?: error("expected a V4 payment domain")
+        val domain = ObservationBuilder(cardRegistry = registry())
+            .paymentDomainFor(environment.state, legalAction)
+            ?: error("expected a V4 payment domain")
 
         domain.version shouldBe 4
         domain.currentPool.certifiedFloatingBuckets shouldBe listOf(
@@ -1556,7 +1548,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldBe null
     }
 
-    test("intrinsic and statically granted mana on one land never publishes only the granted ability") {
+    test("current V5 publishes intrinsic and statically granted mana on one land in Rules order") {
         val (prepared, forestId) = preparedWithForestAndStaticManaGrant()
         val environment = prepared.first
         val player = prepared.second
@@ -1593,6 +1585,13 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
             .legalActions
             .single()
 
-        view.paymentDomain shouldBe null
+        val domain = view.paymentDomain.shouldNotBeNull()
+        domain.sourceActivationOptions.count { it.sourceId == forestId } shouldBe 3
+        domain.sourceActivationOptions.any {
+            it.manaAbilityKey == ManaAbilityIdentity.intrinsic(Color.GREEN)
+        } shouldBe true
+        domain.sourceActivationOptions.any {
+            it.manaAbilityKey == ManaAbilityIdentity.key(grantedAnyColorManaAbility)
+        } shouldBe true
     }
 })

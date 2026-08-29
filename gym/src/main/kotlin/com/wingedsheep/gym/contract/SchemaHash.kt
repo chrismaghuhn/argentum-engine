@@ -11,5 +11,5 @@ package com.wingedsheep.gym.contract
  * itself is arbitrary; uniqueness is what matters.
  */
 object SchemaHash {
-    const val CURRENT: String = "argentum-gym-contract@v1.22-attack-declaration-order"
+    const val CURRENT: String = "argentum-gym-contract@v1.23-paid-mana-source-payment"
 }

@@ -1,20 +1,20 @@
 package com.wingedsheep.gym.server.controller
 
 import com.wingedsheep.engine.core.CardsSelectedResponse
-import com.wingedsheep.engine.core.CostUnitAllocation
 import com.wingedsheep.engine.core.DecisionResponse
-import com.wingedsheep.engine.core.ManaSpendReference
-import com.wingedsheep.engine.core.PaymentManaColor
-import com.wingedsheep.engine.core.PaymentPlanV1
+import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
+import com.wingedsheep.engine.core.ManaResourceRefV1
+import com.wingedsheep.engine.core.PaymentAllocationV1
+import com.wingedsheep.engine.core.PaymentCostKindV1
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
-import com.wingedsheep.engine.core.PoolSpend
-import com.wingedsheep.engine.core.SourceActivation
-import com.wingedsheep.engine.core.SpendAllocation
+import com.wingedsheep.engine.core.PaymentTargetV1
+import com.wingedsheep.engine.core.SourceActivationV2
 import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.LegalActionView
-import com.wingedsheep.gym.contract.PaymentCostKind
+import com.wingedsheep.gym.contract.PaymentDomainV5
 import com.wingedsheep.gym.contract.SearchLibraryDomain
 import com.wingedsheep.gym.service.DeckSpec
 import com.wingedsheep.gym.service.EnvConfig
@@ -93,16 +93,6 @@ class EnvControllerTest : FunSpec() {
         }
     }
 
-    private val httpZeroForestSource = card("A5 HTTP Zero Forest Source") {
-        manaCost = "{0}"
-        typeLine = "Artifact — Forest"
-        activatedAbility {
-            cost = Costs.Tap
-            effect = Effects.AddMana(Color.GREEN)
-            manaAbility = true
-        }
-    }
-
     private val httpHomogeneousSpell = card("A5 HTTP Homogeneous Floating Spell") {
         manaCost = "{1}"
         typeLine = "Sorcery"
@@ -171,7 +161,7 @@ class EnvControllerTest : FunSpec() {
             val response = get("/schema-hash")
             response.statusCode() shouldBe 200
             val parsed = json.decodeFromString<SchemaHashResponse>(response.body())
-            parsed.schemaHash shouldBe "argentum-gym-contract@v1.22-attack-declaration-order"
+            parsed.schemaHash shouldBe "argentum-gym-contract@v1.23-paid-mana-source-payment"
             parsed.schemaHash shouldBe SchemaHash.CURRENT
         }
 
@@ -294,43 +284,90 @@ class EnvControllerTest : FunSpec() {
             fun paymentPayload(action: LegalActionView): JsonObject? {
                 val semantics = action.actionSemantics ?: return null
                 val domain = action.paymentDomain ?: return semantics
+                val remainingPool = domain.initialPoolBuckets
+                    .associate { it.key to it.availableAmount }
+                    .toMutableMap()
                 val usedSourceIds = mutableSetOf<com.wingedsheep.sdk.model.EntityId>()
-                val sourceActivations = mutableListOf<SourceActivation>()
-                val allocations = domain.costUnits.map { unit ->
-                    val requiredColor = when (unit.kind) {
-                        PaymentCostKind.COLORED -> unit.allowedColors.single()
-                        PaymentCostKind.COLORLESS -> PaymentManaColor.COLORLESS
-                        PaymentCostKind.GENERIC -> null
-                    }
-                    val spends = buildList {
-                        repeat(unit.amount) {
-                            val source = domain.sourceActivations.firstOrNull { candidate ->
-                                candidate.sourceId !in usedSourceIds &&
-                                    candidate.productionChoices.any { choice ->
-                                        requiredColor == null || choice.producedColor == requiredColor
-                                    }
-                            } ?: error("No explicit source in the HTTP payment domain for $unit")
-                            val production = source.productionChoices.first {
-                                requiredColor == null || it.producedColor == requiredColor
+                val activations = mutableListOf<SourceActivationV2>()
+                val allocations = buildList {
+                    for (unit in domain.outerAtomicCostUnits) {
+                        fun matches(color: com.wingedsheep.engine.core.PaymentManaColor): Boolean =
+                            when (unit.kind) {
+                                PaymentCostKindV1.COLORED -> color in unit.allowedColors
+                                PaymentCostKindV1.COLORLESS ->
+                                    color == com.wingedsheep.engine.core.PaymentManaColor.COLORLESS
+                                PaymentCostKindV1.GENERIC -> true
                             }
-                            usedSourceIds += source.sourceId
-                            sourceActivations += SourceActivation(
-                                sourceId = source.sourceId,
-                                manaAbilityKey = source.manaAbilityKey,
-                                productionChoice = production,
-                            )
-                            add(ManaSpendReference(sourceId = source.sourceId))
+
+                        val poolBucket = domain.initialPoolBuckets.firstOrNull { bucket ->
+                            (remainingPool[bucket.key] ?: 0) > 0 &&
+                                when (val key = bucket.key) {
+                                    is InitialPoolBucketKeyV1.UnrestrictedPoolBucket -> matches(key.color)
+                                    is InitialPoolBucketKeyV1.CertifiedFloatingBucket ->
+                                        matches(key.key.poolColor)
+                                }
                         }
+                        if (poolBucket != null) {
+                            remainingPool[poolBucket.key] =
+                                (remainingPool[poolBucket.key] ?: 0) - 1
+                            add(
+                                PaymentAllocationV1(
+                                    target = PaymentTargetV1.OuterCostUnit(
+                                        symbolIndex = unit.symbolIndex,
+                                        unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
+                                    ),
+                                    resource = ManaResourceRefV1.InitialPoolResource(poolBucket.key),
+                                )
+                            )
+                            continue
+                        }
+
+                        val source = domain.sourceActivationOptions.firstOrNull { candidate ->
+                            candidate.sourceId !in usedSourceIds &&
+                                candidate.atomicActivationManaCostUnits.isEmpty() &&
+                                candidate.productionChoices.any { choice ->
+                                    choice.fixedOutputs?.any { output ->
+                                        output.amount > 0 && matches(output.color)
+                                    } ?: matches(choice.producedColor)
+                                }
+                        } ?: error("No explicit source in the HTTP V5 payment domain for $unit")
+                        val production = source.productionChoices.first { choice ->
+                            choice.fixedOutputs?.any { output ->
+                                output.amount > 0 && matches(output.color)
+                            } ?: matches(choice.producedColor)
+                        }
+                        usedSourceIds += source.sourceId
+                        val activationIndex = activations.size
+                        activations += SourceActivationV2(
+                            sourceId = source.sourceId,
+                            manaAbilityKey = source.manaAbilityKey,
+                            productionChoice = production,
+                            activationCostOrder = source.activationCostOrderOptions.first(),
+                        )
+                        val outputIndex = production.fixedOutputs
+                            ?.first { it.amount > 0 && matches(it.color) }
+                            ?.index
+                            ?: 0
+                        add(
+                            PaymentAllocationV1(
+                                target = PaymentTargetV1.OuterCostUnit(
+                                    symbolIndex = unit.symbolIndex,
+                                    unitIndexWithinSymbol = unit.unitIndexWithinSymbol,
+                                ),
+                                resource = ManaResourceRefV1.ActivationOutputUnit(
+                                    activationIndex = activationIndex,
+                                    outputIndex = outputIndex,
+                                ),
+                            )
+                        )
                     }
-                    CostUnitAllocation(unit.symbolIndex, spends)
                 }
                 val strategy = json.encodeToJsonElement(
                     PaymentStrategy.serializer(),
-                    PaymentStrategy.Explicit(
-                        paymentPlan = PaymentPlanV1(
-                            sourceActivations = sourceActivations,
-                            poolSpend = PoolSpend(),
-                            spendAllocation = SpendAllocation(costUnits = allocations),
+                    PaymentStrategy.ExplicitV3(
+                        paymentPlan = PaymentPlanV3(
+                            activations = activations,
+                            outerAllocation = allocations,
                         ),
                     ),
                 )
@@ -419,9 +456,9 @@ class EnvControllerTest : FunSpec() {
             }
         }
 
-        test("HTTP round-trips PaymentDomain V4 buckets and PaymentPlan V1 floatingSourceId") {
+        test("HTTP round-trips PaymentDomain V5 initial buckets and PaymentPlan V3") {
             multiEnvService.cardRegistry.register(
-                listOf(httpForestSource, httpZeroForestSource, httpHomogeneousSpell)
+                listOf(httpForestSource, httpHomogeneousSpell)
             )
             val config = EnvConfig(
                 players = listOf(
@@ -430,7 +467,6 @@ class EnvControllerTest : FunSpec() {
                         DeckSpec.Explicit(
                             mapOf(
                                 httpForestSource.name to 1,
-                                httpZeroForestSource.name to 1,
                                 httpHomogeneousSpell.name to 1,
                                 "Mountain" to 4,
                             ),
@@ -495,35 +531,6 @@ class EnvControllerTest : FunSpec() {
                 }
                 observation = step(observation, landActivation)
 
-                val zeroSourceCardId = observation.zones
-                    .flatMap { it.cards }
-                    .first { it.name == httpZeroForestSource.name }
-                    .entityId
-                val zeroSourceCast = findAction(observation) {
-                    it.kind == "CastSpell" && it.sourceEntityId == zeroSourceCardId
-                }
-                val zeroCostStrategy = json.encodeToJsonElement(
-                    PaymentStrategy.serializer(),
-                    PaymentStrategy.Explicit(
-                        paymentPlan = PaymentPlanV1(
-                            spendAllocation = SpendAllocation(),
-                        ),
-                    ),
-                )
-                val zeroCostAction = zeroSourceCast.copy(
-                    actionSemantics = buildJsonObject {
-                        zeroSourceCast.actionSemantics?.forEach { (key, value) -> put(key, value) }
-                        put("paymentStrategy", zeroCostStrategy)
-                    },
-                )
-                observation = step(observation, zeroCostAction)
-
-                val zeroSourceId = zeroSourceCardId
-                val zeroActivation = findAction(observation) {
-                    it.kind == "ActivateAbility" && it.isManaAbility && it.sourceEntityId == zeroSourceId
-                }
-                observation = step(observation, zeroActivation)
-
                 val spellCardId = observation.zones
                     .flatMap { it.cards }
                     .first { it.name == httpHomogeneousSpell.name }
@@ -531,38 +538,31 @@ class EnvControllerTest : FunSpec() {
                 val spellAction = findAction(observation) {
                     it.kind == "CastSpell" && it.sourceEntityId == spellCardId
                 }
-                val domain = spellAction.paymentDomain ?: error("Expected the V4 HTTP payment domain")
-                domain.version shouldBe 4
-                val certified = domain.currentPool.certifiedFloatingBuckets
-                certified.map { it.sourceId }.toSet() shouldBe setOf(landId, zeroSourceId)
-                certified.map { it.poolColor }.toSet() shouldBe setOf(PaymentManaColor.GREEN)
-                certified.map { it.sourceSubtypes }.toSet() shouldBe setOf(listOf("Forest"))
-                certified.map { it.amount } shouldBe listOf(1, 1)
+                val domain = spellAction.paymentDomain ?: error("Expected the V5 HTTP payment domain")
+                domain.version shouldBe 5
+                val initialBucket = domain.initialPoolBuckets.single()
+                val initialKey = initialBucket.key as InitialPoolBucketKeyV1.CertifiedFloatingBucket
+                initialKey.key.sourceId shouldBe landId
+                initialKey.key.poolColor shouldBe com.wingedsheep.engine.core.PaymentManaColor.GREEN
+                initialBucket.availableAmount shouldBe 1
 
                 val observedWire = get("/envs/${envId.value}")
                 observedWire.statusCode() shouldBe 200
-                observedWire.body() shouldContain "\"version\":4"
-                observedWire.body() shouldContain "\"certifiedFloatingBuckets\""
+                observedWire.body() shouldContain "\"version\":5"
+                observedWire.body() shouldContain "\"initialPoolBuckets\""
                 observedWire.body() shouldContain landId.value
-                observedWire.body() shouldContain zeroSourceId.value
 
-                val selectedSource = certified.first().sourceId
                 val strategy = json.encodeToJsonElement(
                     PaymentStrategy.serializer(),
-                    PaymentStrategy.Explicit(
-                        paymentPlan = PaymentPlanV1(
-                            poolSpend = PoolSpend(green = 1),
-                            spendAllocation = SpendAllocation(
-                                costUnits = listOf(
-                                    CostUnitAllocation(
+                    PaymentStrategy.ExplicitV3(
+                        paymentPlan = PaymentPlanV3(
+                            outerAllocation = listOf(
+                                PaymentAllocationV1(
+                                    target = PaymentTargetV1.OuterCostUnit(
                                         symbolIndex = 0,
-                                        spends = listOf(
-                                            ManaSpendReference(
-                                                poolColor = PaymentManaColor.GREEN,
-                                                floatingSourceId = selectedSource,
-                                            ),
-                                        ),
+                                        unitIndexWithinSymbol = 0,
                                     ),
+                                    resource = ManaResourceRefV1.InitialPoolResource(initialBucket.key),
                                 ),
                             ),
                         ),
@@ -578,7 +578,7 @@ class EnvControllerTest : FunSpec() {
                 )
                 paymentResponse.statusCode() shouldBe 200
                 val afterPayment = json.decodeFromString<TrainingObservation>(paymentResponse.body())
-                afterPayment.players.first { it.isPerspective }.manaPool.green shouldBe 1
+                afterPayment.players.first { it.isPerspective }.manaPool.green shouldBe 0
             } finally {
                 deleteJson("/envs", json.encodeToString(DisposeBody(listOf(envId))))
             }
