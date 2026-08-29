@@ -2550,43 +2550,29 @@ class ActivateAbilityHandler(
         xManaRestriction: Set<Color> = emptySet(),
         additionalPayLife: Int = 0,
     ): AutoTapResult? {
-        // Determine what the floating pool can cover (with the ability context so restricted
-        // mana eligible for this activation counts toward coverage)
-        val partialResult = pool.payPartial(cost, abilityContext)
-        val remainingCost = partialResult.remainingCost
-
-        // The floating pool also pays toward the {X} portion before any sources are tapped —
-        // sharing the same coverage rule as CastPaymentProcessor.autoPay (ManaPool.xCoveragePlan).
-        // Without this, an {X} ability whose X is solved purely by tapping sources reports "Not
-        // enough mana" even when the pool already holds enough (e.g. Aladdin's Lamp activated with
-        // X=4 while 4 mana float in the pool). We only reduce how much X the solver must tap for
-        // here; the actual pool spend for X happens later in `payAbilityCost`.
         val xSymbolCount = cost.xCount.coerceAtLeast(1)
-        var xToTap = xValue * xSymbolCount
-        if (xToTap > 0) {
-            xToTap -= partialResult.newPool.xCoveragePlan(xToTap, xManaRestriction).size
-        }
-
-        // If floating pool covers everything (and no X left to tap for), no tapping needed.
-        // Return the original pool unchanged — `payAbilityCost` performs the actual deduction.
-        if (remainingCost.isEmpty() && xToTap == 0) {
-            return AutoTapResult(state, pool, emptyList())
-        }
-
-        // Tap sources for the remaining cost (xToTap is the X mana the floating pool couldn't
-        // cover, treated as additional generic mana — or restricted to xManaRestriction colors
-        // for "spend only [colors] on X" abilities)
+        // Solve the complete payment against one shared ledger. The solver may reserve the supplied
+        // floating mana for a selected mana source's own activation cost before that source produces
+        // the mana needed by this ability. The returned solution still describes a deferred outer
+        // payment: this helper only taps sources and leaves the outer pool spend to payAbilityCost.
         val solution = manaSolver.solve(
-            state,
-            playerId,
-            remainingCost,
-            xToTap,
+            state = state,
+            playerId = playerId,
+            cost = cost,
+            xValue = xValue * xSymbolCount,
             excludeSources = excludeSources,
             spellContext = abilityContext,
             xManaRestriction = xManaRestriction,
             additionalPayLife = additionalPayLife,
+            initialManaPool = pool,
         )
             ?: return null
+
+        // The solver has already separated the shared pool ledger into nested activation-cost
+        // spends and outer-cost spends. Use the exact post-activation view here; replaying generic
+        // units would ignore restricted entries and could leave inner resources available for the
+        // outer ability payment (or select a different eligible restriction).
+        var currentPool = solution.poolAfterActivation ?: pool
 
         val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
             state = state,
@@ -2596,7 +2582,6 @@ class ActivateAbilityHandler(
         if (!sideEffectResult.success) return null
 
         var currentState = sideEffectResult.state
-        var currentPool = pool
         val events = sideEffectResult.events.toMutableList()
 
         // Add produced mana to floating pool so costHandler.payAbilityCost can consume it.

@@ -424,172 +424,84 @@ class CastPaymentProcessor(
         excludeSources: Set<EntityId> = emptySet(),
         xManaRestriction: Set<Color> = emptySet()
     ): PaymentResult {
-        var currentState = state
-        val events = mutableListOf<GameEvent>()
-
-        // Use floating mana first
         val poolComponent = state.getEntity(playerId)?.get<ManaPoolComponent>()
             ?: ManaPoolComponent()
         val pool = poolComponent.toManaPool()
-
-        val partialResult = pool.payPartial(cost, spellContext)
-        var poolAfterPayment = partialResult.newPool
-        val remainingCost = partialResult.remainingCost
-        val manaSpentFromPool = partialResult.manaSpent
-
-        var whiteSpent = manaSpentFromPool.white
-        var blueSpent = manaSpentFromPool.blue
-        var blackSpent = manaSpentFromPool.black
-        var redSpent = manaSpentFromPool.red
-        var greenSpent = manaSpentFromPool.green
-        var colorlessSpent = manaSpentFromPool.colorless
-
-        // Use remaining floating mana for X cost (multiply by X symbol count for XX costs)
         val xSymbolCount = cost.xCount.coerceAtLeast(1)
-        var xRemainingToPay = xValue * xSymbolCount
-        // Per-color mana spent on the X portion (for DynamicAmount.ManaSpentOnX).
-        val xSpentByColor = mutableMapOf<Color, Int>()
-        // When X is color-restricted, only these colors may pay it (and colorless can't).
-        val xColorsAllowed: Set<Color> =
-            if (xManaRestriction.isEmpty()) Color.entries.toSet() else xManaRestriction
+        val solution = manaSolver.solve(
+            state = state,
+            playerId = playerId,
+            cost = cost,
+            xValue = xValue * xSymbolCount,
+            excludeSources = excludeSources,
+            spellContext = spellContext,
+            xManaRestriction = xManaRestriction,
+            initialManaPool = pool,
+        ) ?: return PaymentResult(state, emptyList(), "Not enough mana to auto-pay")
 
-        // Spend eligible restricted mana for X first
-        if (spellContext != null) {
-            for (entry in poolAfterPayment.restrictedMana.toList()) {
-                if (xRemainingToPay <= 0) break
-                // A color-restricted X can't be paid with off-color or colorless restricted mana.
-                if (entry.color != null && entry.color !in xColorsAllowed) continue
-                if (entry.color == null && xManaRestriction.isNotEmpty()) continue
-                if (entry.restriction.isSatisfiedBy(spellContext)) {
-                    val spent = poolAfterPayment.spendRestricted(entry.color, spellContext)
-                    if (spent != null) {
-                        poolAfterPayment = spent
-                        if (entry.color != null) {
-                            when (entry.color) {
-                                Color.WHITE -> whiteSpent++
-                                Color.BLUE -> blueSpent++
-                                Color.BLACK -> blackSpent++
-                                Color.RED -> redSpent++
-                                Color.GREEN -> greenSpent++
-                            }
-                            xSpentByColor[entry.color] = (xSpentByColor[entry.color] ?: 0) + 1
-                        } else colorlessSpent++
-                        xRemainingToPay--
-                    }
-                }
+        // The solver has already reserved both inner activation costs and the outer cost on one
+        // shared ledger. Execute all selected abilities only after that complete preflight succeeds;
+        // a failed side effect returns the untouched input state.
+        val tapResult = manaAbilitySideEffectExecutor
+            .tapSourcesWithSideEffects(state, solution, playerId)
+        if (!tapResult.success) {
+            return PaymentResult(state, emptyList(), "Unable to pay mana ability side effect")
+        }
+        var currentState = tapResult.state
+        val events = tapResult.events.toMutableList()
+
+        // `poolAfterPayment` contains the initial pool after both activation-cost and outer-cost
+        // consumption. Source output is consumed logically by the solver; only excess bonus mana
+        // remains to be floated back to the player.
+        var poolAfterPayment = solution.poolAfterPayment ?:
+            return PaymentResult(state, emptyList(), "Mana solver did not return pool accounting")
+        for (entry in solution.remainingBonusMana) {
+            poolAfterPayment = when {
+                entry.colorless && entry.restriction != null ->
+                    poolAfterPayment.addRestricted(null, entry.amount, entry.restriction)
+                entry.colorless -> poolAfterPayment.addColorless(entry.amount)
+                entry.restriction != null ->
+                    poolAfterPayment.addRestricted(entry.color, entry.amount, entry.restriction)
+                else -> poolAfterPayment.add(entry.color, entry.amount)
             }
         }
-
-        // Spend unrestricted floating mana for the remaining X: colorless first (unless X is
-        // color-restricted), then allowed colors. Same coverage rule as autoTapForManaCost.
-        for (unit in poolAfterPayment.xCoveragePlan(xRemainingToPay, xManaRestriction)) {
-            poolAfterPayment = if (unit == null) {
-                colorlessSpent++
-                poolAfterPayment.spendColorless()!!
-            } else {
-                when (unit) {
-                    Color.WHITE -> whiteSpent++
-                    Color.BLUE -> blueSpent++
-                    Color.BLACK -> blackSpent++
-                    Color.RED -> redSpent++
-                    Color.GREEN -> greenSpent++
-                }
-                xSpentByColor[unit] = (xSpentByColor[unit] ?: 0) + 1
-                poolAfterPayment.spend(unit)!!
-            }
-            xRemainingToPay--
-        }
-
-        // Consume provenance tags proportional to unrestricted mana pulled from the pool during the
-        // floating-mana phase. Freshly-tapped sources (below) contribute their own provenance —
-        // unlike the legacy Treasure counter, general provenance covers solver-tapped mana too
-        // (Caves and the LCI mana-source lands are tapped directly, not filtered out like Treasure).
-        val poolUnrestrictedSpent = maxOf(
-            0,
-            (poolComponent.white - poolAfterPayment.white) +
-                (poolComponent.blue - poolAfterPayment.blue) +
-                (poolComponent.black - poolAfterPayment.black) +
-                (poolComponent.red - poolAfterPayment.red) +
-                (poolComponent.green - poolAfterPayment.green) +
-                (poolComponent.colorless - poolAfterPayment.colorless)
-        )
-        val (provenancePool, poolProvenance) = pool.consumeProvenance(poolUnrestrictedSpent)
-        val poolWithProvenanceUpdated = poolAfterPayment.withProvenanceFrom(provenancePool)
-        var spentProvenance = poolProvenance
-
         currentState = currentState.updateEntity(playerId) { container ->
-            container.with(fromManaPool(poolWithProvenanceUpdated))
+            container.with(fromManaPool(poolAfterPayment))
         }
 
-        // Tap lands for remaining cost (using xRemainingToPay instead of full xValue)
-        var solutionConsumedRiders: List<ManaSpellRider> = emptyList()
-        if (!remainingCost.isEmpty() || xRemainingToPay > 0) {
-            val solution = manaSolver.solve(currentState, playerId, remainingCost, xRemainingToPay, excludeSources = excludeSources, spellContext = spellContext, xManaRestriction = xManaRestriction)
-                ?: return PaymentResult(currentState, events, "Not enough mana to auto-pay")
-            solutionConsumedRiders = solution.consumedRiders
-            // Mana tapped directly for this payment carries the provenance of its source (read from
-            // the pre-payment [state], where every tapped source still exists with its type line).
-            spentProvenance = mergeProvenance(spentProvenance, tappedSourceProvenance(state, solution.manaProduced))
-            // Fold the X portion the solver tapped (allowed colors only) into the X-by-color tally.
-            for ((color, amount) in solution.xRestrictedManaSpent) {
-                xSpentByColor[color] = (xSpentByColor[color] ?: 0) + amount
-            }
-
-            // Tap each source AND run any non-mana side effects of the matching
-            // activated mana ability (e.g. Adarkar Wastes' "this land deals 1
-            // damage to you"). The mana itself is consumed via
-            // `solution.manaProduced` below.
-            val tapResult = manaAbilitySideEffectExecutor
-                .tapSourcesWithSideEffects(currentState, solution, playerId)
-            if (!tapResult.success) return PaymentResult(currentState, events, "Unable to pay mana ability side effect")
-            currentState = tapResult.state
-            events.addAll(tapResult.events)
-
-            for ((_, production) in solution.manaProduced) {
-                when (production.color) {
-                    Color.WHITE -> whiteSpent += production.amount
-                    Color.BLUE -> blueSpent += production.amount
-                    Color.BLACK -> blackSpent += production.amount
-                    Color.RED -> redSpent += production.amount
-                    Color.GREEN -> greenSpent += production.amount
-                    null -> colorlessSpent += production.colorless
-                }
-            }
-
-            // Aura bonus mana (Shimmerwilds Growth, Fertile Ground, …) spent on the cost is not in
-            // `manaProduced`; fold it in so "if {B}{B} was spent" gates (Deceit) see it. See
-            // [ManaSolution.bonusManaSpentByColor].
-            for ((color, amount) in solution.bonusManaSpentByColor) {
-                when (color) {
-                    Color.WHITE -> whiteSpent += amount
-                    Color.BLUE -> blueSpent += amount
-                    Color.BLACK -> blackSpent += amount
-                    Color.RED -> redSpent += amount
-                    Color.GREEN -> greenSpent += amount
-                }
-            }
-
-            // Add only the bonus mana that wasn't consumed by the solver to the floating pool.
-            // Bonus mana from a restricted ability keeps its restriction so the player can't
-            // launder e.g. Steelswarm Operator's artifact-only mana into unrestricted blue.
-            if (solution.remainingBonusMana.isNotEmpty()) {
-                currentState = currentState.updateEntity(playerId) { container ->
-                    var pool = container.get<ManaPoolComponent>() ?: ManaPoolComponent()
-                    for (entry in solution.remainingBonusMana) {
-                        pool = when {
-                            // Colorless excess (e.g. Sol Ring's unused second {C}) floats as colorless.
-                            entry.colorless && entry.restriction != null ->
-                                pool.addRestricted(null, entry.amount, entry.restriction)
-                            entry.colorless -> pool.addColorless(entry.amount)
-                            entry.restriction != null ->
-                                pool.addRestricted(entry.color, entry.amount, entry.restriction)
-                            else -> pool.add(entry.color, entry.amount)
-                        }
-                    }
-                    container.with(pool)
-                }
+        var whiteSpent = solution.poolManaSpentForOuter.white
+        var blueSpent = solution.poolManaSpentForOuter.blue
+        var blackSpent = solution.poolManaSpentForOuter.black
+        var redSpent = solution.poolManaSpentForOuter.red
+        var greenSpent = solution.poolManaSpentForOuter.green
+        var colorlessSpent = solution.poolManaSpentForOuter.colorless
+        for (production in solution.manaProduced.values) {
+            when (production.color) {
+                Color.WHITE -> whiteSpent += production.amount
+                Color.BLUE -> blueSpent += production.amount
+                Color.BLACK -> blackSpent += production.amount
+                Color.RED -> redSpent += production.amount
+                Color.GREEN -> greenSpent += production.amount
+                null -> colorlessSpent += production.colorless
             }
         }
+        for ((color, amount) in solution.bonusManaSpentByColor) {
+            when (color) {
+                Color.WHITE -> whiteSpent += amount
+                Color.BLUE -> blueSpent += amount
+                Color.BLACK -> blackSpent += amount
+                Color.RED -> redSpent += amount
+                Color.GREEN -> greenSpent += amount
+            }
+        }
+
+        val unrestrictedPoolSpent = solution.poolManaSpentForOuter.unrestrictedTotal
+        val (_, poolProvenance) = pool.consumeProvenance(unrestrictedPoolSpent)
+        val spentProvenance = mergeProvenance(
+            poolProvenance,
+            tappedSourceProvenance(state, solution.manaProduced),
+        )
+        val xSpentByColor = solution.xRestrictedManaSpent
 
         events.add(
             ManaSpentEvent(
@@ -600,19 +512,22 @@ class CastPaymentProcessor(
                 black = blackSpent,
                 red = redSpent,
                 green = greenSpent,
-                colorless = colorlessSpent
+                colorless = colorlessSpent,
             )
         )
 
-        val consumedRiders =
-            ridersConsumedDuringPayment(poolComponent.restrictedMana, poolAfterPayment.restrictedMana) + solutionConsumedRiders
+        val poolBeforeOuterPayment = solution.poolAfterActivation ?: pool
+        val consumedRiders = ridersConsumedDuringPayment(
+            poolBeforeOuterPayment.restrictedMana,
+            solution.poolAfterPayment.restrictedMana,
+        ) + solution.consumedRiders
         return PaymentResult(
-            currentState,
-            events,
-            null,
-            consumedRiders,
+            state = currentState,
+            events = events,
+            error = null,
+            consumedRiders = consumedRiders,
             spentManaProvenance = spentProvenance,
-            xManaSpentByColor = xSpentByColor
+            xManaSpentByColor = xSpentByColor,
         )
     }
 
