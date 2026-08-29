@@ -3,10 +3,8 @@ package com.wingedsheep.engine.mechanics.mana
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.mechanics.layers.SerializableModification
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.battlefield.ClassLevelComponent
 import com.wingedsheep.engine.state.components.battlefield.GrantsControllerProtectionComponent
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
-import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TextReplacementComponent
 import com.wingedsheep.engine.state.components.player.DamageBonusComponent
 import com.wingedsheep.engine.state.components.player.PlayerProtectionComponent
@@ -23,6 +21,7 @@ import com.wingedsheep.sdk.scripting.PlayersCantActivateAbilities
 import com.wingedsheep.sdk.scripting.PreventActivatedAbilities
 import com.wingedsheep.sdk.scripting.ReplacementEffect
 import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
+import com.wingedsheep.sdk.scripting.StaticAbility
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 
 /**
@@ -85,11 +84,22 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         if (ability.isPowerUp || ability.genericCostReduction != null) return false
         if (!candidate.effectiveCost.isFixedTapOrOrdinaryManaAndTap()) return false
         if (candidate.productionProfile is PaymentManaProductionProfile.Unsupported) return false
+
+        // Every state-backed static channel used by the stability certificate must resolve from
+        // one Rules-owned view. A normal permanent contributes its effective printed statics;
+        // an inline token has no CardDefinition by design, so its statics must come from the
+        // granted-static channel populated by token creation. Any other missing definition is an
+        // unknown rules object and keeps the complete V5 domain fail-closed.
+        val stabilityStaticAbilities = resolvePaymentStabilityStaticAbilities(
+            state = candidate.state,
+            cardRegistry = cardRegistry,
+        ) ?: return false
+
         when (val sideEffect = candidate.sideEffectCertificate) {
             PaymentManaSideEffectCertificate.NoSideEffect -> Unit
             is PaymentManaSideEffectCertificate.FixedSelfDamage -> {
                 if (sideEffect.amount <= 0 || !candidate.lifeMutationStabilityCertified ||
-                    !fixedSelfDamageEnvironmentIsSupported(candidate)
+                    !fixedSelfDamageEnvironmentIsSupported(candidate, stabilityStaticAbilities)
                 ) {
                     return false
                 }
@@ -103,7 +113,7 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
 
         // An earlier TapSelf node can change which state-dependent cost modifiers apply. V5 has no
         // nested cost-lock witness, so any such modifier closes the complete public domain.
-        if (hasActivatedAbilityCostModifier(candidate.state)) return false
+        if (stabilityStaticAbilities.any(::containsActivatedAbilityCostModifier)) return false
 
         // Authoritative activation legality also includes permission statics that are not carried
         // by the selected ability itself. Their filters/conditions are read against live state by
@@ -111,7 +121,7 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         // the later ability has no own restriction. The first V5 slice has no permission-closure
         // certificate; reject every recognized printed or granted permission shape instead of
         // allowing the executor to bypass that authoritative check.
-        if (hasExternalActivationPermission(candidate.state)) return false
+        if (stabilityStaticAbilities.any(::containsExternalActivationPermission)) return false
 
         return true
     }
@@ -140,18 +150,6 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         return tapCount == 1
     }
 
-    private fun hasActivatedAbilityCostModifier(state: GameState): Boolean {
-        for (entityId in state.getBattlefield()) {
-            val card = state.getEntity(entityId)?.get<CardComponent>() ?: continue
-            val cardDefinition = cardRegistry.getCard(card.cardDefinitionId)
-                ?: return true
-            if (cardDefinition.script.staticAbilities.any(::containsActivatedAbilityCostModifier)) {
-                return true
-            }
-        }
-        return false
-    }
-
     private fun containsActivatedAbilityCostModifier(
         ability: com.wingedsheep.sdk.scripting.StaticAbility,
     ): Boolean = when (ability) {
@@ -177,6 +175,7 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
      */
     private fun fixedSelfDamageEnvironmentIsSupported(
         candidate: PaymentProgramExecutionStabilityCandidate,
+        stabilityStaticAbilities: List<StaticAbility>,
     ): Boolean {
         val state = candidate.state
 
@@ -239,18 +238,10 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
             return false
         }
 
-        // The direct DamageUtils path also reads these static amplification abilities. Treat an
-        // unknown battlefield definition as unsupported rather than assuming it has no damage
-        // modifier.
-        if (state.getBattlefield().any { entityId ->
-                val container = state.getEntity(entityId) ?: return@any false
-                val card = container.get<CardComponent>() ?: return@any false
-                val definition = cardRegistry.getCard(card.cardDefinitionId) ?: return@any true
-                val classLevel = container.get<ClassLevelComponent>()?.currentLevel
-                definition.script.effectiveStaticAbilities(classLevel)
-                    .any(::containsNoncombatDamageBonus)
-            }
-        ) {
+        // The direct DamageUtils path also reads these static amplification abilities. The same
+        // resolver used by the cost/permission scans includes printed statics and token grants;
+        // an unknown non-token definition has already failed closed at the qualification seam.
+        if (stabilityStaticAbilities.any(::containsNoncombatDamageBonus)) {
             return false
         }
 
@@ -284,32 +275,14 @@ private class FixedFirstSlicePaymentProgramExecutionStabilityCertifier(
         else -> false
     }
 
-    private fun containsNoncombatDamageBonus(
-        ability: com.wingedsheep.sdk.scripting.StaticAbility,
-    ): Boolean = when (ability) {
+    private fun containsNoncombatDamageBonus(ability: StaticAbility): Boolean = when (ability) {
         is NoncombatDamageBonus -> true
         is ConditionalStaticAbility -> containsNoncombatDamageBonus(ability.ability)
         is CompositeStaticAbility -> ability.abilities.any(::containsNoncombatDamageBonus)
         else -> false
     }
 
-    private fun hasExternalActivationPermission(state: GameState): Boolean {
-        for (entityId in state.getBattlefield()) {
-            val card = state.getEntity(entityId)?.get<CardComponent>() ?: continue
-            val cardDefinition = cardRegistry.getCard(card.cardDefinitionId)
-                ?: return true
-            if (cardDefinition.script.staticAbilities.any(::containsExternalActivationPermission)) {
-                return true
-            }
-        }
-        return state.grantedStaticAbilities.any { grant ->
-            containsExternalActivationPermission(grant.ability)
-        }
-    }
-
-    private fun containsExternalActivationPermission(
-        ability: com.wingedsheep.sdk.scripting.StaticAbility,
-    ): Boolean = when (ability) {
+    private fun containsExternalActivationPermission(ability: StaticAbility): Boolean = when (ability) {
         is PlayersCantActivateAbilities,
         is PreventActivatedAbilities,
         -> true

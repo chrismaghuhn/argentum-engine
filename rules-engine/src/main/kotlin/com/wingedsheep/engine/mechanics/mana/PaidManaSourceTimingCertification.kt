@@ -2,13 +2,15 @@ package com.wingedsheep.engine.mechanics.mana
 
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.TextReplacementComponent
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityCost
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.CompositeStaticAbility
+import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
 import com.wingedsheep.sdk.scripting.IncreaseActivatedAbilityCost
 import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
+import com.wingedsheep.sdk.scripting.StaticAbility
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 
 /**
@@ -85,7 +87,11 @@ private class FixedFirstSlicePaidManaSourceTimingCertifier(
         // computing the effective cost. Reject the whole certification whenever one is present:
         // prerequisite mana generation could change the state used by that calculation, and V5
         // has no nested cost-lock witness to preserve the distinction.
-        if (hasActivatedAbilityCostModifier(candidate.state)) return false
+        val stabilityStaticAbilities = resolvePaymentStabilityStaticAbilities(
+            state = candidate.state,
+            cardRegistry = cardRegistry,
+        ) ?: return false
+        if (stabilityStaticAbilities.any(::containsActivatedAbilityCostModifier)) return false
 
         return true
     }
@@ -111,18 +117,12 @@ private class FixedFirstSlicePaidManaSourceTimingCertifier(
         return manaComponents == 1 && tapComponents == 1
     }
 
-    private fun hasActivatedAbilityCostModifier(state: GameState): Boolean {
-        for (entityId in state.getBattlefield()) {
-            val card = state.getEntity(entityId)?.get<CardComponent>() ?: continue
-            val cardDefinition = cardRegistry.getCard(card.cardDefinitionId)
-                ?: return true
-            if (cardDefinition.script.staticAbilities.any { ability ->
-                    ability is ReduceActivatedAbilityCost || ability is IncreaseActivatedAbilityCost
-                }
-            ) {
-                return true
-            }
-        }
-        return false
+    private fun containsActivatedAbilityCostModifier(ability: StaticAbility): Boolean = when (ability) {
+        is ReduceActivatedAbilityCost,
+        is IncreaseActivatedAbilityCost,
+        -> true
+        is ConditionalStaticAbility -> containsActivatedAbilityCostModifier(ability.ability)
+        is CompositeStaticAbility -> ability.abilities.any(::containsActivatedAbilityCostModifier)
+        else -> false
     }
 }

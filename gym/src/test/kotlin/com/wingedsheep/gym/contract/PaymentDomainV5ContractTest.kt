@@ -9,7 +9,11 @@ import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.event.GrantedStaticAbility
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.handlers.effects.BattlefieldEntry
+import com.wingedsheep.engine.state.ComponentContainer
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate
@@ -18,6 +22,8 @@ import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.identity.TokenComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.gym.GameEnvironment
@@ -28,19 +34,28 @@ import com.wingedsheep.mtg.sets.definitions.mh1.cards.TalismanOfResilience
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
+import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.CreatureStats
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
 import com.wingedsheep.sdk.scripting.ActivatedAbility
+import com.wingedsheep.sdk.scripting.Duration
+import com.wingedsheep.sdk.scripting.IncreaseActivatedAbilityCost
+import com.wingedsheep.sdk.scripting.NoncombatDamageBonus
 import com.wingedsheep.sdk.scripting.PlayersCantActivateAbilities
+import com.wingedsheep.sdk.scripting.PreventActivatedAbilities
+import com.wingedsheep.sdk.scripting.ReduceActivatedAbilityCost
+import com.wingedsheep.sdk.scripting.StaticAbility
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
@@ -330,6 +345,130 @@ class PaymentDomainV5ContractTest : FunSpec({
             swampId = swampId,
             extraIds = extraIds,
         )
+    }
+
+    /**
+     * Build the same inline-token shape emitted by CreateTokenEffect: the CardComponent carries
+     * a token:* identity, TokenComponent marks token-ness, and token statics are represented by
+     * the Rules-owned granted-static channel rather than a CardDefinition.
+     */
+    fun withInlineToken(
+        fixture: Fixture,
+        cardDefinitionId: String = "token:Beast",
+        tokenComponent: Boolean = true,
+        staticAbilities: List<StaticAbility> = emptyList(),
+    ): GameState {
+        val (tokenId, stateWithId) = fixture.environment.state.newEntity()
+        val tokenCard = CardComponent(
+            cardDefinitionId = cardDefinitionId,
+            name = "Beast Token",
+            manaCost = ManaCost.ZERO,
+            typeLine = TypeLine.parse("Creature — Beast"),
+            baseStats = CreatureStats(3, 3),
+            ownerId = fixture.playerId,
+        )
+        val components = buildList {
+            add(tokenCard)
+            if (tokenComponent) add(TokenComponent)
+            add(ControllerComponent(fixture.playerId))
+        }
+        var state = BattlefieldEntry.place(
+            stateWithId.withEntity(tokenId, ComponentContainer.of(*components.toTypedArray())),
+            fixture.playerId,
+            tokenId,
+        )
+        if (staticAbilities.isNotEmpty()) {
+            state = state.copy(
+                grantedStaticAbilities = state.grantedStaticAbilities + staticAbilities.map { ability ->
+                    GrantedStaticAbility(
+                        entityId = tokenId,
+                        ability = ability,
+                        duration = Duration.Permanent,
+                    )
+                },
+            )
+        }
+        return state
+    }
+
+    fun tokenCostModifier(): ReduceActivatedAbilityCost = ReduceActivatedAbilityCost(
+        filter = GroupFilter(GameObjectFilter.Any),
+        amount = DynamicAmount.Fixed(1),
+    )
+
+    fun tokenCostIncrease(): IncreaseActivatedAbilityCost = IncreaseActivatedAbilityCost(
+        filter = GroupFilter(GameObjectFilter.Any),
+        amount = DynamicAmount.Fixed(1),
+    )
+
+    fun tokenActivationPermission(): PlayersCantActivateAbilities = PlayersCantActivateAbilities()
+
+    fun tokenActivationPrevention(): PreventActivatedAbilities = PreventActivatedAbilities(
+        filter = GameObjectFilter.Any,
+    )
+
+    test("PAY106-TOKEN-STABILITY-01: a plain inline token does not close V5 stability") {
+        val fixture = prepared()
+        val state = withInlineToken(fixture)
+
+        val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction)
+
+        domain shouldNotBe null
+    }
+
+    test("PAY106-TOKEN-STABILITY-02: an inline token cost reducer remains unsupported") {
+        val fixture = prepared()
+        val state = withInlineToken(fixture, staticAbilities = listOf(tokenCostModifier()))
+
+        ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction) shouldBe null
+    }
+
+    test("PAY106-TOKEN-STABILITY-03: an inline token cost increase remains unsupported") {
+        val fixture = prepared()
+        val state = withInlineToken(fixture, staticAbilities = listOf(tokenCostIncrease()))
+
+        ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction) shouldBe null
+    }
+
+    test("PAY106-TOKEN-STABILITY-04: an inline token activation lock remains unsupported") {
+        val fixture = prepared()
+        val state = withInlineToken(fixture, staticAbilities = listOf(tokenActivationPermission()))
+
+        ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction) shouldBe null
+
+        val preventionState = withInlineToken(
+            fixture,
+            staticAbilities = listOf(tokenActivationPrevention()),
+        )
+        ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(preventionState, fixture.legalAction) shouldBe null
+    }
+
+    test("PAY106-TOKEN-STABILITY-05: an unknown non-token remains fail-closed") {
+        val fixture = prepared()
+        val state = withInlineToken(
+            fixture,
+            cardDefinitionId = "unknown:missing-definition",
+            tokenComponent = false,
+        )
+
+        ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction) shouldBe null
+    }
+
+    test("PAY106-TOKEN-STABILITY-06: token damage amplification closes pain certification") {
+        val fixture = prepared(listOf(LlanowarWastes))
+        val state = withInlineToken(
+            fixture,
+            staticAbilities = listOf(NoncombatDamageBonus(1)),
+        )
+
+        ObservationBuilder(cardRegistry = fixture.cardRegistry)
+            .paymentDomainV5For(state, fixture.legalAction) shouldBe null
     }
 
     fun certifiedJointPool(
