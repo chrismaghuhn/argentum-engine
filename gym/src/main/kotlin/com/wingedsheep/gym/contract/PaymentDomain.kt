@@ -19,6 +19,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSource
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCandidate
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.mechanics.mana.PaymentManaProductionProfile
+import com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificate
 import com.wingedsheep.engine.mechanics.mana.PaymentManaSideEffectCertificateResolver
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
@@ -311,8 +312,13 @@ data class PaymentSourceActivationDomainV2(
     val activationSupportKind: PaymentActivationSupportKindV1,
     val deterministicNonManaCosts: List<PaymentDeterministicNonManaCostKindV1>,
     val activationCostOrderOptions: List<ActivationCostOrderV1>,
+    /** Exact controller damage applied by the selected mana ability, if any. */
+    val fixedSelfDamageAmount: Int = 0,
 ) {
     init {
+        require(fixedSelfDamageAmount >= 0) {
+            "PaymentSourceActivationDomainV2 fixed self-damage amount must be non-negative"
+        }
         require(productionChoices.isNotEmpty()) {
             "PaymentSourceActivationDomainV2 must publish at least one production choice"
         }
@@ -358,8 +364,18 @@ data class PaymentDomainV5(
     val outerAtomicCostUnits: List<AtomicManaCostUnitV1>,
     val initialPoolBuckets: List<InitialPoolBucketV1>,
     val sourceActivationOptions: List<PaymentSourceActivationDomainV2>,
+    /** Mandatory life paid by the outer action, resolved from the current Rules cost. */
+    val reservedOuterLifePayment: Int = 0,
+    /** Life available to selected fixed-self-damage mana activations after the outer payment. */
+    val fixedSelfDamageBudget: Int = 0,
 ) {
     init {
+        require(reservedOuterLifePayment >= 0) {
+            "PaymentDomainV5 reserved outer life payment must be non-negative"
+        }
+        require(fixedSelfDamageBudget >= 0) {
+            "PaymentDomainV5 fixed self-damage budget must be non-negative"
+        }
         require(version == PAYMENT_DOMAIN_V5_VERSION) {
             "Unsupported PaymentDomainV5 version: $version"
         }
@@ -491,6 +507,7 @@ class PaymentDomainBuilder(
         requiredCost: String,
         spellContext: SpellPaymentContext,
         excludeSources: Set<EntityId> = emptySet(),
+        reservedOuterLifePayment: Int = 0,
     ): PaymentDomainV5? {
         val cost = runCatching { ManaCost.parse(requiredCost) }
             .getOrNull()
@@ -498,6 +515,10 @@ class PaymentDomainBuilder(
             ?: return null
         if (!cost.isFixedOrdinaryManaCost()) return null
         val outerAtomicCostUnits = cost.toAtomicDomain() ?: return null
+        if (reservedOuterLifePayment < 0) return null
+        val currentLife = state.lifeTotal(playerId)
+        if (reservedOuterLifePayment > currentLife) return null
+        val fixedSelfDamageBudget = currentLife - reservedOuterLifePayment
 
         val pool = state.getEntity(playerId)?.get<ManaPoolComponent>() ?: ManaPoolComponent()
         val initialPoolBuckets = pool.toV5InitialPoolBuckets(state, playerId) ?: return null
@@ -537,6 +558,8 @@ class PaymentDomainBuilder(
             outerAtomicCostUnits = outerAtomicCostUnits,
             initialPoolBuckets = initialPoolBuckets,
             sourceActivationOptions = sourceActivationOptions,
+            reservedOuterLifePayment = reservedOuterLifePayment,
+            fixedSelfDamageBudget = fixedSelfDamageBudget,
         )
     }
 
@@ -743,6 +766,11 @@ class PaymentDomainBuilder(
             ) {
                 return null
             }
+            val fixedSelfDamageAmount = when (currentSideEffectCertificate) {
+                PaymentManaSideEffectCertificate.NoSideEffect -> 0
+                is PaymentManaSideEffectCertificate.FixedSelfDamage -> currentSideEffectCertificate.amount
+                is PaymentManaSideEffectCertificate.Unsupported -> return null
+            }
             val effectiveCost = costCalculator.calculate(
                 state = state,
                 sourceId = entityId,
@@ -797,6 +825,7 @@ class PaymentDomainBuilder(
                     PaymentDeterministicNonManaCostKindV1.TAP_SELF,
                 ),
                 activationCostOrderOptions = listOf(shape.activationCostOrder),
+                fixedSelfDamageAmount = fixedSelfDamageAmount,
             )
         }
     }

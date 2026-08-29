@@ -70,6 +70,7 @@ import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
+import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.mechanics.cost.DeterministicAdditionalCostPayment
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
@@ -843,12 +844,14 @@ class ObservationBuilder(
      */
     internal fun paymentDomainV5For(state: GameState, legalAction: LegalAction): PaymentDomainV5? {
         val request = paymentDomainRequestFor(state, legalAction) ?: return null
+        val reservedOuterLifePayment = reservedOuterLifePaymentForV5(state, legalAction) ?: return null
         val domain = paymentDomainBuilder.buildV5(
             state = state,
             playerId = request.playerId,
             requiredCost = request.requiredCost,
             spellContext = request.spellContext,
             excludeSources = request.excludeSources,
+            reservedOuterLifePayment = reservedOuterLifePayment,
         ) ?: return null
         return if (legalAction.action is CastSpell &&
             hasUnrepresentableAdditionalPayment(
@@ -860,6 +863,30 @@ class ObservationBuilder(
         } else {
             domain
         }
+    }
+
+    /** Resolve only the deterministic outer PayLife supported by the current V5 action slice. */
+    private fun reservedOuterLifePaymentForV5(
+        state: GameState,
+        legalAction: LegalAction,
+    ): Int? {
+        val action = legalAction.action as? ActivateAbility ?: return 0
+        val ability = resolveActivatedAbility(state, action) ?: return null
+        val effectiveCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            ability = ability,
+            targets = action.targets,
+            equipPayment = action.alternativePayment?.equipPayment,
+        )
+        return CostAmountResolver.resolvePayLifeTotal(
+            state = state,
+            cost = effectiveCost,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            cardRegistry = cardRegistry,
+        )
     }
 
     /**

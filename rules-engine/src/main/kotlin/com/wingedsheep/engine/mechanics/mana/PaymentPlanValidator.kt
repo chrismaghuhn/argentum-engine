@@ -354,8 +354,21 @@ class PaymentPlanValidator(
         cost: ManaCost,
         plan: PaymentPlanV3,
         spellContext: SpellPaymentContext? = null,
+        reservedOuterLifePayment: Int = 0,
         excludeSources: Set<EntityId> = emptySet(),
     ): PaymentPlanValidation {
+        if (reservedOuterLifePayment < 0) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 outer life reservation cannot be negative"
+            )
+        }
+        val currentLife = state.lifeTotal(playerId)
+        if (reservedOuterLifePayment > currentLife) {
+            return PaymentPlanValidation.Rejected(
+                "PaymentPlanV3 outer PayLife exceeds current life"
+            )
+        }
+        val fixedSelfDamageBudget = currentLife - reservedOuterLifePayment
         val outerCost = cost.canonicalPaymentManaCost()
         if (!outerCost.isFixedOrdinaryManaCost()) {
             return PaymentPlanValidation.Rejected(
@@ -394,6 +407,7 @@ class PaymentPlanValidator(
 
         val resolvedActivations = mutableListOf<ValidatedPaymentActivationV3>()
         val selectedSourceIds = mutableSetOf<EntityId>()
+        var selectedFixedSelfDamage = 0
         for ((activationIndex, activation) in plan.activations.withIndex()) {
             if (!selectedSourceIds.add(activation.sourceId)) {
                 return PaymentPlanValidation.Rejected(
@@ -479,6 +493,20 @@ class PaymentPlanValidator(
                     "PaymentPlanV3 source has an unrepresented deterministic side effect"
                 )
             }
+            val fixedSelfDamageAmount = when (currentSideEffectCertificate) {
+                PaymentManaSideEffectCertificate.NoSideEffect -> 0
+                is PaymentManaSideEffectCertificate.FixedSelfDamage -> currentSideEffectCertificate.amount
+                is PaymentManaSideEffectCertificate.Unsupported -> return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 source has an unrepresented deterministic side effect"
+                )
+            }
+            val remainingFixedSelfDamageBudget = fixedSelfDamageBudget - selectedFixedSelfDamage
+            if (fixedSelfDamageAmount > remainingFixedSelfDamageBudget) {
+                return PaymentPlanValidation.Rejected(
+                    "PaymentPlanV3 fixed self-damage exceeds life budget after outer PayLife reservation"
+                )
+            }
+            selectedFixedSelfDamage += fixedSelfDamageAmount
             val outputs = when (profile) {
                 is PaymentManaProductionProfile.SelectableSingleOutput -> {
                     if (activation.productionChoice.amount != 1 ||

@@ -44,6 +44,7 @@ class OrderedPaymentProgramExecutor(
         plan: PaymentPlanV3,
         paymentContext: SpellPaymentContext,
         reason: String,
+        reservedOuterLifePayment: Int = 0,
         excludeSources: Set<EntityId> = emptySet(),
     ): ExplicitPaymentExecution {
         val validation = validator.validateV3(
@@ -52,6 +53,7 @@ class OrderedPaymentProgramExecutor(
             cost = cost.canonicalPaymentManaCost(),
             plan = plan,
             spellContext = paymentContext,
+            reservedOuterLifePayment = reservedOuterLifePayment,
             excludeSources = excludeSources,
         )
         val accepted = validation as? PaymentPlanValidation.AcceptedV3

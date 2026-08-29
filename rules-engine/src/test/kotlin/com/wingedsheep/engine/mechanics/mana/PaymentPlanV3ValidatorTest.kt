@@ -183,6 +183,15 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         val colorlessKey: String,
     )
 
+    data class DoublePainFixture(
+        val driver: GameTestDriver,
+        val player: EntityId,
+        val firstSourceId: EntityId,
+        val firstGreenKey: String,
+        val secondSourceId: EntityId,
+        val secondGreenKey: String,
+    )
+
     data class PainSequenceFixture(
         val driver: GameTestDriver,
         val player: EntityId,
@@ -289,6 +298,34 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         )
     }
 
+    fun doublePainFixture(): DoublePainFixture {
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + LlanowarWastes)
+        driver.initMirrorMatch(Deck.of("Forest" to 40), startingPlayer = 0)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val player = driver.activePlayer!!
+        val firstSourceId = driver.putLandOnBattlefield(player, LlanowarWastes.name)
+        val secondSourceId = driver.putLandOnBattlefield(player, LlanowarWastes.name)
+        val sources = ManaSolver(driver.cardRegistry).findAvailableManaSources(
+            state = driver.state,
+            playerId = player,
+            spellContext = null,
+            paymentOrderRequired = true,
+        )
+        val firstSource = sources.single { it.entityId == firstSourceId }
+        val secondSource = sources.single { it.entityId == secondSourceId }
+        return DoublePainFixture(
+            driver = driver,
+            player = player,
+            firstSourceId = firstSourceId,
+            firstGreenKey = firstSource.manaAbilityOptionsFor(Color.GREEN).single()
+                .let(ManaAbilityIdentity::key),
+            secondSourceId = secondSourceId,
+            secondGreenKey = secondSource.manaAbilityOptionsFor(Color.GREEN).single()
+                .let(ManaAbilityIdentity::key),
+        )
+    }
+
     fun painSequenceFixture(): PainSequenceFixture {
         val driver = GameTestDriver()
         driver.registerCards(TestCards.all + LlanowarWastes + lifeHistoryGuardedManaSource)
@@ -325,6 +362,60 @@ class PaymentPlanV3ValidatorTest : FunSpec({
                 sourceId = fixture.sourceId,
                 manaAbilityKey = manaAbilityKey,
                 productionChoice = ProductionChoice(producedColor),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+        ),
+        outerAllocation = listOf(
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(0, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+            ),
+        ),
+    )
+
+    fun doublePainPlan(fixture: DoublePainFixture): PaymentPlanV3 = PaymentPlanV3(
+        activations = listOf(
+            SourceActivationV2(
+                sourceId = fixture.firstSourceId,
+                manaAbilityKey = fixture.firstGreenKey,
+                productionChoice = ProductionChoice(PaymentManaColor.GREEN),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+            SourceActivationV2(
+                sourceId = fixture.secondSourceId,
+                manaAbilityKey = fixture.secondGreenKey,
+                productionChoice = ProductionChoice(PaymentManaColor.GREEN),
+                activationCostOrder = listOf(
+                    ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
+                ),
+            ),
+        ),
+        outerAllocation = listOf(
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(0, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(0, 0),
+            ),
+            PaymentAllocationV1(
+                target = PaymentTargetV1.OuterCostUnit(1, 0),
+                resource = ManaResourceRefV1.ActivationOutputUnit(1, 0),
+            ),
+        ),
+    )
+
+    fun singleDoublePainSourcePlan(
+        fixture: DoublePainFixture,
+        sourceId: EntityId = fixture.firstSourceId,
+        manaAbilityKey: String = fixture.firstGreenKey,
+    ): PaymentPlanV3 = PaymentPlanV3(
+        activations = listOf(
+            SourceActivationV2(
+                sourceId = sourceId,
+                manaAbilityKey = manaAbilityKey,
+                productionChoice = ProductionChoice(PaymentManaColor.GREEN),
                 activationCostOrder = listOf(
                     ActivationCostComponentRefV1.DeterministicNonManaComponent(0),
                 ),
@@ -452,12 +543,14 @@ class PaymentPlanV3ValidatorTest : FunSpec({
         fixture: SignetFixture,
         cost: ManaCost = ManaCost.parse("{1}{B}"),
         plan: PaymentPlanV3 = validPlan(fixture),
+        reservedOuterLifePayment: Int = 0,
     ): PaymentPlanValidation = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
         state = fixture.driver.state,
         playerId = fixture.player,
         cost = cost,
         plan = plan,
         spellContext = SpellPaymentContext(),
+        reservedOuterLifePayment = reservedOuterLifePayment,
     )
 
     test("PAY106-03: Forest output pays Signet activation and Signet output pays outer cost") {
@@ -848,6 +941,67 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             life.newLife shouldBe life.oldLife - 1
         }
         result.events.filterIsInstance<ManaSpentEvent>().single().green shouldBe 1
+    }
+
+    test("PAY106-OUTER-COST-01: fixed self-damage reserves life needed by the outer PayLife") {
+        val fixture = painFixture()
+        fixture.driver.setLifeTotal(fixture.player, 2)
+        val before = fixture.driver.state
+        val rejected = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singlePainPlan(fixture, fixture.greenKey, PaymentManaColor.GREEN),
+            spellContext = SpellPaymentContext(),
+            reservedOuterLifePayment = 2,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+
+        rejected.reason shouldContain "life budget"
+        fixture.driver.state shouldBe before
+    }
+
+    test("PAY106-OUTER-COST-02: one pain unit remains legal when life covers outer PayLife") {
+        val fixture = painFixture()
+        fixture.driver.setLifeTotal(fixture.player, 3)
+        val before = fixture.driver.state
+        val accepted = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry)).validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singlePainPlan(fixture, fixture.greenKey, PaymentManaColor.GREEN),
+            spellContext = SpellPaymentContext(),
+            reservedOuterLifePayment = 2,
+        ).shouldBeInstanceOf<PaymentPlanValidation.AcceptedV3>()
+
+        accepted shouldNotBe null
+        fixture.driver.state shouldBe before
+    }
+
+    test("PAY106-OUTER-COST-03: the outer PayLife budget is cumulative across painful sources") {
+        val fixture = doublePainFixture()
+        fixture.driver.setLifeTotal(fixture.player, 3)
+        val validator = PaymentPlanValidator(ManaSolver(fixture.driver.cardRegistry))
+        val before = fixture.driver.state
+
+        validator.validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}"),
+            plan = singleDoublePainSourcePlan(fixture),
+            spellContext = SpellPaymentContext(),
+            reservedOuterLifePayment = 2,
+        ).shouldBeInstanceOf<PaymentPlanValidation.AcceptedV3>()
+        validator.validateV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{G}{G}"),
+            plan = doublePainPlan(fixture),
+            spellContext = SpellPaymentContext(),
+            reservedOuterLifePayment = 2,
+        ).shouldBeInstanceOf<PaymentPlanValidation.Rejected>().reason
+            .shouldContain("life budget")
+
+        fixture.driver.state shouldBe before
     }
 
     test("PAY106-SIDEEFFECT-03: pain before a life-history-sensitive node is not certified") {

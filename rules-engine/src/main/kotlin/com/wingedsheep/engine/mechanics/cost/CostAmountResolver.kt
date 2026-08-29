@@ -57,6 +57,25 @@ object CostAmountResolver {
     }
 
     /**
+     * Resolve all mandatory PayLife leaves in an activated-ability cost at one Rules point.
+     * The cost must already be the effective cost for the announced action; this overload only
+     * resolves its deterministic amount and never selects an alternative cost or payment mode.
+     */
+    fun resolvePayLifeTotal(
+        state: GameState,
+        cost: AbilityCost,
+        sourceId: EntityId,
+        controllerId: EntityId,
+        cardRegistry: CardRegistry?,
+    ): Int? = resolvePayLifeTotal(
+        state = state,
+        amounts = payLifeAmounts(cost),
+        sourceId = sourceId,
+        controllerId = controllerId,
+        cardRegistry = cardRegistry,
+    )
+
+    /**
      * Resolve every mandatory PayLife amount in one cost context and return their total.
      *
      * The individual amounts are all evaluated against the same pre-payment state and source

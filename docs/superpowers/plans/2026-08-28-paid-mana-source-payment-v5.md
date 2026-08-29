@@ -167,7 +167,9 @@ PaymentDomainV5(
     version = 5,
     outerAtomicCostUnits,
     initialPoolBuckets,
-    orderedSourceActivationOptions
+    orderedSourceActivationOptions,
+    reservedOuterLifePayment,
+    fixedSelfDamageBudget
 )
 
 PaymentSourceActivationDomainV2(
@@ -177,7 +179,8 @@ PaymentSourceActivationDomainV2(
     productionChoices,
     atomicActivationManaCostUnits,
     deterministicNonManaCosts,
-    activationCostOrderOptions
+    activationCostOrderOptions,
+    fixedSelfDamageAmount
 )
 ```
 
@@ -185,6 +188,17 @@ PaymentSourceActivationDomainV2(
 Rules-owned order. If one source has multiple legal mana abilities, each stable ability key is
 represented explicitly; the builder MUST NOT collapse them to the cheapest ability or one
 solver-preferred option.
+
+`fixedSelfDamageAmount` is the exact Rules-owned side-effect certificate for that source/ability
+option. `reservedOuterLifePayment` is the mandatory PayLife total of the current outer action, when
+the supported action path has one. The builder derives `fixedSelfDamageBudget` from the current life
+total as `currentLife - reservedOuterLifePayment`; it rejects an unpayable outer reservation rather
+than publishing a negative budget. The domain does not filter painful options by itself. Instead, a
+submitted V3 program is a member of the public legal plan space only when the cumulative
+`fixedSelfDamageAmount` of all selected activation nodes is at most `fixedSelfDamageBudget`.
+The validator applies this same Rules-owned constraint before any mutation. This information is
+public because otherwise a policy could submit a structurally complete program that becomes unable
+to pay the outer life component only after its selected mana sources deal damage.
 
 `PaymentDomainV5` and `PaymentPlanV3` deliberately have no `domainIdentity` field and no Gym observation
 hash. Freshness is already owned by the strict Gym action seam: the step-local `ActionRegistry` binds
@@ -494,7 +508,7 @@ The first slice MUST reject the entire action domain as unsupported when a disco
 
 The source MUST NOT be omitted merely because one legal option is unsupported. If the complete discovered source set cannot be represented, the whole action domain remains `PAYMENT_DOMAIN_UNSUPPORTED`. This is the same fail-closed completeness rule that makes V4 safe for A5.
 
-The first slice does not attempt to solve every paid mana ability in Magic. It creates a reusable seam that can later add a separately versioned support kind for another fully characterized deterministic cost. Fixed self-damage is not treated as a boolean `NoSideEffect` exception: the Rules-owned certificate must account for the source tap, the controller's life total, the canonical damage/life-history facts that later payment discovery could observe, and the relevant live damage environment. Prevention, redirection, replacement, amplification, protection, lifelink, dynamic, or otherwise additional side effects outside that certificate remain unsupported. The contract does not add a fake generic life field to the mana domain; life costs remain Rules-owned and only enter a future public contract when their exact deterministic semantics are explicitly represented.
+The first slice does not attempt to solve every paid mana ability in Magic. It creates a reusable seam that can later add a separately versioned support kind for another fully characterized deterministic cost. Fixed self-damage is not treated as a boolean `NoSideEffect` exception: the Rules-owned certificate must account for the source tap, the controller's life total, the canonical damage/life-history facts that later payment discovery could observe, and the relevant live damage environment. Prevention, redirection, replacement, amplification, protection, lifelink, dynamic, or otherwise additional side effects outside that certificate remain unsupported. For the supported deterministic outer PayLife path, the public domain carries the exact life reservation and remaining fixed-self-damage budget; the policy must not reconstruct either value from card text or hidden state.
 
 ---
 
@@ -524,7 +538,13 @@ A V5 builder MUST follow this sequence:
    option is published. Its side-effect certificate must be `NoSideEffect`, or `FixedSelfDamage`
    paired with a successful life-mutation execution-stability certificate for the complete
    discovered source set; a bare side-effect-type check is insufficient.
-8. Publish complete initial-pool bucket capacities and outer atomic cost units.
+8. Resolve the current action's deterministic outer PayLife total when that action path carries one.
+   Publish it as `reservedOuterLifePayment` together with the derived
+   `fixedSelfDamageBudget = currentLife - reservedOuterLifePayment`. An unresolvable or currently
+   unaffordable outer life reservation is unsupported; the builder MUST NOT publish a negative
+   budget. The builder does not remove individual painful options: the cumulative budget is a
+   public constraint on selected activation nodes.
+9. Publish complete initial-pool bucket capacities and outer atomic cost units.
 
 The builder MUST NOT:
 
@@ -552,6 +572,7 @@ validateV3(
     outerCost,
     plan: PaymentPlanV3,
     spellContext,
+    reservedOuterLifePayment,
     excludeSources
 ): PaymentPlanValidation
 ```
@@ -571,6 +592,9 @@ It MUST:
 - reject a source/ability whose activation cost or identity changed since publication;
 - reject a source/ability whose `PAY106-MANA-WINDOW-01` timing certification no longer holds for the
   current effective-cost/state class;
+- reject a submitted `reservedOuterLifePayment` that is negative, exceeds the current Rules-owned
+  life total, or leaves a selected cumulative `FixedSelfDamage` total above the current
+  `fixedSelfDamageBudget`;
 - reject an `activationCostOrder` that is not in the current Rules-owned legal order set represented
   by the V5 domain and validate each selected cost component exactly once; this is a fresh
   re-resolution, not a Gym-domain hash comparison;
@@ -655,7 +679,8 @@ This is the public capability entry for one source/ability option. It adds:
 - exact `atomicActivationManaCostUnits`;
 - `activationSupportKind`, initially `FixedManaAndTapSelf`;
 - the legal `activationCostOrderOptions` for the published cost components;
-- all production choices for the stable ability key.
+- all production choices for the stable ability key;
+- the exact `fixedSelfDamageAmount` for the selected source/ability option.
 
 Publication also requires the source-local key to be collision-free and the
 `PAY106-MANA-WINDOW-01` timing distinction to be certified irrelevant for the represented case. These
@@ -663,6 +688,11 @@ are qualification invariants, not policy-selected fields. No `ManaAbilityIdentit
 #106; a collision remains fail-closed until a separately reviewed identity contract exists.
 
 It does not include policy-selected allocations or a nested plan.
+
+`PaymentDomainV5` also publishes the current action's deterministic
+`reservedOuterLifePayment` and the derived `fixedSelfDamageBudget`. A V3 plan may select painful
+source activations only while the cumulative certified fixed damage remains within that budget.
+This is a public constraint on the plan space, not a policy hint and not a card-specific exception.
 
 ### `PaymentPlanV3` and `SourceActivationV2`
 
@@ -939,6 +969,9 @@ reported verification commands are recorded in the current-turn boundary below a
 | PAY106-SIDEEFFECT-04 | A later node is invalid after the represented pain mutation | The full program is rejected transactionally with the original `GameState` and an empty event list. |
 | PAY106-SIDEEFFECT-05 | Select the pain-free colorless output of a mixed pain source | The source produces the selected colorless mana and applies no damage or life-change event. |
 | PAY106-SIDEEFFECT-06 | A live damage replacement is present beside a fixed-self-damage source | The damage-environment certificate closes the complete V5 domain before execution; no replacement is approximated and no state/event mutation occurs. |
+| PAY106-OUTER-COST-01 | Chevill/BG at life 2 activates War Room with outer PayLife 2 while Llanowar Wastes offers painful mana | V5 publishes `reservedOuterLifePayment=2`, `fixedSelfDamageBudget=0`, and the exact pain amount; a safe plan remains expressible, while a painful plan exceeds the public budget and is rejected before execution. |
+| PAY106-OUTER-COST-02 | The same War Room/Wastes plan at life 3 | The public budget is 1, so one painful activation remains representable and the outer PayLife remains legal after the damage. |
+| PAY106-OUTER-COST-03 | Two painful activations each fit individually but exceed the shared life budget together | The cumulative global constraint rejects the combined program before mutation. |
 | PAY106-03 | Forest output pays Signet's atomic `{1}` target; Signet output pays outer atomic cost units | Complete `ExplicitV3` is accepted and resolves with the selected outputs. |
 | PAY106-04 | Signet output is assigned to its own `{1}` | Rejected; original state and event list are unchanged. |
 | PAY106-05 | A later activation output is assigned to an earlier activation cost | Rejected by the forward-reference rule; zero mutation. |

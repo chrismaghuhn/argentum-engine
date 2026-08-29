@@ -24,6 +24,7 @@ import com.wingedsheep.engine.core.SpendAllocationV2
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.SelectCardsDecision
+import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
@@ -35,8 +36,10 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.mrd.cards.LightningGreaves
 import com.wingedsheep.mtg.sets.definitions.`5dn`.cards.WayfarersBauble
+import com.wingedsheep.mtg.sets.definitions.apc.cards.LlanowarWastes
 import com.wingedsheep.mtg.sets.definitions.cmr.cards.WarRoom
 import com.wingedsheep.mtg.sets.definitions.c17.cards.RamosDragonEngine
+import com.wingedsheep.mtg.sets.definitions.iko.cards.ChevillBaneOfMonsters
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.mtg.sets.definitions.wth.cards.MindStone
 import com.wingedsheep.sdk.core.Format
@@ -151,6 +154,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         register(MindStone)
         register(WarRoom)
         register(RamosDragonEngine)
+        register(ChevillBaneOfMonsters)
         extraCards.forEach(::register)
     }
 
@@ -162,6 +166,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         format: Format = Format.Standard,
         commanderCardName: String? = null,
         manaSourceCount: Int = 2,
+        startingLife: Int? = null,
     ): PreparedDeterministicAbilityGym {
         val cardRegistry = registry(extraCards)
         val environment = GameEnvironment.create(cardRegistry)
@@ -212,6 +217,7 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         val sourceId = moveNamed(sourceCard.name, Zone.BATTLEFIELD)
         battlefieldCardNames.forEach { moveNamed(it, Zone.BATTLEFIELD) }
         val mountainIds = List(manaSourceCount) { moveNamed("Mountain", Zone.BATTLEFIELD) }
+        if (startingLife != null) state = state.withLifeTotal(playerId, startingLife)
         environment.restore(state, environment.playerIds, environment.stepCount)
 
         return PreparedDeterministicAbilityGym(
@@ -250,6 +256,17 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         format = Format.Commander(),
         commanderCardName = RamosDragonEngine.name,
         manaSourceCount = 3,
+    )
+
+    fun preparedWarRoomWithWastes(life: Int) = preparedActivatedAbility(
+        sourceCard = WarRoom,
+        abilityIndex = 1,
+        battlefieldCardNames = listOf(LlanowarWastes.name),
+        extraCards = listOf(LlanowarWastes),
+        format = Format.Commander(),
+        commanderCardName = ChevillBaneOfMonsters.name,
+        manaSourceCount = 3,
+        startingLife = life,
     )
 
     fun preparedDynamicPayLife() = preparedActivatedAbility(
@@ -538,6 +555,63 @@ class GameGymEnvDeterministicActivatedCostPaymentTest : FunSpec({
         domain.version shouldBe 4
         domain.requiredCost shouldBe "{3}"
         domain.sourceActivations.any { it.sourceId == prepared.sourceId } shouldBe false
+    }
+
+    test("PAY106-OUTER-COST-01: V5 exposes War Room's life reservation and pain budget") {
+        val prepared = preparedWarRoomWithWastes(life = 2)
+        val drawAbility = prepared.cardRegistry.requireCard(WarRoom.name).activatedAbilities[1]
+        val action = LegalAction(
+            action = ActivateAbility(
+                playerId = prepared.playerId,
+                sourceId = prepared.sourceId,
+                abilityId = drawAbility.id,
+            ),
+            actionType = "ActivateAbility",
+            description = "Activate War Room",
+            affordable = true,
+            manaCostString = "{3}",
+        )
+        val domain = ObservationBuilder(cardRegistry = prepared.cardRegistry)
+            .paymentDomainV5For(prepared.environment.state, action)
+            ?: error("Expected PaymentDomainV5 for War Room")
+        val wastesId = prepared.environment.state.getZone(prepared.playerId, Zone.BATTLEFIELD)
+            .single { id ->
+                prepared.environment.state.getEntity(id)?.get<CardComponent>()?.name == LlanowarWastes.name
+            }
+
+        domain.reservedOuterLifePayment shouldBe 2
+        domain.fixedSelfDamageBudget shouldBe 0
+        domain.sourceActivationOptions.any { it.sourceId == prepared.sourceId } shouldBe false
+        domain.sourceActivationOptions.any { it.sourceId == prepared.mountainIds.first() } shouldBe true
+        domain.sourceActivationOptions
+            .filter { it.sourceId == wastesId && it.fixedSelfDamageAmount == 1 }
+            .size shouldBe 2
+        domain.sourceActivationOptions
+            .filter { it.sourceId == wastesId && it.fixedSelfDamageAmount > domain.fixedSelfDamageBudget }
+            .size shouldBe 2
+    }
+
+    test("PAY106-OUTER-COST-02: V5 retains a painful War Room plan when life covers it") {
+        val prepared = preparedWarRoomWithWastes(life = 3)
+        val drawAbility = prepared.cardRegistry.requireCard(WarRoom.name).activatedAbilities[1]
+        val action = LegalAction(
+            action = ActivateAbility(
+                playerId = prepared.playerId,
+                sourceId = prepared.sourceId,
+                abilityId = drawAbility.id,
+            ),
+            actionType = "ActivateAbility",
+            description = "Activate War Room",
+            affordable = true,
+            manaCostString = "{3}",
+        )
+        val domain = ObservationBuilder(cardRegistry = prepared.cardRegistry)
+            .paymentDomainV5For(prepared.environment.state, action)
+            ?: error("Expected PaymentDomainV5 for War Room")
+
+        domain.reservedOuterLifePayment shouldBe 2
+        domain.fixedSelfDamageBudget shouldBe 1
+        domain.sourceActivationOptions.count { it.fixedSelfDamageAmount == 1 } shouldBe 2
     }
 
     test("TapSelf-only activated costs publish and require the source-bound acknowledgement") {

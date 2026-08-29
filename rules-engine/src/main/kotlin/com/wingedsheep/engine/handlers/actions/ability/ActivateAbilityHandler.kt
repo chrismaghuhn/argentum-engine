@@ -453,6 +453,17 @@ class ActivateAbilityHandler(
             val paymentCost = extractManaCost(costAfterConvokeReduction)
                 ?.canonicalPaymentManaCost()
                 ?: return "$planVersion requires an ordinary mana cost"
+            val reservedOuterLifePayment = if (submittedPaymentPlanV3 != null) {
+                CostAmountResolver.resolvePayLifeTotal(
+                    state = state,
+                    cost = effectiveCost,
+                    sourceId = action.sourceId,
+                    controllerId = action.playerId,
+                    cardRegistry = cardRegistry,
+                ) ?: return "Cannot resolve life cost"
+            } else {
+                0
+            }
             val paymentValidation = when {
                 submittedPaymentPlanV3 != null -> paymentPlanValidator.validateV3(
                     state = state,
@@ -460,6 +471,7 @@ class ActivateAbilityHandler(
                     cost = paymentCost,
                     plan = submittedPaymentPlanV3,
                     spellContext = abilityPaymentContext,
+                    reservedOuterLifePayment = reservedOuterLifePayment,
                     excludeSources = if (hasTapCost(effectiveCost)) setOf(action.sourceId) else emptySet(),
                 )
                 submittedPaymentPlanV2 != null -> paymentPlanValidator.validateV2(
@@ -1453,6 +1465,7 @@ class ActivateAbilityHandler(
                         plan = paymentPlan,
                         paymentContext = executeAbilityContext,
                         reason = "Activate ${cardComponent.name}",
+                        reservedOuterLifePayment = abilityPayLifeTotal,
                         excludeSources = selfExcludedSources,
                     )
                     execution.error?.let { error ->
