@@ -606,7 +606,7 @@ class ManaSolver(
 
         // Helper to spend one bonus mana of any color for a generic cost. Same FIFO
         // policy as [spendBonusMana].
-        fun spendAnyBonusMana(): Boolean {
+        fun spendAnyBonusMana(countTowardSpent: Boolean = true): Boolean {
             val idx = bonusManaPool.indexOfFirst { it.amount > 0 }
             if (idx < 0) return false
             val entry = bonusManaPool[idx]
@@ -614,7 +614,7 @@ class ManaSolver(
             // Generic paid from extra aura bonus mana counts its fixed color (mirroring
             // ManaPool.payPartial, where colored mana spent on generic still tracks as that color).
             // An any-color bonus has no color committed at solve time, so it stays uncounted here.
-            if (entry.countsTowardSpent && !entry.anyColor && !entry.colorless) {
+            if (countTowardSpent && entry.countsTowardSpent && !entry.anyColor && !entry.colorless) {
                 bonusManaSpentByColor[entry.color] = (bonusManaSpentByColor[entry.color] ?: 0) + 1
             }
             return true
@@ -627,6 +627,81 @@ class ManaSolver(
             if (idx < 0) return false
             val entry = bonusManaPool[idx]
             bonusManaPool[idx] = entry.copy(amount = entry.amount - 1)
+            return true
+        }
+
+        /**
+         * Makes a source's activation mana cost reachable before the source contributes any output.
+         *
+         * A source's output cannot be used to pay its own activation cost, and two paid sources
+         * cannot bootstrap one another. Existing bonus mana is available because it was produced
+         * by an earlier, already-activated source. When that is insufficient, only a source whose
+         * selected generic-payment ability is itself free may be tapped as a prerequisite. Its
+         * primary mana pays one activation-cost unit and any excess remains in [bonusManaPool].
+         *
+         * The local solver state is restored when the prerequisite search fails. This matters for
+         * callers that can try another production route after an unreachable candidate.
+         */
+        fun prepareSourceForProduction(source: ManaSource, colorUsed: Color?): Boolean {
+            var activationCostRemaining = colorUsed?.let { source.colorActivationManaCost[it] ?: 0 } ?: 0
+            if (activationCostRemaining <= 0) return true
+
+            val usedSourceCount = usedSources.size
+            val remainingSnapshot = remainingSources.toList()
+            val sourceCountsSnapshot = availableSourcesByColor.toMap()
+            val bonusSnapshot = bonusManaPool.toList()
+            val abilityUsesSnapshot = manaAbilityUses.toMap()
+            val bonusSpentSnapshot = bonusManaSpentByColor.toMap()
+
+            fun restoreSolverState() {
+                while (usedSources.size > usedSourceCount) usedSources.removeAt(usedSources.lastIndex)
+                remainingSources.clear()
+                remainingSources.addAll(remainingSnapshot)
+                availableSourcesByColor.clear()
+                availableSourcesByColor.putAll(sourceCountsSnapshot)
+                bonusManaPool.clear()
+                bonusManaPool.addAll(bonusSnapshot)
+                manaAbilityUses.clear()
+                manaAbilityUses.putAll(abilityUsesSnapshot)
+                bonusManaSpentByColor.clear()
+                bonusManaSpentByColor.putAll(bonusSpentSnapshot)
+            }
+
+            while (activationCostRemaining > 0) {
+                if (spendAnyBonusMana(countTowardSpent = false)) {
+                    activationCostRemaining--
+                    continue
+                }
+
+                val prerequisite = remainingSources
+                    .asSequence()
+                    .filter { it.entityId != source.entityId }
+                    .mapNotNull { candidate ->
+                        val selectedAbility = candidate.preferredManaAbilityForGenericPayment()
+                        val candidateCost = selectedAbility?.producedColor
+                            ?.let { candidate.colorActivationManaCost[it] ?: 0 }
+                            ?: 0
+                        if (candidateCost == 0) candidate to selectedAbility else null
+                    }
+                    .minByOrNull { (candidate, _) ->
+                        calculateTapPriority(candidate, handRequirements, availableSourcesByColor)
+                    }
+
+                if (prerequisite == null) {
+                    restoreSolverState()
+                    return false
+                }
+
+                val (prerequisiteSource, selectedAbility) = prerequisite
+                useSource(
+                    source = prerequisiteSource,
+                    colorUsed = selectedAbility?.producedColor,
+                    selectedAbility = selectedAbility?.ability,
+                )
+                // The prerequisite source's first mana unit pays this activation-cost unit;
+                // excess output was added to bonusManaPool by useSource above.
+                activationCostRemaining--
+            }
             return true
         }
 
@@ -643,6 +718,8 @@ class ManaSolver(
             val source = remainingSources.firstOrNull { src ->
                 src.bonusManaPerTap > 0 && (src.bonusManaIsAnyColor || src.bonusManaColor == color)
             } ?: return false
+            val primaryColor = source.availableColorsFor(spellContext).firstOrNull()
+            if (!prepareSourceForProduction(source, primaryColor)) return false
             usedSources.add(source)
             remainingSources.remove(source)
             for (c in source.producesColors) {
@@ -650,7 +727,6 @@ class ManaSolver(
             }
             // Printed mana → recorded as produced (mana-spent tally) and routed into the bonus pool
             // so the generic pass can consume it (or it floats back to the player's pool).
-            val primaryColor = source.availableColorsFor(spellContext).firstOrNull()
             if (primaryColor != null) {
                 manaProduced[source.entityId] = ManaProduction(
                     color = primaryColor,
@@ -699,6 +775,7 @@ class ManaSolver(
                         return null // Can't pay this colored cost
                     }
 
+                    if (!prepareSourceForProduction(source, symbol.color)) return null
                     manaProduced[source.entityId] = ManaProduction(
                         color = symbol.color,
                         amount = source.manaAmount,
@@ -740,6 +817,7 @@ class ManaSolver(
                     val availableColors = source.availableColorsFor(spellContext)
                     val colorUsed = if (availableColors.contains(symbol.color1))
                         symbol.color1 else symbol.color2
+                    if (!prepareSourceForProduction(source, colorUsed)) return null
                     manaProduced[source.entityId] = ManaProduction(
                         color = colorUsed,
                         amount = source.manaAmount,
@@ -758,6 +836,7 @@ class ManaSolver(
                         return null
                     }
 
+                    if (!prepareSourceForProduction(source, symbol.color)) return null
                     manaProduced[source.entityId] = ManaProduction(
                         color = symbol.color,
                         amount = source.manaAmount,
@@ -780,6 +859,7 @@ class ManaSolver(
                         }
                         ?: return null
 
+                    if (!prepareSourceForProduction(source, null)) return null
                     manaProduced[source.entityId] = ManaProduction(
                         colorless = source.manaAmount,
                         manaAbility = source.manaAbilityFor(null),
@@ -804,6 +884,7 @@ class ManaSolver(
             if (spendBonusMana(symbol.color)) continue
             val source = findBestSourceForColor(remainingSources, symbol.color, handRequirements, availableSourcesByColor, spellContext)
             if (source != null) {
+                if (!prepareSourceForProduction(source, symbol.color)) return null
                 manaProduced[source.entityId] = ManaProduction(
                     color = symbol.color,
                     amount = source.manaAmount,
@@ -813,38 +894,6 @@ class ManaSolver(
             } else {
                 monoHybridGeneric += symbol.generic
             }
-        }
-
-        // 1b. Pay the internal mana cost of any ability we committed to activate above
-        //     (e.g., Hidden Grotto's "{1}, {T}: Add one mana of any color" — producing
-        //     the colored mana requires {1} from another source). These extra sources
-        //     are tapped but their production is NOT added to manaProduced — it is
-        //     consumed by the ability's activation cost rather than flowing into the
-        //     spell's payment pool. Excess mana from multi-mana sources does still
-        //     flow to the bonus pool and remains available for the generic pass.
-        var activationCostRemaining = 0
-        for (used in usedSources) {
-            val produced = manaProduced[used.entityId] ?: continue
-            val color = produced.color ?: continue
-            activationCostRemaining += used.colorActivationManaCost[color] ?: 0
-        }
-        while (activationCostRemaining > 0) {
-            if (spendAnyBonusMana()) {
-                activationCostRemaining--
-                continue
-            }
-            if (remainingSources.isEmpty()) return null
-            val source = remainingSources.minByOrNull {
-                calculateTapPriority(it, handRequirements, availableSourcesByColor)
-            } ?: return null
-            // Tap for activation cost; attribute any excess to bonus pool.
-            val selectedAbility = source.preferredManaAbilityForGenericPayment()
-            useSource(
-                source = source,
-                colorUsed = selectedAbility?.producedColor,
-                selectedAbility = selectedAbility?.ability,
-            )
-            activationCostRemaining--
         }
 
         // 1c. Pay the color-restricted X portion ("spend only [colors] on X"), if any.
@@ -878,6 +927,7 @@ class ManaSolver(
                     .minByOrNull { calculateTapPriority(it, handRequirements, availableSourcesByColor) }
                     ?: return null // Can't pay X with the allowed colors
                 val colorToUse = source.availableColorsFor(spellContext).first { it in xManaRestriction }
+                if (!prepareSourceForProduction(source, colorToUse)) return null
                 manaProduced[source.entityId] = ManaProduction(
                     color = colorToUse,
                     amount = source.manaAmount,
@@ -939,6 +989,7 @@ class ManaSolver(
                     coloredExtraCost(cheapestColor) > source.colorlessPainCost -> null
                 else -> cheapestColor
             }
+            if (!prepareSourceForProduction(source, colorToUse)) return null
             manaProduced[source.entityId] = if (colorToUse != null) {
                 ManaProduction(
                     color = colorToUse,
