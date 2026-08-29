@@ -3,7 +3,9 @@ package com.wingedsheep.gym.contract
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.engineSerializersModule
+import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
@@ -17,6 +19,7 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
+import com.wingedsheep.engine.state.components.player.ManaProvenanceCompleteness
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.apc.cards.BattlefieldForge
 import com.wingedsheep.mtg.sets.definitions.apc.cards.LlanowarWastes
@@ -329,6 +332,42 @@ class PaymentDomainV5ContractTest : FunSpec({
         )
     }
 
+    fun certifiedJointPool(
+        fixture: Fixture,
+        reverseInsertionOrder: Boolean = false,
+    ): ManaPoolComponent {
+        val sourceId = fixture.forestId
+        val blackKey = FloatingManaBucketKeyV1(
+            sourceId = sourceId,
+            poolColor = PaymentManaColor.BLACK,
+            sourceSubtypes = emptySet(),
+        )
+        val greenKey = FloatingManaBucketKeyV1(
+            sourceId = sourceId,
+            poolColor = PaymentManaColor.GREEN,
+            sourceSubtypes = emptySet(),
+        )
+        val buckets = if (reverseInsertionOrder) {
+            linkedMapOf(greenKey to 1, blackKey to 1)
+        } else {
+            linkedMapOf(blackKey to 1, greenKey to 1)
+        }
+        val sourceColors = if (reverseInsertionOrder) {
+            linkedMapOf(PaymentManaColor.GREEN to 1, PaymentManaColor.BLACK to 1)
+        } else {
+            linkedMapOf(PaymentManaColor.BLACK to 1, PaymentManaColor.GREEN to 1)
+        }
+        return ManaPoolComponent(
+            black = 1,
+            green = 1,
+            manaBySource = mapOf(sourceId to 2),
+            manaBySourceAndColor = mapOf(sourceId to sourceColors),
+            manaByFloatingBucket = buckets,
+            manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+            manaProvenanceKnownTo = setOf(fixture.playerId),
+        )
+    }
+
     test("PAY106-01: Forest plus Golgari Signet publishes a complete V5 domain") {
         val fixture = prepared()
         val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
@@ -492,21 +531,9 @@ class PaymentDomainV5ContractTest : FunSpec({
         domain shouldBe null
     }
 
-    test("V5 rejects a certified joint pool with more than one provenance bucket") {
+    test("PAY106-FLOATING-JOINT-01: V5 publishes every certified joint pool bucket") {
         val fixture = prepared()
-        val pool = ManaPoolComponent()
-            .addTracked(
-                color = PaymentManaColor.GREEN,
-                sourceId = fixture.forestId,
-                subtypes = setOf(Subtype.FOREST),
-                knownToPlayers = setOf(fixture.playerId),
-            )
-            .addTracked(
-                color = PaymentManaColor.BLACK,
-                sourceId = fixture.swampId,
-                subtypes = setOf(Subtype.SWAMP),
-                knownToPlayers = setOf(fixture.playerId),
-            )
+        val pool = certifiedJointPool(fixture)
         val stateWithPool = fixture.environment.state.updateEntity(fixture.playerId) {
             it.with(pool)
         }
@@ -514,7 +541,59 @@ class PaymentDomainV5ContractTest : FunSpec({
         val domain = ObservationBuilder(cardRegistry = fixture.cardRegistry)
             .paymentDomainV5For(stateWithPool, fixture.legalAction)
 
-        domain shouldBe null
+        domain shouldNotBe null
+        domain!!.initialPoolBuckets.map { it.key } shouldBe listOf(
+            InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+                FloatingManaBucketKeyV1(
+                    sourceId = fixture.forestId,
+                    poolColor = PaymentManaColor.BLACK,
+                    sourceSubtypes = emptySet(),
+                ),
+            ),
+            InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+                FloatingManaBucketKeyV1(
+                    sourceId = fixture.forestId,
+                    poolColor = PaymentManaColor.GREEN,
+                    sourceSubtypes = emptySet(),
+                ),
+            ),
+        )
+        domain.initialPoolBuckets.map { it.availableAmount } shouldBe listOf(1, 1)
+    }
+
+    test("PAY106-FLOATING-JOINT-05: keyed joint buckets have canonical public ordering") {
+        val fixture = prepared()
+        val state = fixture.environment.state
+        val firstState = state.updateEntity(fixture.playerId) {
+            it.with(certifiedJointPool(fixture))
+        }
+        val secondState = state.updateEntity(fixture.playerId) {
+            it.with(certifiedJointPool(fixture, reverseInsertionOrder = true))
+        }
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+        val firstDomain = builder.paymentDomainV5For(firstState, fixture.legalAction)
+        val secondDomain = builder.paymentDomainV5For(secondState, fixture.legalAction)
+
+        firstDomain shouldNotBe null
+        secondDomain shouldNotBe null
+        firstDomain shouldBe secondDomain
+
+        val firstObservation = builder.build(
+            state = firstState,
+            perspectivePlayerId = fixture.playerId,
+            legalActions = listOf(fixture.legalAction),
+        ).observation as TrainingObservation
+        val secondObservation = builder.build(
+            state = secondState,
+            perspectivePlayerId = fixture.playerId,
+            legalActions = listOf(fixture.legalAction),
+        ).observation as TrainingObservation
+
+        ObservationCanonicalizer.semanticJson(firstObservation) shouldBe
+            ObservationCanonicalizer.semanticJson(secondObservation)
+        ObservationCanonicalizer.wireJson(firstObservation) shouldBe
+            ObservationCanonicalizer.wireJson(secondObservation)
+        firstObservation.stateDigest shouldBe secondObservation.stateDigest
     }
 
     test("V5 rejects the pre-existing synthetic colorless land fallback") {
@@ -659,4 +738,5 @@ class PaymentDomainV5ContractTest : FunSpec({
         domain.sourceActivationOptions.any { it.sourceId == fixture.signetId } shouldBe false
         domain.sourceActivationOptions.any { it.sourceId == fixture.forestId } shouldBe true
     }
+
 })

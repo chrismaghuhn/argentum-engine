@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.FixedManaOutput
+import com.wingedsheep.engine.core.FloatingManaBucketKeyV1
 import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.LifeChangeReason
 import com.wingedsheep.engine.core.LifeChangedEvent
@@ -239,6 +240,32 @@ class PaymentPlanV3ValidatorTest : FunSpec({
             },
         )
     }
+
+    fun certifiedJointBucket(
+        fixture: SignetFixture,
+        color: PaymentManaColor,
+    ): InitialPoolBucketKeyV1 = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+        FloatingManaBucketKeyV1(
+            sourceId = fixture.forestId,
+            poolColor = color,
+            sourceSubtypes = emptySet(),
+        ),
+    )
+
+    fun certifiedJointPool(fixture: SignetFixture): ManaPoolComponent =
+        ManaPoolComponent()
+            .addTracked(
+                color = PaymentManaColor.BLACK,
+                sourceId = fixture.forestId,
+                subtypes = emptySet(),
+                knownToPlayers = setOf(fixture.player),
+            )
+            .addTracked(
+                color = PaymentManaColor.GREEN,
+                sourceId = fixture.forestId,
+                subtypes = emptySet(),
+                knownToPlayers = setOf(fixture.player),
+            )
 
     fun permissionFixture(): PermissionFixture {
         val driver = GameTestDriver()
@@ -1218,6 +1245,157 @@ class PaymentPlanV3ValidatorTest : FunSpec({
 
         validate(fixture, cost = ManaCost.parse("{2}{B}"), plan = plan)
             .shouldBeInstanceOf<PaymentPlanValidation.AcceptedV3>()
+    }
+
+    test("PAY106-FLOATING-JOINT-02: two certified initial buckets pay an outer {1}{B} cost") {
+        val fixture = signetFixture()
+        fixture.driver.addComponent(fixture.player, certifiedJointPool(fixture))
+        val blackBucket = certifiedJointBucket(fixture, PaymentManaColor.BLACK)
+        val greenBucket = certifiedJointBucket(fixture, PaymentManaColor.GREEN)
+        val plan = PaymentPlanV3(
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(greenBucket),
+                ),
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(1, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(blackBucket),
+                ),
+            ),
+        )
+        val before = fixture.driver.state
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = before,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{1}{B}"),
+            plan = plan,
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 certified joint initial buckets",
+        )
+
+        result.error shouldBe null
+        result.state.getEntity(fixture.player)?.get<ManaPoolComponent>()?.unrestrictedTotal shouldBe 0
+        result.spentManaProvenance.sourceIds shouldBe setOf(fixture.forestId)
+        result.events.filterIsInstance<ManaSpentEvent>().single().let { spent ->
+            spent.black shouldBe 1
+            spent.green shouldBe 1
+        }
+    }
+
+    test("PAY106-FLOATING-JOINT-03: consuming one certified bucket preserves the other") {
+        val fixture = signetFixture()
+        fixture.driver.addComponent(fixture.player, certifiedJointPool(fixture))
+        val blackBucket = certifiedJointBucket(fixture, PaymentManaColor.BLACK)
+        val greenKey = FloatingManaBucketKeyV1(
+            sourceId = fixture.forestId,
+            poolColor = PaymentManaColor.GREEN,
+            sourceSubtypes = emptySet(),
+        )
+        val plan = PaymentPlanV3(
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(blackBucket),
+                ),
+            ),
+        )
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val result = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        ).executeV3(
+            state = fixture.driver.state,
+            playerId = fixture.player,
+            cost = ManaCost.parse("{B}"),
+            plan = plan,
+            paymentContext = SpellPaymentContext(),
+            reason = "PAY106 preserve unspent certified joint bucket",
+        )
+
+        result.error shouldBe null
+        val pool = result.state.getEntity(fixture.player)?.get<ManaPoolComponent>()
+        pool?.black shouldBe 0
+        pool?.green shouldBe 1
+        pool?.manaByFloatingBucket shouldBe mapOf(greenKey to 1)
+    }
+
+    test("PAY106-FLOATING-JOINT-04: invalid certified bucket references reject transactionally") {
+        val fixture = signetFixture()
+        fixture.driver.addComponent(fixture.player, certifiedJointPool(fixture))
+        val blackBucket = certifiedJointBucket(fixture, PaymentManaColor.BLACK)
+        val fabricatedBucket = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+            FloatingManaBucketKeyV1(
+                sourceId = EntityId("fabricated-source"),
+                poolColor = PaymentManaColor.BLACK,
+                sourceSubtypes = emptySet(),
+            ),
+        )
+        val wrongColorBucket = InitialPoolBucketKeyV1.CertifiedFloatingBucket(
+            FloatingManaBucketKeyV1(
+                sourceId = fixture.forestId,
+                poolColor = PaymentManaColor.RED,
+                sourceSubtypes = emptySet(),
+            ),
+        )
+        val overConsumed = PaymentPlanV3(
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(blackBucket),
+                ),
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(1, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(blackBucket),
+                ),
+            ),
+        )
+        val wrong = PaymentPlanV3(
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(wrongColorBucket),
+                ),
+            ),
+        )
+        val fabricated = PaymentPlanV3(
+            outerAllocation = listOf(
+                PaymentAllocationV1(
+                    target = PaymentTargetV1.OuterCostUnit(0, 0),
+                    resource = ManaResourceRefV1.InitialPoolResource(fabricatedBucket),
+                ),
+            ),
+        )
+        val services = EngineServices(fixture.driver.cardRegistry)
+        val executor = OrderedPaymentProgramExecutor(
+            manaSolver = services.manaSolver,
+            manaAbilitySideEffectExecutor = services.manaAbilitySideEffectExecutor,
+        )
+        val cases = listOf(
+            ManaCost.parse("{B}{B}") to overConsumed,
+            ManaCost.parse("{B}") to wrong,
+            ManaCost.parse("{B}") to fabricated,
+        )
+
+        for ((cost, plan) in cases) {
+            val before = fixture.driver.state
+            val result = executor.executeV3(
+                state = before,
+                playerId = fixture.player,
+                cost = cost,
+                plan = plan,
+                paymentContext = SpellPaymentContext(),
+                reason = "PAY106 invalid certified joint bucket",
+            )
+
+            result.error shouldNotBe null
+            result.state shouldBe before
+            result.events shouldBe emptyList()
+        }
     }
 
     test("PAY106-04: a Signet output cannot fund its own activation") {

@@ -16,6 +16,7 @@ import com.wingedsheep.engine.core.PaymentTargetV1
 import com.wingedsheep.engine.core.PoolSpend
 import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.SourceActivation
+import com.wingedsheep.engine.core.canonicalizeInitialPoolBucketsV1
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.ManaCost
@@ -684,9 +685,11 @@ class PaymentPlanValidator(
         return PaymentPlanValidation.AcceptedV3(
             program = ValidatedPaymentProgramV3(
                 outerCost = outerCost,
-                initialPoolBuckets = initialBuckets.map { (key, amount) ->
-                    InitialPoolBucketV1(key = key, availableAmount = amount)
-                },
+                initialPoolBuckets = canonicalizeInitialPoolBucketsV1(
+                    initialBuckets.map { (key, amount) ->
+                        InitialPoolBucketV1(key = key, availableAmount = amount)
+                    },
+                ),
                 activations = resolvedActivations,
                 allocations = allAllocations,
                 consumedInitialPool = ledger.consumedInitialPool,
@@ -1327,31 +1330,42 @@ private fun AtomicManaCostUnitV1.accepts(color: PaymentManaColor): Boolean = whe
 /** Build the exact fungible initial resources admitted by the V5 first slice. */
 private fun ManaPoolComponent.toV3InitialPoolBuckets(): Map<InitialPoolBucketKeyV1, Int>? {
     return when (val classification = FloatingManaProvenanceClassification.classify(this)) {
-        FloatingManaProvenanceClassification.NoTrackedProvenance -> buildMap {
-            for (color in PaymentManaColor.entries) {
-                val amount = when (color) {
-                    PaymentManaColor.WHITE -> white
-                    PaymentManaColor.BLUE -> blue
-                    PaymentManaColor.BLACK -> black
-                    PaymentManaColor.RED -> red
-                    PaymentManaColor.GREEN -> green
-                    PaymentManaColor.COLORLESS -> colorless
-                }
-                if (amount < 0) return null
-                if (amount > 0) {
-                    put(InitialPoolBucketKeyV1.UnrestrictedPoolBucket(color), amount)
+        FloatingManaProvenanceClassification.NoTrackedProvenance -> {
+            val buckets = buildList {
+                for (color in PaymentManaColor.entries) {
+                    val amount = when (color) {
+                        PaymentManaColor.WHITE -> white
+                        PaymentManaColor.BLUE -> blue
+                        PaymentManaColor.BLACK -> black
+                        PaymentManaColor.RED -> red
+                        PaymentManaColor.GREEN -> green
+                        PaymentManaColor.COLORLESS -> colorless
+                    }
+                    if (amount < 0) return null
+                    if (amount > 0) {
+                        add(
+                            InitialPoolBucketV1(
+                                key = InitialPoolBucketKeyV1.UnrestrictedPoolBucket(color),
+                                availableAmount = amount,
+                            ),
+                        )
+                    }
                 }
             }
+            canonicalizeInitialPoolBucketsV1(buckets).associate { it.key to it.availableAmount }
         }
 
         is FloatingManaProvenanceClassification.CertifiedJoint -> {
-            // V5 deliberately has no unstable multi-bucket ordering. The builder publishes only
-            // one certified bucket, so the validator accepts exactly that same shape.
-            val bucket = classification.candidate.buckets.singleOrNull() ?: return null
-            if (bucket.amount <= 0) return null
-            mapOf(
-                InitialPoolBucketKeyV1.CertifiedFloatingBucket(bucket.key) to bucket.amount,
-            )
+            val buckets = classification.candidate.buckets
+            if (buckets.any { it.amount <= 0 }) return null
+            canonicalizeInitialPoolBucketsV1(
+                buckets.map {
+                    InitialPoolBucketV1(
+                        key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(it.key),
+                        availableAmount = it.amount,
+                    )
+                },
+            ).associate { it.key to it.availableAmount }
         }
 
         is FloatingManaProvenanceClassification.CertifiedHomogeneous,

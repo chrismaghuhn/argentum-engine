@@ -78,6 +78,68 @@ data class InitialPoolBucketV1(
     val availableAmount: Int,
 )
 
+/**
+ * Canonical transport order for the unordered keyed set of initial-pool buckets.
+ *
+ * This ordering is only a deterministic wire/serialization convention. It does not choose a
+ * payment source, activation, or allocation for an external controller. Resource references
+ * continue to identify buckets by their complete key, and the ledger treats each bucket as
+ * fungible within that key.
+ */
+fun canonicalizeInitialPoolBucketsV1(
+    buckets: Iterable<InitialPoolBucketV1>,
+): List<InitialPoolBucketV1> = buckets.sortedWith { left, right ->
+    compareInitialPoolBucketKeys(left.key, right.key)
+}
+
+private data class InitialPoolBucketCanonicalKey(
+    val kind: Int,
+    val sourceId: String,
+    val colorOrdinal: Int,
+    val sortedSubtypeValues: List<String>,
+)
+
+private fun compareInitialPoolBucketKeys(
+    left: InitialPoolBucketKeyV1,
+    right: InitialPoolBucketKeyV1,
+): Int {
+    val leftKey = left.canonicalKey()
+    val rightKey = right.canonicalKey()
+    compareValues(leftKey.kind, rightKey.kind).takeIf { it != 0 }?.let { return it }
+    compareValues(leftKey.sourceId, rightKey.sourceId).takeIf { it != 0 }?.let { return it }
+    compareValues(leftKey.colorOrdinal, rightKey.colorOrdinal).takeIf { it != 0 }?.let { return it }
+
+    val subtypeCountComparison = compareValues(
+        leftKey.sortedSubtypeValues.size,
+        rightKey.sortedSubtypeValues.size,
+    )
+    if (subtypeCountComparison != 0) return subtypeCountComparison
+    for (index in leftKey.sortedSubtypeValues.indices) {
+        val comparison = compareValues(
+            leftKey.sortedSubtypeValues[index],
+            rightKey.sortedSubtypeValues[index],
+        )
+        if (comparison != 0) return comparison
+    }
+    return 0
+}
+
+private fun InitialPoolBucketKeyV1.canonicalKey(): InitialPoolBucketCanonicalKey = when (this) {
+    is InitialPoolBucketKeyV1.UnrestrictedPoolBucket -> InitialPoolBucketCanonicalKey(
+        kind = 0,
+        sourceId = "",
+        colorOrdinal = color.ordinal,
+        sortedSubtypeValues = emptyList(),
+    )
+
+    is InitialPoolBucketKeyV1.CertifiedFloatingBucket -> InitialPoolBucketCanonicalKey(
+        kind = 1,
+        sourceId = key.sourceId.value,
+        colorOrdinal = key.poolColor.ordinal,
+        sortedSubtypeValues = key.sourceSubtypes.map { it.value }.sorted(),
+    )
+}
+
 /** A legal non-mana component in the selected activation-cost order. */
 @Serializable
 sealed interface ActivationCostComponentRefV1 {

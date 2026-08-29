@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.InitialPoolBucketV1
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentCostKindV1
 import com.wingedsheep.engine.core.ProductionChoice
+import com.wingedsheep.engine.core.canonicalizeInitialPoolBucketsV1
 import com.wingedsheep.engine.mechanics.combat.CombatObjectOrder
 import com.wingedsheep.engine.mechanics.cost.ActivatedAbilityCostCalculator
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
@@ -389,6 +390,9 @@ data class PaymentDomainV5(
         require(initialPoolBuckets.map { it.key }.toSet().size == initialPoolBuckets.size) {
             "PaymentDomainV5 cannot publish duplicate initial-pool buckets"
         }
+        require(initialPoolBuckets == canonicalizeInitialPoolBucketsV1(initialPoolBuckets)) {
+            "PaymentDomainV5 initial-pool buckets must use canonical keyed-set order"
+        }
         require(outerAtomicCostUnits.map {
             it.symbolIndex to it.unitIndexWithinSymbol
         }.toSet().size == outerAtomicCostUnits.size) {
@@ -584,24 +588,26 @@ class PaymentDomainBuilder(
     ): List<InitialPoolBucketV1>? {
         if (restrictedMana.isNotEmpty()) return null
         return when (val classification = FloatingManaProvenanceClassification.classify(this)) {
-            FloatingManaProvenanceClassification.NoTrackedProvenance -> buildList {
-                val amounts = listOf(
-                    PaymentManaColor.WHITE to white,
-                    PaymentManaColor.BLUE to blue,
-                    PaymentManaColor.BLACK to black,
-                    PaymentManaColor.RED to red,
-                    PaymentManaColor.GREEN to green,
-                    PaymentManaColor.COLORLESS to colorless,
-                )
-                amounts.filter { it.second > 0 }.forEach { (color, amount) ->
-                    add(
-                        InitialPoolBucketV1(
-                            key = InitialPoolBucketKeyV1.UnrestrictedPoolBucket(color),
-                            availableAmount = amount,
-                        )
+            FloatingManaProvenanceClassification.NoTrackedProvenance -> canonicalizeInitialPoolBucketsV1(
+                buildList {
+                    val amounts = listOf(
+                        PaymentManaColor.WHITE to white,
+                        PaymentManaColor.BLUE to blue,
+                        PaymentManaColor.BLACK to black,
+                        PaymentManaColor.RED to red,
+                        PaymentManaColor.GREEN to green,
+                        PaymentManaColor.COLORLESS to colorless,
                     )
-                }
-            }
+                    amounts.filter { it.second > 0 }.forEach { (color, amount) ->
+                        add(
+                            InitialPoolBucketV1(
+                                key = InitialPoolBucketKeyV1.UnrestrictedPoolBucket(color),
+                                availableAmount = amount,
+                            )
+                        )
+                    }
+                },
+            )
 
             is FloatingManaProvenanceClassification.CertifiedJoint -> {
                 if (playerId !in manaProvenanceKnownTo) return null
@@ -609,19 +615,16 @@ class PaymentDomainBuilder(
                         !isPerspectiveSafeSource(state, playerId, it.key.sourceId)
                     }
                 ) return null
-                // V4 owns the historical multi-bucket ordering. V5 must not promote that
-                // EntityId-based order into a new public contract without a stable Rules-owned
-                // provenance order. A single fungible bucket has no ordering choice; multiple
-                // buckets remain unsupported until that Rules metadata exists.
-                if (classification.candidate.buckets.size > 1) return null
-                classification.candidate.buckets
-                    .filter { it.amount > 0 }
-                    .map {
+                val buckets = classification.candidate.buckets
+                if (buckets.any { it.amount <= 0 }) return null
+                canonicalizeInitialPoolBucketsV1(
+                    buckets.map {
                         InitialPoolBucketV1(
                             key = InitialPoolBucketKeyV1.CertifiedFloatingBucket(it.key),
                             availableAmount = it.amount,
                         )
-                    }
+                    },
+                )
             }
 
             is FloatingManaProvenanceClassification.CertifiedHomogeneous,
