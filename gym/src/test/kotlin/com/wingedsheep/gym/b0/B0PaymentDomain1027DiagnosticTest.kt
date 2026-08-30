@@ -92,14 +92,15 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
             val postLegalActions = postEnvironment.legalActions()
             val payableViews = observation.legalActions.filter { it.manaCost != null }
             val offenderViews = payableViews.filter { it.paymentDomain == null }
-            val offenders = offenderViews.map { view ->
-                postLegalActions.single { legalAction ->
+            fun registeredActionFor(view: LegalActionView): LegalAction = postLegalActions.single { legalAction ->
                     legalAction.actionType == view.kind &&
                         legalAction.description == view.description &&
                         legalAction.manaCostString == view.manaCost &&
                         legalActionSourceId(legalAction) == view.sourceEntityId
-                }
             }
+            val offenders = offenderViews.map(::registeredActionFor)
+            val productionOffenderViews = offenderViews.filter { it.affordable }
+            val productionOffenders = productionOffenderViews.map(::registeredActionFor)
 
             val report = buildString {
                 appendLine("B0-PAYMENT-DOMAIN-01 DECISION-1027 PAYMENT DIAGNOSTIC")
@@ -121,9 +122,10 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                 appendLine("RUN_CLOSURE=${failingRun.result.closureKind}/${failingRun.result.closureReason}")
                 appendLine("RUN_FAILURE_STAGE=${failingRun.failureBundle?.failureStage}")
                 appendLine("RUN_FAILURE_REFERENCE=${failingRun.failureBundle?.restrictedDiagnosticsReference}")
-                appendLine("ROOT_CLASSIFICATION=MIXED_SHARED_AND_ACTION_SPECIFIC_ROOT_CAUSES")
-                appendLine("SHARED_EQUIP_ROOT_CAUSE=Fervent Champion makes one public equip target cheaper")
-                appendLine("STRONGHOLD_ROOT_CAUSE=unaffordable action is omitted from public payment domain")
+                appendLine("ROOT_CLASSIFICATION=SINGLE_SHARED_PRODUCTION_ROOT_WITH_DIAGNOSTIC_NOISE")
+                appendLine("PRODUCTION_ROOT=TARGET_DEPENDENT_EQUIP_PAYMENT_DOMAIN_GAP")
+                appendLine("PRODUCTION_OFFENDER_COUNT=${productionOffenders.size}")
+                appendLine("NON_CAUSAL_DIAGNOSTIC_NOISE=Slayers' Stronghold is unaffordable and intentionally omits paymentDomain")
                 appendLine()
 
                 appendLine("PUBLIC_PAYABLE_COUNT=${payableViews.size}")
@@ -176,8 +178,12 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
 
             offenderViews.size shouldBe 4
             offenders.size shouldBe 4
+            productionOffenderViews.size shouldBe 3
+            productionOffenders.size shouldBe 3
             offenders.mapNotNull(::legalActionSourceId).map(EntityId::value) shouldBe
                 listOf("e164", "e136", "e162", "e165")
+            productionOffenders.mapNotNull(::legalActionSourceId).map(EntityId::value) shouldBe
+                listOf("e164", "e162", "e165")
             offenderViews.map { it.requiredPayloadFields } shouldBe listOf(
                 listOf("targets", "paymentStrategy"),
                 listOf("paymentStrategy", "costPayment"),
@@ -199,7 +205,7 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                 "PAYMENT_REQUEST:EQUIP_PAYMENT_UNSUPPORTED:{e147=Atom(atom=Mana(cost={1}))}",
             )
 
-            val equipActions = offenders.filter { it.description == "Equip {0}" }
+            val equipActions = productionOffenders.filter { it.description == "Equip {0}" }
             equipActions.size shouldBe 3
             equipActions.forEach { legalAction ->
                 val action = legalAction.action as ActivateAbility
