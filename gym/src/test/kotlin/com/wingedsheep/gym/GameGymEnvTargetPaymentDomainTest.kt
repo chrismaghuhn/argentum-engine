@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PaymentPlanV3
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
@@ -15,9 +16,11 @@ import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TargetPaymentDomainV1
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
@@ -25,6 +28,7 @@ import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
@@ -36,10 +40,17 @@ import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import com.wingedsheep.sdk.scripting.targets.TargetSpell
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 
 class GameGymEnvTargetPaymentDomainTest : FunSpec({
 
@@ -159,6 +170,20 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         }
     }
 
+    val strictTargetActivator = card("Gym Strict Target Payment Activator") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetCreature()
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+    }
+
     val artifactCreatureTarget = card("Gym Artifact Creature Target") {
         typeLine = "Artifact Creature — Construct"
         power = 1
@@ -183,6 +208,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
     data class Fixture(
         val environment: GameEnvironment,
         val registry: com.wingedsheep.engine.registry.CardRegistry,
+        val activator: CardDefinition,
         val playerId: EntityId,
         val opponentId: EntityId,
         val sourceId: EntityId,
@@ -191,11 +217,15 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val unrepresentableSourceId: EntityId?,
     )
 
-    fun prepared(includeUnrepresentableManaSource: Boolean = false): Fixture {
+    fun prepared(
+        includeUnrepresentableManaSource: Boolean = false,
+        activator: CardDefinition = targetBoundActivator,
+        includeBasicManaSource: Boolean = false,
+    ): Fixture {
         val registry = com.wingedsheep.engine.registry.CardRegistry().apply {
             register(PortalSet.cards)
             register(PortalSet.basicLands)
-            register(targetBoundActivator)
+            register(activator)
             register(artifactCreatureTarget)
             register(ordinaryCreatureTarget)
             register(unrepresentableManaSource)
@@ -207,7 +237,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
                     PlayerConfig(
                         "Alice",
                         Deck.of(
-                            targetBoundActivator.name to 1,
+                            activator.name to 1,
                             artifactCreatureTarget.name to 1,
                             ordinaryCreatureTarget.name to 1,
                             *(if (includeUnrepresentableManaSource) {
@@ -245,7 +275,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             return entityId
         }
 
-        val sourceId = moveNamed(targetBoundActivator.name)
+        val sourceId = moveNamed(activator.name)
         val artifactTargetId = moveNamed(artifactCreatureTarget.name)
         val ordinaryTargetId = moveNamed(ordinaryCreatureTarget.name)
         val unrepresentableSourceId = if (includeUnrepresentableManaSource) {
@@ -253,11 +283,13 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         } else {
             null
         }
+        if (includeBasicManaSource) moveNamed("Mountain")
         environment.restore(state, environment.playerIds, environment.stepCount)
 
         return Fixture(
             environment = environment,
             registry = registry,
+            activator = activator,
             playerId = playerId,
             opponentId = opponentId,
             sourceId = sourceId,
@@ -268,7 +300,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
     }
 
     fun targetAction(fixture: Fixture, abilityIndex: Int = 0): LegalAction {
-        val sourceCard = fixture.registry.getCard(targetBoundActivator.name)
+        val sourceCard = fixture.registry.getCard(fixture.activator.name)
             ?: error("Target-bound activator is not registered")
         val ability = sourceCard.script.activatedAbilities[abilityIndex]
         val permanentTargetIds = listOf(fixture.ordinaryTargetId, fixture.artifactTargetId)
@@ -315,6 +347,53 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             perspectivePlayerId = fixture.playerId,
             legalActions = listOf(action),
         )
+
+    val actionJson = Json {
+        encodeDefaults = true
+        explicitNulls = false
+        classDiscriminator = "type"
+    }
+
+    fun strictTargetPaymentView(fixture: Fixture): Pair<GameGymEnv, LegalActionView> {
+        val gym = GameGymEnv(
+            environment = fixture.environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = fixture.registry),
+        )
+        val observation = gym.observe().observation.shouldBeInstanceOf<TrainingObservation>()
+        val view = observation.legalActions.singleOrNull { action ->
+            action.sourceEntityId == fixture.sourceId && action.targetPaymentDomain != null
+        } ?: error("Expected target-payment action in ${observation.legalActions}")
+        return gym to view
+    }
+
+    fun targetPaymentPlan(view: LegalActionView, targetId: EntityId): PaymentPlanV3 {
+        val binding = view.targetPaymentDomain?.targetBindings?.singleOrNull { it.target == targetId }
+            ?: error("No target binding for $targetId in $view")
+        return paymentPlanV3FromPublic(binding.paymentDomain)
+            ?: error("Expected a complete V5 plan for target $targetId")
+    }
+
+    fun targetPaymentPayload(
+        view: LegalActionView,
+        targetId: EntityId,
+        plan: PaymentPlanV3,
+    ): JsonObject = buildJsonObject {
+        view.actionSemantics?.forEach { (key, value) -> put(key, value) }
+        put("targets", buildJsonArray {
+            add(buildJsonObject {
+                put("type", "Permanent")
+                put("entityId", targetId.value)
+            })
+        })
+        put(
+            "paymentStrategy",
+            actionJson.encodeToJsonElement(
+                PaymentStrategy.serializer(),
+                PaymentStrategy.ExplicitV3(paymentPlan = plan),
+            ),
+        )
+    }
 
     test("publishes complete target-bound V5 domains in the mapped candidate order") {
         val fixture = prepared()
@@ -414,6 +493,202 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val result = observe(fixture, action)
         result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
         result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single().targetPaymentDomain shouldBe null
+    }
+
+    test("strict Gym accepts a plan from the selected target binding") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val plan = targetPaymentPlan(view, fixture.artifactTargetId)
+        val beforeStepCount = fixture.environment.stepCount
+
+        gym.step(
+            view.actionId,
+            targetPaymentPayload(view, fixture.artifactTargetId, plan),
+        )
+
+        fixture.environment.stepCount shouldBe beforeStepCount + 1
+    }
+
+    test("strict Gym rejects native payment fallback for a target-bound action atomically") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val beforeState = fixture.environment.state
+        val beforeEvents = fixture.environment.lastStepEvents
+        val beforeStepCount = fixture.environment.stepCount
+        val payload = buildJsonObject {
+            view.actionSemantics?.forEach { (key, value) -> put(key, value) }
+            put("targets", buildJsonArray {
+                add(buildJsonObject {
+                    put("type", "Permanent")
+                    put("entityId", fixture.artifactTargetId.value)
+                })
+            })
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(PaymentStrategy.serializer(), PaymentStrategy.AutoPay),
+            )
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(view.actionId, payload)
+        }
+
+        fixture.environment.state shouldBe beforeState
+        fixture.environment.lastStepEvents shouldBe beforeEvents
+        fixture.environment.stepCount shouldBe beforeStepCount
+    }
+
+    test("strict Gym rejects a payment plan from a different target binding atomically") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val planForArtifact = targetPaymentPlan(view, fixture.artifactTargetId)
+        val beforeState = fixture.environment.state
+        val beforeEvents = fixture.environment.lastStepEvents
+        val beforeStepCount = fixture.environment.stepCount
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(
+                view.actionId,
+                targetPaymentPayload(view, fixture.ordinaryTargetId, planForArtifact),
+            )
+        }
+
+        fixture.environment.state shouldBe beforeState
+        fixture.environment.lastStepEvents shouldBe beforeEvents
+        fixture.environment.stepCount shouldBe beforeStepCount
+    }
+
+    test("strict Gym rejects missing, duplicate, and off-domain target submissions atomically") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val plan = targetPaymentPlan(view, fixture.artifactTargetId)
+
+        fun assertRejected(payload: JsonObject) {
+            val beforeState = fixture.environment.state
+            val beforeEvents = fixture.environment.lastStepEvents
+            val beforeStepCount = fixture.environment.stepCount
+
+            shouldThrow<IllegalArgumentException> {
+                gym.step(view.actionId, payload)
+            }
+
+            fixture.environment.state shouldBe beforeState
+            fixture.environment.lastStepEvents shouldBe beforeEvents
+            fixture.environment.stepCount shouldBe beforeStepCount
+        }
+
+        assertRejected(buildJsonObject {
+            view.actionSemantics?.forEach { (key, value) -> put(key, value) }
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.ExplicitV3(paymentPlan = plan),
+                ),
+            )
+        })
+        assertRejected(targetPaymentPayload(view, EntityId("not-a-published-target"), plan))
+        assertRejected(buildJsonObject {
+            view.actionSemantics?.forEach { (key, value) -> put(key, value) }
+            put("targets", buildJsonArray {
+                listOf(fixture.artifactTargetId, fixture.ordinaryTargetId).forEach { targetId ->
+                    add(buildJsonObject {
+                        put("type", "Permanent")
+                        put("entityId", targetId.value)
+                    })
+                }
+            })
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.ExplicitV3(paymentPlan = plan),
+                ),
+            )
+        })
+    }
+
+    test("strict Gym rejects a stale target-payment snapshot before mutation") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val plan = targetPaymentPlan(view, fixture.artifactTargetId)
+        val staleState = fixture.environment.state.moveToZone(
+            fixture.ordinaryTargetId,
+            ZoneKey(fixture.playerId, Zone.BATTLEFIELD),
+            ZoneKey(fixture.playerId, Zone.GRAVEYARD),
+        )
+        fixture.environment.restore(
+            staleState,
+            fixture.environment.playerIds,
+            fixture.environment.stepCount,
+        )
+        val beforeState = fixture.environment.state
+        val beforeEvents = fixture.environment.lastStepEvents
+        val beforeStepCount = fixture.environment.stepCount
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(
+                view.actionId,
+                targetPaymentPayload(view, fixture.artifactTargetId, plan),
+            )
+        }
+
+        fixture.environment.state shouldBe beforeState
+        fixture.environment.lastStepEvents shouldBe beforeEvents
+        fixture.environment.stepCount shouldBe beforeStepCount
+    }
+
+    test("strict Gym rejects a stale target-bound cost before mutation") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val plan = targetPaymentPlan(view, fixture.artifactTargetId)
+        val changedTargetState = fixture.environment.state.updateEntity(fixture.artifactTargetId) { container ->
+            val card = container.get<CardComponent>() ?: error("Expected target card component")
+            container.with(
+                card.copy(
+                    typeLine = card.typeLine.copy(
+                        cardTypes = card.typeLine.cardTypes - CardType.ARTIFACT,
+                    ),
+                ),
+            )
+        }
+        fixture.environment.restore(
+            changedTargetState,
+            fixture.environment.playerIds,
+            fixture.environment.stepCount,
+        )
+        val beforeState = fixture.environment.state
+        val beforeEvents = fixture.environment.lastStepEvents
+        val beforeStepCount = fixture.environment.stepCount
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(
+                view.actionId,
+                targetPaymentPayload(view, fixture.artifactTargetId, plan),
+            )
+        }
+
+        fixture.environment.state shouldBe beforeState
+        fixture.environment.lastStepEvents shouldBe beforeEvents
+        fixture.environment.stepCount shouldBe beforeStepCount
     }
 
     test("does not mark a binding affordable through an unrepresentable legacy source") {

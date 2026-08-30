@@ -11,10 +11,14 @@ import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.SubmitDecision
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
+import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
+import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationResult
@@ -89,7 +93,7 @@ class GameGymEnv(
             AttackDeclarationDomainSubmission.requireSupported(resolved.legalAction)
             BlockerDeclarationDomainSubmission.requireSupported(resolved.legalAction)
             ManaColorDomainSubmission.requireSupported(resolved.legalAction)
-            requireActionPaymentPlan(resolved, resolved.action)
+            requireActionPaymentPlan(resolved, resolved.action, actionId)
         }
         if (resolved is ResolvedAction.Legal &&
             observationBuilder.requiresStructuredActionFor(environment.state, resolved.legalAction)
@@ -133,7 +137,7 @@ class GameGymEnv(
         BlockerDeclarationDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
         ManaColorDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
         ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
-        requireActionPaymentPlan(legal, submitted)
+        requireActionPaymentPlan(legal, submitted, actionId)
         environment.stepFromCandidateStrict(legal.legalAction, submitted)
         return build()
     }
@@ -266,7 +270,7 @@ class GameGymEnv(
             is ResolvedAction.Legal -> {
                 BlockerDeclarationDomainSubmission.requireSupported(resolved.legalAction)
                 ManaColorDomainSubmission.requireSupported(resolved.legalAction)
-                requireActionPaymentPlan(resolved, resolved.action)
+                requireActionPaymentPlan(resolved, resolved.action, actionId)
                 // Keep the registry's complete LegalAction certificate bound to the live
                 // candidate even for an action-ID-only call. This prevents a stale blocker handle
                 // from reaching the compatibility execution path after the live domain changes.
@@ -305,12 +309,34 @@ class GameGymEnv(
     }
 
     /**
-     * A trusted Gym submission for an action-level mana payment must carry the complete public
-     * plan. The legacy engine still supports AutoPay/FromPool/Explicit(source IDs) for non-Gym
-     * callers, but none of those forms is a valid policy contract here.
+     * A trusted Gym submission for an action-level or target-bound mana payment must carry the
+     * complete public plan. The legacy engine still supports AutoPay/FromPool/Explicit(source IDs)
+     * for non-Gym callers, but none of those forms is a valid policy contract here.
      */
-    private fun requireActionPaymentPlan(resolved: ResolvedAction.Legal, submitted: GameAction) {
+    private fun requireActionPaymentPlan(
+        resolved: ResolvedAction.Legal,
+        submitted: GameAction,
+        actionId: Int,
+    ) {
         if (resolved.legalAction.manaCostString == null) return
+
+        val registeredView = registeredViewFor(actionId)
+        val currentTargetPayment = if (submitted is ActivateAbility) {
+            currentTargetPaymentSnapshot(resolved.legalAction)
+        } else {
+            null
+        }
+        val registeredTargetPayment = registeredView.targetPaymentDomain
+        val currentTargetPaymentDomain = currentTargetPayment?.view?.targetPaymentDomain
+        if (registeredTargetPayment != null || currentTargetPaymentDomain != null) {
+            requireTargetPaymentPlan(
+                resolved = resolved,
+                submitted = submitted,
+                registeredView = registeredView,
+                currentSnapshot = currentTargetPayment,
+            )
+            return
+        }
 
         if (observationBuilder.paymentDomainV5For(environment.state, resolved.legalAction) == null) {
             throw UnsupportedPathFailure(
@@ -345,6 +371,114 @@ class GameGymEnv(
             else -> throw IllegalArgumentException(
                 "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV3; automatic, pool, and legacy payments are not allowed"
             )
+        }
+    }
+
+    /** The public view registered for this opaque action handle; never recomputed from live state. */
+    private fun registeredViewFor(actionId: Int): LegalActionView =
+        (cachedObservation?.observation as? TrainingObservation)
+            ?.legalActions
+            ?.singleOrNull { it.actionId == actionId }
+            ?: throw IllegalArgumentException(
+                "Action ID $actionId has no registered observation snapshot",
+            )
+
+    private data class CurrentTargetPaymentSnapshot(
+        val legalAction: LegalAction,
+        val view: LegalActionView,
+    )
+
+    /**
+     * Re-enumerate only the selected current Rules action without touching the observation cache,
+     * action-handle allocator, diagnostic ledger, or action cursor. This is the live counterpart
+     * of the registered [LegalActionView] held by [cachedObservation].
+     */
+    private fun currentTargetPaymentSnapshot(
+        registeredAction: LegalAction,
+    ): CurrentTargetPaymentSnapshot {
+        val currentActions = environment.legalActions()
+        val currentAction = currentActions.firstOrNull { candidate ->
+            environment.isCurrentActionCandidate(candidate.action, registeredAction.action)
+        } ?: throw IllegalArgumentException(
+            "Registered action is no longer present in the current Rules action set",
+        )
+        val perspective = environment.agentToAct
+            ?: fallbackPerspectivePlayerIndex.let(environment.playerIds::getOrNull)
+            ?: throw IllegalArgumentException("Current target-payment action has no acting player")
+        val result = observationBuilder.build(
+            state = environment.state,
+            perspectivePlayerId = perspective,
+            legalActions = listOf(currentAction),
+            truncated = environment.isTruncated,
+        )
+        if (result.diagnostics.isNotEmpty()) {
+            throw UnsupportedPathFailure(result.diagnostics)
+        }
+        val observation = result.observation as? TrainingObservation
+            ?: throw IllegalStateException("GameGymEnv requires a TrainingObservation")
+        val view = observation.legalActions.singleOrNull()
+            ?: throw IllegalArgumentException(
+                "Current Rules action has no complete public observation view",
+            )
+        return CurrentTargetPaymentSnapshot(currentAction, view)
+    }
+
+    private fun requireTargetPaymentPlan(
+        resolved: ResolvedAction.Legal,
+        submitted: GameAction,
+        registeredView: LegalActionView,
+        currentSnapshot: CurrentTargetPaymentSnapshot?,
+    ) {
+        val registeredRelation = registeredView.targetPaymentDomain
+        val current = currentSnapshot
+            ?: throw IllegalArgumentException("Target-bound payment domain is stale")
+        val currentRelation = current.view.targetPaymentDomain
+        require(registeredRelation != null && currentRelation != null) {
+            "Target-bound payment domain is unavailable or stale"
+        }
+        require(registeredView.targetDomain == current.view.targetDomain) {
+            "Registered target domain is stale for the current action"
+        }
+        require(registeredRelation == currentRelation) {
+            "Registered target-payment domain is stale for the current action"
+        }
+
+        val activate = submitted as? ActivateAbility
+            ?: throw IllegalArgumentException("Target-bound payment requires ActivateAbility")
+        val selectedTarget = activate.targets.singleOrNull() as? ChosenTarget.Permanent
+            ?: throw IllegalArgumentException(
+                "Target-bound payment requires exactly one permanent target",
+            )
+        val registeredBinding = registeredRelation.targetBindings
+            .singleOrNull { it.target == selectedTarget.entityId }
+            ?: throw IllegalArgumentException("Submitted target is outside the registered payment domain")
+        val currentBinding = currentRelation.targetBindings
+            .singleOrNull { it.target == selectedTarget.entityId }
+            ?: throw IllegalArgumentException("Submitted target is outside the current payment domain")
+        require(registeredBinding == currentBinding) {
+            "Selected target-payment binding is stale"
+        }
+        require(currentBinding.affordable) {
+            "Selected target-payment binding is unaffordable"
+        }
+
+        val explicitV3 = activate.paymentStrategy as? PaymentStrategy.ExplicitV3
+            ?: throw IllegalArgumentException(
+                "Target-bound payment must submit PaymentStrategy.ExplicitV3",
+            )
+        val plan = explicitV3.paymentPlan
+            ?: throw IllegalArgumentException("Target-bound payment must submit a complete PaymentPlanV3")
+        when (val validation = observationBuilder.validateTargetPaymentPlanV3(
+            state = environment.state,
+            template = current.legalAction,
+            submitted = activate,
+            plan = plan,
+        )) {
+            is PaymentPlanValidation.AcceptedV3 -> Unit
+            is PaymentPlanValidation.Rejected -> throw IllegalArgumentException(
+                "Target-bound PaymentPlanV3 rejected: ${validation.reason}",
+            )
+            else -> throw IllegalStateException("Unexpected target-bound payment validation result")
         }
     }
 }
