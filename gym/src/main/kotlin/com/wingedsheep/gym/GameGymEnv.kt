@@ -473,6 +473,7 @@ class GameGymEnv(
             template = current.legalAction,
             submitted = activate,
             plan = plan,
+            expectedRequiredCost = currentBinding.paymentDomain.requiredCost,
         )) {
             is PaymentPlanValidation.AcceptedV3 -> Unit
             is PaymentPlanValidation.Rejected -> throw IllegalArgumentException(

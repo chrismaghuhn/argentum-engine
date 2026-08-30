@@ -962,6 +962,7 @@ class ObservationBuilder(
         template: LegalAction,
         submitted: ActivateAbility,
         plan: PaymentPlanV3,
+        expectedRequiredCost: String,
     ): PaymentPlanValidation {
         if (submitted.targets.singleOrNull() !is ChosenTarget.Permanent) {
             return PaymentPlanValidation.Rejected(
@@ -985,10 +986,16 @@ class ObservationBuilder(
             ability = ability,
             effectiveCost = effectiveCost,
         ) ?: return PaymentPlanValidation.Rejected("Target-bound payment request is unsupported")
+        val expectedCost = runCatching { ManaCost.parse(expectedRequiredCost) }
+            .getOrNull()
+            ?: return PaymentPlanValidation.Rejected("Target-bound published payment cost is invalid")
+        if (request.requiredCost != expectedRequiredCost) {
+            return PaymentPlanValidation.Rejected("Target-bound published payment cost is stale")
+        }
         return paymentPlanValidator.validateV3(
             state = state,
             playerId = request.playerId,
-            cost = ManaCost.parse(request.requiredCost),
+            cost = expectedCost,
             plan = plan,
             spellContext = request.spellContext,
             reservedOuterLifePayment = request.reservedOuterLifePayment,

@@ -824,6 +824,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             template = template,
             submitted = submitted,
             plan = PaymentPlanV3(),
+            expectedRequiredCost = "{0}",
         )
 
         validation.shouldBeInstanceOf<PaymentPlanValidation.AcceptedV3>()
@@ -836,7 +837,26 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
                     targets = listOf(ChosenTarget.Permanent(fixture.ordinaryTargetId)),
                 ),
                 plan = PaymentPlanV3(),
+                expectedRequiredCost = "{1}",
             )
         unaffordableBindingValidation.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
+    }
+
+    test("target-bound preflight rejects a published cost that disagrees with Rules resolution") {
+        val fixture = prepared()
+        val template = targetAction(fixture)
+        val submitted = (template.action as ActivateAbility).copy(
+            targets = listOf(ChosenTarget.Permanent(fixture.artifactTargetId)),
+        )
+
+        val validation = ObservationBuilder(cardRegistry = fixture.registry).validateTargetPaymentPlanV3(
+            state = fixture.environment.state,
+            template = template,
+            submitted = submitted,
+            plan = PaymentPlanV3(),
+            expectedRequiredCost = "{1}",
+        )
+
+        validation.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
     }
 })

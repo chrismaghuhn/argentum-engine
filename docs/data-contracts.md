@@ -1214,3 +1214,22 @@ canonicalization. Its binding sequence is preserved exactly; `ObservationCanonic
 invent a second ordering. Any nested V5 cost, source capability, or allocation-domain change is
 therefore digest-relevant. This additive observation relation does not change `PaymentDomainV5`,
 `PaymentPlanV3`, the executed `GameAction` carrier, or CompactReplay v5.
+
+On the trusted Gym submission path, the opaque action ID is bound to the `LegalActionView` from the
+cached registered observation. The server re-enumerates the current Rules action and builds a fresh
+public target/payment relation without replacing the cached snapshot, allocating new action IDs, or
+advancing any observation cursor. The registered and current target domains and complete target-
+payment relations must be semantically equal before the submission is interpreted.
+
+The submitted permanent target selects exactly one binding from that relation. The binding must be
+currently affordable, the submission must carry `PaymentStrategy.ExplicitV3` with a complete
+`PaymentPlanV3`, and the plan is preflighted against the selected current binding. The Rules-side
+recomputation must equal `currentBinding.paymentDomain.requiredCost`; that binding cost is the sole
+target-bound mana-cost input passed to the shared `PaymentPlanValidator.validateV3` preflight. The
+validator performs no payment selection, and no state mutation occurs before it accepts the plan.
+
+Missing, duplicate, or off-domain targets; an unaffordable binding; registered/current target or
+relation drift; nested V5 or required-cost drift; a plan from another target binding; malformed
+ExplicitV3 data; or any failed V3 preflight is rejected atomically before Rules execution, events,
+step advancement, or replay recording. The trusted path never falls back to AutoPay, FromPool,
+legacy Explicit source lists, or a different target binding.
