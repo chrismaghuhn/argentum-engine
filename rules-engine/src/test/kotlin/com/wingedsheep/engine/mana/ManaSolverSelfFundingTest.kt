@@ -596,6 +596,38 @@ class ManaSolverSelfFundingTest : FunSpec({
         poolAfterPayment.green shouldBe 0
     }
 
+    test("SELF-FUND-20 pool-only joint allocation is the allocation that gets spent") {
+        val driver = createDriver(listOf(paidSingleSource))
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.GREEN, 1)
+        driver.giveMana(player, Color.BLUE, 1)
+        driver.giveMana(player, Color.BLACK, 1)
+        val paidSource = driver.putPermanentOnBattlefield(player, paidSingleSource.name)
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G/U}{G}{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            xManaRestriction = setOf(Color.BLACK),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources shouldBe emptyList()
+        val poolAfterPayment = solution.poolAfterPayment.shouldNotBeNull()
+        poolAfterPayment.unrestrictedTotal shouldBe 0
+        poolAfterPayment.restrictedMana shouldBe emptyList()
+        driver.state.getEntity(paidSource)?.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
+    }
+
     test("SELF-FUND-07 restricted prerequisite bonus cannot pay a color-restricted X") {
         val driver = createDriver()
         val player = driver.activePlayer!!
