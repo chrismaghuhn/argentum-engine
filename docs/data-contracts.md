@@ -770,6 +770,12 @@ for every such action; an empty list is an authoritative empty domain. Actions w
 choice carry null. Policies select only from this list and never reconstruct a `ManaColorSet` from
 action semantics, commander zones, or other observation fields.
 
+At the trusted Gym submission boundary, a required choice must be non-null and a member of the
+registered Rules domain; an empty domain accepts no value. A color choice on an action that does
+not require one, duplicate domain entries, and drift between the registered and freshly
+re-enumerated Rules domain are rejected before mutation. The legacy Rules executor's fallback
+color selection is therefore unreachable through this trusted path.
+
 The domain hierarchy covers targets, card selection, modes, distribution, ordering, pile splitting,
 library search, library reorder, combat resolution, mana-source selection, replacement choices and
 budget modals. Simple one-mode and single-card choices remain flat `legalActions`. The obsolete

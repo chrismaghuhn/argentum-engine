@@ -19,6 +19,7 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
+import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 
 /**
  * A stateful game environment for AI agents, MCTS, and reinforcement learning.
@@ -301,9 +302,15 @@ class GameEnvironment private constructor(
                 "Structured blocker declaration domain is stale for the current action"
             }
         }
+        if (candidate.action is ActivateAbility) {
+            ManaColorDomainSubmission.requireSupported(current)
+            ManaColorDomainSubmission.requireSupported(candidate)
+            ManaColorDomainSubmission.requireCurrentDomain(candidate, current)
+        }
         require(isCurrentActionCandidate(candidate.action, submitted)) {
             "Structured action does not belong to the selected current legal candidate: $submitted"
         }
+        ManaColorDomainSubmission.requireWithinRegisteredDomain(candidate, submitted)
 
         return processAndCommit(submitted)
     }

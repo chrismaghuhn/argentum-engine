@@ -15,6 +15,7 @@ import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
+import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ResolvedAction
@@ -87,6 +88,7 @@ class GameGymEnv(
             ActionPayloadRequirements.requireTargetDomainSupported(resolved.legalAction)
             AttackDeclarationDomainSubmission.requireSupported(resolved.legalAction)
             BlockerDeclarationDomainSubmission.requireSupported(resolved.legalAction)
+            ManaColorDomainSubmission.requireSupported(resolved.legalAction)
             requireActionPaymentPlan(resolved, resolved.action)
         }
         if (resolved is ResolvedAction.Legal &&
@@ -116,6 +118,7 @@ class GameGymEnv(
         ActionPayloadRequirements.requireTargetDomainSupported(legal.legalAction)
         AttackDeclarationDomainSubmission.requireSupported(legal.legalAction)
         BlockerDeclarationDomainSubmission.requireSupported(legal.legalAction)
+        ManaColorDomainSubmission.requireSupported(legal.legalAction)
         val missingFields = observationBuilder.missingRequiredFieldsFor(
             environment.state,
             legal.legalAction,
@@ -128,6 +131,7 @@ class GameGymEnv(
         val submitted = materializeAction(legal.action, actionPayload)
         AttackDeclarationDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
         BlockerDeclarationDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
+        ManaColorDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
         ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
         requireActionPaymentPlan(legal, submitted)
         environment.stepFromCandidateStrict(legal.legalAction, submitted)
@@ -261,6 +265,7 @@ class GameGymEnv(
         when (resolved) {
             is ResolvedAction.Legal -> {
                 BlockerDeclarationDomainSubmission.requireSupported(resolved.legalAction)
+                ManaColorDomainSubmission.requireSupported(resolved.legalAction)
                 requireActionPaymentPlan(resolved, resolved.action)
                 // Keep the registry's complete LegalAction certificate bound to the live
                 // candidate even for an action-ID-only call. This prevents a stale blocker handle

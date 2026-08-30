@@ -109,6 +109,17 @@ class ManaColorDomainPolicyTest : FunSpec({
         gap.family shouldBe "MANA_COLOR"
         gap.code shouldBe "A5_DECISION_GAP"
     }
+
+    test("policy fails closed when the published color domain contains duplicates") {
+        val choice = DeterministicExternalPolicy().choose(
+            observation(action(listOf(Color.WHITE, Color.WHITE)), Zone.GRAVEYARD),
+            DeterministicPolicyState(policySeed = 1L),
+        )
+
+        val gap = choice as SemanticChoice.Gap
+        gap.family shouldBe "MANA_COLOR"
+        gap.code shouldBe "A5_DECISION_GAP"
+    }
 })
 
 private fun jsonObject(vararg entries: Pair<String, JsonElement>): JsonObject =
