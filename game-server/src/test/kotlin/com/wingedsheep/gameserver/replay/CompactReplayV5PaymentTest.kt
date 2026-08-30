@@ -1,6 +1,7 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.FixedManaOutput
 import com.wingedsheep.engine.core.GameAction
@@ -18,15 +19,22 @@ import com.wingedsheep.engine.mechanics.mana.ManaAbilityIdentity
 import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.session.GameSession
 import com.wingedsheep.gameserver.session.PlayerSession
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.Conditions
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.targets.TargetPermanent
+import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.string.shouldNotContain
 import io.kotest.core.spec.style.FunSpec
 import io.mockk.every
 import io.mockk.mockk
@@ -48,6 +56,20 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
         manaCost = "{G}"
         typeLine = "Sorcery"
         spell {
+            effect = Effects.GainLife(1)
+        }
+    }
+
+    private val replayV5TargetSource = card("Replay V5 Target Payment Source") {
+        typeLine = "Artifact Land"
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetPermanent()
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
             effect = Effects.GainLife(1)
         }
     }
@@ -229,6 +251,100 @@ class CompactReplayV5PaymentTest : ScenarioTestBase() {
 
             val decoded = ReplayCodec.decode(ReplayCodec.encode(replay))
             decoded shouldBe replay
+            val reconstructed = ReplayReconstructor(cardRegistry, null).reconstruct(decoded)
+            reconstructed.fidelity shouldBe ReplayFidelity.EXACT
+            val reconstructedFinal = ReplayReconstructor(cardRegistry, null)
+                .reconstructStateAt(decoded, decoded.actions.size)
+                .shouldNotBeNull()
+            ReplayFingerprint.of(reconstructedFinal, 5) shouldBe ReplayFingerprint.of(liveFinal, 5)
+        }
+
+        test("PAY106-13: target-bound ExplicitV3 action preserves target and replay fingerprint") {
+            cardRegistry.register(replayV5TargetSource)
+            val session = GameSession(cardRegistry = cardRegistry, maxPlayers = 2)
+            val playerOne = EntityId.of("replay-v5-target-player-one")
+            val playerTwo = EntityId.of("replay-v5-target-player-two")
+            val deck = mapOf(replayV5TargetSource.name to 1, "Mountain" to 5)
+            session.addPlayer(PlayerSession(mockWs("replay-v5-target-ws-1"), playerOne, "Alice"), deck)
+            session.addPlayer(PlayerSession(mockWs("replay-v5-target-ws-2"), playerTwo, "Bob"), deck)
+            session.startGame()
+            session.keepHand(playerOne)
+            session.keepHand(playerTwo)
+
+            val player = session.getStateForTesting().shouldNotBeNull().activePlayerId
+                ?: error("Expected active player")
+            advanceToPriority(session, player)
+            val enumerator = LegalActionEnumerator.create(cardRegistry)
+            val initial = session.getStateForTesting().shouldNotBeNull()
+            val playLand = enumerator.enumerate(initial, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? PlayLand ?: return@firstOrNull false
+                    initial.getEntity(action.cardId)
+                        ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                        ?.name == replayV5TargetSource.name
+                }
+                ?: error("Expected target-bound replay source in hand")
+            submit(session, player, playLand.action)
+            advanceToPriority(session, player)
+
+            val afterLand = session.getStateForTesting().shouldNotBeNull()
+            val sourceId = afterLand.getBattlefield(player).firstOrNull { id ->
+                afterLand.getEntity(id)
+                    ?.get<com.wingedsheep.engine.state.components.identity.CardComponent>()
+                    ?.name == replayV5TargetSource.name
+            } ?: error("Expected target-bound replay source on battlefield")
+            val legalTargetActivation = enumerator.enumerate(afterLand, player)
+                .firstOrNull { legal ->
+                    val action = legal.action as? ActivateAbility ?: return@firstOrNull false
+                    action.sourceId == sourceId &&
+                        action.targets == listOf(ChosenTarget.Permanent(sourceId))
+                }
+                ?: error("Expected self-targeted ActivateAbility action")
+            val explicit = (legalTargetActivation.action as ActivateAbility).copy(
+                paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = PaymentPlanV3()),
+            )
+            submit(session, player, explicit)
+
+            val liveFinal = session.getStateForTesting().shouldNotBeNull()
+            val recorded = session.getRecordedActions().filterIsInstance<ActivateAbility>().single {
+                it.sourceId == sourceId
+            }
+            recorded.targets shouldBe listOf(ChosenTarget.Permanent(sourceId))
+            recorded.paymentStrategy shouldBe explicit.paymentStrategy
+
+            val setup = session.getReplaySetup().shouldNotBeNull()
+            val actions = session.getRecordedActions()
+            val replay = CompactReplay(
+                version = 5,
+                gameId = session.sessionId,
+                players = session.getPlayers().map { ReplayPlayerInfo(it.playerId.value, it.playerName) },
+                startedAt = "2026-08-29T00:00:00Z",
+                endedAt = "2026-08-29T00:01:00Z",
+                winnerName = null,
+                setup = setup,
+                actions = actions,
+                checkpoints = listOf(
+                    ReplayCheckpoint(
+                        afterActionCount = actions.size,
+                        fingerprint = ReplayFingerprint.of(liveFinal, 5),
+                    ),
+                ),
+            )
+
+            val encoded = ReplayCodec.encode(replay)
+            val replayPayload = ReplayCodec.decodeText(encoded)
+            replayPayload shouldContain "\"targets\""
+            replayPayload shouldContain "\"ExplicitV3\""
+            replayPayload shouldNotContain "TargetPaymentDomainV1"
+
+            val decoded = ReplayCodec.decode(encoded)
+            decoded shouldBe replay
+            val decodedAction = decoded.actions.filterIsInstance<ActivateAbility>().single {
+                it.sourceId == sourceId
+            }
+            decodedAction.targets shouldBe listOf(ChosenTarget.Permanent(sourceId))
+            decodedAction.paymentStrategy shouldBe explicit.paymentStrategy
+
             val reconstructed = ReplayReconstructor(cardRegistry, null).reconstruct(decoded)
             reconstructed.fidelity shouldBe ReplayFidelity.EXACT
             val reconstructedFinal = ReplayReconstructor(cardRegistry, null)

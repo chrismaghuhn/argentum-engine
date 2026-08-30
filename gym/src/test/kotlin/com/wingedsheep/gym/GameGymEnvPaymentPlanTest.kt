@@ -3,10 +3,12 @@ package com.wingedsheep.gym
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.UnsupportedPathFailure
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
@@ -23,7 +25,9 @@ import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.effects.ManaRestriction
+import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.engine.state.components.player.RestrictedManaEntry
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
@@ -297,6 +301,26 @@ class GameGymEnvPaymentPlanTest : FunSpec({
         val (gym, view) = prepared()
 
         gym.step(view.actionId, paymentPayload(view))
+    }
+
+    test("target-bound ExplicitV3 carries its target without embedding the observation domain") {
+        val target = EntityId("target")
+        val action = ActivateAbility(
+            playerId = EntityId("player"),
+            sourceId = EntityId("source"),
+            abilityId = AbilityId("targeted-payment"),
+            targets = listOf(ChosenTarget.Permanent(target)),
+            paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = PaymentPlanV3()),
+        )
+
+        val encoded = actionJson.encodeToJsonElement(
+            ActivateAbility.serializer(),
+            action,
+        ).toString()
+
+        encoded.contains(target.value) shouldBe true
+        encoded.contains("ExplicitV3") shouldBe true
+        encoded.contains("targetPaymentDomain") shouldBe false
     }
 
     test("ordinary CastSpell publishes and accepts the complete PaymentPlanV3 domain") {

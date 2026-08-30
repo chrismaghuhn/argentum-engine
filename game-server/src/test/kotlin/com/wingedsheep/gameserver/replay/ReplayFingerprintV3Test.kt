@@ -184,6 +184,32 @@ class ReplayFingerprintV3Test : FunSpec({
         ReplayFingerprint.of(base, 4) shouldNotBe ReplayFingerprint.of(joint, 4)
     }
 
+    test("v5 target-bound payment replay retains the v4 fingerprint semantics") {
+        val player = EntityId("p1")
+        val source = EntityId("e108")
+        val state = GameState().withEntity(
+            player,
+            ComponentContainer.of(
+                ManaPoolComponent(
+                    green = 1,
+                    manaBySource = mapOf(source to 1),
+                    manaBySourceAndColor = mapOf(source to mapOf(PaymentManaColor.GREEN to 1)),
+                    manaProvenanceCompleteness = ManaProvenanceCompleteness.COMPLETE,
+                    manaByFloatingBucket = mapOf(
+                        FloatingManaBucketKeyV1(
+                            source,
+                            PaymentManaColor.GREEN,
+                            setOf(Subtype.FOREST),
+                        ) to 1,
+                    ),
+                    manaProvenanceKnownTo = setOf(player),
+                ),
+            ),
+        )
+
+        ReplayFingerprint.of(state, 5) shouldBe ReplayFingerprint.of(state, 4)
+    }
+
     test("v3 fingerprint includes semantic yields and canonicalizes unordered sets") {
         val player = EntityId("p1")
         val identity = AbilityIdentity("Test Card#TST-1", AbilityId("test-ability"))
