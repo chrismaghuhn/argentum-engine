@@ -66,6 +66,7 @@ import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
+import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCostWireString
 import com.wingedsheep.engine.mechanics.mana.isFixedOrdinaryManaCost
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
@@ -115,12 +116,19 @@ import com.wingedsheep.sdk.scripting.TimingRule
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetChooser
 import com.wingedsheep.sdk.scripting.effects.LevelUpClassEffect
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
+
+private sealed interface TargetPaymentQualification {
+    data object NotApplicable : TargetPaymentQualification
+    data class Supported(val domain: TargetPaymentDomainV1) : TargetPaymentQualification
+    data object Unsupported : TargetPaymentQualification
+}
 
 /**
  * Converts `(GameState, perspectivePlayerId)` into a [TrainingObservation].
@@ -195,11 +203,13 @@ class ObservationBuilder(
         val decisionRegistry = pendingDecisionAndRegistry?.second ?: ActionRegistry.EMPTY
         val actionDomainMappings = if (mayReceiveActions && state.pendingDecision == null) {
             legalActions.map { action ->
+                val targetResult = mapPublicTargetDomain(state, action, perspectivePlayerId)
                 ActionDomainMapping(
-                    action,
-                    targetResult = mapPublicTargetDomain(state, action, perspectivePlayerId),
+                    action = action,
+                    targetResult = targetResult,
                     attackResult = mapPublicAttackDeclarationDomain(state, action, perspectivePlayerId),
                     blockerResult = mapPublicBlockerDeclarationDomain(state, action, perspectivePlayerId),
+                    targetPaymentQualification = targetPaymentQualificationFor(state, action, targetResult),
                 )
             }
         } else {
@@ -212,7 +222,13 @@ class ObservationBuilder(
             if (target == null || attack == null || blocker == null) {
                 null
             } else {
-                SupportedActionDomain(mapping.action, target.domain, attack.domain, blocker.domain)
+                SupportedActionDomain(
+                    action = mapping.action,
+                    targetDomain = target.domain,
+                    attackDeclarationDomain = attack.domain,
+                    blockerDeclarationDomain = blocker.domain,
+                    targetPaymentQualification = mapping.targetPaymentQualification,
+                )
             }
         }
         val targetDomainDiagnostics = actionDomainMappings
@@ -239,8 +255,16 @@ class ObservationBuilder(
             ) {
                 add(DiagnosticSignal(code = DiagnosticCode.STRUCTURED_DECISION_DOMAIN_MISSING))
             }
-            if (mayReceiveActions && state.pendingDecision == null && legalActions.any { action ->
-                    action.affordable && action.manaCostString != null && paymentDomainV5For(state, action) == null
+            if (mayReceiveActions && state.pendingDecision == null && actionDomainMappings.any { mapping ->
+                    when (mapping.targetPaymentQualification) {
+                        TargetPaymentQualification.NotApplicable ->
+                            mapping.action.affordable &&
+                                mapping.action.manaCostString != null &&
+                                paymentDomainV5For(state, mapping.action) == null
+
+                        is TargetPaymentQualification.Supported -> false
+                        TargetPaymentQualification.Unsupported -> true
+                    }
                 }) {
                 add(DiagnosticSignal(code = DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
             }
@@ -273,6 +297,7 @@ class ObservationBuilder(
                     mapped.targetDomain,
                     mapped.attackDeclarationDomain,
                     mapped.blockerDeclarationDomain,
+                    mapped.targetPaymentQualification,
                 )
             }
             actionRegistry = ActionRegistry.ofLegalActions(supportedActionMappings.map { it.action })
@@ -603,23 +628,45 @@ class ObservationBuilder(
         targetDomain: ActionTargetDomainV1,
         attackDeclarationDomain: AttackDeclarationDomainV2?,
         blockerDeclarationDomain: BlockerDeclarationDomainV1?,
+        targetPaymentQualification: TargetPaymentQualification,
     ): LegalActionView {
         val sacrificeInfo = la.additionalCostInfo
             ?.takeIf { it.costType.contains("Sacrifice") || it.costType == "Casualty" }
         val singleRequirement = targetDomain.requirements.singleOrNull()
         val requiredPayloadFields = requiredPayloadFieldsFor(state, la)
+        val targetPaymentDomain =
+            (targetPaymentQualification as? TargetPaymentQualification.Supported)?.domain
+        val affordable = when (targetPaymentQualification) {
+            TargetPaymentQualification.NotApplicable -> la.affordable
+            is TargetPaymentQualification.Supported ->
+                targetPaymentQualification.domain.targetBindings.any { it.affordable }
+
+            TargetPaymentQualification.Unsupported -> false
+        }
+        val manaCost = when (targetPaymentQualification) {
+            TargetPaymentQualification.NotApplicable -> la.manaCostString
+            is TargetPaymentQualification.Supported,
+            TargetPaymentQualification.Unsupported -> null
+        }
+        val paymentDomain = when (targetPaymentQualification) {
+            TargetPaymentQualification.NotApplicable ->
+                if (la.affordable) paymentDomainV5For(state, la) else null
+
+            is TargetPaymentQualification.Supported,
+            TargetPaymentQualification.Unsupported -> null
+        }
         return LegalActionView(
             actionId = actionId,
             kind = la.actionType,
             description = la.description,
-            affordable = la.affordable,
+            affordable = affordable,
             sourceEntityId = actionSourceEntityId(la),
             targetEntityIds = singleRequirement?.candidates ?: emptyList(),
             targetDomain = targetDomain,
             attackDeclarationDomain = attackDeclarationDomain,
             blockerDeclarationDomain = blockerDeclarationDomain,
-            manaCost = la.manaCostString,
-            paymentDomain = if (la.affordable) paymentDomainV5For(state, la) else null,
+            manaCost = manaCost,
+            paymentDomain = paymentDomain,
             hasXCost = la.hasXCost,
             maxAffordableX = la.maxAffordableX,
             minTargets = singleRequirement?.minTargets ?: 0,
@@ -639,9 +686,222 @@ class ObservationBuilder(
             requiresStructuredAction = requiredPayloadFields.isNotEmpty(),
             requiredPayloadFields = requiredPayloadFields,
             actionSemantics = actionSemantic(state, la.action),
-            isDecisionOption = false
+            isDecisionOption = false,
+            targetPaymentDomain = targetPaymentDomain,
         )
     }
+
+    /**
+     * Classifies whether this action needs a target-bound payment relation. Target dependence is
+     * detected from the Rules-owned effective-cost calculator for the public candidates, with the
+     * calculator's explicit target-aware reduction marker retained as a conservative signal when
+     * the target domain itself is unsupported. This is qualification only; it never chooses a
+     * target or a payment.
+     */
+    private fun targetPaymentQualificationFor(
+        state: GameState,
+        legalAction: LegalAction,
+        targetResult: ActionTargetDomainMapper.Result,
+    ): TargetPaymentQualification {
+        val action = legalAction.action as? ActivateAbility
+            ?: return TargetPaymentQualification.NotApplicable
+        val ability = resolveActivatedAbility(state, action)
+            ?: return TargetPaymentQualification.NotApplicable
+        val unboundCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            ability = ability,
+            equipPayment = action.alternativePayment?.equipPayment,
+        ).canonicalPaymentCost()
+        if (!unboundCost.hasManaComponent()) return TargetPaymentQualification.NotApplicable
+
+        val publicTargetDomain = (targetResult as? ActionTargetDomainMapper.Result.Supported)?.domain
+        val candidateIds = publicTargetDomain
+            ?.requirements
+            ?.singleOrNull()
+            ?.candidates
+            .orEmpty()
+        val boundCosts = candidateIds.mapNotNull { candidateId ->
+            chosenTargetFor(state, candidateId)?.let { target ->
+                activatedAbilityCostCalculator.calculate(
+                    state = state,
+                    sourceId = action.sourceId,
+                    controllerId = action.playerId,
+                    ability = ability,
+                    targets = listOf(target),
+                    equipPayment = action.alternativePayment?.equipPayment,
+                ).canonicalPaymentCost()
+            }
+        }
+        val targetDependent = ability.genericCostReduction != null ||
+            boundCosts.any { it != unboundCost }
+        if (!targetDependent) return TargetPaymentQualification.NotApplicable
+
+        val targetDomain = publicTargetDomain
+            ?: return TargetPaymentQualification.Unsupported
+        val relation = targetPaymentDomainV1For(state, legalAction, targetDomain)
+            ?: return TargetPaymentQualification.Unsupported
+        return TargetPaymentQualification.Supported(relation)
+    }
+
+    /** Build the complete relation from the already mapped, canonical target candidate list. */
+    private fun targetPaymentDomainV1For(
+        state: GameState,
+        legalAction: LegalAction,
+        targetDomain: ActionTargetDomainV1,
+    ): TargetPaymentDomainV1? {
+        val action = legalAction.action as? ActivateAbility ?: return null
+        val requirement = targetDomain.requirements.singleOrNull() ?: return null
+        if (requirement.minTargets != 1 || requirement.maxTargets != 1 || requirement.candidates.isEmpty()) {
+            return null
+        }
+        val legalRequirement = legalAction.targetRequirements.singleOrNull() ?: return null
+        if (legalRequirement.minTargets != 1 ||
+            legalRequirement.maxTargets != 1 ||
+            legalRequirement.targetChooser != TargetChooser.Controller
+        ) return null
+        val ability = resolveActivatedAbility(state, action) ?: return null
+        val abilityRequirement = ability.targetRequirements.singleOrNull() as? TargetObject ?: return null
+        if (abilityRequirement.count != 1 ||
+            abilityRequirement.minCount != 1 ||
+            abilityRequirement.optional ||
+            abilityRequirement.unlimited ||
+            abilityRequirement.dynamicMaxCount != null ||
+            abilityRequirement.chooser != TargetChooser.Controller ||
+            abilityRequirement.filter.clauses().any { it.zone != Zone.BATTLEFIELD }
+        ) return null
+        if (requirement.candidates.any { !isBattlefieldPermanent(state, it) }) return null
+
+        val bindings = requirement.candidates.map { targetId ->
+            val boundAction = action.copy(targets = listOf(ChosenTarget.Permanent(targetId)))
+            val effectiveCost = activatedAbilityCostCalculator.calculate(
+                state = state,
+                sourceId = boundAction.sourceId,
+                controllerId = boundAction.playerId,
+                ability = ability,
+                targets = boundAction.targets,
+                equipPayment = boundAction.alternativePayment?.equipPayment,
+            )
+            val request = targetBoundPaymentRequest(
+                state = state,
+                template = legalAction,
+                action = boundAction,
+                ability = ability,
+                effectiveCost = effectiveCost,
+            ) ?: return null
+            val paymentDomain = paymentDomainBuilder.buildV5(
+                state = state,
+                playerId = request.playerId,
+                requiredCost = request.requiredCost,
+                spellContext = request.spellContext,
+                excludeSources = request.excludeSources,
+                reservedOuterLifePayment = request.reservedOuterLifePayment,
+            ) ?: return null
+            TargetPaymentBindingV1(
+                target = targetId,
+                affordable = targetBoundAffordable(state, request),
+                paymentDomain = paymentDomain,
+            )
+        }
+        return runCatching { TargetPaymentDomainV1(targetBindings = bindings) }.getOrNull()
+    }
+
+    private data class TargetBoundPaymentRequest(
+        val playerId: EntityId,
+        val requiredCost: String,
+        val spellContext: SpellPaymentContext,
+        val excludeSources: Set<EntityId>,
+        val reservedOuterLifePayment: Int,
+    )
+
+    private fun targetBoundPaymentRequest(
+        state: GameState,
+        template: LegalAction,
+        action: ActivateAbility,
+        ability: ActivatedAbility,
+        effectiveCost: AbilityCost,
+    ): TargetBoundPaymentRequest? {
+        val manaComponents = when (effectiveCost) {
+            is AbilityCost.Atom -> listOfNotNull(effectiveCost.manaCostOrNull)
+            is AbilityCost.Composite -> effectiveCost.costs.mapNotNull { it.manaCostOrNull }
+            else -> emptyList()
+        }
+        val manaCost = manaComponents.singleOrNull()?.canonicalPaymentManaCost() ?: return null
+        val requiredCost = manaCost.canonicalPaymentManaCostWireString()
+        val deterministic = deterministicAdditionalCostPaymentFor(
+            state,
+            template.copy(action = action, manaCostString = requiredCost),
+        ) ?: return null
+        val card = state.getEntity(action.sourceId)?.get<CardComponent>() ?: return null
+        val spellContext = buildAbilityPaymentContext(
+            cardComponent = card,
+            projected = state.projectedState,
+            sourceId = action.sourceId,
+            ability = ability,
+        )
+        val reservedOuterLifePayment = CostAmountResolver.resolvePayLifeTotal(
+            state = state,
+            cost = effectiveCost,
+            sourceId = action.sourceId,
+            controllerId = action.playerId,
+            cardRegistry = cardRegistry,
+        ) ?: return null
+        return TargetBoundPaymentRequest(
+            playerId = action.playerId,
+            requiredCost = requiredCost,
+            spellContext = spellContext,
+            excludeSources = if (deterministic.tappedPermanents.isNotEmpty()) {
+                setOf(action.sourceId)
+            } else {
+                emptySet()
+            },
+            reservedOuterLifePayment = reservedOuterLifePayment,
+        )
+    }
+
+    private fun targetBoundAffordable(
+        state: GameState,
+        request: TargetBoundPaymentRequest,
+    ): Boolean = manaSolver.canPay(
+        state = state,
+        playerId = request.playerId,
+        cost = ManaCost.parse(request.requiredCost),
+        excludeSources = request.excludeSources,
+        spellContext = request.spellContext,
+        additionalPayLife = request.reservedOuterLifePayment,
+    )
+
+    private fun AbilityCost.hasManaComponent(): Boolean = when (this) {
+        is AbilityCost.Atom -> manaCostOrNull != null
+        is AbilityCost.Composite -> costs.any { it.manaCostOrNull != null }
+        else -> false
+    }
+
+    private fun chosenTargetFor(state: GameState, entityId: EntityId): ChosenTarget? {
+        if (entityId in state.turnOrder) return ChosenTarget.Player(entityId)
+        val zone = state.zones.entries.firstOrNull { (_, ids) -> entityId in ids }?.key?.zoneType
+        return when (zone) {
+            Zone.BATTLEFIELD -> ChosenTarget.Permanent(entityId)
+            Zone.STACK -> ChosenTarget.Spell(entityId)
+            Zone.HAND,
+            Zone.LIBRARY,
+            Zone.GRAVEYARD,
+            Zone.EXILE,
+            Zone.COMMAND,
+            Zone.SIDEBOARD -> ChosenTarget.Card(
+                cardId = entityId,
+                ownerId = state.getEntity(entityId)?.get<CardComponent>()?.ownerId ?: return null,
+                zone = zone,
+            )
+            null -> null
+        }
+    }
+
+    private fun isBattlefieldPermanent(state: GameState, entityId: EntityId): Boolean =
+        state.zones.any { (key, ids) ->
+            key.zoneType == Zone.BATTLEFIELD && entityId in ids
+        } && state.getEntity(entityId)?.get<CardComponent>() != null
 
     /**
      * Project the Rules-owned mana-color candidate set into the public action domain. A null
@@ -1953,6 +2213,7 @@ private data class ActionDomainMapping(
     val targetResult: ActionTargetDomainMapper.Result,
     val attackResult: AttackDeclarationDomainMapper.Result,
     val blockerResult: BlockerDeclarationDomainMapper.Result,
+    val targetPaymentQualification: TargetPaymentQualification,
 )
 
 private data class SupportedActionDomain(
@@ -1960,4 +2221,5 @@ private data class SupportedActionDomain(
     val targetDomain: ActionTargetDomainV1,
     val attackDeclarationDomain: AttackDeclarationDomainV2?,
     val blockerDeclarationDomain: BlockerDeclarationDomainV1?,
+    val targetPaymentQualification: TargetPaymentQualification,
 )

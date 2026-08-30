@@ -19,3 +19,12 @@ fun ManaCost.canonicalPaymentManaCost(): ManaCost {
         this
     }
 }
+
+/**
+ * Renders the canonical mana cost used by the explicit payment wire contract. Unlike
+ * [ManaCost.toString], this preserves the explicit `{0}` marker for an effective zero cost.
+ */
+fun ManaCost.canonicalPaymentManaCostWireString(): String =
+    canonicalPaymentManaCost().let { canonical ->
+        if (canonical == ManaCost.ZERO) "{0}" else canonical.toString()
+    }
