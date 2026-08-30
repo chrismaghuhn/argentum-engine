@@ -197,6 +197,12 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         toughness = 2
     }
 
+    val secondArtifactCreatureTarget = card("Gym Second Artifact Creature Target") {
+        typeLine = "Artifact Creature — Golem"
+        power = 3
+        toughness = 3
+    }
+
     val unrepresentableManaSource = card("Gym Unrepresentable Mana Source") {
         typeLine = "Artifact"
         activatedAbility {
@@ -215,6 +221,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val sourceId: EntityId,
         val artifactTargetId: EntityId,
         val ordinaryTargetId: EntityId,
+        val secondArtifactTargetId: EntityId?,
         val unrepresentableSourceId: EntityId?,
         val basicManaSourceId: EntityId?,
     )
@@ -223,6 +230,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         includeUnrepresentableManaSource: Boolean = false,
         activator: CardDefinition = targetBoundActivator,
         includeBasicManaSource: Boolean = false,
+        includeThirdArtifactTarget: Boolean = false,
     ): Fixture {
         val registry = com.wingedsheep.engine.registry.CardRegistry().apply {
             register(PortalSet.cards)
@@ -230,6 +238,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             register(activator)
             register(artifactCreatureTarget)
             register(ordinaryCreatureTarget)
+            register(secondArtifactCreatureTarget)
             register(unrepresentableManaSource)
         }
         val environment = GameEnvironment.create(registry)
@@ -242,6 +251,11 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
                             activator.name to 1,
                             artifactCreatureTarget.name to 1,
                             ordinaryCreatureTarget.name to 1,
+                            *(if (includeThirdArtifactTarget) {
+                                arrayOf(secondArtifactCreatureTarget.name to 1)
+                            } else {
+                                emptyArray()
+                            }),
                             *(if (includeUnrepresentableManaSource) {
                                 arrayOf(unrepresentableManaSource.name to 1)
                             } else {
@@ -280,6 +294,11 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val sourceId = moveNamed(activator.name)
         val artifactTargetId = moveNamed(artifactCreatureTarget.name)
         val ordinaryTargetId = moveNamed(ordinaryCreatureTarget.name)
+        val secondArtifactTargetId = if (includeThirdArtifactTarget) {
+            moveNamed(secondArtifactCreatureTarget.name)
+        } else {
+            null
+        }
         val unrepresentableSourceId = if (includeUnrepresentableManaSource) {
             moveNamed(unrepresentableManaSource.name)
         } else {
@@ -297,6 +316,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             sourceId = sourceId,
             artifactTargetId = artifactTargetId,
             ordinaryTargetId = ordinaryTargetId,
+            secondArtifactTargetId = secondArtifactTargetId,
             unrepresentableSourceId = unrepresentableSourceId,
             basicManaSourceId = basicManaSourceId,
         )
@@ -306,7 +326,8 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val sourceCard = fixture.registry.getCard(fixture.activator.name)
             ?: error("Target-bound activator is not registered")
         val ability = sourceCard.script.activatedAbilities[abilityIndex]
-        val permanentTargetIds = listOf(fixture.ordinaryTargetId, fixture.artifactTargetId)
+        val permanentTargetIds = listOf(fixture.ordinaryTargetId, fixture.artifactTargetId) +
+            fixture.secondArtifactTargetId?.let(::listOf).orEmpty()
         val isPlayerTarget = abilityIndex == 1 || abilityIndex == 2
         val targetRequirements = ability.targetRequirements.mapIndexed { index, requirement ->
             val targetIds = if (isPlayerTarget) {
@@ -681,9 +702,12 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val fixture = prepared(
             activator = strictTargetActivator,
             includeBasicManaSource = true,
+            includeThirdArtifactTarget = true,
         )
         val (gym, view) = strictTargetPaymentView(fixture)
         val plan = targetPaymentPlan(view, fixture.artifactTargetId)
+        view.targetPaymentDomain!!.targetBindings.single { it.target == fixture.artifactTargetId }
+            .paymentDomain.requiredCost shouldBe "{0}"
         val changedTargetState = fixture.environment.state.updateEntity(fixture.artifactTargetId) { container ->
             val card = container.get<CardComponent>() ?: error("Expected target card component")
             container.with(
@@ -699,6 +723,20 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             fixture.environment.playerIds,
             fixture.environment.stepCount,
         )
+        val freshObservation = ObservationBuilder(cardRegistry = fixture.registry).build(
+            state = fixture.environment.state,
+            perspectivePlayerId = fixture.playerId,
+            legalActions = fixture.environment.legalActions(),
+        ).observation.shouldBeInstanceOf<TrainingObservation>()
+        val freshRelation = freshObservation.legalActions.single {
+            it.sourceEntityId == fixture.sourceId
+        }.targetPaymentDomain ?: error("Expected a live target-payment relation")
+        freshRelation.targetBindings.single { it.target == fixture.artifactTargetId }
+            .paymentDomain.requiredCost shouldBe "{1}"
+        val secondArtifactTargetId = fixture.secondArtifactTargetId
+            ?: error("Expected a third artifact target")
+        freshRelation.targetBindings.single { it.target == secondArtifactTargetId }
+            .paymentDomain.requiredCost shouldBe "{0}"
         val beforeState = fixture.environment.state
         val beforeEvents = fixture.environment.lastStepEvents
         val beforeStepCount = fixture.environment.stepCount
@@ -740,7 +778,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val freshView = freshObservation.legalActions.single {
             it.sourceEntityId == fixture.sourceId
         }
-        freshView.targetPaymentDomain shouldNotBe null
+        val freshRelation = freshView.targetPaymentDomain ?: error("Expected a live target-payment relation")
         freshView.targetPaymentDomain shouldNotBe view.targetPaymentDomain
 
         val beforeState = fixture.environment.state
