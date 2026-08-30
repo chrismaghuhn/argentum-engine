@@ -750,7 +750,9 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.24-mana-color-domain`.
+The Gym contract is currently `argentum-gym-contract@v1.25-target-payment-domain`. The preceding
+`argentum-gym-contract@v1.24-mana-color-domain` identifier remains historical and must not be
+interpreted as the current observation schema.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -1147,10 +1149,11 @@ checks that the key is currently certified and never merges a client-supplied su
 Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` identifies exactly one
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
-The Gym `SchemaHash` is
-`argentum-gym-contract@v1.24-mana-color-domain`. A client must compare the hash
-before interpreting the current payment domain and fail closed on mismatch. Historical V4
-payloads remain decodable only through their historical DTO and are not reinterpreted as V5.
+The historical V4 observation contract used the `SchemaHash`
+`argentum-gym-contract@v1.24-mana-color-domain`. Current observations use
+`argentum-gym-contract@v1.25-target-payment-domain`. A client must compare the hash before
+interpreting the current payment domain and fail closed on mismatch. Historical V4 payloads remain
+decodable only through their historical DTO and are not reinterpreted as V5.
 
 The authoritative `GameState` persists the joint bucket map, completeness marker, and known-
 information metadata. State digests and the v4 transition-semantic replay fingerprint bind those
@@ -1185,3 +1188,34 @@ the v4 transition-semantic fingerprint and checkpoint semantics while recording 
 program as part of the action stream. The replay payload does not serialize a Gym-domain hash or
 observation schema identity. Replay v4 plus `ExplicitV3` is rejected, and unknown future replay
 versions fail closed before action deserialization or reinterpretation.
+
+### Target-bound activated-ability payment (TargetPaymentDomainV1)
+
+An activated ability with exactly one mandatory controller-chosen Battlefield permanent target may
+publish `LegalActionView.targetPaymentDomain` when the Rules-owned
+`ActivatedAbilityCostCalculator` proves that the effective mana cost differs for at least one
+public target candidate. The relation is intentionally limited to a finite, complete candidate
+set with one target per binding. Multi-target, optional or unlimited cardinality, dynamic target
+counts, non-permanent targets, target combinations, mode-coupled costs, unresolved alternative or
+additional payment choices, and any other unproven shape fail closed as a complete relation.
+
+`TargetPaymentDomainV1.targetBindings` has exactly one entry for every candidate in the already
+published `ActionTargetDomainV1` requirement, in that same order. Each binding contains an
+`affordable` result recomputed for that exact target-bound action and a non-null
+`PaymentDomainV5`. The nested `PaymentDomainV5.requiredCost` is the sole target-bound mana-cost
+authority; the parent action sets `manaCost` and `paymentDomain` to null and reports affordability
+as the existence of at least one affordable binding. A complete V5 domain is still published for
+an unaffordable binding, while an unrepresentable binding makes the entire target-payment relation
+unsupported.
+
+The trusted Gym submission binds the submitted target and `PaymentPlanV3` to the same registered
+target binding. It compares the cached registered observation snapshot with a fresh Rules
+re-enumeration, then runs the shared read-only V3 payment preflight before any mutation. A stale,
+missing, duplicate, off-domain, unaffordable, or cross-binding target/plan is rejected atomically;
+the Rules executor never reinterprets a plan from another target binding.
+
+`targetPaymentDomain` is included in both the wire observation and the semantic action
+canonicalization. Its binding sequence is preserved exactly; `ObservationCanonicalizer` does not
+invent a second ordering. Any nested V5 cost, source capability, or allocation-domain change is
+therefore digest-relevant. This additive observation relation does not change `PaymentDomainV5`,
+`PaymentPlanV3`, the executed `GameAction` carrier, or CompactReplay v5.

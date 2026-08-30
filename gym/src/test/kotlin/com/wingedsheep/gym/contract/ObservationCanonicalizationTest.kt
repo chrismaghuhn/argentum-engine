@@ -2,6 +2,8 @@ package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.CardEntityFactory
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
+import com.wingedsheep.engine.core.PaymentCostKindV1
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.GameEnvironment
@@ -21,6 +23,9 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 private const val HIDDEN_HAND_FIXTURE_SEED = 70L
@@ -137,6 +142,39 @@ class ObservationCanonicalizationTest : FunSpec({
         )
     )
 
+    fun paymentDomain(
+        requiredCost: String,
+        outerAtomicCostUnits: List<AtomicManaCostUnitV1> = emptyList(),
+    ) = PaymentDomainV5(
+        requiredCost = requiredCost,
+        outerAtomicCostUnits = outerAtomicCostUnits,
+        initialPoolBuckets = emptyList(),
+        sourceActivationOptions = emptyList(),
+    )
+
+    fun withTargetPaymentDomain(
+        base: TrainingObservation,
+        domain: TargetPaymentDomainV1?,
+    ): TrainingObservation = base.copy(
+        legalActions = listOf(
+            base.legalActions.first().copy(
+                actionId = 9001,
+                description = "target payment presentation",
+                targetPaymentDomain = domain,
+            )
+        )
+    )
+
+    fun targetBindingOrder(observation: TrainingObservation): List<String> =
+        Json.parseToJsonElement(ObservationCanonicalizer.wireJson(observation))
+            .jsonObject["legalActions"]!!
+            .jsonArray
+            .single()
+            .jsonObject["targetPaymentDomain"]!!
+            .jsonObject["targetBindings"]!!
+            .jsonArray
+            .map { it.jsonObject["target"]!!.jsonPrimitive.content }
+
     fun withAttackDeclarationDomain(
         base: TrainingObservation,
         domain: AttackDeclarationDomainV2?,
@@ -209,6 +247,62 @@ class ObservationCanonicalizationTest : FunSpec({
         ObservationCanonicalizer.semanticJson(withFields) shouldNotBe
             ObservationCanonicalizer.semanticJson(reordered)
         StateDigest.compute(withFields) shouldNotBe StateDigest.compute(reordered)
+    }
+
+    test("target payment domain participates in wire and semantic action identity") {
+        val base = observation(environment())
+        val targetPaymentDomain = TargetPaymentDomainV1(
+            targetBindings = listOf(
+                TargetPaymentBindingV1(
+                    target = EntityId("target-a"),
+                    affordable = true,
+                    paymentDomain = paymentDomain("{0}"),
+                ),
+            ),
+        )
+        val withDomain = withTargetPaymentDomain(base, targetPaymentDomain)
+
+        ObservationCanonicalizer.wireJson(withDomain) shouldContain "\"targetPaymentDomain\""
+        ObservationCanonicalizer.semanticJson(withDomain) shouldContain "\"targetPaymentDomain\""
+        ObservationCanonicalizer.semanticJson(withDomain) shouldContain "\"requiredCost\":\"{0}\""
+    }
+
+    test("target payment bindings preserve producer order and nested V5 changes the digest") {
+        val base = observation(environment())
+        val targetA = EntityId("target-a")
+        val targetB = EntityId("target-b")
+        val genericOne = AtomicManaCostUnitV1(
+            symbolIndex = 0,
+            unitIndexWithinSymbol = 0,
+            kind = PaymentCostKindV1.GENERIC,
+        )
+
+        fun relation(order: List<EntityId>, requiredCost: String = "{0}") =
+            TargetPaymentDomainV1(
+                targetBindings = order.map { target ->
+                    TargetPaymentBindingV1(
+                        target = target,
+                        affordable = target == targetA,
+                        paymentDomain = paymentDomain(
+                            requiredCost = requiredCost,
+                            outerAtomicCostUnits = if (requiredCost == "{1}") listOf(genericOne) else emptyList(),
+                        ),
+                    )
+                },
+            )
+
+        val producerOrder = withTargetPaymentDomain(base, relation(listOf(targetA, targetB)))
+        val reversedInput = withTargetPaymentDomain(base, relation(listOf(targetB, targetA)))
+        targetBindingOrder(producerOrder) shouldBe listOf("target-a", "target-b")
+        targetBindingOrder(reversedInput) shouldBe listOf("target-b", "target-a")
+
+        val nestedPaymentVariant = withTargetPaymentDomain(
+            base,
+            relation(listOf(targetA, targetB), requiredCost = "{1}"),
+        )
+        ObservationCanonicalizer.semanticJson(producerOrder) shouldNotBe
+            ObservationCanonicalizer.semanticJson(nestedPaymentVariant)
+        StateDigest.compute(producerOrder) shouldNotBe StateDigest.compute(nestedPaymentVariant)
     }
 
     test("action target domains are present on the wire and candidates canonicalize by EntityId") {
