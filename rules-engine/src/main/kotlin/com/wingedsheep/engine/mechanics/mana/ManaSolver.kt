@@ -911,6 +911,49 @@ class ManaSolver(
             return true
         }
 
+        /**
+         * Select a paid source that can be seeded from the current pool for one of [colors].
+         * The caller uses this before assigning the next outer cost unit to the pool; otherwise
+         * that assignment could consume the only resource that makes the paid source reachable.
+         */
+        fun seedableSourceForColors(colors: Iterable<Color>): Pair<ManaSource, Color>? {
+            if (poolCanPayOuterCost()) return null
+            val candidates = colors.flatMap { color ->
+                remainingSources.mapNotNull { candidate ->
+                    if (
+                        candidate.availableColorsFor(spellContext).contains(color) &&
+                        candidate.activationManaCostFor(color) > 0 &&
+                        poolCanSeedActivation(candidate, color)
+                    ) candidate to color else null
+                }
+            }
+            return candidates.minWithOrNull(
+                compareBy<Pair<ManaSource, Color>>(
+                    { (candidate, _) -> calculateTapPriority(candidate, handRequirements, availableSourcesByColor) },
+                    { (_, color) -> color.ordinal },
+                )
+            )
+        }
+
+        /** Record and consume a source whose output pays one outer mana unit. */
+        fun activateSourceForPayment(source: ManaSource, colorUsed: Color?): Boolean {
+            if (!prepareSourceForProduction(source, colorUsed)) return false
+            manaProduced[source.entityId] = if (colorUsed != null) {
+                ManaProduction(
+                    color = colorUsed,
+                    amount = source.manaAmount,
+                    manaAbility = source.manaAbilityFor(colorUsed),
+                )
+            } else {
+                ManaProduction(
+                    colorless = source.manaAmount,
+                    manaAbility = source.manaAbilityFor(null),
+                )
+            }
+            useSource(source, colorUsed)
+            return true
+        }
+
         // Helper for a colored pip that no *printed* source can produce, but an as-yet-untapped
         // source carries an aura tap-bonus that can (Fertile Ground's "one mana of any color", or a
         // fixed-color bonus matching the pip). Tapping such a source yields its printed mana PLUS the
@@ -1020,6 +1063,19 @@ class ManaSolver(
                     // (handled naturally on next iteration via spendBonusMana)
                 }
                 is ManaSymbol.Hybrid -> {
+                    // A composite source such as Golgari Signet may need the pool unit for its
+                    // activation. Prefer its bonus output (or another seedable paid source) before
+                    // assigning the pool unit to this flexible symbol.
+                    if (!poolCanPayOuterCost()) {
+                        if (payColoredPipFromAuraBonus(symbol.color1)) continue
+                        if (payColoredPipFromAuraBonus(symbol.color2)) continue
+                        val seeded = seedableSourceForColors(listOf(symbol.color1, symbol.color2))
+                        if (seeded != null) {
+                            val (source, colorUsed) = seeded
+                            if (!activateSourceForPayment(source, colorUsed)) return null
+                            continue
+                        }
+                    }
                     if (spendPoolCost(ManaCost(listOf(symbol)), spellContext, activationCost = false)) continue
                     // Try bonus mana first
                     if (spendBonusMana(symbol.color1)) continue
@@ -1060,6 +1116,11 @@ class ManaSolver(
                     useSource(source, colorUsed)
                 }
                 is ManaSymbol.Phyrexian -> {
+                    val sourceCandidate = seedableSourceForColors(listOf(symbol.color))
+                    if (sourceCandidate != null) {
+                        if (!activateSourceForPayment(sourceCandidate.first, sourceCandidate.second)) return null
+                        continue
+                    }
                     if (spendPoolCost(ManaCost(listOf(symbol)), spellContext, activationCost = false)) continue
                     // Try bonus mana first
                     if (spendBonusMana(symbol.color)) continue
@@ -1136,6 +1197,12 @@ class ManaSolver(
         var monoHybridGeneric = 0
         for (symbol in cost.symbols) {
             if (symbol !is ManaSymbol.MonocolorHybrid) continue
+            if (!poolCanPayOuterCost() && payColoredPipFromAuraBonus(symbol.color)) continue
+            val seeded = seedableSourceForColors(listOf(symbol.color))
+            if (seeded != null) {
+                if (!activateSourceForPayment(seeded.first, seeded.second)) return null
+                continue
+            }
             if (spendPoolCost(ManaCost(listOf(symbol)), spellContext, activationCost = false)) continue
             if (spendBonusMana(symbol.color)) continue
             val source = findBestSourceForColor(remainingSources, symbol.color, handRequirements, availableSourcesByColor, spellContext)
@@ -1175,6 +1242,15 @@ class ManaSolver(
             }
             var xRemaining = xValue
             while (xRemaining > 0) {
+                if (!poolCanPayOuterCost()) {
+                    val seeded = seedableSourceForColors(xManaRestriction)
+                    if (seeded != null) {
+                        if (!activateSourceForPayment(seeded.first, seeded.second)) return null
+                        xRestrictedSpent[seeded.second] = (xRestrictedSpent[seeded.second] ?: 0) + 1
+                        xRemaining--
+                        continue
+                    }
+                }
                 val poolUnit = availableManaPool?.xCoveragePlan(1, xManaRestriction)?.firstOrNull()
                 val poolPaid = when (poolUnit) {
                     null -> xManaRestriction.isEmpty() &&
@@ -2775,40 +2851,6 @@ class ManaSolver(
                 xManaRestriction = xManaRestriction,
                 additionalPayLife = additionalPayLife,
                 initialManaPool = pool,
-            ) != null
-        ) return true
-
-        // Preserve the historical extras fallback below. It augments a virtual pool with mana
-        // from explicitly opt-in-only abilities, then lets the same shared solver validate the
-        // complete cost rather than reintroducing a partial outer payment.
-        val partialResult = pool.payPartial(cost, spellContext)
-        val remainingCost = partialResult.remainingCost
-        val poolAfterPartial = partialResult.newPool
-
-        // Calculate how much X mana is needed (multiply by X symbol count for XX costs).
-        // Eligible restricted floating mana counts toward X exactly like the payment path
-        // (CastPaymentProcessor.autoPay) spends it; only allowed-color mana counts toward a
-        // color-restricted X.
-        val xPaidFromPool = poolAfterPartial.xCoverage(totalXMana, xManaRestriction, spellContext)
-        val xRemainingToPay = totalXMana - xPaidFromPool
-
-        // If nothing remains after using pool (including X), we can pay
-        if (remainingCost.isEmpty() && xRemainingToPay == 0) {
-            return true
-        }
-
-        // Check if we can tap sources for the remaining cost (including remaining X)
-        if (solve(
-                state = state,
-                playerId = playerId,
-                cost = remainingCost,
-                xValue = xRemainingToPay,
-                excludeSources = excludeSources,
-                spellContext = spellContext,
-                precomputedSources = precomputedSources,
-                xManaRestriction = xManaRestriction,
-                additionalPayLife = additionalPayLife,
-                initialManaPool = poolAfterPartial,
             ) != null
         ) return true
 

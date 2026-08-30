@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.SpellCastEvent
+import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -307,6 +308,59 @@ class ManaSolverSelfFundingTest : FunSpec({
             cost = ManaCost.parse("{X}{X}"),
             xValue = 2,
         ) shouldBe false
+    }
+
+    test("SELF-FUND-10 canPay does not count the same floating mana twice for X") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.GREEN, 1)
+
+        ManaSolver(driver.cardRegistry).canPay(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{X}"),
+            xValue = 2,
+        ) shouldBe false
+    }
+
+    test("SELF-FUND-11 reserves floating mana for a paid source before a hybrid pip") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.GREEN, 1)
+        val signet = driver.putPermanentOnBattlefield(player, "Golgari Signet")
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G/B}{B}"),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources.map { it.entityId } shouldContainExactly listOf(signet)
+    }
+
+    test("SELF-FUND-12 reserves floating mana before color-restricted X") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.GREEN, 1)
+        val signet = driver.putPermanentOnBattlefield(player, "Golgari Signet")
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{X}"),
+            xValue = 2,
+            xManaRestriction = setOf(Color.BLACK, Color.GREEN),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources.map { it.entityId } shouldContainExactly listOf(signet)
     }
 
     test("SELF-FUND-07 restricted prerequisite bonus cannot pay a color-restricted X") {
