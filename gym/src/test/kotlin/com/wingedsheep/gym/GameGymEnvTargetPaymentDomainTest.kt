@@ -13,6 +13,7 @@ import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.TappedComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.gym.contract.ObservationBuilder
@@ -215,6 +216,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val artifactTargetId: EntityId,
         val ordinaryTargetId: EntityId,
         val unrepresentableSourceId: EntityId?,
+        val basicManaSourceId: EntityId?,
     )
 
     fun prepared(
@@ -283,7 +285,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         } else {
             null
         }
-        if (includeBasicManaSource) moveNamed("Mountain")
+        val basicManaSourceId = if (includeBasicManaSource) moveNamed("Mountain") else null
         environment.restore(state, environment.playerIds, environment.stepCount)
 
         return Fixture(
@@ -296,6 +298,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             artifactTargetId = artifactTargetId,
             ordinaryTargetId = ordinaryTargetId,
             unrepresentableSourceId = unrepresentableSourceId,
+            basicManaSourceId = basicManaSourceId,
         )
     }
 
@@ -512,6 +515,27 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         fixture.environment.stepCount shouldBe beforeStepCount + 1
     }
 
+    test("strict Gym rejects an unaffordable target binding before mutation") {
+        val fixture = prepared(activator = strictTargetActivator)
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val relation = view.targetPaymentDomain ?: error("Expected target-payment relation")
+        relation.targetBindings.single { it.target == fixture.ordinaryTargetId }.affordable shouldBe false
+        val beforeState = fixture.environment.state
+        val beforeEvents = fixture.environment.lastStepEvents
+        val beforeStepCount = fixture.environment.stepCount
+
+        shouldThrow<IllegalArgumentException> {
+            gym.step(
+                view.actionId,
+                targetPaymentPayload(view, fixture.ordinaryTargetId, PaymentPlanV3()),
+            )
+        }
+
+        fixture.environment.state shouldBe beforeState
+        fixture.environment.lastStepEvents shouldBe beforeEvents
+        fixture.environment.stepCount shouldBe beforeStepCount
+    }
+
     test("strict Gym rejects native payment fallback for a target-bound action atomically") {
         val fixture = prepared(
             activator = strictTargetActivator,
@@ -679,6 +703,49 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val beforeEvents = fixture.environment.lastStepEvents
         val beforeStepCount = fixture.environment.stepCount
 
+        shouldThrow<IllegalArgumentException> {
+            gym.step(
+                view.actionId,
+                targetPaymentPayload(view, fixture.artifactTargetId, plan),
+            )
+        }
+
+        fixture.environment.state shouldBe beforeState
+        fixture.environment.lastStepEvents shouldBe beforeEvents
+        fixture.environment.stepCount shouldBe beforeStepCount
+    }
+
+    test("strict Gym rejects nested V5 drift while the target-payment relation remains present") {
+        val fixture = prepared(
+            activator = strictTargetActivator,
+            includeBasicManaSource = true,
+        )
+        val (gym, view) = strictTargetPaymentView(fixture)
+        val plan = targetPaymentPlan(view, fixture.artifactTargetId)
+        val manaSourceId = fixture.basicManaSourceId ?: error("Expected a basic mana source")
+        val driftedState = fixture.environment.state.updateEntity(manaSourceId) { container ->
+            container.with(TappedComponent)
+        }
+        fixture.environment.restore(
+            driftedState,
+            fixture.environment.playerIds,
+            fixture.environment.stepCount,
+        )
+
+        val freshObservation = ObservationBuilder(cardRegistry = fixture.registry).build(
+            state = fixture.environment.state,
+            perspectivePlayerId = fixture.playerId,
+            legalActions = fixture.environment.legalActions(),
+        ).observation.shouldBeInstanceOf<TrainingObservation>()
+        val freshView = freshObservation.legalActions.single {
+            it.sourceEntityId == fixture.sourceId
+        }
+        freshView.targetPaymentDomain shouldNotBe null
+        freshView.targetPaymentDomain shouldNotBe view.targetPaymentDomain
+
+        val beforeState = fixture.environment.state
+        val beforeEvents = fixture.environment.lastStepEvents
+        val beforeStepCount = fixture.environment.stepCount
         shouldThrow<IllegalArgumentException> {
             gym.step(
                 view.actionId,
