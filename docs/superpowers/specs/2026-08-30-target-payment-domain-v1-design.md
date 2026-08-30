@@ -26,7 +26,7 @@ or a replacement for the existing target-domain contract.
 | Observation | Add nullable `LegalActionView.targetPaymentDomain` |
 | Gym schema | `argentum-gym-contract@v1.25-target-payment-domain` |
 | Cost authority | Rules-owned `ActivatedAbilityCostCalculator` with concrete target |
-| Ordering | Existing producer-owned `targetDomain` candidate order |
+| Ordering | Exact order already published by `ActionTargetDomainV1.requirements.single().candidates` |
 | Unsupported shapes | Whole domain fails closed; no partial publication or fallback |
 
 `TargetPaymentDomainV1` is an Observation contract. It is not placed in `GameAction`, the replay
@@ -48,16 +48,15 @@ data class TargetPaymentDomainV1(
 @Serializable
 data class TargetPaymentBindingV1(
     val target: EntityId,
-    val effectiveManaCost: String,
     val affordable: Boolean,
     val paymentDomain: PaymentDomainV5,
 )
 ```
 
-`target` is the public `EntityId` from the existing target domain. `effectiveManaCost` is the
-Rules-owned canonical cost calculated with that target bound. `affordable` is the current Rules
-affordability result for the fully bound action. `paymentDomain` is always non-null for a certified
-binding, even when `affordable` is false.
+`target` is the public `EntityId` from the existing target domain. `paymentDomain.requiredCost` is
+the sole public mana-cost authority for the binding and contains the canonical cost calculated with
+that target bound. `affordable` is the current Rules affordability result for the fully bound
+action. `paymentDomain` is always non-null for a certified binding, even when `affordable` is false.
 
 An unaffordable binding is a legal target with no current payment plan. It is not an unknown domain.
 If any candidate lacks a representable V5 domain, the complete `TargetPaymentDomainV1` is
@@ -91,9 +90,10 @@ actions without this field retain their current action-level payment contract.
 The producer may publish this contract only when all conditions hold:
 
 1. The action is `ActivateAbility`.
-2. There is exactly one controller-chosen `TargetRequirement`.
+2. There is exactly one mandatory controller-chosen battlefield-permanent `TargetRequirement`.
 3. Its `minTargets` and `maxTargets` are both `1`.
-4. Its candidate set is finite, complete, public, addressable, and duplicate-free.
+4. Its candidate set is finite, complete, public, addressable, and duplicate-free, and every
+   candidate binds to `ChosenTarget.Permanent`.
 5. The existing target-domain mapping is `SUPPORTED`.
 6. Target selection is the only unresolved choice that can affect payment cost.
 7. The complete ability can be resolved for every candidate.
@@ -106,9 +106,19 @@ The producer may publish this contract only when all conditions hold:
 The qualifier is structural and state-aware. It must not inspect card names, set names, source-ID
 conventions, or Fervent Champion-specific conditions.
 
-### 3.1 Target binding calculation
+### 3.1 Affordability authority
 
-For each candidate in the existing Rules-owned target order, the producer performs:
+`binding.affordable` must be recomputed for the fully target-bound action. It must use the same
+Rules-owned payment-feasibility semantics as authoritative activation/payment, including the bound
+effective cost, payment context, source exclusions, outer life reservation, and the currently
+supported V5 source model. It must not be copied from parent `LegalAction.affordable` and must not
+be inferred from `paymentDomain != null`. A non-null payment domain describes representability, not
+payability.
+
+### 3.2 Target binding calculation
+
+For each candidate in exactly `targetDomain.requirements.single().candidates`, in the order already
+published by `ActionTargetDomainV1`, the producer performs:
 
 ```text
 target candidate
@@ -120,19 +130,23 @@ target candidate
   → publish one TargetPaymentBindingV1
 ```
 
-The unbound `LegalAction.manaCostString` is never the target-bound cost authority. A target-dependent
-cost that cannot be represented by the V5 builder fails the whole target-payment domain.
+The unbound `LegalAction.manaCostString` is never the target-bound cost authority. The resulting
+`PaymentDomainV5.requiredCost` is the only public target-bound mana-cost authority. A target-dependent
+cost that cannot be represented by the V5 builder fails the whole target-payment domain. The producer
+must not derive binding order from raw `LegalAction.validTargets`, raw target-requirement iteration,
+card-definition traversal, or another collection.
 
 The implementation may retain the existing action-level domain when it proves that every candidate
 has the same effective cost. Once target-dependent cost is detected, it must use this contract or
 fail closed.
 
-### 3.2 Unsupported V1 shapes
+### 3.3 Unsupported V1 shapes
 
 The following remain fail-closed with `TARGET_PAYMENT_DOMAIN_UNSUPPORTED` or the repository's
 equivalent typed diagnostic:
 
 ```text
+player, card, spell, or any non-permanent target requirement
 two or more target requirements
 optional, unlimited, or "any number of" targets
 dynamic or X-driven target cardinality
@@ -155,14 +169,15 @@ The producer rejects the whole contract if any invariant fails:
 ```text
 targetBindings.size == targetDomain.requirements.single().candidates.size
 targetBindings.map { it.target }.distinct().size == targetBindings.size
-targetDomain candidates == binding targets in identical order
-every effectiveManaCost is canonical
+targetDomain.requirements.single().candidates == targetBindings.map { it.target }
+every paymentDomain.requiredCost is the canonical target-bound cost
 every paymentDomain is non-null and valid
 no target is omitted because its binding is unaffordable
 ```
 
-The target domain owns candidate ordering. Consumers do not sort, deduplicate, repair, or otherwise
-reorder bindings. The policy chooses a binding; it does not choose the producer's ordering.
+The already-published target domain owns candidate ordering. Consumers do not sort, deduplicate,
+repair, or otherwise reorder bindings. The policy chooses a binding; it does not choose the
+producer's ordering.
 
 ## 5. Strict Gym execution
 
@@ -191,7 +206,7 @@ binding.affordable is false
 the plan is missing or malformed
 the plan belongs to another target binding
 registered/current target binding differs
-registered/current effective cost differs
+registered/current `paymentDomain.requiredCost` differs
 registered/current nested PaymentDomainV5 differs
 ```
 
@@ -205,8 +220,9 @@ target=e147
 payment plan from binding(target=e146)
 ```
 
-If the registered binding says `target=e146, effectiveManaCost={0}` and current Rules resolution
-says `{1}`, the submission is stale and rejected. It is not recalculated, retargeted, or auto-paid.
+If the registered binding says `target=e146` with `paymentDomain.requiredCost={0}` and current Rules
+resolution says `{1}`, the submission is stale and rejected. It is not recalculated, retargeted, or
+auto-paid.
 
 ## 6. External policy contract
 
@@ -231,7 +247,7 @@ targetDomain
 targetPaymentDomain.version
 targetPaymentDomain.targetBindings in producer order
 target
-effectiveManaCost
+paymentDomain.requiredCost
 affordable
 complete nested PaymentDomainV5
 ```
@@ -275,7 +291,7 @@ TARGET-PAYMENT-01
 
 TARGET-PAYMENT-02
   costs {0} and {1}/{2}
-  → exact bound costs; parent manaCost/paymentDomain are null
+  → exact bound `paymentDomain.requiredCost` values; parent manaCost/paymentDomain are null
   → parent affordable equals any binding affordable
 
 TARGET-PAYMENT-03
@@ -293,7 +309,7 @@ TARGET-PAYMENT-05
 TARGET-PAYMENT-06
   exact B0 decision-1027 state
   → Sword of the Animist, Swiftfoot Boots, and Mask of Memory each publish bindings
-  → e146 and e147 costs are independently verified
+  → e146 and e147 `paymentDomain.requiredCost` values are independently verified
   → Slayers' Stronghold is not counted as a production offender
 
 TARGET-PAYMENT-07
