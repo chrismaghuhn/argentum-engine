@@ -1,7 +1,7 @@
 # TargetPaymentDomainV1 Design Specification
 
-Status: approved architecture, pending written-spec review  
-Baseline: `458022a8e61eb6399ac3b8fe8f0cbce2e28e34ce`  
+Status: approved architecture, pending written-spec review
+Baseline: `458022a8e61eb6399ac3b8fe8f0cbce2e28e34ce`
 Scope: finite, single-target, target-dependent activated-ability payment domains in the Gym.
 
 This is an additive Gym observation contract. It does not change `PaymentDomainV5`,
