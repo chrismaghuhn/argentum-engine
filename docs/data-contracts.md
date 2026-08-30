@@ -1149,11 +1149,12 @@ checks that the key is currently certified and never merges a client-supplied su
 Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` identifies exactly one
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
-The historical V4 observation contract used the `SchemaHash`
+The preceding Gym observation schema was
 `argentum-gym-contract@v1.24-mana-color-domain`. Current observations use
-`argentum-gym-contract@v1.25-target-payment-domain`. A client must compare the hash before
-interpreting the current payment domain and fail closed on mismatch. Historical V4 payloads remain
-decodable only through their historical DTO and are not reinterpreted as V5.
+`argentum-gym-contract@v1.25-target-payment-domain`. `PaymentDomainV4` remains a historical
+payment-domain DTO. A client must compare the hash before interpreting the current payment domain
+and fail closed on mismatch. Historical V4 payloads remain decodable only through their historical
+DTO and are not reinterpreted as V5.
 
 The authoritative `GameState` persists the joint bucket map, completeness marker, and known-
 information metadata. State digests and the v4 transition-semantic replay fingerprint bind those
@@ -1207,12 +1208,6 @@ authority; the parent action sets `manaCost` and `paymentDomain` to null and rep
 as the existence of at least one affordable binding. A complete V5 domain is still published for
 an unaffordable binding, while an unrepresentable binding makes the entire target-payment relation
 unsupported.
-
-The trusted Gym submission binds the submitted target and `PaymentPlanV3` to the same registered
-target binding. It compares the cached registered observation snapshot with a fresh Rules
-re-enumeration, then runs the shared read-only V3 payment preflight before any mutation. A stale,
-missing, duplicate, off-domain, unaffordable, or cross-binding target/plan is rejected atomically;
-the Rules executor never reinterprets a plan from another target binding.
 
 `targetPaymentDomain` is included in both the wire observation and the semantic action
 canonicalization. Its binding sequence is preserved exactly; `ObservationCanonicalizer` does not
