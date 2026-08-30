@@ -441,6 +441,39 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         result.diagnostics.none { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
     }
 
+    test("external policy consumes the selected target binding from the public relation") {
+        val fixture = prepared(activator = strictTargetActivator)
+        val gym = GameGymEnv(
+            environment = fixture.environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = fixture.registry),
+        )
+        val observation = gym.observe().observation.shouldBeInstanceOf<TrainingObservation>()
+        val view = observation.legalActions.single { action ->
+            action.sourceEntityId == fixture.sourceId && action.targetPaymentDomain != null
+        }
+
+        val choice = DeterministicExternalPolicy().choose(
+            observation.copy(legalActions = listOf(view)),
+            DeterministicPolicyState(policySeed = 1L),
+        ).shouldBeInstanceOf<SemanticChoice.Action>()
+        val payload = choice.payload ?: error("Target-payment choice omitted its payload")
+
+        payload["targets"] shouldBe buildJsonArray {
+            add(buildJsonObject {
+                put("type", "Permanent")
+                put("entityId", fixture.artifactTargetId.value)
+            })
+        }
+        payload["paymentStrategy"] shouldBe actionJson.encodeToJsonElement(
+            PaymentStrategy.serializer(),
+            PaymentStrategy.ExplicitV3(
+                paymentPlan = targetPaymentPlan(view, fixture.artifactTargetId),
+            ),
+        )
+        payload.containsKey("targetPaymentDomain") shouldBe false
+    }
+
     test("retains action-level V5 when every target-bound effective cost is equal") {
         val fixture = prepared()
         val result = observe(fixture, targetAction(fixture, abilityIndex = 2))

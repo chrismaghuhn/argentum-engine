@@ -1,7 +1,9 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.gym.contract.CardSelectionDomain
+import com.wingedsheep.gym.contract.ActionTargetComposition
 import com.wingedsheep.gym.contract.BLOCKER_DECLARATION_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.BlockRequirementV1
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainV1
@@ -228,6 +230,22 @@ class DeterministicExternalPolicy {
         }
         var completedChoice = false
 
+        if (action.targetPaymentDomain != null) {
+            val targetPaymentPayload = publicTargetPaymentPayload(observation, action)
+                ?: return SemanticChoice.Gap(
+                    family = "TARGET_PAYMENT",
+                    code = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    reason = "Published target-payment relation is missing or inconsistent",
+                    actionKind = action.kind,
+                    diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
+                    publicDomain =
+                        "targetDomain=${action.targetDomain}; " +
+                            "targetPaymentDomain=${action.targetPaymentDomain}",
+                )
+            targetPaymentPayload.forEach { (key, value) -> payload[key] = value }
+            completedChoice = true
+        }
+
         if ("attackers" in requiredFieldSet || "bands" in requiredFieldSet) {
             val attackFields = setOf("attackers", "bands")
             if (action.kind != "DeclareAttackers" || !attackFields.all { it in requiredFieldSet }) {
@@ -300,7 +318,7 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        if ("paymentStrategy" in requiredFieldSet) {
+        if (action.targetPaymentDomain == null && "paymentStrategy" in requiredFieldSet) {
             val domain = action.paymentDomain
                 ?: return SemanticChoice.Gap(
                     family = "PAYMENT",
@@ -360,7 +378,7 @@ class DeterministicExternalPolicy {
             completedChoice = true
         }
 
-        if ("targets" in requiredFieldSet) {
+        if (action.targetPaymentDomain == null && "targets" in requiredFieldSet) {
             val targetValues = publicTargetSelection(observation, action)
                 ?: return SemanticChoice.Gap(
                     family = "TARGETS",
@@ -811,6 +829,42 @@ class DeterministicExternalPolicy {
                 .map { target -> publicTarget(observation, target) }
                 .takeIf { values -> values.all { it != null } }
                 ?.map { value -> value!! }
+        }
+    }
+
+    /**
+     * Consumes a complete target-to-payment relation without reconstructing target cost or
+     * affordability. The binding list is already in the producer's public candidate order, so the
+     * first affordable member is a policy choice from the published domain, not a Rules heuristic.
+     */
+    private fun publicTargetPaymentPayload(
+        observation: TrainingObservation,
+        action: com.wingedsheep.gym.contract.LegalActionView,
+    ): JsonObject? {
+        val targetDomain = action.targetDomain ?: return null
+        if (targetDomain.version != ACTION_TARGET_DOMAIN_VERSION ||
+            targetDomain.requirements.size != 1 ||
+            targetDomain.composition != ActionTargetComposition.FIXED
+        ) return null
+        val requirement = targetDomain.requirements.single()
+        if (requirement.minTargets != 1 || requirement.maxTargets != 1 ||
+            requirement.candidates.distinct().size != requirement.candidates.size
+        ) return null
+
+        val relation = action.targetPaymentDomain ?: return null
+        if (relation.targetBindings.map { it.target } != requirement.candidates) return null
+        val binding = relation.targetBindings.firstOrNull { it.affordable } ?: return null
+        val target = publicTarget(observation, binding.target) ?: return null
+        val plan = paymentPlanV3FromPublic(binding.paymentDomain) ?: return null
+        return buildJsonObject {
+            put("targets", JsonArray(listOf(target)))
+            put(
+                "paymentStrategy",
+                paymentJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.ExplicitV3(paymentPlan = plan),
+                ),
+            )
         }
     }
 
