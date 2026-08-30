@@ -25,7 +25,9 @@ Create or modify only these production/documentation seams unless a test exposes
 
 - Create gym/src/main/kotlin/com/wingedsheep/gym/contract/TargetPaymentDomain.kt
   - Serializable TargetPaymentDomainV1 and TargetPaymentBindingV1 DTOs.
-  - Constructor invariants for version, non-empty bindings, unique targets, and valid nested domains.
+  - Constructor invariants for version, non-empty bindings, and unique targets. The nested
+    PaymentDomainV5 is non-null and must already satisfy its own constructor contract; this DTO does
+    not duplicate semantic V5 validation.
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/TrainingObservation.kt
   - Add nullable LegalActionView.targetPaymentDomain with a default of null.
   - Keep manaCost and paymentDomain historical fields unchanged for non-target-bound actions.
@@ -37,6 +39,9 @@ Create or modify only these production/documentation seams unless a test exposes
   - Qualify the permanent single-target slice, bind each published candidate, calculate its cost,
     compute its affordability, and build its non-null PaymentDomainV5.
   - Clear parent action-wide manaCost and paymentDomain when target payment is published.
+- Modify rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/PaymentManaCostCanonicalizer.kt
+  - Reuse or add the Rules-owned canonical payment wire renderer for target-bound costs; it must emit
+    `{0}` for ManaCost.ZERO rather than the empty ManaCost.toString() result.
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationCanonicalizer.kt
   - Include target-payment bindings in wire and semantic canonicalization without reordering them.
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/SchemaHash.kt
@@ -63,9 +68,18 @@ Create or modify only these production/documentation seams unless a test exposes
 Do not modify PaymentDomainV5, PaymentPlanV3, SourceActivationV2, GameAction,
 PaymentStrategy.ExplicitV3, CompactReplay serializers, locked decks, or the B0 overlay.
 
-The initial implementation batch is Tasks 1, 2, 3, 4, 6, and 8. Task 8 ends with an independent
-review package and a stop. Task 5 (B0 policy adaptation) and Task 7 (B0 execution) are post-review
-tasks and must not run in the initial implementation batch.
+## Execution authorization gate
+
+This document describes the dependency order of the pre-B0 work; it is not blanket authorization to
+execute a batch. Execute exactly one numbered task per authorization. After that task, run its required
+focused/regression gates, make exactly one standalone task commit, report the exact HEAD and evidence,
+and stop. Do not start the next numbered task until the independent exact-SHA review of the completed
+task is finished and the user explicitly authorizes the next task. Task 5 (B0 policy adaptation) and
+Task 7 (B0 execution) remain post-review tasks and require their own later authorization.
+
+The pre-B0 task order is Tasks 1, 2, 3, 4, 6, and 8. This list records dependency order only; it does
+not authorize more than one numbered task at a time. Task 8 ends with an independent review package
+and a stop.
 
 ## Task 1: Add the observation DTO and structural invariants
 
@@ -123,8 +137,10 @@ The `{2}` fixture must therefore contain two generic atomic units, while `{0}` m
 an empty atomic-unit list. Never use `outerAtomicCostUnits = emptyList()` as a fixture for a non-zero
 cost, and never introduce a test-only atomicization algorithm.
 
-Add rejection tests for unsupported version, empty bindings, duplicate target bindings, and a nested
-invalid PaymentDomainV5. Add a kotlinx.serialization round-trip test and assert DTO equality.
+Add rejection tests for unsupported version, empty bindings, and duplicate target bindings. Do not add
+a second nested-PaymentDomainV5 validator here: an already constructed PaymentDomainV5 satisfies its
+own constructor contract, while PaymentDomainV5ContractTest owns V5-specific invalid-input coverage.
+Add a kotlinx.serialization round-trip test and assert DTO equality.
 
 - [ ] **Step 2: Run the focused tests and record the RED.**
 
@@ -176,7 +192,7 @@ tests pass.
 - [ ] **Step 5: Commit the contract slice.**
 
 ~~~text
-git add gym/src/main/kotlin/com/wingedsheep/gym/contract/TargetPaymentDomain.kt gym/src/main/kotlin/com/wingedsheep/gym/contract/TrainingObservation.kt gym/src/test/kotlin/com/wingedsheep/gym/TargetPaymentDomainContractTest.kt
+git add gym/src/main/kotlin/com/wingedsheep/gym/contract/TargetPaymentDomain.kt gym/src/main/kotlin/com/wingedsheep/gym/contract/TrainingObservation.kt gym/src/main/kotlin/com/wingedsheep/gym/contract/PaymentDomain.kt gym/src/test/kotlin/com/wingedsheep/gym/TargetPaymentDomainContractTest.kt
 git commit -m "feat: add target payment domain observation contract"
 ~~~
 
@@ -185,6 +201,9 @@ git commit -m "feat: add target payment domain observation contract"
 **Files:**
 
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt
+- Modify rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/PaymentManaCostCanonicalizer.kt
+  - Reuse or add only the Rules-owned canonical payment wire-string helper required by the target
+    request seam; do not alter the existing ManaCost canonicalization semantics.
 - Create or extend gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvTargetPaymentDomainTest.kt
 
 - [ ] **Step 1: Write the failing publication tests.**
@@ -406,9 +425,10 @@ private fun targetBoundPaymentRequest(
     // V1 intentionally accepts exactly one mana component. Do not silently select the first component
     // and do not invent a new composition rule in this seam.
     val manaCost = manaComponents.singleOrNull()?.canonicalPaymentManaCost() ?: return null
+    val requiredCostString = canonicalPaymentManaCostWireString(manaCost)
     val deterministic = deterministicAdditionalCostPaymentFor(
         state,
-        template.copy(action = action, manaCostString = manaCost.toString()),
+        template.copy(action = action, manaCostString = requiredCostString),
     ) ?: return null
     val card = state.getEntity(action.sourceId)?.get<CardComponent>() ?: return null
     val spellContext = buildAbilityPaymentContext(
@@ -426,7 +446,7 @@ private fun targetBoundPaymentRequest(
     ) ?: return null
     return TargetBoundPaymentRequest(
         playerId = action.playerId,
-        requiredCost = manaCost.toString(),
+        requiredCost = requiredCostString,
         spellContext = spellContext,
         excludeSources = if (deterministic.tappedPermanents.isNotEmpty()) {
             setOf(action.sourceId)
@@ -503,7 +523,10 @@ remains the final authority for the submitted explicit plan.
 
 The targetBoundPaymentRequest function must return null for an unresolved cost choice, for zero or more
 than one mana component in the V1 slice, and for a component that cannot be canonically represented.
-It must derive requiredCost from the target-bound calculator result. Add a RED test with a composite
+It must derive requiredCost from the target-bound calculator result through the Rules-owned canonical
+payment wire renderer. That renderer must serialize ManaCost.ZERO as exactly `{0}`; it must never use
+ManaCost.toString() for the public requiredCost. Add a RED test with a target-bound ManaCost.ZERO that
+asserts `PaymentDomainV5.requiredCost == "{0}"` and rejects `""`, plus a composite
 effective AbilityCost containing two mana components (for example Mana({1}) + Mana({B}) + TapSelf):
 the result must be a complete canonical combined cost only if an existing Rules utility explicitly
 provides that operation; otherwise V1 must fail closed with TARGET_PAYMENT_DOMAIN_UNSUPPORTED and must
@@ -529,7 +552,7 @@ cost-authority, composite-mana, V5-affordability-equivalence, and affordability 
 - [ ] **Step 6: Commit the Rules publication slice.**
 
 ~~~text
-git add gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvTargetPaymentDomainTest.kt
+git add gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/PaymentManaCostCanonicalizer.kt gym/src/test/kotlin/com/wingedsheep/gym/GameGymEnvTargetPaymentDomainTest.kt
 git commit -m "feat: publish target-bound payment domains"
 ~~~
 
@@ -725,10 +748,10 @@ git commit -m "feat: enforce target-bound payment submissions"
 
 ## Task 5: Make the external policy consume the published relation (post-review)
 
-This task is not part of the initial implementation batch. The exact-pair/B0 policy remains
-unchanged until Tasks 1-4 and 6-8 have been implemented, independently reviewed, and accepted by
-the user. Task 1 and Task 2 may use a small test-local consumer to test the public DTO; that consumer
-must not modify EnvironmentV1ExternalPolicy.kt.
+This task is not part of the pre-B0 dependency sequence's current authorization. The exact-pair/B0
+policy remains unchanged until Tasks 1-4 and 6-8 have been implemented, independently reviewed, and
+accepted by the user. Task 1 and Task 2 may use a small test-local consumer to test the public DTO; that
+consumer must not modify EnvironmentV1ExternalPolicy.kt.
 
 **Files:**
 
