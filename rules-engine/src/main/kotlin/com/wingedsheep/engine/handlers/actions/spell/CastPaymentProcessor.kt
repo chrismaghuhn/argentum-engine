@@ -455,6 +455,23 @@ class CastPaymentProcessor(
         // remains to be floated back to the player.
         var poolAfterPayment = solution.poolAfterPayment ?:
             return PaymentResult(state, emptyList(), "Mana solver did not return pool accounting")
+
+        // The solver's aggregate outer-spend counters include restricted mana for the
+        // ManaSpentEvent, but restricted units must never consume the producing-source provenance
+        // of ordinary floating mana. Normalize the initial pool in two ledger stages so inner
+        // activation-cost spends are removed before the outer-spend provenance is materialized.
+        val poolAfterActivation = solution.poolAfterActivation ?: pool
+        val innerUnrestrictedSpent = (
+            pool.unrestrictedTotal - poolAfterActivation.unrestrictedTotal
+            ).coerceAtLeast(0)
+        val (poolProvenanceAfterActivation, _) = pool.consumeProvenance(innerUnrestrictedSpent)
+        val outerUnrestrictedSpent = (
+            poolAfterActivation.unrestrictedTotal - poolAfterPayment.unrestrictedTotal
+            ).coerceAtLeast(0)
+        val (poolProvenanceAfterPayment, poolProvenance) =
+            poolProvenanceAfterActivation.consumeProvenance(outerUnrestrictedSpent)
+        poolAfterPayment = poolAfterPayment.withProvenanceFrom(poolProvenanceAfterPayment)
+
         for (entry in solution.remainingBonusMana) {
             poolAfterPayment = when {
                 entry.colorless && entry.restriction != null ->
@@ -495,8 +512,6 @@ class CastPaymentProcessor(
             }
         }
 
-        val unrestrictedPoolSpent = solution.poolManaSpentForOuter.unrestrictedTotal
-        val (_, poolProvenance) = pool.consumeProvenance(unrestrictedPoolSpent)
         val spentProvenance = mergeProvenance(
             poolProvenance,
             tappedSourceProvenance(state, solution.manaProduced),

@@ -503,6 +503,7 @@ class CostPaymentService(private val services: EngineServices) {
         // (multi-mana source/aura bonus) is floated back to the caller.
         var newPool = solution.poolAfterPayment
             ?: return CostPaymentExecution(state, emptyList(), success = false)
+        newPool = newPool.withNormalizedProvenanceAfterSpend(pool)
         for (entry in solution.remainingBonusMana) {
             newPool = when {
                 entry.colorless && entry.restriction != null ->

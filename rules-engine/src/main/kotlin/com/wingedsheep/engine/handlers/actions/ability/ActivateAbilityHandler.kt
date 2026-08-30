@@ -2572,7 +2572,8 @@ class ActivateAbilityHandler(
         // spends and outer-cost spends. Use the exact post-activation view here; replaying generic
         // units would ignore restricted entries and could leave inner resources available for the
         // outer ability payment (or select a different eligible restriction).
-        var currentPool = solution.poolAfterActivation ?: pool
+        var currentPool = (solution.poolAfterActivation ?: pool)
+            .withNormalizedProvenanceAfterSpend(pool)
 
         val sideEffectResult = manaAbilitySideEffectExecutor.tapSourcesWithSideEffects(
             state = state,

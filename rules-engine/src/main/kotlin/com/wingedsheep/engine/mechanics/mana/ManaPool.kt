@@ -920,6 +920,19 @@ data class ManaPool(
         manaProvenanceKnownTo = provenancePool.manaProvenanceKnownTo,
     )
 
+    /**
+     * Restore the aggregate provenance view after an ordinary payment spend. The transient spend
+     * operations intentionally invalidate exact source/color buckets because they cannot know which
+     * fungible unit was selected. The caller still has the pre-spend pool, so consume that many
+     * unrestricted units there and apply the resulting normalized provenance to this post-spend
+     * balance. Restricted mana is excluded from the count by [unrestrictedTotal].
+     */
+    internal fun withNormalizedProvenanceAfterSpend(before: ManaPool): ManaPool {
+        val unrestrictedSpent = (before.unrestrictedTotal - unrestrictedTotal).coerceAtLeast(0)
+        val (provenancePool, _) = before.consumeProvenance(unrestrictedSpent)
+        return withProvenanceFrom(provenancePool)
+    }
+
     /** Add a solver-confirmed unrestricted production while retaining its production snapshot. */
     internal fun addUnrestrictedProduction(
         sourceId: EntityId,

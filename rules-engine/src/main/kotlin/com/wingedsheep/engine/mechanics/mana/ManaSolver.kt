@@ -623,8 +623,28 @@ class ManaSolver(
 
         val genericManaUnit = ManaCost(listOf(ManaSymbol.Generic(1)))
 
-        fun poolCanPayOuterCost(): Boolean =
-            availableManaPool?.canPay(cost, spellContext) == true
+        /**
+         * Whether the currently available pool can cover the entire outer payment, including the
+         * already-resolved X amount. [ManaPool.canPay] intentionally treats X as zero because it
+         * has no X-value parameter; using it directly here could spend the pool's only prerequisite
+         * unit and strand a paid source that still needs that unit for its activation cost.
+         */
+        fun poolCanPayOuterCost(): Boolean {
+            val pool = availableManaPool ?: return false
+            val xAmount = xValue.coerceAtLeast(0)
+            if (xManaRestriction.isEmpty()) {
+                val expandedSymbols = cost.symbols.filterNot { it is ManaSymbol.X } +
+                    if (xAmount > 0) listOf(ManaSymbol.Generic(xAmount)) else emptyList()
+                return pool.canPay(ManaCost(expandedSymbols), spellContext)
+            }
+
+            // For a color-restricted X, pay only the fixed portion first and account for the X
+            // units with the same restricted coverage rule as the actual X pass below.
+            val fixedCost = ManaCost(cost.symbols.filterNot { it is ManaSymbol.X })
+            val fixedPayment = pool.payPartial(fixedCost, spellContext)
+            if (!fixedPayment.remainingCost.isEmpty()) return false
+            return fixedPayment.newPool.xCoverage(xAmount, xManaRestriction, spellContext) == xAmount
+        }
 
         fun poolCanSeedActivation(source: ManaSource, colorUsed: Color?): Boolean {
             val pool = availableManaPool ?: return false
@@ -971,6 +991,11 @@ class ManaSolver(
                         useSource(sourceCandidate, symbol.color)
                         continue
                     }
+                    // A composite source such as Golgari Signet may expose the demanded color
+                    // through an additional output rather than its primary color. Preserve a
+                    // pool unit that is needed for that source's activation before letting the
+                    // ordinary pool spend claim the colored pip.
+                    if (!poolCanPayOuterCost() && payColoredPipFromAuraBonus(symbol.color)) continue
                     if (spendPoolCost(ManaCost(listOf(symbol)), spellContext, activationCost = false)) continue
                     // Try bonus mana first
                     if (spendBonusMana(symbol.color)) continue
@@ -1136,8 +1161,11 @@ class ManaSolver(
         if (xManaRestriction.isNotEmpty() && xValue > 0) {
             // Spend bonus mana of an allowed color (or an any-color bonus) toward X.
             fun spendBonusManaOnX(): Color? {
+                val eligible: (BonusManaEntry) -> Boolean = { entry ->
+                    entry.restriction == null || spellContext?.let(entry.restriction::isSatisfiedBy) == true
+                }
                 val idx = bonusManaPool.indexOfFirst {
-                    it.amount > 0 && (it.color in xManaRestriction || it.anyColor)
+                    it.amount > 0 && eligible(it) && (it.color in xManaRestriction || it.anyColor)
                 }
                 if (idx < 0) return null
                 val entry = bonusManaPool[idx]
@@ -2731,11 +2759,16 @@ class ManaSolver(
         // Solve the complete payment against one shared ledger. The ledger may reserve a pool
         // unit for a paid mana source's activation before spending any source output on the outer
         // cost; a pool-first partial payment cannot represent that legal ordering.
+        val xSymbolCount = cost.xCount.coerceAtLeast(1)
+        val totalXMana = xValue * xSymbolCount
         if (solve(
                 state = state,
                 playerId = playerId,
                 cost = cost,
-                xValue = xValue,
+                // solve() receives the total X allocation. The legacy fallback below already
+                // multiplies the player-selected X value for costs such as {X}{X}; keep the
+                // shared-ledger fast path on that same contract.
+                xValue = totalXMana,
                 excludeSources = excludeSources,
                 spellContext = spellContext,
                 precomputedSources = precomputedSources,
@@ -2756,8 +2789,6 @@ class ManaSolver(
         // Eligible restricted floating mana counts toward X exactly like the payment path
         // (CastPaymentProcessor.autoPay) spends it; only allowed-color mana counts toward a
         // color-restricted X.
-        val xSymbolCount = cost.xCount.coerceAtLeast(1)
-        val totalXMana = xValue * xSymbolCount
         val xPaidFromPool = poolAfterPartial.xCoverage(totalXMana, xManaRestriction, spellContext)
         val xRemainingToPay = totalXMana - xPaidFromPool
 
@@ -2817,7 +2848,10 @@ class ManaSolver(
             state = state,
             playerId = playerId,
             cost = cost,
-            xValue = xValue,
+            // This final extras path still solves the original cost. Keep the same total-X
+            // contract as the shared-ledger path above; otherwise an XX cost can re-enter the
+            // fallback with only one copy of the selected X value and report a false positive.
+            xValue = totalXMana,
             excludeSources = excludeSources + sacrificeConsumedIds,
             spellContext = spellContext,
             precomputedSources = precomputedSources,

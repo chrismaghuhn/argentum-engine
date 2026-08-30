@@ -3,15 +3,19 @@ package com.wingedsheep.engine.mana
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.mtg.sets.definitions.rav.cards.GolgariSignet
 import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.Subtype
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
@@ -52,6 +56,32 @@ class ManaSolverSelfFundingTest : FunSpec({
         }
     }
 
+    val abilityOnlyDoublePrerequisite = card("Ability-Only Double Prerequisite Source") {
+        typeLine = "Land"
+
+        activatedAbility {
+            cost = AbilityCost.Tap
+            effect = AddManaEffect(
+                color = Color.GREEN,
+                amount = 2,
+                restriction = ManaRestriction.AbilityActivationOnly,
+            )
+            manaAbility = true
+            timing = TimingRule.ManaAbility
+        }
+    }
+
+    val paidSingleSource = card("Paid Single Mana Source") {
+        typeLine = "Land"
+
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.Tap)
+            effect = AddManaEffect(Color.GREEN)
+            manaAbility = true
+            timing = TimingRule.ManaAbility
+        }
+    }
+
     val paidColorlessSource = card("Paid Colorless Source") {
         typeLine = "Land"
 
@@ -77,6 +107,13 @@ class ManaSolverSelfFundingTest : FunSpec({
         script = CardScript.EMPTY,
     )
 
+    val selfFundingXInstant = CardDefinition.instant(
+        name = "Self-Funding X Green Instant",
+        manaCost = ManaCost.parse("{G}{X}"),
+        oracleText = "",
+        script = CardScript.EMPTY,
+    )
+
     val selfFundingActivatedAbility = card("Self-Funding Activated Ability") {
         typeLine = "Artifact"
 
@@ -88,7 +125,9 @@ class ManaSolverSelfFundingTest : FunSpec({
 
     fun createDriver(extraCards: List<CardDefinition> = emptyList()): GameTestDriver {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + GolgariSignet + extraCards)
+        driver.registerCards(
+            TestCards.all + GolgariSignet + abilityOnlyDoublePrerequisite + paidSingleSource + extraCards
+        )
         driver.initMirrorMatch(deck = Deck.of("Forest" to 40), skipMulligans = true)
         return driver
     }
@@ -210,6 +249,138 @@ class ManaSolverSelfFundingTest : FunSpec({
             player,
             ManaCost.parse("{1}{G}"),
         ) shouldBe true
+    }
+
+    test("SELF-FUND-06 existing green floating mana seeds Signet before outer X") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.GREEN, 1)
+        driver.putPermanentOnBattlefield(player, "Golgari Signet")
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            initialManaPool = pool,
+        )
+        solution.shouldNotBeNull()
+    }
+
+    test("SELF-FUND-06 AutoPay spends green floating mana on Signet before outer X") {
+        val driver = createDriver(listOf(selfFundingXInstant))
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.GREEN, 1)
+        val signet = driver.putPermanentOnBattlefield(player, "Golgari Signet")
+        val spell = driver.putCardInHand(player, selfFundingXInstant.name)
+
+        driver.submitSuccess(
+            CastSpell(
+                playerId = player,
+                cardId = spell,
+                xValue = 1,
+                paymentStrategy = PaymentStrategy.AutoPay,
+            )
+        )
+
+        driver.state.getEntity(signet)?.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe true
+        driver.state.getEntity(player)?.get<ManaPoolComponent>()?.green shouldBe 0
+    }
+
+    test("SELF-FUND-06 counts every repeated X symbol") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.putLandOnBattlefield(player, "Forest")
+        driver.putLandOnBattlefield(player, "Forest")
+
+        ManaSolver(driver.cardRegistry).canPay(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{X}{X}"),
+            xValue = 2,
+        ) shouldBe false
+    }
+
+    test("SELF-FUND-07 restricted prerequisite bonus cannot pay a color-restricted X") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.putPermanentOnBattlefield(player, abilityOnlyDoublePrerequisite.name)
+        driver.putPermanentOnBattlefield(player, paidSingleSource.name)
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+
+        ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            xManaRestriction = setOf(Color.GREEN),
+        ) shouldBe null
+    }
+
+    test("SELF-FUND-09 restricted floating mana is not attributed to tracked provenance") {
+        val driver = createDriver(listOf(selfFundingInstant))
+        val player = driver.activePlayer!!
+        val trackedSource = com.wingedsheep.sdk.model.EntityId("tracked-cave")
+        val pool = ManaPoolComponent()
+            .addTracked(PaymentManaColor.GREEN, trackedSource, setOf(Subtype.CAVE))
+            .addRestricted(Color.GREEN, 1, ManaRestriction.InstantOrSorceryOnly)
+        driver.addComponent(player, pool)
+        val spell = driver.putCardInHand(player, selfFundingInstant.name)
+
+        val result = driver.submitSuccess(
+            CastSpell(
+                playerId = player,
+                cardId = spell,
+                paymentStrategy = PaymentStrategy.AutoPay,
+            )
+        )
+
+        val cast = result.events.filterIsInstance<SpellCastEvent>().single()
+        cast.spentManaSourceIds shouldBe emptySet()
+        cast.spentManaSubtypes shouldBe emptySet()
+        val remaining = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing mana pool")
+        remaining.green shouldBe 1
+        remaining.manaBySource shouldBe mapOf(trackedSource to 1)
+        remaining.manaBySubtype shouldBe mapOf(Subtype.CAVE to 1)
+    }
+
+    test("SELF-FUND-09 normalizes remaining floating provenance after unrestricted spend") {
+        val driver = createDriver(listOf(selfFundingInstant))
+        val player = driver.activePlayer!!
+        val trackedSource = com.wingedsheep.sdk.model.EntityId("tracked-forest")
+        val pool = ManaPoolComponent()
+            .addTracked(PaymentManaColor.GREEN, trackedSource, setOf(Subtype.FOREST), amount = 2)
+        driver.addComponent(player, pool)
+        val spell = driver.putCardInHand(player, selfFundingInstant.name)
+
+        driver.submitSuccess(
+            CastSpell(
+                playerId = player,
+                cardId = spell,
+                paymentStrategy = PaymentStrategy.AutoPay,
+            )
+        )
+
+        val remaining = driver.state.getEntity(player)?.get<ManaPoolComponent>()
+            ?: error("missing mana pool")
+        remaining.green shouldBe 1
+        remaining.manaBySource shouldBe mapOf(trackedSource to 1)
+        remaining.manaBySubtype shouldBe mapOf(Subtype.FOREST to 1)
+        remaining.manaBySourceAndColor shouldBe emptyMap()
+        remaining.manaByFloatingBucket shouldBe emptyMap()
     }
 
     test("SELF-FUND-06 AutoPay spends existing pool mana on Signet activation") {
