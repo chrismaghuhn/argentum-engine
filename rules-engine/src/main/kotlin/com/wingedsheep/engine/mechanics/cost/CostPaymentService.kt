@@ -37,6 +37,7 @@ import com.wingedsheep.engine.state.components.identity.ExiledFromZoneComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
 import com.wingedsheep.engine.state.components.player.ManaPoolComponent
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -479,66 +480,66 @@ class CostPaymentService(private val services: EngineServices) {
         val poolComponent = playerEntity.get<ManaPoolComponent>() ?: ManaPoolComponent()
         val pool = poolComponent.toManaPool()
 
-        // Spend floating mana first, then tap sources for the remainder.
-        val partial = pool.payPartial(manaCost)
-        var combined = pool
-        var current = state
+        // Solve the complete payment against one shared ledger. This permits existing floating mana
+        // to pay a selected mana source's own activation cost before that source contributes output.
+        val solution = services.manaSolver.solve(
+            state = state,
+            playerId = payerId,
+            cost = manaCost,
+            initialManaPool = pool,
+        ) ?: return CostPaymentExecution(state, emptyList(), false)
+
         val events = mutableListOf<GameEvent>()
 
-        if (!partial.remainingCost.isEmpty()) {
-            val solution = services.manaSolver.solve(current, payerId, partial.remainingCost)
-                ?: return CostPaymentExecution(state, emptyList(), false)
-            val tapResult = services.manaAbilitySideEffectExecutor
-                .tapSourcesWithSideEffects(current, solution, payerId)
-            if (!tapResult.success) {
-                return CostPaymentExecution(state, emptyList(), success = false)
-            }
-            current = tapResult.state
-            events.addAll(tapResult.events)
-            for ((producingSourceId, production) in solution.manaProduced) {
-                combined = if (production.sourceSubtypes != null && production.color != null) {
-                    combined.addTracked(
-                        color = PaymentManaColor.fromEngine(production.color),
-                        sourceId = producingSourceId,
-                        subtypes = production.sourceSubtypes,
-                        amount = production.amount,
-                        knownToPlayers = setOf(payerId),
-                    )
-                } else if (production.sourceSubtypes != null) {
-                    combined.addTracked(
-                        color = PaymentManaColor.COLORLESS,
-                        sourceId = producingSourceId,
-                        subtypes = production.sourceSubtypes,
-                        amount = production.colorless,
-                        knownToPlayers = setOf(payerId),
-                    )
-                } else if (production.color != null) {
-                    combined.add(production.color, production.amount)
-                } else {
-                    combined.addColorless(production.colorless)
-                }
-            }
-            // Bonus mana from AdditionalManaOnTap / AdditionalManaOnSourceTap (e.g. Badgermole
-            // Cub's "Whenever you tap a creature for mana, add an additional {G}") and mana auras
-            // is not in `manaProduced`, so credit it here — otherwise the cost comes up short even
-            // though the solver counted the bonus toward affordability. Mirrors the activate-ability
-            // auto-tap path (ActivateAbilityHandler.autoTapForManaCost).
-            for (source in solution.sources) {
-                if (source.bonusManaPerTap > 0 && source.bonusManaColor != null) {
-                    combined = combined.addTracked(
-                        color = PaymentManaColor.fromEngine(source.bonusManaColor),
-                        sourceId = source.entityId,
-                        subtypes = source.sourceSubtypes,
-                        amount = source.bonusManaPerTap,
-                        knownToPlayers = setOf(payerId),
-                    )
-                }
+        val tapResult = services.manaAbilitySideEffectExecutor
+            .tapSourcesWithSideEffects(state, solution, payerId)
+        if (!tapResult.success) {
+            return CostPaymentExecution(state, emptyList(), success = false)
+        }
+        val current = tapResult.state
+        events.addAll(tapResult.events)
+
+        // The solver has already consumed the selected outer payment units. Only excess production
+        // (multi-mana source/aura bonus) is floated back to the caller.
+        var newPool = solution.poolAfterPayment
+            ?: return CostPaymentExecution(state, emptyList(), success = false)
+        newPool = newPool.withNormalizedProvenanceAfterSpend(pool)
+        for (entry in solution.remainingBonusMana) {
+            newPool = when {
+                entry.colorless && entry.restriction != null ->
+                    newPool.addRestricted(null, entry.amount, entry.restriction)
+                entry.colorless -> newPool.addColorless(entry.amount)
+                entry.restriction != null ->
+                    newPool.addRestricted(entry.color, entry.amount, entry.restriction)
+                else -> newPool.add(entry.color, entry.amount)
             }
         }
+        val updated = current.updateEntity(payerId) { it.with(fromManaPool(newPool)) }
 
-        val newPool = combined.pay(manaCost) ?: return CostPaymentExecution(state, emptyList(), false)
-        current = current.updateEntity(payerId) {
-            it.with(fromManaPool(newPool))
+        var whiteSpent = solution.poolManaSpentForOuter.white
+        var blueSpent = solution.poolManaSpentForOuter.blue
+        var blackSpent = solution.poolManaSpentForOuter.black
+        var redSpent = solution.poolManaSpentForOuter.red
+        var greenSpent = solution.poolManaSpentForOuter.green
+        var colorlessSpent = solution.poolManaSpentForOuter.colorless
+        for (production in solution.manaProduced.values) {
+            when (production.color) {
+                Color.WHITE -> whiteSpent += production.amount
+                Color.BLUE -> blueSpent += production.amount
+                Color.BLACK -> blackSpent += production.amount
+                Color.RED -> redSpent += production.amount
+                Color.GREEN -> greenSpent += production.amount
+                null -> colorlessSpent += production.colorless
+            }
+        }
+        for ((color, amount) in solution.bonusManaSpentByColor) {
+            when (color) {
+                Color.WHITE -> whiteSpent += amount
+                Color.BLUE -> blueSpent += amount
+                Color.BLACK -> blackSpent += amount
+                Color.RED -> redSpent += amount
+                Color.GREEN -> greenSpent += amount
+            }
         }
 
         val sourceName = state.getEntity(sourceId)?.get<CardComponent>()?.name ?: "the source"
@@ -546,15 +547,15 @@ class CostPaymentService(private val services: EngineServices) {
             ManaSpentEvent(
                 playerId = payerId,
                 reason = "Pay cost for $sourceName",
-                white = combined.white - newPool.white,
-                blue = combined.blue - newPool.blue,
-                black = combined.black - newPool.black,
-                red = combined.red - newPool.red,
-                green = combined.green - newPool.green,
-                colorless = combined.colorless - newPool.colorless
+                white = whiteSpent,
+                blue = blueSpent,
+                black = blackSpent,
+                red = redSpent,
+                green = greenSpent,
+                colorless = colorlessSpent,
             )
         )
-        return CostPaymentExecution(current, events, success = true)
+        return CostPaymentExecution(updated, events, success = true)
     }
 
     private fun payLife(state: GameState, payerId: EntityId, amount: Int): CostPaymentExecution {
