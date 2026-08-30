@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.ManaSpentEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
@@ -113,6 +114,13 @@ class ManaSolverSelfFundingTest : FunSpec({
         manaCost = ManaCost.parse("{G}{X}"),
         oracleText = "",
         script = CardScript.EMPTY,
+    )
+
+    val selfFundingRestrictedXInstant = CardDefinition.instant(
+        name = "Self-Funding Restricted X Instant",
+        manaCost = ManaCost.parse("{X}"),
+        oracleText = "",
+        script = CardScript.EMPTY.copy(xManaRestriction = setOf(Color.GREEN)),
     )
 
     val selfFundingActivatedAbility = card("Self-Funding Activated Ability") {
@@ -380,7 +388,8 @@ class ManaSolverSelfFundingTest : FunSpec({
         ).shouldNotBeNull()
 
         solution.sources shouldBe emptyList()
-        solution.poolAfterPayment!!.colorless shouldBe 0
+        val poolAfterPayment = solution.poolAfterPayment.shouldNotBeNull()
+        poolAfterPayment.colorless shouldBe 0
         solution.poolManaSpentForOuter.colorless shouldBe 2
     }
 
@@ -413,6 +422,107 @@ class ManaSolverSelfFundingTest : FunSpec({
 
         solution.xRestrictedManaSpent shouldBe mapOf(Color.GREEN to 1)
         solution.poolAfterPayment!!.restrictedMana shouldBe emptyList()
+    }
+
+    test("SELF-FUND-15 repeated X does not over-expand remaining outer demand") {
+        val driver = createDriver(listOf(paidColorlessSource))
+        val player = driver.activePlayer!!
+        driver.giveColorlessMana(player, 2)
+        driver.putPermanentOnBattlefield(player, paidColorlessSource.name)
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+
+        // canPay()/AutoPay passes the total X allocation (xValue * xCount) to solve().
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{X}{X}"),
+            xValue = 2,
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources shouldBe emptyList()
+        val poolAfterPayment = solution.poolAfterPayment.shouldNotBeNull()
+        poolAfterPayment.colorless shouldBe 0
+        solution.poolManaSpentForOuter.colorless shouldBe 2
+    }
+
+    test("SELF-FUND-16 restricted floating X spend is included in outer accounting") {
+        val driver = createDriver(listOf(selfFundingRestrictedXInstant))
+        val player = driver.activePlayer!!
+        driver.giveRestrictedMana(
+            player,
+            color = Color.GREEN,
+            amount = 1,
+            restriction = ManaRestriction.InstantOrSorceryOnly,
+        )
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            xManaRestriction = setOf(Color.GREEN),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+        solution.poolManaSpentForOuter.green shouldBe 1
+
+        val spell = driver.putCardInHand(player, selfFundingRestrictedXInstant.name)
+        val result = driver.submitSuccess(
+            CastSpell(
+                playerId = player,
+                cardId = spell,
+                xValue = 1,
+                paymentStrategy = PaymentStrategy.AutoPay,
+            )
+        )
+
+        val manaSpent = result.events.filterIsInstance<ManaSpentEvent>().single()
+        manaSpent.green shouldBe 1
+        manaSpent.total shouldBe 1
+    }
+
+    test("SELF-FUND-17 fixed generic and restricted X use a shared pool allocation") {
+        val driver = createDriver(listOf(paidSingleSource))
+        val player = driver.activePlayer!!
+        driver.giveColorlessMana(player, 1)
+        driver.giveRestrictedMana(
+            player,
+            color = Color.GREEN,
+            amount = 1,
+            restriction = ManaRestriction.InstantOrSorceryOnly,
+        )
+        val paidSource = driver.putPermanentOnBattlefield(player, paidSingleSource.name)
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{1}{X}"),
+            xValue = 1,
+            spellContext = SpellPaymentContext(
+                isInstantOrSorcery = true,
+                cardTypes = setOf(CardType.INSTANT),
+            ),
+            xManaRestriction = setOf(Color.GREEN),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources shouldBe emptyList()
+        val poolAfterPayment = solution.poolAfterPayment.shouldNotBeNull()
+        poolAfterPayment.colorless shouldBe 0
+        poolAfterPayment.restrictedMana shouldBe emptyList()
+        driver.state.getEntity(paidSource)?.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
     }
 
     test("SELF-FUND-07 restricted prerequisite bonus cannot pay a color-restricted X") {

@@ -546,10 +546,12 @@ class ManaSolver(
         // look-ahead is called after earlier symbols have already been paid, so asking whether the
         // original cost is affordable would preserve a resource that is no longer needed and can
         // make a paid source appear reachable when it should remain untouched.
+        var unrestrictedXExpanded = false
         val remainingOuterSymbols = cost.symbols.flatMap { symbol ->
             when (symbol) {
                 is ManaSymbol.Generic -> List(symbol.amount.coerceAtLeast(0)) { ManaSymbol.Generic(1) }
-                is ManaSymbol.X -> if (xManaRestriction.isEmpty()) {
+                is ManaSymbol.X -> if (xManaRestriction.isEmpty() && !unrestrictedXExpanded) {
+                    unrestrictedXExpanded = true
                     List(xValue.coerceAtLeast(0)) { ManaSymbol.Generic(1) }
                 } else {
                     emptyList()
@@ -585,6 +587,16 @@ class ManaSolver(
             green = current.green + spent.green,
             colorless = current.colorless + spent.colorless,
         )
+
+        fun addOuterRestrictedSpend(color: Color) {
+            poolManaSpentForOuter = when (color) {
+                Color.WHITE -> poolManaSpentForOuter.copy(white = poolManaSpentForOuter.white + 1)
+                Color.BLUE -> poolManaSpentForOuter.copy(blue = poolManaSpentForOuter.blue + 1)
+                Color.BLACK -> poolManaSpentForOuter.copy(black = poolManaSpentForOuter.black + 1)
+                Color.RED -> poolManaSpentForOuter.copy(red = poolManaSpentForOuter.red + 1)
+                Color.GREEN -> poolManaSpentForOuter.copy(green = poolManaSpentForOuter.green + 1)
+            }
+        }
 
         /**
          * Apply exactly the resources consumed by one [ManaPool.payPartial] call to an independent
@@ -672,12 +684,35 @@ class ManaSolver(
                 return pool.canPay(ManaCost(remainingOuterSymbols), spellContext)
             }
 
-            // For a color-restricted X, pay the remaining fixed portion first and account for the
-            // remaining X units with the same restricted coverage rule as the actual X pass below.
+            // For a color-restricted X, reserve enough eligible restricted units for the X pass
+            // before probing the remaining fixed portion. `payPartial` intentionally spends
+            // eligible restricted mana first for generic costs, but that greedy order can consume
+            // the only units that are legal for X and make a jointly payable pool look short.
+            val reservedForX = if (spellContext == null) {
+                emptyList()
+            } else {
+                pool.restrictedMana
+                    .filter { entry ->
+                        entry.color != null &&
+                            entry.color in xManaRestriction &&
+                            entry.restriction.isSatisfiedBy(spellContext)
+                    }
+                    .take(remainingRestrictedX)
+            }
+            val fixedPool = if (reservedForX.isEmpty()) {
+                pool
+            } else {
+                val remainingRestricted = pool.restrictedMana.toMutableList()
+                reservedForX.forEach { entry -> remainingRestricted.remove(entry) }
+                pool.copy(restrictedMana = remainingRestricted)
+            }
             val fixedCost = ManaCost(remainingOuterSymbols)
-            val fixedPayment = pool.payPartial(fixedCost, spellContext)
+            val fixedPayment = fixedPool.payPartial(fixedCost, spellContext)
             if (!fixedPayment.remainingCost.isEmpty()) return false
-            return fixedPayment.newPool.xCoverage(remainingRestrictedX, xManaRestriction, spellContext) == remainingRestrictedX
+            val poolForX = fixedPayment.newPool.copy(
+                restrictedMana = fixedPayment.newPool.restrictedMana + reservedForX,
+            )
+            return poolForX.xCoverage(remainingRestrictedX, xManaRestriction, spellContext) == remainingRestrictedX
         }
 
         /** Consume one eligible restricted pool unit for the color-restricted X pass. */
@@ -689,8 +724,10 @@ class ManaSolver(
                     entry.color in xManaRestriction &&
                     entry.restriction.isSatisfiedBy(context)
             } ?: return null
-            availableManaPool = pool.spendRestricted(entry.color, context) ?: return null
-            return entry.color
+            val color = entry.color ?: return null
+            availableManaPool = pool.spendRestricted(color, context) ?: return null
+            addOuterRestrictedSpend(color)
+            return color
         }
 
         fun poolCanSeedActivation(source: ManaSource, colorUsed: Color?): Boolean {
