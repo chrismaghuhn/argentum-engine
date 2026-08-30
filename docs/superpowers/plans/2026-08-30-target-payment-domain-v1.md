@@ -1,4 +1,3 @@
-
 # TargetPaymentDomainV1 Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
@@ -30,6 +29,9 @@ Create or modify only these production/documentation seams unless a test exposes
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/TrainingObservation.kt
   - Add nullable LegalActionView.targetPaymentDomain with a default of null.
   - Keep manaCost and paymentDomain historical fields unchanged for non-target-bound actions.
+- Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/PaymentDomain.kt only if needed
+  - Promote the existing ManaCost.toAtomicDomain() helper to internal visibility without changing
+    PaymentDomainV5 or its atomicization behavior, so contract fixtures use the production mapping.
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt
   - Build the already-public ActionTargetDomainV1 first.
   - Qualify the permanent single-target slice, bind each published candidate, calculate its cost,
@@ -71,6 +73,7 @@ tasks and must not run in the initial implementation batch.
 
 - Create gym/src/main/kotlin/com/wingedsheep/gym/contract/TargetPaymentDomain.kt
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/TrainingObservation.kt
+- Modify gym/src/main/kotlin/com/wingedsheep/gym/contract/PaymentDomain.kt only for the internal helper visibility
 - Create gym/src/test/kotlin/com/wingedsheep/gym/TargetPaymentDomainContractTest.kt
 
 - [ ] **Step 1: Write the failing DTO tests.**
@@ -98,17 +101,27 @@ domain.targetBindings.map { it.target } shouldBe
 domain.targetBindings.all { it.paymentDomain != null } shouldBe true
 ~~~
 
-Define the test fixture used above in the same test file with the existing PaymentDomainV5
-constructor:
+Define the test fixture used above in the same test file with the production atomic-cost helper. The
+existing builder helper may be moved from a private member extension to an internal top-level extension
+without changing its body or any PaymentDomainV5 behavior:
 
 ~~~kotlin
-private fun paymentDomain(requiredCost: String) = PaymentDomainV5(
-    requiredCost = requiredCost,
-    outerAtomicCostUnits = emptyList(),
-    initialPoolBuckets = emptyList(),
-    sourceActivationOptions = emptyList(),
-)
+private fun paymentDomain(requiredCost: String): PaymentDomainV5 {
+    val parsedCost = ManaCost.parse(requiredCost)
+    val atomicUnits = parsedCost.toAtomicDomain()
+        ?: error("fixture cost is outside the V5 ordinary-mana slice")
+    return PaymentDomainV5(
+        requiredCost = requiredCost,
+        outerAtomicCostUnits = atomicUnits,
+        initialPoolBuckets = emptyList(),
+        sourceActivationOptions = emptyList(),
+    )
+}
 ~~~
+
+The `{2}` fixture must therefore contain two generic atomic units, while `{0}` may legitimately have
+an empty atomic-unit list. Never use `outerAtomicCostUnits = emptyList()` as a fixture for a non-zero
+cost, and never introduce a test-only atomicization algorithm.
 
 Add rejection tests for unsupported version, empty bindings, duplicate target bindings, and a nested
 invalid PaymentDomainV5. Add a kotlinx.serialization round-trip test and assert DTO equality.
@@ -210,10 +223,13 @@ result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_U
 ~~~
 
 Add tests proving that one unaffordable candidate still receives a non-null complete V5 domain, while
-one unrepresentable candidate makes the entire relation unsupported. Add tests for player/card/spell
-targets, two requirements, optional/unlimited/dynamic targets, X/mode coupling, and unresolved
-additional or alternative payment. Every case must publish neither a partial relation nor an
-action-wide fallback.
+one unrepresentable candidate makes the entire relation unsupported. Add a diagnostic pair that keeps
+the parent LegalAction.affordable=false while one target-bound binding is fully affordable and the
+relation is complete (no PAYMENT_DOMAIN_UNSUPPORTED), then makes the target relation unrepresentable
+with the same parent value (PAYMENT_DOMAIN_UNSUPPORTED regardless of the parent value). Add tests for
+player/card/spell targets, two requirements, optional/unlimited/dynamic targets, X/mode coupling, and
+unresolved additional or alternative payment. Every case must publish neither a partial relation nor
+an action-wide fallback.
 
 - [ ] **Step 2: Run the publication tests to capture RED.**
 
@@ -232,10 +248,45 @@ In ObservationBuilder.legalActionToView, use the already mapped ActionTargetDoma
 candidate source. Do not read raw LegalAction.validTargets or independently traverse the card
 definition.
 
-Add a private/internal flow equivalent to:
+Do not represent target-payment qualification with a nullable relation alone. Use an internal tri-state
+result so the diagnostic can distinguish a non-target-bound action from a target-bound action whose
+complete relation is unsupported:
 
 ~~~kotlin
-private fun targetPaymentDomainV1For(
+private sealed interface TargetPaymentQualification {
+    data object NotApplicable : TargetPaymentQualification
+    data class Supported(val domain: TargetPaymentDomainV1) : TargetPaymentQualification
+    data object Unsupported : TargetPaymentQualification
+}
+~~~
+
+`NotApplicable` is returned only when target-bound payment is not required and the action-level V5
+domain remains the authority. `Supported` requires the complete target-payment relation. `Unsupported`
+is returned once the action is a target-dependent payment action but any required qualification,
+cost binding, or nested V5 domain fails. It must not be inferred from parent affordability.
+
+Add a private/internal flow equivalent to the following. The outer qualification seam first determines
+whether a target-bound payment relation is required. It returns `NotApplicable` only when the
+action-level payment domain remains authoritative; once target-dependent payment is required, every
+shape/cost/domain failure is `Unsupported`:
+
+~~~kotlin
+private fun targetPaymentQualificationFor(
+    state: GameState,
+    legalAction: LegalAction,
+    targetResult: ActionTargetDomainMapper.Result?,
+): TargetPaymentQualification {
+    if (!requiresTargetBoundPayment(legalAction, targetResult)) {
+        return TargetPaymentQualification.NotApplicable
+    }
+    val targetDomain = (targetResult as? ActionTargetDomainMapper.Result.Supported)?.domain
+        ?: return TargetPaymentQualification.Unsupported
+    val relation = buildTargetPaymentDomainV1(state, legalAction, targetDomain)
+        ?: return TargetPaymentQualification.Unsupported
+    return TargetPaymentQualification.Supported(relation)
+}
+
+private fun buildTargetPaymentDomainV1(
     state: GameState,
     legalAction: LegalAction,
     targetDomain: ActionTargetDomainV1,
@@ -280,32 +331,39 @@ private fun targetPaymentDomainV1For(
 }
 ~~~
 
-The concrete implementation must verify that every candidate is a battlefield permanent and resolves to
-ChosenTarget.Permanent. It must never special-case isEquipAbility, a card name, or Fervent Champion.
+`requiresTargetBoundPayment` is a Rules-owned classification, not a consumer heuristic: it must return
+true for a target-dependent payment relation even when the relation is outside V1's supported permanent
+target shape. The nullable builder is private to the `Supported` path and must not leak a nullable result
+to diagnostic code. The concrete implementation must verify that every candidate is a battlefield
+permanent and resolves to ChosenTarget.Permanent. It must never special-case isEquipAbility, a card
+name, or Fervent Champion.
 
 Update the existing ObservationBuilder payment diagnostic at the same time. The diagnostic must
 consider a complete target-payment relation equivalent to a complete action-level V5 domain:
 
 ~~~kotlin
-val supportedTargetDomain = actionDomainMappings
+val targetResult = actionDomainMappings
     .firstOrNull { it.action == action }
     ?.targetResult
-    ?.let { it as? ActionTargetDomainMapper.Result.Supported }
-    ?.domain
 val actionPaymentSupported = paymentDomainV5For(state, action) != null
-val targetPaymentSupported = supportedTargetDomain?.let {
-    targetPaymentDomainV1For(state, action, it) != null
-} == true
-if (action.affordable && action.manaCostString != null &&
-    !actionPaymentSupported && !targetPaymentSupported
-) {
-    add(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
+when (val targetQualification = targetPaymentQualificationFor(state, action, targetResult)) {
+    TargetPaymentQualification.NotApplicable -> {
+        if (action.affordable && action.manaCostString != null && !actionPaymentSupported) {
+            add(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
+        }
+    }
+    is TargetPaymentQualification.Supported -> Unit
+    TargetPaymentQualification.Unsupported -> {
+        add(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
+    }
 }
 ~~~
 
 The target relation must be computed from the same already mapped target domain used by
-legalActionToView. A complete relation suppresses PAYMENT_DOMAIN_UNSUPPORTED; an action with neither
-a complete action-level V5 domain nor a complete target relation still raises it.
+legalActionToView. A complete relation suppresses PAYMENT_DOMAIN_UNSUPPORTED even when the parent
+LegalAction.affordable is false. A target-dependent action whose relation is unsupported raises the
+diagnostic without consulting parent affordability. Only `NotApplicable` uses the historical
+action-level affordability/mana-cost gate.
 
 - [ ] **Step 4: Implement the shared target-bound request and affordability proof.**
 
@@ -340,11 +398,14 @@ private fun targetBoundPaymentRequest(
     ability: ActivatedAbility,
     effectiveCost: AbilityCost,
 ): TargetBoundPaymentRequest? {
-    val manaCost = when (effectiveCost) {
-        is AbilityCost.Atom -> effectiveCost.manaCostOrNull
-        is AbilityCost.Composite -> effectiveCost.costs.firstNotNullOfOrNull { it.manaCostOrNull }
-        else -> null
-    }?.canonicalPaymentManaCost() ?: return null
+    val manaComponents = when (effectiveCost) {
+        is AbilityCost.Atom -> listOfNotNull(effectiveCost.manaCostOrNull)
+        is AbilityCost.Composite -> effectiveCost.costs.mapNotNull { it.manaCostOrNull }
+        else -> emptyList()
+    }
+    // V1 intentionally accepts exactly one mana component. Do not silently select the first component
+    // and do not invent a new composition rule in this seam.
+    val manaCost = manaComponents.singleOrNull()?.canonicalPaymentManaCost() ?: return null
     val deterministic = deterministicAdditionalCostPaymentFor(
         state,
         template.copy(action = action, manaCostString = manaCost.toString()),
@@ -433,15 +494,25 @@ Compute binding.affordable independently from parent LegalAction.affordable by u
 PaymentDomainV5.requiredCost, target-bound SpellPaymentContext, the same source exclusions, outer-life
 reservation, deterministic non-mana cost checks, and the current V5-supported source model. The
 implementation may call existing ManaSolver.canPay/solve feasibility, but it must not use
-paymentDomain != null as an affordability result.
+paymentDomain != null as an affordability result. A broad legacy `ManaSolver.canPay()` path must not
+make a binding affordable when the corresponding payment is outside the certified V5 source model:
+add an adversarial test where legacy canPay is true via an unrepresentable sacrifice/tap-other or
+similar capability but PaymentDomainBuilder.buildV5 is null; the target relation is then Unsupported,
+not a binding with `affordable=true` and no matching public payment witness. PaymentPlanValidator.validateV3
+remains the final authority for the submitted explicit plan.
 
-The targetBoundPaymentRequest function must return null for an unresolved cost choice and must derive
-requiredCost from the target-bound calculator result. The binding's PaymentDomainV5.requiredCost is
-the sole public target-bound cost authority.
+The targetBoundPaymentRequest function must return null for an unresolved cost choice, for zero or more
+than one mana component in the V1 slice, and for a component that cannot be canonically represented.
+It must derive requiredCost from the target-bound calculator result. Add a RED test with a composite
+effective AbilityCost containing two mana components (for example Mana({1}) + Mana({B}) + TapSelf):
+the result must be a complete canonical combined cost only if an existing Rules utility explicitly
+provides that operation; otherwise V1 must fail closed with TARGET_PAYMENT_DOMAIN_UNSUPPORTED and must
+never publish a `{1}`-only binding. The binding's PaymentDomainV5.requiredCost is the sole public
+target-bound cost authority.
 
 - [ ] **Step 5: Set parent view semantics and run publication tests.**
 
-When targetPaymentDomainV1For returns a relation, construct LegalActionView with:
+When targetPaymentQualificationFor returns Supported, construct LegalActionView with:
 
 ~~~text
 targetPaymentDomain = relation
@@ -450,9 +521,10 @@ paymentDomain = null
 affordable = relation.targetBindings.any { it.affordable }
 ~~~
 
-When the action is target-dependent but qualification fails, emit the typed unsupported diagnostic and
-publish no partial target-payment relation. Run just test-class GameGymEnvTargetPaymentDomainTest and
-expect the publication, unsupported-shape, cost-authority, and affordability tests to pass.
+When the action is target-dependent but qualification returns Unsupported, emit the typed unsupported
+diagnostic regardless of parent LegalAction.affordable and publish no partial target-payment relation.
+Run just test-class GameGymEnvTargetPaymentDomainTest and expect the publication, unsupported-shape,
+cost-authority, composite-mana, V5-affordability-equivalence, and affordability tests to pass.
 
 - [ ] **Step 6: Commit the Rules publication slice.**
 
@@ -785,11 +857,18 @@ test changes.
 
 - No implementation source file is changed by this task.
 - This task is deferred until Task 8 Step 4 has passed and the B0 gate is explicitly reopened.
-- Run the existing B0 diagnostic/acceptance test from the unchanged overlay worktree only after the
-  production implementation has passed independent review.
+- Run the existing B0 diagnostic/acceptance test only from a disposable integration worktree assembled
+  after the production implementation has passed independent review. The original B0 overlay worktree
+  is evidence-only and must not be checked out, rebased, cleaned, or mutated.
 - Modify no locked deck, policy seed, or B0 overlay file.
 
 - [ ] **Step 1: Run the existing exact B0 target-payment assertions.**
+
+Create the disposable worktree from the accepted production HEAD, then add the unchanged test-only
+characterization commits `714381b6e8482915a31986bda064fadfc4580f06` and
+`bee8210e9bbf19ed77513c4f2da9ee6739762d0f` without rewriting either commit. Apply the unchanged B0
+overlay diff from its existing evidence worktree into this disposable checkout, recording source and
+destination commit/worktree identities. Do not change the overlay files, locked decks, or policy.
 
 At episode b0-v1-0-chevill_seat_0-chevill, engine seed 0, policy seed 8396027631620334333,
 decision 1027, assert:
@@ -875,8 +954,10 @@ git diff --check
 ~~~
 
 Confirm that PaymentDomainV5, PaymentPlanV3, SourceActivationV2, ExplicitV3, GameAction, and CompactReplay
-production serializers were not changed except where the spec explicitly permits no change, and that
-no AutoPay/native fallback was added to the trusted path.
+production serializers were not changed. PaymentDomain.kt may differ only by the internal visibility
+of the existing cost-to-atomic helper used by contract fixtures; its output and PaymentDomainV5
+behavior must be byte-for-byte/semantically unchanged. Also confirm that no AutoPay/native fallback
+was added to the trusted path.
 
 - [ ] **Step 4: Prepare the independent-review package and stop.**
 
