@@ -684,35 +684,96 @@ class ManaSolver(
                 return pool.canPay(ManaCost(remainingOuterSymbols), spellContext)
             }
 
-            // For a color-restricted X, reserve enough eligible restricted units for the X pass
-            // before probing the remaining fixed portion. `payPartial` intentionally spends
-            // eligible restricted mana first for generic costs, but that greedy order can consume
-            // the only units that are legal for X and make a jointly payable pool look short.
-            val reservedForX = if (spellContext == null) {
-                emptyList()
-            } else {
-                pool.restrictedMana
-                    .filter { entry ->
-                        entry.color != null &&
-                            entry.color in xManaRestriction &&
-                            entry.restriction.isSatisfiedBy(spellContext)
+            /**
+             * Check the joint demand without inheriting `ManaPool.payPartial`'s greedy resource
+             * order. A pool may cover a fixed colored/generic portion and restricted X only when
+             * one common allocation exists; trying every legal unit assignment is small here
+             * because the fixed cost is already atomized and X is processed one unit at a time.
+             */
+            fun canAllocateFixedAndRestrictedX(): Boolean {
+                val failedStates = mutableSetOf<String>()
+
+                fun poolShape(pool: ManaPool): String = buildString {
+                    append(pool.white).append(',')
+                    append(pool.blue).append(',')
+                    append(pool.black).append(',')
+                    append(pool.red).append(',')
+                    append(pool.green).append(',')
+                    append(pool.colorless).append('|')
+                    pool.restrictedMana
+                        .groupingBy { entry -> "${entry.color?.ordinal ?: -1}:${entry.restriction}" }
+                        .eachCount()
+                        .toSortedMap()
+                        .forEach { (resource, amount) -> append(resource).append('=').append(amount).append(';') }
+                }
+
+                fun consumeResources(pool: ManaPool, accepts: (Color?) -> Boolean): List<ManaPool> {
+                    val options = mutableListOf<ManaPool>()
+                    for (color in Color.entries) {
+                        if (accepts(color)) pool.spend(color)?.let(options::add)
                     }
-                    .take(remainingRestrictedX)
+                    if (accepts(null)) pool.spendColorless()?.let(options::add)
+                    if (spellContext != null) {
+                        for (entry in pool.restrictedMana) {
+                            if (
+                                accepts(entry.color) &&
+                                entry.restriction.isSatisfiedBy(spellContext)
+                            ) {
+                                pool.spendRestricted(entry.color, spellContext)?.let(options::add)
+                            }
+                        }
+                    }
+                    return options.distinct()
+                }
+
+                fun consumeGenericUnits(pool: ManaPool, amount: Int): List<ManaPool> {
+                    var options = listOf(pool)
+                    repeat(amount.coerceAtLeast(0)) {
+                        options = options.flatMap { consumeResources(it) { true } }.distinct()
+                    }
+                    return options
+                }
+
+                fun consumeFixedSymbol(pool: ManaPool, symbol: ManaSymbol): List<ManaPool> = when (symbol) {
+                    is ManaSymbol.Generic -> consumeGenericUnits(pool, symbol.amount)
+                    is ManaSymbol.Colorless -> consumeResources(pool) { it == null }
+                    is ManaSymbol.Colored -> consumeResources(pool) { it == symbol.color }
+                    is ManaSymbol.Hybrid -> (
+                        consumeResources(pool) { it == symbol.color1 } +
+                            consumeResources(pool) { it == symbol.color2 }
+                        ).distinct()
+                    is ManaSymbol.Phyrexian -> consumeResources(pool) { it == symbol.color }
+                    is ManaSymbol.MonocolorHybrid -> (
+                        consumeResources(pool) { it == symbol.color } +
+                            consumeGenericUnits(pool, symbol.generic)
+                        ).distinct()
+                    is ManaSymbol.X -> emptyList()
+                }
+
+                fun search(
+                    currentPool: ManaPool,
+                    fixedSymbols: List<ManaSymbol>,
+                    xRemaining: Int,
+                ): Boolean {
+                    if (fixedSymbols.isEmpty() && xRemaining == 0) return true
+                    val stateKey = "${poolShape(currentPool)}|$fixedSymbols|$xRemaining"
+                    if (!failedStates.add(stateKey)) return false
+
+                    if (fixedSymbols.isNotEmpty()) {
+                        val remainingFixed = fixedSymbols.drop(1)
+                        return consumeFixedSymbol(currentPool, fixedSymbols.first())
+                            .any { nextPool -> search(nextPool, remainingFixed, xRemaining) }
+                    }
+
+                    return consumeResources(currentPool) { color ->
+                        color != null && color in xManaRestriction
+                    }.any { nextPool -> search(nextPool, emptyList(), xRemaining - 1) }
+                }
+
+                return search(pool, remainingOuterSymbols, remainingRestrictedX)
             }
-            val fixedPool = if (reservedForX.isEmpty()) {
-                pool
-            } else {
-                val remainingRestricted = pool.restrictedMana.toMutableList()
-                reservedForX.forEach { entry -> remainingRestricted.remove(entry) }
-                pool.copy(restrictedMana = remainingRestricted)
-            }
-            val fixedCost = ManaCost(remainingOuterSymbols)
-            val fixedPayment = fixedPool.payPartial(fixedCost, spellContext)
-            if (!fixedPayment.remainingCost.isEmpty()) return false
-            val poolForX = fixedPayment.newPool.copy(
-                restrictedMana = fixedPayment.newPool.restrictedMana + reservedForX,
-            )
-            return poolForX.xCoverage(remainingRestrictedX, xManaRestriction, spellContext) == remainingRestrictedX
+
+            return canAllocateFixedAndRestrictedX()
         }
 
         /** Consume one eligible restricted pool unit for the color-restricted X pass. */

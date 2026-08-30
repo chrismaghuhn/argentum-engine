@@ -525,6 +525,77 @@ class ManaSolverSelfFundingTest : FunSpec({
         driver.state.getEntity(paidSource)?.has<com.wingedsheep.engine.state.components.battlefield.TappedComponent>() shouldBe false
     }
 
+    test("SELF-FUND-18 joint fixed and restricted X allocation can choose another restricted unit") {
+        val driver = createDriver(listOf(paidSingleSource))
+        val player = driver.activePlayer!!
+        driver.giveColorlessMana(player, 1)
+        driver.giveRestrictedMana(
+            player,
+            color = Color.GREEN,
+            amount = 1,
+            restriction = ManaRestriction.InstantOrSorceryOnly,
+        )
+        driver.giveRestrictedMana(
+            player,
+            color = Color.RED,
+            amount = 1,
+            restriction = ManaRestriction.InstantOrSorceryOnly,
+        )
+        driver.putPermanentOnBattlefield(player, paidSingleSource.name)
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{G}{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            xManaRestriction = setOf(Color.GREEN, Color.RED),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources shouldBe emptyList()
+        val poolAfterPayment = solution.poolAfterPayment.shouldNotBeNull()
+        poolAfterPayment.colorless shouldBe 1
+        poolAfterPayment.restrictedMana shouldBe emptyList()
+    }
+
+    test("SELF-FUND-19 joint fixed and restricted X allocation can choose a different unrestricted color") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.giveMana(player, Color.BLACK, 1)
+        driver.giveMana(player, Color.GREEN, 1)
+        driver.putPermanentOnBattlefield(player, GolgariSignet.name)
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{1}{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            xManaRestriction = setOf(Color.BLACK),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources shouldBe emptyList()
+        val poolAfterPayment = solution.poolAfterPayment.shouldNotBeNull()
+        poolAfterPayment.black shouldBe 0
+        poolAfterPayment.green shouldBe 0
+    }
+
     test("SELF-FUND-07 restricted prerequisite bonus cannot pay a color-restricted X") {
         val driver = createDriver()
         val player = driver.activePlayer!!
