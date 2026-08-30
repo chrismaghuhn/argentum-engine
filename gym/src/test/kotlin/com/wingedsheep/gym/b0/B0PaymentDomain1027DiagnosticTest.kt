@@ -2,6 +2,7 @@ package com.wingedsheep.gym.b0
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PredicateEvaluator
 import com.wingedsheep.engine.legalactions.LegalAction
@@ -19,6 +20,10 @@ import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.PaymentDomainBuilder
+import com.wingedsheep.gym.DeterministicPolicyState
+import com.wingedsheep.gym.ExternalPolicySelectionMode
+import com.wingedsheep.gym.PublicPolicyPicker
+import com.wingedsheep.gym.SemanticChoice
 import com.wingedsheep.gym.paymentPlanV3FromPublic
 import com.wingedsheep.gym.service.EnvConfig
 import com.wingedsheep.gym.service.EnvId
@@ -39,12 +44,12 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * RED-only characterization for B0-PAYMENT-DOMAIN-01. The test deliberately reproduces the
- * exact decision-1027 state and records the complete action/request/builder boundary without
- * changing the B0 policy, locked decks, PR #107, or production semantics.
+ * Test-only evidence for B0-PAYMENT-DOMAIN-01. The test deliberately reproduces the exact
+ * decision-1027 state, proves the target-bound publication, and attributes any remaining policy
+ * gap without changing the B0 policy, locked decks, PR #107, or production semantics.
  */
 class B0PaymentDomain1027DiagnosticTest : FunSpec({
-    test("characterizes all four PAYMENT_DOMAIN_UNSUPPORTED offenders at decision 1027") {
+    test("characterizes target-bound publication and the remaining decision-1027 policy gap") {
         val harness = B0CommanderSoakHarness.create()
         val service = privateField<MultiEnvService>(harness, "service")
         val cardRegistry = privateField<CardRegistry>(harness, "cardRegistry")
@@ -90,17 +95,112 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                 ?: error("B0 run has no transition action")
             val observation = service.diagnosticTrainingObservation(failingCreated.envId)
             val postLegalActions = postEnvironment.legalActions()
-            val payableViews = observation.legalActions.filter { it.manaCost != null }
-            val offenderViews = payableViews.filter { it.paymentDomain == null }
             fun registeredActionFor(view: LegalActionView): LegalAction = postLegalActions.single { legalAction ->
                     legalAction.actionType == view.kind &&
                         legalAction.description == view.description &&
-                        legalAction.manaCostString == view.manaCost &&
                         legalActionSourceId(legalAction) == view.sourceEntityId
             }
-            val offenders = offenderViews.map(::registeredActionFor)
-            val productionOffenderViews = offenderViews.filter { it.affordable }
-            val productionOffenders = productionOffenderViews.map(::registeredActionFor)
+            val expectedTargetSources = linkedMapOf(
+                EntityId("e164") to "Sword of the Animist",
+                EntityId("e162") to "Swiftfoot Boots",
+                EntityId("e165") to "Mask of Memory",
+            )
+            val targetViews = expectedTargetSources.map { (sourceId, cardName) ->
+                val view = observation.legalActions.singleOrNull {
+                    it.kind == "ActivateAbility" &&
+                        it.sourceEntityId == sourceId &&
+                        it.targetPaymentDomain != null
+                } ?: error("Expected target-bound payment view for $cardName/$sourceId")
+                view to cardName
+            }
+            val targetActions = targetViews.map { (view, _) -> registeredActionFor(view) }
+            val targetCostExpectations = mapOf(
+                EntityId("e164") to mapOf("e146" to "{0}", "e147" to "{2}"),
+                EntityId("e162") to mapOf("e146" to "{0}", "e147" to "{1}"),
+                EntityId("e165") to mapOf("e146" to "{0}", "e147" to "{1}"),
+            )
+            targetViews.forEach { (view, cardName) ->
+                val sourceId = view.sourceEntityId ?: error("$cardName has no source entity")
+                val relation = view.targetPaymentDomain ?: error("$cardName has no target-payment relation")
+                val targetDomain = view.targetDomain ?: error("$cardName has no target domain")
+                targetDomain.requirements.single().candidates shouldBe relation.targetBindings.map { it.target }
+                view.manaCost shouldBe null
+                view.paymentDomain shouldBe null
+                view.affordable shouldBe relation.targetBindings.any { it.affordable }
+                view.requiredPayloadFields shouldBe listOf("targets", "paymentStrategy")
+                postState.getEntity(sourceId)?.get<CardComponent>()?.name shouldBe cardName
+                val expectedCosts = targetCostExpectations.getValue(sourceId)
+                relation.targetBindings.associate { it.target.value to it.paymentDomain.requiredCost }
+                    .filterKeys { it in expectedCosts.keys } shouldBe expectedCosts
+            }
+            val stronghold = postLegalActions.single {
+                legalActionSourceId(it) == EntityId("e136") &&
+                    it.actionType == "ActivateAbility" &&
+                    it.manaCostString == "{R}{W}"
+            }
+            val strongholdAction = stronghold.action as ActivateAbility
+
+            val observationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
+            val strongholdView = (
+                observationBuilder.build(
+                    state = postState,
+                    perspectivePlayerId = actor,
+                    legalActions = listOf(stronghold),
+                    truncated = postEnvironment.isTruncated,
+                ).observation as? com.wingedsheep.gym.contract.TrainingObservation
+                    ?: error("Expected a TrainingObservation for Slayers' Stronghold")
+                ).legalActions.single()
+            strongholdView.affordable shouldBe false
+            strongholdView.targetPaymentDomain shouldBe null
+            strongholdView.paymentDomain shouldBe null
+            val aggregateObservation = observationBuilder.build(
+                state = postState,
+                perspectivePlayerId = actor,
+                legalActions = postLegalActions,
+                truncated = postEnvironment.isTruncated,
+            )
+            val aggregatePaymentDiagnostics = aggregateObservation.diagnostics
+                .filter { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED }
+            val isolatedPaymentDiagnostics = postLegalActions.mapNotNull { legalAction ->
+                val isolated = observationBuilder.build(
+                    state = postState,
+                    perspectivePlayerId = actor,
+                    legalActions = listOf(legalAction),
+                    truncated = postEnvironment.isTruncated,
+                )
+                val diagnostics = isolated.diagnostics
+                    .filter { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED }
+                if (diagnostics.isEmpty()) {
+                    null
+                } else {
+                    Triple(
+                        legalAction,
+                        (isolated.observation as? com.wingedsheep.gym.contract.TrainingObservation)
+                            ?.legalActions?.singleOrNull(),
+                        diagnostics,
+                    )
+                }
+            }
+            val policyStateAtGap = B0PolicyState(spec.policySeed, choiceOrdinal = 1_026L)
+            val policyCandidates = observation.legalActions.filter { it.affordable || it.isDecisionOption }
+            val selectedByPolicy = PublicPolicyPicker(
+                ExternalPolicySelectionMode.PUBLISHED_SEEDED,
+                DeterministicPolicyState(spec.policySeed, choiceOrdinal = 1_026L),
+            ).choose(policyCandidates) ?: error("Expected a policy candidate at decision 1027")
+            val policyChoice = B0SeededPublicPolicy().choose(observation, policyStateAtGap)
+            val policyGap = policyChoice as? SemanticChoice.Gap
+                ?: error("Expected the old policy to expose the remaining gap, got $policyChoice")
+            val isolatedPolicyPaymentGaps = policyCandidates.mapNotNull { candidate ->
+                val choice = B0SeededPublicPolicy().choose(
+                    observation.copy(legalActions = listOf(candidate)),
+                    policyStateAtGap,
+                )
+                if (choice is SemanticChoice.Gap && choice.code == "PAYMENT_DOMAIN_UNSUPPORTED") {
+                    candidate
+                } else {
+                    null
+                }
+            }
 
             val report = buildString {
                 appendLine("B0-PAYMENT-DOMAIN-01 DECISION-1027 PAYMENT DIAGNOSTIC")
@@ -122,22 +222,35 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                 appendLine("RUN_CLOSURE=${failingRun.result.closureKind}/${failingRun.result.closureReason}")
                 appendLine("RUN_FAILURE_STAGE=${failingRun.failureBundle?.failureStage}")
                 appendLine("RUN_FAILURE_REFERENCE=${failingRun.failureBundle?.restrictedDiagnosticsReference}")
-                appendLine("ROOT_CLASSIFICATION=SINGLE_SHARED_PRODUCTION_ROOT_WITH_DIAGNOSTIC_NOISE")
-                appendLine("PRODUCTION_ROOT=TARGET_DEPENDENT_EQUIP_PAYMENT_DOMAIN_GAP")
-                appendLine("PRODUCTION_OFFENDER_COUNT=${productionOffenders.size}")
-                appendLine("NON_CAUSAL_DIAGNOSTIC_NOISE=Slayers' Stronghold is unaffordable and intentionally omits paymentDomain")
+                appendLine("TARGET_PAYMENT_PUBLICATION=TARGET_PAYMENT_DOMAIN_V1")
+                appendLine("TARGET_BINDING_SOURCES=${targetViews.map { it.first.sourceEntityId?.value }}")
+                appendLine("TARGET_BINDING_CARD_NAMES=${targetViews.map { it.second }}")
+                appendLine("STRONGHOLD_NON_CAUSAL=true")
+                appendLine("OBSERVATION_AGGREGATE_PAYMENT_DIAGNOSTICS=$aggregatePaymentDiagnostics")
+                appendLine("OBSERVATION_ISOLATED_PAYMENT_DIAGNOSTICS=${isolatedPaymentDiagnostics.map { diagnostic ->
+                    "source=${legalActionSourceId(diagnostic.first)?.value}," +
+                        "kind=${diagnostic.first.actionType}," +
+                        "description=${diagnostic.first.description}," +
+                        "view=${diagnostic.second},codes=${diagnostic.third}"
+                }}")
+                appendLine("POLICY_SELECTED_ACTION=source=${selectedByPolicy.sourceEntityId?.value},kind=${selectedByPolicy.kind},description=${selectedByPolicy.description},actionId=${selectedByPolicy.actionId}")
+                appendLine("POLICY_GAP=$policyGap")
+                appendLine("POLICY_ISOLATED_PAYMENT_GAPS=${isolatedPolicyPaymentGaps.map {
+                    "source=${it.sourceEntityId?.value},kind=${it.kind},description=${it.description},actionId=${it.actionId}"
+                }}")
                 appendLine()
 
-                appendLine("PUBLIC_PAYABLE_COUNT=${payableViews.size}")
-                appendLine("PUBLIC_UNPUBLISHED_COUNT=${offenderViews.size}")
-                offenderViews.forEachIndexed { index, view ->
+                appendLine("TARGET_BINDING_COUNT=${targetViews.size}")
+                targetViews.forEachIndexed { index, (view, cardName) ->
                     appendLine(
-                        "PUBLIC_OFFENDER[$index]=" +
+                        "TARGET_BINDING[$index]=" +
+                            "cardName=$cardName," +
                             "sourceEntityId=${view.sourceEntityId}," +
                             "kind=${view.kind},description=${view.description}," +
-                            "manaCost=${view.manaCost},alternativePayment=<from LegalAction>," +
+                            "manaCost=${view.manaCost},paymentDomain=${view.paymentDomain}," +
+                            "targetPaymentDomain=${view.targetPaymentDomain}," +
                             "requiredPayloadFields=${view.requiredPayloadFields}," +
-                            "affordable=${view.affordable},paymentDomainPresent=${view.paymentDomain != null}," +
+                            "affordable=${view.affordable}," +
                             "targetDomain=${view.targetDomain}",
                     )
                 }
@@ -146,17 +259,14 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                 append(manaPoolReport(postState, actor))
                 appendLine("DISCOVERED_MANA_SOURCES")
                 append(sourceInventory(postState, actor, cardRegistry))
-                appendLine("ACTION_RECORDS")
-                offenders.forEachIndexed { index, legalAction ->
-                    appendLine("ACTION[$index]")
-                    append(actionReport(postState, actor, legalAction, cardRegistry, offenderViews[index]))
-                }
+                appendLine("STRONGHOLD_ACTION_RECORD")
+                append(actionReport(postState, actor, stronghold, cardRegistry, strongholdView))
             }
 
             val output = Path.of(
                 System.getProperty(
                     "b0.diagnosticOutput",
-                    "C:/Users/chris/.config/superpowers/worktrees/argentum-engine/b0-payment-domain-1027/gym/build/reports/b0/task-b0-payment-domain-01/decision-1027-diagnostic.txt",
+                    "build/reports/b0/task-b0-payment-domain-01/decision-1027-diagnostic.txt",
                 ),
             )
             Files.createDirectories(output.parent)
@@ -169,45 +279,18 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
             failingRun.result.engineProgressCount shouldBe 1027
             failingRun.result.externalTransitionCount shouldBe 1027
             failingRun.result.failureClassification shouldBe B0FailureClassification.UNSUPPORTED
-            failingRun.failureBundle?.failureStage shouldBe "post-action-observation"
+            failingRun.failureBundle?.failureStage shouldBe
+                "public-domain:PAYMENT:PAYMENT_DOMAIN_UNSUPPORTED"
             failingRun.failureBundle?.restrictedDiagnosticsReference
                 ?.contains("PAYMENT_DOMAIN_UNSUPPORTED") shouldBe true
             transition.javaClass.simpleName shouldBe "PassPriority"
             preEnvironment.stepCount shouldBe 1026
             postEnvironment.stepCount shouldBe 1027
 
-            offenderViews.size shouldBe 4
-            offenders.size shouldBe 4
-            productionOffenderViews.size shouldBe 3
-            productionOffenders.size shouldBe 3
-            offenders.mapNotNull(::legalActionSourceId).map(EntityId::value) shouldBe
-                listOf("e164", "e136", "e162", "e165")
-            productionOffenders.mapNotNull(::legalActionSourceId).map(EntityId::value) shouldBe
+            targetViews.size shouldBe 3
+            targetActions.mapNotNull(::legalActionSourceId).map(EntityId::value) shouldBe
                 listOf("e164", "e162", "e165")
-            offenderViews.map { it.requiredPayloadFields } shouldBe listOf(
-                listOf("targets", "paymentStrategy"),
-                listOf("paymentStrategy", "costPayment"),
-                listOf("targets", "paymentStrategy"),
-                listOf("targets", "paymentStrategy"),
-            )
-            offenderViews.map { it.affordable } shouldBe listOf(true, false, true, true)
-            offenders.map { it.actionType } shouldBe List(4) { "ActivateAbility" }
-            offenders.map { it.manaCostString } shouldBe listOf("{0}", "{R}{W}", "{0}", "{0}")
-            offenders.map { legalAction ->
-                ObservationBuilder(cardRegistry = cardRegistry).paymentDomainV5For(postState, legalAction) != null
-            } shouldBe listOf(false, true, false, false)
-            offenders.map { legalAction ->
-                firstNullStage(postState, legalAction, offenderViewFor(legalAction, offenderViews), cardRegistry)
-            } shouldBe listOf(
-                "PAYMENT_REQUEST:EQUIP_PAYMENT_UNSUPPORTED:{e147=Atom(atom=Mana(cost={2}))}",
-                "PUBLIC_VIEW_OMITS_UNAFFORDABLE_ACTION",
-                "PAYMENT_REQUEST:EQUIP_PAYMENT_UNSUPPORTED:{e147=Atom(atom=Mana(cost={1}))}",
-                "PAYMENT_REQUEST:EQUIP_PAYMENT_UNSUPPORTED:{e147=Atom(atom=Mana(cost={1}))}",
-            )
-
-            val equipActions = productionOffenders.filter { it.description == "Equip {0}" }
-            equipActions.size shouldBe 3
-            equipActions.forEach { legalAction ->
+            targetActions.forEach { legalAction ->
                 val action = legalAction.action as ActivateAbility
                 action.alternativePayment shouldBe null
                 legalAction.additionalCostInfo shouldBe null
@@ -230,8 +313,6 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                     .isNotEmpty() shouldBe true
             }
 
-            val stronghold = offenders.single { legalActionSourceId(it)?.value == "e136" }
-            val strongholdAction = stronghold.action as ActivateAbility
             strongholdAction.alternativePayment shouldBe null
             stronghold.additionalCostInfo shouldBe null
             stronghold.manaCostString shouldBe "{R}{W}"
@@ -263,8 +344,15 @@ class B0PaymentDomain1027DiagnosticTest : FunSpec({
                 "AdditionalCostPayment(sacrificedPermanents=[], discardedCards=[], lifePaid=0, exiledCards=[], variableCostPermanents=[], beheldCards=[], tappedPermanents=[e136], bouncedPermanents=[], blightTargets=[], blightAmount=0, payXLifeAmount=0, distributedCounterRemovals=[])"
             ObservationBuilder(cardRegistry = cardRegistry)
                 .paymentDomainV5For(postState, stronghold) shouldNotBe null
-            offenderViewFor(stronghold, offenderViews).affordable shouldBe false
-            offenderViewFor(stronghold, offenderViews).paymentDomain shouldBe null
+            strongholdView.affordable shouldBe false
+            strongholdView.paymentDomain shouldBe null
+
+            aggregatePaymentDiagnostics shouldBe emptyList()
+            isolatedPaymentDiagnostics shouldBe emptyList()
+            policyGap.code shouldBe "PAYMENT_DOMAIN_UNSUPPORTED"
+            selectedByPolicy.targetPaymentDomain shouldNotBe null
+            isolatedPolicyPaymentGaps.mapNotNull { it.sourceEntityId?.value } shouldBe
+                listOf("e164", "e162", "e165")
 
             val discovered = ManaSolver(cardRegistry).findAvailableManaSources(
                 state = postState,
