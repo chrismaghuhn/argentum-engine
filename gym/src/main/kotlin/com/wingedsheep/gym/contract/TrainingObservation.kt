@@ -298,7 +298,9 @@ data class LegalActionView(
      */
     val actionSemantics: JsonObject? = null,
     /** True when this entry was generated from [PendingDecisionView], not a GameAction. */
-    val isDecisionOption: Boolean = false
+    val isDecisionOption: Boolean = false,
+    /** Complete target-to-payment relation for target-dependent activated-ability costs. */
+    val targetPaymentDomain: TargetPaymentDomainV1? = null
 )
 
 /**

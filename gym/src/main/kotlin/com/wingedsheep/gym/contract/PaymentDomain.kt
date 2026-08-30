@@ -406,6 +406,46 @@ data class PaymentDomainV5(
     }
 }
 
+/** Converts a fixed ordinary mana cost to the atomic V5 contract representation. */
+internal fun ManaCost.toAtomicDomain(): List<AtomicManaCostUnitV1>? = buildList {
+    for ((symbolIndex, symbol) in symbols.withIndex()) {
+        when (symbol) {
+            is ManaSymbol.Colored -> add(
+                AtomicManaCostUnitV1(
+                    symbolIndex = symbolIndex,
+                    unitIndexWithinSymbol = 0,
+                    kind = PaymentCostKindV1.COLORED,
+                    allowedColors = setOf(PaymentManaColor.fromEngine(symbol.color)),
+                )
+            )
+
+            is ManaSymbol.Colorless -> add(
+                AtomicManaCostUnitV1(
+                    symbolIndex = symbolIndex,
+                    unitIndexWithinSymbol = 0,
+                    kind = PaymentCostKindV1.COLORLESS,
+                    allowedColors = setOf(PaymentManaColor.COLORLESS),
+                )
+            )
+
+            is ManaSymbol.Generic -> {
+                if (symbol.amount < 0) return null
+                repeat(symbol.amount) { unitIndex ->
+                    add(
+                        AtomicManaCostUnitV1(
+                            symbolIndex = symbolIndex,
+                            unitIndexWithinSymbol = unitIndex,
+                            kind = PaymentCostKindV1.GENERIC,
+                        )
+                    )
+                }
+            }
+
+            else -> return null
+        }
+    }
+}
+
 /**
  * Builds the public action-level domain from the existing engine mana-source discovery. The caller
  * must pass the same ability payment context and source exclusion that the authoritative ability
@@ -630,45 +670,6 @@ class PaymentDomainBuilder(
             is FloatingManaProvenanceClassification.CertifiedHomogeneous,
             is FloatingManaProvenanceClassification.CertifiedHeterogeneous,
             is FloatingManaProvenanceClassification.Ambiguous -> null
-        }
-    }
-
-    private fun ManaCost.toAtomicDomain(): List<AtomicManaCostUnitV1>? = buildList {
-        for ((symbolIndex, symbol) in symbols.withIndex()) {
-            when (symbol) {
-                is ManaSymbol.Colored -> add(
-                    AtomicManaCostUnitV1(
-                        symbolIndex = symbolIndex,
-                        unitIndexWithinSymbol = 0,
-                        kind = PaymentCostKindV1.COLORED,
-                        allowedColors = setOf(PaymentManaColor.fromEngine(symbol.color)),
-                    )
-                )
-
-                is ManaSymbol.Colorless -> add(
-                    AtomicManaCostUnitV1(
-                        symbolIndex = symbolIndex,
-                        unitIndexWithinSymbol = 0,
-                        kind = PaymentCostKindV1.COLORLESS,
-                        allowedColors = setOf(PaymentManaColor.COLORLESS),
-                    )
-                )
-
-                is ManaSymbol.Generic -> {
-                    if (symbol.amount < 0) return null
-                    repeat(symbol.amount) { unitIndex ->
-                        add(
-                            AtomicManaCostUnitV1(
-                                symbolIndex = symbolIndex,
-                                unitIndexWithinSymbol = unitIndex,
-                                kind = PaymentCostKindV1.GENERIC,
-                            )
-                        )
-                    }
-                }
-
-                else -> return null
-            }
         }
     }
 
