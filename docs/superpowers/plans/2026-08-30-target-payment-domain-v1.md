@@ -41,6 +41,7 @@ Create or modify only these production/documentation seams unless a test exposes
   - Change only the current Gym schema identifier to
     argentum-gym-contract@v1.25-target-payment-domain.
 - Modify gym/src/main/kotlin/com/wingedsheep/gym/GameGymEnv.kt
+  - Read the registered target-payment snapshot from cachedObservation by submitted actionId.
   - Resolve the submitted target binding before validating ExplicitV3 payment.
   - Reject target/plan cross-binding and registered/current binding drift before execution.
 - Modify gym/src/test/kotlin/com/wingedsheep/gym/EnvironmentV1ExternalPolicy.kt
@@ -59,6 +60,10 @@ Create or modify only these production/documentation seams unless a test exposes
 
 Do not modify PaymentDomainV5, PaymentPlanV3, SourceActivationV2, GameAction,
 PaymentStrategy.ExplicitV3, CompactReplay serializers, locked decks, or the B0 overlay.
+
+The initial implementation batch is Tasks 1, 2, 3, 4, 6, and 8. Task 8 ends with an independent
+review package and a stop. Task 5 (B0 policy adaptation) and Task 7 (B0 execution) are post-review
+tasks and must not run in the initial implementation batch.
 
 ## Task 1: Add the observation DTO and structural invariants
 
@@ -191,6 +196,19 @@ view.affordable shouldBe relation.targetBindings.any { it.affordable }
 relation.targetBindings.all { it.paymentDomain != null } shouldBe true
 ~~~
 
+Build the full ObservationBuilder result in the same fixture and assert that the existing payment
+diagnostic treats either complete action-level V5 or complete target-payment V1 as supported:
+
+~~~kotlin
+result.diagnostics.any { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe false
+~~~
+
+Add the inverse test by making one target binding unrepresentable:
+
+~~~kotlin
+result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+~~~
+
 Add tests proving that one unaffordable candidate still receives a non-null complete V5 domain, while
 one unrepresentable candidate makes the entire relation unsupported. Add tests for player/card/spell
 targets, two requirements, optional/unlimited/dynamic targets, X/mode coupling, and unresolved
@@ -265,9 +283,35 @@ private fun targetPaymentDomainV1For(
 The concrete implementation must verify that every candidate is a battlefield permanent and resolves to
 ChosenTarget.Permanent. It must never special-case isEquipAbility, a card name, or Fervent Champion.
 
+Update the existing ObservationBuilder payment diagnostic at the same time. The diagnostic must
+consider a complete target-payment relation equivalent to a complete action-level V5 domain:
+
+~~~kotlin
+val supportedTargetDomain = actionDomainMappings
+    .firstOrNull { it.action == action }
+    ?.targetResult
+    ?.let { it as? ActionTargetDomainMapper.Result.Supported }
+    ?.domain
+val actionPaymentSupported = paymentDomainV5For(state, action) != null
+val targetPaymentSupported = supportedTargetDomain?.let {
+    targetPaymentDomainV1For(state, action, it) != null
+} == true
+if (action.affordable && action.manaCostString != null &&
+    !actionPaymentSupported && !targetPaymentSupported
+) {
+    add(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
+}
+~~~
+
+The target relation must be computed from the same already mapped target domain used by
+legalActionToView. A complete relation suppresses PAYMENT_DOMAIN_UNSUPPORTED; an action with neither
+a complete action-level V5 domain nor a complete target relation still raises it.
+
 - [ ] **Step 4: Implement the shared target-bound request and affordability proof.**
 
-Factor a private Rules-owned request path so publication and strict execution use the same values:
+Factor an internal Rules-owned target-payment seam so publication and strict execution use the same
+values. The calculation remains internal to ObservationBuilder; GameGymEnv consumes the exposed
+preflight operation rather than duplicating it:
 
 ~~~text
 resolved target-bound ability
@@ -278,10 +322,10 @@ resolved target-bound ability
 → reserved outer PayLife amount
 ~~~
 
-Define the private request/result seam before calling it from the publication loop:
+Define the internal request and preflight seam before calling it from the publication loop:
 
 ~~~kotlin
-private data class TargetBoundPaymentRequest(
+internal data class TargetBoundPaymentRequest(
     val playerId: EntityId,
     val requiredCost: String,
     val spellContext: SpellPaymentContext,
@@ -296,7 +340,11 @@ private fun targetBoundPaymentRequest(
     ability: ActivatedAbility,
     effectiveCost: AbilityCost,
 ): TargetBoundPaymentRequest? {
-    val manaCost = effectiveCost.manaCostOrNull?.canonicalPaymentManaCost() ?: return null
+    val manaCost = when (effectiveCost) {
+        is AbilityCost.Atom -> effectiveCost.manaCostOrNull
+        is AbilityCost.Composite -> effectiveCost.costs.firstNotNullOfOrNull { it.manaCostOrNull }
+        else -> null
+    }?.canonicalPaymentManaCost() ?: return null
     val deterministic = deterministicAdditionalCostPaymentFor(
         state,
         template.copy(action = action, manaCostString = manaCost.toString()),
@@ -340,6 +388,45 @@ private fun targetBoundAffordable(
     spellContext = request.spellContext,
     additionalPayLife = request.reservedOuterLifePayment,
 )
+~~~
+
+Add one internal, read-only preflight method on the same ObservationBuilder seam. It must resolve the
+submitted target, recompute the bound request, and delegate to the existing Rules validator instead
+of reimplementing ledger checks:
+
+~~~kotlin
+private val paymentPlanValidator by lazy { PaymentPlanValidator(manaSolver) }
+
+internal fun validateTargetPaymentPlanV3(
+    state: GameState,
+    template: LegalAction,
+    submitted: ActivateAbility,
+    plan: PaymentPlanV3,
+): PaymentPlanValidation {
+    val target = submitted.targets.singleOrNull() as? ChosenTarget.Permanent
+        ?: return PaymentPlanValidation.Rejected("TargetPaymentDomainV1 requires one permanent target")
+    val ability = resolveActivatedAbility(state, submitted)
+        ?: return PaymentPlanValidation.Rejected("Target-bound ActivatedAbility is stale")
+    val effectiveCost = activatedAbilityCostCalculator.calculate(
+        state = state,
+        sourceId = submitted.sourceId,
+        controllerId = submitted.playerId,
+        ability = ability,
+        targets = submitted.targets,
+        equipPayment = submitted.alternativePayment?.equipPayment,
+    )
+    val request = targetBoundPaymentRequest(state, template, submitted, ability, effectiveCost)
+        ?: return PaymentPlanValidation.Rejected("Target-bound payment request is unsupported")
+    return paymentPlanValidator.validateV3(
+        state = state,
+        playerId = request.playerId,
+        cost = ManaCost.parse(request.requiredCost),
+        plan = plan,
+        spellContext = request.spellContext,
+        reservedOuterLifePayment = request.reservedOuterLifePayment,
+        excludeSources = request.excludeSources,
+    )
+}
 ~~~
 
 Compute binding.affordable independently from parent LegalAction.affordable by using the target-bound
@@ -500,8 +587,23 @@ target binding, so the cross-binding and stale tests fail or cannot compile.
 
 - [ ] **Step 3: Add a target-binding resolver at the trusted Gym seam.**
 
-Before requireActionPaymentPlan, detect targetPaymentDomain on the registered/current action view and
-resolve exactly one submitted ChosenTarget.Permanent. Validate:
+Before requireActionPaymentPlan, obtain two distinct snapshots. The registered snapshot is the
+cached observation view selected by the submitted actionId:
+
+~~~kotlin
+val registeredView = (cachedObservation?.observation as? TrainingObservation)
+    ?.legalActions
+    ?.singleOrNull { it.actionId == actionId }
+    ?: throw IllegalArgumentException("Action handle has no registered observation snapshot")
+~~~
+
+The current snapshot is a fresh, non-caching ObservationBuilder result over the current immutable
+state and current legal actions. It must not allocate action IDs, replace cachedObservation, or
+advance the action cursor. Match the current raw LegalAction to the registered action through the
+existing action-registry/candidate seam, then select its current LegalActionView.
+
+For a target-payment action, detect targetPaymentDomain on both snapshots and resolve exactly one
+submitted ChosenTarget.Permanent. Validate:
 
 ~~~text
 registered TargetPaymentDomainV1 is structurally valid
@@ -512,9 +614,11 @@ submitted target is one of the current binding targets
 selected binding.affordable is true
 ~~~
 
-Pass only the selected binding's PaymentDomainV5 and requiredCost into the existing ExplicitV3
-validation path. Keep PaymentPlanV3 target-free; target/plan association is established by the selected
-binding at the Gym seam.
+The registered and current selected bindings must be compared before execution. Then call the
+internal ObservationBuilder target-payment preflight, which recomputes the target-bound request and
+delegates to PaymentPlanValidator.validateV3. Pass only the selected binding's PaymentDomainV5 and
+requiredCost into the existing ExplicitV3 validation path. Keep PaymentPlanV3 target-free;
+target/plan association is established by the selected binding at the Gym seam.
 
 - [ ] **Step 4: Add registered/current stale equality before mutation.**
 
@@ -547,7 +651,12 @@ git add gym/src/main/kotlin/com/wingedsheep/gym/GameGymEnv.kt gym/src/test/kotli
 git commit -m "feat: enforce target-bound payment submissions"
 ~~~
 
-## Task 5: Make the external policy consume the published relation
+## Task 5: Make the external policy consume the published relation (post-review)
+
+This task is not part of the initial implementation batch. The exact-pair/B0 policy remains
+unchanged until Tasks 1-4 and 6-8 have been implemented, independently reviewed, and accepted by
+the user. Task 1 and Task 2 may use a small test-local consumer to test the public DTO; that consumer
+must not modify EnvironmentV1ExternalPolicy.kt.
 
 **Files:**
 
@@ -558,7 +667,7 @@ git commit -m "feat: enforce target-bound payment submissions"
 - [ ] **Step 1: Write failing policy-consumption tests.**
 
 Create a LegalActionView with targetPaymentDomain containing one affordable and one unaffordable
-binding. Assert the policy:
+binding. A test-local consumer may be used before the external review. Assert the consumer:
 
 ~~~text
 selects only an affordable published binding
@@ -577,10 +686,13 @@ just test-class TargetPaymentDomainPolicyTest
 just test-class GameGymEnvTargetPaymentDomainTest
 ~~~
 
-Expected: the current policy sees no target-payment field and either reports an unsupported structured
-action or tries the parent payment domain.
+Expected: the test-local consumer and current policy remain unchanged before the post-review policy
+task; the new relation-specific assertions are RED until the adapter is implemented.
 
 - [ ] **Step 3: Implement the policy adapter against the public relation.**
+
+Perform this step only after the external production-review gate has returned acceptance for the
+implementation HEAD.
 
 For a target-payment action, validate the targetDomain/binding bijection in published order, choose from
 bindings whose affordable flag is true, and build the ExplicitV3 plan from that binding's
@@ -600,8 +712,8 @@ just test-class TargetPaymentDomainPolicyTest
 just test-class GameGymEnvTargetPaymentDomainTest
 ~~~
 
-Expected: the policy selects only published affordable bindings and strict Gym accepts only the
-matching plan.
+Expected after the post-review gate: the policy selects only published affordable bindings and strict
+Gym accepts only the matching plan.
 
 - [ ] **Step 5: Commit the policy slice.**
 
@@ -722,8 +834,8 @@ tests pass.
 
 ## Task 8: Full verification, review package, and handoff
 
-**Files:** Review the production and test files changed by Tasks 1-6. The B0 overlay remains outside
-this implementation branch.
+**Files:** Review the production and test files changed by Tasks 1-4 and 6. Task 5 remains deferred;
+the B0 overlay remains outside this implementation branch.
 
 - [ ] **Step 1: Run the repository-required Gym and engine gates.**
 
@@ -746,7 +858,6 @@ Run:
 ~~~text
 just test-class TargetPaymentDomainContractTest
 just test-class GameGymEnvTargetPaymentDomainTest
-just test-class TargetPaymentDomainPolicyTest
 just test-class ObservationCanonicalizationTest
 just test-class CompactReplayV5PaymentTest
 ~~~
@@ -767,9 +878,12 @@ Confirm that PaymentDomainV5, PaymentPlanV3, SourceActivationV2, ExplicitV3, Gam
 production serializers were not changed except where the spec explicitly permits no change, and that
 no AutoPay/native fallback was added to the trusted path.
 
-- [ ] **Step 4: Perform independent review before B0.**
+- [ ] **Step 4: Prepare the independent-review package and stop.**
 
-Review the complete diff for:
+Record the exact implementation HEAD and present the complete diff for independent review. The
+implementation agent must not mark this review as passed; the review is external to this plan.
+
+The reviewer checks:
 
 ~~~text
 target↔binding bijection and published order
