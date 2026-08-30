@@ -36,6 +36,7 @@ import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OptionMetadata
 import com.wingedsheep.engine.core.OrderObjectsDecision
 import com.wingedsheep.engine.core.PendingDecision
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PlayLand
 import com.wingedsheep.engine.core.PlotCard
 import com.wingedsheep.engine.core.ReorderLibraryDecision
@@ -64,6 +65,8 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.CostCalculator
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCostWireString
@@ -130,6 +133,14 @@ private sealed interface TargetPaymentQualification {
     data object Unsupported : TargetPaymentQualification
 }
 
+private enum class TargetCostDependency {
+    INDEPENDENT,
+    DEPENDENT,
+    UNRESOLVED,
+}
+
+private const val TARGET_COST_COMBINATION_LIMIT: Int = 4096
+
 /**
  * Converts `(GameState, perspectivePlayerId)` into a [TrainingObservation].
  *
@@ -170,6 +181,7 @@ class ObservationBuilder(
     }
     private val costCalculator by lazy { CostCalculator(cardRegistry) }
     private val manaSolver by lazy { ManaSolver(cardRegistry) }
+    private val paymentPlanValidator by lazy { PaymentPlanValidator(manaSolver) }
     private val activatedAbilityCostCalculator by lazy {
         ActivatedAbilityCostCalculator(castPermissionUtils)
     }
@@ -705,8 +717,79 @@ class ObservationBuilder(
     ): TargetPaymentQualification {
         val action = legalAction.action as? ActivateAbility
             ?: return TargetPaymentQualification.NotApplicable
-        val ability = resolveActivatedAbility(state, action)
-            ?: return TargetPaymentQualification.NotApplicable
+        return when (targetCostDependencyFor(state, action, legalAction, targetResult)) {
+            TargetCostDependency.INDEPENDENT -> TargetPaymentQualification.NotApplicable
+            TargetCostDependency.UNRESOLVED -> TargetPaymentQualification.Unsupported
+            TargetCostDependency.DEPENDENT -> {
+                val targetDomain = (targetResult as? ActionTargetDomainMapper.Result.Supported)?.domain
+                    ?: return TargetPaymentQualification.Unsupported
+                val relation = targetPaymentDomainV1For(state, legalAction, targetDomain)
+                    ?: return TargetPaymentQualification.Unsupported
+                TargetPaymentQualification.Supported(relation)
+            }
+        }
+    }
+
+    /**
+     * Proves target independence only from the complete finite set of target bindings that the
+     * Rules target mapper published. A target-independent dynamic reduction therefore remains on
+     * the historical action-level V5 path; a missing binding or an unenumerable shape is never
+     * treated as equality.
+     */
+    private fun targetCostDependencyFor(
+        state: GameState,
+        action: ActivateAbility,
+        legalAction: LegalAction,
+        targetResult: ActionTargetDomainMapper.Result,
+    ): TargetCostDependency {
+        val ability = resolveActivatedAbility(state, action) ?: return TargetCostDependency.UNRESOLVED
+        if (!ability.cost.hasManaComponent()) return TargetCostDependency.INDEPENDENT
+
+        // ActivatedAbilityEnumerator emits an unaffordable target-bearing ability as a greyed-out
+        // targetless placeholder before it has built target infos. There is no public target/payment
+        // choice to qualify in that representation, and no action-level V5 domain is exposed while
+        // it is unaffordable. Do not turn that historical placeholder into an observation-wide
+        // PAYMENT_DOMAIN_UNSUPPORTED diagnostic; real target-bearing shapes below remain strict.
+        if (!legalAction.affordable &&
+            legalAction.targetRequirements.isEmpty() &&
+            targetResult is ActionTargetDomainMapper.Result.Supported &&
+            targetResult.domain.requirements.isEmpty()
+        ) {
+            return TargetCostDependency.INDEPENDENT
+        }
+
+        // These are the current Rules-owned inputs that can make the calculator's effective cost
+        // target-sensitive. With neither present, the calculator is target-independent by contract.
+        if (ability.genericCostReduction == null && !ability.isEquipAbility) {
+            return TargetCostDependency.INDEPENDENT
+        }
+
+        val targetDomain = (targetResult as? ActionTargetDomainMapper.Result.Supported)?.domain
+            ?: return TargetCostDependency.UNRESOLVED
+        val requirements = targetDomain.requirements
+        if (requirements.size != ability.targetRequirements.size || requirements.isEmpty()) {
+            return TargetCostDependency.UNRESOLVED
+        }
+        if (requirements.any { it.maxTargets > 1 }) return TargetCostDependency.UNRESOLVED
+
+        val targetOptions = requirements.map { requirement ->
+            val choices = requirement.candidates.map { candidateId ->
+                chosenTargetFor(state, candidateId)
+            }
+            if (choices.any { it == null }) return TargetCostDependency.UNRESOLVED
+            val selected = choices.filterNotNull().map { listOf(it) }
+            if (requirement.minTargets == 0) listOf(emptyList<ChosenTarget>()) + selected else selected
+        }
+        if (targetOptions.any { it.isEmpty() }) return TargetCostDependency.UNRESOLVED
+
+        var combinations = listOf(emptyList<ChosenTarget>())
+        for (options in targetOptions) {
+            if (options.isEmpty() || combinations.size > TARGET_COST_COMBINATION_LIMIT / options.size) {
+                return TargetCostDependency.UNRESOLVED
+            }
+            combinations = combinations.flatMap { prefix -> options.map { prefix + it } }
+        }
+
         val unboundCost = activatedAbilityCostCalculator.calculate(
             state = state,
             sourceId = action.sourceId,
@@ -714,35 +797,21 @@ class ObservationBuilder(
             ability = ability,
             equipPayment = action.alternativePayment?.equipPayment,
         ).canonicalPaymentCost()
-        if (!unboundCost.hasManaComponent()) return TargetPaymentQualification.NotApplicable
-
-        val publicTargetDomain = (targetResult as? ActionTargetDomainMapper.Result.Supported)?.domain
-        val candidateIds = publicTargetDomain
-            ?.requirements
-            ?.singleOrNull()
-            ?.candidates
-            .orEmpty()
-        val boundCosts = candidateIds.mapNotNull { candidateId ->
-            chosenTargetFor(state, candidateId)?.let { target ->
-                activatedAbilityCostCalculator.calculate(
-                    state = state,
-                    sourceId = action.sourceId,
-                    controllerId = action.playerId,
-                    ability = ability,
-                    targets = listOf(target),
-                    equipPayment = action.alternativePayment?.equipPayment,
-                ).canonicalPaymentCost()
-            }
+        val boundCosts = combinations.map { targets ->
+            activatedAbilityCostCalculator.calculate(
+                state = state,
+                sourceId = action.sourceId,
+                controllerId = action.playerId,
+                ability = ability,
+                targets = targets,
+                equipPayment = action.alternativePayment?.equipPayment,
+            ).canonicalPaymentCost()
         }
-        val targetDependent = ability.genericCostReduction != null ||
-            boundCosts.any { it != unboundCost }
-        if (!targetDependent) return TargetPaymentQualification.NotApplicable
-
-        val targetDomain = publicTargetDomain
-            ?: return TargetPaymentQualification.Unsupported
-        val relation = targetPaymentDomainV1For(state, legalAction, targetDomain)
-            ?: return TargetPaymentQualification.Unsupported
-        return TargetPaymentQualification.Supported(relation)
+        return if (boundCosts.all { it == unboundCost }) {
+            TargetCostDependency.INDEPENDENT
+        } else {
+            TargetCostDependency.DEPENDENT
+        }
     }
 
     /** Build the complete relation from the already mapped, canonical target candidate list. */
@@ -752,6 +821,13 @@ class ObservationBuilder(
         targetDomain: ActionTargetDomainV1,
     ): TargetPaymentDomainV1? {
         val action = legalAction.action as? ActivateAbility ?: return null
+        // Resource-payment alternatives (Convoke, Delve, Harmonize, Waterbend, ...) carry an
+        // unresolved external choice that V1 cannot represent. An explicitly selected equip
+        // payment is the only alternative retained by this slice because the cost calculator can
+        // consume that already-bound choice deterministically.
+        if (action.alternativePayment?.let { it.hasResourcePayment || it.equipPayment == null } == true) {
+            return null
+        }
         val requirement = targetDomain.requirements.singleOrNull() ?: return null
         if (requirement.minTargets != 1 || requirement.maxTargets != 1 || requirement.candidates.isEmpty()) {
             return null
@@ -822,6 +898,9 @@ class ObservationBuilder(
         ability: ActivatedAbility,
         effectiveCost: AbilityCost,
     ): TargetBoundPaymentRequest? {
+        if (action.alternativePayment?.let { it.hasResourcePayment || it.equipPayment == null } == true) {
+            return null
+        }
         val manaComponents = when (effectiveCost) {
             is AbilityCost.Atom -> listOfNotNull(effectiveCost.manaCostOrNull)
             is AbilityCost.Composite -> effectiveCost.costs.mapNotNull { it.manaCostOrNull }
@@ -871,6 +950,51 @@ class ObservationBuilder(
         spellContext = request.spellContext,
         additionalPayLife = request.reservedOuterLifePayment,
     )
+
+    /**
+     * Read-only strict preflight for a target-bound ExplicitV3 submission. The trusted Gym seam
+     * will bind the submitted target to the registered/current observation snapshots in Task 4;
+     * this method owns the Rules-side recomputation and delegates all ledger validation to the
+     * existing V3 validator.
+     */
+    internal fun validateTargetPaymentPlanV3(
+        state: GameState,
+        template: LegalAction,
+        submitted: ActivateAbility,
+        plan: PaymentPlanV3,
+    ): PaymentPlanValidation {
+        if (submitted.targets.singleOrNull() !is ChosenTarget.Permanent) {
+            return PaymentPlanValidation.Rejected(
+                "TargetPaymentDomainV1 requires one permanent target",
+            )
+        }
+        val ability = resolveActivatedAbility(state, submitted)
+            ?: return PaymentPlanValidation.Rejected("Target-bound ActivatedAbility is stale")
+        val effectiveCost = activatedAbilityCostCalculator.calculate(
+            state = state,
+            sourceId = submitted.sourceId,
+            controllerId = submitted.playerId,
+            ability = ability,
+            targets = submitted.targets,
+            equipPayment = submitted.alternativePayment?.equipPayment,
+        )
+        val request = targetBoundPaymentRequest(
+            state = state,
+            template = template,
+            action = submitted,
+            ability = ability,
+            effectiveCost = effectiveCost,
+        ) ?: return PaymentPlanValidation.Rejected("Target-bound payment request is unsupported")
+        return paymentPlanValidator.validateV3(
+            state = state,
+            playerId = request.playerId,
+            cost = ManaCost.parse(request.requiredCost),
+            plan = plan,
+            spellContext = request.spellContext,
+            reservedOuterLifePayment = request.reservedOuterLifePayment,
+            excludeSources = request.excludeSources,
+        )
+    }
 
     private fun AbilityCost.hasManaComponent(): Boolean = when (this) {
         is AbilityCost.Atom -> manaCostOrNull != null
@@ -956,6 +1080,12 @@ class ObservationBuilder(
                 val ability = resolveActivatedAbility(state, action) ?: return null
                 val expectedAdditionalCostPayment =
                     deterministicAdditionalCostPaymentFor(state, legalAction) ?: return null
+                val targetCostDependency = targetCostDependencyFor(
+                    state = state,
+                    action = action,
+                    legalAction = legalAction,
+                    targetResult = mapPublicTargetDomain(state, legalAction, action.playerId),
+                )
                 if (legalAction.hasXCost ||
                     legalAction.hasConvoke ||
                     legalAction.hasTapForGeneric ||
@@ -964,7 +1094,7 @@ class ObservationBuilder(
                     ability.hasWaterbend ||
                     (ability.isEquipAbility &&
                         !isSupportedEquipPayment(state, legalAction, action, ability, requiredCost)) ||
-                    (ability.genericCostReduction != null && ability.targetRequirements.isNotEmpty())
+                    targetCostDependency != TargetCostDependency.INDEPENDENT
                 ) {
                     // The action payload does not yet carry the non-mana/target choices that
                     // determine these costs. Publishing the enumerator's optimistic cost would
@@ -1246,7 +1376,7 @@ class ObservationBuilder(
             abilityTargetRequirement.totalManaValueAtMost != null
         ) return false
 
-        if (ability.genericCostReduction != null || ability.cost.manaCostOrNull == null) {
+        if (ability.cost.manaCostOrNull == null) {
             return false
         }
         val parsedPublicCost = runCatching { ManaCost.parse(requiredCost) }
@@ -1263,6 +1393,7 @@ class ObservationBuilder(
             sourceId = action.sourceId,
             controllerId = action.playerId,
             ability = ability,
+            equipPayment = action.alternativePayment?.equipPayment,
         ).canonicalPaymentCost()
         if (unboundCost != advertisedCost) return false
 
@@ -1273,6 +1404,7 @@ class ObservationBuilder(
                 controllerId = action.playerId,
                 ability = ability,
                 targets = listOf(ChosenTarget.Permanent(candidateId)),
+                equipPayment = action.alternativePayment?.equipPayment,
             ).canonicalPaymentCost() == advertisedCost
         }
     }

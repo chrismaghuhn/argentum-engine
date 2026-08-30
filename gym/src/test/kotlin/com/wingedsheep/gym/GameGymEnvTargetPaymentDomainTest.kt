@@ -5,15 +5,20 @@ import com.wingedsheep.engine.core.DiagnosticCode
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
+import com.wingedsheep.engine.mechanics.mana.ManaSolver
+import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TargetPaymentDomainV1
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Conditions
@@ -22,13 +27,18 @@ import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.values.DynamicAmount
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetPlayer
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
+import com.wingedsheep.sdk.scripting.targets.TargetObject
+import com.wingedsheep.sdk.scripting.targets.TargetSpell
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
 class GameGymEnvTargetPaymentDomainTest : FunSpec({
@@ -48,7 +58,103 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         activatedAbility {
             cost = Costs.Mana("{1}")
             target = TargetPlayer()
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetIsPlayer(),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetPlayer()
             genericCostReduction = DynamicAmount.Fixed(1)
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.Mana("{B}"))
+            target = TargetCreature()
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetCreature(optional = true)
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetCreature(unlimited = true)
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            val first = target("first creature", TargetCreature())
+            target("second creature", TargetCreature())
+            cost = Costs.Mana("{1}")
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1, first)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{X}")
+            target = TargetCreature()
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetSpell()
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetObject(filter = TargetFilter.CardInGraveyard)
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Composite(Costs.Mana("{1}"), Costs.TapAnotherPermanent())
+            target = TargetCreature()
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
+            effect = Effects.GainLife(1)
+        }
+        activatedAbility {
+            cost = Costs.Mana("{1}")
+            target = TargetCreature(dynamicMaxCount = DynamicAmount.Fixed(1))
+            genericCostReduction = DynamicAmount.Conditional(
+                condition = Conditions.TargetMatchesFilter(GameObjectFilter.Artifact),
+                ifTrue = DynamicAmount.Fixed(1),
+                ifFalse = DynamicAmount.Fixed(0),
+            )
             effect = Effects.GainLife(1)
         }
     }
@@ -65,6 +171,15 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         toughness = 2
     }
 
+    val unrepresentableManaSource = card("Gym Unrepresentable Mana Source") {
+        typeLine = "Artifact"
+        activatedAbility {
+            cost = Costs.Composite(Costs.Tap, Costs.TapAnotherPermanent())
+            effect = Effects.AddMana(com.wingedsheep.sdk.core.Color.GREEN)
+            manaAbility = true
+        }
+    }
+
     data class Fixture(
         val environment: GameEnvironment,
         val registry: com.wingedsheep.engine.registry.CardRegistry,
@@ -73,15 +188,17 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val sourceId: EntityId,
         val artifactTargetId: EntityId,
         val ordinaryTargetId: EntityId,
+        val unrepresentableSourceId: EntityId?,
     )
 
-    fun prepared(): Fixture {
+    fun prepared(includeUnrepresentableManaSource: Boolean = false): Fixture {
         val registry = com.wingedsheep.engine.registry.CardRegistry().apply {
             register(PortalSet.cards)
             register(PortalSet.basicLands)
             register(targetBoundActivator)
             register(artifactCreatureTarget)
             register(ordinaryCreatureTarget)
+            register(unrepresentableManaSource)
         }
         val environment = GameEnvironment.create(registry)
         environment.reset(
@@ -93,6 +210,11 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
                             targetBoundActivator.name to 1,
                             artifactCreatureTarget.name to 1,
                             ordinaryCreatureTarget.name to 1,
+                            *(if (includeUnrepresentableManaSource) {
+                                arrayOf(unrepresentableManaSource.name to 1)
+                            } else {
+                                emptyArray()
+                            }),
                             "Mountain" to 8,
                         ),
                     ),
@@ -126,6 +248,11 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val sourceId = moveNamed(targetBoundActivator.name)
         val artifactTargetId = moveNamed(artifactCreatureTarget.name)
         val ordinaryTargetId = moveNamed(ordinaryCreatureTarget.name)
+        val unrepresentableSourceId = if (includeUnrepresentableManaSource) {
+            moveNamed(unrepresentableManaSource.name)
+        } else {
+            null
+        }
         environment.restore(state, environment.playerIds, environment.stepCount)
 
         return Fixture(
@@ -136,6 +263,7 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
             sourceId = sourceId,
             artifactTargetId = artifactTargetId,
             ordinaryTargetId = ordinaryTargetId,
+            unrepresentableSourceId = unrepresentableSourceId,
         )
     }
 
@@ -143,31 +271,41 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         val sourceCard = fixture.registry.getCard(targetBoundActivator.name)
             ?: error("Target-bound activator is not registered")
         val ability = sourceCard.script.activatedAbilities[abilityIndex]
-        val targetIds = if (abilityIndex == 0) {
-            listOf(fixture.ordinaryTargetId, fixture.artifactTargetId)
-        } else {
-            listOf(fixture.opponentId)
+        val permanentTargetIds = listOf(fixture.ordinaryTargetId, fixture.artifactTargetId)
+        val isPlayerTarget = abilityIndex == 1 || abilityIndex == 2
+        val targetRequirements = ability.targetRequirements.mapIndexed { index, requirement ->
+            val targetIds = if (isPlayerTarget) {
+                listOf(fixture.opponentId)
+            } else {
+                permanentTargetIds
+            }
+            TargetInfo(
+                index = index,
+                description = requirement.description,
+                minTargets = if (requirement.optional || requirement.unlimited) 0 else requirement.minCount,
+                maxTargets = if (requirement.unlimited) targetIds.size else requirement.count,
+                validTargets = targetIds,
+            )
         }
-        val targetRequirement = ability.targetRequirements.single()
+        val isTargetIndependentReduction = abilityIndex == 2
+        val manaCost = when (abilityIndex) {
+            2 -> "{0}"
+            3 -> "{1}{B}"
+            7 -> "{X}"
+            else -> "{1}"
+        }
         return LegalAction(
             action = ActivateAbility(fixture.playerId, fixture.sourceId, ability.id),
             actionType = "ActivateAbility",
             description = ability.description,
-            affordable = false,
+            affordable = isTargetIndependentReduction || abilityIndex == 7,
             requiresTargets = true,
-            targetCount = 1,
-            minTargets = 1,
-            targetRequirements = listOf(
-                TargetInfo(
-                    index = 0,
-                    description = targetRequirement.description,
-                    minTargets = 1,
-                    maxTargets = 1,
-                    validTargets = targetIds,
-                ),
-            ),
+            targetCount = targetRequirements.sumOf { it.maxTargets },
+            minTargets = targetRequirements.sumOf { it.minTargets },
+            targetRequirements = targetRequirements,
             targetDomainSupport = TargetDomainSupport.SUPPORTED,
-            manaCostString = "{1}",
+            manaCostString = manaCost,
+            hasXCost = abilityIndex == 7,
         )
     }
 
@@ -200,6 +338,18 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         result.diagnostics.none { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
     }
 
+    test("retains action-level V5 when every target-bound effective cost is equal") {
+        val fixture = prepared()
+        val result = observe(fixture, targetAction(fixture, abilityIndex = 2))
+        val view = result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single()
+
+        view.targetPaymentDomain shouldBe null
+        view.paymentDomain shouldNotBe null
+        view.manaCost shouldBe "{0}"
+        view.affordable shouldBe true
+        result.diagnostics.none { it.code == DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED } shouldBe true
+    }
+
     test("fails closed for a target-dependent non-permanent target even when parent is unaffordable") {
         val fixture = prepared()
         val result = observe(fixture, targetAction(fixture, abilityIndex = 1))
@@ -210,5 +360,103 @@ class GameGymEnvTargetPaymentDomainTest : FunSpec({
         view.paymentDomain shouldBe null
         view.manaCost shouldBe null
         view.affordable shouldBe false
+    }
+
+    test("fails closed for target-dependent unsupported cardinality, X, and composite shapes") {
+        val fixture = prepared()
+
+        listOf(
+            3 to "multiple mana components",
+            4 to "optional target",
+            5 to "unlimited target",
+            6 to "multiple target requirements",
+            7 to "X cost",
+            8 to "spell target",
+            9 to "card target",
+            10 to "unresolved additional cost",
+            11 to "dynamic target cardinality",
+        ).forEach { (abilityIndex, shape) ->
+            val result = observe(fixture, targetAction(fixture, abilityIndex))
+            result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+            val view = result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single()
+            view.targetPaymentDomain shouldBe null
+            view.paymentDomain shouldBe null
+            if (shape != "X cost") view.manaCost shouldBe null
+        }
+    }
+
+    test("rejects the whole relation when one public binding is not a battlefield permanent") {
+        val fixture = prepared()
+        val action = targetAction(fixture).let { legalAction ->
+            legalAction.copy(
+                targetRequirements = legalAction.targetRequirements.map { requirement ->
+                    requirement.copy(validTargets = listOf(fixture.artifactTargetId, fixture.opponentId))
+                },
+            )
+        }
+
+        val result = observe(fixture, action)
+        result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single().targetPaymentDomain shouldBe null
+    }
+
+    test("fails closed for an unresolved alternative payment choice") {
+        val fixture = prepared()
+        val template = targetAction(fixture)
+        val action = template.copy(
+            action = (template.action as ActivateAbility).copy(
+                alternativePayment = AlternativePaymentChoice(
+                    harmonizeCreature = fixture.ordinaryTargetId,
+                ),
+            ),
+        )
+
+        val result = observe(fixture, action)
+        result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single().targetPaymentDomain shouldBe null
+    }
+
+    test("does not mark a binding affordable through an unrepresentable legacy source") {
+        val fixture = prepared(includeUnrepresentableManaSource = true)
+        ManaSolver(fixture.registry).canPay(
+            state = fixture.environment.state,
+            playerId = fixture.playerId,
+            cost = ManaCost.parse("{1}"),
+        ) shouldBe true
+
+        val result = observe(fixture, targetAction(fixture))
+        result.diagnostics.map { it.code } shouldContain DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        val view = result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single()
+        view.targetPaymentDomain shouldBe null
+        view.paymentDomain shouldBe null
+        view.affordable shouldBe false
+    }
+
+    test("target-bound preflight re-resolves the cost and delegates to the V3 validator") {
+        val fixture = prepared()
+        val template = targetAction(fixture)
+        val submitted = (template.action as ActivateAbility).copy(
+            targets = listOf(ChosenTarget.Permanent(fixture.artifactTargetId)),
+        )
+
+        val validation = ObservationBuilder(cardRegistry = fixture.registry).validateTargetPaymentPlanV3(
+            state = fixture.environment.state,
+            template = template,
+            submitted = submitted,
+            plan = PaymentPlanV3(),
+        )
+
+        validation.shouldBeInstanceOf<PaymentPlanValidation.AcceptedV3>()
+
+        val unaffordableBindingValidation = ObservationBuilder(cardRegistry = fixture.registry)
+            .validateTargetPaymentPlanV3(
+                state = fixture.environment.state,
+                template = template,
+                submitted = submitted.copy(
+                    targets = listOf(ChosenTarget.Permanent(fixture.ordinaryTargetId)),
+                ),
+                plan = PaymentPlanV3(),
+            )
+        unaffordableBindingValidation.shouldBeInstanceOf<PaymentPlanValidation.Rejected>()
     }
 })
