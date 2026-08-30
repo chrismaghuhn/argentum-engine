@@ -61,6 +61,7 @@ import com.wingedsheep.gym.service.PlayerSpec
 import com.wingedsheep.gym.service.StepRequest
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.CardDefinition
@@ -283,13 +284,13 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         singleBucketPlan.outerAllocation.size shouldBe 2
     }
 
-    test("the external policy completes CommanderIdentity manaColorChoice from public data") {
+    test("the external policy completes CommanderIdentity manaColorChoice from the published domain") {
         val player = EntityId("player-0")
         val commander = EntityFeatures(
             entityId = EntityId("commander-0"),
             cardDefinitionId = "public-commander",
             name = "Public Commander",
-            zone = Zone.COMMAND,
+            zone = Zone.GRAVEYARD,
             ownerId = player,
             controllerId = null,
             types = setOf("CREATURE"),
@@ -307,6 +308,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             description = "Add one mana from the commander's color identity",
             affordable = true,
             isManaAbility = true,
+            availableManaColors = listOf(Color.WHITE, Color.RED),
             requiresStructuredAction = true,
             requiredPayloadFields = listOf("manaColorChoice"),
             actionSemantics = buildJsonObject {
@@ -336,7 +338,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             zones = listOf(
                 ZoneView(
                     ownerId = player,
-                    zoneType = Zone.COMMAND,
+                    zoneType = Zone.GRAVEYARD,
                     hidden = false,
                     size = 1,
                     cards = listOf(commander),

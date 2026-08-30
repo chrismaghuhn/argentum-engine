@@ -99,6 +99,7 @@ import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.view.Visibility
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.ManaSymbol
@@ -634,11 +635,25 @@ class ObservationBuilder(
                 ?: 0,
             requiresDamageDistribution = la.requiresDamageDistribution,
             isManaAbility = la.isManaAbility,
+            availableManaColors = publicManaColorDomain(la),
             requiresStructuredAction = requiredPayloadFields.isNotEmpty(),
             requiredPayloadFields = requiredPayloadFields,
             actionSemantics = actionSemantic(state, la.action),
             isDecisionOption = false
         )
+    }
+
+    /**
+     * Project the Rules-owned mana-color candidate set into the public action domain. A null
+     * Rules value means an unrestricted choice for the existing engine contract, so a required
+     * public choice receives the explicit five-color list instead of forcing the consumer to
+     * interpret null. The list is a set-shaped domain and is therefore canonically WUBRG ordered.
+     */
+    private fun publicManaColorDomain(action: LegalAction): List<Color>? {
+        if (!action.requiresManaColorChoice) return null
+        return (action.availableManaColors ?: Color.entries.toList())
+            .distinct()
+            .sortedBy(Color::ordinal)
     }
 
     internal fun requiredPayloadFieldsFor(state: GameState, legalAction: LegalAction): List<String> {

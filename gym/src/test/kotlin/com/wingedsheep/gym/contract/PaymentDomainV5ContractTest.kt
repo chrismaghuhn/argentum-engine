@@ -75,7 +75,7 @@ import kotlinx.serialization.json.Json
 class PaymentDomainV5ContractTest : FunSpec({
 
     test("current Gym schema identifies the V5 paid-source contract") {
-        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.23-paid-mana-source-payment"
+        SchemaHash.CURRENT shouldBe "argentum-gym-contract@v1.24-mana-color-domain"
     }
 
     val outerSpell = card("PAY106 V5 Outer Spell") {

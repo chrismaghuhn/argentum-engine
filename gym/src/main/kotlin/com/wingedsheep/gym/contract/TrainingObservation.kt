@@ -276,6 +276,15 @@ data class LegalActionView(
     val sacrificeMaxCount: Int = 0,
     val requiresDamageDistribution: Boolean = false,
     val isManaAbility: Boolean = false,
+    /**
+     * Complete Rules-owned domain for an action that requires a mana-color choice.
+     *
+     * Null means this action does not require a mana-color choice. When non-null, the list is
+     * complete and canonically ordered by the producer; an empty list is a real empty domain and
+     * must remain fail-closed. Consumers must select only from this published list and must not
+     * reconstruct the domain from action semantics or visible zones.
+     */
+    val availableManaColors: List<Color>? = null,
     /** True when an action ID alone is not an executable player choice. */
     val requiresStructuredAction: Boolean = false,
     /** Canonical external JSON fields required to complete this structured action. */

@@ -750,7 +750,7 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.23-paid-mana-source-payment`.
+The Gym contract is currently `argentum-gym-contract@v1.24-mana-color-domain`.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
 from the authoritative Rules decision. The opponent receives the existing generic view with no
@@ -763,6 +763,12 @@ actions; an explicitly empty choice such as `additionalCostPayment` for a zero-c
 still required. The trusted server validates against the Gym-owned canonical requirement projection
 over the Rules-owned `LegalAction` contract and never infers a missing value from presentation
 fields.
+
+Mana actions that require `manaColorChoice` additionally publish `availableManaColors`. This is the
+complete, Rules-owned, perspective-safe legal color domain in canonical WUBRG order. It is non-null
+for every such action; an empty list is an authoritative empty domain. Actions without a mana-color
+choice carry null. Policies select only from this list and never reconstruct a `ManaColorSet` from
+action semantics, commander zones, or other observation fields.
 
 The domain hierarchy covers targets, card selection, modes, distribution, ordering, pile splitting,
 library search, library reorder, combat resolution, mana-source selection, replacement choices and
@@ -1136,7 +1142,7 @@ Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` iden
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
 The Gym `SchemaHash` is
-`argentum-gym-contract@v1.23-paid-mana-source-payment`. A client must compare the hash
+`argentum-gym-contract@v1.24-mana-color-domain`. A client must compare the hash
 before interpreting the current payment domain and fail closed on mismatch. Historical V4
 payloads remain decodable only through their historical DTO and are not reinterpreted as V5.
 

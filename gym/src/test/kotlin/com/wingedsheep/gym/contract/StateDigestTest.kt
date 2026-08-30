@@ -16,6 +16,7 @@ import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
@@ -169,6 +170,29 @@ class StateDigestTest : FunSpec({
         )
 
         StateDigest.compute(withoutFields) shouldNotBe StateDigest.compute(withFields)
+    }
+
+    test("published mana color domains are digest-relevant and canonically ordered") {
+        val base = observation(environment())
+        val candidate = base.legalActions.first()
+        val redWhite = base.copy(
+            legalActions = listOf(
+                candidate.copy(availableManaColors = listOf(Color.RED, Color.WHITE)),
+            ) + base.legalActions.drop(1),
+        )
+        val whiteRed = redWhite.copy(
+            legalActions = listOf(
+                candidate.copy(availableManaColors = listOf(Color.WHITE, Color.RED)),
+            ) + base.legalActions.drop(1),
+        )
+        val greenOnly = redWhite.copy(
+            legalActions = listOf(
+                candidate.copy(availableManaColors = listOf(Color.GREEN)),
+            ) + base.legalActions.drop(1),
+        )
+
+        StateDigest.compute(redWhite) shouldBe StateDigest.compute(whiteRed)
+        StateDigest.compute(redWhite) shouldNotBe StateDigest.compute(greenOnly)
     }
 
     test("CastSpell payment domains are digest-relevant") {

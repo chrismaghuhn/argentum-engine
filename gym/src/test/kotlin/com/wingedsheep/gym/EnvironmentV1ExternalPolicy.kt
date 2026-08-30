@@ -378,7 +378,7 @@ class DeterministicExternalPolicy {
         }
 
         if ("manaColorChoice" in requiredFieldSet) {
-            val colors = publicManaColorDomain(observation, action)
+            val colors = publicManaColorDomain(action)
                 ?: return SemanticChoice.Gap(
                     family = "MANA_COLOR",
                     code = "A5_DECISION_GAP",
@@ -1121,36 +1121,17 @@ class DeterministicExternalPolicy {
         return selected
     }
 
+    /**
+     * Consume the complete Rules-owned color domain already attached to the action view. The
+     * policy deliberately does not interpret action semantics or reconstruct state-dependent
+     * sets such as CommanderIdentity from visible zones.
+     */
     private fun publicManaColorDomain(
-        observation: TrainingObservation,
         action: com.wingedsheep.gym.contract.LegalActionView,
     ): List<Color>? {
-        val colorSet = findPublicColorSet(action.actionSemantics) ?: return null
-        val type = (colorSet["type"] as? JsonPrimitive)?.content ?: return null
-        val colors = when (type) {
-            "ManaColorSet.AnyColor" -> Color.entries.toList()
-            "ManaColorSet.Specific" -> parseSpecificColors(colorSet) ?: return null
-            "ManaColorSet.CommanderIdentity" -> {
-                val actor = observation.agentToAct ?: return null
-                observation.zones
-                    .asSequence()
-                    .filter { zone ->
-                        zone.ownerId == actor &&
-                            zone.zoneType == Zone.COMMAND &&
-                            !zone.hidden
-                    }
-                    .flatMap { zone -> zone.cards.asSequence() }
-                    .filterNot { card -> card.faceDown }
-                    .flatMap { card -> card.colors.asSequence() }
-                    .mapNotNull { colorName ->
-                        Color.entries.firstOrNull { color -> color.name == colorName }
-                    }
-                    .distinct()
-                    .toList()
-            }
-            else -> return null
-        }
-        return colors.sortedBy(Color::ordinal)
+        val colors = action.availableManaColors ?: return null
+        if (colors.distinct().size != colors.size) return null
+        return colors
     }
 
     /**
@@ -1211,26 +1192,6 @@ class DeterministicExternalPolicy {
             }
             else -> SourceBoundCostShape()
         }
-    }
-
-    private fun parseSpecificColors(colorSet: JsonObject): List<Color>? {
-        val encodedColors = colorSet["colors"] as? JsonArray ?: return null
-        val colors = encodedColors.mapNotNull { element ->
-            val colorName = (element as? JsonPrimitive)?.content ?: return@mapNotNull null
-            Color.entries.firstOrNull { color -> color.name == colorName }
-        }
-        return colors.takeIf { it.size == encodedColors.size }?.distinct()
-    }
-
-    private fun findPublicColorSet(element: JsonElement?): JsonObject? = when (element) {
-        null, JsonNull, is JsonPrimitive -> null
-        is JsonObject -> (element["colorSet"] as? JsonObject)
-            ?: element.values.asSequence()
-                .mapNotNull(::findPublicColorSet)
-                .firstOrNull()
-        is JsonArray -> element.asSequence()
-            .mapNotNull(::findPublicColorSet)
-            .firstOrNull()
     }
 
     private fun publicTarget(observation: TrainingObservation, id: EntityId): JsonObject? {

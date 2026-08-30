@@ -1,5 +1,6 @@
 package com.wingedsheep.gym.contract
 
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -103,6 +104,11 @@ internal object ObservationCanonicalizer {
         put("sacrificeMaxCount", action.sacrificeMaxCount)
         put("requiresDamageDistribution", action.requiresDamageDistribution)
         put("isManaAbility", action.isManaAbility)
+        action.availableManaColors?.let { colors ->
+            put("availableManaColors", buildJsonArray {
+                colors.sortedBy(Color::ordinal).forEach { add(JsonPrimitive(it.name)) }
+            })
+        }
         put("requiresStructuredAction", action.requiresStructuredAction)
         put("requiredPayloadFields", buildJsonArray {
             action.requiredPayloadFields.forEach { add(JsonPrimitive(it)) }
