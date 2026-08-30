@@ -363,6 +363,58 @@ class ManaSolverSelfFundingTest : FunSpec({
         solution.sources.map { it.entityId } shouldContainExactly listOf(signet)
     }
 
+    test("SELF-FUND-13 does not reserve a paid source after the pool paid the remaining cost") {
+        val driver = createDriver(listOf(paidColorlessSource))
+        val player = driver.activePlayer!!
+        driver.giveColorlessMana(player, 2)
+        driver.putPermanentOnBattlefield(player, paidColorlessSource.name)
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{C}{C}"),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.sources shouldBe emptyList()
+        solution.poolAfterPayment!!.colorless shouldBe 0
+        solution.poolManaSpentForOuter.colorless shouldBe 2
+    }
+
+    test("SELF-FUND-14 restricted floating mana can pay color-restricted X") {
+        val driver = createDriver()
+        val player = driver.activePlayer!!
+        driver.giveRestrictedMana(
+            player,
+            color = Color.GREEN,
+            amount = 1,
+            restriction = ManaRestriction.InstantOrSorceryOnly,
+        )
+        val pool = driver.state.getEntity(player)!!
+            .get<ManaPoolComponent>()!!
+            .toManaPool()
+        val instantContext = SpellPaymentContext(
+            isInstantOrSorcery = true,
+            cardTypes = setOf(CardType.INSTANT),
+        )
+
+        val solution = ManaSolver(driver.cardRegistry).solve(
+            state = driver.state,
+            playerId = player,
+            cost = ManaCost.parse("{X}"),
+            xValue = 1,
+            spellContext = instantContext,
+            xManaRestriction = setOf(Color.GREEN),
+            initialManaPool = pool,
+        ).shouldNotBeNull()
+
+        solution.xRestrictedManaSpent shouldBe mapOf(Color.GREEN to 1)
+        solution.poolAfterPayment!!.restrictedMana shouldBe emptyList()
+    }
+
     test("SELF-FUND-07 restricted prerequisite bonus cannot pay a color-restricted X") {
         val driver = createDriver()
         val player = driver.activePlayer!!
