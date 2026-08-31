@@ -954,13 +954,13 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     TargetDomainSupport.SUPPORTED
                 }
                 if (hasNonControllerChooser) {
-                    val allReqInfos = context.targetUtils.buildTargetInfos(state, playerId, allTargetReqs, sourceId = entityId)
+                    val allReqInfos = context.targetUtils.buildTargetInfosForAbility(state, playerId, allTargetReqs, sourceId = entityId)
                     if (!context.targetUtils.allRequirementsSatisfied(allReqInfos)) continue
                 }
                 val targetReqs = allTargetReqs.filter { it.chooser == com.wingedsheep.sdk.scripting.targets.TargetChooser.Controller }
                 if (targetReqs.isNotEmpty()) {
                     // Build target info for each requirement (same pattern as spells)
-                    val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, sourceId = entityId)
+                    val targetReqInfos = context.targetUtils.buildTargetInfosForAbility(state, playerId, targetReqs, sourceId = entityId)
 
                     // All requirements must be satisfiable
                     if (!context.targetUtils.allRequirementsSatisfied(targetReqInfos)) continue
@@ -1210,7 +1210,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                     ability.targetRequirements
                 }
                 if (targetReqs.isNotEmpty()) {
-                    val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, sourceId = entityId)
+                    val targetReqInfos = context.targetUtils.buildTargetInfosForAbility(state, playerId, targetReqs, sourceId = entityId)
 
                     if (!context.targetUtils.allRequirementsSatisfied(targetReqInfos)) continue
 
@@ -1512,7 +1512,7 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
         evaluator: com.wingedsheep.engine.handlers.DynamicAmountEvaluator
     ): Int {
         val validTargets = enumerationContext.targetUtils
-            .buildTargetInfos(state, controllerId, ability.targetRequirements, sourceId = sourceId)
+            .buildTargetInfosForAbility(state, controllerId, ability.targetRequirements, sourceId = sourceId)
             .firstOrNull()?.validTargets ?: emptyList()
         if (validTargets.isEmpty()) return 0
         return validTargets.maxOf { targetId ->

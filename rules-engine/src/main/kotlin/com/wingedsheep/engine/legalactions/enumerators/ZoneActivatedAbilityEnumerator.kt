@@ -237,7 +237,7 @@ class ZoneActivatedAbilityEnumerator(private val zone: Zone) : ActionEnumerator 
                 // Check for target requirements
                 val targetReqs = ability.targetRequirements
                 if (targetReqs.isNotEmpty()) {
-                    val targetInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, sourceId = entityId)
+                    val targetInfos = context.targetUtils.buildTargetInfosForAbility(state, playerId, targetReqs, sourceId = entityId)
                     val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                     if (!allSatisfied) continue
 

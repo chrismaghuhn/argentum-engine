@@ -1293,7 +1293,7 @@ class CastSpellEnumerator : ActionEnumerator {
                 // Skip the normal targeting logic for modal spells
             } else if (targetReqs.isNotEmpty()) {
                 // Spell requires targets - find valid targets for all requirements
-                val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
 
                 // Check if all requirements can be satisfied
                 val allRequirementsSatisfied = context.targetUtils.allRequirementsSatisfied(targetReqInfos)
@@ -2060,7 +2060,7 @@ class CastSpellEnumerator : ActionEnumerator {
             )
 
             if (targetReqs.isNotEmpty()) {
-                val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
                 val allRequirementsSatisfied = context.targetUtils.allRequirementsSatisfied(targetReqInfos)
                 if (!allRequirementsSatisfied) continue
                 val firstReq = targetReqs.first()
@@ -2177,7 +2177,7 @@ class CastSpellEnumerator : ActionEnumerator {
             )
 
             if (targetReqs.isNotEmpty()) {
-                val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
                 if (!context.targetUtils.allRequirementsSatisfied(targetReqInfos)) continue
                 val firstReq = targetReqs.first()
                 val firstReqInfo = targetReqInfos.first()
@@ -2316,7 +2316,7 @@ class CastSpellEnumerator : ActionEnumerator {
                     continue
                 }
 
-                val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
                 // CR 702.47b — no splice at all if the added text's choices can't be made.
                 if (!context.targetUtils.allRequirementsSatisfied(targetReqInfos)) continue
                 val firstReq = targetReqs.first()
@@ -2664,7 +2664,7 @@ class CastSpellEnumerator : ActionEnumerator {
                 }
 
                 if (targetReqs.isNotEmpty()) {
-                    val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                    val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
                     val allRequirementsSatisfied = context.targetUtils.allRequirementsSatisfied(targetReqInfos)
                     if (allRequirementsSatisfied) {
                         val firstReq = targetReqs.first()
@@ -2846,7 +2846,7 @@ class CastSpellEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetReqInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
                 if (!context.targetUtils.allRequirementsSatisfied(targetReqInfos)) continue
                 val firstReq = targetReqs.first()
                 val firstReqInfo = targetReqInfos.first()
@@ -3261,7 +3261,7 @@ class CastSpellEnumerator : ActionEnumerator {
 
         val modeTargetReqs = mode.targetRequirements
         val modeTargetInfos = if (modeTargetReqs.isNotEmpty()) {
-            context.targetUtils.buildTargetInfos(state, playerId, modeTargetReqs, cardId)
+            context.targetUtils.buildTargetInfosForSpell(state, playerId, modeTargetReqs, cardId)
         } else {
             TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
         }
@@ -3359,7 +3359,7 @@ class CastSpellEnumerator : ActionEnumerator {
             return
         }
 
-        val targetInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
         if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) return
         val firstReq = targetReqs.first()
         val firstInfo = targetInfos.first()
@@ -3532,7 +3532,7 @@ class CastSpellEnumerator : ActionEnumerator {
             return
         }
 
-        val targetInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
         if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) return
         val firstReq = targetReqs.first()
         val firstInfo = targetInfos.first()
@@ -3656,7 +3656,7 @@ class CastSpellEnumerator : ActionEnumerator {
             return true
         }
 
-        val targetInfos = context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
         if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) return false
         val firstReq = targetReqs.first()
         val firstInfo = targetInfos.first()

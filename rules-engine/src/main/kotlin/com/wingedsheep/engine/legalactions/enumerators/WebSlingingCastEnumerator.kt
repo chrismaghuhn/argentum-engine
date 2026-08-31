@@ -83,7 +83,7 @@ class WebSlingingCastEnumerator : ActionEnumerator {
             val targetReqInfos = if (targetReqs.isEmpty()) {
                 TargetInfoProjection(emptyList(), TargetDomainSupport.SUPPORTED)
             } else {
-                context.targetUtils.buildTargetInfos(state, playerId, targetReqs, cardId)
+                context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
             }
             // A targeted web-slinging spell (e.g. Spider-Sense) is only castable if every
             // requirement has a legal target right now (CR 601.2c).

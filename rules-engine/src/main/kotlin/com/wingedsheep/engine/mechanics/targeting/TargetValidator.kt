@@ -61,9 +61,9 @@ private const val UNAVAILABLE_DYNAMIC_AGGREGATE_CAP = -1
  *
  * Uses PredicateEvaluator to match unified filters against game state.
  */
-class TargetValidator {
-    private val predicateEvaluator = PredicateEvaluator()
-
+class TargetValidator(
+    private val predicateEvaluator: PredicateEvaluator = PredicateEvaluator(),
+) {
     /**
      * Evaluate a target aggregate cap without turning unavailable data into an unlimited cap.
      * A negative fixed value is the serialized fail-closed marker produced when announcement-time
@@ -1148,6 +1148,19 @@ class TargetValidator {
         return null
     }
 
+    private fun sourceColorsForEnumeration(
+        state: GameState,
+        sourceId: EntityId?,
+    ): Set<Color> {
+        val projectedColors = sourceId?.let { id ->
+            state.projectedState.getColors(id)
+                .mapNotNull { name -> Color.entries.firstOrNull { it.name == name } }
+                .toSet()
+        }.orEmpty()
+        if (projectedColors.isNotEmpty()) return projectedColors
+        return sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.colors }.orEmpty()
+    }
+
     /**
      * Validate one battlefield permanent against a target filter and the same source-aware
      * restrictions used by [validateTargets]. This is deliberately narrower than the public
@@ -1161,6 +1174,7 @@ class TargetValidator {
         casterId: EntityId,
         sourceId: EntityId? = null,
         predicateContext: PredicateContext? = null,
+        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
     ): String? {
         val source = sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
         return validateSingleTarget(
@@ -1168,10 +1182,11 @@ class TargetValidator {
             target = ChosenTarget.Permanent(targetId),
             requirement = TargetObject(filter = filter),
             casterId = casterId,
-            sourceColors = source?.colors ?: emptySet(),
+            sourceColors = sourceColorsForEnumeration(state, sourceId),
             sourceSubtypes = source?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet(),
             sourceId = sourceId,
             predicateContext = predicateContext,
+            targetingSourceType = targetingSourceType,
         )
     }
 
