@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.event.GrantedStaticAbility
 import com.wingedsheep.engine.legalactions.LegalAction
+import com.wingedsheep.engine.legalactions.AdditionalCostData
 import com.wingedsheep.engine.handlers.effects.BattlefieldEntry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -668,6 +669,58 @@ class PaymentDomainV5ContractTest : FunSpec({
             .paymentDomainV5For(fixture.environment.state, fixture.legalAction)
 
         domain shouldBe null
+    }
+
+    test("PAY106-SACRIFICE-01: fixed-mana sacrifice overlap remains publishable") {
+        val fixture = prepared()
+        val sacrificeInfo = AdditionalCostData(
+            description = "Sacrifice any number of creatures",
+            costType = "VariableSacrifice",
+            validSacrificeTargets = listOf(fixture.signetId),
+            sacrificeMinCount = 0,
+            sacrificeMaxCount = 1,
+        )
+        val sacrificeAction = fixture.legalAction.copy(additionalCostInfo = sacrificeInfo)
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+
+        builder.paymentDomainV5For(fixture.environment.state, sacrificeAction) shouldNotBe null
+    }
+
+    test("PAY106-SACRIFICE-02: cost-changing sacrifice and tap overlap remain unsupported") {
+        val fixture = prepared()
+        val builder = ObservationBuilder(cardRegistry = fixture.cardRegistry)
+        val baseInfo = AdditionalCostData(
+            description = "Sacrifice a permanent",
+            costType = "Sacrifice",
+            validSacrificeTargets = listOf(fixture.signetId),
+        )
+
+        builder.paymentDomainV5For(
+            fixture.environment.state,
+            fixture.legalAction.copy(
+                additionalCostInfo = baseInfo.copy(
+                    costType = "SacrificeForCostReduction",
+                )
+            ),
+        ) shouldBe null
+        builder.paymentDomainV5For(
+            fixture.environment.state,
+            fixture.legalAction.copy(
+                additionalCostInfo = baseInfo.copy(
+                    validSacrificeTargets = emptyList(),
+                    validTapTargets = listOf(fixture.signetId),
+                    tapCount = 1,
+                )
+            ),
+        ) shouldBe null
+        builder.paymentDomainV5For(
+            fixture.environment.state,
+            fixture.legalAction.copy(
+                additionalCostInfo = baseInfo.copy(
+                    costAfterSacrifice = mapOf(fixture.signetId to "{1}"),
+                )
+            ),
+        ) shouldBe null
     }
 
     test("PAY106-FLOATING-JOINT-01: V5 publishes every certified joint pool bucket") {

@@ -1524,12 +1524,14 @@ class ObservationBuilder(
     }
 
     /**
-     * A non-mana cast choice may still invalidate the published mana domain. Sacrificing, tapping,
-     * or bouncing a candidate that is itself one of the published mana sources changes what the
-     * submitted plan can legally activate. Cost reductions and variable X-like additional choices
-     * also make the enumerator's advertised mana cost non-final. Choices that are inert for this
-     * concrete state remain compatible with PaymentPlanV1 and are carried by the normal action
-     * payload alongside the mana plan.
+     * A non-mana cast choice may still invalidate the published mana domain. Tapping, bouncing, or
+     * crafting with a candidate that is itself one of the published mana sources changes what the
+     * submitted plan can legally activate. A pure sacrifice is different: the Rules cast pipeline
+     * activates mana abilities before paying that sacrifice, so a source may fund the cast and then
+     * be sacrificed. Cost reductions and variable X-like additional choices also make the
+     * enumerator's advertised mana cost non-final. Choices that are inert for this concrete state
+     * remain compatible with PaymentPlanV1 and are carried by the normal action payload alongside
+     * the mana plan.
      */
     private fun hasUnrepresentableAdditionalPayment(
         legalAction: LegalAction,
@@ -1543,7 +1545,8 @@ class ObservationBuilder(
         ) return true
 
         val additionalCostCandidates = buildSet {
-            addAll(info.validSacrificeTargets)
+            // Pure sacrifices are paid after the mana-ability activation window; their overlap
+            // with a published source is therefore representable by the Rules payment path.
             addAll(info.validTapTargets)
             addAll(info.validBounceTargets)
             addAll(info.tapForPowerCreatures.map { it.entityId })

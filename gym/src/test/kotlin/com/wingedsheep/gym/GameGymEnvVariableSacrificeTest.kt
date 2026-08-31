@@ -11,15 +11,21 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AbilityId
+import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.TimingRule
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
@@ -63,14 +69,36 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
         toughness = 1,
     )
 
+    fun variableSacrificeManaCreature() = CardDefinition.creature(
+        name = "Variable Spell Gym Mana Creature",
+        manaCost = ManaCost.parse("{1}"),
+        subtypes = emptySet(),
+        power = 1,
+        toughness = 1,
+        keywords = setOf(Keyword.HASTE),
+        script = CardScript(
+            activatedAbilities = listOf(
+                ActivatedAbility(
+                    id = AbilityId.generate(),
+                    cost = Costs.Tap,
+                    effect = Effects.AddMana(Color.GREEN),
+                    timing = TimingRule.ManaAbility,
+                    isManaAbility = true,
+                )
+            )
+        ),
+    )
+
     fun prepare(battlefield: List<String>): Pair<GameGymEnv, LegalActionView> {
         val spell = variableSacrificeSpell()
         val creature = variableSacrificeCreature()
+        val manaCreature = variableSacrificeManaCreature()
         val cardRegistry = CardRegistry().apply {
             register(PortalSet.cards)
             register(PortalSet.basicLands)
             register(spell)
             register(creature)
+            register(manaCreature)
         }
         val environment = GameEnvironment.create(cardRegistry)
         environment.reset(
@@ -78,7 +106,12 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
                 players = listOf(
                     PlayerConfig(
                         "Alice",
-                        Deck.of(spell.name to 1, "Mountain" to 8, creature.name to 3),
+                        Deck.of(
+                            spell.name to 1,
+                            "Mountain" to 8,
+                            creature.name to 3,
+                            manaCreature.name to 1,
+                        ),
                     ),
                     PlayerConfig("Bob", Deck.of("Mountain" to 20)),
                 ),
@@ -203,5 +236,20 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
 
         gym.step(view.actionId, payload(view, view.validSacrificeTargets.take(1)))
         gym.environment.stepCount shouldBe before + 1
+    }
+
+    test("a mana source may fund the cast before being sacrificed through strict Gym") {
+        val (gym, view) = prepare(
+            battlefield = listOf("Mountain", "Variable Spell Gym Mana Creature")
+        )
+        view.validSacrificeTargets.size shouldBe 1
+        val source = view.validSacrificeTargets.single()
+        val before = gym.environment.stepCount
+
+        gym.step(view.actionId, payload(view, listOf(source)))
+
+        gym.environment.stepCount shouldBe before + 1
+        gym.environment.state.getZone(ZoneKey(gym.environment.playerIds.first(), Zone.GRAVEYARD))
+            .contains(source) shouldBe true
     }
 })

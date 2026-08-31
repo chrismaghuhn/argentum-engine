@@ -644,9 +644,11 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         } shouldBe 55
         orderedRows.count { it.publicDomain != "NOT_PUBLISHED" } shouldBe 215
         // The deterministic activated-cost certificate now also covers fixed ordinary {0},
-        // and the plain fixed-kicker rail closes Tear Asunder's kicked cast.
-        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 6
-        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 154
+        // and the plain fixed-kicker rail closes Tear Asunder's kicked cast. Pure sacrifice
+        // overlaps are now representable after the Rules mana-payment ordering fix, reducing the
+        // unsupported count for Diabolic Intent and Plumb the Forbidden by two.
+        orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 4
+        orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 156
         orderedRows.count { it.paymentStatus == "NOT_APPLICABLE" } shouldBe 55
         rawShapeTotals shouldBe mapOf(
             "0:1-1@-[]#1" to 1,
