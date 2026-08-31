@@ -12,15 +12,12 @@ import com.wingedsheep.engine.legalactions.TargetInfoProjection
 import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.mechanics.targeting.ControllerHexproof
 import com.wingedsheep.engine.mechanics.targeting.ControllerShroud
-import com.wingedsheep.engine.mechanics.targeting.HexproofSuppression
 import com.wingedsheep.engine.mechanics.targeting.PlayerTargetRestriction
 import com.wingedsheep.engine.mechanics.targeting.StackObjectTargeting
+import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.battlefield.AttachedToComponent
-import com.wingedsheep.engine.state.components.identity.CardComponent
-import com.wingedsheep.engine.state.components.identity.ControllerComponent
-import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
@@ -36,6 +33,8 @@ import com.wingedsheep.sdk.scripting.values.DynamicAmount
 class TargetEnumerationUtils(
     private val predicateEvaluator: PredicateEvaluator
 ) {
+    private val targetValidator = TargetValidator()
+
     private fun predicateContextFor(
         playerId: EntityId,
         sourceId: EntityId?,
@@ -103,22 +102,13 @@ class TargetEnumerationUtils(
             }
             is TargetSpellOrPermanent -> {
                 val permanentFilter = requirement.permanentFilter
-                val permanents = if (permanentFilter == null) {
-                    findValidPermanentTargets(state, playerId, TargetFilter.Permanent, sourceId, predicateContext)
-                } else {
-                    val projected = state.projectedState
-                    val context = predicateContextFor(playerId, sourceId, predicateContext)
-                    state.getBattlefield().filter { entityId ->
-                        val container = state.getEntity(entityId) ?: return@filter false
-                        val entityController = container.get<ControllerComponent>()?.playerId
-                        if (projected.hasKeyword(entityId, Keyword.HEXPROOF) &&
-                            entityController != playerId &&
-                            !HexproofSuppression.isSuppressedForCaster(state, projected, entityId, playerId)
-                        ) return@filter false
-                        if (projected.hasKeyword(entityId, Keyword.SHROUD)) return@filter false
-                        predicateEvaluator.matches(state, projected, entityId, permanentFilter, context)
-                    }
-                }
+                val permanents = findValidPermanentTargets(
+                    state,
+                    playerId,
+                    permanentFilter?.let { TargetFilter(baseFilter = it) } ?: TargetFilter.Permanent,
+                    sourceId,
+                    predicateContext,
+                )
                 val spells = findValidSpellTargets(state, playerId, TargetFilter.SpellOnStack, predicateContext)
                 permanents + spells
             }
@@ -158,32 +148,18 @@ class TargetEnumerationUtils(
         sourceId: EntityId? = null,
         predicateContext: PredicateContext? = null,
     ): List<EntityId> {
-        val projected = state.projectedState
         val battlefield = state.getBattlefield()
         val context = predicateContextFor(playerId, sourceId, predicateContext)
         return battlefield.filter { entityId ->
-            if (filter.excludeSelf && entityId == sourceId) return@filter false
-            val entityController = state.getEntity(entityId)?.get<ControllerComponent>()?.playerId
-            if (projected.hasKeyword(entityId, Keyword.HEXPROOF) && entityController != playerId &&
-                !HexproofSuppression.isSuppressedForCaster(state, projected, entityId, playerId)
-            ) return@filter false
-            if (entityController != playerId && sourceId != null &&
-                hasHexproofFromSource(state, entityId, sourceId)
-            ) return@filter false
-            if (projected.hasKeyword(entityId, Keyword.SHROUD)) return@filter false
-            predicateEvaluator.matches(state, projected, entityId, filter.baseFilter, context)
+            targetValidator.validateSinglePermanentTarget(
+                state = state,
+                targetId = entityId,
+                filter = filter,
+                casterId = playerId,
+                sourceId = sourceId,
+                predicateContext = context,
+            ) == null
         }
-    }
-
-    private fun hasHexproofFromSource(state: GameState, targetId: EntityId, sourceId: EntityId): Boolean {
-        val projected = state.projectedState
-        val sourceColors = projected.getColors(sourceId).ifEmpty {
-            state.getEntity(sourceId)?.get<CardComponent>()?.colors?.map { it.name }?.toSet().orEmpty()
-        }
-        if (sourceColors.any { projected.hasKeyword(targetId, "HEXPROOF_FROM_$it") }) return true
-        if (sourceColors.size == 1 && projected.hasKeyword(targetId, "HEXPROOF_FROM_MONOCOLORED")) return true
-        val sourceTypes = state.getEntity(sourceId)?.get<CardComponent>()?.typeLine?.cardTypes.orEmpty()
-        return sourceTypes.any { projected.hasKeyword(targetId, "HEXPROOF_FROM_CARDTYPE_${it.name}") }
     }
 
     fun findValidGraveyardTargets(

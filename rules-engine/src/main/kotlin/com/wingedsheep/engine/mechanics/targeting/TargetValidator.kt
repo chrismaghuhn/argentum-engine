@@ -1149,6 +1149,33 @@ class TargetValidator {
     }
 
     /**
+     * Validate one battlefield permanent against a target filter and the same source-aware
+     * restrictions used by [validateTargets]. This is deliberately narrower than the public
+     * multi-target entry point: target enumeration needs one candidate's legality, not cast-time
+     * cardinality, distinctness, or cross-requirement validation.
+     */
+    internal fun validateSinglePermanentTarget(
+        state: GameState,
+        targetId: EntityId,
+        filter: TargetFilter,
+        casterId: EntityId,
+        sourceId: EntityId? = null,
+        predicateContext: PredicateContext? = null,
+    ): String? {
+        val source = sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
+        return validateSingleTarget(
+            state = state,
+            target = ChosenTarget.Permanent(targetId),
+            requirement = TargetObject(filter = filter),
+            casterId = casterId,
+            sourceColors = source?.colors ?: emptySet(),
+            sourceSubtypes = source?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet(),
+            sourceId = sourceId,
+            predicateContext = predicateContext,
+        )
+    }
+
+    /**
      * Validate a single target against a requirement.
      */
     private fun validateSingleTarget(

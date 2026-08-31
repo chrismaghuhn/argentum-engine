@@ -24,9 +24,8 @@ import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.string.shouldContain
 
 /**
- * RED characterization for source-aware protection during activated-ability target enumeration.
- * The enumerator currently publishes a protected permanent, while the authoritative handler
- * rejects the same submitted target. No production code is changed by this characterization.
+ * Regression coverage for source-aware protection during activated-ability target enumeration.
+ * The enumerator and authoritative handler must agree on the same source-aware target legality.
  */
 class TargetProtectionEnumerationTest : FunSpec({
     val redTargetingSource = card("Target Protection Red Source") {
@@ -93,7 +92,7 @@ class TargetProtectionEnumerationTest : FunSpec({
                 "source=${fixture.source} ordinary=${fixture.ordinaryTarget} " +
                 "protected=${fixture.protectedTarget} actualValidTargets=$validTargets",
         )
-        // RED: TargetEnumerationUtils currently omits the source-aware protection check.
+        // The enumerator and authoritative submit must share source-aware target legality.
         validTargets shouldNotContain fixture.protectedTarget
     }
 
