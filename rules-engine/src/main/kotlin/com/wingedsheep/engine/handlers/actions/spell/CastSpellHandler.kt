@@ -3207,19 +3207,36 @@ class CastSpellHandler(
                     is AdditionalCost.Forage -> {
                         // Forage as an additional cost to cast (e.g. Feed the Cycle's forage mode).
                         // Honors the player's mode + card/Food choice via additionalCostPayment,
-                        // falling back to a legal auto-payment otherwise. The spell is cast from
-                        // hand here, so it's not in the exile pool — no exclusion needed.
-                        when (val forageResult = com.wingedsheep.engine.handlers.costs.ForageCostResolver.pay(
-                            currentState, action.playerId,
-                            exileChoices = action.additionalCostPayment.exiledCards,
-                            sacrificeChoices = action.additionalCostPayment.sacrificedPermanents,
-                        )) {
-                            is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Success -> {
-                                currentState = forageResult.state
-                                events.addAll(forageResult.events)
+                        // falling back to a legal auto-payment otherwise. A Food sacrifice is
+                        // deferred through the shared sacrifice seam so a Food that is also a mana
+                        // source can produce mana before it is sacrificed. Exile mode has no
+                        // battlefield overlap and keeps using the resolver immediately.
+                        val forageCandidates = com.wingedsheep.engine.handlers.costs.ForageCostResolver
+                            .candidates(currentState, action.playerId)
+                        val validExileChoices = action.additionalCostPayment.exiledCards
+                            .filter { it in forageCandidates.exileCards }
+                        val foodToSacrifice = if (
+                            validExileChoices.size < com.wingedsheep.engine.handlers.costs.ForageCostResolver.EXILE_COUNT
+                        ) {
+                            action.additionalCostPayment.sacrificedPermanents
+                                .firstOrNull { it in forageCandidates.foods }
+                                ?: forageCandidates.foods.firstOrNull()
+                        } else null
+                        if (foodToSacrifice != null) {
+                            deferredAdditionalSacrifices += listOf(foodToSacrifice)
+                        } else {
+                            when (val forageResult = com.wingedsheep.engine.handlers.costs.ForageCostResolver.pay(
+                                currentState, action.playerId,
+                                exileChoices = action.additionalCostPayment.exiledCards,
+                                sacrificeChoices = action.additionalCostPayment.sacrificedPermanents,
+                            )) {
+                                is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Success -> {
+                                    currentState = forageResult.state
+                                    events.addAll(forageResult.events)
+                                }
+                                is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Failure ->
+                                    return ExecutionResult.error(transactionStartState, forageResult.reason)
                             }
-                            is com.wingedsheep.engine.handlers.costs.ForageCostResolver.Result.Failure ->
-                                return ExecutionResult.error(transactionStartState, forageResult.reason)
                         }
                     }
                     else -> {}
@@ -3238,18 +3255,11 @@ class CastSpellHandler(
             }
         }
 
-        // Pay Casualty's optional additional cost: sacrifice the chosen creature (CR 702.153).
-        // Validated in validate(); routes through the shared cost-sacrifice helper so the LKI
-        // snapshot (CR 608.2h / 113.7a) and the leave-the-battlefield events are emitted for
-        // dies/leaves triggers and the "cards leave your graveyard" family. The pre-sacrifice
-        // EntitySnapshot is also captured into sacrificedSnapshots for the spell's own effect
-        // context (copy-token P/T, etc.).
+        // Register Casualty's optional additional cost for the shared post-mana sacrifice seam
+        // (CR 702.153). The selected creature is still validated against the pre-payment state;
+        // its movement and LKI snapshot happen with the other deferred sacrifices below.
         action.casualtyCreature?.let { permId ->
-            val projectedBeforeSacrifice = currentState.projectedState
-            sacrificedSnapshots.addAll(captureEntitySnapshots(listOf(permId), projectedBeforeSacrifice))
-            if (currentState.getEntity(permId) != null) {
-                currentState = sacrificePermanentAsCost(currentState, permId, action.playerId, events)
-            }
+            deferredAdditionalSacrifices += listOf(permId)
         }
 
         // X mana to pay (≤ action.xValue). For an X-cost Harmonize cast with a tapped

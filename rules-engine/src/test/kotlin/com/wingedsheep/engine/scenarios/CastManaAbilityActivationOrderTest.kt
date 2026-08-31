@@ -24,6 +24,7 @@ import com.wingedsheep.sdk.model.CardScript
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.KeywordAbility
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 
@@ -64,9 +65,37 @@ class CastManaAbilityActivationOrderTest : FunSpec({
         ),
     )
 
+    val casualtyProbe = CardDefinition.instant(
+        name = "Mana Before Casualty Probe",
+        manaCost = ManaCost.parse("{G}"),
+        oracleText = "Casualty 1",
+    ).copy(keywordAbilities = listOf(KeywordAbility.casualty(1)))
+
+    val forageProbe = CardDefinition.instant(
+        name = "Mana Before Forage Probe",
+        manaCost = ManaCost.parse("{G}"),
+        oracleText = "As an additional cost to cast this spell, forage.",
+        script = CardScript(
+            additionalCosts = listOf(Costs.additional.Forage)
+        ),
+    )
+
     val manaCreature = card("Sacrificeable Mana Creature") {
         manaCost = "{1}"
         typeLine = "Creature — Elf"
+        power = 1
+        toughness = 1
+        keywords(Keyword.HASTE)
+        activatedAbility {
+            cost = Costs.Tap
+            effect = Effects.AddMana(com.wingedsheep.sdk.core.Color.GREEN)
+            manaAbility = true
+        }
+    }
+
+    val foodManaCreature = card("Sacrificeable Food Mana Creature") {
+        manaCost = "{1}"
+        typeLine = "Artifact Creature — Food"
         power = 1
         toughness = 1
         keywords(Keyword.HASTE)
@@ -85,9 +114,11 @@ class CastManaAbilityActivationOrderTest : FunSpec({
         val manaAbilityKey: String,
     )
 
-    fun fixture(spell: CardDefinition): Fixture {
+    fun fixture(spell: CardDefinition, sourceCard: CardDefinition = manaCreature): Fixture {
         val driver = GameTestDriver()
-        driver.registerCards(TestCards.all + manaCreature + sacrificeProbe + tapProbe)
+        driver.registerCards(
+            TestCards.all + manaCreature + foodManaCreature + sacrificeProbe + tapProbe + casualtyProbe + forageProbe
+        )
         driver.initMirrorMatch(
             deck = Deck.of("Forest" to 40),
             skipMulligans = true,
@@ -95,9 +126,9 @@ class CastManaAbilityActivationOrderTest : FunSpec({
         )
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val player = driver.activePlayer!!
-        val source = driver.putPermanentOnBattlefield(player, manaCreature.name)
+        val source = driver.putPermanentOnBattlefield(player, sourceCard.name)
         val spellId = driver.putCardInHand(player, spell.name)
-        val ability = manaCreature.script.activatedAbilities.single()
+        val ability = sourceCard.script.activatedAbilities.single()
         return Fixture(
             driver = driver,
             player = player,
@@ -145,6 +176,46 @@ class CastManaAbilityActivationOrderTest : FunSpec({
         fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
             .toList() shouldBe listOf(fixture.source)
         fixture.driver.state.stack.any { it.value == fixture.spell.value } shouldBe true
+        fixture.driver.events shouldBe beforeEvents + result.events
+    }
+
+    test("a mana source may fund the cast before being sacrificed for Casualty") {
+        val fixture = fixture(casualtyProbe)
+        val beforeEvents = fixture.driver.events
+        val result = fixture.driver.submit(
+            CastSpell(
+                playerId = fixture.player,
+                cardId = fixture.spell,
+                paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = plan(fixture)),
+                casualtyCreature = fixture.source,
+            )
+        )
+
+        println("CASUALTY_OVERLAP_RED success=${result.isSuccess} error=${result.error}")
+        result.isSuccess shouldBe true
+        fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
+            .toList() shouldBe listOf(fixture.source)
+        fixture.driver.events shouldBe beforeEvents + result.events
+    }
+
+    test("a Food mana source may fund the cast before being sacrificed for Forage") {
+        val fixture = fixture(forageProbe, foodManaCreature)
+        val beforeEvents = fixture.driver.events
+        val result = fixture.driver.submit(
+            CastSpell(
+                playerId = fixture.player,
+                cardId = fixture.spell,
+                paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = plan(fixture)),
+                additionalCostPayment = com.wingedsheep.sdk.scripting.AdditionalCostPayment(
+                    sacrificedPermanents = listOf(fixture.source),
+                ),
+            )
+        )
+
+        println("FORAGE_OVERLAP_RED success=${result.isSuccess} error=${result.error}")
+        result.isSuccess shouldBe true
+        fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
+            .toList() shouldBe listOf(fixture.source)
         fixture.driver.events shouldBe beforeEvents + result.events
     }
 
