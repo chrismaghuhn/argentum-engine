@@ -51,6 +51,7 @@ import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetingSourceCharacteristics
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.engine.registry.CardRegistry
@@ -580,16 +581,13 @@ class ActivateAbilityHandler(
                 action.targets,
                 controllerTargetReqs,
                 action.playerId,
-                sourceColors = cardComponent.colors,
-                sourceSubtypes = cardComponent.typeLine.subtypes.map { it.value }.toSet(),
-                sourceCardTypes = cardComponent.typeLine.cardTypes.map { it.name }.toSet(),
-                sourceSupertypes = cardComponent.typeLine.supertypes.map { it.name }.toSet(),
                 sourceId = action.sourceId,
                 // X-clamped target counts (e.g. Rot-Curse Rakshasa's Renew "X target creatures")
                 // and X-bounded "mana value X or less" reanimation targets (Fabrication Foundry)
                 // need the chosen X to validate — mirror the spell path.
                 xValue = effectiveXValue,
                 targetingSourceType = TargetingSourceType.ABILITY,
+                sourceCharacteristicsOverride = TargetingSourceCharacteristics.from(cardComponent),
             )
             if (targetError != null) {
                 return targetError

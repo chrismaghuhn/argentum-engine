@@ -48,6 +48,7 @@ import com.wingedsheep.engine.mechanics.WarpGrants
 import com.wingedsheep.engine.mechanics.mana.SpellPaymentContext
 import com.wingedsheep.engine.mechanics.mana.spellPaymentContextFor
 import com.wingedsheep.engine.mechanics.mana.TapForGeneric
+import com.wingedsheep.engine.mechanics.targeting.TargetingSourceCharacteristics
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 
 /**
@@ -641,7 +642,13 @@ class CastFromZoneEnumerator : ActionEnumerator {
                         }
 
                         if (targetReqs.isNotEmpty()) {
-                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
+                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(
+                                state,
+                                playerId,
+                                targetReqs,
+                                sourceId = cardId,
+                                sourceCharacteristics = prepareFace?.let { TargetingSourceCharacteristics.from(it) },
+                            )
                             val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                             if (allSatisfied) {
                                 val firstReq = targetReqs.first()
@@ -758,7 +765,13 @@ class CastFromZoneEnumerator : ActionEnumerator {
                             effectiveScript?.auraTarget?.let { add(it) }
                         }
                         if (freeTargetReqs.isNotEmpty()) {
-                            val freeTargetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, freeTargetReqs, sourceId = cardId)
+                            val freeTargetInfos = context.targetUtils.buildTargetInfosForSpell(
+                                state,
+                                playerId,
+                                freeTargetReqs,
+                                sourceId = cardId,
+                                sourceCharacteristics = prepareFace?.let { TargetingSourceCharacteristics.from(it) },
+                            )
                             if (context.targetUtils.allRequirementsSatisfied(freeTargetInfos)) {
                                 val firstReq = freeTargetReqs.first()
                                 val firstInfo = freeTargetInfos.first()
@@ -1763,7 +1776,13 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(
+                    state,
+                    playerId,
+                    targetReqs,
+                    sourceId = cardId,
+                    sourceCharacteristics = TargetingSourceCharacteristics.from(backFace),
+                )
                 if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) continue
                 val firstReq = targetReqs.first()
                 val firstInfo = targetInfos.first()

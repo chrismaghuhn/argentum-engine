@@ -75,6 +75,7 @@ import com.wingedsheep.engine.mechanics.mana.isResolvedFixedAlternativeCastPayme
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.stack.StackResolver
+import com.wingedsheep.engine.mechanics.targeting.TargetingSourceCharacteristics
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
@@ -754,6 +755,10 @@ class CastSpellHandler(
                 addAll(SpliceCasts.targetRequirementsFor(state, action.splicedCardIds, cardRegistry))
             }
             if (targetRequirements.isNotEmpty()) {
+                val targetSourceCharacteristics = action.faceIndex
+                    ?.let { cardDef.cardFaces.getOrNull(it) }
+                    ?.let { TargetingSourceCharacteristics.from(it) }
+                    ?: TargetingSourceCharacteristics.from(transformedFace ?: cardDef)
                 // Reject casting if spell requires targets but none were provided
                 if (action.targets.isEmpty()) {
                     val requiredCount = targetRequirements.sumOf { it.effectiveMinCount }
@@ -766,13 +771,10 @@ class CastSpellHandler(
                     action.targets,
                     targetRequirements,
                     action.playerId,
-                    sourceColors = (transformedFace ?: cardDef).colors,
-                    sourceSubtypes = (transformedFace ?: cardDef).typeLine.subtypes.map { it.value }.toSet(),
-                    sourceCardTypes = (transformedFace ?: cardDef).typeLine.cardTypes.map { it.name }.toSet(),
-                    sourceSupertypes = (transformedFace ?: cardDef).typeLine.supertypes.map { it.name }.toSet(),
                     sourceId = action.cardId,
                     xValue = action.xValue,
                     targetingSourceType = TargetingSourceType.SPELL,
+                    sourceCharacteristicsOverride = targetSourceCharacteristics,
                 )
                 if (targetError != null) {
                     return targetError

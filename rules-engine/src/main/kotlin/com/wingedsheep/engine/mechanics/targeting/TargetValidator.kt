@@ -36,6 +36,8 @@ import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.model.CardDefinition
+import com.wingedsheep.sdk.model.CardFace
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.*
@@ -51,6 +53,49 @@ private val CARD_TYPE_NAMES: Set<String> = CardType.entries.mapTo(mutableSetOf()
 
 /** Negative caps cannot be legal target limits; this value marks an unavailable locked cap. */
 private const val UNAVAILABLE_DYNAMIC_AGGREGATE_CAP = -1
+
+/**
+ * Rules-owned characteristics of the object that supplies a target restriction's source quality.
+ * Battlefield sources are resolved from projection; spell faces and other non-battlefield
+ * sources may provide their effective face snapshot explicitly.
+ */
+data class TargetingSourceCharacteristics(
+    val colors: Set<Color>,
+    val subtypes: Set<String>,
+    val cardTypes: Set<String>,
+    val supertypes: Set<String>,
+) {
+    fun asPlayerProtectionSource(): PlayerProtectionRules.SourceCharacteristics =
+        PlayerProtectionRules.SourceCharacteristics(
+            colors = colors.map { it.name }.toSet(),
+            subtypes = subtypes,
+            supertypes = supertypes,
+            cardTypes = cardTypes,
+        )
+
+    companion object {
+        fun from(card: CardDefinition): TargetingSourceCharacteristics = TargetingSourceCharacteristics(
+            colors = card.colors,
+            subtypes = card.typeLine.subtypes.map { it.value }.toSet(),
+            cardTypes = card.typeLine.cardTypes.map { it.name }.toSet(),
+            supertypes = card.typeLine.supertypes.map { it.name }.toSet(),
+        )
+
+        fun from(face: CardFace): TargetingSourceCharacteristics = TargetingSourceCharacteristics(
+            colors = face.manaCost.colors,
+            subtypes = face.typeLine.subtypes.map { it.value }.toSet(),
+            cardTypes = face.typeLine.cardTypes.map { it.name }.toSet(),
+            supertypes = face.typeLine.supertypes.map { it.name }.toSet(),
+        )
+
+        fun from(card: CardComponent): TargetingSourceCharacteristics = TargetingSourceCharacteristics(
+            colors = card.colors,
+            subtypes = card.typeLine.subtypes.map { it.value }.toSet(),
+            cardTypes = card.typeLine.cardTypes.map { it.name }.toSet(),
+            supertypes = card.typeLine.supertypes.map { it.name }.toSet(),
+        )
+    }
+}
 
 /**
  * Validates that chosen targets match their target requirements.
@@ -948,16 +993,14 @@ class TargetValidator(
         sourceId: EntityId? = null,
         xValue: Int? = null,
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
-        sourceCardTypes: Set<String>? = null,
-        sourceSupertypes: Set<String>? = null,
+        sourceCharacteristicsOverride: TargetingSourceCharacteristics? = null,
     ): String? {
         val sourceCharacteristics = sourceCharacteristicsForTargeting(
             state = state,
             sourceId = sourceId,
             fallbackColors = sourceColors,
             fallbackSubtypes = sourceSubtypes,
-            fallbackCardTypes = sourceCardTypes,
-            fallbackSupertypes = sourceSupertypes,
+            fallbackCharacteristics = sourceCharacteristicsOverride,
         )
         // Use the game state for validation
         // StateProjector is used for P/T checks to account for continuous effects
@@ -1040,8 +1083,7 @@ class TargetValidator(
                     xValue = xValue,
                     allTargets = targets,
                     targetingSourceType = targetingSourceType,
-                    sourceCardTypes = sourceCharacteristics.cardTypes,
-                    sourceSupertypes = sourceCharacteristics.supertypes,
+                    sourceCharacteristicsOverride = sourceCharacteristics,
                 )
                 if (error != null) return error
             }
@@ -1172,13 +1214,6 @@ class TargetValidator(
         return null
     }
 
-    private data class TargetingSourceCharacteristics(
-        val colors: Set<Color>,
-        val subtypes: Set<String>,
-        val cardTypes: Set<String>,
-        val supertypes: Set<String>,
-    )
-
     /**
      * Resolve the characteristics of a targeting source once for both enumeration and strict
      * validation. Battlefield sources use projected Layer-5/Layer-4 values; non-battlefield
@@ -1195,6 +1230,7 @@ class TargetValidator(
         fallbackSubtypes: Set<String>? = null,
         fallbackCardTypes: Set<String>? = null,
         fallbackSupertypes: Set<String>? = null,
+        fallbackCharacteristics: TargetingSourceCharacteristics? = null,
     ): TargetingSourceCharacteristics {
         val source = sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
         if (sourceId != null && sourceId in state.getBattlefield()) {
@@ -1209,7 +1245,7 @@ class TargetValidator(
                 supertypes = projected.getSupertypes(sourceId),
             )
         }
-        return TargetingSourceCharacteristics(
+        return fallbackCharacteristics ?: TargetingSourceCharacteristics(
             colors = fallbackColors ?: source?.colors.orEmpty(),
             subtypes = fallbackSubtypes
                 ?: source?.typeLine?.subtypes?.map { it.value }?.toSet().orEmpty(),
@@ -1234,6 +1270,7 @@ class TargetValidator(
         sourceId: EntityId? = null,
         predicateContext: PredicateContext? = null,
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
+        sourceCharacteristicsOverride: TargetingSourceCharacteristics? = null,
     ): String? {
         val source = sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
         val sourceCharacteristics = sourceCharacteristicsForTargeting(
@@ -1243,6 +1280,7 @@ class TargetValidator(
             fallbackSubtypes = source?.typeLine?.subtypes?.map { it.value }?.toSet(),
             fallbackCardTypes = source?.typeLine?.cardTypes?.map { it.name }?.toSet(),
             fallbackSupertypes = source?.typeLine?.supertypes?.map { it.name }?.toSet(),
+            fallbackCharacteristics = sourceCharacteristicsOverride,
         )
         return validateSingleTarget(
             state = state,
@@ -1254,8 +1292,7 @@ class TargetValidator(
             sourceId = sourceId,
             predicateContext = predicateContext,
             targetingSourceType = targetingSourceType,
-            sourceCardTypes = sourceCharacteristics.cardTypes,
-            sourceSupertypes = sourceCharacteristics.supertypes,
+            sourceCharacteristicsOverride = sourceCharacteristics,
         )
     }
 
@@ -1273,8 +1310,7 @@ class TargetValidator(
         xValue: Int? = null,
         allTargets: List<ChosenTarget> = emptyList(),
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
-        sourceCardTypes: Set<String>? = null,
-        sourceSupertypes: Set<String>? = null,
+        sourceCharacteristicsOverride: TargetingSourceCharacteristics? = null,
         triggeringEntityId: EntityId? = null,
         triggeringPlayerId: EntityId? = null,
         defendingPlayerId: EntityId? = null,
@@ -1287,12 +1323,11 @@ class TargetValidator(
         damageSourceLastKnownSnapshot: EntitySnapshot? = null,
         damageRecipientLastKnownSnapshot: EntitySnapshot? = null
     ): String? {
-        val sourceTypeCharacteristics = sourceCharacteristicsForTargeting(
-            state = state,
-            sourceId = sourceId,
-            fallbackCardTypes = sourceCardTypes,
-            fallbackSupertypes = sourceSupertypes,
-        )
+        val sourceTypeCharacteristics = sourceCharacteristicsOverride
+            ?: sourceCharacteristicsForTargeting(
+                state = state,
+                sourceId = sourceId,
+            )
         // A separately-chosen player target (target index 0 for "target player's graveyard"
         // spells) — lets a later requirement's filter resolve `OwnedByTargetPlayer` /
         // `ControlledByTargetPlayer` against the player already chosen for this same cast
@@ -1336,23 +1371,28 @@ class TargetValidator(
                     targetPredicateContext
                 )
             is TargetOther -> validateSingleTarget(
-                state,
-                target,
-                requirement.baseRequirement,
-                casterId,
-                sourceColors,
-                sourceSubtypes,
-                sourceId,
-                xValue,
-                allTargets,
-                targetingSourceType,
-                sourceCardTypes,
-                sourceSupertypes,
-                triggeringEntityId,
-                triggeringPlayerId,
-                defendingPlayerId,
-                storedCollections,
-                targetPredicateContext
+                state = state,
+                target = target,
+                requirement = requirement.baseRequirement,
+                casterId = casterId,
+                sourceColors = sourceColors,
+                sourceSubtypes = sourceSubtypes,
+                sourceId = sourceId,
+                xValue = xValue,
+                allTargets = allTargets,
+                targetingSourceType = targetingSourceType,
+                sourceCharacteristicsOverride = sourceTypeCharacteristics,
+                triggeringEntityId = triggeringEntityId,
+                triggeringPlayerId = triggeringPlayerId,
+                defendingPlayerId = defendingPlayerId,
+                storedCollections = storedCollections,
+                predicateContext = targetPredicateContext,
+                damageSourceId = damageSourceId,
+                damageRecipientId = damageRecipientId,
+                damageRecipientKind = damageRecipientKind,
+                damageRecipientKinds = damageRecipientKinds,
+                damageSourceLastKnownSnapshot = damageSourceLastKnownSnapshot,
+                damageRecipientLastKnownSnapshot = damageRecipientLastKnownSnapshot,
             )
         }
         if (error != null) return error
@@ -1384,7 +1424,12 @@ class TargetValidator(
         // Check player-level protection, e.g. The One Ring's "protection from everything" (Rule 702.16).
         // A protected player can't be the target of a source matching one of its protection scopes.
         if (target is ChosenTarget.Player &&
-            PlayerProtectionRules.isProtectedFromSource(state, target.playerId, sourceId, casterId)
+            PlayerProtectionRules.isProtectedFromSourceCharacteristics(
+                state = state,
+                playerId = target.playerId,
+                source = sourceTypeCharacteristics.asPlayerProtectionSource(),
+                casterId = casterId,
+            )
         ) {
             return "Target player has protection from this source"
         }
@@ -1399,7 +1444,12 @@ class TargetValidator(
 
         // Check hexproof from card type, e.g. "hexproof from instants" (Rule 702.11b).
         // Elenda, Saint of Dusk.
-        val hexproofCardTypeError = checkHexproofFromCardType(state, target, casterId, sourceId)
+        val hexproofCardTypeError = checkHexproofFromCardType(
+            state,
+            target,
+            casterId,
+            sourceTypeCharacteristics.cardTypes,
+        )
         if (hexproofCardTypeError != null) return hexproofCardTypeError
 
         // Check protection from each opponent (Rule 702.16e)
@@ -1605,9 +1655,9 @@ class TargetValidator(
         state: GameState,
         target: ChosenTarget,
         casterId: EntityId,
-        sourceId: EntityId?
+        sourceCardTypes: Set<String>,
     ): String? {
-        if (sourceId == null) return null
+        if (sourceCardTypes.isEmpty()) return null
         val entityId = when (target) {
             is ChosenTarget.Permanent -> target.entityId
             else -> return null
@@ -1621,7 +1671,7 @@ class TargetValidator(
         val projected = state.projectedState
         if (HexproofSuppression.isSuppressedForCaster(state, projected, entityId, casterId)) return null
 
-        for (cardType in SourceTypeTargeting.sourceCardTypes(state, sourceId)) {
+        for (cardType in sourceCardTypes) {
             if (projected.hasKeyword(entityId, "HEXPROOF_FROM_CARDTYPE_${cardType.uppercase()}")) {
                 val cardName = state.getEntity(entityId)?.get<CardComponent>()?.name ?: "target"
                 return "$cardName has hexproof from ${cardType.lowercase()}s"

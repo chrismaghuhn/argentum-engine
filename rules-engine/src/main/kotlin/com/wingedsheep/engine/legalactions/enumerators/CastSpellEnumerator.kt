@@ -15,6 +15,7 @@ import com.wingedsheep.engine.legalactions.TapForPowerCreatureData
 import com.wingedsheep.engine.legalactions.TargetInfo
 import com.wingedsheep.engine.legalactions.TargetInfoProjection
 import com.wingedsheep.engine.legalactions.utils.SelectionCostPresentation
+import com.wingedsheep.engine.mechanics.targeting.TargetingSourceCharacteristics
 import com.wingedsheep.engine.mechanics.cost.VariablePermanentsCost
 import com.wingedsheep.engine.mechanics.EscalateCosts
 import com.wingedsheep.engine.mechanics.ModalChooseCounts
@@ -3359,7 +3360,13 @@ class CastSpellEnumerator : ActionEnumerator {
             return
         }
 
-        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
+        val targetInfos = context.targetUtils.buildTargetInfosForSpell(
+            state,
+            playerId,
+            targetReqs,
+            cardId,
+            sourceCharacteristics = TargetingSourceCharacteristics.from(face),
+        )
         if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) return
         val firstReq = targetReqs.first()
         val firstInfo = targetInfos.first()
@@ -3532,7 +3539,13 @@ class CastSpellEnumerator : ActionEnumerator {
             return
         }
 
-        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
+        val targetInfos = context.targetUtils.buildTargetInfosForSpell(
+            state,
+            playerId,
+            targetReqs,
+            cardId,
+            sourceCharacteristics = TargetingSourceCharacteristics.from(back),
+        )
         if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) return
         val firstReq = targetReqs.first()
         val firstInfo = targetInfos.first()
@@ -3656,7 +3669,13 @@ class CastSpellEnumerator : ActionEnumerator {
             return true
         }
 
-        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, cardId)
+        val targetInfos = context.targetUtils.buildTargetInfosForSpell(
+            state,
+            playerId,
+            targetReqs,
+            cardId,
+            sourceCharacteristics = TargetingSourceCharacteristics.from(face),
+        )
         if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) return false
         val firstReq = targetReqs.first()
         val firstInfo = targetInfos.first()
