@@ -389,6 +389,7 @@ class CastSpellHandler(
                 // same rule, but the action is client-supplied.
                 val castColors = action.faceIndex
                     ?.let { cardDef?.cardFaces?.getOrNull(it)?.manaCost?.colors }
+                    ?: transformedFace?.colors
                     ?: cardDef?.colors
                     ?: cardComponent.manaCost.colors
                 if (permissions.none { it.castColorRestriction == null || it.castColorRestriction in castColors }) {

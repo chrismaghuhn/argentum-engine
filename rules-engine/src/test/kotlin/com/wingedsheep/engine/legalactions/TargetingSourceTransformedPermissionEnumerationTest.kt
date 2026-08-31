@@ -21,7 +21,7 @@ import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.string.shouldContain
+import io.kotest.matchers.shouldNotBe
 
 /** A transformed may-play permission must use the back face for target legality. */
 class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
@@ -56,7 +56,7 @@ class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
         keywordAbility(KeywordAbility.Protection(ProtectionScope.Color(Color.BLUE)))
     }
 
-    test("a cast-transformed may-play permission supplies back-face source characteristics") {
+    test("a cast-transformed may-play permission uses back-face characteristics for enumeration and strict validation") {
         val driver = GameTestDriver().apply {
             registerCards(TestCards.all + listOf(transformedSpell, blueProtectedTarget))
             initMirrorMatch(
@@ -76,6 +76,7 @@ class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
                     cardIds = setOf(spellId),
                     controllerId = caster,
                     castTransformed = true,
+                    castColorRestriction = Color.BLUE,
                     timestamp = driver.state.timestamp,
                 )
             )
@@ -105,12 +106,14 @@ class TargetingSourceTransformedPermissionEnumerationTest : FunSpec({
             CastSpell(
                 playerId = caster,
                 cardId = spellId,
-                targets = listOf(ChosenTarget.Permanent(protectedTargetId)),
+                targets = listOf(ChosenTarget.Permanent(ordinaryTargetId)),
             )
         )
 
-        result.error shouldContain "protection from blue"
-        driver.state shouldBe beforeState
-        driver.events shouldBe beforeEvents
+        // Desired behavior — RED before the strict handler reads castTransformed's back face.
+        result.isSuccess shouldBe true
+        result.error shouldBe null
+        driver.state shouldNotBe beforeState
+        driver.events shouldNotBe beforeEvents
     }
 })
