@@ -18,6 +18,7 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.dka.cards.FaithlessLooting
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
@@ -39,6 +40,7 @@ class GameGymEnvAlternativeCastPaymentTest : FunSpec({
 
     val flashbackWithLifeCost = FaithlessLooting.copy(
         name = "Flashback Life Cost Test",
+        manaCost = ManaCost.parse("{2}{R}"),
         oracleText = "Draw two cards, then discard two cards. Flashback {2}{R}, Pay 2 life.",
         keywordAbilities = listOf(
             KeywordAbility.flashback("{2}{R}", Costs.additional.PayLife(2)),
@@ -192,16 +194,37 @@ class GameGymEnvAlternativeCastPaymentTest : FunSpec({
             .single()
             .paymentDomain shouldBe null
 
+        // Obtain a complete {2}{R} witness from the same state and source set. The synthetic
+        // ordinary-cast view only bypasses this test fixture's alternative-cost qualification; the
+        // resulting PaymentPlanV3 still contains the exact current source/output allocations.
+        val resolvedCostAction = action.copy(
+            actionType = "CastSpell",
+            manaCostString = "{2}{R}",
+            action = (action.action as CastSpell).copy(
+                useAlternativeCost = false,
+                alternativeCostType = null,
+            ),
+        )
+        val resolvedCostDomain = builder.paymentDomainV5For(
+            fixture.environment.state,
+            resolvedCostAction,
+        )
+        val nonNullResolvedCostDomain = resolvedCostDomain
+            ?: error("Expected a complete V5 domain for the resolved {2}{R} witness")
+        val validResolvedCostPlan = paymentPlanV3FromPublic(nonNullResolvedCostDomain)
+            ?: error("Expected a complete ExplicitV3 plan for the resolved {2}{R} witness")
         val submitted = (action.action as CastSpell).copy(
-            paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = PaymentPlanV3()),
+            paymentStrategy = PaymentStrategy.ExplicitV3(paymentPlan = validResolvedCostPlan),
         )
         val beforeState = fixture.environment.state
         val beforeStepCount = fixture.environment.stepCount
         val beforeEvents = fixture.environment.lastStepEvents
 
-        shouldThrow<IllegalArgumentException> {
+        val failure = shouldThrow<IllegalArgumentException> {
             fixture.environment.stepStrict(submitted)
         }
+        failure.message shouldBe
+            "PAYMENT_DOMAIN_UNSUPPORTED: alternative mana costs are not representable"
 
         fixture.environment.state shouldBe beforeState
         fixture.environment.stepCount shouldBe beforeStepCount
