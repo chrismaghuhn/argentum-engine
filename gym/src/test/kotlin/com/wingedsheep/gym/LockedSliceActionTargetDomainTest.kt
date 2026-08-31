@@ -649,6 +649,18 @@ class LockedSliceActionTargetDomainTest : FunSpec({
         // unsupported count for Diabolic Intent and Plumb the Forbidden by two.
         orderedRows.count { it.paymentStatus == "PAYMENT_DOMAIN_UNSUPPORTED" } shouldBe 4
         orderedRows.count { it.paymentStatus == "SUPPORTED" } shouldBe 156
+        orderedRows.single {
+            it.cardName == "Diabolic Intent" &&
+                it.actionKind == "CastSpell" &&
+                it.actionType == "CastSpell" &&
+                it.description == "Cast Diabolic Intent"
+        }.paymentStatus shouldBe "SUPPORTED"
+        orderedRows.single {
+            it.cardName == "Plumb the Forbidden" &&
+                it.actionKind == "CastSpell" &&
+                it.actionType == "CastSpell" &&
+                it.description == "Cast Plumb the Forbidden"
+        }.paymentStatus shouldBe "SUPPORTED"
         orderedRows.count { it.paymentStatus == "NOT_APPLICABLE" } shouldBe 55
         rawShapeTotals shouldBe mapOf(
             "0:1-1@-[]#1" to 1,

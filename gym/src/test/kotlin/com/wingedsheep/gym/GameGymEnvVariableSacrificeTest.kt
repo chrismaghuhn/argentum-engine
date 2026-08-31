@@ -160,11 +160,14 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
         return gym to view
     }
 
+    fun paymentPlan(view: LegalActionView) =
+        view.paymentDomain
+            ?.let(::paymentPlanV3FromPublic)
+            ?: error("Expected a complete PaymentDomainV5 for ${view.description}")
+
     fun payload(view: LegalActionView, selected: List<EntityId>) = buildJsonObject {
         view.actionSemantics!!.forEach { (key, value) -> put(key, value) }
-        val domain = view.paymentDomain ?: error("Expected a PaymentDomainV5 for ${view.description}")
-        val plan = paymentPlanV3FromPublic(domain)
-            ?: error("Expected a complete PaymentDomainV5 plan for ${view.description}")
+        val plan = paymentPlan(view)
         put(
             "paymentStrategy",
             actionJson.encodeToJsonElement(
@@ -240,10 +243,11 @@ class GameGymEnvVariableSacrificeTest : FunSpec({
 
     test("a mana source may fund the cast before being sacrificed through strict Gym") {
         val (gym, view) = prepare(
-            battlefield = listOf("Mountain", "Variable Spell Gym Mana Creature")
+            battlefield = listOf("Variable Spell Gym Mana Creature")
         )
         view.validSacrificeTargets.size shouldBe 1
         val source = view.validSacrificeTargets.single()
+        paymentPlan(view).activations.single().sourceId shouldBe source
         val before = gym.environment.stepCount
 
         gym.step(view.actionId, payload(view, listOf(source)))
