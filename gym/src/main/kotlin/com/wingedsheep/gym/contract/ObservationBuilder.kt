@@ -67,6 +67,7 @@ import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.mana.PaidManaSourceTimingCertifier
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.isResolvedFixedAlternativeCastPayment
 import com.wingedsheep.engine.mechanics.mana.buildAbilityPaymentContext
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCostWireString
@@ -1080,6 +1081,7 @@ class ObservationBuilder(
     private fun paymentDomainRequestFor(
         state: GameState,
         legalAction: LegalAction,
+        allowResolvedAlternativeCast: Boolean = false,
     ): PaymentDomainRequest? {
         val requiredCost = legalAction.manaCostString ?: return null
         return when (val action = legalAction.action) {
@@ -1131,10 +1133,26 @@ class ObservationBuilder(
             }
 
             is CastSpell -> {
-                if (!isSupportedCastSpellPayment(legalAction, action, state)) return null
                 val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return null
                 val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return null
                 val parsedCost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
+                val resolvedAlternativeCast = allowResolvedAlternativeCast &&
+                    isResolvedFixedAlternativeCastPayment(
+                        action = action,
+                        effectiveCost = parsedCost,
+                        hasUnresolvedTargetChoice = legalAction.requiresTargets ||
+                            legalAction.validTargets.orEmpty().isNotEmpty() ||
+                            legalAction.targetRequirements.orEmpty().isNotEmpty(),
+                        hasUnresolvedAdditionalCost = legalAction.additionalCostInfo != null ||
+                            cardDef.script.additionalCosts.isNotEmpty(),
+                    )
+                if (!isSupportedCastSpellPayment(
+                        legalAction = legalAction,
+                        action = action,
+                        state = state,
+                        allowResolvedAlternativeCast = resolvedAlternativeCast,
+                    )
+                ) return null
                 if (parsedCost.symbols.any {
                         it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
                     }) return null
@@ -1158,7 +1176,7 @@ class ObservationBuilder(
                 } else {
                     targetRequirements.sumOf { it.minTargets }
                 }
-                if (costCalculator.hasTargetDependentCastCost(
+                if (!resolvedAlternativeCast && costCalculator.hasTargetDependentCastCost(
                         state = state,
                         cardDef = cardDef,
                         casterId = action.playerId,
@@ -1188,7 +1206,11 @@ class ObservationBuilder(
                 }
                 PaymentDomainRequest(
                     playerId = action.playerId,
-                    requiredCost = effectivePaymentCost.toString(),
+                    requiredCost = if (resolvedAlternativeCast) {
+                        effectivePaymentCost.canonicalPaymentManaCostWireString()
+                    } else {
+                        effectivePaymentCost.toString()
+                    },
                     spellContext = spellContext,
                 )
             }
@@ -1255,7 +1277,11 @@ class ObservationBuilder(
      * source list, solver-selected fallback, or legacy AutoPay interpretation is permitted.
      */
     internal fun paymentDomainV5For(state: GameState, legalAction: LegalAction): PaymentDomainV5? {
-        val request = paymentDomainRequestFor(state, legalAction) ?: return null
+        val request = paymentDomainRequestFor(
+            state = state,
+            legalAction = legalAction,
+            allowResolvedAlternativeCast = true,
+        ) ?: return null
         val reservedOuterLifePayment = reservedOuterLifePaymentForV5(state, legalAction) ?: return null
         val domain = paymentDomainBuilder.buildV5(
             state = state,
@@ -1428,10 +1454,13 @@ class ObservationBuilder(
         legalAction: LegalAction,
         action: CastSpell,
         state: GameState,
+        allowResolvedAlternativeCast: Boolean = false,
     ): Boolean {
         val isCastSpellMode = legalAction.actionType == "CastSpellMode"
         val isCastWithKicker = legalAction.actionType == "CastWithKicker"
-        if ((legalAction.actionType != "CastSpell" && !isCastSpellMode && !isCastWithKicker) ||
+        val isResolvedAlternativeCast = allowResolvedAlternativeCast
+        if ((legalAction.actionType != "CastSpell" && !isCastSpellMode && !isCastWithKicker &&
+                !isResolvedAlternativeCast) ||
             legalAction.hasXCost ||
             (legalAction.hasConvoke && !legalAction.convokeCreatures.isNullOrEmpty()) ||
             (legalAction.hasDelve && !legalAction.delveCards.isNullOrEmpty()) ||
@@ -1477,7 +1506,7 @@ class ObservationBuilder(
             action.alternativePayment?.hasResourcePayment == true ||
             action.wasWaterbendPaid ||
             action.splicedCardIds.isNotEmpty() ||
-            action.useAlternativeCost ||
+            (action.useAlternativeCost && !isResolvedAlternativeCast) ||
             action.useWithoutPayingManaCost ||
             action.faceIndex != null
         ) return false

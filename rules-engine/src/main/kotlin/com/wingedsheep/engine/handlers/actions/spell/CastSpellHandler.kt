@@ -70,6 +70,7 @@ import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.toManaPool
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidator
+import com.wingedsheep.engine.mechanics.mana.isResolvedFixedAlternativeCastPayment
 import com.wingedsheep.engine.mechanics.mana.canonicalPaymentManaCost
 import com.wingedsheep.engine.mechanics.mana.ModalPaymentPlanSupport
 import com.wingedsheep.engine.mechanics.stack.StackResolver
@@ -1320,7 +1321,14 @@ class CastSpellHandler(
                 action.xValue != null || cost.symbols.any {
                     it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
                 } -> "X, hybrid, Phyrexian, and twobrid costs are not representable"
-                action.useAlternativeCost -> "alternative mana costs are not representable"
+                action.useAlternativeCost &&
+                    (explicitV3Plan == null || !isResolvedFixedAlternativeCastPayment(
+                        action = action,
+                        effectiveCost = effectiveCost,
+                        hasUnresolvedTargetChoice = cardDef?.script?.targetRequirements?.isNotEmpty() == true ||
+                            cardDef?.script?.auraTarget != null,
+                        hasUnresolvedAdditionalCost = cardDef?.script?.additionalCosts?.isNotEmpty() == true,
+                    )) -> "alternative mana costs are not representable"
                 action.faceIndex != null -> "alternative face payment choices are not representable"
                 action.alternativePayment?.hasResourcePayment == true ->
                     "convoke, delve, harmonize, and tap-for-generic choices are not representable"
