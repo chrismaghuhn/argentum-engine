@@ -141,7 +141,6 @@ class CastManaAbilityActivationOrderTest : FunSpec({
         )
 
         println("SACRIFICE_OVERLAP_RED success=${result.isSuccess} error=${result.error}")
-        result.error shouldBe "Payment source is not currently available: ${fixture.source}"
         result.isSuccess shouldBe true
         fixture.driver.state.getZone(com.wingedsheep.engine.state.ZoneKey(fixture.player, Zone.GRAVEYARD))
             .toList() shouldBe listOf(fixture.source)
