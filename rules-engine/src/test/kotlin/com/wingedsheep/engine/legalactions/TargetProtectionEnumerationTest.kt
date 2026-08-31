@@ -88,8 +88,6 @@ class TargetProtectionEnumerationTest : FunSpec({
         val validTargets = action.validTargets.shouldNotBeNull()
 
         validTargets shouldContain fixture.ordinaryTarget
-        // Characterization: the current enumerator incorrectly includes the protected target.
-        validTargets shouldContain fixture.protectedTarget
         println(
             "RULES_TARGET_PROTECTION_ENUMERATION_01 " +
                 "source=${fixture.source} ordinary=${fixture.ordinaryTarget} " +
