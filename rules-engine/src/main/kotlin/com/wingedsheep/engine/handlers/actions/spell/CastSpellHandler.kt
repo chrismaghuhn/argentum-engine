@@ -768,6 +768,8 @@ class CastSpellHandler(
                     action.playerId,
                     sourceColors = (transformedFace ?: cardDef).colors,
                     sourceSubtypes = (transformedFace ?: cardDef).typeLine.subtypes.map { it.value }.toSet(),
+                    sourceCardTypes = (transformedFace ?: cardDef).typeLine.cardTypes.map { it.name }.toSet(),
+                    sourceSupertypes = (transformedFace ?: cardDef).typeLine.supertypes.map { it.name }.toSet(),
                     sourceId = action.cardId,
                     xValue = action.xValue,
                     targetingSourceType = TargetingSourceType.SPELL,

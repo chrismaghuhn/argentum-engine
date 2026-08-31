@@ -6,8 +6,11 @@ import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOppon
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
+import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Supertype
+import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
@@ -98,6 +101,33 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         keywordAbility(KeywordAbility.Protection(ProtectionScope.Color(Color.BLUE)))
     }
 
+    val typeChangingAbilitySource = card("Targeting Source Type Artifact Source") {
+        manaCost = "{1}{R}"
+        colorIdentity = "R"
+        typeLine = "Creature — Wizard"
+        power = 1
+        toughness = 1
+        oracleText = "This creature becomes an artifact. {T}: Target creature gets +1/+0 until end of turn."
+        activatedAbility {
+            cost = Costs.Free
+            effect = Effects.AddCardType(CardType.ARTIFACT.name, EffectTarget.Self)
+        }
+        activatedAbility {
+            cost = Costs.Tap
+            target = Targets.Creature
+            effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
+        }
+    }
+
+    val artifactProtectedTarget = card("Targeting Source Type Artifact-Protected Creature") {
+        manaCost = "{1}{W}"
+        colorIdentity = "W"
+        typeLine = "Creature — Soldier"
+        power = 2
+        toughness = 2
+        keywordAbility(KeywordAbility.Protection(ProtectionScope.CardType(CardType.ARTIFACT.name)))
+    }
+
     val redProtectedTarget = card("Targeting Source Type Red-Protected Creature") {
         manaCost = "{1}{W}"
         colorIdentity = "W"
@@ -105,6 +135,15 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         power = 2
         toughness = 2
         keywordAbility(KeywordAbility.Protection(ProtectionScope.Color(Color.RED)))
+    }
+
+    val legendaryProtectedTarget = card("Targeting Source Type Legendary-Protected Creature") {
+        manaCost = "{1}{G}"
+        colorIdentity = "G"
+        typeLine = "Creature — Soldier"
+        power = 2
+        toughness = 2
+        keywordAbility(KeywordAbility.Protection(ProtectionScope.Supertype(Supertype.LEGENDARY.name)))
     }
 
     val graveyardSpell = card("Targeting Source Type Graveyard Spell") {
@@ -119,6 +158,30 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         staticAbility {
             ability = MayCastSelfFromZones(zones = listOf(Zone.GRAVEYARD))
         }
+    }
+
+    val legendarySpell = card("Targeting Source Type Legendary Spell") {
+        manaCost = "{R}"
+        colorIdentity = "R"
+        typeLine = "Instant"
+        oracleText = "Target creature gets +1/+0 until end of turn."
+        spell {
+            target = Targets.Creature
+            effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
+        }
+    }.copy(
+        typeLine = TypeLine(
+            supertypes = setOf(Supertype.LEGENDARY),
+            cardTypes = setOf(CardType.INSTANT),
+        ),
+    )
+
+    val legendaryControl = card("Targeting Source Type Legendary Control") {
+        manaCost = "{1}{G}"
+        colorIdentity = "G"
+        typeLine = "Legendary Creature — Bear"
+        power = 2
+        toughness = 2
     }
 
     fun fixture(): SourceTypeFixture {
@@ -287,6 +350,94 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         )
 
         result.error shouldContain "protection from blue"
+        driver.state shouldBe beforeState
+        driver.events shouldBe beforeEvents
+    }
+
+    test("projected card types of an ability source drive protection legality") {
+        val driver = GameTestDriver().apply {
+            registerCards(TestCards.all + listOf(typeChangingAbilitySource, artifactProtectedTarget))
+            initMirrorMatch(
+                deck = Deck.of("Mountain" to 40),
+                skipMulligans = true,
+                startingPlayer = 0,
+            )
+        }
+        val caster = driver.activePlayer!!
+        val opponent = driver.getOpponent(caster)
+        val sourceId = driver.putCreatureOnBattlefield(caster, typeChangingAbilitySource.name)
+        driver.removeSummoningSickness(sourceId)
+        val protectedTargetId = driver.putCreatureOnBattlefield(opponent, artifactProtectedTarget.name)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val addTypeAbilityId = typeChangingAbilitySource.activatedAbilities[0].id
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = caster,
+                sourceId = sourceId,
+                abilityId = addTypeAbilityId,
+            )
+        )
+        driver.bothPass()
+
+        driver.state.projectedState.getTypes(sourceId) shouldContain CardType.ARTIFACT.name
+        val targetAbilityId = typeChangingAbilitySource.activatedAbilities[1].id
+        val action = driver.legalActions(caster).single { candidate ->
+            val activate = candidate.action as? ActivateAbility
+            activate?.sourceId == sourceId && activate.abilityId == targetAbilityId
+        }
+        action.targetRequirements.single().validTargets shouldNotContain protectedTargetId
+
+        val beforeState = driver.state
+        val beforeEvents = driver.events
+        val result = driver.submit(
+            ActivateAbility(
+                playerId = caster,
+                sourceId = sourceId,
+                abilityId = targetAbilityId,
+                targets = listOf(ChosenTarget.Permanent(protectedTargetId)),
+            )
+        )
+
+        result.error shouldContain "protection from artifact"
+        driver.state shouldBe beforeState
+        driver.events shouldBe beforeEvents
+    }
+
+    test("non-battlefield source supertypes drive protection legality") {
+        val driver = GameTestDriver().apply {
+            registerCards(TestCards.all + listOf(legendarySpell, legendaryProtectedTarget, legendaryControl))
+            initMirrorMatch(
+                deck = Deck.of("Mountain" to 40),
+                skipMulligans = true,
+                startingPlayer = 0,
+            )
+        }
+        val caster = driver.activePlayer!!
+        val opponent = driver.getOpponent(caster)
+        val spellId = driver.putCardInHand(caster, legendarySpell.name)
+        driver.putCreatureOnBattlefield(caster, legendaryControl.name)
+        driver.putCreatureOnBattlefield(opponent, "Grizzly Bears")
+        val protectedTargetId = driver.putCreatureOnBattlefield(opponent, legendaryProtectedTarget.name)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        driver.giveMana(caster, Color.RED)
+
+        val action = driver.legalActions(caster).single { candidate ->
+            (candidate.action as? CastSpell)?.cardId == spellId
+        }
+        action.validTargets.shouldNotBeNull() shouldNotContain protectedTargetId
+
+        val beforeState = driver.state
+        val beforeEvents = driver.events
+        val result = driver.submit(
+            CastSpell(
+                playerId = caster,
+                cardId = spellId,
+                targets = listOf(ChosenTarget.Permanent(protectedTargetId)),
+            )
+        )
+
+        result.error shouldContain "protection from legendary"
         driver.state shouldBe beforeState
         driver.events shouldBe beforeEvents
     }
