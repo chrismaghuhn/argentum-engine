@@ -2779,6 +2779,12 @@ class CastSpellHandler(
         val chosenEntitySnapshots = mutableListOf<EntitySnapshot>()
         /** Pipeline storage populated by Behold, consumed by ExileFromStorage */
         val costPipelineCollections = mutableMapOf<String, List<EntityId>>()
+        /**
+         * Sacrifice selections are applied after the mana payment window. Mana abilities must be
+         * activated before total-cost payment, so a selected permanent may fund the cast before it
+         * is moved by the later sacrifice cost.
+         */
+        val deferredAdditionalSacrifices = mutableListOf<List<EntityId>>()
 
         // Collect all additional costs: script costs + kicker additional cost (if kicked)
         // + self-alternative cost's additional costs (if using alternative cost)
@@ -2844,16 +2850,7 @@ class CastSpellHandler(
                 when (additionalCost) {
                     is AdditionalCost.Atom -> when (val atom = additionalCost.atom) {
                         is CostAtom.Sacrifice -> {
-                            // Snapshot projected subtypes and P/T before zone change
-                            // (Rule 112.7a / 608.2h — "as it last existed on the battlefield")
-                            val projectedBeforeSacrifice = currentState.projectedState
-                            sacrificedSnapshots.addAll(
-                                captureEntitySnapshots(action.additionalCostPayment.sacrificedPermanents, projectedBeforeSacrifice)
-                            )
-                            for (permId in action.additionalCostPayment.sacrificedPermanents) {
-                                if (currentState.getEntity(permId) == null) continue
-                                currentState = sacrificePermanentAsCost(currentState, permId, action.playerId, events)
-                            }
+                            deferredAdditionalSacrifices += action.additionalCostPayment.sacrificedPermanents
                         }
                         is CostAtom.Discard -> {
                             val discardedCards = action.additionalCostPayment.discardedCards
@@ -2962,13 +2959,7 @@ class CastSpellHandler(
                                     events.addAll(tapEvents)
                                 }
                                 PermanentCostAction.SACRIFICE -> {
-                                    sacrificedSnapshots.addAll(
-                                        captureEntitySnapshots(chosen, currentState)
-                                    )
-                                    for (permId in chosen) {
-                                        if (currentState.getEntity(permId) == null) continue
-                                        currentState = sacrificePermanentAsCost(currentState, permId, action.playerId, events)
-                                    }
+                                    deferredAdditionalSacrifices += chosen
                                 }
                                 PermanentCostAction.EXILE -> for (permId in chosen) {
                                     val tr = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
@@ -3036,17 +3027,10 @@ class CastSpellHandler(
                         exiledCardCount = exiledCards.size
                     }
                     is AdditionalCost.SacrificeCreaturesForCostReduction -> {
-                        // Process sacrifices for cost reduction (e.g., Torgaar)
-                        val projectedBeforeSacrifice = currentState.projectedState
-                        sacrificedSnapshots.addAll(
-                            captureEntitySnapshots(action.additionalCostPayment.sacrificedPermanents, projectedBeforeSacrifice)
-                        )
-                        for (permId in action.additionalCostPayment.sacrificedPermanents) {
-                            if (currentState.getEntity(permId) == null) continue
-                            currentState = sacrificePermanentAsCost(currentState, permId, action.playerId, events)
-                        }
-                        // Apply cost reduction based on number of creatures sacrificed
+                        // The selected count still determines the locked-in mana reduction, but
+                        // moving the selected permanents waits until after mana payment.
                         val reduction = action.additionalCostPayment.sacrificedPermanents.size * additionalCost.costReductionPerCreature
+                        deferredAdditionalSacrifices += action.additionalCostPayment.sacrificedPermanents
                         if (reduction > 0) {
                             effectiveCost = effectiveCost.reduceGeneric(reduction)
                         }
@@ -3382,6 +3366,20 @@ class CastSpellHandler(
         }
         currentState = paymentResult.state
         events.addAll(paymentResult.events)
+
+        // CR 601.2g requires mana abilities to be activated before costs are paid. Apply the
+        // deferred sacrifice movements only after the complete selected V3/AutoPay mana payment;
+        // this permits a source to fund the cast and then be sacrificed as a cost. Tap, bounce,
+        // and other non-sacrifice additional-cost mutations retain their existing semantics.
+        for (chosen in deferredAdditionalSacrifices) {
+            sacrificedSnapshots.addAll(
+                captureEntitySnapshots(chosen, currentState)
+            )
+            for (permId in chosen) {
+                if (currentState.getEntity(permId) == null) continue
+                currentState = sacrificePermanentAsCost(currentState, permId, action.playerId, events)
+            }
+        }
 
         // Emerge (CR 702.119a/c): the chosen creature is sacrificed *as the total cost is paid*
         // (CR 601.2h), which is why this sits after the mana payment rather than in the additional-
