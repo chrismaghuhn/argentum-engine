@@ -7,6 +7,7 @@ import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.TargetDomainSupport
 import com.wingedsheep.engine.legalactions.TargetInfo
@@ -27,6 +28,7 @@ import com.wingedsheep.gym.contract.CertifiedFloatingManaSourceColorBucketDomain
 import com.wingedsheep.gym.contract.CertifiedFloatingManaBucketDomainV4
 import com.wingedsheep.mtg.sets.definitions.gtc.cards.BorosCharm
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.gym.paymentPlanV3FromPublic
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Subtype
@@ -45,8 +47,11 @@ import com.wingedsheep.sdk.scripting.AbilityId
 import com.wingedsheep.sdk.scripting.ActivatedAbility
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ActivationRestriction
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
 import com.wingedsheep.sdk.scripting.CostModification
 import com.wingedsheep.sdk.scripting.CostReductionSource
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
+import com.wingedsheep.sdk.scripting.FreeFirstEquipEachTurn
 import com.wingedsheep.sdk.scripting.GrantActivatedAbility
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.ModifySpellCost
@@ -63,6 +68,11 @@ import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.put
 
 /** Focused coverage for action-authoritative historical V4 and current V5 payment inputs. */
 class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
@@ -97,6 +107,13 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
     val fixedCostEquipment = card("Gym Fixed Cost Equipment") {
         typeLine = "Artifact — Equipment"
         equipAbility("{1}")
+    }
+
+    val freeFirstEquipPermission = card("Gym Free First Equip Permission") {
+        typeLine = "Enchantment"
+        staticAbility {
+            ability = FreeFirstEquipEachTurn
+        }
     }
 
     val targetPowerEquipment = card("Gym Target Power Equipment") {
@@ -335,6 +352,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         register(sourceWithTapPayment)
         register(sourceWithTrackedMana)
         register(fixedCostEquipment)
+        register(freeFirstEquipPermission)
         register(targetPowerEquipment)
         register(targetRestrictedEquipGrant)
         register(targetRestrictedEquipment)
@@ -360,6 +378,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         includeMountain: Boolean = false,
         includeFlyingTarget: Boolean = false,
         includeTargetRestrictedGrant: Boolean = false,
+        includeFreeFirstEquipPermission: Boolean = false,
     ): Triple<GameEnvironment, EntityId, EntityId> {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
@@ -367,6 +386,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         if (includeGroundTarget) aliceDeckCards += groundTarget.name to 1
         if (includeFlyingTarget) aliceDeckCards += flyingTarget.name to 1
         if (includeTargetRestrictedGrant) aliceDeckCards += targetRestrictedEquipGrant.name to 1
+        if (includeFreeFirstEquipPermission) aliceDeckCards += freeFirstEquipPermission.name to 1
         val aliceDeck = Deck.of(*aliceDeckCards.toTypedArray())
         environment.reset(
             GameConfig(
@@ -406,6 +426,7 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         if (includeGroundTarget) moveNamedToBattlefield(groundTarget.name)
         if (includeFlyingTarget) moveNamedToBattlefield(flyingTarget.name)
         if (includeTargetRestrictedGrant) moveNamedToBattlefield(targetRestrictedEquipGrant.name)
+        if (includeFreeFirstEquipPermission) moveNamedToBattlefield(freeFirstEquipPermission.name)
         if (includeMountain) {
             moveNamedToBattlefield("Mountain")
         }
@@ -1133,6 +1154,127 @@ class GameGymEnvPaymentDomainAuthorityTest : FunSpec({
         view.paymentDomain shouldNotBe null
         view.paymentDomain!!.version shouldBe 5
         view.paymentDomain!!.requiredCost shouldBe "{1}"
+    }
+
+    test("explicit NORMAL and FREE_FIRST_EQUIP modes publish V5 and strict Gym consumes free mode") {
+        val normalPrepared = prepared(
+            fixedCostEquipment.name,
+            includeGroundTarget = true,
+            includeMountain = true,
+            includeFreeFirstEquipPermission = true,
+        )
+        val normalAction = normalPrepared.first.legalActions().single { candidate ->
+            val action = candidate.action as? ActivateAbility
+            action?.sourceId == normalPrepared.third &&
+                action.alternativePayment?.equipPayment == EquipPaymentChoice.NORMAL
+        }
+        normalAction.affordable shouldBe true
+        val normalView = ObservationBuilder(cardRegistry = registry())
+            .build(normalPrepared.first.state, normalPrepared.second, listOf(normalAction))
+            .observation
+            .legalActions
+            .single()
+        normalView.manaCost shouldBe "{1}"
+        normalView.targetPaymentDomain shouldBe null
+        normalView.paymentDomain shouldNotBe null
+        normalView.paymentDomain!!.requiredCost shouldBe "{1}"
+
+        val freePrepared = prepared(
+            fixedCostEquipment.name,
+            includeGroundTarget = true,
+            includeMountain = true,
+            includeFreeFirstEquipPermission = true,
+        )
+        val gym = GameGymEnv(
+            environment = freePrepared.first,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry()),
+        )
+        val observed = gym.observe()
+        observed.diagnostics shouldBe emptyList()
+        val freeView = observed.observation.legalActions.single { candidate ->
+            candidate.sourceEntityId == freePrepared.third && candidate.manaCost == "{0}"
+        }
+        val domain = freeView.paymentDomain ?: error("Expected V5 for FREE_FIRST_EQUIP")
+        domain.requiredCost shouldBe "{0}"
+        val target = freeView.targetDomain!!.requirements.single().candidates.first()
+        val plan = paymentPlanV3FromPublic(domain)
+            ?: error("Expected a complete V3 plan for FREE_FIRST_EQUIP")
+        val actionJson = Json {
+            encodeDefaults = true
+            explicitNulls = false
+            classDiscriminator = "type"
+        }
+        val payload = buildJsonObject {
+            freeView.actionSemantics?.forEach { (key, value) -> put(key, value) }
+            put(
+                "paymentStrategy",
+                actionJson.encodeToJsonElement(
+                    PaymentStrategy.serializer(),
+                    PaymentStrategy.ExplicitV3(paymentPlan = plan),
+                ),
+            )
+            put(
+                "targets",
+                buildJsonArray {
+                    add(buildJsonObject {
+                        put("type", "Permanent")
+                        put("entityId", target.value)
+                    })
+                },
+            )
+        }
+        val stepBefore = freePrepared.first.stepCount
+        gym.step(freeView.actionId, payload)
+        freePrepared.first.stepCount shouldBe stepBefore + 1
+    }
+
+    test("resource and inconsistent equip payment alternatives remain fail-closed") {
+        val resourcePrepared = prepared(
+            fixedCostEquipment.name,
+            includeGroundTarget = true,
+            includeMountain = true,
+            includeFreeFirstEquipPermission = true,
+        )
+        val normalAction = resourcePrepared.first.legalActions().single { candidate ->
+            val action = candidate.action as? ActivateAbility
+            action?.sourceId == resourcePrepared.third &&
+                action.alternativePayment?.equipPayment == EquipPaymentChoice.NORMAL
+        }
+        val resourceAction = normalAction.copy(
+            action = (normalAction.action as ActivateAbility).copy(
+                alternativePayment = AlternativePaymentChoice(
+                    harmonizeCreature = normalAction.targetRequirements.single().validTargets.first(),
+                ),
+            ),
+        )
+        val resourceObservation = ObservationBuilder(cardRegistry = registry())
+            .build(resourcePrepared.first.state, resourcePrepared.second, listOf(resourceAction))
+        resourceObservation.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        resourceObservation.observation.legalActions.single().paymentDomain shouldBe null
+
+        val invalidPrepared = prepared(
+            fixedCostEquipment.name,
+            includeGroundTarget = true,
+            includeMountain = true,
+        )
+        val ordinaryAction = invalidPrepared.first.legalActions().first { candidate ->
+            val action = candidate.action as? ActivateAbility
+            action?.sourceId == invalidPrepared.third && action.alternativePayment == null
+        }
+        val inconsistentFreeAction = ordinaryAction.copy(
+            manaCostString = "{0}",
+            affordable = true,
+            action = (ordinaryAction.action as ActivateAbility).copy(
+                alternativePayment = AlternativePaymentChoice(
+                    equipPayment = EquipPaymentChoice.FREE_FIRST_EQUIP,
+                ),
+            ),
+        )
+        val invalidObservation = ObservationBuilder(cardRegistry = registry())
+            .build(invalidPrepared.first.state, invalidPrepared.second, listOf(inconsistentFreeAction))
+        invalidObservation.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
+        invalidObservation.observation.legalActions.single().paymentDomain shouldBe null
     }
 
     test("target-dependent Equip cost keeps every target but publishes no payment domain") {

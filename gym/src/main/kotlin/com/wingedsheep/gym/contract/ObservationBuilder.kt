@@ -1101,7 +1101,7 @@ class ObservationBuilder(
                 if (legalAction.hasXCost ||
                     legalAction.hasConvoke ||
                     legalAction.hasTapForGeneric ||
-                    action.alternativePayment != null ||
+                    action.alternativePayment?.let { it.hasResourcePayment || it.equipPayment == null } == true ||
                     ability.hasConvoke ||
                     ability.hasWaterbend ||
                     (ability.isEquipAbility &&
