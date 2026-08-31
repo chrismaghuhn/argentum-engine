@@ -445,6 +445,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
         // (e.g. Malcolm, Alluring Scoundrel) are castable without a detour through exile.
         val exileCandidates = state.turnOrder.flatMap { pid -> state.getExile(pid).map { it to "EXILE" } }
         val graveyardCandidates = state.turnOrder.flatMap { pid -> state.getGraveyard(pid).map { it to "GRAVEYARD" } }
+        val zoneResolver = CastZoneResolver(context.cardRegistry, context.conditionEvaluator)
         for ((cardId, sourceZoneLabel) in exileCandidates + graveyardCandidates) {
             val container = state.getEntity(cardId) ?: continue
             val permissions = state.activeMayPlayFor(cardId, playerId, context.conditionEvaluator, context.cardRegistry)
@@ -504,18 +505,30 @@ class CastFromZoneEnumerator : ActionEnumerator {
                         else permissions.firstNotNullOfOrNull { it.castFaceIndex }
                             ?.takeIf { cardDef?.cardFaces?.getOrNull(it) != null }
                     val prepareFace = prepareCopyFaceIndex?.let { cardDef?.cardFaces?.getOrNull(it) }
+                    // A transformed may-play permission puts the back face on the stack (CR
+                    // 712.8c). Resolve the same face the cast handler will use before deriving
+                    // any timing, script, target, or source-characteristic facts. A face-index
+                    // permission is a separate choice and therefore keeps precedence here.
+                    val transformedFace = if (prepareCopyFaceIndex == null &&
+                        permissions.any { it.castTransformed }
+                    ) {
+                        zoneResolver.permissionTransformedCastFace(state, playerId, cardId)
+                    } else null
                     // "You may cast red spells from among them" (Chandra, Dressed to Kill −7): the
                     // colour is checked against the face actually being cast, not the exiled card,
                     // so a red MDFC's blue back face stays uncastable through this permission. A
                     // permission with no restriction authorizes any colour, and only *one* of the
                     // applicable permissions needs to authorize the cast.
-                    val castColors = prepareFace?.manaCost?.colors ?: cardDef?.colors ?: cardComponent.manaCost.colors
+                    val castColors = transformedFace?.colors
+                        ?: prepareFace?.manaCost?.colors
+                        ?: cardDef?.colors
+                        ?: cardComponent.manaCost.colors
                     if (permissions.none { it.castColorRestriction == null || it.castColorRestriction in castColors }) {
                         continue
                     }
-                    val castName = prepareFace?.name ?: cardComponent.name
-                    val effectiveScript = prepareFace?.script ?: cardDef?.script
-                    val effectiveTypeLine = prepareFace?.typeLine ?: cardComponent.typeLine
+                    val castName = transformedFace?.name ?: prepareFace?.name ?: cardComponent.name
+                    val effectiveScript = transformedFace?.script ?: prepareFace?.script ?: cardDef?.script
+                    val effectiveTypeLine = transformedFace?.typeLine ?: prepareFace?.typeLine ?: cardComponent.typeLine
                     val isInstant = effectiveTypeLine.isInstant
                     // A may-play permission with an "as though it had flash" rider (Azula, Cunning
                     // Usurper) unlocks instant-speed casting of even a sorcery/creature exiled with it.
@@ -523,7 +536,11 @@ class CastFromZoneEnumerator : ActionEnumerator {
                     val hasCorrectTiming = isInstant || grantsFlashTiming || context.canPlaySorcerySpeed
                     val castRestrictions = effectiveScript?.castRestrictions ?: emptyList()
                     val meetsRestrictions = context.castPermissionUtils.checkCastRestrictions(state, playerId, castRestrictions)
-                    val baseEffectiveCost = if (cardDef != null && prepareFace != null) {
+                    val baseEffectiveCost = if (cardDef != null && transformedFace != null) {
+                        context.costCalculator.calculateEffectiveCostWithAlternativeBase(
+                            state, cardDef, transformedFace.manaCost, playerId
+                        )
+                    } else if (cardDef != null && prepareFace != null) {
                         context.costCalculator.calculateEffectiveCostWithAlternativeBase(state, cardDef, prepareFace.manaCost, playerId)
                     } else if (cardDef != null) {
                         context.costCalculator.calculateEffectiveCost(state, cardDef, playerId)
@@ -647,7 +664,11 @@ class CastFromZoneEnumerator : ActionEnumerator {
                                 playerId,
                                 targetReqs,
                                 sourceId = cardId,
-                                sourceCharacteristics = prepareFace?.let { TargetingSourceCharacteristics.from(it) },
+                                sourceCharacteristics = when {
+                                    transformedFace != null -> TargetingSourceCharacteristics.from(transformedFace)
+                                    prepareFace != null -> TargetingSourceCharacteristics.from(prepareFace)
+                                    else -> null
+                                },
                             )
                             val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                             if (allSatisfied) {
@@ -770,7 +791,11 @@ class CastFromZoneEnumerator : ActionEnumerator {
                                 playerId,
                                 freeTargetReqs,
                                 sourceId = cardId,
-                                sourceCharacteristics = prepareFace?.let { TargetingSourceCharacteristics.from(it) },
+                                sourceCharacteristics = when {
+                                    transformedFace != null -> TargetingSourceCharacteristics.from(transformedFace)
+                                    prepareFace != null -> TargetingSourceCharacteristics.from(prepareFace)
+                                    else -> null
+                                },
                             )
                             if (context.targetUtils.allRequirementsSatisfied(freeTargetInfos)) {
                                 val firstReq = freeTargetReqs.first()
