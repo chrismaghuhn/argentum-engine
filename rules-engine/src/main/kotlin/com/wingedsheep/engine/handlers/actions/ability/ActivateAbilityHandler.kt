@@ -24,6 +24,7 @@ import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.handlers.actions.ActionHandler
 import com.wingedsheep.engine.handlers.effects.EffectExecutorRegistry
@@ -585,7 +586,8 @@ class ActivateAbilityHandler(
                 // X-clamped target counts (e.g. Rot-Curse Rakshasa's Renew "X target creatures")
                 // and X-bounded "mana value X or less" reanimation targets (Fabrication Foundry)
                 // need the chosen X to validate — mirror the spell path.
-                xValue = effectiveXValue
+                xValue = effectiveXValue,
+                targetingSourceType = TargetingSourceType.ABILITY,
             )
             if (targetError != null) {
                 return targetError

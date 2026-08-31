@@ -53,6 +53,7 @@ import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.CostHandler
 import com.wingedsheep.engine.handlers.DynamicAmountEvaluator
 import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.TargetingSourceType
 import com.wingedsheep.engine.mechanics.cost.CostAmountResolver
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
@@ -768,7 +769,8 @@ class CastSpellHandler(
                     sourceColors = (transformedFace ?: cardDef).colors,
                     sourceSubtypes = (transformedFace ?: cardDef).typeLine.subtypes.map { it.value }.toSet(),
                     sourceId = action.cardId,
-                    xValue = action.xValue
+                    xValue = action.xValue,
+                    targetingSourceType = TargetingSourceType.SPELL,
                 )
                 if (targetError != null) {
                     return targetError

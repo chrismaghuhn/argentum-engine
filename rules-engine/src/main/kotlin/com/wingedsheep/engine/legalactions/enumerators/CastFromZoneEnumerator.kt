@@ -174,7 +174,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                 if (canAfford && allSatisfied) {
                     val firstReq = targetReqs.first()
@@ -347,7 +347,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                         }
 
                         if (targetReqs.isNotEmpty()) {
-                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = topCardId)
                             val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                             if (allSatisfied) {
                                 val firstReq = targetReqs.first()
@@ -641,7 +641,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                         }
 
                         if (targetReqs.isNotEmpty()) {
-                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                             val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                             if (allSatisfied) {
                                 val firstReq = targetReqs.first()
@@ -758,7 +758,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                             effectiveScript?.auraTarget?.let { add(it) }
                         }
                         if (freeTargetReqs.isNotEmpty()) {
-                            val freeTargetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, freeTargetReqs)
+                            val freeTargetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, freeTargetReqs, sourceId = cardId)
                             if (context.targetUtils.allRequirementsSatisfied(freeTargetInfos)) {
                                 val firstReq = freeTargetReqs.first()
                                 val firstInfo = freeTargetInfos.first()
@@ -976,7 +976,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                             exiledCardDef?.script?.auraTarget?.let { add(it) }
                         }
                         if (targetReqs.isNotEmpty()) {
-                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = exiledId)
                             val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                             if (allSatisfied) {
                                 val firstReq = targetReqs.first()
@@ -1174,7 +1174,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                         }
 
                         if (targetReqs.isNotEmpty()) {
-                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                            val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                             val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                             if (allSatisfied) {
                                 val firstReq = targetReqs.first()
@@ -1298,7 +1298,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                     }
 
                     if (targetReqs.isNotEmpty()) {
-                        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                        val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                         val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                         if (allSatisfied) {
                             val firstReq = targetReqs.first()
@@ -1470,7 +1470,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                 if (allSatisfied) {
                     val firstReq = targetReqs.first()
@@ -1616,7 +1616,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                 if (allSatisfied) {
                     val firstReq = targetReqs.first()
@@ -1763,7 +1763,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 if (!context.targetUtils.allRequirementsSatisfied(targetInfos)) continue
                 val firstReq = targetReqs.first()
                 val firstInfo = targetInfos.first()
@@ -1900,7 +1900,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                 if (allSatisfied) {
                     val firstReq = targetReqs.first()
@@ -2109,7 +2109,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                 if (allSatisfied) {
                     val firstReq = targetReqs.first()
@@ -2287,7 +2287,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
             }
 
             if (targetReqs.isNotEmpty()) {
-                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                 val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                 if (allSatisfied) {
                     val firstReq = targetReqs.first()
@@ -2412,7 +2412,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                 }
 
                 if (targetReqs.isNotEmpty()) {
-                    val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                    val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                     val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                     if (allSatisfied) {
                         val firstReq = targetReqs.first()
@@ -2629,7 +2629,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                 }
 
                 if (targetReqs.isNotEmpty()) {
-                    val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                    val targetInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                     val allSatisfied = context.targetUtils.allRequirementsSatisfied(targetInfos)
                     if (allSatisfied) {
                         val firstReq = targetReqs.first()
@@ -2862,7 +2862,7 @@ class CastFromZoneEnumerator : ActionEnumerator {
                 val kickerMinDamagePerTarget = if (kickerDividedDamage != null) 1 else null
 
                 if (targetReqs.isNotEmpty()) {
-                    val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs)
+                    val targetReqInfos = context.targetUtils.buildTargetInfosForSpell(state, playerId, targetReqs, sourceId = cardId)
                     val allRequirementsSatisfied = context.targetUtils.allRequirementsSatisfied(targetReqInfos)
                     if (allRequirementsSatisfied) {
                         val firstReq = targetReqs.first()

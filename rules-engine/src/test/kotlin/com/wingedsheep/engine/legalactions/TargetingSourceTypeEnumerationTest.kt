@@ -3,19 +3,27 @@ package com.wingedsheep.engine.legalactions
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.state.components.battlefield.CantBeTargetedByOpponentAbilitiesComponent
+import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.Targets
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.KeywordAbility
+import com.wingedsheep.sdk.scripting.MayCastSelfFromZones
+import com.wingedsheep.sdk.scripting.ProtectionScope
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldContain
 import io.kotest.matchers.collections.shouldNotContain
 import io.kotest.matchers.nulls.shouldNotBeNull
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 
 /**
  * The source type is part of target enumeration semantics: a permanent may reject an opponent's
@@ -32,7 +40,7 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         activatedAbility {
             cost = Costs.Tap
             target = Targets.Creature
-            effect = Effects.ModifyStats(1, 0, com.wingedsheep.sdk.scripting.targets.EffectTarget.ContextTarget(0))
+            effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
         }
     }
 
@@ -63,6 +71,56 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         toughness = 2
     }
 
+    val colorChangingAbilitySource = card("Targeting Source Type Color-Changing Source") {
+        manaCost = "{1}{R}"
+        colorIdentity = "R"
+        typeLine = "Creature — Wizard"
+        power = 1
+        toughness = 1
+        oracleText = "This creature becomes blue until end of turn. {T}: Target creature gets +1/+0 until end of turn."
+        activatedAbility {
+            cost = Costs.Free
+            effect = Effects.ChangeColor(target = EffectTarget.Self, colors = setOf(Color.BLUE))
+        }
+        activatedAbility {
+            cost = Costs.Tap
+            target = Targets.Creature
+            effect = Effects.ModifyStats(1, 0, com.wingedsheep.sdk.scripting.targets.EffectTarget.ContextTarget(0))
+        }
+    }
+
+    val blueProtectedTarget = card("Targeting Source Type Blue-Protected Creature") {
+        manaCost = "{1}{U}"
+        colorIdentity = "U"
+        typeLine = "Creature — Soldier"
+        power = 2
+        toughness = 2
+        keywordAbility(KeywordAbility.Protection(ProtectionScope.Color(Color.BLUE)))
+    }
+
+    val redProtectedTarget = card("Targeting Source Type Red-Protected Creature") {
+        manaCost = "{1}{W}"
+        colorIdentity = "W"
+        typeLine = "Creature — Soldier"
+        power = 2
+        toughness = 2
+        keywordAbility(KeywordAbility.Protection(ProtectionScope.Color(Color.RED)))
+    }
+
+    val graveyardSpell = card("Targeting Source Type Graveyard Spell") {
+        manaCost = "{R}"
+        colorIdentity = "R"
+        typeLine = "Instant"
+        oracleText = "Target creature gets +1/+0 until end of turn."
+        spell {
+            target = Targets.Creature
+            effect = Effects.ModifyStats(1, 0, EffectTarget.ContextTarget(0))
+        }
+        staticAbility {
+            ability = MayCastSelfFromZones(zones = listOf(Zone.GRAVEYARD))
+        }
+    }
+
     fun fixture(): SourceTypeFixture {
         val driver = GameTestDriver().apply {
             registerCards(TestCards.all + listOf(abilitySource, spellSource, ordinaryTarget, guardedTarget))
@@ -85,6 +143,25 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         return SourceTypeFixture(driver, caster, abilitySourceId, spellId, ordinaryTargetId, guardedTargetId)
     }
 
+    fun graveyardFixture(): GraveyardSourceFixture {
+        val driver = GameTestDriver().apply {
+            registerCards(TestCards.all + listOf(graveyardSpell, redProtectedTarget))
+            initMirrorMatch(
+                deck = Deck.of("Mountain" to 40),
+                skipMulligans = true,
+                startingPlayer = 0,
+            )
+        }
+        val caster = driver.activePlayer!!
+        val opponent = driver.getOpponent(caster)
+        val spell = driver.putCardInGraveyard(caster, graveyardSpell.name)
+        driver.putCreatureOnBattlefield(opponent, "Grizzly Bears")
+        val protectedTarget = driver.putCreatureOnBattlefield(opponent, redProtectedTarget.name)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        driver.giveMana(caster, Color.RED)
+        return GraveyardSourceFixture(driver, caster, spell, protectedTarget)
+    }
+
     test("an opponent activated ability excludes a permanent guarded from opponent abilities") {
         val fixture = fixture()
         val action = fixture.driver.legalActions(fixture.caster).single { candidate ->
@@ -96,6 +173,26 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         validTargets shouldNotContain fixture.guardedTarget
     }
 
+    test("strict activated-ability validation rejects the guarded permanent") {
+        val fixture = fixture()
+        val abilityId = abilitySource.activatedAbilities.single().id
+        val beforeState = fixture.driver.state
+        val beforeEvents = fixture.driver.events
+
+        val result = fixture.driver.submit(
+            ActivateAbility(
+                playerId = fixture.caster,
+                sourceId = fixture.abilitySource,
+                abilityId = abilityId,
+                targets = listOf(ChosenTarget.Permanent(fixture.guardedTarget)),
+            )
+        )
+
+        result.error shouldContain "opponent's ability"
+        fixture.driver.state shouldBe beforeState
+        fixture.driver.events shouldBe beforeEvents
+    }
+
     test("an opponent spell keeps a permanent guarded from opponent abilities as a target") {
         val fixture = fixture()
         val action = fixture.driver.legalActions(fixture.caster).single { candidate ->
@@ -104,6 +201,94 @@ class TargetingSourceTypeEnumerationTest : FunSpec({
         val validTargets = action.validTargets.shouldNotBeNull()
 
         validTargets shouldContain fixture.guardedTarget
+    }
+
+    test("strict spell validation accepts the guarded permanent") {
+        val fixture = fixture()
+        val result = fixture.driver.submit(
+            CastSpell(
+                playerId = fixture.caster,
+                cardId = fixture.spell,
+                targets = listOf(ChosenTarget.Permanent(fixture.guardedTarget)),
+            )
+        )
+
+        result.error shouldBe null
+    }
+
+    test("a non-hand spell keeps its source id through target enumeration") {
+        val fixture = graveyardFixture()
+        val action = fixture.driver.legalActions(fixture.caster).single { candidate ->
+            (candidate.action as? CastSpell)?.cardId == fixture.spell
+        }
+        val validTargets = action.validTargets.shouldNotBeNull()
+
+        validTargets shouldNotContain fixture.protectedTarget
+
+        val beforeState = fixture.driver.state
+        val beforeEvents = fixture.driver.events
+        val result = fixture.driver.submit(
+            CastSpell(
+                playerId = fixture.caster,
+                cardId = fixture.spell,
+                targets = listOf(ChosenTarget.Permanent(fixture.protectedTarget)),
+            )
+        )
+
+        result.error shouldContain "protection from red"
+        fixture.driver.state shouldBe beforeState
+        fixture.driver.events shouldBe beforeEvents
+    }
+
+    test("strict ability validation uses the projected color of its source") {
+        val driver = GameTestDriver().apply {
+            registerCards(TestCards.all + listOf(colorChangingAbilitySource, blueProtectedTarget))
+            initMirrorMatch(
+                deck = Deck.of("Mountain" to 40),
+                skipMulligans = true,
+                startingPlayer = 0,
+            )
+        }
+        val caster = driver.activePlayer!!
+        val opponent = driver.getOpponent(caster)
+        val sourceId = driver.putCreatureOnBattlefield(caster, colorChangingAbilitySource.name)
+        driver.removeSummoningSickness(sourceId)
+        val protectedTargetId = driver.putCreatureOnBattlefield(opponent, blueProtectedTarget.name)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val colorChangeAbilityId = colorChangingAbilitySource.activatedAbilities[0].id
+        driver.submitSuccess(
+            ActivateAbility(
+                playerId = caster,
+                sourceId = sourceId,
+                abilityId = colorChangeAbilityId,
+            )
+        )
+        driver.bothPass()
+
+        driver.state.projectedState.getColors(sourceId) shouldBe setOf(Color.BLUE.name)
+        val targetAbilityId = colorChangingAbilitySource.activatedAbilities[1].id
+        val action = driver.legalActions(caster).single { candidate ->
+            val activate = candidate.action as? ActivateAbility
+            activate?.sourceId == sourceId && activate.abilityId == targetAbilityId
+        }
+        val validTargets = action.targetRequirements.single().validTargets
+        validTargets shouldNotContain protectedTargetId
+
+        val beforeState = driver.state
+        val beforeEvents = driver.events
+        val result = driver.submit(
+            ActivateAbility(
+                playerId = caster,
+                sourceId = sourceId,
+                abilityId = targetAbilityId,
+                targets = listOf(ChosenTarget.Permanent(protectedTargetId)),
+            )
+        )
+
+        result.error shouldContain "protection from blue"
+        driver.state shouldBe beforeState
+        driver.events shouldBe beforeEvents
     }
 })
 
@@ -114,4 +299,11 @@ private data class SourceTypeFixture(
     val spell: com.wingedsheep.sdk.model.EntityId,
     val ordinaryTarget: com.wingedsheep.sdk.model.EntityId,
     val guardedTarget: com.wingedsheep.sdk.model.EntityId,
+)
+
+private data class GraveyardSourceFixture(
+    val driver: GameTestDriver,
+    val caster: com.wingedsheep.sdk.model.EntityId,
+    val spell: com.wingedsheep.sdk.model.EntityId,
+    val protectedTarget: com.wingedsheep.sdk.model.EntityId,
 )

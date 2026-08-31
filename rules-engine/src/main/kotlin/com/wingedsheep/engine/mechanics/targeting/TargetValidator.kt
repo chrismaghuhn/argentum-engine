@@ -946,8 +946,15 @@ class TargetValidator(
         sourceColors: Set<Color> = emptySet(),
         sourceSubtypes: Set<String> = emptySet(),
         sourceId: EntityId? = null,
-        xValue: Int? = null
+        xValue: Int? = null,
+        targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
     ): String? {
+        val sourceCharacteristics = sourceCharacteristicsForTargeting(
+            state = state,
+            sourceId = sourceId,
+            fallbackColors = sourceColors,
+            fallbackSubtypes = sourceSubtypes,
+        )
         // Use the game state for validation
         // StateProjector is used for P/T checks to account for continuous effects
 
@@ -1018,7 +1025,18 @@ class TargetValidator(
 
             // Validate each target against the requirement
             for (target in targetsForReq) {
-                val error = validateSingleTarget(state, target, requirement, casterId, sourceColors, sourceSubtypes, sourceId, xValue, targets)
+                val error = validateSingleTarget(
+                    state = state,
+                    target = target,
+                    requirement = requirement,
+                    casterId = casterId,
+                    sourceColors = sourceCharacteristics.colors,
+                    sourceSubtypes = sourceCharacteristics.subtypes,
+                    sourceId = sourceId,
+                    xValue = xValue,
+                    allTargets = targets,
+                    targetingSourceType = targetingSourceType,
+                )
                 if (error != null) return error
             }
 
@@ -1148,17 +1166,39 @@ class TargetValidator(
         return null
     }
 
-    private fun sourceColorsForEnumeration(
+    private data class TargetingSourceCharacteristics(
+        val colors: Set<Color>,
+        val subtypes: Set<String>,
+    )
+
+    /**
+     * Resolve the characteristics of a targeting source once for both enumeration and strict
+     * validation. Battlefield sources use projected Layer-5/Layer-4 values; non-battlefield
+     * sources use the caller's effective face values when supplied, otherwise their card entity.
+     * An explicit empty fallback is preserved so a transformed colorless face does not fall back
+     * to the printed front face.
+     */
+    private fun sourceCharacteristicsForTargeting(
         state: GameState,
         sourceId: EntityId?,
-    ): Set<Color> {
-        val projectedColors = sourceId?.let { id ->
-            state.projectedState.getColors(id)
-                .mapNotNull { name -> Color.entries.firstOrNull { it.name == name } }
-                .toSet()
-        }.orEmpty()
-        if (projectedColors.isNotEmpty()) return projectedColors
-        return sourceId?.let { state.getEntity(it)?.get<CardComponent>()?.colors }.orEmpty()
+        fallbackColors: Set<Color>? = null,
+        fallbackSubtypes: Set<String>? = null,
+    ): TargetingSourceCharacteristics {
+        val source = sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
+        if (sourceId != null && sourceId in state.getBattlefield()) {
+            val projected = state.projectedState
+            return TargetingSourceCharacteristics(
+                colors = projected.getColors(sourceId)
+                    .mapNotNull { name -> Color.entries.firstOrNull { it.name == name } }
+                    .toSet(),
+                subtypes = projected.getSubtypes(sourceId),
+            )
+        }
+        return TargetingSourceCharacteristics(
+            colors = fallbackColors ?: source?.colors.orEmpty(),
+            subtypes = fallbackSubtypes
+                ?: source?.typeLine?.subtypes?.map { it.value }?.toSet().orEmpty(),
+        )
     }
 
     /**
@@ -1177,13 +1217,19 @@ class TargetValidator(
         targetingSourceType: TargetingSourceType = TargetingSourceType.ANY,
     ): String? {
         val source = sourceId?.let { state.getEntity(it)?.get<CardComponent>() }
+        val sourceCharacteristics = sourceCharacteristicsForTargeting(
+            state = state,
+            sourceId = sourceId,
+            fallbackColors = source?.colors,
+            fallbackSubtypes = source?.typeLine?.subtypes?.map { it.value }?.toSet(),
+        )
         return validateSingleTarget(
             state = state,
             target = ChosenTarget.Permanent(targetId),
             requirement = TargetObject(filter = filter),
             casterId = casterId,
-            sourceColors = sourceColorsForEnumeration(state, sourceId),
-            sourceSubtypes = source?.typeLine?.subtypes?.map { it.value }?.toSet() ?: emptySet(),
+            sourceColors = sourceCharacteristics.colors,
+            sourceSubtypes = sourceCharacteristics.subtypes,
             sourceId = sourceId,
             predicateContext = predicateContext,
             targetingSourceType = targetingSourceType,
