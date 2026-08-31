@@ -28,6 +28,8 @@ import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AlternativePaymentChoice
+import com.wingedsheep.sdk.scripting.EquipPaymentChoice
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -35,6 +37,7 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
@@ -209,8 +212,14 @@ class DeterministicExternalPolicy {
             )
         }
 
-        val unsupportedRequiredFields = requiredFieldSet -
-            EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS
+        val candidateBoundAlternativePayment = if ("alternativePayment" in requiredFieldSet) {
+            candidateBoundEquipAlternativePayment(action)
+        } else {
+            null
+        }
+        val supportedRequiredFields = EXTERNAL_POLICY_SUPPORTED_REQUIRED_PAYLOAD_FIELDS +
+            if (candidateBoundAlternativePayment != null) setOf("alternativePayment") else emptySet()
+        val unsupportedRequiredFields = requiredFieldSet - supportedRequiredFields
         if (unsupportedRequiredFields.isNotEmpty()) {
             return SemanticChoice.Gap(
                 family = action.kind,
@@ -229,6 +238,13 @@ class DeterministicExternalPolicy {
             action.actionSemantics?.forEach { (key, value) -> put(key, value) }
         }
         var completedChoice = false
+
+        if (candidateBoundAlternativePayment != null) {
+            // The candidate already carries the engine-bound choice. Re-assign the exact public
+            // element rather than choosing or reconstructing an alternative payment here.
+            payload["alternativePayment"] = candidateBoundAlternativePayment
+            completedChoice = true
+        }
 
         if (action.targetPaymentDomain != null) {
             val targetPaymentPayload = publicTargetPaymentPayload(observation, action)
@@ -500,6 +516,27 @@ class DeterministicExternalPolicy {
             kind = action.kind,
             payload = JsonObject(payload),
         )
+    }
+
+    /**
+     * Accept only the already-bound equip choice carried by an ActivateAbility candidate. The
+     * policy never chooses the mode and never interprets a card name, description, or mana cost;
+     * malformed, future, or resource-payment alternatives remain unsupported.
+     */
+    private fun candidateBoundEquipAlternativePayment(
+        action: com.wingedsheep.gym.contract.LegalActionView,
+    ): JsonObject? {
+        if (action.kind != "ActivateAbility") return null
+        val element = action.actionSemantics?.get("alternativePayment") as? JsonObject ?: return null
+        val decoded = runCatching {
+            paymentJson.decodeFromJsonElement(AlternativePaymentChoice.serializer(), element)
+        }.getOrNull() ?: return null
+        if (decoded.hasResourcePayment) return null
+        return when (decoded.equipPayment) {
+            EquipPaymentChoice.NORMAL,
+            EquipPaymentChoice.FREE_FIRST_EQUIP -> element
+            null -> null
+        }
     }
 
     private fun publicSacrificeSelection(
