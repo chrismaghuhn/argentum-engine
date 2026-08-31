@@ -135,8 +135,26 @@ class B0AlternativePayment01DiagnosticTest : FunSpec({
                     action = action,
                     sourceCard = state.getEntity(action.sourceId)?.get<CardComponent>(),
                 )
-            }
+        }
         siblingRecords.shouldNotBeEmpty()
+        siblingRecords.size shouldBe 2
+        siblingRecords.map { it.action.sourceId }.toSet() shouldBe setOf(EntityId("e161"))
+        siblingRecords.map { it.sourceCard?.name }.toSet() shouldBe setOf("Bonesplitter")
+        siblingRecords.map { it.view.actionSemantics?.get("abilityKey") }.distinct().size shouldBe 1
+        siblingRecords.associate {
+            it.view.description to it.action.alternativePayment?.equipPayment
+        } shouldBe mapOf(
+            "Equip {1}" to EquipPaymentChoice.NORMAL,
+            "Equip {0}" to EquipPaymentChoice.FREE_FIRST_EQUIP,
+        )
+        siblingRecords.forEach { record ->
+            paymentSelection(record.view) shouldNotBe null
+            val semanticAlternative = record.view.actionSemantics
+                ?.get("alternativePayment") as? JsonObject
+                ?: error("${record.view.description} did not publish alternativePayment semantics")
+            semanticAlternative["equipPayment"]?.jsonPrimitive?.content shouldBe
+                record.action.alternativePayment?.equipPayment?.name
+        }
 
         records.forEach { record ->
             val semanticAlternative = record.view.actionSemantics
