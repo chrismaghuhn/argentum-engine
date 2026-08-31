@@ -61,7 +61,7 @@ class GameGymEnvTargetedAlternativeCastPaymentTest : FunSpec({
             target = Targets.Creature
             effect = Effects.GainLife(1)
         }
-        keywordAbility(KeywordAbility.flashback("{1}{U}"))
+        keywordAbility(KeywordAbility.flashback("{2}{U}"))
     }
 
     val flyingCreature = card("Gym Flashback Flying Creature") {
@@ -222,7 +222,7 @@ class GameGymEnvTargetedAlternativeCastPaymentTest : FunSpec({
         )
         val view = result.observation.shouldBeInstanceOf<TrainingObservation>().legalActions.single()
 
-        action.manaCostString shouldBe "{1}{U}"
+        action.manaCostString shouldBe "{2}{U}"
         result.diagnostics.single().code shouldBe DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED
         view.paymentDomain shouldBe null
 

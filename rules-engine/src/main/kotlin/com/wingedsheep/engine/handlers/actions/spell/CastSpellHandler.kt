@@ -1317,6 +1317,7 @@ class CastSpellHandler(
                 fromZone = castSourceZone(state, action.cardId),
                 declaredCostSlot = action.declaredCostSlot,
                 compareEmptyTargetCost = false,
+                compareTargetCosts = false,
             )
         } else {
             false

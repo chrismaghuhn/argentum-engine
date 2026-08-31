@@ -1170,6 +1170,7 @@ class ObservationBuilder(
                     fromZone = cardZone(state, action.cardId),
                     declaredCostSlot = action.declaredCostSlot,
                     compareEmptyTargetCost = !action.useAlternativeCost,
+                    compareTargetCosts = !action.useAlternativeCost,
                 )
                 val resolvedAlternativeCast = allowResolvedAlternativeCast &&
                     isResolvedFixedAlternativeCastPayment(
