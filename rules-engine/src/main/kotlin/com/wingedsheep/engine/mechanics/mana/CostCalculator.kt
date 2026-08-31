@@ -178,7 +178,9 @@ class CostCalculator(
      * legal single-target choice against the advertised cost. When zero targets are legal, also
      * compare the empty-target final cost; multi-target actions are rejected conservatively
      * whenever an applicable target-dependent modifier is present because their target
-     * combinations are not represented by one flat target list.
+     * combinations are not represented by one flat target list. Callers using an alternative
+     * base cost should disable [compareEmptyTargetCost]: the empty-target normal cost is not
+     * comparable to an alternative base cost, while the per-target modifier probe remains valid.
      */
     fun hasTargetDependentCastCost(
         state: GameState,
@@ -190,10 +192,11 @@ class CostCalculator(
         minimumTargetCount: Int = 1,
         fromZone: Zone? = null,
         declaredCostSlot: ChoiceSlot? = null,
+        compareEmptyTargetCost: Boolean = true,
     ): Boolean {
         val distinctTargets = legalTargets.distinct()
 
-        if (minimumTargetCount == 0) {
+        if (minimumTargetCount == 0 && compareEmptyTargetCost) {
             val emptyTargetCost = calculateEffectiveCost(
                 state = state,
                 cardDef = cardDef,

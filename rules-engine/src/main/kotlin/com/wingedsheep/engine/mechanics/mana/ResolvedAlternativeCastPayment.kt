@@ -5,18 +5,18 @@ import com.wingedsheep.sdk.core.ManaCost
 
 /**
  * Shared structural qualification for the narrow ExplicitV3 alternative-cast slice. The Rules
- * enumerator must already have selected and resolved the alternative cost; this helper only proves
- * that the resulting action/cost shape contains no applicable additional payment.
+ * enumerator must already have selected and resolved the alternative cost; callers additionally
+ * provide the Rules-owned proof that the chosen targets do not change the payment cost.
  */
 fun isResolvedFixedAlternativeCastPayment(
     action: CastSpell,
     effectiveCost: ManaCost,
-    hasUnresolvedTargetChoice: Boolean = false,
+    hasTargetDependentCost: Boolean = false,
     hasApplicableAdditionalCost: Boolean = false,
 ): Boolean {
     if (!action.useAlternativeCost || action.alternativeCostType == null) return false
     if (!effectiveCost.isFixedOrdinaryManaCost()) return false
-    if (hasUnresolvedTargetChoice || hasApplicableAdditionalCost) return false
+    if (hasTargetDependentCost || hasApplicableAdditionalCost) return false
     if (action.alternativePayment != null ||
         action.additionalCostPayment != null ||
         action.xValue != null ||
@@ -32,8 +32,7 @@ fun isResolvedFixedAlternativeCastPayment(
         action.casualtyCreature != null ||
         action.graveyardCastRider != null ||
         action.faceIndex != null ||
-        action.useWithoutPayingManaCost ||
-        action.targets.isNotEmpty()
+        action.useWithoutPayingManaCost
     ) return false
 
     return true

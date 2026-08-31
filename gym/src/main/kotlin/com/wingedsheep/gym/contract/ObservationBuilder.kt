@@ -1139,33 +1139,6 @@ class ObservationBuilder(
                 val card = state.getEntity(action.cardId)?.get<CardComponent>() ?: return null
                 val cardDef = cardRegistry.getCard(card.cardDefinitionId) ?: return null
                 val parsedCost = runCatching { ManaCost.parse(requiredCost) }.getOrNull() ?: return null
-                val resolvedAlternativeCast = allowResolvedAlternativeCast &&
-                    isResolvedFixedAlternativeCastPayment(
-                        action = action,
-                        effectiveCost = parsedCost,
-                        hasUnresolvedTargetChoice = legalAction.requiresTargets ||
-                            legalAction.validTargets.orEmpty().isNotEmpty() ||
-                            legalAction.targetRequirements.orEmpty().isNotEmpty(),
-                        hasApplicableAdditionalCost = legalAction.additionalCostInfo != null ||
-                            resolveApplicableAdditionalCostsForCast(
-                                state = state,
-                                action = action,
-                                cardDef = cardDef,
-                                cardRegistry = cardRegistry,
-                                predicateEvaluator = predicateEvaluator,
-                                zoneResolver = castZoneResolver,
-                            ).isNotEmpty(),
-                    )
-                if (!isSupportedCastSpellPayment(
-                        legalAction = legalAction,
-                        action = action,
-                        state = state,
-                        allowResolvedAlternativeCast = resolvedAlternativeCast,
-                    )
-                ) return null
-                if (parsedCost.symbols.any {
-                        it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
-                    }) return null
                 val boundTargetCandidates = action.targets
                     .plus(action.modeTargetsOrdered.flatten())
                     .map(::entityIdForChosenTarget)
@@ -1186,18 +1159,44 @@ class ObservationBuilder(
                 } else {
                     targetRequirements.sumOf { it.minTargets }
                 }
-                if (!resolvedAlternativeCast && costCalculator.hasTargetDependentCastCost(
+                val hasTargetDependentCastCost = costCalculator.hasTargetDependentCastCost(
+                    state = state,
+                    cardDef = cardDef,
+                    casterId = action.playerId,
+                    advertisedCost = parsedCost,
+                    legalTargets = targetCandidates,
+                    targetCount = targetCount,
+                    minimumTargetCount = minimumTargetCount,
+                    fromZone = cardZone(state, action.cardId),
+                    declaredCostSlot = action.declaredCostSlot,
+                    compareEmptyTargetCost = !action.useAlternativeCost,
+                )
+                val resolvedAlternativeCast = allowResolvedAlternativeCast &&
+                    isResolvedFixedAlternativeCastPayment(
+                        action = action,
+                        effectiveCost = parsedCost,
+                        hasTargetDependentCost = hasTargetDependentCastCost,
+                        hasApplicableAdditionalCost = legalAction.additionalCostInfo != null ||
+                            resolveApplicableAdditionalCostsForCast(
+                                state = state,
+                                action = action,
+                                cardDef = cardDef,
+                                cardRegistry = cardRegistry,
+                                predicateEvaluator = predicateEvaluator,
+                                zoneResolver = castZoneResolver,
+                            ).isNotEmpty(),
+                    )
+                if (!isSupportedCastSpellPayment(
+                        legalAction = legalAction,
+                        action = action,
                         state = state,
-                        cardDef = cardDef,
-                        casterId = action.playerId,
-                        advertisedCost = parsedCost,
-                        legalTargets = targetCandidates,
-                        targetCount = targetCount,
-                        minimumTargetCount = minimumTargetCount,
-                        fromZone = cardZone(state, action.cardId),
-                        declaredCostSlot = action.declaredCostSlot,
+                        allowResolvedAlternativeCast = resolvedAlternativeCast,
                     )
                 ) return null
+                if (parsedCost.symbols.any {
+                        it !is ManaSymbol.Colored && it !is ManaSymbol.Colorless && it !is ManaSymbol.Generic
+                    }) return null
+                if (!resolvedAlternativeCast && hasTargetDependentCastCost) return null
                 val effectivePaymentCost = castPermissionUtils.relaxSpellCostColorsIfAny(
                     state = state,
                     playerId = action.playerId,

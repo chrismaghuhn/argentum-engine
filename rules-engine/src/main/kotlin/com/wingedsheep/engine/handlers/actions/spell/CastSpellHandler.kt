@@ -1304,6 +1304,23 @@ class CastSpellHandler(
         val explicitPlan = explicitStrategy?.paymentPlan
         val explicitV2Plan = explicitV2Strategy?.paymentPlan
         val explicitV3Plan = explicitV3Strategy?.paymentPlan
+        val hasTargetDependentCastCost = if (cardDef != null && action.useAlternativeCost) {
+            val targetIds = action.targets.map { it.toEntityId() }
+            costCalculator.hasTargetDependentCastCost(
+                state = state,
+                cardDef = cardDef,
+                casterId = action.playerId,
+                advertisedCost = effectiveCost,
+                legalTargets = targetIds,
+                targetCount = targetIds.size,
+                minimumTargetCount = targetIds.size,
+                fromZone = castSourceZone(state, action.cardId),
+                declaredCostSlot = action.declaredCostSlot,
+                compareEmptyTargetCost = false,
+            )
+        } else {
+            false
+        }
         if (explicitPlan != null || explicitV2Plan != null || explicitV3Plan != null) {
             val unsupportedReason = when {
                 action.castFaceDown -> "face-down payment choices are not representable"
@@ -1314,8 +1331,7 @@ class CastSpellHandler(
                     (explicitV3Plan == null || !isResolvedFixedAlternativeCastPayment(
                         action = action,
                         effectiveCost = effectiveCost,
-                        hasUnresolvedTargetChoice = cardDef?.script?.targetRequirements?.isNotEmpty() == true ||
-                            cardDef?.script?.auraTarget != null,
+                        hasTargetDependentCost = hasTargetDependentCastCost,
                         hasApplicableAdditionalCost = collectAdditionalCostsForCast(
                             state = state,
                             action = action,
