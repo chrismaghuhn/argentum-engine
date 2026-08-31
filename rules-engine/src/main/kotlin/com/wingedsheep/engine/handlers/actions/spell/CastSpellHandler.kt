@@ -177,24 +177,6 @@ private fun isCleaveCast(action: CastSpell, cardDef: com.wingedsheep.sdk.model.C
         action.altAllows(AlternativeCostType.CLEAVE) &&
         cardDef.keywordAbilities.any { it is KeywordAbility.Cleave }
 
-/**
- * The card's optional-additional-cost keywords matching the slot this cast declared (CR 601.2b) —
- * empty when the cast declared none, or when the card has no keyword for the declared slot (which
- * `validate` turns into a rejection). A card can carry two entries for one slot (a mana kicker
- * alongside a sacrifice kicker), hence a list: the mana portion and the non-mana portion are read
- * separately.
- */
-private fun declaredOptionalCosts(
-    action: CastSpell,
-    cardDef: com.wingedsheep.sdk.model.CardDefinition?,
-): List<KeywordAbility.OptionalAdditionalCost> {
-    val slot = action.declaredCostSlot ?: return emptyList()
-    return cardDef?.keywordAbilities
-        ?.filterIsInstance<KeywordAbility.OptionalAdditionalCost>()
-        ?.filter { it.declaredSlot == slot }
-        ?: emptyList()
-}
-
 private const val PAYMENT_DOMAIN_UNSUPPORTED = "PAYMENT_DOMAIN_UNSUPPORTED"
 
 private fun paymentDomainUnsupported(reason: String): String =
@@ -1327,7 +1309,11 @@ class CastSpellHandler(
                         effectiveCost = effectiveCost,
                         hasUnresolvedTargetChoice = cardDef?.script?.targetRequirements?.isNotEmpty() == true ||
                             cardDef?.script?.auraTarget != null,
-                        hasUnresolvedAdditionalCost = cardDef?.script?.additionalCosts?.isNotEmpty() == true,
+                        hasApplicableAdditionalCost = collectAdditionalCostsForCast(
+                            state = state,
+                            action = action,
+                            cardDef = cardDef,
+                        ).isNotEmpty(),
                     )) -> "alternative mana costs are not representable"
                 action.faceIndex != null -> "alternative face payment choices are not representable"
                 action.alternativePayment?.hasResourcePayment == true ->
@@ -1776,82 +1762,19 @@ class CastSpellHandler(
         return payment.distributedCounterRemovals
     }
 
-    /**
-     * The additional costs a modal spell owes for the modes it chose: per-mode overrides where the
-     * chosen modes declare them (rule 700.2h — they stack), card-level costs otherwise, plus the
-     * non-mana escalate cost when the card has one ([EscalateCosts.additionalCostFor]).
-     */
-    private fun resolveAdditionalCostsForMode(
-        cardDef: com.wingedsheep.sdk.model.CardDefinition,
-        action: CastSpell
-    ): List<AdditionalCost> {
-        if (action.chosenModes.isEmpty()) return cardDef.script.additionalCosts
-        val modalEffect = cardDef.script.spellEffect as? ModalEffect ?: return cardDef.script.additionalCosts
-
-        val perModeOverrides = action.chosenModes.mapNotNull { modeIndex ->
-            modalEffect.modes.getOrNull(modeIndex)?.additionalCosts
-        }
-        val base = if (perModeOverrides.isEmpty()) cardDef.script.additionalCosts else perModeOverrides.flatten()
-        val escalate = EscalateCosts.additionalCostFor(modalEffect, action.chosenModes.size)
-        return if (escalate == null) base else base + escalate
-    }
-
-    /**
-     * Collect the additional costs selected for this cast from every authoritative source. Keep
-     * this list shared by validation and payment so dynamic life amounts are resolved against the
-     * same card, controller, and chosen alternative-cost context on both paths.
-     */
+    /** Use the Rules-owned selected-cast collector shared with Gym V5 qualification. */
     private fun collectAdditionalCostsForCast(
         state: GameState,
         action: CastSpell,
         cardDef: com.wingedsheep.sdk.model.CardDefinition?,
-    ): List<AdditionalCost> = buildList {
-        if (cardDef != null) addAll(resolveAdditionalCostsForMode(cardDef, action))
-
-        declaredOptionalCosts(action, cardDef)
-            .firstOrNull { it.additionalCost != null }
-            ?.additionalCost
-            ?.let(::add)
-
-        if (action.useAlternativeCost && cardDef != null) {
-            val selfAltCost = cardDef.script.selfAlternativeCost
-            if (selfAltCost != null && action.altAllows(AlternativeCostType.SELF_ALTERNATIVE)) {
-                addAll(selfAltCost.additionalCosts)
-            }
-            if (action.altAllows(AlternativeCostType.FLASHBACK) &&
-                zoneResolver.hasFlashbackPermission(state, action.playerId, action.cardId)
-            ) {
-                cardDef.keywordAbilities
-                    .filterIsInstance<KeywordAbility.Flashback>()
-                    .firstOrNull()
-                    ?.additionalCost
-                    ?.let(::add)
-            }
-            if (action.altAllows(AlternativeCostType.WARP) &&
-                zoneResolver.hasWarpPermission(state, action.playerId, action.cardId)
-            ) {
-                WarpGrants.effectiveWarp(
-                    state, action.cardId, cardDef, action.playerId, cardRegistry, predicateEvaluator
-                )?.additionalCost?.let(::add)
-            }
-        }
-
-        state.getEntity(action.cardId)
-            ?.get<PlayWithAdditionalCostComponent>()
-            ?.takeIf { it.controllerId == action.playerId }
-            ?.additionalCosts
-            ?.let(::addAll)
-
-        zoneResolver.findLinkedExileGranter(state, action.playerId, action.cardId)
-            ?.additionalCost
-            ?.let(::add)
-        zoneResolver.findMayCastSelfFromZoneAbility(state, action.playerId, action.cardId)
-            ?.additionalCost
-            ?.let(::add)
-        zoneResolver.topOfLibraryAlternativeGrant(state, action.playerId, action.cardId)
-            ?.additionalCost
-            ?.let(::add)
-    }
+    ): List<AdditionalCost> = resolveApplicableAdditionalCostsForCast(
+        state = state,
+        action = action,
+        cardDef = cardDef,
+        cardRegistry = cardRegistry,
+        predicateEvaluator = predicateEvaluator,
+        zoneResolver = zoneResolver,
+    )
 
     private fun isLifeAdditionalCost(cost: AdditionalCost): Boolean = when (cost) {
         is AdditionalCost.Atom -> cost.atom is CostAtom.PayLife

@@ -57,6 +57,8 @@ import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.handlers.ConditionEvaluator
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.PredicateEvaluator
+import com.wingedsheep.engine.handlers.actions.spell.CastZoneResolver
+import com.wingedsheep.engine.handlers.actions.spell.resolveApplicableAdditionalCostsForCast
 import com.wingedsheep.engine.legalactions.LegalAction
 import com.wingedsheep.engine.legalactions.utils.CastPermissionUtils
 import com.wingedsheep.engine.mechanics.mana.IntrinsicManaAbilities
@@ -171,6 +173,7 @@ class ObservationBuilder(
     private val castPermissionUtils by lazy {
         CastPermissionUtils(cardRegistry, predicateEvaluator, conditionEvaluator)
     }
+    private val castZoneResolver by lazy { CastZoneResolver(cardRegistry, conditionEvaluator) }
     private val paymentDomainBuilder by lazy {
         PaymentDomainBuilder(
             manaSolver = ManaSolver(cardRegistry),
@@ -1143,8 +1146,15 @@ class ObservationBuilder(
                         hasUnresolvedTargetChoice = legalAction.requiresTargets ||
                             legalAction.validTargets.orEmpty().isNotEmpty() ||
                             legalAction.targetRequirements.orEmpty().isNotEmpty(),
-                        hasUnresolvedAdditionalCost = legalAction.additionalCostInfo != null ||
-                            cardDef.script.additionalCosts.isNotEmpty(),
+                        hasApplicableAdditionalCost = legalAction.additionalCostInfo != null ||
+                            resolveApplicableAdditionalCostsForCast(
+                                state = state,
+                                action = action,
+                                cardDef = cardDef,
+                                cardRegistry = cardRegistry,
+                                predicateEvaluator = predicateEvaluator,
+                                zoneResolver = castZoneResolver,
+                            ).isNotEmpty(),
                     )
                 if (!isSupportedCastSpellPayment(
                         legalAction = legalAction,
