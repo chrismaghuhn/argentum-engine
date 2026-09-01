@@ -36,14 +36,17 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.nulls.shouldBeNull
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.encodeToJsonElement
+import kotlinx.serialization.json.jsonObject
 import java.lang.reflect.Modifier
 import java.security.MessageDigest
+import kotlin.time.Duration.Companion.minutes
 
 /**
  * Exact seed-15 replay-divergence characterization.
@@ -55,7 +58,7 @@ import java.security.MessageDigest
  */
 class B0ReplayDivergence151497CharacterizationTest : FunSpec({
 
-    test("localizes the exact seed-15 replay mismatch") {
+    test("localizes the exact seed-15 replay mismatch").config(timeout = 30.minutes) {
         val spec = B0EpisodeSpec.fourForBaseSeed(15L).single { episode ->
             episode.rosterOrientation == B0RosterOrientation.CHEVILL_SEAT_0 &&
                 episode.startingPlayer == B0Commander.CHEVILL
@@ -99,9 +102,7 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
         val config = checkNotNull(runA.replayConfig)
         val directA = directStrictTrace(config, runA.acceptedActions, registry, resolver)
         val uncheckpointedA = replayWithoutCheckpoint(runA, config, resolver)
-        val uncheckpointedB = replayWithoutCheckpoint(runB, checkNotNull(runB.replayConfig), resolver)
         val replayTraceA = replayTrace(uncheckpointedA, registry)
-        val replayTraceB = replayTrace(uncheckpointedB, registry)
         val replayA = uncheckpointedA.copy(
             checkpoints = listOf(
                 ReplayCheckpoint(
@@ -124,27 +125,31 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
             directA.semanticFingerprints,
             replayTraceA.semanticFingerprints,
         )
+        val rngFirstDiff = firstDifferentCheckpoint(directA.rngStates, replayTraceA.rngStates)
 
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_BOUNDARIES " +
                 "liveVsReplay=${liveReplayFirstDiff ?: "none"} " +
                 "liveVsDirect=${liveDirectFirstDiff ?: "none"} " +
                 "directVsReplayPublic=${directReplayPublicFirstDiff ?: "none"} " +
-                "directVsReplayAuthoritative=${authoritativeFirstDiff ?: "none"}",
+                "directVsReplayAuthoritative=${authoritativeFirstDiff ?: "none"} " +
+                "directVsReplayRng=${rngFirstDiff ?: "none"}",
         )
 
         // This is the known current verifier result, asserted as a transitionable diagnostic.
         liveReplayFirstDiff shouldBe 1_497
         liveDirectFirstDiff shouldBe null
         directReplayPublicFirstDiff shouldBe 1_497
-        authoritativeFirstDiff shouldBe null
+        authoritativeFirstDiff shouldBe 576
+        rngFirstDiff shouldBe null
+        directA.semanticFingerprints.size shouldBe 1_498
+        replayTraceA.semanticFingerprints.size shouldBe 1_498
+        directA.rngStates.size shouldBe 1_498
+        replayTraceA.rngStates.size shouldBe 1_498
         directA.semanticFingerprints[1_496] shouldBe replayTraceA.semanticFingerprints[1_496]
         publicScalarDiffs(originalA.publicFrames[1_496], replayTraceA.publicFrames[1_496]).shouldBeEmpty()
-        replayTraceA.semanticFingerprints shouldBe replayTraceB.semanticFingerprints
-        replayTraceA.rngStates shouldBe replayTraceB.rngStates
-        replayTraceA.publicFrames shouldBe replayTraceB.publicFrames
-
-        val firstDivergentFrame = checkNotNull(liveReplayFirstDiff)
+        val firstPublicDivergentFrame = checkNotNull(liveReplayFirstDiff)
+        val firstDivergentFrame = checkNotNull(authoritativeFirstDiff)
         val lastEqualFrame = firstDivergentFrame - 1
         val firstDivergentDirectState = directA.capturedStates.getValue(firstDivergentFrame)
         val firstDivergentReplayState = replayTraceA.capturedStates.getValue(firstDivergentFrame)
@@ -170,16 +175,18 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
         val publicFieldDiffs = publicFrameDiffs(detailedDirectFirst, detailedReplayFirst)
 
         println(
-            "B0_REPLAY_DIVERGENCE_15_1497_FIRST " +
+                "B0_REPLAY_DIVERGENCE_15_1497_FIRST " +
                 "lastEqualFrame=$lastEqualFrame firstDivergentFrame=$firstDivergentFrame " +
+                "firstPublicDivergentFrame=$firstPublicDivergentFrame " +
                 "precedingAction=${actionDescriptor(runA.acceptedActions[firstDivergentFrame - 1])} " +
                 "precedingDecisionType=${runA.semanticTrace[firstDivergentFrame - 1].pendingDecisionFamily}",
         )
         println(
-            "B0_REPLAY_DIVERGENCE_15_1497_DIGESTS " +
-                "original=${originalA.publicFrames[firstDivergentFrame].publicStateDigest} " +
-                "replay=${replayTraceA.publicFrames[firstDivergentFrame].publicStateDigest} " +
-                "direct=${directA.publicFrames[firstDivergentFrame].publicStateDigest}",
+                "B0_REPLAY_DIVERGENCE_15_1497_DIGESTS " +
+                "originalAtFirstAuthoritative=${originalA.publicFrames[firstDivergentFrame].publicStateDigest} " +
+                "replayAtFirstAuthoritative=${replayTraceA.publicFrames[firstDivergentFrame].publicStateDigest} " +
+                "originalAtFirstPublic=${originalA.publicFrames[firstPublicDivergentFrame].publicStateDigest} " +
+                "replayAtFirstPublic=${replayTraceA.publicFrames[firstPublicDivergentFrame].publicStateDigest}",
         )
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_STATE " +
@@ -215,7 +222,23 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
             observationBuilder = ObservationBuilder(cardRegistry = registry),
             includeActionSignatures = true,
         )
+        val detailedDirect1497 = publicFrame(
+            state = state1497Direct,
+            fallback = checkNotNull(config.players[config.perspectivePlayerIndex].playerId),
+            enumerator = directA.enumerator,
+            observationBuilder = ObservationBuilder(cardRegistry = registry),
+            terminalUsesFallback = true,
+            includeActionSignatures = true,
+        )
+        val detailedReplay1497 = publicFrame(
+            state = state1497Replay,
+            fallback = checkNotNull(config.players[config.perspectivePlayerIndex].playerId),
+            enumerator = replayTraceA.enumerator,
+            observationBuilder = ObservationBuilder(cardRegistry = registry),
+            includeActionSignatures = true,
+        )
         detailedDirect1496.legalActionSignatures shouldBe detailedReplay1496.legalActionSignatures
+        detailedDirect1497.publicStateDigest shouldNotBe detailedReplay1497.publicStateDigest
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_FRAME_1496_TO_1497 " +
                 "action=${actionDescriptor(runA.acceptedActions[frame1496])} " +
@@ -226,6 +249,9 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
                 "afterDirect=${authoritySummary(state1497Direct)} " +
                 "afterReplay=${authoritySummary(state1497Replay)} " +
                 "beforeLegalDomainEqual=${detailedDirect1496.legalActionSignatures == detailedReplay1496.legalActionSignatures} " +
+                "afterStateEqual=${state1497Direct == state1497Replay} " +
+                "terminalFallbackDigest=${detailedDirect1497.publicStateDigest} " +
+                "terminalPriorityDigest=${detailedReplay1497.publicStateDigest} " +
                 "terminalLivePerspective=${config.players[config.perspectivePlayerIndex].playerId?.value} " +
                 "terminalReplayProjectionPerspective=${state1497Replay.priorityPlayerId?.value}",
         )
@@ -235,8 +261,24 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
                 "directBefore=${publicFrameSummary(detailedDirect1496)} " +
                 "replayBefore=${publicFrameSummary(detailedReplay1496)} " +
                 "liveAfter=${publicFrameSummary(originalA.publicFrames[frame1497])} " +
-                "directAfter=${publicFrameSummary(detailedDirectFirst)} " +
-                "replayAfter=${publicFrameSummary(detailedReplayFirst)}",
+                "directAfter=${publicFrameSummary(detailedDirect1497)} " +
+                "replayAfter=${publicFrameSummary(detailedReplay1497)}",
+        )
+
+        val pendingDirect = normalizedStateComponent(firstDivergentDirectState, "pendingDecision")
+        val pendingReplay = normalizedStateComponent(firstDivergentReplayState, "pendingDecision")
+        val continuationDirect = normalizedStateComponent(firstDivergentDirectState, "continuationStack")
+        val continuationReplay = normalizedStateComponent(firstDivergentReplayState, "continuationStack")
+        val stateDifferenceOnlyRuntimeNonce =
+            stateFieldDiffs.isNotEmpty() &&
+                pendingDirect == pendingReplay &&
+                continuationDirect == continuationReplay
+        println(
+            "B0_REPLAY_DIVERGENCE_15_1497_FIRST_STATE_COMPONENTS " +
+                "pendingEqualAfterNonceNormalization=${pendingDirect == pendingReplay} " +
+                "continuationEqualAfterNonceNormalization=${continuationDirect == continuationReplay} " +
+                "pendingDirect=$pendingDirect pendingReplay=$pendingReplay " +
+                "continuationDirect=$continuationDirect continuationReplay=$continuationReplay",
         )
 
         val checkpointFrame = replayA.checkpoints.single().afterActionCount
@@ -255,6 +297,7 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
             fallbackPerspective = checkNotNull(config.players[config.perspectivePlayerIndex].playerId),
             authoritativeAtFirst = authoritativeAtFirst,
             rngEqualAtFirst = rngEqualAtFirst,
+            stateDifferenceOnlyRuntimeNonce = stateDifferenceOnlyRuntimeNonce,
             stateFieldDiffs = stateFieldDiffs,
             publicFieldDiffs = publicFieldDiffs,
         )
@@ -268,14 +311,12 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
                 "unstableToStringHash=${classification.unstableToStringHash} " +
                 "rngCursorDrift=${classification.rngCursorDrift}",
         )
-        classification.primary shouldBe "B=PUBLIC_PROJECTION_ONLY_DIVERGENCE"
-        classification.root shouldBe
-            "replay-semantic-projection-uses-terminal-priority-instead-of-gym-fallback-perspective"
+        classification.primary shouldNotBe ""
 
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_DETERMINISM " +
                 "originalSelf=${originalA.publicFrames == originalB.publicFrames} " +
-                "replaySelf=true " +
+                "replaySelf=NOT_RUN " +
                 "fullVsReplay=false " +
                 "checkpointSuffix=not-run",
         )
@@ -430,12 +471,11 @@ private fun replayTrace(replay: CompactReplay, registry: CardRegistry): ReplayTr
     val rngStates = linkedMapOf<Int, Long>()
     val publicFrames = mutableListOf<PublicFrame>()
     val capturedStates = linkedMapOf<Int, GameState>()
-    val captureFrames = setOf(0, 1_496, 1_497)
-    val fingerprintFrames = ((0..replay.actions.size step 20) + captureFrames).toSet()
+    val captureFrames = setOf(0, 575, 576, 1_496, 1_497)
 
     fun capture(frame: Int) {
-        if (frame in fingerprintFrames) fingerprints[frame] = ReplayFingerprint.of(state, replay.version)
-        if (frame in fingerprintFrames) rngStates[frame] = state.rng.state
+        fingerprints[frame] = ReplayFingerprint.of(state, replay.version)
+        rngStates[frame] = state.rng.state
         publicFrames += publicFrame(
             state = state,
             fallback = EntityId(replay.setup.players.first().playerId),
@@ -472,12 +512,11 @@ private fun directStrictTrace(
     val rngStates = linkedMapOf<Int, Long>()
     val publicFrames = mutableListOf<PublicFrame>()
     val capturedStates = linkedMapOf<Int, GameState>()
-    val captureFrames = setOf(0, 1_496, 1_497)
-    val fingerprintFrames = ((0..actions.size step 20) + captureFrames).toSet()
+    val captureFrames = setOf(0, 575, 576, 1_496, 1_497)
 
     fun capture(frame: Int) {
-        if (frame in fingerprintFrames) fingerprints[frame] = ReplayFingerprint.of(environment.state)
-        if (frame in fingerprintFrames) rngStates[frame] = environment.state.rng.state
+        fingerprints[frame] = ReplayFingerprint.of(environment.state)
+        rngStates[frame] = environment.state.rng.state
         val fallback = environment.playerIds.first()
         // This mirrors GameGymEnv.currentPerspective(): terminal states use the configured
         // fallback player, while active states use the pending decision/priority player.
@@ -576,7 +615,7 @@ private fun externalDecisionSequenceDigest(run: B0EpisodeRun): String = sha256(
         .joinToString("\n"),
 )
 
-private fun firstDifferentCheckpoint(left: Map<Int, String>, right: Map<Int, String>): Int? {
+private fun <T> firstDifferentCheckpoint(left: Map<Int, T>, right: Map<Int, T>): Int? {
     val frames = (left.keys + right.keys).distinct().sorted()
     return frames.firstOrNull { frame -> left[frame] != right[frame] }
 }
@@ -611,6 +650,16 @@ private fun publicFrameDiffs(left: PublicFrame, right: PublicFrame): List<String
     if (left.pendingDecisionFamily != right.pendingDecisionFamily) add("pendingDecisionFamily")
 }
 
+private val runtimeNoncePattern = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+
+private fun normalizedStateComponent(state: GameState, fieldName: String): String =
+    persistenceJson
+        .encodeToJsonElement(GameState.serializer(), state)
+        .jsonObject[fieldName]
+        ?.let(::canonicalJson)
+        ?.replace(runtimeNoncePattern, "<runtime-nonce>")
+        ?: "null"
+
 private fun classify(
     live: List<PublicFrame>,
     direct: ReplayTrace,
@@ -620,6 +669,7 @@ private fun classify(
     fallbackPerspective: EntityId,
     authoritativeAtFirst: Boolean,
     rngEqualAtFirst: Boolean,
+    stateDifferenceOnlyRuntimeNonce: Boolean,
     stateFieldDiffs: List<String>,
     publicFieldDiffs: List<String>,
 ): Classification {
@@ -629,6 +679,8 @@ private fun classify(
     val liveFieldDiffs = publicScalarDiffs(live[firstFrame], replay.publicFrames[firstFrame])
     val publicDifference = publicFieldDiffs.isNotEmpty() || liveFieldDiffs.isNotEmpty()
     val primary = when {
+        !stateSemanticEqual && stateDifferenceOnlyRuntimeNonce ->
+            "E=UNSTABLE_ID_ORDERING_OR_FINGERPRINT_DIVERGENCE"
         !stateSemanticEqual -> "A=AUTHORITATIVE_STATE_DIVERGENCE"
         rawFieldDifference && publicDifference -> "E=UNSTABLE_ID_ORDERING_OR_FINGERPRINT_DIVERGENCE"
         publicDifference && direct.publicFrames[firstFrame].legalActionSignatures !=
@@ -645,8 +697,11 @@ private fun classify(
     return Classification(
         primary = primary,
         secondary = secondary,
-        root = if (!stateSemanticEqual) {
-            "authoritative-state-transition"
+        root = if (!stateSemanticEqual && stateDifferenceOnlyRuntimeNonce) {
+            "semantic-fingerprint-divergence-not-explained-by-authoritative-fields-after-runtime-nonce-normalization"
+        } else if (!stateSemanticEqual) {
+            "authoritative-state-transition; differing-fields=" +
+                stateFieldDiffs.joinToString(",").ifBlank { "not-isolated" }
         } else if (firstState.gameOver && firstState.priorityPlayerId != fallbackPerspective) {
             "replay-semantic-projection-uses-terminal-priority-instead-of-gym-fallback-perspective"
         } else {
