@@ -265,21 +265,29 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
                 "replayAfter=${publicFrameSummary(detailedReplay1497)}",
         )
 
-        val pendingDirect = normalizedStateComponent(firstDivergentDirectState, "pendingDecision")
-        val pendingReplay = normalizedStateComponent(firstDivergentReplayState, "pendingDecision")
-        val continuationDirect = normalizedStateComponent(firstDivergentDirectState, "continuationStack")
-        val continuationReplay = normalizedStateComponent(firstDivergentReplayState, "continuationStack")
-        val stateDifferenceOnlyRuntimeNonce =
+        val decisionReferencesDirect = normalizedDecisionReferenceComponents(firstDivergentDirectState)
+        val decisionReferencesReplay = normalizedDecisionReferenceComponents(firstDivergentReplayState)
+        val stateDifferenceOnlyDecisionReferences =
             stateFieldDiffs.isNotEmpty() &&
-                pendingDirect == pendingReplay &&
-                continuationDirect == continuationReplay
+                decisionReferencesDirect == decisionReferencesReplay
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_FIRST_STATE_COMPONENTS " +
-                "pendingEqualAfterNonceNormalization=${pendingDirect == pendingReplay} " +
-                "continuationEqualAfterNonceNormalization=${continuationDirect == continuationReplay} " +
-                "pendingDirect=$pendingDirect pendingReplay=$pendingReplay " +
-                "continuationDirect=$continuationDirect continuationReplay=$continuationReplay",
+                "referenceEqualAfterAliasNormalization=${decisionReferencesDirect == decisionReferencesReplay} " +
+                "direct=$decisionReferencesDirect replay=$decisionReferencesReplay",
         )
+
+        val separateTerminalProjectionFinding =
+            firstPublicDivergentFrame == 1_497 &&
+                detailedDirect1497.publicStateDigest != detailedReplay1497.publicStateDigest
+        println(
+            "B0_REPLAY_DIVERGENCE_15_1497_SEPARATE_TERMINAL_PROJECTION " +
+                "firstPublicFrame=$firstPublicDivergentFrame " +
+                "independentFinding=$separateTerminalProjectionFinding " +
+                "stateEqual=${state1497Direct == state1497Replay} " +
+                "fallbackDigest=${detailedDirect1497.publicStateDigest} " +
+                "priorityDigest=${detailedReplay1497.publicStateDigest}",
+        )
+        separateTerminalProjectionFinding shouldBe true
 
         val checkpointFrame = replayA.checkpoints.single().afterActionCount
         println(
@@ -297,7 +305,7 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
             fallbackPerspective = checkNotNull(config.players[config.perspectivePlayerIndex].playerId),
             authoritativeAtFirst = authoritativeAtFirst,
             rngEqualAtFirst = rngEqualAtFirst,
-            stateDifferenceOnlyRuntimeNonce = stateDifferenceOnlyRuntimeNonce,
+            stateDifferenceOnlyDecisionReferences = stateDifferenceOnlyDecisionReferences,
             stateFieldDiffs = stateFieldDiffs,
             publicFieldDiffs = publicFieldDiffs,
         )
@@ -311,7 +319,11 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
                 "unstableToStringHash=${classification.unstableToStringHash} " +
                 "rngCursorDrift=${classification.rngCursorDrift}",
         )
-        classification.primary shouldNotBe ""
+        classification.primary shouldBe "E=UNSTABLE_ID_ORDERING_OR_FINGERPRINT_DIVERGENCE"
+        classification.root shouldBe
+            "semantic-fingerprint-divergence-despite-preserved-pending-continuation-reference-aliases"
+        classification.unstableActionDecisionId shouldBe "FOUND_IN_TYPED_DECISION_REFERENCE_SLOTS"
+        classification.secondary shouldBe "none"
 
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_DETERMINISM " +
@@ -650,15 +662,60 @@ private fun publicFrameDiffs(left: PublicFrame, right: PublicFrame): List<String
     if (left.pendingDecisionFamily != right.pendingDecisionFamily) add("pendingDecisionFamily")
 }
 
-private val runtimeNoncePattern = Regex("[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
+private fun normalizedDecisionReferenceComponents(state: GameState): String {
+    val stateJson = persistenceJson.encodeToJsonElement(GameState.serializer(), state).jsonObject
+    val aliases = linkedMapOf<String, String>()
 
-private fun normalizedStateComponent(state: GameState, fieldName: String): String =
-    persistenceJson
-        .encodeToJsonElement(GameState.serializer(), state)
-        .jsonObject[fieldName]
-        ?.let(::canonicalJson)
-        ?.replace(runtimeNoncePattern, "<runtime-nonce>")
-        ?: "null"
+    fun alias(raw: String): JsonPrimitive =
+        JsonPrimitive(aliases.getOrPut(raw) { "D${aliases.size}" })
+
+    val pending = (stateJson["pendingDecision"] as? JsonObject)?.let { decision ->
+        val id = decision["id"] as? JsonPrimitive
+        if (id == null || !id.isString) {
+            decision
+        } else {
+            JsonObject(decision + ("id" to alias(id.content)))
+        }
+    } ?: stateJson["pendingDecision"] ?: JsonNull
+
+    val continuation = (stateJson["continuationStack"] as? JsonArray)?.let { frames ->
+        JsonArray(frames.map { frame ->
+            val objectFrame = frame as? JsonObject ?: return@map frame
+            val id = objectFrame["decisionId"] as? JsonPrimitive
+            if (id == null || !id.isString) {
+                objectFrame
+            } else {
+                val continuationAlias = alias(id.content)
+                val decisionShape = objectFrame["decisionShape"] as? JsonObject
+                val shaped = if (decisionShape != null) {
+                    val shapeId = decisionShape["id"] as? JsonPrimitive
+                    if (shapeId != null && shapeId.isString && shapeId.content == id.content) {
+                        JsonObject(decisionShape + ("id" to continuationAlias))
+                    } else {
+                        decisionShape
+                    }
+                } else {
+                    null
+                }
+                JsonObject(
+                    objectFrame + buildMap {
+                        put("decisionId", continuationAlias)
+                        if (shaped != null) put("decisionShape", shaped)
+                    },
+                )
+            }
+        })
+    } ?: stateJson["continuationStack"] ?: JsonArray(emptyList())
+
+    return canonicalJson(
+        JsonObject(
+            linkedMapOf(
+                "pendingDecision" to pending,
+                "continuationStack" to continuation,
+            ),
+        ),
+    )
+}
 
 private fun classify(
     live: List<PublicFrame>,
@@ -669,7 +726,7 @@ private fun classify(
     fallbackPerspective: EntityId,
     authoritativeAtFirst: Boolean,
     rngEqualAtFirst: Boolean,
-    stateDifferenceOnlyRuntimeNonce: Boolean,
+    stateDifferenceOnlyDecisionReferences: Boolean,
     stateFieldDiffs: List<String>,
     publicFieldDiffs: List<String>,
 ): Classification {
@@ -679,7 +736,7 @@ private fun classify(
     val liveFieldDiffs = publicScalarDiffs(live[firstFrame], replay.publicFrames[firstFrame])
     val publicDifference = publicFieldDiffs.isNotEmpty() || liveFieldDiffs.isNotEmpty()
     val primary = when {
-        !stateSemanticEqual && stateDifferenceOnlyRuntimeNonce ->
+        !stateSemanticEqual && stateDifferenceOnlyDecisionReferences ->
             "E=UNSTABLE_ID_ORDERING_OR_FINGERPRINT_DIVERGENCE"
         !stateSemanticEqual -> "A=AUTHORITATIVE_STATE_DIVERGENCE"
         rawFieldDifference && publicDifference -> "E=UNSTABLE_ID_ORDERING_OR_FINGERPRINT_DIVERGENCE"
@@ -697,8 +754,8 @@ private fun classify(
     return Classification(
         primary = primary,
         secondary = secondary,
-        root = if (!stateSemanticEqual && stateDifferenceOnlyRuntimeNonce) {
-            "semantic-fingerprint-divergence-not-explained-by-authoritative-fields-after-runtime-nonce-normalization"
+        root = if (!stateSemanticEqual && stateDifferenceOnlyDecisionReferences) {
+            "semantic-fingerprint-divergence-despite-preserved-pending-continuation-reference-aliases"
         } else if (!stateSemanticEqual) {
             "authoritative-state-transition; differing-fields=" +
                 stateFieldDiffs.joinToString(",").ifBlank { "not-isolated" }
@@ -709,7 +766,13 @@ private fun classify(
         },
         unstableMapSet = if (stateFieldDiffs.any { it.contains("zone", ignoreCase = true) }) "FOUND_OR_REQUIRES_AUDIT" else "NOT_FOUND",
         unstableEntityId = if (stateFieldDiffs.any { it.contains("Entity", ignoreCase = true) }) "FOUND_OR_REQUIRES_AUDIT" else "NOT_FOUND",
-        unstableActionDecisionId = if (publicFieldDiffs.any { it.contains("legalAction") }) "NOT_FOUND_IN_SEMANTIC_SIGNATURE" else "NOT_FOUND",
+        unstableActionDecisionId = if (stateDifferenceOnlyDecisionReferences) {
+            "FOUND_IN_TYPED_DECISION_REFERENCE_SLOTS"
+        } else if (publicFieldDiffs.any { it.contains("legalAction") }) {
+            "NOT_FOUND_IN_SEMANTIC_SIGNATURE"
+        } else {
+            "NOT_FOUND"
+        },
         unstableToStringHash = "NOT_FOUND",
         rngCursorDrift = if (rngEqual) "NOT_FOUND" else "FOUND",
     )
