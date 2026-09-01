@@ -725,7 +725,14 @@ internal object TransitionSemanticGameStateCanonicalizer {
         val key = path.lastOrNull() ?: return primitive
         val pendingDecisionId = key == "id" && path.contains("pendingDecision")
         val continuationDecisionId = key == "decisionId" && path.contains("continuationStack")
-        if (!pendingDecisionId && !continuationDecisionId) return primitive
+        // CombatResolutionContinuation caches a full CombatResolutionDecision in decisionShape.
+        // Its id is the same routing reference as the continuation's decisionId, not an arbitrary
+        // string. Keep the parent-path check narrow so entity ids inside the cached shape are not
+        // treated as decision nonces.
+        val continuationDecisionShapeId = key == "id" &&
+            path.contains("continuationStack") &&
+            path.getOrNull(path.lastIndex - 1) == "decisionShape"
+        if (!pendingDecisionId && !continuationDecisionId && !continuationDecisionShapeId) return primitive
         return JsonPrimitive(decisionAliases.alias(primitive.content))
     }
 
