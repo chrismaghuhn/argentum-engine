@@ -211,8 +211,12 @@ class GameGymEnv(
     // --- internals -----------------------------------------------------------
 
     private fun build(): ObservationResult {
-        val perspective = environment.agentToAct
-            ?: environment.playerIds.getOrNull(fallbackPerspectivePlayerIndex)
+        val perspective = ObservationPerspective.resolve(
+            state = environment.state,
+            playerIds = environment.playerIds,
+            fallbackPerspectivePlayerIndex = fallbackPerspectivePlayerIndex,
+            truncated = environment.isTruncated,
+        )
             ?: throw IllegalStateException(
                 "Env has no player at fallback perspective index $fallbackPerspectivePlayerIndex"
             )
@@ -402,8 +406,12 @@ class GameGymEnv(
         } ?: throw IllegalArgumentException(
             "Registered action is no longer present in the current Rules action set",
         )
-        val perspective = environment.agentToAct
-            ?: fallbackPerspectivePlayerIndex.let(environment.playerIds::getOrNull)
+        val perspective = ObservationPerspective.resolve(
+            state = environment.state,
+            playerIds = environment.playerIds,
+            fallbackPerspectivePlayerIndex = fallbackPerspectivePlayerIndex,
+            truncated = environment.isTruncated,
+        )
             ?: throw IllegalArgumentException("Current target-payment action has no acting player")
         val result = observationBuilder.build(
             state = environment.state,
