@@ -157,6 +157,7 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
             ReplayFingerprint.of(firstDivergentReplayState, replayA.version)
         val rngEqualAtFirst = firstDivergentDirectState.rng == firstDivergentReplayState.rng
         val stateFieldDiffs = topLevelStateDiffs(firstDivergentDirectState, firstDivergentReplayState)
+        stateFieldDiffs.toSet() shouldBe setOf("pendingDecision", "continuationStack")
         val detailedDirectFirst = publicFrame(
             state = firstDivergentDirectState,
             fallback = checkNotNull(config.players[config.perspectivePlayerIndex].playerId),
@@ -276,14 +277,32 @@ class B0ReplayDivergence151497CharacterizationTest : FunSpec({
                 "direct=$decisionReferencesDirect replay=$decisionReferencesReplay",
         )
 
+        val terminalAuthoritativeStateEqual =
+            state1497Direct == state1497Replay &&
+                directA.semanticFingerprints[1_497] == replayTraceA.semanticFingerprints[1_497]
+        val terminalRngEqual = directA.rngStates[1_497] == replayTraceA.rngStates[1_497]
+        val terminalLegalDomainEqual =
+            detailedDirect1497.legalActionFamiliesInPublishedOrder ==
+                detailedReplay1497.legalActionFamiliesInPublishedOrder &&
+                detailedDirect1497.legalActionSignatures == detailedReplay1497.legalActionSignatures
+        val terminalPerspectiveDifferent =
+            checkNotNull(config.players[config.perspectivePlayerIndex].playerId) !=
+                state1497Replay.priorityPlayerId
         val separateTerminalProjectionFinding =
             firstPublicDivergentFrame == 1_497 &&
+                terminalAuthoritativeStateEqual &&
+                terminalRngEqual &&
+                terminalLegalDomainEqual &&
+                terminalPerspectiveDifferent &&
                 detailedDirect1497.publicStateDigest != detailedReplay1497.publicStateDigest
         println(
             "B0_REPLAY_DIVERGENCE_15_1497_SEPARATE_TERMINAL_PROJECTION " +
                 "firstPublicFrame=$firstPublicDivergentFrame " +
                 "independentFinding=$separateTerminalProjectionFinding " +
-                "stateEqual=${state1497Direct == state1497Replay} " +
+                "authoritativeStateEqual=$terminalAuthoritativeStateEqual " +
+                "rngEqual=$terminalRngEqual " +
+                "legalDomainEqual=$terminalLegalDomainEqual " +
+                "perspectiveDifferent=$terminalPerspectiveDifferent " +
                 "fallbackDigest=${detailedDirect1497.publicStateDigest} " +
                 "priorityDigest=${detailedReplay1497.publicStateDigest}",
         )
