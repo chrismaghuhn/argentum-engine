@@ -12,6 +12,9 @@ DATA_TRUSTED=NO
 PRODUCTION_FILES_CHANGED=0
 PRODUCTION_OPTIMIZATIONS=0
 PRODUCTION_SEMANTIC_CHANGES=0
+P2_1=FIXED
+P2_2=FIXED
+P3_WORDING=FIXED
 ```
 
 The live fork and upstream refs were fetched before the worktree was created. The worktree starts
@@ -33,6 +36,8 @@ CURRENT_TRANSITIONS_PER_SEC:
   183.618130
 CURRENT_ALLOCATION_PER_TRANSITION:
   5,117,938.195 thread-allocated bytes; median of the same three runs
+PRIMARY_REMAINING_MEASURED_HOTSPOT:
+  residual semantic JSON/tree/String/UTF-8/SHA-256/hex observation-digest pipeline
 
 DEEP_AUDIT_REPRIORITIZED:YES
 
@@ -46,19 +51,19 @@ REPLAY_VERSION_BLOCKER:
 OBSERVATION_BUILDER_DUPLICATION:
   DUPLICATE_WORK_PROVEN, but not the current leading CPU hotspot
 TARGET_DOMAIN_COUNTERS:
-  witness=28,650 calls for 28,555 builder-input candidates; 76 same-action extra calls
-  normal4=109,527 calls for 109,177 builder-input candidates; 280 same-action extra calls
-  corpus8=209,236 calls for 208,986 builder-input candidates; 200 same-action extra calls
+  witness=28,650 calls for 28,555 builder-input candidates; 76 extra calls / 38 distinct affected actions
+  normal4=109,527 calls for 109,177 builder-input candidates; 280 extra calls / 140 distinct affected actions
+  corpus8=209,236 calls for 208,986 builder-input candidates; 200 extra calls / 100 distinct affected actions
 PAYMENT_QUALIFICATION_COUNTERS:
   witness=28,555; normal4=109,177; corpus8=208,986; one per builder-input action
 PAYMENT_DOMAIN_COUNTERS:
   paymentDomainV5For witness/normal4/corpus8=8,434/30,760/61,308
   PaymentDomainBuilder.buildV5 attempts=233/1,095/1,516
-  target-dependent relation calls=0/0/0; same-action V5 extras=103/488/696
+  target-dependent relation calls=0/0/0; same-action V5 extras=103/488/696 and affected actions=103/488/696
 ABILITY_IDENTITY_COUNTERS:
   stableAbilityKey=26,490/100,533/191,349
   resolveActivatedAbility=54,111/205,380/389,738
-  same-action resolve extras=26,794/101,653/192,149
+  same-action resolve extras=26,794/101,653/192,149; distinct affected actions=26,490/100,533/191,349
   stableAbilityOrdinal=18,901/68,164/129,962
   structuralAbilitySignature=41,237/143,225/270,052
   structuralAbilityJson=67,727/243,758/461,401
@@ -118,7 +123,9 @@ test JVM, records scalar counts plus short-lived integer-key maps for the curren
 restores every class file before the test exits. It does not retain `GameState`,
 `TrainingObservation`, `LegalAction`, JSON, payment-domain DTOs, or card/state graphs. It is not
 part of the production classpath and is disabled unless `b1.characterize=true` is explicitly
-forwarded to the test worker.
+forwarded to the test worker. Installation records each original before writing, restores every
+already-recorded output if a later patch fails, and the profiler's evidence-finalization helper
+closes the restoration handle from an unconditional nested `finally`.
 
 ## Current-head profiler
 
@@ -322,12 +329,12 @@ The following distinguishes a real duplicate from two merely similar source call
 same-action row means that the same object identity hash received more than one entry for that
 derived operation during one builder build; no action-view identity-hash collision was detected.
 
-| Derived operation | Witness extra calls / action rows | Normal4 extra calls / action rows | Corpus8 extra calls / action rows | Maximum calls for one action |
+| Derived operation | Witness extra calls / distinct affected actions | Normal4 extra calls / distinct affected actions | Corpus8 extra calls / distinct affected actions | Maximum calls for one action |
 |---|---:|---:|---:|---:|
 | target-domain mapping | 76 / 38 | 280 / 140 | 200 / 100 | 3 |
-| `paymentDomainV5For` | 103 / 79 | 488 / 399 | 696 / 526 | 2 |
-| payment-domain request | 103 / 79 | 488 / 399 | 696 / 526 | 2 |
-| `resolveActivatedAbility` | 26,794 / 1,955 | 101,653 / 7,811 | 192,149 / 15,575 | 10 |
+| `paymentDomainV5For` | 103 / 103 | 488 / 488 | 696 / 696 | 2 |
+| payment-domain request | 103 / 103 | 488 / 488 | 696 / 696 | 2 |
+| `resolveActivatedAbility` | 26,794 / 26,490 | 101,653 / 100,533 | 192,149 / 191,349 | 10 |
 | target-cost dependency | 76 / 38 | 280 / 140 | 200 / 100 | 3 |
 
 The direct conclusion is:
@@ -520,8 +527,8 @@ privacy / decision completeness / replay`; `L/M/H` means low/medium/high.
 |---|---|---|---|---|---|
 | 1. Exact semantic byte pipeline | **MEASURED_CURRENT_HOTSPOT.** JFR shows canonicalizer recursion, string hashing/builders, byte copies, and UTF-8 materialization. `StateDigest` still materializes a JSON tree/string and hashes its UTF-8 bytes. | `VERY_HIGH / H / H` | `M / H / H / H / H` | Stream the exact existing canonical semantic JSON byte sequence, or explicitly version identity; never silently change digest bytes. | RED: known-answer semantic bytes/digests across privacy, unordered arrays, domains, generated IDs, replay. Benchmark probe-free corpus8 CPU/allocation/GC. Gates: canonicalization, digest, privacy, strict Gym, replay, Hosted CI. |
 | 2. Generation-scoped pre-state legal-list reuse | **MEASURED_CURRENT_HOTSPOT.** 31,342 actual enumerations over corpus8 and one strict pre-state scan around most accepted active actions. | `HIGH / M / H` | `H / H / H / H / H` | Exact immutable state/generation token plus perspective, pending-decision, registry certificate, and invalidation proof; retain live direct-caller validation. | RED: stale action, reset/restore/fork, changed actor/domain, full candidate-order equality. Benchmark enum hit/miss counts and probe-free corpus8. Gates: strict Gym, domains, privacy, replay, Rules, Hosted CI. |
-| 3. ObservationBuilder typed derived-candidate reuse | **DUPLICATE_WORK_PROVEN.** Corpus8 has 696 extra same-action V5 calls, 200 extra target mappings, and 192,149 extra resolver calls. JFR shows derived ability work, but below canonicalizer/enum groups. | `HIGH / M / M/H` | `H / H / H / H / H` | Per-build typed record keyed by exact state/generation and legal-action identity/index; preserve complete supported/unsupported results. | RED: same-action counter equality plus byte/semantic/domain equality. Benchmark probe-free A/B corpus8 after implementation. Gates: target/payment/ability, privacy, decision, replay, Rules, Hosted CI. |
-| 4. Stable ability provenance/signature memoization | **STILL_PLAUSIBLE.** Stable key is once per activated view, but resolver and structural JSON/signature work repeats for 15,575 corpus8 action identities. | `MEDIUM/HIGH / M / M` | `M/H / H / M / H / H` | Memoize exact immutable state/source/runtime ability/provenance and retain duplicate structural ordinal semantics. | RED: distinct equal-structure abilities, grants, emblem/intrinsic paths, generated handles. Benchmark structural JSON/CPU/allocation counters. Gates: observation, privacy, Rules ability, replay. |
+| 3. ObservationBuilder typed derived-candidate reuse | **DUPLICATE_WORK_PROVEN.** Corpus8 has 696 extra same-action V5 calls affecting 696 distinct action identities, 200 extra target mappings affecting 100 distinct actions, and 192,149 extra resolver calls affecting 191,349 distinct actions. JFR shows derived ability work, but below canonicalizer/enum groups. | `HIGH / M / M/H` | `H / H / H / H / H` | Per-build typed record keyed by exact state/generation and legal-action identity/index; preserve complete supported/unsupported results. | RED: same-action counter equality plus byte/semantic/domain equality. Benchmark probe-free A/B corpus8 after implementation. Gates: target/payment/ability, privacy, decision, replay, Rules, Hosted CI. |
+| 4. Stable ability provenance/signature memoization | **STILL_PLAUSIBLE.** Stable key is once per activated view, but resolver and structural JSON/signature work repeats for 191,349 distinct corpus8 action identities, with 192,149 extra resolver calls. | `MEDIUM/HIGH / M / M` | `M/H / H / M / H / H` | Memoize exact immutable state/source/runtime ability/provenance and retain duplicate structural ordinal semantics. | RED: distinct equal-structure abilities, grants, emblem/intrinsic paths, generated handles. Benchmark structural JSON/CPU/allocation counters. Gates: observation, privacy, Rules ability, replay. |
 | 5. V5 source-discovery sharing | **STILL_PLAUSIBLE.** 1,516 V5 builder attempts/source scans in corpus8; target-dependent route absent and JFR direct signal small. | `HIGH worst-case / L/M / H` | `H/H/H/H/H` | Share only context-independent discovery/certificate data; leave action cost, exclusions, target binding, producer order, and stability checks intact. | RED: paid sources, restrictions, pain, floating provenance, source exclusion. Benchmark payment fixtures plus corpus8. Gates: Rules payment, Gym payment/domain, privacy, replay, B0. |
 | 6. Immutable event/state allocation reduction | **NOT_PROVEN.** Cumulative event prefix copy is source-visible; current `CollectionsKt.plus` sample is 0.68% and unisolated. | `HIGH allocation / M / H` | `H/H/M/H/H` | Transition-local accumulator or persistent structure only after proving all intermediate event/state observations identical. | RED: full event API, triggers, forks, snapshots, replay, state identity. Benchmark allocation stack traces/event length. Gates: full Rules/Gym/replay/determinism/B0. |
 | 7. Fresh action-handle/remap churn | **STILL_PLAUSIBLE.** Fresh ID/list/map/registry remap is required per generation; current direct sample is small. | `MEDIUM / H existence / L/M` | `M/M/M/M/H` | One-pass equivalent construction preserving fresh monotonic opaque IDs and stale registry rejection. | RED: handle freshness/staleness/cardinality/order/digest. Benchmark isolated allocation site. Gates: Gym action contract, privacy, replay, strict domains. |
@@ -629,7 +636,7 @@ native focused contract matrix
   GameGymEnvStrictExecutionTest, TargetPaymentDomainContractTest, B0HarnessTimeoutPolicyTest
 
 native full :gym:test
-  PASS: 432 tests, 0 failures, 0 errors, 1 expected B1 profiler skip
+  PASS: 437 tests, 0 failures, 0 errors, 1 expected B1 profiler skip
 
 test-only characterization
   PASS: witness 1/1 episodes, 2,000 transitions
@@ -645,6 +652,11 @@ current probe-free profiler
 current exact-pair replay gate
   PASS: 2 authoritative V5 cases, codec round-trip exact, reconstruction fidelity exact
   38 non-selected tests skipped by the focused filter
+
+B1ObservationInstrumentationTest
+  PASS: 5 selected, 5 passed, 0 failed
+  covers distinct affected-action counts, partial-install rollback, evidence-finalization failure,
+  probe-stop failure, and exact original class-byte restoration
 
 Hosted CI
   NOT_ESTABLISHED

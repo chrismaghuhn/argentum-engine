@@ -26,8 +26,8 @@ import java.nio.file.Path
 internal object B1ObservationBytecodeInstrumentation {
     private const val PROBE_OWNER = "com/wingedsheep/gym/B1ObservationProbe"
 
-    internal fun install(): Handle {
-        val targets = listOf(
+    internal fun install(): Handle = installTargets(
+        listOf(
             Target(
                 locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
                 ::observationBuilderMethod,
@@ -44,21 +44,88 @@ internal object B1ObservationBytecodeInstrumentation {
                 locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/ManaSolver.class"),
                 ::manaSolverMethod,
             ),
+        ),
+    )
+
+    /** Test seam for proving the restoration transaction without changing production classes. */
+    internal fun installForTest(
+        paths: List<Path>,
+        failOnWriteIndex: Int? = null,
+    ): Handle {
+        var writeIndex = 0
+        return installTargets(
+            paths.map { path -> Target(path) { null } },
+            transformBytes = { bytes, _ ->
+                bytes.mapIndexed { index, byte ->
+                    (byte.toInt() xor (index + 1)).toByte()
+                }.toByteArray()
+            },
+            writeBytes = { path, bytes ->
+                val currentIndex = writeIndex++
+                if (currentIndex == failOnWriteIndex) {
+                    error("synthetic B1 installation failure at write $currentIndex")
+                }
+                Files.write(path, bytes)
+            },
         )
-        val originals = targets.map { target ->
-            val original = Files.readAllBytes(target.path)
-            val transformed = transform(original, target.methodSelector)
-            Files.write(target.path, transformed)
-            target.path to original
+    }
+
+    internal fun classOutputPathsForTest(): List<Path> = listOf(
+        locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
+        locate("gym", "com/wingedsheep/gym/contract/PaymentDomainBuilder.class"),
+        locate("gym", "com/wingedsheep/gym/GameEnvironment.class"),
+        locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/ManaSolver.class"),
+    )
+
+    private fun installTargets(
+        targets: List<Target>,
+        transformBytes: (ByteArray, (String) -> MethodPlan?) -> ByteArray = ::transform,
+        writeBytes: (Path, ByteArray) -> Unit = { path, bytes -> Files.write(path, bytes) },
+    ): Handle {
+        val originals = mutableListOf<Pair<Path, ByteArray>>()
+        try {
+            targets.forEach { target ->
+                val original = Files.readAllBytes(target.path)
+                // Register before the write so a short/failed write is restored as well.
+                originals += target.path to original
+                val transformed = transformBytes(original, target.methodSelector)
+                writeBytes(target.path, transformed)
+            }
+            return Handle(originals.toList())
+        } catch (failure: Throwable) {
+            restoreAll(originals, failure)
+            throw failure
         }
-        return Handle(originals)
     }
 
     internal class Handle(
         private val originals: List<Pair<Path, ByteArray>>,
     ) : AutoCloseable {
         override fun close() {
-            originals.forEach { (path, original) -> Files.write(path, original) }
+            restoreAll(originals)
+        }
+    }
+
+    private fun restoreAll(
+        originals: List<Pair<Path, ByteArray>>,
+        installationFailure: Throwable? = null,
+    ) {
+        var restorationFailure: Throwable? = null
+        originals.asReversed().forEach { (path, original) ->
+            try {
+                Files.write(path, original)
+            } catch (failure: Throwable) {
+                if (restorationFailure == null) {
+                    restorationFailure = failure
+                } else {
+                    checkNotNull(restorationFailure).addSuppressed(failure)
+                }
+            }
+        }
+        if (installationFailure != null) {
+            restorationFailure?.let(installationFailure::addSuppressed)
+        } else {
+            restorationFailure?.let { throw it }
         }
     }
 
@@ -272,5 +339,21 @@ internal object B1ObservationBytecodeInstrumentation {
             .filterNotNull()
             .firstOrNull(Files::exists)
             ?: error("B1 characterization class file not found: module=$module suffix=$suffix")
+    }
+}
+
+/**
+ * Finalize the test-only evidence first, but always restore the bytecode patch. If probe stopping
+ * or evidence writing throws, the restoration failure (if any) is still reported by [close].
+ */
+internal fun finishB1Characterization(
+    session: B1ObservationProbe.Session?,
+    instrumentation: B1ObservationBytecodeInstrumentation.Handle?,
+    writeEvidence: (B1ObservationProbe.Snapshot) -> Unit,
+) {
+    try {
+        session?.let { writeEvidence(B1ObservationProbe.stop(it)) }
+    } finally {
+        instrumentation?.close()
     }
 }

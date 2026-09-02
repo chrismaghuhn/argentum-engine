@@ -21,6 +21,7 @@ internal object B1ObservationProbe {
         val actionViews: Int,
         val actionCallCounts: Map<String, Long>,
         val sameActionDuplicateCalls: Map<String, Long>,
+        val actionsWithSameActionDuplicates: Map<String, Long>,
         val maxCallsForOneAction: Map<String, Long>,
     )
 
@@ -168,9 +169,9 @@ internal object B1ObservationProbe {
             completed.sameActionDuplicateCalls.forEach { (family, count) ->
                 if (count > 0) increment(sameActionDuplicateCalls, family, count)
             }
-            completed.sameActionDuplicateCalls
-                .filterValues { it > 0 }
-                .forEach { (family, _) -> increment(actionsWithSameActionDuplicates, family) }
+            completed.actionsWithSameActionDuplicates.forEach { (family, count) ->
+                if (count > 0) increment(actionsWithSameActionDuplicates, family, count)
+            }
             completed.maxCallsForOneAction.forEach { (family, count) ->
                 maxCallsForOneAction[family] = maxOf(maxCallsForOneAction[family] ?: 0, count)
             }
@@ -226,6 +227,14 @@ internal object B1ObservationProbe {
                     actionViews = actionViews,
                     actionCallCounts = actionCallCounts.toSortedMap(),
                     sameActionDuplicateCalls = duplicateCalls.toSortedMap(),
+                    actionsWithSameActionDuplicates = callsByAction.values
+                        .flatMap { calls ->
+                            calls.filterValues { it > 1 }.keys
+                        }
+                        .groupingBy { it }
+                        .eachCount()
+                        .mapValues { (_, count) -> count.toLong() }
+                        .toSortedMap(),
                     maxCallsForOneAction = maxCalls.toSortedMap(),
                 )
             }

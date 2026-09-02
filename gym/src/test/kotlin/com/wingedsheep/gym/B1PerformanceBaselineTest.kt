@@ -114,18 +114,19 @@ private fun runProfiledWorkload() {
     Files.createDirectories(outputDir)
     val stem = workloadName + "-" + mode
     val characterize = System.getProperty("b1.characterize") == "true"
+    val jfrPath = outputDir.resolve(stem + ".jfr")
+    val jsonPath = outputDir.resolve(stem + ".json")
     val bytecodeInstrumentation = if (characterize) {
         B1ObservationBytecodeInstrumentation.install()
     } else {
         null
     }
-    val characterizationSession = if (characterize) B1ObservationProbe.start() else null
-    val jfrPath = outputDir.resolve(stem + ".jfr")
-    val jsonPath = outputDir.resolve(stem + ".json")
-    Files.deleteIfExists(jfrPath)
-    Files.deleteIfExists(jsonPath)
+    var characterizationSession: B1ObservationProbe.Session? = null
 
     try {
+        characterizationSession = if (characterize) B1ObservationProbe.start() else null
+        Files.deleteIfExists(jfrPath)
+        Files.deleteIfExists(jsonPath)
         val recording = openJfrRecording()
         val countersBefore = JvmSnapshot.capture()
         val workloadStart = System.nanoTime()
@@ -191,8 +192,10 @@ private fun runProfiledWorkload() {
             "B1 profiling workload failed: " + finalMeasurement.status
         }
     } finally {
-        characterizationSession?.let { session ->
-            val snapshot = B1ObservationProbe.stop(session)
+        finishB1Characterization(
+            session = characterizationSession,
+            instrumentation = bytecodeInstrumentation,
+        ) { snapshot ->
             val characterizationPath = outputDir.resolve("observation-duplication-" + stem + ".json")
             Files.writeString(
                 characterizationPath,
@@ -200,7 +203,6 @@ private fun runProfiledWorkload() {
             )
             println("B1_OBSERVATION_CHARACTERIZATION_PATH=" + characterizationPath)
         }
-        bytecodeInstrumentation?.close()
     }
 }
 
