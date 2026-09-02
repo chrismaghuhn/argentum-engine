@@ -3839,7 +3839,8 @@ private data class ReplayGateEvidence(
         }
         authoritative.forEach { replay ->
             appendLine(
-                "compactReplay=${replay.caseLabel}; codecRoundTrip=${replay.codecRoundTrip}; " +
+                "compactReplay=${replay.caseLabel}; version=${replay.replayVersion}; " +
+                    "codecRoundTrip=${replay.codecRoundTrip}; " +
                     "fidelity=${replay.fidelity}; frames=${replay.frameCount}; " +
                     "checkpoints=${replay.checkpointCount}",
             )
@@ -3850,6 +3851,7 @@ private data class ReplayGateEvidence(
 
 private data class AuthoritativeReplayCase(
     val caseLabel: String,
+    val replayVersion: Int,
     val codecRoundTrip: Boolean,
     val fidelity: String,
     val frameCount: Int,
@@ -3895,6 +3897,12 @@ private object CompactReplayBridge {
     ): AuthoritativeReplayCase {
         val replayRuntime = runtime(repositoryRoot)
         val replay = replayRuntime.compactReplay(trace)
+        val replayVersion = replayRuntime.invoke(replay, "getVersion") as Int
+        val currentVersion = replayRuntime.currentVersion()
+        check(replayVersion == currentVersion) {
+            "Exact-pair bridge created CompactReplay v$replayVersion, " +
+                "but loaded runtime declares v$currentVersion"
+        }
         val codec = replayRuntime.singleton(REPLAY_CODEC)
         val encoded = replayRuntime.invoke(codec, "encode", replay) as String
         val decoded = replayRuntime.invoke(codec, "decode", encoded)
@@ -3926,6 +3934,7 @@ private object CompactReplayBridge {
         return AuthoritativeReplayCase(
             caseLabel = "${trace.episode.rosterLabel}/seed=${trace.episode.seed}/" +
                 "starting=${trace.episode.startingPlayerIndex}",
+            replayVersion = replayVersion,
             codecRoundTrip = true,
             fidelity = fidelity,
             frameCount = frameCount,
@@ -4048,6 +4057,9 @@ private object CompactReplayBridge {
             ) as String
         }
 
+        fun currentVersion(): Int =
+            loadClass(COMPACT_REPLAY).getField("CURRENT_VERSION").getInt(null)
+
         fun checkpointCadence(): Int {
             val policy = loadClass(
                 "com.wingedsheep.gameserver.replay.ReplayRecordingPolicy",
@@ -4056,6 +4068,7 @@ private object CompactReplayBridge {
         }
 
         fun compactReplay(trace: ReplayTrace): Any {
+            val version = currentVersion()
             val config = trace.gameConfig
             val playerSetups = trace.playerIds.zip(config.players).map { (playerId, player) ->
                 newInstance(
@@ -4153,7 +4166,7 @@ private object CompactReplayBridge {
                     List::class.java,
                 ),
                 arrayOf(
-                    4,
+                    version,
                     "a5-exact-pair-${trace.episode.rosterLabel}-${trace.episode.seed}-" +
                         trace.episode.startingPlayerIndex,
                     playerInfos,
