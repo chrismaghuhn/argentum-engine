@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.service
 
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.EpisodeDiagnostics
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
@@ -44,6 +45,8 @@ class SnapshotCodec {
         val diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
         /** Environment-local state generation used by the observation exactly-once cursor. */
         val projectionGeneration: Long = 0L,
+        /** Explicit semantic/integrity failure closure, when the source episode has failed. */
+        val failureClosure: EpisodeClosureV1.Failed? = null,
     )
 
     fun save(
@@ -53,9 +56,18 @@ class SnapshotCodec {
         maxSteps: Int?,
         diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
         projectionGeneration: Long = 0L,
+        failureClosure: EpisodeClosureV1.Failed? = null,
     ): SnapshotHandle.Slot {
         val id = nextId.getAndIncrement()
-        slots[id] = Entry(state, playerIds, stepCount, maxSteps, diagnostics, projectionGeneration)
+        slots[id] = Entry(
+            state,
+            playerIds,
+            stepCount,
+            maxSteps,
+            diagnostics,
+            projectionGeneration,
+            failureClosure,
+        )
         return SnapshotHandle.Slot(id)
     }
 

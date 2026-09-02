@@ -124,6 +124,38 @@ class GameEnvironment private constructor(
     var diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY
         private set
 
+    /** Explicit semantic/integrity failure; it has precedence over later terminal/truncated state. */
+    private var explicitFailureClosure: EpisodeClosureV1.Failed? = null
+
+    /**
+     * Typed closure for the current episode, or null while the episode is still open.
+     *
+     * A recorded failure is intentionally checked first so a later state transition cannot
+     * relabel a failed episode as terminal or interrupted.
+     */
+    val episodeClosure: EpisodeClosureV1?
+        get() = explicitFailureClosure
+            ?: diagnostics.closureFailureReason()?.let { reason ->
+                EpisodeClosureV1.Failed(stepCount = stepCount, reason = reason)
+            }
+            ?: when {
+                isTerminal -> EpisodeClosureV1.GameTerminal(
+                    stepCount = stepCount,
+                    winnerId = winnerId,
+                    reason = events.asReversed()
+                        .filterIsInstance<GameEndedEvent>()
+                        .firstOrNull()
+                        ?.reason,
+                )
+
+                isTruncated -> EpisodeClosureV1.Interrupted(
+                    stepCount = stepCount,
+                    reason = EpisodeInterruptionReason.HORIZON_REACHED,
+                )
+
+                else -> null
+            }
+
     /** Monotonic state generation used to deduplicate observation diagnostics. */
     internal var projectionGeneration: Long = 0L
         private set
@@ -174,6 +206,7 @@ class GameEnvironment private constructor(
         stepCount = 0
         this.maxSteps = maxSteps
         diagnostics = EpisodeDiagnostics.EMPTY
+        explicitFailureClosure = null
         projectionGeneration = 0L
         return buildStepResult(initResult.events)
     }
@@ -197,14 +230,16 @@ class GameEnvironment private constructor(
         check(!isTerminal) { "Cannot step a terminal environment" }
         check(!isTruncated) { "Cannot step a truncated environment" }
 
-        // The Gym boundary is an action-space boundary, not merely a thin wrapper around the
-        // processor.  A caller may hold an action from an older observation, or may submit an
-        // action for the other player.  The rules engine validates the action's local shape, but
-        // it intentionally does not know which candidate list this environment exposed.  Keep
-        // stale/non-owner actions fail-closed here before simulation can advance the horizon.
-        validateActionMembership(action)
-        rejectNativePolicyFallback()
-        return simulateAndCommit(action)
+        return classifyActionFailure {
+            // The Gym boundary is an action-space boundary, not merely a thin wrapper around the
+            // processor.  A caller may hold an action from an older observation, or may submit an
+            // action for the other player.  The rules engine validates the action's local shape, but
+            // it intentionally does not know which candidate list this environment exposed.  Keep
+            // stale/non-owner actions fail-closed here before simulation can advance the horizon.
+            validateActionMembership(action)
+            rejectNativePolicyFallback()
+            simulateAndCommit(action)
+        }
     }
 
     /**
@@ -217,20 +252,22 @@ class GameEnvironment private constructor(
         check(!isTerminal) { "Cannot step a terminal environment" }
         check(!isTruncated) { "Cannot step a truncated environment" }
 
-        validateActionMembership(action)
-        if (action is DeclareAttackers) {
-            val current = legalActions().firstOrNull {
-                isCurrentActionCandidate(it.action, action)
+        return classifyActionFailure {
+            validateActionMembership(action)
+            if (action is DeclareAttackers) {
+                val current = legalActions().firstOrNull {
+                    isCurrentActionCandidate(it.action, action)
+                }
+                if (current != null) AttackDeclarationDomainSubmission.requireSupported(current)
             }
-            if (current != null) AttackDeclarationDomainSubmission.requireSupported(current)
-        }
-        if (action is DeclareBlockers) {
-            val current = legalActions().firstOrNull {
-                isCurrentActionCandidate(it.action, action)
+            if (action is DeclareBlockers) {
+                val current = legalActions().firstOrNull {
+                    isCurrentActionCandidate(it.action, action)
+                }
+                if (current != null) BlockerDeclarationDomainSubmission.requireSupported(current)
             }
-            if (current != null) BlockerDeclarationDomainSubmission.requireSupported(current)
+            processAndCommit(action)
         }
-        return processAndCommit(action)
     }
 
     /**
@@ -245,20 +282,22 @@ class GameEnvironment private constructor(
         check(playerIds.isNotEmpty()) { "Call reset() before step()" }
         check(!isTerminal) { "Cannot step a terminal environment" }
         check(!isTruncated) { "Cannot step a truncated environment" }
-        require(candidate !is SubmitDecision && submitted !is SubmitDecision) {
-            "Structured action payloads are only valid for legal game actions"
-        }
+        return classifyActionFailure {
+            require(candidate !is SubmitDecision && submitted !is SubmitDecision) {
+                "Structured action payloads are only valid for legal game actions"
+            }
 
-        val currentActions = legalActions()
-        require(currentActions.any { it.action == candidate }) {
-            "Action candidate is not in the current legal action set for ${agentToAct}: $candidate"
-        }
-        require(isCurrentActionCandidate(candidate, submitted)) {
-            "Structured action does not belong to the selected current legal candidate: $submitted"
-        }
+            val currentActions = legalActions()
+            require(currentActions.any { it.action == candidate }) {
+                "Action candidate is not in the current legal action set for ${agentToAct}: $candidate"
+            }
+            require(isCurrentActionCandidate(candidate, submitted)) {
+                "Structured action does not belong to the selected current legal candidate: $submitted"
+            }
 
-        rejectNativePolicyFallback()
-        return simulateAndCommit(submitted)
+            rejectNativePolicyFallback()
+            simulateAndCommit(submitted)
+        }
     }
 
     /** Strict counterpart of [stepFromCandidate] for the trusted Gym adapter. */
@@ -266,53 +305,55 @@ class GameEnvironment private constructor(
         check(playerIds.isNotEmpty()) { "Call reset() before stepStrict()" }
         check(!isTerminal) { "Cannot step a terminal environment" }
         check(!isTruncated) { "Cannot step a truncated environment" }
-        require(candidate.action !is SubmitDecision && submitted !is SubmitDecision) {
-            "Structured action payloads are only valid for legal game actions"
-        }
-
-        val currentActions = legalActions()
-        val current = currentActions.firstOrNull {
-            isCurrentActionCandidate(it.action, candidate.action)
-        }
-        require(current != null) {
-            "Action candidate is not in the current legal action set for ${agentToAct}: ${candidate.action}"
-        }
-
-        // A strict combat submission must never reach a compatibility path if the live producer can
-        // no longer publish a supported certificate. Compare the complete registered Rules
-        // certificate as well: the action handle may still be current by actor identity while its
-        // old domain snapshot is no longer the live contract.
-        if (candidate.action is DeclareAttackers) {
-            AttackDeclarationDomainSubmission.requireSupported(current)
-            AttackDeclarationDomainSubmission.requireSupported(candidate)
-            require(
-                candidate.attackDeclarationDomain == current.attackDeclarationDomain &&
-                    candidate.attackDeclarationDomainSupport == current.attackDeclarationDomainSupport
-            ) {
-                "Structured attack declaration domain is stale for the current action"
+        return classifyActionFailure {
+            require(candidate.action !is SubmitDecision && submitted !is SubmitDecision) {
+                "Structured action payloads are only valid for legal game actions"
             }
-        }
-        if (candidate.action is DeclareBlockers) {
-            BlockerDeclarationDomainSubmission.requireSupported(current)
-            BlockerDeclarationDomainSubmission.requireSupported(candidate)
-            require(
-                candidate.blockerDeclarationDomain == current.blockerDeclarationDomain &&
-                    candidate.blockerDeclarationDomainSupport == current.blockerDeclarationDomainSupport
-            ) {
-                "Structured blocker declaration domain is stale for the current action"
-            }
-        }
-        if (candidate.action is ActivateAbility) {
-            ManaColorDomainSubmission.requireSupported(current)
-            ManaColorDomainSubmission.requireSupported(candidate)
-            ManaColorDomainSubmission.requireCurrentDomain(candidate, current)
-        }
-        require(isCurrentActionCandidate(candidate.action, submitted)) {
-            "Structured action does not belong to the selected current legal candidate: $submitted"
-        }
-        ManaColorDomainSubmission.requireWithinRegisteredDomain(candidate, submitted)
 
-        return processAndCommit(submitted)
+            val currentActions = legalActions()
+            val current = currentActions.firstOrNull {
+                isCurrentActionCandidate(it.action, candidate.action)
+            }
+            require(current != null) {
+                "Action candidate is not in the current legal action set for ${agentToAct}: ${candidate.action}"
+            }
+
+            // A strict combat submission must never reach a compatibility path if the live producer can
+            // no longer publish a supported certificate. Compare the complete registered Rules
+            // certificate as well: the action handle may still be current by actor identity while its
+            // old domain snapshot is no longer the live contract.
+            if (candidate.action is DeclareAttackers) {
+                AttackDeclarationDomainSubmission.requireSupported(current)
+                AttackDeclarationDomainSubmission.requireSupported(candidate)
+                require(
+                    candidate.attackDeclarationDomain == current.attackDeclarationDomain &&
+                        candidate.attackDeclarationDomainSupport == current.attackDeclarationDomainSupport
+                ) {
+                    "Structured attack declaration domain is stale for the current action"
+                }
+            }
+            if (candidate.action is DeclareBlockers) {
+                BlockerDeclarationDomainSubmission.requireSupported(current)
+                BlockerDeclarationDomainSubmission.requireSupported(candidate)
+                require(
+                    candidate.blockerDeclarationDomain == current.blockerDeclarationDomain &&
+                        candidate.blockerDeclarationDomainSupport == current.blockerDeclarationDomainSupport
+                ) {
+                    "Structured blocker declaration domain is stale for the current action"
+                }
+            }
+            if (candidate.action is ActivateAbility) {
+                ManaColorDomainSubmission.requireSupported(current)
+                ManaColorDomainSubmission.requireSupported(candidate)
+                ManaColorDomainSubmission.requireCurrentDomain(candidate, current)
+            }
+            require(isCurrentActionCandidate(candidate.action, submitted)) {
+                "Structured action does not belong to the selected current legal candidate: $submitted"
+            }
+            ManaColorDomainSubmission.requireWithinRegisteredDomain(candidate, submitted)
+
+            processAndCommit(submitted)
+        }
     }
 
     private fun validateActionMembership(action: GameAction) {
@@ -525,6 +566,7 @@ class GameEnvironment private constructor(
         forked.stepCount = stepCount
         forked.maxSteps = maxSteps
         forked.diagnostics = diagnostics
+        forked.explicitFailureClosure = explicitFailureClosure
         forked.projectionGeneration = projectionGeneration
         return forked
     }
@@ -546,7 +588,8 @@ class GameEnvironment private constructor(
         stepCount: Int = 0,
         maxSteps: Int? = this.maxSteps,
         diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
-        projectionGeneration: Long = stepCount.toLong()
+        projectionGeneration: Long = stepCount.toLong(),
+        failureClosure: EpisodeClosureV1.Failed? = null,
     ) {
         require(stepCount >= 0) { "stepCount must not be negative" }
         require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
@@ -558,6 +601,7 @@ class GameEnvironment private constructor(
         this.stepCount = stepCount
         this.maxSteps = maxSteps
         this.diagnostics = diagnostics
+        this.explicitFailureClosure = failureClosure
         this.projectionGeneration = projectionGeneration
     }
 
@@ -638,6 +682,30 @@ class GameEnvironment private constructor(
         DecisionResponder(simulator, evaluator)
     }
 
+    /** Record only the first typed action/observation failure for this episode. */
+    internal fun recordFailure(reason: EpisodeFailureReason) {
+        if (explicitFailureClosure == null) {
+            explicitFailureClosure = EpisodeClosureV1.Failed(
+                stepCount = stepCount,
+                reason = reason,
+            )
+        }
+    }
+
+    private inline fun <T> classifyActionFailure(block: () -> T): T =
+        try {
+            block()
+        } catch (failure: UnsupportedPathFailure) {
+            recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
+            throw failure
+        } catch (failure: IllegalArgumentException) {
+            recordFailure(EpisodeFailureReason.PUBLIC_CHOICE_REJECTED)
+            throw failure
+        } catch (failure: RuntimeException) {
+            recordFailure(EpisodeFailureReason.ENGINE_EXCEPTION)
+            throw failure
+        }
+
     internal fun projectionCursor(perspectivePlayerId: EntityId): ProjectionCursor =
         ProjectionCursor(projectionGeneration, perspectivePlayerId)
 
@@ -681,7 +749,8 @@ class GameEnvironment private constructor(
                 winnerId = winnerId,
                 phase = state.phase,
                 step = state.step
-            )
+            ),
+            episodeClosure = episodeClosure,
         )
     }
 
