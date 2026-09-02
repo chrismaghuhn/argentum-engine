@@ -299,7 +299,7 @@ Only if real B0/trainer counters show additional observe() calls should a separa
 - No additional production files beyond the single reviewed canonicalizer change from Task 4
 - Existing contract tests and exact-pair acceptance tests only
 
-- [ ] **Step 1: Run focused public-contract gates.**
+- [x] **Step 1: Run focused public-contract gates.**
 
 Run the repository wrapper first:
 
@@ -319,11 +319,11 @@ If the Windows wrapper is BLOCKED by WinError 193, run the native fallback separ
 
 Expected result: every selected test reports PASS with zero failures; a blocked wrapper and a passing native fallback remain separately labeled.
 
-- [ ] **Step 2: Run exact-pair replay and B0 harness checks.**
+- [x] **Step 2: Run exact-pair replay and B0 harness checks.**
 
 Run the existing exact-pair replay filter and B0HarnessTimeoutPolicyTest. If CompactReplay still rejects the current ExplicitV3 payload with “PaymentStrategy.ExplicitV3 requires CompactReplay v5 or newer”, record FAIL and ReplayFingerprint overhead=NOT_RUN. Do not alter the replay contract to make this gate pass.
 
-- [ ] **Step 3: Verify the final diff and workload invariants.**
+- [x] **Step 3: Verify the final diff and workload invariants.**
 
 Confirm zero changes to ActionProcessor/Rules semantics, external policy control/order, locked decks, RNG, legal candidate membership, observation/privacy fields, decision completeness, replay payloads, and ZERO-UNSUPPORTED behavior. Report exact PASS, FAIL, NOT_RUN, SKIPPED, or BLOCKED status for every command. Keep DATA_TRUSTED=NO until independent review accepts the exact optimization commit.
 
@@ -368,5 +368,6 @@ NEXT=B1_OPTIMIZATION_AFTER_INDEPENDENT_REVIEW
 Task 4 is implemented on the approved branch. The diagnostic production probe and its
 ThreadLocal hooks were removed before the matched benchmark; the remaining production change is
 the stable decorate-sort for legal-action semantic fingerprints plus its equal-key contract test.
-Task 5 and Task 6 remain unexecuted and unauthorized. `DATA_TRUSTED=NO` remains in force until the
-optimization commit is independently reviewed and the final trust gates are authorized.
+Task 5 is accepted as a NOT_PROVEN cache-relevance result, and Task 6 executable gates are
+complete. The exact-pair replay/version failure is reproduced on the baseline and Task-4 heads;
+Hosted CI is NOT_ESTABLISHED, so `DATA_TRUSTED=NO` remains in force.

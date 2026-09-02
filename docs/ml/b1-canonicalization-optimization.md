@@ -1,6 +1,8 @@
-# B1 Canonicalization Optimization — Task 4 Handoff
+# B1 Canonicalization Optimization — Task 6 Final Gate Report
 
-Status: Task 4 implemented and benchmarked. Final optimization acceptance remains pending.
+Status: Task 6 executable gates completed. The optimization is accepted at the code-review level;
+final trust is blocked only by the reproduced pre-existing CompactReplay version failure and
+unestablished hosted CI.
 
 ```text
 BASE=d0f4fe9eddb377fbddd7e675ec396ecbabe254d5
@@ -9,9 +11,17 @@ PRODUCTION_OPTIMIZATIONS=1
 PRODUCTION_SEMANTIC_CHANGES=0
 DIAGNOSTIC_PRODUCTION_HOOKS=NO
 PROBE_DEFAULT_ENABLED=NO
-TASK5=NOT_AUTHORIZED
-TASK6=NOT_AUTHORIZED
-CODE_REVIEW_PASS=PENDING
+TASK5=ACCEPTED
+TASK6=EXECUTED_WITH_PREEXISTING_REPLAY_BLOCKER
+TASK_4_EXACT_SHA=036205719a0ede84d7d9307a0bcca1c1b741fa4c
+CODE_REVIEW_PASS=YES
+HOSTED_CI_PASS=NOT_ESTABLISHED
+COMPACT_REPLAY=FAIL
+REPLAYFINGERPRINT_OVERHEAD=NOT_RUN
+EXACT_PAIR_BASELINE=d0f4fe9eddb377fbddd7e675ec396ecbabe254d5:FAIL
+EXACT_PAIR_TASK4=036205719a0ede84d7d9307a0bcca1c1b741fa4c:FAIL
+PREEXISTING_REPLAY_BLOCKER=PROVEN
+FINAL_TRUST_STATUS=BLOCKED_BY_PREEXISTING_REPLAY_VERSION
 DATA_TRUSTED=NO
 ```
 
@@ -55,8 +65,8 @@ observation path.
 
 All runs use the existing locked Akiri/Chevill decks, deterministic external policy, strict Gym
 path, and maxSteps=2,000. JFR remains enabled for the existing profiler, but the workload timer
-and JVM after-snapshot stop before JFR stop/dump. These are matched Task 4 runs, not final hosted
-acceptance evidence.
+and JVM after-snapshot stop before JFR stop/dump. These are matched Task 4 runs, not hosted CI
+evidence. Hosted CI remains NOT_ESTABLISHED.
 
 | Workload | Episodes | Transitions | Semantic decisions | Workload wall | Episodes/sec | Transitions/sec |
 |---|---:|---:|---:|---:|---:|---:|
@@ -85,11 +95,20 @@ GREEN after fix: PASS; test passed with m=26, n=26
 Equal-Key canonicalization test: PASS
 ObservationCanonicalizationTest + StateDigestTest + profiler skip: PASS
 Probe-free witness/normal4/corpus8/replay2 baseline: PASS
-Task 5 cache characterization: NOT_RUN
-Task 6 final trust/replay acceptance: NOT_RUN
-CompactReplay/ReplayFingerprint comparison: NOT_RUN
+Task 5 cache characterization: PASS as a separate NOT_PROVEN relevance result
+Task 6 focused public-contract gates: PASS, 72/72 tests
+Task 6 payment-domain contract gates: PASS, 50/50 tests
+Task 6 B0HarnessTimeoutPolicyTest: PASS, 3/3 tests
+Task 6 exact-pair replay gate: FAIL, 1 failed and 38 skipped out of 39; ExplicitV3/v5 precondition
+CompactReplay/ReplayFingerprint overhead: NOT_RUN after the exact-pair bridge failure
+Exact-pair baseline reproduction on d0f4fe9e: FAIL with the identical ExplicitV3/v5 message
 Hosted CI: NOT_ESTABLISHED
+DATA_TRUSTED: NO
 ```
 
-The final optimization commit must still receive independent review and explicit Task 6
-authorization before any `DATA_TRUSTED=YES` or final acceptance status is possible.
+The Task 4 production commit is independently reviewed as CODE_REVIEW_PASS=YES. The exact-pair
+gate failed identically on both the exact baseline d0f4fe9e... and the Task-4 head
+036205719a..., proving the failure is pre-existing. It remains a separate replay/version blocker;
+no replay contract was changed to bypass it. The B1 plan is complete at this authorization
+boundary, but DATA_TRUSTED remains NO because Hosted CI is not established and the replay gate is
+incomplete.
