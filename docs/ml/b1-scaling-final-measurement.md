@@ -89,6 +89,9 @@ same accepted source head; the previously accepted scaling numbers are not rerun
 ```text
 BENCHMARK_CONTRACT=PASS (captured by the focused v2 characterization run)
 SCALING_BENCHMARK_SCHEMA_VERSION=argentum-b1-scaling-v2
+STRUCTURED_LATENCY_BENCHMARK_SCHEMA_VERSION=argentum-b1-structured-latency-v1
+RESET_HEAVY_BENCHMARK_SCHEMA_VERSION=argentum-b1-reset-heavy-v1
+BENCHMARK_CONTRACT_SCHEMA_VERSION=argentum-b1-benchmark-contract-v1
 GRADLE_TASK=:gym:test
 RUN_MODE=native-gradle-jdk21
 CPU_IDENTITY=AMD Ryzen 7 5800X 8-Core Processor; cores=8; logical=16; maxClockSpeed=3801 MHz
@@ -242,6 +245,17 @@ RESET_HEAVY_MEMORY_TREND=first/last delta -181,186,128 B across 256 samples
 
 This closes the small-sample reset percentile gap for B1 evidence without claiming that one
 in-process reset trend is a fresh-JVM retained-memory study.
+
+The post-review artifact-schema confirmation ran at this exact source head:
+
+```text
+ARTIFACT_SCHEMA_CONFIRMATION=PASS
+STRUCTURED_LATENCY_ARTIFACT_SCHEMA=argentum-b1-structured-latency-v1
+RESET_HEAVY_ARTIFACT_SCHEMA=argentum-b1-reset-heavy-v1
+EMBEDDED_CONTRACT_SCHEMA=argentum-b1-benchmark-contract-v1
+STRUCTURED_ARTIFACT_JSON=PASS (15,953 normal / 47 structured steps)
+RESET_HEAVY_ARTIFACT_JSON=PASS (256 resets)
+```
 
 Relative to the one-environment median, measured speedup/ideal efficiency was:
 

@@ -65,6 +65,10 @@ private const val B1_SCALING_ENGINE_SEED_CORPUS_IDENTITY =
     "524C5EA743D266E4191AEDBA7E0D42FC6F6EE8430E68506AF776CB161E6D0DBF"
 private const val B1_SCALING_POLICY_SEED_CORPUS_IDENTITY =
     "F763D209C4E03BEEF9FCFAEFA7507E2A7EBF48A440F55137E835C819FAEF54F0"
+private const val B1_SCALING_BENCHMARK_SCHEMA_VERSION = "argentum-b1-scaling-v2"
+private const val B1_STRUCTURED_LATENCY_SCHEMA_VERSION = "argentum-b1-structured-latency-v1"
+private const val B1_RESET_HEAVY_SCHEMA_VERSION = "argentum-b1-reset-heavy-v1"
+private const val B1_BENCHMARK_CONTRACT_SCHEMA_VERSION = "argentum-b1-benchmark-contract-v1"
 
 private val b1ScalingJson = Json {
     prettyPrint = true
@@ -148,6 +152,7 @@ class B1ScalingContractTest : FunSpec({
         check(contract.policySeedCorpusIdentitySha256 == B1_SCALING_POLICY_SEED_CORPUS_IDENTITY) {
             "Policy seed corpus identity changed without an explicit policy-seed update"
         }
+        check(contract.contractSchemaVersion == B1_BENCHMARK_CONTRACT_SCHEMA_VERSION)
         check(contract.lockedDeckHashesSha256.size == 2)
         check(contract.lockedUniqueCardCount == 146)
         println(
@@ -913,7 +918,7 @@ private fun runB1ScalingMeasurement() {
     }
 
     val report = B1ScalingReport(
-        benchmarkSchemaVersion = "argentum-b1-scaling-v2",
+        benchmarkSchemaVersion = B1_SCALING_BENCHMARK_SCHEMA_VERSION,
         baseOriginMain = B1_SCALING_BASE_ORIGIN_MAIN,
         acceptedCharacterizationHead = B1_SCALING_ACCEPTED_HEAD,
         sourceHead = B1_SCALING_ACCEPTED_HEAD,
@@ -976,6 +981,7 @@ private fun runB1StructuredLatencyMeasurement() {
             tracker = ConcurrencyTracker(),
         )
         val report = B1StructuredLatencyReport(
+            benchmarkSchemaVersion = B1_STRUCTURED_LATENCY_SCHEMA_VERSION,
             sourceHead = B1_SCALING_ACCEPTED_HEAD,
             workloadName = "corpus8-locked-akiri-chevill",
             warmupStepsPerEnvironment = warmupSteps,
@@ -1053,6 +1059,7 @@ private fun runB1ResetHeavyMeasurement() {
         val allocationBytes = positiveDelta(after.threadAllocatedBytes, before.threadAllocatedBytes)
         val gc = gcDelta(before, after)
         val report = B1ResetHeavyReport(
+            benchmarkSchemaVersion = B1_RESET_HEAVY_SCHEMA_VERSION,
             sourceHead = B1_SCALING_ACCEPTED_HEAD,
             workloadName = "single-env-reset-heavy-locked-akiri-chevill",
             resets = resets,
@@ -1761,6 +1768,7 @@ private data class B1ScalingReport(
 
 @Serializable
 private data class B1StructuredLatencyReport(
+    val benchmarkSchemaVersion: String,
     val sourceHead: String,
     val workloadName: String,
     val warmupStepsPerEnvironment: Int,
@@ -1782,6 +1790,7 @@ private data class B1StructuredLatencyReport(
 
 @Serializable
 private data class B1ResetHeavyReport(
+    val benchmarkSchemaVersion: String,
     val sourceHead: String,
     val workloadName: String,
     val resets: Int,
@@ -1820,6 +1829,7 @@ private data class ScalingHardwareMetadata(
 
 @Serializable
 private data class B1ScalingBenchmarkContract(
+    val contractSchemaVersion: String,
     val hardware: ScalingHardwareMetadata,
     val gradleTask: String,
     val runMode: String,
@@ -2168,6 +2178,7 @@ private fun buildScalingBenchmarkContract(): B1ScalingBenchmarkContract {
         "${spec.label}|policySeed=${spec.policySeed()}"
     }
     return B1ScalingBenchmarkContract(
+        contractSchemaVersion = B1_BENCHMARK_CONTRACT_SCHEMA_VERSION,
         hardware = hardwareMetadata(),
         gradleTask = System.getProperty("b1.scaling.gradleTask", "NOT_SUPPLIED"),
         runMode = System.getProperty("b1.scaling.runMode", "NOT_SUPPLIED"),
