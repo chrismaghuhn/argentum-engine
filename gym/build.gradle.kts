@@ -20,7 +20,7 @@ tasks.register<Test>("environmentV1AcceptanceTest") {
 // B1 performance profiling is an opt-in test-only workload. Forward its controls to the test
 // worker so Gradle's daemon properties cannot silently leave the profiler disabled or stale.
 tasks.withType<Test>().configureEach {
-    for (property in listOf("b1.profile", "b1.workload", "b1.mode", "b1.outputDir")) {
+    for (property in listOf("b1.profile", "b1.characterize", "b1.workload", "b1.mode", "b1.outputDir")) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
 }

@@ -14,6 +14,7 @@ import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.gym.contract.B1CanonicalizationProbe
 import com.wingedsheep.gym.contract.ObservationCanonicalizer
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.StateDigest
@@ -47,12 +48,14 @@ import kotlin.time.Duration.Companion.hours
 /**
  * Opt-in, test-only performance measurement for the trusted Akiri/Chevill Gym path.
  *
- * This test intentionally lives under src/test and is disabled unless b1.profile=true. It drives
- * the same public MultiEnvService/DeterministicExternalPolicy boundary as the exact-pair acceptance
- * test. It does not change production code, decks, policy choices, replay contracts, or horizons.
+ * This test intentionally lives under src/test and is disabled unless b1.profile=true or
+ * b1.characterize=true. It drives the same public MultiEnvService/DeterministicExternalPolicy
+ * boundary as the exact-pair acceptance test. It does not change decks, policy choices, replay
+ * contracts, or horizons; characterization only activates disabled scalar diagnostics.
  */
 class B1PerformanceBaselineTest : FunSpec({
-    val enabled = System.getProperty("b1.profile") == "true"
+    val enabled = System.getProperty("b1.profile") == "true" ||
+        System.getProperty("b1.characterize") == "true"
 
     test("writes the requested B1 performance baseline").config(
         enabled = enabled,
@@ -120,14 +123,36 @@ private fun runProfiledWorkload() {
 
     val recording = openJfrRecording()
     val countersBefore = JvmSnapshot.capture()
+    val characterizationSession = if (
+        System.getProperty("b1.characterize") == "true" && mode == "baseline"
+    ) {
+        B1CanonicalizationProbe.start()
+    } else {
+        null
+    }
     val workloadStart = System.nanoTime()
-    val measurement = try {
-        runWorkload(specs, mode)
+    var measurement: WorkloadMeasurement? = null
+    var workloadWallNanos = 0L
+    var countersAfter: JvmSnapshot? = null
+    var characterizationSnapshot: B1CanonicalizationProbe.Snapshot? = null
+    var recordingStopNanos = 0L
+    var recordingDumpNanos = 0L
+    try {
+        measurement = runWorkload(specs, mode)
     } finally {
+        workloadWallNanos = System.nanoTime() - workloadStart
+        countersAfter = JvmSnapshot.capture()
+        characterizationSnapshot = characterizationSession?.let { session ->
+            B1CanonicalizationProbe.stop(session)
+        }
         recording?.let { current ->
             try {
+                val stopStart = System.nanoTime()
                 current.stop()
+                recordingStopNanos = System.nanoTime() - stopStart
+                val dumpStart = System.nanoTime()
                 current.dump(jfrPath)
+                recordingDumpNanos = System.nanoTime() - dumpStart
             } catch (failure: Exception) {
                 println("B1_JFR=NOT_RUN reason=" + (failure.message ?: failure::class.simpleName))
             } finally {
@@ -135,15 +160,19 @@ private fun runProfiledWorkload() {
             }
         }
     }
-    val workloadWallNanos = System.nanoTime() - workloadStart
-    val countersAfter = JvmSnapshot.capture()
+    val measured = checkNotNull(measurement) { "B1 profiling workload did not complete" }
+    val measuredAfter = checkNotNull(countersAfter) {
+        "B1 profiling after-snapshot was not captured"
+    }
     val artifactStart = System.nanoTime()
-    val finalMeasurement = measurement.toMetrics(
+    val finalMeasurement = measured.toMetrics(
         workload = workloadName,
         mode = mode,
         workloadWallNanos = workloadWallNanos,
         countersBefore = countersBefore,
-        countersAfter = countersAfter,
+        countersAfter = measuredAfter,
+        recordingStopNanos = recordingStopNanos,
+        recordingDumpNanos = recordingDumpNanos,
         jfrPath = if (Files.exists(jfrPath)) jfrPath.toString() else null,
     )
     val encoded = b1Json.encodeToString(BaselineMetrics.serializer(), finalMeasurement)
@@ -160,8 +189,42 @@ private fun runProfiledWorkload() {
     println("B1_TRANSITIONS=" + finalMeasurement.externalTransitions)
     println("B1_SEMANTIC_DECISIONS=" + finalMeasurement.semanticDecisions)
     println("B1_WALL_SECONDS=" + formatSeconds(finalMeasurement.workloadWallNanos))
+    println("B1_JFR_STOP_SECONDS=" + formatSeconds(finalMeasurement.recordingStopNanos))
+    println("B1_JFR_DUMP_SECONDS=" + formatSeconds(finalMeasurement.recordingDumpNanos))
     println("B1_SERIALIZATION_SECONDS=" + formatSeconds(serializationNanos))
     println("B1_JSON_WRITE_SECONDS=" + formatSeconds(jsonWriteNanos))
+    characterizationSnapshot?.let { snapshot ->
+        val characterization = snapshot.toCharacterization(
+            workload = workloadName,
+            mode = mode,
+            measurement = finalMeasurement,
+        )
+        val characterizationPath = outputDir.resolve(
+            "canonicalization-" + workloadName + "-" + mode + ".json",
+        )
+        Files.writeString(
+            characterizationPath,
+            b1Json.encodeToString(CanonicalizationMetrics.serializer(), characterization),
+        )
+        println("B1_CANONICALIZATION_PATH=" + characterizationPath)
+        println("B1_CANONICALIZATION_SEMANTIC_JSON_CALLS=" + snapshot.semanticJsonCalls)
+        println("B1_CANONICALIZATION_STATE_DIGEST_CALLS=" + snapshot.stateDigestCalls)
+        println("B1_CANONICALIZATION_STATE_DIGEST_INPUT_BYTES=" + snapshot.stateDigestInputBytes)
+        snapshot.largestSemanticCall?.let { call ->
+            println("B1_CANONICALIZATION_MAX_N=" + call.legalActionCount)
+            println("B1_CANONICALIZATION_MAX_F=" + call.semanticActionFingerprintCalls)
+            println("B1_CANONICALIZATION_MAX_M=" + call.legalActionSortKeyEvaluations)
+            println("B1_CANONICALIZATION_MAX_STRUCTURED_M=" + call.structuredDomainSortKeyEvaluations)
+            println(
+                "B1_CANONICALIZATION_SORT_KEY_DUPLICATE=" +
+                    if (call.legalActionSortKeyEvaluations > call.semanticActionFingerprintCalls) {
+                        "YES"
+                    } else {
+                        "NOT_FOUND"
+                    },
+            )
+        }
+    }
     check(finalMeasurement.status == "PASS") {
         "B1 profiling workload failed: " + finalMeasurement.status
     }
@@ -182,6 +245,7 @@ private fun openJfrRecording(): Recording? =
 private fun runWorkload(specs: List<EpisodeSpec>, mode: String): WorkloadMeasurement {
     val baseline = PassMetrics("baseline")
     val captureTraces = mutableListOf<CapturedEpisode>()
+    val baselineJvmBefore = JvmSnapshot.capture()
     val baselineStart = System.nanoTime()
     runPass(
         specs = specs,
@@ -190,15 +254,20 @@ private fun runWorkload(specs: List<EpisodeSpec>, mode: String): WorkloadMeasure
         replayTraces = captureTraces,
     )
     baseline.wallNanos = System.nanoTime() - baselineStart
+    val baselineJvmAfter = JvmSnapshot.capture()
 
+    var replayJvm: PassJvmMeasurement? = null
     val replay = if (mode == "replay") {
         check(captureTraces.size == specs.size) {
             "Replay capture produced " + captureTraces.size + " traces for " + specs.size + " episodes"
         }
         val verifyPass = PassMetrics("replay-verify")
+        val replayJvmBefore = JvmSnapshot.capture()
         val verifyStart = System.nanoTime()
         runReplayPass(captureTraces, verifyPass)
         verifyPass.wallNanos = System.nanoTime() - verifyStart
+        val replayJvmAfter = JvmSnapshot.capture()
+        replayJvm = PassJvmMeasurement(replayJvmBefore, replayJvmAfter)
         verifyPass
     } else {
         null
@@ -207,6 +276,8 @@ private fun runWorkload(specs: List<EpisodeSpec>, mode: String): WorkloadMeasure
     return WorkloadMeasurement(
         baseline = baseline,
         replay = replay,
+        baselineJvm = PassJvmMeasurement(baselineJvmBefore, baselineJvmAfter),
+        replayJvm = replayJvm,
         status = "PASS",
     )
 }
@@ -777,6 +848,8 @@ private class PassMetrics(
 private data class WorkloadMeasurement(
     val baseline: PassMetrics,
     val replay: PassMetrics?,
+    val baselineJvm: PassJvmMeasurement,
+    val replayJvm: PassJvmMeasurement?,
     val status: String,
 ) {
     fun toMetrics(
@@ -785,15 +858,10 @@ private data class WorkloadMeasurement(
         workloadWallNanos: Long,
         countersBefore: JvmSnapshot,
         countersAfter: JvmSnapshot,
+        recordingStopNanos: Long,
+        recordingDumpNanos: Long,
         jfrPath: String?,
     ): BaselineMetrics {
-        val gc = countersAfter.gc.mapValues { (name, after) ->
-            val before = countersBefore.gc[name] ?: GcSnapshot(0, 0)
-            GcDelta(
-                collectionCount = delta(after.collectionCount, before.collectionCount),
-                collectionTimeMillis = delta(after.collectionTimeMillis, before.collectionTimeMillis),
-            )
-        }
         return BaselineMetrics(
             baseHead = B1_BASE_HEAD,
             profileWorkload = workload,
@@ -811,7 +879,12 @@ private data class WorkloadMeasurement(
             baselinePass = baseline.toSnapshot(),
             replayPass = replay?.toSnapshot(),
             cpu = CpuMetrics.from(countersBefore, countersAfter, workloadWallNanos),
-            allocation = AllocationMetrics.from(countersBefore, countersAfter, baseline.transitions),
+            allocation = baselineJvm.allocation(baseline.transitions),
+            replayAllocation = replay?.let { pass ->
+                replayJvm?.allocation(pass.transitions)
+            },
+            recordingStopNanos = recordingStopNanos,
+            recordingDumpNanos = recordingDumpNanos,
             memory = MemoryMetrics(
                 heapUsedStartBytes = countersBefore.heapUsedBytes,
                 heapUsedEndBytes = countersAfter.heapUsedBytes,
@@ -820,10 +893,33 @@ private data class WorkloadMeasurement(
                     max(baseline.heapPeakBytes, replay?.heapPeakBytes ?: 0),
                 ),
             ),
-            gc = gc,
+            gc = gcDelta(countersBefore, countersAfter),
+            baselineGc = baselineJvm.gcDelta(),
+            replayGc = replayJvm?.gcDelta(),
             jfrPath = jfrPath,
         )
     }
+}
+
+private data class PassJvmMeasurement(
+    val before: JvmSnapshot,
+    val after: JvmSnapshot,
+) {
+    fun allocation(transitions: Long): AllocationMetrics =
+        AllocationMetrics.from(before, after, transitions)
+
+    fun gcDelta(): Map<String, GcDelta> = gcDelta(before, after)
+}
+
+private fun gcDelta(
+    before: JvmSnapshot,
+    after: JvmSnapshot,
+): Map<String, GcDelta> = after.gc.mapValues { (name, afterGc) ->
+    val beforeGc = before.gc[name] ?: GcSnapshot(0, 0)
+    GcDelta(
+        collectionCount = delta(afterGc.collectionCount, beforeGc.collectionCount),
+        collectionTimeMillis = delta(afterGc.collectionTimeMillis, beforeGc.collectionTimeMillis),
+    )
 }
 
 @Serializable
@@ -845,10 +941,104 @@ private data class BaselineMetrics(
     val replayPass: PassSnapshot? = null,
     val cpu: CpuMetrics,
     val allocation: AllocationMetrics,
+    val replayAllocation: AllocationMetrics? = null,
+    val recordingStopNanos: Long = 0,
+    val recordingDumpNanos: Long = 0,
     val memory: MemoryMetrics,
     val gc: Map<String, GcDelta>,
+    val baselineGc: Map<String, GcDelta> = emptyMap(),
+    val replayGc: Map<String, GcDelta>? = null,
     val jfrPath: String? = null,
 )
+
+@Serializable
+private data class CanonicalizationMetrics(
+    val baseHead: String,
+    val profileWorkload: String,
+    val mode: String,
+    val productionOptimizations: Int,
+    val productionSemanticChanges: Int,
+    val diagnosticProductionHooks: Boolean,
+    val probeDefaultEnabled: Boolean,
+    val episodes: Int,
+    val transitions: Long,
+    val semanticDecisions: Long,
+    val externalTransitions: Long,
+    val engineProgress: Long,
+    val observationBuilderCalls: Long,
+    val legalActionEnumerationCalls: Long,
+    val semanticJsonCalls: Long,
+    val wireJsonCalls: Long,
+    val semanticActionFingerprintCalls: Long,
+    val legalActionSortKeyEvaluations: Long,
+    val structuredDomainSortKeyEvaluations: Long,
+    val finalCanonicalizationCalls: Long,
+    val semanticJsonChars: Long,
+    val wireJsonChars: Long,
+    val stateDigestCalls: Long,
+    val stateDigestInputBytes: Long,
+    val sha256Calls: Long,
+    val digestHexFormattingCalls: Long,
+    val maxN: Int? = null,
+    val maxF: Long? = null,
+    val maxM: Long? = null,
+    val maxStructuredM: Long? = null,
+    val maxSemanticChars: Int? = null,
+)
+
+private fun B1CanonicalizationProbe.Snapshot.toCharacterization(
+    workload: String,
+    mode: String,
+    measurement: BaselineMetrics,
+): CanonicalizationMetrics {
+    check(mode == "baseline") { "Canonicalization characterization requires baseline mode" }
+    check(semanticJsonCalls == stateDigestCalls) {
+        "Expected one semanticJson call per baseline StateDigest call, got semanticJsonCalls=" +
+            semanticJsonCalls + ", stateDigestCalls=" + stateDigestCalls
+    }
+    check(sha256Calls == stateDigestCalls) {
+        "Expected one SHA-256 call per StateDigest call, got sha256Calls=" +
+            sha256Calls + ", stateDigestCalls=" + stateDigestCalls
+    }
+    check(digestHexFormattingCalls == stateDigestCalls) {
+        "Expected one digest formatter call per StateDigest call, got digestHexFormattingCalls=" +
+            digestHexFormattingCalls + ", stateDigestCalls=" + stateDigestCalls
+    }
+    val largest = largestSemanticCall
+    return CanonicalizationMetrics(
+        baseHead = B1_BASE_HEAD,
+        profileWorkload = workload,
+        mode = mode,
+        productionOptimizations = 0,
+        productionSemanticChanges = 0,
+        diagnosticProductionHooks = true,
+        probeDefaultEnabled = false,
+        episodes = measurement.episodes,
+        transitions = measurement.transitions,
+        semanticDecisions = measurement.semanticDecisions,
+        externalTransitions = measurement.externalTransitions,
+        engineProgress = measurement.engineProgress,
+        observationBuilderCalls = observationBuilderCalls,
+        legalActionEnumerationCalls = legalActionEnumerationCalls,
+        semanticJsonCalls = semanticJsonCalls,
+        wireJsonCalls = wireJsonCalls,
+        semanticActionFingerprintCalls = semanticActionFingerprintCalls,
+        legalActionSortKeyEvaluations = legalActionSortKeyEvaluations,
+        structuredDomainSortKeyEvaluations = structuredDomainSortKeyEvaluations,
+        finalCanonicalizationCalls = finalCanonicalizationCalls,
+        semanticJsonChars = semanticJsonChars,
+        wireJsonChars = wireJsonChars,
+        stateDigestCalls = stateDigestCalls,
+        stateDigestInputBytes = stateDigestInputBytes,
+        sha256Calls = sha256Calls,
+        digestHexFormattingCalls = digestHexFormattingCalls,
+        maxN = largest?.legalActionCount,
+        maxF = largest?.semanticActionFingerprintCalls,
+        maxM = largest?.legalActionSortKeyEvaluations,
+        maxStructuredM = largest?.structuredDomainSortKeyEvaluations,
+        maxSemanticChars = largest?.semanticChars,
+    )
+}
 
 @Serializable
 private data class PassSnapshot(
