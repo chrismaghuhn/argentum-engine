@@ -59,13 +59,21 @@ internal object ObservationCanonicalizer {
         }
 
         semantic["legalActions"] = JsonArray(
-            observation.legalActions
-                .map(::semanticActionFingerprint)
-                .sortedBy { canonicalize(it).toString() }
+            sortSemanticActionFingerprints(
+                observation.legalActions.map(::semanticActionFingerprint),
+            )
         )
 
         return canonicalize(JsonObject(semantic)).toString()
     }
+
+    /** Stable decorate-sort for legal-action semantic fingerprints. */
+    internal fun sortSemanticActionFingerprints(
+        fingerprints: List<JsonObject>,
+    ): List<JsonObject> = fingerprints
+        .map { fingerprint -> fingerprint to canonicalize(fingerprint).toString() }
+        .sortedBy { (_, sortKey) -> sortKey }
+        .map { (fingerprint, _) -> fingerprint }
 
     /** The structured, transport-ID-free semantic identity of one legal action. */
     fun semanticActionFingerprint(action: LegalActionView): JsonObject = buildJsonObject {
