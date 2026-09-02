@@ -17,8 +17,8 @@ tasks.register<Test>("environmentV1AcceptanceTest") {
     include("**/EnvironmentV1ExactPairAcceptanceTest*")
 }
 
-// B1 performance profiling is an opt-in test-only workload. Forward its controls to the test
-// worker so Gradle's daemon properties cannot silently leave the profiler disabled or stale.
+// B1 performance/scaling characterization is opt-in test-only work. Forward its controls to the
+// test worker so Gradle's daemon properties cannot silently leave a measurement disabled or stale.
 tasks.withType<Test>().configureEach {
     for (property in listOf(
         "b1.profile",
@@ -33,6 +33,14 @@ tasks.withType<Test>().configureEach {
         "b1.scaling.isolation",
         "b1.scaling.isolationOutputDir",
         "kotest.filter.tests",
+        "b1.scaling.gradleTask",
+        "b1.scaling.runMode",
+        "b1.latency",
+        "b1.latency.warmupSteps",
+        "b1.latency.outputDir",
+        "b1.resetHeavy",
+        "b1.resetHeavy.resets",
+        "b1.resetHeavy.outputDir",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

@@ -26,13 +26,19 @@ import com.wingedsheep.gym.service.PlayerSpec
 import com.wingedsheep.gym.service.StepRequest
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.serialization.CardSerialization
 import io.kotest.core.spec.style.FunSpec
 import jdk.jfr.Configuration
 import jdk.jfr.Recording
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import java.lang.management.ManagementFactory
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -54,6 +60,7 @@ private const val B1_SCALING_EPISODES = 8
 private const val B1_SCALING_DEFAULT_REPETITIONS = 3
 private const val B1_SCALING_DEFAULT_WARMUP_STEPS = 256
 private const val B1_SCALING_MEMORY_STABILIZATION_MILLIS = 100L
+private const val B1_SCALING_DEFAULT_RESET_HEAVY_RESETS = 256
 
 private val b1ScalingJson = Json {
     prettyPrint = true
@@ -81,6 +88,30 @@ class B1ScalingMeasurementTest : FunSpec({
         timeout = 4.hours,
     ) {
         runB1ScalingMeasurement()
+    }
+})
+
+/** Opt-in test-only latency characterization with normal and structured steps split. */
+class B1StructuredLatencyMeasurementTest : FunSpec({
+    val enabled = System.getProperty("b1.latency") == "true"
+
+    test("characterizes normal and structured pending-decision latency separately").config(
+        enabled = enabled,
+        timeout = 2.hours,
+    ) {
+        runB1StructuredLatencyMeasurement()
+    }
+})
+
+/** Opt-in test-only reset-heavy measurement; it never advances a game action. */
+class B1ResetHeavyMeasurementTest : FunSpec({
+    val enabled = System.getProperty("b1.resetHeavy") == "true"
+
+    test("measures a bounded reset-heavy workload").config(
+        enabled = enabled,
+        timeout = 2.hours,
+    ) {
+        runB1ResetHeavyMeasurement()
     }
 })
 
@@ -845,6 +876,7 @@ private fun runB1ScalingMeasurement() {
         acceptedCharacterizationHead = B1_SCALING_ACCEPTED_HEAD,
         sourceHead = B1_SCALING_ACCEPTED_HEAD,
         hardware = hardwareMetadata(),
+        benchmarkContract = buildScalingBenchmarkContract(),
         warmupStepsPerEnvironment = warmupSteps,
         measuredRepetitions = repetitions,
         environments = conditions,
@@ -870,6 +902,144 @@ private fun runB1ScalingMeasurement() {
                 " medianEpisodesPerSecond=" + formatDouble(condition.medianEpisodesPerSecond) +
                 " maxConcurrency=" + condition.actualConcurrency.maxConcurrentCalls,
         )
+    }
+}
+
+private fun runB1StructuredLatencyMeasurement() {
+    val warmupSteps = positiveProperty("b1.latency.warmupSteps", B1_SCALING_DEFAULT_WARMUP_STEPS)
+    val outputDir = Path.of(
+        System.getProperty(
+            "b1.latency.outputDir",
+            Path.of(System.getProperty("user.dir"), "build", "reports", "b1-latency").toString(),
+        ),
+    )
+    Files.createDirectories(outputDir)
+    val reportPath = outputDir.resolve("b1-structured-latency.json")
+    Files.deleteIfExists(reportPath)
+
+    val registry = b1ScalingRegistry()
+    val service = MultiEnvService(registry, workerPool = EnvWorkerPool(1))
+    val assignments = arrayOf(b1ScalingCorpus)
+    val spec = b1ScalingCorpus.first()
+    val created = service.create(spec.config())
+    val slots = listOf(ScalingSlot(created.envId, trainingObservation(created.observation)))
+    try {
+        warmup(service, slots, assignments, warmupSteps)
+        val repetition = measureRepetition(
+            service = service,
+            slots = slots,
+            assignments = assignments,
+            repetition = 0,
+            referenceHolder = ReferenceTrajectoryHolder(),
+            tracker = ConcurrencyTracker(),
+        )
+        val report = B1StructuredLatencyReport(
+            sourceHead = B1_SCALING_ACCEPTED_HEAD,
+            workloadName = "corpus8-locked-akiri-chevill",
+            warmupStepsPerEnvironment = warmupSteps,
+            episodes = repetition.episodes,
+            externalTransitions = repetition.externalTransitions,
+            observations = repetition.observations,
+            publicLegalCandidates = repetition.publicLegalCandidates,
+            structuredDecisionObservations = repetition.structuredDecisionObservations,
+            normalStepLatency = repetition.normalStepLatency,
+            structuredPendingStepLatency = repetition.structuredPendingStepLatency,
+            resetLatency = repetition.resetLatency,
+            allocationPerExternalTransition = repetition.allocationPerTransition,
+            gcCollections = repetition.gcCollections,
+            gcTimeMillis = repetition.gcTimeMillis,
+            semanticTrajectory = repetition.semanticTrajectory,
+            benchmarkContract = buildScalingBenchmarkContract(),
+            dataTrusted = "NO",
+        )
+        Files.writeString(
+            reportPath,
+            b1ScalingJson.encodeToString(B1StructuredLatencyReport.serializer(), report),
+        )
+        println("B1_STRUCTURED_LATENCY_PATH=" + reportPath)
+        println("B1_STRUCTURED_LATENCY=PASS")
+    } finally {
+        service.dispose(service.listEnvs())
+        service.workerPool.close()
+    }
+}
+
+private fun runB1ResetHeavyMeasurement() {
+    val resets = positiveProperty("b1.resetHeavy.resets", B1_SCALING_DEFAULT_RESET_HEAVY_RESETS)
+    val outputDir = Path.of(
+        System.getProperty(
+            "b1.resetHeavy.outputDir",
+            Path.of(System.getProperty("user.dir"), "build", "reports", "b1-reset-heavy").toString(),
+        ),
+    )
+    Files.createDirectories(outputDir)
+    val reportPath = outputDir.resolve("b1-reset-heavy.json")
+    Files.deleteIfExists(reportPath)
+
+    val registry = b1ScalingRegistry()
+    val service = MultiEnvService(registry, workerPool = EnvWorkerPool(1))
+    val spec = b1ScalingCorpus.first()
+    val created = service.create(spec.config())
+    try {
+        val latencies = ArrayList<Long>(resets)
+        val heapSamples = ArrayList<Long>(resets)
+        val digest = MessageDigest.getInstance("SHA-256")
+        var firstStateDigest: String? = null
+        val before = ScalingJvmSnapshot.capture(includeProcessRss = true)
+        val wallStart = System.nanoTime()
+        repeat(resets) {
+            val start = System.nanoTime()
+            val observation = isolationObservation(
+                service,
+                created.envId,
+                service.reset(created.envId, spec.config()),
+            )
+            latencies += System.nanoTime() - start
+            heapSamples += currentHeapUsed()
+            if (firstStateDigest == null) {
+                firstStateDigest = observation.stateDigest
+            } else {
+                check(firstStateDigest == observation.stateDigest) {
+                    "Reset-heavy deterministic reset digest changed at reset=$it"
+                }
+            }
+            digest.update(observation.stateDigest.toByteArray(StandardCharsets.UTF_8))
+            digest.update('\n'.code.toByte())
+        }
+        val wallNanos = System.nanoTime() - wallStart
+        val after = ScalingJvmSnapshot.capture(includeProcessRss = true)
+        val allocationBytes = positiveDelta(after.threadAllocatedBytes, before.threadAllocatedBytes)
+        val gc = gcDelta(before, after)
+        val report = B1ResetHeavyReport(
+            sourceHead = B1_SCALING_ACCEPTED_HEAD,
+            workloadName = "single-env-reset-heavy-locked-akiri-chevill",
+            resets = resets,
+            workloadWallNanos = wallNanos,
+            resetsPerSecond = resets.toDouble() / wallNanos.toDouble() * 1_000_000_000.0,
+            resetLatency = latencySummary(latencies),
+            resetMemoryTrend = ResetMemoryTrend.from(heapSamples),
+            allocationBytes = allocationBytes,
+            allocationPerReset = if (allocationBytes >= 0L && resets > 0) {
+                allocationBytes.toDouble() / resets.toDouble()
+            } else {
+                null
+            },
+            gcCollections = aggregateGc(gc) { it.collectionCount },
+            gcTimeMillis = aggregateGc(gc) { it.collectionTimeMillis },
+            heapPeakBytes = max(heapSamples.maxOrNull() ?: 0L, maxOf(before.heapUsedBytes, after.heapUsedBytes)),
+            rssBeforeBytes = before.processRssBytes,
+            rssAfterBytes = after.processRssBytes,
+            resetDigestTraceHash = scalingHexLowercase(digest.digest()),
+            semanticResetRegression = "PASS: all reset observations retained the same semantic state digest",
+            benchmarkContract = buildScalingBenchmarkContract(),
+            dataTrusted = "NO",
+        )
+        Files.writeString(reportPath, b1ScalingJson.encodeToString(B1ResetHeavyReport.serializer(), report))
+        println("B1_RESET_HEAVY_PATH=" + reportPath)
+        println("B1_RESET_HEAVY=PASS resets=" + resets)
+    } finally {
+        service.dispose(service.listEnvs())
+        service.workerPool.close()
     }
 }
 
@@ -991,6 +1161,8 @@ private fun measureRepetition(
 ): ScalingRepetitionReport {
     val resetLatencies = mutableListOf<Long>()
     val stepLatencies = mutableListOf<Long>()
+    val normalStepLatencies = mutableListOf<Long>()
+    val structuredPendingStepLatencies = mutableListOf<Long>()
     val resetMemorySamples = mutableListOf<Long>()
     val trajectories = linkedMapOf<String, TrajectoryAccumulator>()
     val jvmBefore = ScalingJvmSnapshot.capture()
@@ -1076,6 +1248,11 @@ private fun measureRepetition(
                 slots[slotIndex].transitions++
                 transitions++
                 stepLatencies += timed.elapsedNanos
+                when (choices[offset]) {
+                    is SemanticChoice.Action -> normalStepLatencies += timed.elapsedNanos
+                    is SemanticChoice.Structured -> structuredPendingStepLatencies += timed.elapsedNanos
+                    is SemanticChoice.Gap -> error("Scaling policy gap reached execution")
+                }
                 recordObservation(observation)
                 trajectories.getValue(slots[slotIndex].spec.label).recordObservation(observation)
             }
@@ -1123,6 +1300,8 @@ private fun measureRepetition(
         policyNanos = policyNanos,
         processCpuNanos = positiveDelta(jvmAfter.processCpuNanos, jvmBefore.processCpuNanos),
         stepLatency = latencySummary(stepLatencies),
+        normalStepLatency = latencySummary(normalStepLatencies),
+        structuredPendingStepLatency = latencySummary(structuredPendingStepLatencies),
         resetLatency = latencySummary(resetLatencies),
         resetMemorySamples = resetMemorySamples,
         heapPeakBytes = heapPeakBytes,
@@ -1290,6 +1469,10 @@ private fun buildConditionReport(
         medianTransitionsPerSecond = medianDouble(repetitions.map { it.transitionsPerSecond }),
         medianEpisodesPerSecond = medianDouble(repetitions.map { it.episodesPerSecond }),
         medianStepLatency = medianLatency(repetitions.map { it.stepLatency }),
+        medianNormalStepLatency = medianLatency(repetitions.map { it.normalStepLatency }),
+        medianStructuredPendingStepLatency = medianLatency(
+            repetitions.map { it.structuredPendingStepLatency },
+        ),
         medianResetLatency = medianLatency(repetitions.map { it.resetLatency }),
         resetMemoryTrend = resetTrend,
         actualConcurrency = ActualConcurrencySummary.from(repetitions.map { it.actualConcurrency }),
@@ -1520,6 +1703,7 @@ private data class B1ScalingReport(
     val acceptedCharacterizationHead: String,
     val sourceHead: String,
     val hardware: ScalingHardwareMetadata,
+    val benchmarkContract: B1ScalingBenchmarkContract,
     val warmupStepsPerEnvironment: Int,
     val measuredRepetitions: Int,
     val environments: List<ScalingConditionReport>,
@@ -1534,14 +1718,81 @@ private data class B1ScalingReport(
 )
 
 @Serializable
+private data class B1StructuredLatencyReport(
+    val sourceHead: String,
+    val workloadName: String,
+    val warmupStepsPerEnvironment: Int,
+    val episodes: Int,
+    val externalTransitions: Long,
+    val observations: Long,
+    val publicLegalCandidates: Long,
+    val structuredDecisionObservations: Long,
+    val normalStepLatency: LatencySummary,
+    val structuredPendingStepLatency: LatencySummary,
+    val resetLatency: LatencySummary,
+    val allocationPerExternalTransition: Double?,
+    val gcCollections: Long,
+    val gcTimeMillis: Long,
+    val semanticTrajectory: String,
+    val benchmarkContract: B1ScalingBenchmarkContract,
+    val dataTrusted: String,
+)
+
+@Serializable
+private data class B1ResetHeavyReport(
+    val sourceHead: String,
+    val workloadName: String,
+    val resets: Int,
+    val workloadWallNanos: Long,
+    val resetsPerSecond: Double,
+    val resetLatency: LatencySummary,
+    val resetMemoryTrend: ResetMemoryTrend,
+    val allocationBytes: Long,
+    val allocationPerReset: Double?,
+    val gcCollections: Long,
+    val gcTimeMillis: Long,
+    val heapPeakBytes: Long,
+    val rssBeforeBytes: Long?,
+    val rssAfterBytes: Long?,
+    val resetDigestTraceHash: String,
+    val semanticResetRegression: String,
+    val benchmarkContract: B1ScalingBenchmarkContract,
+    val dataTrusted: String,
+)
+
+@Serializable
 private data class ScalingHardwareMetadata(
     val osName: String,
     val osVersion: String,
     val architecture: String,
     val javaVersion: String,
     val jvm: String,
+    val cpuIdentity: String,
+    val logicalProcessorCount: Int,
+    val memoryLimitBytes: Long? = null,
+    val jvmMaxHeapBytes: Long? = null,
+    val jvmInputArguments: List<String>,
     val availableProcessors: Int,
     val processId: Long,
+)
+
+@Serializable
+private data class B1ScalingBenchmarkContract(
+    val hardware: ScalingHardwareMetadata,
+    val gradleTask: String,
+    val runMode: String,
+    val workloadName: String,
+    val workloadMaxSteps: Int,
+    val workloadEpisodeCount: Int,
+    val seedCorpusIdentitySha256: String,
+    val policyIdentitySha256: String,
+    val lockedDeckHashesSha256: Map<String, String>,
+    val lockedUniqueCardCount: Int,
+    val lockedCardIdentitySha256: String,
+    val lockedDefinitionIdentitySha256: String,
+    val registryCardNameCount: Int,
+    val definitionSerialization: String,
+    val cardIdentitySource: String,
 )
 
 @Serializable
@@ -1577,6 +1828,8 @@ private data class ScalingConditionReport(
     val medianTransitionsPerSecond: Double,
     val medianEpisodesPerSecond: Double,
     val medianStepLatency: LatencySummary,
+    val medianNormalStepLatency: LatencySummary,
+    val medianStructuredPendingStepLatency: LatencySummary,
     val medianResetLatency: LatencySummary,
     val resetMemoryTrend: ResetMemoryTrend,
     val actualConcurrency: ActualConcurrencySummary,
@@ -1597,6 +1850,8 @@ private data class ScalingRepetitionReport(
     val policyNanos: Long,
     val processCpuNanos: Long,
     val stepLatency: LatencySummary,
+    val normalStepLatency: LatencySummary,
+    val structuredPendingStepLatency: LatencySummary,
     val resetLatency: LatencySummary,
     val resetMemorySamples: List<Long>,
     val heapPeakBytes: Long,
@@ -1799,13 +2054,22 @@ private fun currentHeapUsed(): Long = ManagementFactory.getMemoryMXBean().heapMe
 
 private fun stabilizeHeapForMemorySnapshot() {
     System.gc()
-    System.runFinalization()
     Thread.sleep(B1_SCALING_MEMORY_STABILIZATION_MILLIS)
 }
 
 private fun currentProcessRssBytes(): Long? {
     if (!System.getProperty("os.name").contains("Windows", ignoreCase = true)) return null
     val pid = ProcessHandle.current().pid()
+    return powershellOutput("(Get-Process -Id $pid).WorkingSet64")
+        ?.trim()
+        ?.lines()
+        ?.firstOrNull()
+        ?.trim()
+        ?.toLongOrNull()
+}
+
+private fun powershellOutput(command: String): String? {
+    if (!System.getProperty("os.name").contains("Windows", ignoreCase = true)) return null
     return runCatching {
         val process = ProcessBuilder(
             "powershell.exe",
@@ -1813,15 +2077,13 @@ private fun currentProcessRssBytes(): Long? {
             "-NoProfile",
             "-NonInteractive",
             "-Command",
-            "(Get-Process -Id $pid).WorkingSet64",
+            command,
         ).redirectErrorStream(true).start()
         if (!process.waitFor(5L, TimeUnit.SECONDS)) {
             process.destroyForcibly()
             return@runCatching null
         }
-        process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { reader ->
-            reader.readText().trim().lines().firstOrNull()?.trim()?.toLongOrNull()
-        }
+        process.inputStream.bufferedReader(StandardCharsets.UTF_8).use { reader -> reader.readText() }
     }.getOrNull()
 }
 
@@ -1831,12 +2093,97 @@ private fun positiveDelta(after: Long, before: Long): Long =
 private fun optionalPositiveDelta(after: Long?, before: Long?): Long? =
     if (after != null && before != null && after >= before) after - before else null
 
+private fun buildScalingBenchmarkContract(): B1ScalingBenchmarkContract {
+    val registry = b1ScalingRegistry()
+    val lockedDeckFiles = listOf("akiri-v0.1.txt", "chevill-v0.1.txt")
+    val lockedNames = lockedDeckFiles
+        .flatMap { readScalingLockedDeck(it).cards }
+        .distinct()
+    val lockedDefinitions = lockedNames
+        .map { name -> registry.requireCard(name) }
+        .distinctBy { it.name }
+        .sortedBy { it.name }
+        .map { card ->
+            val json = CardSerialization.json.encodeToJsonElement(CardDefinition.serializer(), card)
+            card.name + ":" + canonicalScalingDefinitionJson(json)
+        }
+    val root = scalingRepositoryRoot()
+    val policyPath = root.resolve(
+        "gym/src/test/kotlin/com/wingedsheep/gym/EnvironmentV1ExternalPolicy.kt",
+    )
+    val seedCorpus = b1ScalingCorpus.joinToString("\n") { spec ->
+        listOf(
+            spec.label,
+            "seed=${spec.seed}",
+            "startingPlayerIndex=${spec.startingPlayerIndex}",
+            "seat0=${spec.seat0}",
+            "seat1=${spec.seat1}",
+            "maxSteps=$B1_SCALING_MAX_STEPS",
+        ).joinToString("|")
+    }
+    return B1ScalingBenchmarkContract(
+        hardware = hardwareMetadata(),
+        gradleTask = System.getProperty("b1.scaling.gradleTask", "NOT_SUPPLIED"),
+        runMode = System.getProperty("b1.scaling.runMode", "NOT_SUPPLIED"),
+        workloadName = "corpus8-locked-akiri-chevill",
+        workloadMaxSteps = B1_SCALING_MAX_STEPS,
+        workloadEpisodeCount = B1_SCALING_EPISODES,
+        seedCorpusIdentitySha256 = scalingSha256Upper(seedCorpus),
+        policyIdentitySha256 = scalingSha256Upper(canonicalScalingText(policyPath)),
+        lockedDeckHashesSha256 = lockedDeckFiles.associateWith { fileName ->
+            scalingSha256Upper(canonicalScalingText(root.resolve("docs/ml/curriculum").resolve(fileName)))
+        },
+        lockedUniqueCardCount = lockedNames.size,
+        lockedCardIdentitySha256 = scalingSha256Upper(lockedNames.sorted().joinToString("\n")),
+        lockedDefinitionIdentitySha256 = scalingSha256Upper(lockedDefinitions.joinToString("\n")),
+        registryCardNameCount = registry.allCardNames().size,
+        definitionSerialization =
+            "CardSerialization CardDefinition JSON; object keys sorted; arrays retain serialized semantic order",
+        cardIdentitySource =
+            "locked deck names resolved through current MtgSetCatalog-backed CardRegistry at source head",
+    )
+}
+
+private fun scalingRepositoryRoot(): Path = generateSequence(Path.of(System.getProperty("user.dir"))) { it.parent }
+    .first { Files.isDirectory(it.resolve("docs").resolve("ml").resolve("curriculum")) }
+
+private fun canonicalScalingText(path: Path): String =
+    Files.readString(path).replace("\r\n", "\n").replace('\r', '\n')
+
+private fun canonicalScalingDefinitionJson(element: JsonElement): String = when (element) {
+    is JsonObject -> element.keys.sorted().joinToString(prefix = "{", postfix = "}") { key ->
+        "${JsonPrimitive(key)}:${canonicalScalingDefinitionJson(element.getValue(key))}"
+    }
+
+    is JsonArray -> element.joinToString(prefix = "[", postfix = "]") {
+        canonicalScalingDefinitionJson(it)
+    }
+
+    JsonNull -> "null"
+    is JsonPrimitive -> element.toString()
+}
+
+private fun scalingSha256Upper(value: String): String =
+    MessageDigest.getInstance("SHA-256")
+        .digest(value.toByteArray(StandardCharsets.UTF_8))
+        .joinToString(separator = "") { byte -> "%02X".format(Locale.ROOT, byte) }
+
 private fun hardwareMetadata(): ScalingHardwareMetadata = ScalingHardwareMetadata(
     osName = System.getProperty("os.name"),
     osVersion = System.getProperty("os.version"),
     architecture = System.getProperty("os.arch"),
     javaVersion = System.getProperty("java.version"),
     jvm = System.getProperty("java.vm.name"),
+    cpuIdentity = powershellOutput(
+        "Get-CimInstance Win32_Processor | " +
+            "Select-Object -First 1 Name,NumberOfCores,NumberOfLogicalProcessors,MaxClockSpeed | " +
+            "ConvertTo-Json -Compress",
+    ) ?: "NOT_MEASURED",
+    logicalProcessorCount = Runtime.getRuntime().availableProcessors(),
+    memoryLimitBytes = (ManagementFactory.getOperatingSystemMXBean() as?
+        com.sun.management.OperatingSystemMXBean)?.totalMemorySize,
+    jvmMaxHeapBytes = ManagementFactory.getMemoryMXBean().heapMemoryUsage.max.takeIf { it >= 0L },
+    jvmInputArguments = ManagementFactory.getRuntimeMXBean().inputArguments,
     availableProcessors = Runtime.getRuntime().availableProcessors(),
     processId = ProcessHandle.current().pid(),
 )

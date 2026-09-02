@@ -80,6 +80,51 @@ The scaling benchmark calls `EnvWorkerPool.invokeAll`, the same pool fan-out use
 the same pool because the existing `stepBatch` API accepts `StepRequest` actions only. No
 production scheduler was changed.
 
+## Reproducible benchmark contract
+
+The review-fix harness now emits the following contract in every new scaling, structured-latency,
+and reset-heavy artifact. The focused characterization run captured the contract below at the
+same accepted source head; the previously accepted scaling numbers are not rerun or relabeled.
+
+```text
+BENCHMARK_CONTRACT=PASS (captured by the focused v2 characterization run)
+GRADLE_TASK=:gym:test
+RUN_MODE=native-gradle-jdk21
+CPU_IDENTITY=AMD Ryzen 7 5800X 8-Core Processor; cores=8; logical=16; maxClockSpeed=3801 MHz
+MEMORY_LIMIT_BYTES=34278862848 (OperatingSystemMXBean.totalMemorySize)
+JVM_MAX_HEAP_BYTES=2147483648
+JVM=OpenJDK 64-Bit Server VM; Java=21.0.12; os=Windows 11 10.0; arch=amd64
+JVM_INPUT_ARGUMENTS=
+  -Db1.latency=true; -Db1.latency.outputDir=build/reports/b1-latency-final-v2;
+  -Db1.latency.warmupSteps=256; -Db1.resetHeavy=true;
+  -Db1.resetHeavy.outputDir=build/reports/b1-reset-heavy-final-v2; -Db1.resetHeavy.resets=256;
+  -Db1.scaling.gradleTask=:gym:test; -Db1.scaling.runMode=native-gradle-jdk21;
+  -Dbenchmark=false; -DbenchmarkGames=10; -DbenchmarkMaxTurns=50;
+  -DbenchmarkOutputDir=C:\Users\chris\AppData\Local\Temp\;
+  -DbenchmarkSet=POR;
+  -Dorg.gradle.internal.worker.tmpdir=C:\Users\chris\.config\superpowers\worktrees\argentum-engine\b1-scaling-final-measurement\gym\build\tmp\test\work;
+  -Xmx2g; -Dfile.encoding=UTF-8; -Duser.country=DE; -Duser.language=de; -Duser.variant; -ea
+```
+
+The full JVM argument list, including Gradle worker and benchmark properties, is retained in the
+JSON artifact rather than abbreviated in this report. The identity inputs are:
+
+```text
+SEED_CORPUS_IDENTITY_SHA256=524C5EA743D266E4191AEDBA7E0D42FC6F6EE8430E68506AF776CB161E6D0DBF
+POLICY_IDENTITY_SHA256=7A3824E4568FDB52BF8EDCE117B834BC42ADCF8D3281EDA7CA1795DBD232120C
+AKIRI_DECK_SHA256=0C5878E3B393A2CB6317FBE64E0827E4E9A562A0346E5A75820F11081F0909C6
+CHEVILL_DECK_SHA256=D158760D404F32C32110C377B1CA6E3EF9406FD6E0CC29B620CB5BCF573AC8B2
+LOCKED_CARD_IDENTITY_SHA256=B522EF3706289DDEB68769A1D642BD90AB80805DE2CFDC45F92F997D84E76AA6
+LOCKED_DEFINITION_IDENTITY_SHA256=2290EE07D8C5BC6F616851C221FD81DCB01F0F1198FDFE00341178CF7842F195
+LOCKED_UNIQUE_CARD_COUNT=146
+REGISTERED_CARD_NAME_COUNT=9725
+```
+
+The deck hashes use canonical LF text. The card identity hash is the sorted unique locked-card
+name set. The definition hash is the sorted `(card name, CardSerialization CardDefinition JSON)`
+stream with object keys canonicalized and serialized array order retained. This is a run identity
+contract, not a replacement for the authoritative exact-pair definition-digest gate.
+
 The test-only JVM snapshot sums allocated bytes over all live JVM threads, rather than only the
 calling thread. Heap is sampled at reset boundaries, every 64 measured observations, and the
 end of each repetition. Windows RSS is sampled at setup/measurement boundaries with
@@ -144,6 +189,51 @@ The final per-repetition workload wall samples were:
 4 env: 32.392, 32.439, 31.701 s
 8 env: 21.563, 21.768, 21.497 s
 ```
+
+### Separated step latency characterization
+
+The focused `B1StructuredLatencyMeasurementTest` used the exact locked corpus8 workload with the
+same 256-step warmup. It did not rerun the scaling matrix. The existing public service boundary
+was timed separately by choice class:
+
+```text
+STRUCTURED_LATENCY_CHARACTERIZATION=PASS
+NORMAL_STEP_COUNT=15,953
+STRUCTURED_PENDING_STEP_COUNT=47
+NORMAL_STEP_P50_P95_P99_MAX=4.018 / 7.711 / 10.712 / 38.531 ms
+STRUCTURED_PENDING_STEP_P50_P95_P99_MAX=4.268 / 7.527 / 9.984 / 9.984 ms
+MIXED_STEP_COUNT=16,000
+EPISODES=8
+OBSERVATIONS=16,008
+PUBLIC_LEGAL_CANDIDATES=211,318
+STRUCTURED_DECISION_OBSERVATIONS=47
+```
+
+`STRUCTURED_PENDING_STEP` means a transition submitted through the existing structured pending
+decision path; no candidate, domain, payload, or policy selection was changed. The structured
+P99 equals its maximum because there are 47 samples; the larger reset sample is reported below.
+
+### Reset-heavy characterization
+
+The focused `B1ResetHeavyMeasurementTest` performed 256 real resets of the same locked seed-0
+Akiri-vs-Chevill environment. It measured only reset calls, not game transitions, and checked
+that every reset returned the same semantic state digest.
+
+```text
+RESET_HEAVY=PASS
+RESET_HEAVY_RESETS=256
+RESET_HEAVY_WALL=1.273s
+RESET_HEAVY_RESETS_PER_SEC=201.151
+RESET_HEAVY_P50_P95_P99_MAX=4.450 / 8.833 / 12.255 / 16.914 ms
+RESET_HEAVY_ALLOCATION_PER_RESET=3,786,750 B
+RESET_HEAVY_GC=4 collections / 26 ms
+RESET_HEAVY_HEAP_PEAK=414.3 MiB
+RESET_HEAVY_SEMANTIC_RESET_REGRESSION=PASS
+RESET_HEAVY_MEMORY_TREND=first/last delta -181,186,128 B across 256 samples
+```
+
+This closes the small-sample reset percentile gap for B1 evidence without claiming that one
+in-process reset trend is a fresh-JVM retained-memory study.
 
 Relative to the one-environment median, measured speedup/ideal efficiency was:
 
@@ -402,10 +492,10 @@ subsequent Kotest system-property run completed successfully and is the result r
 8_ENV=PASS locally; 8 episodes, 16,000 transitions, concurrency=8
 
 B1_FINAL_PASS=NOT_CLAIMED
-  reason: no arbitrary throughput target exists, but Hosted CI is not established and isolated
-          retained memory-per-environment evidence remains a separate capacity-study limitation
+  reason: no arbitrary throughput target exists, but Hosted CI is not established; the retained
+          memory-per-environment limitation is a later capacity-study concern, not a B1 blocker
 
-RECOMMENDED_NEXT_TASK=B1 hosted/final acceptance review and, if required, fresh-JVM memory study
+RECOMMENDED_NEXT_TASK=B1 hosted CI/final exact-head acceptance review
 NEXT=INDEPENDENT_REVIEW
 DATA_TRUSTED=NO
 ```
