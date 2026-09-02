@@ -72,15 +72,27 @@ The later implementation keeps one environment and one public-contract authority
 
 - Gym remains the owner of TrainingObservation, public domain DTOs, transport-free semantic
   projection, and the small VerifiedReplayFrame output contract.
-- gym-trainer remains the owner of the canonical Trajectory V1 contracts, JSONL writer, manifest,
-  reader, and quarantine because that module already owns training-data format choices.
+- gym-trainer remains the owner of the canonical Trajectory V1 contracts, per-episode writer,
+  dataset publisher/manifest, reader, and quarantine because that module already owns training-data
+  format choices.
 - game-server remains the owner of CompactReplay and ReplayReconstructor, and adds one adapter
-  method that emits only VerifiedReplayFrame values through the Gym contract. The game-server main
+  implementation of the neutral VerifiedReplayFrameSource contract in :gym. The game-server main
   source will take a narrow implementation dependency on :gym; it will not depend on
   :gym-trainer, and the replay adapter will not emit GameState.
+- :gym owns VerifiedReplayFrame, VerifiedReplayVerification, and VerifiedReplayFrameSource. The
+  source instance is bound to one CompactReplay by the composition root and exposes only verified
+  public frames and summary data.
+- A future B2 generation/acceptance harness is the only composition point that knows the concrete
+  game-server source and the gym-trainer writer/publisher. For each CompactReplay it constructs a
+  bound GymReplayFrameSource, obtains the full VerifiedReplayVerification, passes only that neutral
+  result to TrajectoryV1Writer.finishEpisode, and appends the finalized episode to the
+  multi-episode publisher. This integration-only harness does not add a production dependency in
+  either direction.
 
 This is a dependency seam, not a second control path. The existing strict Gym transition remains
-the only capture path, and the existing server replay fold remains the only replay authority.
+the only capture path, and the existing server replay fold remains the only replay authority. The
+writer never imports or calls ReplayReconstructor directly; the harness-supplied source result is
+the explicit replay-verification integration seam.
 
 ## IDENTITY_ROLE_AUDIT=
 
@@ -199,6 +211,8 @@ REUSE_AUDIT=COMPLETE
   EpisodeDiagnostics surfaces.
 - Add a replay cursor/adapter around the existing ReplayReconstructor so one verified pass emits
   every decision boundary through the same public ObservationBuilder.
+- Add VerifiedReplayFrameSource in :gym; keep the concrete replay adapter in game-server and pass
+  its neutral verification result to the gym-trainer writer through the future integration harness.
 - Reuse the atomic temporary-file and move discipline from TrainingCorpusFiles, but replace its
   whole-corpus append format with immutable bounded shards and a manifest.
 - Reuse the B0 public-policy trace shape as characterization input only; do not make the policy
@@ -214,7 +228,8 @@ REUSE_AUDIT=COMPLETE
   references.
 - ChosenSemanticActionV1 / ChosenSemanticResponseV1 and a DTO-level membership validator.
 - VerifiedReplayFrameSource: a reusable replay-to-public-observation cursor with complete-range
-  verification, not a second ML environment.
+  verification, not a second ML environment; its harness seam must carry a full
+  VerifiedReplayVerification before finalization.
 
 These are generic boundary primitives. If the closure primitive or verified replay source cannot be
 accepted without changing Rules/Gym semantics, B2 stops at that follow-up and does not hide the
@@ -311,6 +326,30 @@ trajectoryId is a SHA-256 content address of semanticEpisodeId, collectionJobId,
 semantic decision records, and factual closure metadata. A duplicate
 (collectionJobId, semanticEpisodeId) with conflicting content is a conflict; the reader/merge
 operation rejects it instead of choosing an arrival-order winner.
+
+The identity chain is per episode:
+
+~~~text
+semanticEpisodeId
+    -> collectionJobId
+    -> trajectoryId
+~~~
+
+collectionJobId remains per-episode because semanticEpisodeId contains the actual engine seed.
+It is not a collection directory or a multi-episode batch identity.
+
+DatasetManifestV1 is the outer multi-episode batch contract. datasetId is a SHA-256 content
+address of the finalized manifest preimage: version identities, deterministic episode index,
+ordered shard entries, counts, and every referenced shard digest. The preimage omits the
+datasetId and manifestContentDigest fields themselves to avoid circularity. The manifest then
+stores both datasetId and its manifestContentDigest, where the latter is computed over the
+manifest with only its own digest field removed. One dataset may contain many trajectories with
+distinct semanticEpisodeId and collectionJobId values. datasetId is a storage/artifact identity,
+not a semantic environment or decision identity.
+
+DatasetMetadataV1 is the batch-level input to the publisher: schema identities, shard/episode
+bounds, and deterministic enumeration policy. It does not replace per-episode environment or
+policy metadata, and its datasetId is derived only when the complete manifest preimage is ready.
 
 ## OBSERVATION_SCHEMA_IDENTITY=
 
@@ -422,7 +461,7 @@ The preimage is the canonical object:
 ~~~
 
 This is deliberately scoped by semantic episode and ordered semantic history. semanticEpisodeId
-contains only the pinned environment/setup/actual-engine-seed identity. collectionJobId,
+contains only the pinned environment/setup/actual-engine-seed identity. collectionJobId, datasetId,
 behavior/opponent policy identity, policy RNG/seed, trajectoryId, GameSession.sessionId, EnvId,
 actionId, decisionId, PendingDecision.id, nonce, projectionGeneration, recordingRevision, ability
 allocation order, UUID, wall time, PID, and worker placement are not in this preimage.
@@ -585,13 +624,14 @@ GAME_TERMINAL, later consumers may derive a reward view from factual outcome met
 
 ## WRITER_DESIGN=
 
-The writer accepts only the public boundary:
+The episode writer and the dataset publisher have separate responsibilities. The per-episode writer
+accepts only the public boundary:
 
 ~~~text
 beginEpisode(EpisodeMetadataV1)
 recordDecision(PlayerObservationV1, CompleteLegalDomainV1, chosenSemanticActionOrResponse,
                replay coordinates)
-finish(EpisodeClosureV1, CompactReplayLink)
+finishEpisode(EpisodeClosureV1, CompactReplayLinkV1, VerifiedReplayVerification)
 ~~~
 
 The capture adapter may receive one current TrainingObservation, but it derives the two arguments
@@ -599,6 +639,32 @@ once and the writer stores them exactly once: PlayerObservationV1 has no legalAc
 structuredDomain copy, and CompleteLegalDomainV1 is the sole stored domain authority. The writer
 never accepts GameState, PendingDecision, LegalAction, ActionRegistry, an opaque action handle,
 or a native policy object.
+
+The dataset-level publisher aggregates already-verified episode results:
+
+~~~text
+beginDataset(DatasetMetadataV1)
+appendFinalizedEpisode(ValidatedEpisodeV1)
+finalizeDataset()
+~~~
+
+The integration-only B2GenerationHarness is the replay integration seam:
+
+~~~text
+for each CompactReplay:
+  source = game-server GymReplayFrameSource(compactReplay)
+  verification = source.verify()
+  episode = writer.finishEpisode(closure, replayLink, verification)
+  publisher.appendFinalizedEpisode(episode)
+publisher.finalizeDataset()
+~~~
+
+The harness passes only the neutral VerifiedReplayVerification across the module boundary. The
+writer and publisher reject a missing result, a non-EXACT result, an incomplete range, or a frame
+mismatch. The publisher aggregates many episodes, each with its own collectionJobId, into one
+DatasetManifestV1. The writer and publisher do not import or call game-server ReplayReconstructor;
+the harness is the only caller of the concrete replay source. This plan deliberately chooses the
+harness composition path rather than adding a game-server source parameter to the publisher.
 
 At recordDecision it must:
 
@@ -616,17 +682,26 @@ At recordDecision it must:
    replayFrameIndex and replayActionIndex;
 10. retain no raw internal state after validation.
 
-At finish it must:
+At finishEpisode it must:
 
 - reject a second finish, an empty decision range where the environment requires a policy decision,
   an unclosed pending response, or an action/decision/frame count mismatch;
+- require the supplied VerifiedReplayVerification to cover the complete declared replay range,
+  including initial, intermediate, and tail frames, with ReplayFidelity.EXACT;
+- require the verification's replay version/content identity to match CompactReplayLinkV1;
 - require GAME_TERMINAL to agree with the replayed Rules state;
 - require INTERRUPTED to be explicit and nonterminal;
 - route FAILED to quarantine and never to a published shard;
-- run replay-backed verification before publishing trusted data;
-- verify semanticEpisodeId and collectionJobId from canonical metadata, then compute trajectoryId
-  and manifest content digests from canonical bytes;
-- write only immutable finalized shard entries.
+- verify semanticEpisodeId and collectionJobId from canonical episode metadata, then compute
+  trajectoryId and episode content digests from canonical bytes.
+
+At finalizeDataset the publisher must:
+
+- accept only complete episode results from the per-episode writer;
+- place complete episodes into bounded shards without splitting an episode;
+- build the deterministic DatasetManifestV1 and derive datasetId from its non-self-referential
+  canonical preimage;
+- publish only through the atomic whole-directory operation described in ATOMIC_PUBLICATION.
 
 The writer does not repair a missing domain, choose an omitted target/payment/mode, infer a
 winner, convert interruption into terminal, or convert failure into a usable prefix. A failed
@@ -641,16 +716,19 @@ The reader has two layers:
 
 The strict reader:
 
-- accepts only the supported trajectory manifest and component identities;
-- rejects unknown future trajectory, observation, domain, digest, or decision-identity versions
-  before decoding a sample;
+- accepts only the supported DatasetManifestV1/trajectory manifest and component identities;
+- rejects unknown future dataset-manifest, trajectory, observation, domain, digest, or
+  decision-identity versions before decoding a sample;
+- validates the final dataset directory name against DatasetManifestV1.datasetId and validates
+  the manifestContentDigest before yielding a sample;
 - enumerates exactly the shard paths listed by the manifest in manifest order; it never trusts
   filesystem enumeration order;
 - validates byte length, record count, UTF-8/LF framing, shard SHA-256, and manifest content digest
   before yielding any sample;
 - validates episode-start/decision/episode-end framing and complete episode digests;
 - streams valid decision records after the integrity pass, without loading the whole dataset;
-- rejects conflicting duplicate (collectionJobId, semanticEpisodeId) or trajectoryId entries;
+- rejects conflicting duplicate (collectionJobId, semanticEpisodeId) or trajectoryId entries within
+  one dataset; a distinct datasetId is a separate immutable snapshot and is not silently merged;
   the same semanticEpisodeId in a different collectionJobId is allowed only when its metadata
   carries the corresponding distinct policy provenance;
 - exposes policy, engine, deck, replay, closure, quarantine, and count metadata;
@@ -677,7 +755,7 @@ V1 uses canonical uncompressed NDJSON/JSONL:
 
 ~~~text
 dataset-root/
-  collection-COLLECTION_JOB_ID/
+  dataset-DATASET_ID/
     manifest.json
     shard-000000.ndjson
     shard-000001.ndjson
@@ -694,6 +772,10 @@ The choice is based on the current repository, not on a future distributed syste
   reproducible;
 - compression can be added as an explicit shardEncoding extension after measuring actual V1
   serialized sizes. It is not needed to prove the contract.
+
+The directory is dataset-level and may contain many complete episodes. Each episode retains its
+own semanticEpisodeId, collectionJobId, and trajectoryId in the event stream and manifest index;
+collectionJobId is never used as the dataset directory identity.
 
 Each shard contains complete episode event sequences. An episode begins with episode-start,
 contains one decision line per decision, and ends with episode-end:
@@ -717,13 +799,15 @@ distributed/cloud sizing is designed in B2.
 
 The manifest is canonical JSON with:
 
-- manifestSchemaIdentity;
+- DatasetManifestV1 schema identity and datasetId;
 - trajectory/component schema identities;
-- environment/policy/deck/definition identity;
+- per-episode environment/policy/deck/definition identity in the episode index;
+- a deterministic episode index containing each episodeOrdinal, semanticEpisodeId,
+  collectionJobId, trajectoryId, closure, and shard membership;
 - deterministic ordered shard entries;
 - counts and closure counts;
 - each shard's byte length, record count, and content digest;
-- a manifest content digest computed over the manifest with its own digest field removed.
+- manifestContentDigest computed over the manifest with its own digest field removed.
 
 The reader accepts no unlisted shard and no shard with a duplicate ordinal or conflicting digest.
 
@@ -738,22 +822,22 @@ WRITING -> VALIDATING -> VALIDATED -> PUBLISHED
 
 Implementation rules:
 
-- create a unique staging collection directory under dataset-root/.staging. The operational write
+- create a unique staging dataset directory under dataset-root/.staging. The operational write
   token used in that directory name is not a semantic or provenance field in the artifact;
-- keep the final collection-COLLECTION_JOB_ID directory absent or unlisted while writing;
+- keep the final dataset-DATASET_ID directory absent or unlisted while writing;
 - close and flush each shard, validate its complete event framing, and compute its digest;
-- write the manifest last inside the staging collection directory, including all finalized shards
-  and counts, and validate its content digest;
+- write the manifest last inside the staging dataset directory, including the complete episode
+  index, all finalized shards, counts, datasetId, and manifestContentDigest;
 - close/fsync finalized files and the staging directory where the host filesystem supports it, then
-  atomically rename the entire staging collection directory to
-  collection-COLLECTION_JOB_ID with ATOMIC_MOVE on the same filesystem. The manifest and every
-  referenced shard therefore arrive at their final relative paths in one publication operation;
-- never replace an existing published collection directory, manifest, or shard;
+  atomically rename the entire staging dataset directory to dataset-DATASET_ID with ATOMIC_MOVE
+  on the same filesystem. The manifest and every referenced shard therefore arrive at their final
+  relative paths in one publication operation;
+- never replace an existing published dataset directory, manifest, or shard;
 - if the filesystem cannot provide the required atomic directory move, fail publication and retain
   staging/quarantine evidence instead of silently falling back to an overwrite or a manifest-only
   move;
-- a reader ignores .staging and accepts only a final collection directory with a valid manifest
-  and all listed immutable shards; absence of the final directory or a digest mismatch is not
+- a reader ignores .staging and accepts only a final dataset directory with a valid manifest and
+  all listed immutable shards; absence of the final directory or a digest mismatch is not
   published;
 - a repeated semantic episode ordinal or (collectionJobId, semanticEpisodeId) is a conflict, not
   an invitation to select the first or newest artifact.
@@ -814,6 +898,24 @@ CompactReplay
   -> continue through action i + 1
   -> exact final closure and tail verification
 ~~~
+
+The cross-module contract is:
+
+~~~text
+interface VerifiedReplayFrameSource {
+  fun verify(): VerifiedReplayVerification
+}
+~~~
+
+The interface and VerifiedReplayVerification live in :gym and contain only the transport-free
+VerifiedReplayFrame stream, ReplayFidelity/checkpoint summary, complete-range coordinates, and
+factual closure evidence plus a stable replay version/content identity. A game-server
+GymReplayFrameSource instance is constructed with one CompactReplay and upcast to this interface
+at the composition root. B2GenerationHarness calls verify before TrajectoryV1Writer.finishEpisode
+and before any dataset shard is finalized. It then passes the validated episode to the gym-trainer
+publisher. Thus
+gym-trainer has no game-server dependency, game-server has no gym-trainer dependency, and the
+future integration/acceptance harness is the only place that wires both concrete modules.
 
 The verifier must use one forward cursor, not call reconstructStateAt independently for every
 frame. The current reconstructStateAt proves that a requested action prefix can be applied, but
@@ -1019,7 +1121,8 @@ GENERIC_GAPS_FOUND=BLOCKING_PREREQUISITES_IDENTIFIED
 
 None of these gaps authorizes a Rules, card, deck, observation, decision, or replay semantic change
 in this task. The first two are the smallest reusable follow-ups that must be accepted before
-Trajectory V1 implementation can start.
+Trajectory V1 implementation can start; the replay-source harness wiring is a contract, not a
+second replay implementation.
 
 ## PRODUCTION_CHANGES_REQUIRED=
 
@@ -1030,8 +1133,10 @@ Only the later implementation plan may make the following additive changes:
   changing current TrainingObservation wire or StateDigest semantics;
 - add a semantic action/response projection and domain membership validator;
 - add a replay verification cursor/adapter around the existing V5 replay path;
-- add Trajectory V1 contracts, writer, reader, manifest, and quarantine under the existing trainer/data
-  boundary;
+- add Trajectory V1 contracts, per-episode writer, dataset publisher/manifest, reader, and
+  quarantine under the existing trainer/data boundary;
+- add a neutral VerifiedReplayFrameSource interface in :gym; compose the game-server implementation
+  and gym-trainer writer/publisher only in a later integration/acceptance harness;
 - add exact-pair closure/acceptance tests and a bounded generation harness that consumes the
   accepted external public policy.
 
@@ -1216,12 +1321,17 @@ RED characterization/tests:
 Files/contracts affected:
 
 - Create gym/src/main/kotlin/com/wingedsheep/gym/contract/VerifiedReplayFrame.kt with the
-  transport-free frame and verification-summary contract shared by Gym consumers.
+  transport-free frame, VerifiedReplayVerification, and VerifiedReplayFrameSource contracts
+  shared by Gym consumers.
 - Harden game-server/src/main/kotlin/com/wingedsheep/gameserver/replay/ReplayReconstructor.kt
   with a forward verified-frame callback or adapter; do not change CompactReplay V5 semantics.
 - Add game-server/src/main/kotlin/com/wingedsheep/gameserver/replay/GymReplayFrameSource.kt
-  and the narrow implementation dependency on :gym. The adapter calls the existing
-  ObservationBuilder and public ObservationPerspective.
+  implementing the :gym source interface and the narrow implementation dependency on :gym. The
+  adapter is bound to one CompactReplay and calls the existing ObservationBuilder and public
+  ObservationPerspective.
+- Add an integration-only construction test showing that a bound GymReplayFrameSource is passed
+  through B2GenerationHarness to the writer/publisher without a game-server to gym-trainer
+  production dependency.
 - Do not add a dependency from :game-server to :gym-trainer.
 - Keep the adapter boundary free of raw GameState once it emits a public frame.
 
@@ -1235,7 +1345,9 @@ Acceptance:
 
 One forward pass proves ReplayFidelity.EXACT, initial/middle/tail checkpoints, every public frame,
 every complete domain, every semantic decision identity, and the final closure. UNVERIFIED and
-DIVERGED never feed the trusted writer.
+DIVERGED never feed the trusted writer. The source is supplied through the neutral :gym interface;
+B2GenerationHarness invokes it before the writer can finalize an episode or the publisher can
+finalize a dataset.
 
 This is the second prerequisite gate. If the only implementation requires a second environment or
 raw-state persistence, stop and review the generic replay boundary.
@@ -1259,7 +1371,7 @@ Files/contracts affected:
 - Create gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/trajectory/TrajectoryV1.kt.
 - Create typed EpisodeMetadataV1, PolicyProvenanceV1, CompactReplayLinkV1,
   CompleteLegalDomainV1, DecisionRecordV1, ChosenSemanticActionV1, ChosenSemanticResponseV1,
-  and TrajectoryValidationResult there.
+  ValidatedEpisodeV1, DatasetMetadataV1, DatasetManifestV1, and TrajectoryValidationResult there.
 - Reuse gym/src/main/kotlin/com/wingedsheep/gym/EpisodeClosure.kt for EpisodeClosureV1; do not
   define a second closure type in gym-trainer.
 - Use the public Gym serializers and no Rules GameState serializer.
@@ -1285,21 +1397,29 @@ RED characterization/tests:
 - Interrupt while writing an episode before episode-end; reader must reject it.
 - Corrupt one byte, alter one line ending, change one manifest count, exceed the shard/episode
   bound, duplicate an episode ordinal, and write conflicting episode content; publication must fail.
-- Interrupt between staging validation and final publication; no final collection directory may
+- Drive B2GenerationHarness with a fake source that returns UNVERIFIED, DIVERGED, an incomplete
+  range, or a mismatching public frame; the harness must not call a trusted writer finalization
+  path and must quarantine the episode.
+- Interrupt between staging validation and final publication; no final dataset directory may
   appear. Simulate a filesystem without atomic directory move support; publication must fail
   closed rather than moving only the manifest or overwriting a prior collection.
 - Fail a decision with an unsupported diagnostic, public-choice rejection, missing domain, or replay
   divergence; only quarantine evidence may remain.
 - Repeat the same collection job with the same content and verify deterministic bytes; repeat it with
   a conflicting payload and verify conflict rejection.
+- Publish multiple complete episodes with distinct semanticEpisodeId and collectionJobId values;
+  the single DatasetManifestV1 and datasetId must contain all of them without conflating their
+  per-episode identities.
 
 Files/contracts affected:
 
 - Create gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/trajectory/TrajectoryV1Writer.kt,
-  TrajectoryV1Manifest.kt, and TrajectoryV1Quarantine.kt.
+  TrajectoryV1Publisher.kt, TrajectoryV1Manifest.kt, and TrajectoryV1Quarantine.kt.
 - Reuse the atomic staging discipline from ai/.../TrainingCorpusFiles.kt without whole-file
   append or replacement.
-- Add writer tests under gym-trainer/src/test/kotlin/.../trajectory/.
+- Add writer/publisher tests under gym-trainer/src/test/kotlin/.../trajectory/.
+- Use a fake :gym VerifiedReplayFrameSource in harness/publisher orchestration tests and reserve
+  the concrete game-server GymReplayFrameSource wiring for the integration/acceptance harness.
 
 Regressions:
 
@@ -1308,9 +1428,11 @@ trajectory hashes. Existing JsonlSelfPlaySink behavior remains unchanged and is 
 
 Acceptance:
 
-Only VALIDATED complete shards enter a deterministic manifest. Shards are immutable, bounded,
-checksum-addressed, LF-canonical, and safely published. Failed/partial/conflicting artifacts are
-quarantined and never listed.
+Only VALIDATED complete shards enter a deterministic DatasetManifestV1. The harness supplies the
+replay verification before the writer finalizes an episode; the writer and publisher never claim
+replay verification without the supplied VerifiedReplayVerification. Shards are immutable,
+bounded, checksum-addressed, LF-canonical, and safely published. Failed/partial/conflicting
+artifacts are quarantined and never listed.
 
 ### Task A7 — Implement strict streaming reader and manifest validator
 
@@ -1319,16 +1441,19 @@ Status=NOT_STARTED
 RED characterization/tests:
 
 - Add TrajectoryV1ReaderTest.
-- Reject unknown trajectory/component versions before yielding records.
+- Reject unknown dataset-manifest, trajectory, and component versions before yielding records.
 - Reject missing, extra, reordered, duplicated, truncated, or checksum-mismatched shards.
 - Verify deterministic manifest enumeration independent of filesystem order.
+- Verify the final dataset-DATASET_ID directory, DatasetManifestV1.datasetId,
+  manifestContentDigest, and the per-episode semanticEpisodeId/collectionJobId/trajectoryId
+  index.
 - Stream multiple variable-size episodes and preserve complete domains and closure kinds.
 - Reject a duplicate or conflicting semantic episode identity.
 
 Files/contracts affected:
 
 - Create gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/trajectory/TrajectoryV1Reader.kt
-  and TrajectoryV1ManifestValidator.kt.
+  and TrajectoryV1ManifestValidator.kt for DatasetManifestV1 as well as episode records.
 - Add reader/quarantine tests under the same trajectory test package.
 
 Regressions:
@@ -1402,6 +1527,13 @@ Files/contracts affected:
   acceptance boundaries.
 - Use the approved trajectory writer/reader and replay adapter; do not start a trainer or fit a
   model.
+- Add the integration-only B2GenerationHarness in that acceptance source set or a thin equivalent
+  composition root; it may depend on :gym-trainer and :game-server while neither production
+  source set depends on the other.
+- Wire the concrete game-server GymReplayFrameSource to the gym-trainer writer/publisher through
+  the neutral VerifiedReplayFrameSource result in the integration-only B2GenerationHarness. The
+  harness may depend on both modules; neither module's production source set may depend on the
+  other.
 - Update this design report only in a later acceptance task; this audit commit remains
   documentation-only.
 
@@ -1448,6 +1580,8 @@ rows in this audit-only commit.
 | 24 | Deterministic shards | Same episode ordinals and bytes independent of filesystem order | TrajectoryV1WriterTest and TrajectoryV1ReaderTest |
 | 25 | Duplicate conflict | Same collectionJobId with conflicting payload rejected; the same semanticEpisodeId across distinct policy jobs is not conflated | TrajectoryV1ReaderTest |
 | 26 | Pending semantic context | Same YES_NO domain plus different sourceEntityId or triggeringEntityId changes PlayerObservationV1 and semanticDecisionId; prompt/sourceName/effectHint changes do not | TrajectoryObservationProjectionTest and SemanticDecisionIdentityTest |
+| 27 | Episode versus dataset identity | Multiple episodes have distinct semanticEpisodeId/collectionJobId/trajectoryId values but one deterministic DatasetManifestV1 and datasetId | TrajectoryV1WriterTest and TrajectoryV1ReaderTest |
+| 28 | Replay integration seam | Harness passes a complete EXACT VerifiedReplayVerification from the game-server source before writer finalization, with no production cross-dependency | ReplayTrajectoryVerificationTest and TrajectoryV1WriterTest |
 
 The surrounding regression set must include:
 
@@ -1494,6 +1628,8 @@ PRIVACY_TRAJECTORY_AUDIT=NOT_RUN
 COMPLETE_LEGAL_DOMAIN_STORED=DESIGN_ONLY
 CHOSEN_IN_DOMAIN=DESIGN_ONLY
 POLICY_PROVENANCE=DESIGN_ONLY
+DATASET_MANIFEST_IDENTITY=DESIGN_ONLY
+REPLAY_VERIFIER_INTEGRATION=HARNESS_SEAM_DESIGN_ONLY
 CLOSURE_TAXONOMY_PRESERVED=DESIGN_ONLY
 REPLAY_TO_TRAJECTORY_RECONSTRUCTION=BLOCKED_UNTIL_A4
 COMPLETE_REPLAY_VERIFICATION=NOT_RUN
