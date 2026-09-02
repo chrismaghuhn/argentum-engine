@@ -62,7 +62,7 @@ class B1PerformanceBaselineTest : FunSpec({
     }
 })
 
-private const val B1_BASE_HEAD = "ffcf897213f09932d30020f3c1df20b99f369b84"
+private const val B1_BASE_HEAD = "f50c0c92249fe7d5c2f7b8044b1371462630135e"
 private const val B1_MAX_STEPS = 2_000
 
 private val b1Workloads = mapOf(
@@ -113,74 +113,96 @@ private fun runProfiledWorkload() {
     )
     Files.createDirectories(outputDir)
     val stem = workloadName + "-" + mode
+    val characterize = System.getProperty("b1.characterize") == "true"
     val jfrPath = outputDir.resolve(stem + ".jfr")
     val jsonPath = outputDir.resolve(stem + ".json")
-    Files.deleteIfExists(jfrPath)
-    Files.deleteIfExists(jsonPath)
+    val bytecodeInstrumentation = if (characterize) {
+        B1ObservationBytecodeInstrumentation.install()
+    } else {
+        null
+    }
+    var characterizationSession: B1ObservationProbe.Session? = null
 
-    val recording = openJfrRecording()
-    val countersBefore = JvmSnapshot.capture()
-    val workloadStart = System.nanoTime()
-    var measurement: WorkloadMeasurement? = null
-    var workloadWallNanos = 0L
-    var countersAfter: JvmSnapshot? = null
-    var recordingStopNanos = 0L
-    var recordingDumpNanos = 0L
     try {
-        measurement = runWorkload(specs, mode)
-    } finally {
-        workloadWallNanos = System.nanoTime() - workloadStart
-        countersAfter = JvmSnapshot.capture()
-        recording?.let { current ->
-            try {
-                val stopStart = System.nanoTime()
-                current.stop()
-                recordingStopNanos = System.nanoTime() - stopStart
-                val dumpStart = System.nanoTime()
-                current.dump(jfrPath)
-                recordingDumpNanos = System.nanoTime() - dumpStart
-            } catch (failure: Exception) {
-                println("B1_JFR=NOT_RUN reason=" + (failure.message ?: failure::class.simpleName))
-            } finally {
-                current.close()
+        characterizationSession = if (characterize) B1ObservationProbe.start() else null
+        Files.deleteIfExists(jfrPath)
+        Files.deleteIfExists(jsonPath)
+        val recording = openJfrRecording()
+        val countersBefore = JvmSnapshot.capture()
+        val workloadStart = System.nanoTime()
+        var measurement: WorkloadMeasurement? = null
+        var workloadWallNanos = 0L
+        var countersAfter: JvmSnapshot? = null
+        var recordingStopNanos = 0L
+        var recordingDumpNanos = 0L
+        try {
+            measurement = runWorkload(specs, mode)
+        } finally {
+            workloadWallNanos = System.nanoTime() - workloadStart
+            countersAfter = JvmSnapshot.capture()
+            recording?.let { current ->
+                try {
+                    val stopStart = System.nanoTime()
+                    current.stop()
+                    recordingStopNanos = System.nanoTime() - stopStart
+                    val dumpStart = System.nanoTime()
+                    current.dump(jfrPath)
+                    recordingDumpNanos = System.nanoTime() - dumpStart
+                } catch (failure: Exception) {
+                    println("B1_JFR=NOT_RUN reason=" + (failure.message ?: failure::class.simpleName))
+                } finally {
+                    current.close()
+                }
             }
         }
-    }
-    val measured = checkNotNull(measurement) { "B1 profiling workload did not complete" }
-    val measuredAfter = checkNotNull(countersAfter) {
-        "B1 profiling after-snapshot was not captured"
-    }
-    val artifactStart = System.nanoTime()
-    val finalMeasurement = measured.toMetrics(
-        workload = workloadName,
-        mode = mode,
-        workloadWallNanos = workloadWallNanos,
-        countersBefore = countersBefore,
-        countersAfter = measuredAfter,
-        recordingStopNanos = recordingStopNanos,
-        recordingDumpNanos = recordingDumpNanos,
-        jfrPath = if (Files.exists(jfrPath)) jfrPath.toString() else null,
-    )
-    val encoded = b1Json.encodeToString(BaselineMetrics.serializer(), finalMeasurement)
-    val serializationNanos = System.nanoTime() - artifactStart
-    val writeStart = System.nanoTime()
-    Files.writeString(jsonPath, encoded)
-    val jsonWriteNanos = System.nanoTime() - writeStart
+        val measured = checkNotNull(measurement) { "B1 profiling workload did not complete" }
+        val measuredAfter = checkNotNull(countersAfter) {
+            "B1 profiling after-snapshot was not captured"
+        }
+        val artifactStart = System.nanoTime()
+        val finalMeasurement = measured.toMetrics(
+            workload = workloadName,
+            mode = mode,
+            workloadWallNanos = workloadWallNanos,
+            countersBefore = countersBefore,
+            countersAfter = measuredAfter,
+            recordingStopNanos = recordingStopNanos,
+            recordingDumpNanos = recordingDumpNanos,
+            jfrPath = if (Files.exists(jfrPath)) jfrPath.toString() else null,
+        )
+        val encoded = b1Json.encodeToString(BaselineMetrics.serializer(), finalMeasurement)
+        val serializationNanos = System.nanoTime() - artifactStart
+        val writeStart = System.nanoTime()
+        Files.writeString(jsonPath, encoded)
+        val jsonWriteNanos = System.nanoTime() - writeStart
 
-    println("B1_METRICS_PATH=" + jsonPath)
-    println("B1_JFR_PATH=" + (finalMeasurement.jfrPath ?: "NOT_RUN"))
-    println("B1_WORKLOAD=" + workloadName)
-    println("B1_MODE=" + mode)
-    println("B1_EPISODES=" + finalMeasurement.episodes)
-    println("B1_TRANSITIONS=" + finalMeasurement.externalTransitions)
-    println("B1_SEMANTIC_DECISIONS=" + finalMeasurement.semanticDecisions)
-    println("B1_WALL_SECONDS=" + formatSeconds(finalMeasurement.workloadWallNanos))
-    println("B1_JFR_STOP_SECONDS=" + formatSeconds(finalMeasurement.recordingStopNanos))
-    println("B1_JFR_DUMP_SECONDS=" + formatSeconds(finalMeasurement.recordingDumpNanos))
-    println("B1_SERIALIZATION_SECONDS=" + formatSeconds(serializationNanos))
-    println("B1_JSON_WRITE_SECONDS=" + formatSeconds(jsonWriteNanos))
-    check(finalMeasurement.status == "PASS") {
-        "B1 profiling workload failed: " + finalMeasurement.status
+        println("B1_METRICS_PATH=" + jsonPath)
+        println("B1_JFR_PATH=" + (finalMeasurement.jfrPath ?: "NOT_RUN"))
+        println("B1_WORKLOAD=" + workloadName)
+        println("B1_MODE=" + mode)
+        println("B1_EPISODES=" + finalMeasurement.episodes)
+        println("B1_TRANSITIONS=" + finalMeasurement.externalTransitions)
+        println("B1_SEMANTIC_DECISIONS=" + finalMeasurement.semanticDecisions)
+        println("B1_WALL_SECONDS=" + formatSeconds(finalMeasurement.workloadWallNanos))
+        println("B1_JFR_STOP_SECONDS=" + formatSeconds(finalMeasurement.recordingStopNanos))
+        println("B1_JFR_DUMP_SECONDS=" + formatSeconds(finalMeasurement.recordingDumpNanos))
+        println("B1_SERIALIZATION_SECONDS=" + formatSeconds(serializationNanos))
+        println("B1_JSON_WRITE_SECONDS=" + formatSeconds(jsonWriteNanos))
+        check(finalMeasurement.status == "PASS") {
+            "B1 profiling workload failed: " + finalMeasurement.status
+        }
+    } finally {
+        finishB1Characterization(
+            session = characterizationSession,
+            instrumentation = bytecodeInstrumentation,
+        ) { snapshot ->
+            val characterizationPath = outputDir.resolve("observation-duplication-" + stem + ".json")
+            Files.writeString(
+                characterizationPath,
+                b1Json.encodeToString(B1ObservationProbe.Snapshot.serializer(), snapshot),
+            )
+            println("B1_OBSERVATION_CHARACTERIZATION_PATH=" + characterizationPath)
+        }
     }
 }
 
