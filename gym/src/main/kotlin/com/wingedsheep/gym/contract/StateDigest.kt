@@ -14,8 +14,11 @@ object StateDigest {
 
     fun compute(obs: TrainingObservation): String {
         val semantic = ObservationCanonicalizer.semanticJson(obs)
-        val bytes = MessageDigest.getInstance("SHA-256")
-            .digest(semantic.toByteArray(StandardCharsets.UTF_8))
+        val input = semantic.toByteArray(StandardCharsets.UTF_8)
+        B1CanonicalizationProbe.recordStateDigest(input.size)
+        val bytes = MessageDigest.getInstance("SHA-256").digest(input)
+        B1CanonicalizationProbe.recordSha256()
+        B1CanonicalizationProbe.recordDigestHexFormatting()
         return bytes.joinToString("") { "%02x".format(it) }
     }
 }
