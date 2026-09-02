@@ -570,6 +570,30 @@ class ObservationCanonicalizationTest : FunSpec({
             ObservationCanonicalizer.wireJson(withCard(sameSetDifferentInsertionOrder))
     }
 
+    test("decorate-sort preserves input order for equal canonical sort keys") {
+        val first = buildJsonObject {
+            put("targetEntityIds", buildJsonArray {
+                add(JsonPrimitive("z"))
+                add(JsonPrimitive("a"))
+            })
+        }
+        val second = buildJsonObject {
+            put("targetEntityIds", buildJsonArray {
+                add(JsonPrimitive("a"))
+                add(JsonPrimitive("z"))
+            })
+        }
+        first shouldNotBe second
+
+        val forward = ObservationCanonicalizer.sortSemanticActionFingerprints(listOf(first, second))
+        val reverse = ObservationCanonicalizer.sortSemanticActionFingerprints(listOf(second, first))
+
+        (forward[0] === first) shouldBe true
+        (forward[1] === second) shouldBe true
+        (reverse[0] === second) shouldBe true
+        (reverse[1] === first) shouldBe true
+    }
+
     test("unordered attachments and legal target candidates are canonicalized as sets") {
         val base = observation(environment())
         val cardZoneIndex = base.zones.indexOfFirst { it.cards.isNotEmpty() }

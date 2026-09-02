@@ -30,111 +30,102 @@ internal object ObservationCanonicalizer {
     }
 
     /** Serialize the actual wire DTO, retaining transport IDs and presentation fields. */
-    fun wireJson(observation: TrainingObservation): String {
-        val result = canonicalize(
-            json.encodeToJsonElement(TrainingObservation.serializer(), observation),
-        ).toString()
-        B1CanonicalizationProbe.recordWireJson(result.length)
-        return result
-    }
+    fun wireJson(observation: TrainingObservation): String =
+        canonicalize(json.encodeToJsonElement(TrainingObservation.serializer(), observation)).toString()
 
     /**
      * Produce the deterministic internal semantic projection used for equality and digesting.
      * Transport handles and presentation-only text are intentionally absent.
      */
     fun semanticJson(observation: TrainingObservation): String {
-        val call = B1CanonicalizationProbe.beginSemanticJson(observation.legalActions.size)
-        return try {
-            val encoded = json.encodeToJsonElement(TrainingObservation.serializer(), observation).jsonObject
-            val semantic = encoded.toMutableMap()
-            semantic.remove("stateDigest")
+        val encoded = json.encodeToJsonElement(TrainingObservation.serializer(), observation).jsonObject
+        val semantic = encoded.toMutableMap()
+        semantic.remove("stateDigest")
 
-            encoded["pendingDecision"]?.let { pending ->
-                semantic["pendingDecision"] = if (pending is JsonObject) {
-                    val pendingSemantic = pending.filterKeys {
-                        it !in setOf("decisionId", "prompt", "sourceName", "effectHint")
-                    }.toMutableMap()
-                    pending["structuredDomain"]?.let { domain ->
-                        if (domain is JsonObject) {
-                            pendingSemantic["structuredDomain"] = semanticStructuredDomain(domain)
-                        }
+        encoded["pendingDecision"]?.let { pending ->
+            semantic["pendingDecision"] = if (pending is JsonObject) {
+                val pendingSemantic = pending.filterKeys {
+                    it !in setOf("decisionId", "prompt", "sourceName", "effectHint")
+                }.toMutableMap()
+                pending["structuredDomain"]?.let { domain ->
+                    if (domain is JsonObject) {
+                        pendingSemantic["structuredDomain"] = semanticStructuredDomain(domain)
                     }
-                    JsonObject(pendingSemantic)
-                } else {
-                    pending
                 }
+                JsonObject(pendingSemantic)
+            } else {
+                pending
             }
-
-            semantic["legalActions"] = JsonArray(
-                observation.legalActions
-                    .map(::semanticActionFingerprint)
-                    .sortedBy { canonicalSortKey(it, B1CanonicalizationProbe.SortSite.LEGAL_ACTION) }
-            )
-
-            val result = canonicalize(JsonObject(semantic)).toString()
-            B1CanonicalizationProbe.recordFinalCanonicalization()
-            B1CanonicalizationProbe.finishSemanticJson(call, result.length)
-            result
-        } catch (failure: Throwable) {
-            B1CanonicalizationProbe.finishSemanticJson(call, -1)
-            throw failure
         }
+
+        semantic["legalActions"] = JsonArray(
+            sortSemanticActionFingerprints(
+                observation.legalActions.map(::semanticActionFingerprint),
+            )
+        )
+
+        return canonicalize(JsonObject(semantic)).toString()
     }
 
+    /** Stable decorate-sort for legal-action semantic fingerprints. */
+    internal fun sortSemanticActionFingerprints(
+        fingerprints: List<JsonObject>,
+    ): List<JsonObject> = fingerprints
+        .map { fingerprint -> fingerprint to canonicalize(fingerprint).toString() }
+        .sortedBy { (_, sortKey) -> sortKey }
+        .map { (fingerprint, _) -> fingerprint }
+
     /** The structured, transport-ID-free semantic identity of one legal action. */
-    fun semanticActionFingerprint(action: LegalActionView): JsonObject {
-        B1CanonicalizationProbe.recordSemanticActionFingerprint()
-        return buildJsonObject {
-            put("kind", action.kind)
-            put("affordable", action.affordable)
-            put("sourceEntityId", action.sourceEntityId?.value)
-            put(
-                "targetEntityIds",
-                buildJsonArray {
-                    action.targetEntityIds.forEach { add(JsonPrimitive(it.value)) }
-                }
-            )
-            action.targetDomain?.let { put("targetDomain", semanticActionTargetDomain(it)) }
-            action.attackDeclarationDomain?.let {
-                put("attackDeclarationDomain", semanticAttackDeclarationDomain(it))
+    fun semanticActionFingerprint(action: LegalActionView): JsonObject = buildJsonObject {
+        put("kind", action.kind)
+        put("affordable", action.affordable)
+        put("sourceEntityId", action.sourceEntityId?.value)
+        put(
+            "targetEntityIds",
+            buildJsonArray {
+                action.targetEntityIds.forEach { add(JsonPrimitive(it.value)) }
             }
-            action.blockerDeclarationDomain?.let {
-                put("blockerDeclarationDomain", semanticBlockerDeclarationDomain(it))
-            }
-            put("manaCost", action.manaCost)
-            action.paymentDomain?.let {
-                put("paymentDomain", json.encodeToJsonElement(PaymentDomainV5.serializer(), it))
-            }
-            action.targetPaymentDomain?.let {
-                put("targetPaymentDomain", json.encodeToJsonElement(TargetPaymentDomainV1.serializer(), it))
-            }
-            put("hasXCost", action.hasXCost)
-            put("maxAffordableX", action.maxAffordableX)
-            put("minTargets", action.minTargets)
-            put("maxTargets", action.maxTargets)
-            put(
-                "validSacrificeTargets",
-                buildJsonArray {
-                    action.validSacrificeTargets.forEach { add(JsonPrimitive(it.value)) }
-                }
-            )
-            put("sacrificeCount", action.sacrificeCount)
-            put("sacrificeMinCount", action.sacrificeMinCount)
-            put("sacrificeMaxCount", action.sacrificeMaxCount)
-            put("requiresDamageDistribution", action.requiresDamageDistribution)
-            put("isManaAbility", action.isManaAbility)
-            action.availableManaColors?.let { colors ->
-                put("availableManaColors", buildJsonArray {
-                    colors.sortedBy(Color::ordinal).forEach { add(JsonPrimitive(it.name)) }
-                })
-            }
-            put("requiresStructuredAction", action.requiresStructuredAction)
-            put("requiredPayloadFields", buildJsonArray {
-                action.requiredPayloadFields.forEach { add(JsonPrimitive(it)) }
-            })
-            action.actionSemantics?.let { put("actionSemantics", it) }
-            put("isDecisionOption", action.isDecisionOption)
+        )
+        action.targetDomain?.let { put("targetDomain", semanticActionTargetDomain(it)) }
+        action.attackDeclarationDomain?.let {
+            put("attackDeclarationDomain", semanticAttackDeclarationDomain(it))
         }
+        action.blockerDeclarationDomain?.let {
+            put("blockerDeclarationDomain", semanticBlockerDeclarationDomain(it))
+        }
+        put("manaCost", action.manaCost)
+        action.paymentDomain?.let {
+            put("paymentDomain", json.encodeToJsonElement(PaymentDomainV5.serializer(), it))
+        }
+        action.targetPaymentDomain?.let {
+            put("targetPaymentDomain", json.encodeToJsonElement(TargetPaymentDomainV1.serializer(), it))
+        }
+        put("hasXCost", action.hasXCost)
+        put("maxAffordableX", action.maxAffordableX)
+        put("minTargets", action.minTargets)
+        put("maxTargets", action.maxTargets)
+        put(
+            "validSacrificeTargets",
+            buildJsonArray {
+                action.validSacrificeTargets.forEach { add(JsonPrimitive(it.value)) }
+            }
+        )
+        put("sacrificeCount", action.sacrificeCount)
+        put("sacrificeMinCount", action.sacrificeMinCount)
+        put("sacrificeMaxCount", action.sacrificeMaxCount)
+        put("requiresDamageDistribution", action.requiresDamageDistribution)
+        put("isManaAbility", action.isManaAbility)
+        action.availableManaColors?.let { colors ->
+            put("availableManaColors", buildJsonArray {
+                colors.sortedBy(Color::ordinal).forEach { add(JsonPrimitive(it.name)) }
+            })
+        }
+        put("requiresStructuredAction", action.requiresStructuredAction)
+        put("requiredPayloadFields", buildJsonArray {
+            action.requiredPayloadFields.forEach { add(JsonPrimitive(it)) }
+        })
+        action.actionSemantics?.let { put("actionSemantics", it) }
+        put("isDecisionOption", action.isDecisionOption)
     }
 
     /**
@@ -362,9 +353,7 @@ internal object ObservationCanonicalizer {
                     }
                 }
             }
-        }.sortedBy {
-            canonicalSortKey(it, B1CanonicalizationProbe.SortSite.STRUCTURED_DOMAIN)
-        }
+        }.sortedBy { canonicalize(it).toString() }
 
         return stripStructuredPresentation(buildJsonObject {
             domain.entries
@@ -424,14 +413,6 @@ internal object ObservationCanonicalizer {
         "blockedByIds",
         "blockedAttackerIds"
     )
-
-    private fun canonicalSortKey(
-        element: JsonElement,
-        site: B1CanonicalizationProbe.SortSite,
-    ): String {
-        B1CanonicalizationProbe.recordSortKeyEvaluation(site)
-        return canonicalize(element).toString()
-    }
 
     private fun canonicalize(element: JsonElement, propertyName: String? = null): JsonElement = when (element) {
         is JsonObject -> JsonObject(
