@@ -41,6 +41,7 @@ tasks.withType<Test>().configureEach {
         "b1.resetHeavy",
         "b1.resetHeavy.resets",
         "b1.resetHeavy.outputDir",
+        "b1.contract",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }

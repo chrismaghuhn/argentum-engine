@@ -61,6 +61,10 @@ private const val B1_SCALING_DEFAULT_REPETITIONS = 3
 private const val B1_SCALING_DEFAULT_WARMUP_STEPS = 256
 private const val B1_SCALING_MEMORY_STABILIZATION_MILLIS = 100L
 private const val B1_SCALING_DEFAULT_RESET_HEAVY_RESETS = 256
+private const val B1_SCALING_ENGINE_SEED_CORPUS_IDENTITY =
+    "524C5EA743D266E4191AEDBA7E0D42FC6F6EE8430E68506AF776CB161E6D0DBF"
+private const val B1_SCALING_POLICY_SEED_CORPUS_IDENTITY =
+    "F763D209C4E03BEEF9FCFAEFA7507E2A7EBF48A440F55137E835C819FAEF54F0"
 
 private val b1ScalingJson = Json {
     prettyPrint = true
@@ -112,6 +116,44 @@ class B1ResetHeavyMeasurementTest : FunSpec({
         timeout = 2.hours,
     ) {
         runB1ResetHeavyMeasurement()
+    }
+})
+
+/** Opt-in focused contract test for the reproducibility identity fields. */
+class B1ScalingContractTest : FunSpec({
+    val enabled = System.getProperty("b1.contract") == "true"
+
+    test("keeps engine and policy seed corpus identities separate").config(
+        enabled = enabled,
+    ) {
+        val contract = buildScalingBenchmarkContract()
+        check(contract.engineSeedCorpusIdentitySha256.length == 64) {
+            "Engine seed corpus identity must be a SHA-256 hex value"
+        }
+        check(contract.policySeedCorpusIdentitySha256.length == 64) {
+            "Policy seed corpus identity must be a SHA-256 hex value"
+        }
+        check(contract.policyIdentitySha256.length == 64) {
+            "Policy implementation identity must be a SHA-256 hex value"
+        }
+        check(contract.engineSeedCorpusIdentitySha256 != contract.policySeedCorpusIdentitySha256) {
+            "Engine and policy seed corpus identities must remain distinct"
+        }
+        check(contract.policySeedCorpusIdentitySha256 != contract.policyIdentitySha256) {
+            "Policy seed corpus identity must not be the policy source hash"
+        }
+        check(contract.engineSeedCorpusIdentitySha256 == B1_SCALING_ENGINE_SEED_CORPUS_IDENTITY) {
+            "Engine seed corpus identity changed without an explicit corpus update"
+        }
+        check(contract.policySeedCorpusIdentitySha256 == B1_SCALING_POLICY_SEED_CORPUS_IDENTITY) {
+            "Policy seed corpus identity changed without an explicit policy-seed update"
+        }
+        check(contract.lockedDeckHashesSha256.size == 2)
+        check(contract.lockedUniqueCardCount == 146)
+        println(
+            "B1_CONTRACT=PASS engineSeed=${contract.engineSeedCorpusIdentitySha256} " +
+                "policySeed=${contract.policySeedCorpusIdentitySha256}",
+        )
     }
 })
 
@@ -871,7 +913,7 @@ private fun runB1ScalingMeasurement() {
     }
 
     val report = B1ScalingReport(
-        benchmarkSchemaVersion = "argentum-b1-scaling-v1",
+        benchmarkSchemaVersion = "argentum-b1-scaling-v2",
         baseOriginMain = B1_SCALING_BASE_ORIGIN_MAIN,
         acceptedCharacterizationHead = B1_SCALING_ACCEPTED_HEAD,
         sourceHead = B1_SCALING_ACCEPTED_HEAD,
@@ -881,7 +923,7 @@ private fun runB1ScalingMeasurement() {
         measuredRepetitions = repetitions,
         environments = conditions,
         memoryMeasurement =
-            "retained setup heap/RSS delta uses test-only System.gc/runFinalization stabilization; workload timing is unaffected",
+            "retained setup heap/RSS delta uses test-only System.gc() plus sleep stabilization; workload timing is unaffected",
         observationBuildLatency = "NOT_SEPARATELY_MEASURABLE: returned step latency includes public observation construction",
         legalDomainPublicationLatency = "NOT_SEPARATELY_MEASURABLE: returned step latency includes legal-domain publication",
         semanticTrajectoryRegression = "PASS: compact state-digest/action trajectory hashes matched the 1-env reference",
@@ -1784,7 +1826,8 @@ private data class B1ScalingBenchmarkContract(
     val workloadName: String,
     val workloadMaxSteps: Int,
     val workloadEpisodeCount: Int,
-    val seedCorpusIdentitySha256: String,
+    val engineSeedCorpusIdentitySha256: String,
+    val policySeedCorpusIdentitySha256: String,
     val policyIdentitySha256: String,
     val lockedDeckHashesSha256: Map<String, String>,
     val lockedUniqueCardCount: Int,
@@ -2111,7 +2154,7 @@ private fun buildScalingBenchmarkContract(): B1ScalingBenchmarkContract {
     val policyPath = root.resolve(
         "gym/src/test/kotlin/com/wingedsheep/gym/EnvironmentV1ExternalPolicy.kt",
     )
-    val seedCorpus = b1ScalingCorpus.joinToString("\n") { spec ->
+    val engineSeedCorpus = b1ScalingCorpus.joinToString("\n") { spec ->
         listOf(
             spec.label,
             "seed=${spec.seed}",
@@ -2121,6 +2164,9 @@ private fun buildScalingBenchmarkContract(): B1ScalingBenchmarkContract {
             "maxSteps=$B1_SCALING_MAX_STEPS",
         ).joinToString("|")
     }
+    val policySeedCorpus = b1ScalingCorpus.joinToString("\n") { spec ->
+        "${spec.label}|policySeed=${spec.policySeed()}"
+    }
     return B1ScalingBenchmarkContract(
         hardware = hardwareMetadata(),
         gradleTask = System.getProperty("b1.scaling.gradleTask", "NOT_SUPPLIED"),
@@ -2128,7 +2174,8 @@ private fun buildScalingBenchmarkContract(): B1ScalingBenchmarkContract {
         workloadName = "corpus8-locked-akiri-chevill",
         workloadMaxSteps = B1_SCALING_MAX_STEPS,
         workloadEpisodeCount = B1_SCALING_EPISODES,
-        seedCorpusIdentitySha256 = scalingSha256Upper(seedCorpus),
+        engineSeedCorpusIdentitySha256 = scalingSha256Upper(engineSeedCorpus),
+        policySeedCorpusIdentitySha256 = scalingSha256Upper(policySeedCorpus),
         policyIdentitySha256 = scalingSha256Upper(canonicalScalingText(policyPath)),
         lockedDeckHashesSha256 = lockedDeckFiles.associateWith { fileName ->
             scalingSha256Upper(canonicalScalingText(root.resolve("docs/ml/curriculum").resolve(fileName)))

@@ -88,6 +88,7 @@ same accepted source head; the previously accepted scaling numbers are not rerun
 
 ```text
 BENCHMARK_CONTRACT=PASS (captured by the focused v2 characterization run)
+SCALING_BENCHMARK_SCHEMA_VERSION=argentum-b1-scaling-v2
 GRADLE_TASK=:gym:test
 RUN_MODE=native-gradle-jdk21
 CPU_IDENTITY=AMD Ryzen 7 5800X 8-Core Processor; cores=8; logical=16; maxClockSpeed=3801 MHz
@@ -110,7 +111,8 @@ The full JVM argument list, including Gradle worker and benchmark properties, is
 JSON artifact rather than abbreviated in this report. The identity inputs are:
 
 ```text
-SEED_CORPUS_IDENTITY_SHA256=524C5EA743D266E4191AEDBA7E0D42FC6F6EE8430E68506AF776CB161E6D0DBF
+ENGINE_SEED_CORPUS_IDENTITY_SHA256=524C5EA743D266E4191AEDBA7E0D42FC6F6EE8430E68506AF776CB161E6D0DBF
+POLICY_SEED_CORPUS_IDENTITY_SHA256=F763D209C4E03BEEF9FCFAEFA7507E2A7EBF48A440F55137E835C819FAEF54F0
 POLICY_IDENTITY_SHA256=7A3824E4568FDB52BF8EDCE117B834BC42ADCF8D3281EDA7CA1795DBD232120C
 AKIRI_DECK_SHA256=0C5878E3B393A2CB6317FBE64E0827E4E9A562A0346E5A75820F11081F0909C6
 CHEVILL_DECK_SHA256=D158760D404F32C32110C377B1CA6E3EF9406FD6E0CC29B620CB5BCF573AC8B2
@@ -120,16 +122,22 @@ LOCKED_UNIQUE_CARD_COUNT=146
 REGISTERED_CARD_NAME_COUNT=9725
 ```
 
-The deck hashes use canonical LF text. The card identity hash is the sorted unique locked-card
-name set. The definition hash is the sorted `(card name, CardSerialization CardDefinition JSON)`
-stream with object keys canonicalized and serialized array order retained. This is a run identity
-contract, not a replacement for the authoritative exact-pair definition-digest gate.
+The deck hashes use canonical LF text. The engine seed-corpus hash covers each labeled engine seed,
+starting-player index, seat assignment, and max-step contract. The policy seed-corpus hash covers
+the same eight labels paired with `ScalingEpisodeSpec.policySeed()`. It is deliberately separate
+from `POLICY_IDENTITY_SHA256`, which identifies the `EnvironmentV1ExternalPolicy.kt` source file.
+The card identity hash is the sorted unique locked-card name set. The definition hash is the
+sorted `(card name, CardSerialization CardDefinition JSON)` stream with object keys canonicalized
+and serialized array order retained. This is a run identity contract, not a replacement for the
+authoritative exact-pair definition-digest gate.
 
 The test-only JVM snapshot sums allocated bytes over all live JVM threads, rather than only the
 calling thread. Heap is sampled at reset boundaries, every 64 measured observations, and the
 end of each repetition. Windows RSS is sampled at setup/measurement boundaries with
 `Get-Process WorkingSet64`; the combined JFR also records `jdk.ResidentSetSize`. These probes are
 outside the measured workload timer except for the ordinary heap sampling calls described above.
+The setup-only stabilization is exactly `System.gc()` followed by a bounded sleep; no
+finalization API is invoked.
 
 ### NOT_SEPARATELY_MEASURABLE
 
