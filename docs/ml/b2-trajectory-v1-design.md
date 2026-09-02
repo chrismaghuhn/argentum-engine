@@ -110,7 +110,7 @@ not merely safe to hash.
 | LegalActionView.actionSemantics | ObservationBuilder.actionSemantic; consumed by the external policy and ObservationCanonicalizer.semanticActionFingerprint | Yes for resolved printed/granted/intrinsic ability provenance; unresolved ability provenance is rejected | Yes when built from the public observation boundary | Yes as the source of candidate and chosen action semantics | SEMANTIC after validation. It is presentation-free and removes ActivateAbility.abilityId, replacing it with the stable ability key. Unknown/unresolved semantic ability provenance is not repairable in the trajectory layer. |
 | LegalActionView.description | ObservationBuilder and UI-facing policy helpers | Not a durable gameplay identity; wording may change | Public text, but not a rule contract | No for identity or digest | PROVENANCE/presentation. Exclude from V1 semantic equivalence. |
 | PendingDecisionView.decisionId | PendingDecision.id copied by ObservationBuilder; consumed by GameGymEnv.submitDecision | No; many engine producers mint UUIDs and the replay path rebinds it | It is shown only to the owning perspective; still not gameplay meaning | No | FRESHNESS_ROUTING. Omit from the durable player observation and chosen response. |
-| PendingDecisionView.kind, shape, and structuredDomain | ObservationBuilder.buildPendingDecision; consumed by the external policy | Yes when the decision producer and domain version are pinned | Yes for the owner; non-owners receive an intentionally generic, action-free view | Yes in the complete pending-decision domain | SEMANTIC. A policy-relevant structured decision with no structured domain is a hard failure. |
+| PendingDecisionView.kind, playerId, sourceEntityId, triggeringEntityId, shape, and structuredDomain | ObservationBuilder.buildPendingDecision; consumed by the external policy | Yes when the decision producer and domain version are pinned | Yes for the owner; non-owners receive an intentionally generic, action-free view | The semantic context is retained in PlayerObservationV1 and the domain portion in CompleteLegalDomainV1 | SEMANTIC. kind, playerId, sourceEntityId, triggeringEntityId, and shape are part of the current semantic observation. A policy-relevant structured decision with no structured domain is a hard failure. |
 | PendingDecisionView.prompt, sourceName, effectHint | Engine decision context; consumed for display | Wording is not stable identity | Public only where the decision is exposed | No for identity or digest | PROVENANCE/presentation. Current replay and observation canonicalizers intentionally exclude these fields from semantic identity. |
 | StructuredDecisionDomain.version and payload | Typed Gym projections for targets, cards, modes, distribution, ordering, piles, search, reorder, combat resolution, mana sources, replacement, and budget modal | Yes only for a supported version and a valid producer-owned order | Yes when the mapper returns no diagnostic | Yes; this is the stored domain, never only its digest | SEMANTIC. Unknown versions, duplicate members, missing required relations, and unsupported variants fail closed. |
 | ActionRegistry entries | ObservationBuilder creates builder-local mappings; GameGymEnv remaps them to environment handles | No across generations; the mapping is intentionally ephemeral | Not a model surface | No | FRESHNESS_ROUTING. Retain only in memory long enough to execute the current submission. |
@@ -141,7 +141,7 @@ not merely safe to hash.
 | GameGymEnv.nextActionId | Environment-local opaque handle allocator | No across equivalent sessions | No | No | FRESHNESS_ROUTING. It intentionally survives reset/restore within the adapter but has no gameplay meaning. |
 | EnvId | MultiEnvService UUID allocation and HTTP routes | No | No | Optional lookup metadata only, never trajectory identity | FRESHNESS_ROUTING. Exclude from all model and equivalence data. |
 | SnapshotHandle.Slot.slotId | In-process SnapshotCodec AtomicLong slots | No | No | No | FRESHNESS_ROUTING. Snapshot state may support MCTS, but the slot handle is not durable replay identity. |
-| GameSession.sessionId / CompactReplay.gameId | Server session UUID; replay store and viewer routes | No; it is a server lookup key | No | Retain only as optional operational replay linkage | PROVENANCE/routing. episodeId and trajectoryId must not be derived from it. |
+| GameSession.sessionId / CompactReplay.gameId | Server session UUID; replay store and viewer routes | No; it is a server lookup key | No | Retain only as optional operational replay linkage | PROVENANCE/routing. semanticEpisodeId, collectionJobId, and trajectoryId must not be derived from it. |
 | WebSocket messageId, GameSession.lastProcessedMessageId, and server state-update version | Transport idempotency and missed-message detection | No | No | No | FRESHNESS_ROUTING. They are deliberately outside the Rules input stream. |
 | GameSession.recordingRevision | Coherent replay flush cursor; changes on action/yield mutation and undo truncation | No; it is a mutable recording cursor | No | No | FRESHNESS_ROUTING/provenance. It prevents flush races but must not identify a gameplay position. |
 | EpisodeDiagnostics.events and DiagnosticSignal.code | Gym observation/execution boundaries | Code is deterministic; runtime occurrence is episode evidence | Codes contain no private IDs by design | Yes in failure/quarantine metadata; no learner feature | PROVENANCE. A non-empty diagnostic is a trust failure for the affected episode, not a reason to publish a smaller domain. |
@@ -184,8 +184,9 @@ REUSE_AUDIT=COMPLETE
   final Rules authority for an action or response.
 - CompactReplay V5, ReplaySetup, ReplayCodec version rejection, ReplayFingerprint, checkpoints,
   typed nonce rebinding, and pinned-card overlay remain the replay authority.
-- B1's separate environment/policy/deck/definition identity fields are reused as provenance
-  vocabulary, not as a new job scheduler.
+- B1's separate environment/deck/definition identity fields are reused for semanticEpisodeId;
+  policy identity and RNG fields are reused for collectionJobId. These are provenance contracts,
+  not a new job scheduler.
 
 ### HARDEN_EXISTING
 
@@ -248,7 +249,8 @@ and it is not a reward-labeled MCTS buffer.
   "candidateDomainDigestSchemaIdentity": "argentum-gym-candidate-domain-digest@v1",
   "semanticDecisionIdentitySchema": "argentum-trajectory-semantic-decision@v1",
   "trajectoryId": "TRAJECTORY_CONTENT_SHA256",
-  "episodeId": "EPISODE_INPUT_CONTENT_SHA256",
+  "semanticEpisodeId": "SEMANTIC_EPISODE_CONTENT_SHA256",
+  "collectionJobId": "COLLECTION_JOB_CONTENT_SHA256",
   "episodeMetadata": {
     "environmentIdentity": {},
     "policyProvenance": {},
@@ -263,7 +265,10 @@ and it is not a reward-labeled MCTS buffer.
       "perspectivePlayerId": "public-seat-id",
       "decisionKind": "PRIORITY",
       "semanticDecisionId": "DECISION_PREIMAGE_SHA256",
-      "observationBefore": {},
+      "observationBefore": {
+        "playerObservation": {},
+        "observationDigest": "STATE_DIGEST_SHA256"
+      },
       "completeLegalDomain": {},
       "candidateDomainDigest": "DOMAIN_PREIMAGE_SHA256",
       "chosenSemanticActionOrResponse": {}
@@ -293,14 +298,19 @@ host, provider, PID, worker slot, wall-clock time, or completion order. A B0 sch
 included only when it is an explicit semantic workload input, not because it happened to finish
 first.
 
-episodeId is a SHA-256 content address of the semantic episode inputs, including the environment
-identity and the per-seat policy provenance/RNG identity. It is stable across a repeated run of the
-same semantic job. It is not GameSession.sessionId or EnvId.
+semanticEpisodeId is a SHA-256 content address of the canonical environment/setup/actual-engine-seed
+identity and its versioned public contract identities. It contains no behavior policy, opponent policy,
+policy RNG, collection-job, worker, or transport fields. It is not GameSession.sessionId or EnvId.
 
-trajectoryId is a SHA-256 content address of episodeId, the ordered semantic decision records,
-and factual closure metadata. If the same semantic episode job is generated twice with different
-choices, the duplicate episodeId is a conflict; the reader/merge operation rejects the conflict
-instead of choosing an arrival-order winner.
+collectionJobId is a separate SHA-256 content address of semanticEpisodeId plus the behavior and
+opponent policy identities, policy RNG/seed identities, and other collection provenance. It identifies
+which policy run produced an artifact; it is not part of semantic decision identity. The same
+semanticEpisodeId may therefore occur in multiple collection jobs.
+
+trajectoryId is a SHA-256 content address of semanticEpisodeId, collectionJobId, the ordered
+semantic decision records, and factual closure metadata. A duplicate
+(collectionJobId, semanticEpisodeId) with conflicting content is a conflict; the reader/merge
+operation rejects it instead of choosing an arrival-order winner.
 
 ## OBSERVATION_SCHEMA_IDENTITY=
 
@@ -314,13 +324,15 @@ It contains the current semantic public fields:
 - public turn/phase/step and active/priority players;
 - public player summaries;
 - visible zone/card features and stack projection;
-- pending decision kind, player, shape, and semantic structured domain when the actor owns it;
-- the public semantic legal-action projection;
+- pending decision kind, playerId, sourceEntityId, triggeringEntityId, requiresStructuredResponse,
+  and shape;
 - terminal/truncation flags and winner only where the current public observation defines them;
-- schemaHash and the recomputed stateDigest.
+- schemaHash and observationDigest, which binds the source TrainingObservation.stateDigest.
 
 It omits:
 
+- TrainingObservation.legalActions and PendingDecisionView.structuredDomain. These are normalized
+  once into CompleteLegalDomainV1, which is the sole durable legal-domain authority;
 - every actionId;
 - every PendingDecisionView.decisionId;
 - every DecisionResponse.decisionId;
@@ -330,10 +342,17 @@ It omits:
 
 The omission of presentation fields follows the existing ObservationCanonicalizer contract.
 Adding presentation text later requires an explicit V1 extension; it must not silently alter the
-semantic projection. The writer stores the complete domain separately even though the source
-observation contains a public legal-action copy. The validator proves those copies agree, so a
-reader can use the sample as PlayerObservation plus complete domain without relying on an implicit
-reconstruction.
+semantic projection. The capture adapter receives one TrainingObservation and derives the
+observation-only projection plus the one CompleteLegalDomainV1. It does not persist a second
+legalActions or structuredDomain copy.
+
+The existing TrainingObservation.stateDigest remains the reusable public observation digest. At
+capture, the source semantic preimage is computed before the split. At read/verify time, the
+canonical source observation is reassembled from PlayerObservationV1 and CompleteLegalDomainV1 in
+the producer-declared order, and the same ObservationCanonicalizer semantic bytes are recomputed.
+The resulting observationDigest is therefore the source stateDigest binding, while the
+candidateDomainDigest remains a separate digest of the stored domain. PlayerObservationV1 alone
+is not presented as a complete domain-bearing observation.
 
 SchemaHash.CURRENT is reusable as the wire contract anchor. A separate durable-projection
 identity is required because the current hash does not version the semantic-field exclusion list or
@@ -374,6 +393,12 @@ unaffordable public candidate when the current observation exposes it. The polic
 the choices the existing strict submission contract accepts. B2 does not replace the complete
 domain with an affordable-only subset.
 
+CompleteLegalDomainV1 is the single canonical stored representation of the current legal domain.
+For an action boundary it is normalized from TrainingObservation.legalActions; for a structured
+pending decision it is normalized from PendingDecisionView.structuredDomain. PlayerObservationV1
+contains the pending semantic context but neither domain copy. The observation digest binds the
+observation-only projection to this one stored domain.
+
 ## SEMANTIC_DECISION_IDENTITY=
 
 ~~~text
@@ -386,28 +411,38 @@ The preimage is the canonical object:
 ~~~json
 {
   "schema": "argentum-trajectory-semantic-decision@v1",
-  "environmentIdentity": "ENVIRONMENT_INPUT_SHA256",
-  "episodeId": "EPISODE_INPUT_CONTENT_SHA256",
+  "semanticEpisodeId": "SEMANTIC_EPISODE_CONTENT_SHA256",
   "replayPrefixDigest": "REPLAY_PREFIX_SHA256",
   "replayActionIndex": 0,
-  "decisionIndex": 0,
   "perspectivePlayerId": "public-seat-id",
   "decisionKind": "PRIORITY",
-  "observationStateDigest": "STATE_DIGEST_SHA256",
+  "observationDigest": "STATE_DIGEST_SHA256",
   "candidateDomainDigest": "DOMAIN_PREIMAGE_SHA256"
 }
 ~~~
 
-This is deliberately scoped by episode and ordered semantic history. It does not use
-trajectoryId, GameSession.sessionId, EnvId, actionId, decisionId, PendingDecision.id,
-nonce, projectionGeneration, recordingRevision, ability allocation order, UUID, wall time,
-PID, or worker placement.
+This is deliberately scoped by semantic episode and ordered semantic history. semanticEpisodeId
+contains only the pinned environment/setup/actual-engine-seed identity. collectionJobId,
+behavior/opponent policy identity, policy RNG/seed, trajectoryId, GameSession.sessionId, EnvId,
+actionId, decisionId, PendingDecision.id, nonce, projectionGeneration, recordingRevision, ability
+allocation order, UUID, wall time, PID, and worker placement are not in this preimage.
+
+This separation is intentional: two policies may reach the same semantic environment position and
+replay prefix, and must receive the same semanticDecisionId when the public observation and complete
+domain are the same. Their collectionJobId and trajectory content may differ, but policy provenance
+must never change the semantic decision identity.
+
+replayPrefixDigest is the hash of the ordered semantic replay actions/responses before the current
+boundary, after the existing typed decision-reference rebinding and generated-ability aliasing.
+Policy labels, policy RNG state, collectionJobId, and freshness/routing handles are excluded; a
+policy can influence the prefix only by selecting a different semantic action, which is semantic
+history rather than provenance.
 
 The required invariant is:
 
 ~~~text
 same pinned environment
-+ same episode semantic inputs
++ same semantic episode inputs
 + same replayed semantic history
 + same current public decision/domain
 => same semanticDecisionId
@@ -444,15 +479,16 @@ Canonicalization rules:
 
 - JSON object keys are ordered by code point.
 - The domain kind, version, decision kind, shape, and every versioned nested domain are included.
-- The priority and folded candidate collections use the existing semantic action fingerprint
-  rules. They are choice sets, so their transport-free entries are canonicalized and sorted by
-  canonical bytes.
+- Candidate-list order is never chosen by the trajectory layer. Rules-significant order is
+  preserved exactly. For an unordered candidate set, the public Gym/domain producer must establish
+  a deterministic canonical order before capture; CompleteLegalDomainV1 stores that exact order.
 - Target requirements, attackerOrder, blockerOrder, attackerToDefenders, payment source
   options, payment cost units, reorder-library card order, combat edge order, and any other
   Rules-significant sequence retain the producer-owned order.
 - Set-shaped colors, types, subtypes, keywords, visible attachments, target candidate sets, and
-  other fields already declared unordered by ObservationCanonicalizer use the existing
-  canonical set treatment.
+  other fields already declared unordered by ObservationCanonicalizer must likewise be put into
+  their producer-established canonical order before storage. The trajectory digest does not sort
+  arbitrary arrays after the boundary.
 - The canonicalizer must reject duplicate semantic members. It must not deduplicate equal
   blocker requirement instances, because the current blocker contract intentionally retains
   requirement multiplicity.
@@ -462,22 +498,37 @@ Canonicalization rules:
   copy are excluded as they are in the current semantic canonicalizer.
 - Unknown component versions, unknown domain kinds, unresolved generated ability provenance, and
   malformed ordering/relations fail closed. Sorting a nondeterministic producer is not a repair.
+- JSON object-key ordering is a digest encoding rule only; it does not authorize reordering any
+  candidate or semantic sequence.
 
 Required negative evidence changes the digest or rejects the record:
 
 1. candidate membership changes;
 2. semantic candidate payload changes;
 3. a Rules-significant producer order changes;
-4. an unordered set insertion order changes but the semantic set does not;
+4. equivalent unordered source inputs are canonicalized by the public producer to the same stored
+   order, while a raw noncanonical producer order is rejected rather than sorted by this digest;
 5. a duplicate candidate or malformed relation appears;
 6. a runtime action/decision handle changes with the semantic payload unchanged.
 
 The current StateDigest and ObservationCanonicalizer.semanticActionFingerprint are the starting
-implementation source. They do not currently expose a standalone domain digest or a duplicate
-malformation gate, so this is a small generic hardening task rather than a proof that an equivalent
-primitive already exists.
+implementation source. The existing whole-observation canonicalizer may sort its historical
+semantic action-fingerprint array for StateDigest compatibility, but that behavior is not reused
+to repair producer order in CandidateDomainDigestV1. They do not currently expose a standalone
+domain digest or a duplicate malformation gate, so this is a small generic hardening task rather
+than a proof that an equivalent primitive already exists.
 
 ## POLICY_PROVENANCE=
+
+The identity split is normative:
+
+~~~text
+semanticEpisodeId = SHA-256(canonical environment/setup/actual-engine-seed identity)
+collectionJobId = SHA-256(semanticEpisodeId + canonical PolicyProvenanceV1)
+semanticDecisionId = SHA-256(semanticEpisodeId + replayPrefixDigest + replayActionIndex
+                             + perspective + decisionKind + observationDigest
+                             + candidateDomainDigest)
+~~~
 
 PolicyProvenanceV1 is episode metadata plus a per-seat role binding:
 
@@ -495,8 +546,9 @@ PolicyProvenanceV1 is episode metadata plus a per-seat role binding:
 
 The exact B0 bootstrap policy may use the same concrete implementation in both seats; the two
 roles remain separate fields so a later self-play or league run cannot collapse behavior and
-opponent provenance into one vague checkpoint. The B0 policySeed and choiceOrdinal are policy
-provenance and semantic job inputs, not model features and not Rules state.
+opponent provenance into one vague checkpoint. The B0 policySeed and choiceOrdinal are collection
+job provenance inputs, not semanticEpisodeId inputs, model features, or Rules state. They affect
+which trajectory is collected, but must not affect semanticDecisionId.
 
 V1 does not add behavior log-probabilities, value estimates, importance weights, recurrent burn-in,
 MCTS visits, or shaped rewards. Such fields require a separately versioned extension selected by
@@ -537,21 +589,25 @@ The writer accepts only the public boundary:
 
 ~~~text
 beginEpisode(EpisodeMetadataV1)
-recordDecision(TrainingObservation, completeDomain, chosenSemanticActionOrResponse, replay coordinates)
+recordDecision(PlayerObservationV1, CompleteLegalDomainV1, chosenSemanticActionOrResponse,
+               replay coordinates)
 finish(EpisodeClosureV1, CompactReplayLink)
 ~~~
 
-It never accepts GameState, PendingDecision, LegalAction, ActionRegistry, an opaque action
-handle, or a native policy object.
+The capture adapter may receive one current TrainingObservation, but it derives the two arguments
+once and the writer stores them exactly once: PlayerObservationV1 has no legalActions or pending
+structuredDomain copy, and CompleteLegalDomainV1 is the sole stored domain authority. The writer
+never accepts GameState, PendingDecision, LegalAction, ActionRegistry, an opaque action handle,
+or a native policy object.
 
 At recordDecision it must:
 
 1. require a nonterminal acting observation with the acting perspective equal to the decision
    owner;
 2. require an empty diagnostic ledger and no unsupported/fallback signal;
-3. construct the transport-free PlayerObservationV1;
-4. construct the complete domain from the same public observation and require its schema/version;
-5. recompute stateDigest and candidateDomainDigest;
+3. accept the transport-free PlayerObservationV1 from the public capture boundary;
+4. accept the complete domain from that same boundary and require its schema/version;
+5. recompute the source observationDigest and candidateDomainDigest;
 6. reject duplicate semantic candidates and malformed producer order;
 7. require every declared payload field, including explicit empty maps/lists;
 8. prove the chosen semantic action/response is inside the stored complete domain using the current
@@ -568,7 +624,8 @@ At finish it must:
 - require INTERRUPTED to be explicit and nonterminal;
 - route FAILED to quarantine and never to a published shard;
 - run replay-backed verification before publishing trusted data;
-- compute episodeId, trajectoryId, and manifest content digests from canonical bytes;
+- verify semanticEpisodeId and collectionJobId from canonical metadata, then compute trajectoryId
+  and manifest content digests from canonical bytes;
 - write only immutable finalized shard entries.
 
 The writer does not repair a missing domain, choose an omitted target/payment/mode, infer a
@@ -593,7 +650,9 @@ The strict reader:
   before yielding any sample;
 - validates episode-start/decision/episode-end framing and complete episode digests;
 - streams valid decision records after the integrity pass, without loading the whole dataset;
-- rejects conflicting duplicate episodeId or trajectoryId entries;
+- rejects conflicting duplicate (collectionJobId, semanticEpisodeId) or trajectoryId entries;
+  the same semanticEpisodeId in a different collectionJobId is allowed only when its metadata
+  carries the corresponding distinct policy provenance;
 - exposes policy, engine, deck, replay, closure, quarantine, and count metadata;
 - preserves variable-size observations and complete domains;
 - exposes semanticDecisionId and the full chosen semantic payload;
@@ -617,10 +676,12 @@ never silently skipped while the reader continues to report a trusted dataset.
 V1 uses canonical uncompressed NDJSON/JSONL:
 
 ~~~text
-dataset/
-  manifest.json
-  shard-000000.ndjson
-  shard-000001.ndjson
+dataset-root/
+  collection-COLLECTION_JOB_ID/
+    manifest.json
+    shard-000000.ndjson
+    shard-000001.ndjson
+  .staging/
   quarantine/
 ~~~
 
@@ -638,9 +699,9 @@ Each shard contains complete episode event sequences. An episode begins with epi
 contains one decision line per decision, and ends with episode-end:
 
 ~~~json
-{"recordType":"episode-start","trajectorySchemaVersion":1,"episodeId":"...","episodeOrdinal":7,"episodeMetadata":{}}
-{"recordType":"decision","trajectorySchemaVersion":1,"episodeId":"...","decision":{}}
-{"recordType":"episode-end","trajectorySchemaVersion":1,"episodeId":"...","trajectoryId":"...","decisionCount":42,"episodeContentDigest":"...","closure":{}}
+{"recordType":"episode-start","trajectorySchemaVersion":1,"semanticEpisodeId":"...","collectionJobId":"...","episodeOrdinal":7,"episodeMetadata":{}}
+{"recordType":"decision","trajectorySchemaVersion":1,"semanticEpisodeId":"...","collectionJobId":"...","decision":{}}
+{"recordType":"episode-end","trajectorySchemaVersion":1,"semanticEpisodeId":"...","collectionJobId":"...","trajectoryId":"...","decisionCount":42,"episodeContentDigest":"...","closure":{}}
 ~~~
 
 Every line is canonical JSON, UTF-8, no BOM, one LF terminator, and no insignificant whitespace.
@@ -677,18 +738,25 @@ WRITING -> VALIDATING -> VALIDATED -> PUBLISHED
 
 Implementation rules:
 
-- write to a unique staging directory under the target dataset root;
-- keep the final dataset path absent or unlisted while writing;
+- create a unique staging collection directory under dataset-root/.staging. The operational write
+  token used in that directory name is not a semantic or provenance field in the artifact;
+- keep the final collection-COLLECTION_JOB_ID directory absent or unlisted while writing;
 - close and flush each shard, validate its complete event framing, and compute its digest;
-- write the manifest last, including all finalized shards and counts;
-- move the manifest from a temporary sibling to its final name with ATOMIC_MOVE on the same
-  filesystem;
-- never replace an existing published manifest or shard;
-- if the filesystem cannot provide the required atomic publication operation, fail publication and
-  retain staging/quarantine evidence instead of silently falling back to an overwrite;
-- a reader treats the absence of the final manifest or a digest mismatch as not published;
-- a repeated semantic episode ordinal or episode ID is a conflict, not an invitation to select the
-  first or newest artifact.
+- write the manifest last inside the staging collection directory, including all finalized shards
+  and counts, and validate its content digest;
+- close/fsync finalized files and the staging directory where the host filesystem supports it, then
+  atomically rename the entire staging collection directory to
+  collection-COLLECTION_JOB_ID with ATOMIC_MOVE on the same filesystem. The manifest and every
+  referenced shard therefore arrive at their final relative paths in one publication operation;
+- never replace an existing published collection directory, manifest, or shard;
+- if the filesystem cannot provide the required atomic directory move, fail publication and retain
+  staging/quarantine evidence instead of silently falling back to an overwrite or a manifest-only
+  move;
+- a reader ignores .staging and accepts only a final collection directory with a valid manifest
+  and all listed immutable shards; absence of the final directory or a digest mismatch is not
+  published;
+- a repeated semantic episode ordinal or (collectionJobId, semanticEpisodeId) is a conflict, not
+  an invitation to select the first or newest artifact.
 
 The existing TrainingCorpusFiles temporary-file/atomic-move pattern is the implementation model.
 Its whole-corpus REPLACE_EXISTING and append behavior are not copied into V1.
@@ -751,6 +819,23 @@ The verifier must use one forward cursor, not call reconstructStateAt independen
 frame. The current reconstructStateAt proves that a requested action prefix can be applied, but
 it does not by itself validate every checkpoint or emit the public Gym observation stream.
 
+The declared replay range is complete and inclusive at both observation boundaries:
+
+~~~text
+frame 0 before replay action 0
+-> frame 1 after replay action 0 / before replay action 1
+-> ...
+-> frame N at the tail after all replay actions, where N = CompactReplay.actions.size
+~~~
+
+For N > 0, frame N follows replay action N - 1; for N = 0, frame 0 is both the initial and tail
+frame. The verifier must compare frame 0, every intermediate frame, and the final tail frame. It must
+consume exactly every declared replay action, update replayPrefixDigest from the semantic replay
+prefix after each applied action, and reject an early end, an omitted tail, an extra action, or a
+decision coordinate that does not match the cursor. Internal transitions without a public
+decision boundary still consume their replay coordinate; they may not be skipped to make the
+public frame count appear adjacent.
+
 For each replayActionIndex:
 
 1. Use the replayed pre-action state only inside the verifier to determine the current actor and
@@ -797,13 +882,16 @@ The public trajectory comparison excludes only fields with an explicit current c
 - EnvId, snapshot slot, message ID, state-update version, generation, recording revision, worker
   placement, PID, wall time, and completion order;
 - presentation-only prompts, descriptions, labels, image URIs, and auto-pay suggestions;
-- the computed stateDigest field while recomputing it from the semantic observation.
+- the computed observationDigest/source stateDigest field while recomputing it from the
+  reassembled semantic observation and complete domain.
 
 The comparison retains all public semantic characteristics, legal-domain membership and
 Rules-significant order, visible entity references, source/target/payment relations, structured
 response values, replay action order, seed/setup inputs, factual closure, and version identities.
-The full-state ReplayFingerprint remains a separate replay-proof input and is never converted
-into a model feature.
+In particular, PendingDecisionView.sourceEntityId and PendingDecisionView.triggeringEntityId are
+retained semantic context; same-domain YES_NO decisions that differ in either reference are not
+equivalent. The full-state ReplayFingerprint remains a separate replay-proof input and is never
+converted into a model feature.
 
 ## DECISION_FAMILY_CLOSURE=
 
@@ -847,40 +935,51 @@ source additionally derives or checks static-only families, and the exact-pair t
 prove that CastWithFlashback, REORDER_LIBRARY, and CHOOSE_MODE can be derived from current
 definitions even when absent from the historical telemetry.
 
+Closure evidence rule:
+
+- Every family that is reachable under the pinned Environment V1 input must receive a targeted
+  legal behavioral witness and replay-verified serialized record.
+- A family may instead receive PROVEN_UNREACHABLE_FOR_PINNED_ENVIRONMENT_V1 only from an explicit
+  proof over the pinned Environment V1 rules, deck, and configuration inputs.
+- A fixed policy not visiting a family, an empty attack chosen by policy, or absence from
+  historical telemetry is never an unreachability proof.
+- If neither a targeted witness nor the exact pinned-input proof exists, the family remains
+  BLOCKED; the writer cannot publish a claim of closure.
+
 | Family | Current public producer | B0 dynamic evidence | B2 disposition |
 | --- | --- | --- | --- |
 | PRIORITY / PassPriority | LegalActionEnumerator and TrainingObservation.legalActions | Observed | Store complete action candidate domain and behavioral records. |
 | ActivateAbility | LegalActionEnumerator, actionSemantics stable ability key, payment domains | Observed | Store complete candidate and selected target/cost/payment/color/X payload. |
-| CastSpell / CastWithKicker / CastWithFlashback | Cast enumerators and public action semantics | CastSpell and CastWithKicker observed; CastWithFlashback static-only | Require behavioral records for observed families; static-only family needs a B2 witness or an explicit proof of unreachability under the locked policy. |
+| CastSpell / CastWithKicker / CastWithFlashback | Cast enumerators and public action semantics | CastSpell and CastWithKicker observed; CastWithFlashback static-only | Require behavioral records for observed families; CastWithFlashback needs a targeted legal witness or an exact pinned Environment/Deck/Config proof. Policy non-visit is not proof. |
 | CastSpellMode | Cast enumerator emits a chosen-mode action; LegalActionView carries semantic action fields | Observed | Verify each selected mode. A multi-mode template using LegalAction.modalEnumeration currently lacks a corresponding LegalActionView field; if reachable, stop for a generic public-domain follow-up. |
 | CycleCard | Cycling enumerator and V5 payment domain | Observed | Store complete action/payment domain and response. |
 | PlayLand | Land enumerator | Observed | Store complete action domain. |
 | DeclareAttackers | Rules AttackDeclarationDomain, mapped to AttackDeclarationDomainV2 with producer-owned attacker order | Observed | Store and compare ordered attacker/defender/band constraints; never use flat legacy hints. |
-| DeclareBlockers | Rules BlockerDeclarationDomain, mapped to BlockerDeclarationDomainV1 | Not in historical dynamic snapshot; the accepted B0 policy chooses empty attacks in its public policy path | Require a behavioral witness or a proof that the fixed policy/corpus cannot reach it. The current static closure allowlist does not itself prove this family unreachable. |
+| DeclareBlockers | Rules BlockerDeclarationDomain, mapped to BlockerDeclarationDomainV1 | Not in historical dynamic snapshot; the accepted B0 policy chooses empty attacks in its public policy path | The empty-attack policy path is not evidence of unreachability. Require a targeted legal nonempty-attack/blocker witness or an exact pinned Environment/Deck/Config proof; otherwise BLOCKED. The static closure allowlist alone is insufficient. |
 | DECISION folded options | PendingDecision simple variants become LegalActionView response candidates | Observed | Store the full option candidate set; chosen response excludes only its nonce. |
 | YES_NO including commander-zone yes/no and batch yes/no | YesNoDecision and BatchYesNoDecision | Observed | Preserve response subtype and semantic fields; do not use prompt text to identify commander behavior. |
 | CHOOSE_COLOR | ChooseColorDecision or action-level mana-color domain | Observed | Store explicit WUBRG/certified public color domain and selected color. |
 | CHOOSE_TARGETS | TargetsDomain and action-level fixed target domain | Observed | Store every requirement, relation, cardinality, and candidate; validate selected IDs and constraints. |
 | SELECT_CARDS | CardSelectionDomain | Observed | Store options, selection bounds, order flag, constraints, and selected cards. |
-| CHOOSE_MODE | ModeSelectionDomain for multi-mode pending decisions | Static-only in current telemetry | Behavioral record required if reached; no enum-only coverage claim. |
-| REORDER_LIBRARY | ReorderLibraryDomain | Static-only in current telemetry | Behavioral record required if reached; order is semantic and must not be sorted away. |
-| DISTRIBUTE | DistributionDomain | Not observed | Current public producer exists; require a reachability witness plus structured response record before trusted publication. |
-| ORDER_OBJECTS / trigger ordering | OrderingDomain, including generated trigger-order handles | Not observed | Require a behavioral witness and validate handle-free object semantics; use the existing alias rules only. |
-| SPLIT_PILES | SplitPilesDomain | Not observed | Require a behavioral witness; preserve pile membership and response order. |
-| CHOOSE_OPTION | Folded option candidates and OptionMetadata | Not observed | Require a behavioral witness; option index is semantic, display metadata is not. |
-| CHOOSE_REPLACEMENT | ReplacementDomain | Not observed | Require a behavioral witness; validate the from/to relation. |
-| SEARCH_LIBRARY | SearchLibraryDomain | Not observed | Require a behavioral witness; preserve visible authorized card information only. |
-| BUDGET_MODAL | BudgetModalDomain | Not observed | Require a behavioral witness; preserve repeated mode selections and budget constraints. |
-| ASSIGN_DAMAGE | Current PendingDecision producer, but ObservationBuilder emits no structured domain | Not observed | Unsupported public producer. Do not serialize it by echoing raw state; add a generic public-domain follow-up or prove it unreachable. |
-| COMBAT_RESOLUTION | CombatResolutionDomain and CombatResolutionResponse | Not observed as a pending family in the snapshot | Require behavioral witness; compare all edges, ownership, defaults, and final response amounts. |
-| SELECT_MANA_SOURCES | ManaSourcesDomain V2 and explicit source response | Not observed as a pending family; action-level V5 payments are observed | Require behavioral witness if reached; autoPaySuggestion is advisory and never a chosen label. |
-| MULLIGAN | Rules actions exist, but no MulliganDecision public pending family or Gym legal-action branch is present | Unreachable under the locked B0 skipMulligans=true input | Treat as proven unreachable only for the locked B0 input. A non-skipped Gym path is a generic prerequisite, not a trajectory-layer repair. |
+| CHOOSE_MODE | ModeSelectionDomain for multi-mode pending decisions | Static-only in current telemetry | Require a targeted legal behavioral witness or an exact pinned Environment/Deck/Config proof; no enum-only or telemetry-absence coverage claim. |
+| REORDER_LIBRARY | ReorderLibraryDomain | Static-only in current telemetry | Require a targeted legal behavioral witness or an exact pinned Environment/Deck/Config proof; stored order is semantic and must not be sorted away. |
+| DISTRIBUTE | DistributionDomain | Not observed | Require a targeted legal witness plus structured response record, or an exact pinned Environment/Deck/Config proof, before trusted publication. |
+| ORDER_OBJECTS / trigger ordering | OrderingDomain, including generated trigger-order handles | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; validate handle-free object semantics and use the existing alias rules only. |
+| SPLIT_PILES | SplitPilesDomain | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; preserve pile membership and response order. |
+| CHOOSE_OPTION | Folded option candidates and OptionMetadata | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; option index is semantic, display metadata is not. |
+| CHOOSE_REPLACEMENT | ReplacementDomain | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; validate the from/to relation. |
+| SEARCH_LIBRARY | SearchLibraryDomain | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; preserve visible authorized card information only. |
+| BUDGET_MODAL | BudgetModalDomain | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; preserve repeated mode selections and budget constraints. |
+| ASSIGN_DAMAGE | Current PendingDecision producer, but ObservationBuilder emits no structured domain | Not observed | Unsupported public producer. Do not serialize it by echoing raw state; add a generic public-domain follow-up or establish an exact pinned Environment/Deck/Config proof of unreachability. |
+| COMBAT_RESOLUTION | CombatResolutionDomain and CombatResolutionResponse | Not observed as a pending family in the snapshot | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; compare all edges, ownership, defaults, and final response amounts. |
+| SELECT_MANA_SOURCES | ManaSourcesDomain V2 and explicit source response | Not observed as a pending family; action-level V5 payments are observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; autoPaySuggestion is advisory and never a chosen label. |
+| MULLIGAN | Rules actions exist, but no MulliganDecision public pending family or Gym legal-action branch is present | No public family under the pinned EnvConfig.skipMulligans=true input | PROVEN_UNREACHABLE_FOR_PINNED_ENVIRONMENT_V1 is valid here only because skipMulligans=true is an explicit pinned environment configuration. Non-skipped mulligan is not required for B2, and policy behavior is not evidence. |
 
 Every row must end in one of:
 
 ~~~text
 BEHAVIORALLY_REPRESENTED_AND_REPLAY_VERIFIED
-PROVEN_UNREACHABLE_FOR_THE_PINNED_LOCKED_INPUT
+PROVEN_UNREACHABLE_FOR_PINNED_ENVIRONMENT_V1
 BLOCKED_BY_MISSING_GENERIC_PUBLIC_DOMAIN
 ~~~
 
@@ -911,8 +1010,9 @@ GENERIC_GAPS_FOUND=BLOCKING_PREREQUISITES_IDENTIFIED
    validator over the stored public domain. B2 needs both: current Rules validation at capture/replay
    time and a storage-level structural membership check.
 7. The exact-pair static closure source does not itself enumerate every generic public producer:
-   blocker declaration, non-skipped mulligan, AssignDamage, and several structured families need
-   explicit reachability dispositions.
+   blocker declaration, AssignDamage, and several structured families need a targeted behavioral
+   witness or an exact pinned Environment/Deck/Config proof. The pinned skipMulligans=true
+   configuration is a scoped proof for non-skipped mulligan only; policy non-visit is never proof.
 8. TrainingCorpusFiles is whole-corpus, non-streaming persistence; JsonlSelfPlaySink is a
    mutable append sink with outcome back-patching. Neither provides immutable bounded shards,
    deterministic manifest enumeration, or checksum-gated reads.
@@ -999,6 +1099,10 @@ RED characterization/tests:
   transport-free projection and its digest must remain equal.
 - Change a visible semantic field, candidate payload, or schema identity; the projection/digest
   must change.
+- Keep the same YES_NO domain and all other fields fixed; changing
+  pendingDecision.sourceEntityId or pendingDecision.triggeringEntityId must change
+  PlayerObservationV1 and semanticDecisionId, while changing prompt, sourceName, or effectHint
+  must not.
 - Reuse the existing hidden-hand, hidden-library, face-down, and authorized-reveal fixtures to
   assert that the durable bytes contain no hidden entity/card identity.
 - Decode an unknown durable projection version and assert fail-closed behavior.
@@ -1019,9 +1123,10 @@ structured-domain equality, and B1 semantic trajectory hashes.
 
 Acceptance:
 
-PlayerObservationV1 is derived only from TrainingObservation, has no transport IDs or raw state,
-retains all public semantic fields required by current B0, and has an explicit fail-closed schema
-identity.
+PlayerObservationV1 is derived only from TrainingObservation, has no transport IDs, raw state,
+legalActions, or pending structuredDomain copy, retains all public semantic fields required by
+current B0 including sourceEntityId and triggeringEntityId, and has an explicit fail-closed schema
+identity. Presentation-only prompt/sourceName/effectHint changes do not alter it.
 
 ### Task A2 — Add the complete-domain canonicalizer and digest
 
@@ -1031,7 +1136,9 @@ RED characterization/tests:
 
 - Add CandidateDomainDigestTest.
 - Prove membership, semantic payload, and Rules-significant order mutations change the digest.
-- Prove unordered set insertion-order changes do not.
+- Prove equivalent unordered source inputs converge only through the public producer's canonical
+  order before storage, and a raw noncanonical producer order is rejected rather than sorted by
+  the trajectory digest.
 - Prove duplicate semantic candidates, duplicate relation members, malformed blocker
   multiplicity, missing required maps, unknown domain kinds, and future component versions reject.
 - Cover target, attack, blocker, V5 payment, target-payment, color, X, modes, card selection,
@@ -1064,6 +1171,9 @@ RED characterization/tests:
 - Add SemanticDecisionIdentityTest.
 - Replay the same public trace with fresh action IDs, decision IDs, continuation nonces, generated
   ability suffixes, and session IDs; semantic decision IDs and chosen semantic payloads must match.
+- Keep semanticEpisodeId, replay prefix, public observation, and complete domain fixed while
+  changing policy provenance and collectionJobId; semanticDecisionId must remain equal, while the
+  collection provenance remains distinct.
 - Change prefix history, actor, decision kind, domain membership/order, schema, or public state;
   the correct semantic identity must change or the record must reject.
 - Submit a partial structured payload, raw AutoPay, an unknown field, or an action not in the
@@ -1175,9 +1285,12 @@ RED characterization/tests:
 - Interrupt while writing an episode before episode-end; reader must reject it.
 - Corrupt one byte, alter one line ending, change one manifest count, exceed the shard/episode
   bound, duplicate an episode ordinal, and write conflicting episode content; publication must fail.
+- Interrupt between staging validation and final publication; no final collection directory may
+  appear. Simulate a filesystem without atomic directory move support; publication must fail
+  closed rather than moving only the manifest or overwriting a prior collection.
 - Fail a decision with an unsupported diagnostic, public-choice rejection, missing domain, or replay
   divergence; only quarantine evidence may remain.
-- Repeat the same semantic job with the same content and verify deterministic bytes; repeat it with
+- Repeat the same collection job with the same content and verify deterministic bytes; repeat it with
   a conflicting payload and verify conflict rejection.
 
 Files/contracts affected:
@@ -1238,11 +1351,13 @@ RED characterization/tests:
 - Add a Trajectory V1 closure test that combines the current static definition scan, public-domain
   producer inventory, accepted B0 dynamic telemetry, and B2 serialized family counts.
 - Make the test fail when a statically reachable or public-producer family has neither a behavioral
-  record nor a locked-input unreachability proof.
+  record from a targeted legal witness nor an exact pinned Environment/Deck/Config proof;
+  policy non-visit and historical telemetry absence must fail the test.
 - Add explicit probes for CastWithFlashback, CHOOSE_MODE, REORDER_LIBRARY,
   DeclareBlockers, DISTRIBUTE, ORDER_OBJECTS, SPLIT_PILES, CHOOSE_REPLACEMENT,
-  BUDGET_MODAL, COMBAT_RESOLUTION, SELECT_MANA_SOURCES, ASSIGN_DAMAGE, and non-skipped
-  mulligan before claiming their disposition.
+  BUDGET_MODAL, COMBAT_RESOLUTION, SELECT_MANA_SOURCES, and ASSIGN_DAMAGE, plus an explicit
+  pinned skipMulligans=true proof for non-skipped mulligan. No non-skipped mulligan behavioral
+  probe is required for the pinned B2 environment.
 - Add an unknown-family fixture that fails closed.
 
 Files/contracts affected:
@@ -1261,9 +1376,9 @@ contracts, and B0 first-gap stop behavior.
 
 Acceptance:
 
-Every reachable family has a behavioral record that is replay-verified or an explicit
-locked-input-specific unreachable proof. No family is considered covered by an enum or source-name
-match alone.
+Every reachable family has a behavioral record from a targeted legal witness that is replay-verified
+or an explicit pinned Environment/Deck/Config unreachable proof. No family is considered covered by
+an enum, source-name match, policy non-visit, or telemetry absence alone.
 
 ### Task A9 — Run the bounded B2 generation and final gate
 
@@ -1317,7 +1432,7 @@ rows in this audit-only commit.
 | 8 | True terminal | Rules gameOver and factual winner/draw | EpisodeClosureContractTest |
 | 9 | Interrupted | Horizon/cancellation with no winner/reward | EpisodeClosureContractTest |
 | 10 | Failed/quarantined | Diagnostic, exception, public rejection, replay divergence | TrajectoryV1WriterTest |
-| 11 | Policy provenance | Distinct behavior/opponent roles and policy RNG identity | TrajectoryV1ContractTest |
+| 11 | Policy provenance separation | Distinct behavior/opponent roles and policy RNG identity affect collectionJobId but not semanticEpisodeId or semanticDecisionId | TrajectoryV1ContractTest and SemanticDecisionIdentityTest |
 | 12 | Semantic decision stability | Same replay with fresh nonces/handles | SemanticDecisionIdentityTest |
 | 13 | Freshness independence | Action/decision/session/generation changes do not alter durable identity | SemanticDecisionIdentityTest |
 | 14 | Domain digest recomputation | Stored complete domain recomputes exactly | CandidateDomainDigestTest |
@@ -1331,7 +1446,8 @@ rows in this audit-only commit.
 | 22 | Same replay | Same pinned replay reconstructs the same semantic trajectory | ReplayTrajectoryVerificationTest |
 | 23 | Complete range | Initial frame, every action boundary, final tail; no skipped tail | ReplayTrajectoryVerificationTest |
 | 24 | Deterministic shards | Same episode ordinals and bytes independent of filesystem order | TrajectoryV1WriterTest and TrajectoryV1ReaderTest |
-| 25 | Duplicate conflict | Same semantic job with conflicting payload rejected | TrajectoryV1ReaderTest |
+| 25 | Duplicate conflict | Same collectionJobId with conflicting payload rejected; the same semanticEpisodeId across distinct policy jobs is not conflated | TrajectoryV1ReaderTest |
+| 26 | Pending semantic context | Same YES_NO domain plus different sourceEntityId or triggeringEntityId changes PlayerObservationV1 and semanticDecisionId; prompt/sourceName/effectHint changes do not | TrajectoryObservationProjectionTest and SemanticDecisionIdentityTest |
 
 The surrounding regression set must include:
 
@@ -1386,6 +1502,7 @@ QUARANTINE=DESIGN_ONLY
 B0_TRUST_INVARIANTS_PRESERVED=YES (no production change)
 B1_PERFORMANCE_CONTRACT_PRESERVED=YES (no production change)
 B2_FINAL_ACCEPTANCE=NOT_RUN
+PLAN_REVIEW=CHANGES_APPLIED_PENDING_INDEPENDENT_DELTA_REVIEW
 
 B2_IMPLEMENTATION_AUTHORIZED=NO
 DATA_TRUSTED=NO
