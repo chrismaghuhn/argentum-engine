@@ -8,12 +8,15 @@ import com.wingedsheep.engine.core.GameEndReason
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.UnsupportedPathFailure
+import com.wingedsheep.engine.core.YesNoDecision
+import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.player.LossReason
 import com.wingedsheep.engine.state.components.player.PlayerLostComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Costs
@@ -92,6 +95,13 @@ class EpisodeClosureContractTest : FunSpec({
         defaultAssignments = mapOf(EntityId("target") to 1),
         hasTrample = false,
         hasDeathtouch = false,
+    )
+
+    fun yesNoDecision(playerId: EntityId, id: String = "a0-yes-no") = YesNoDecision(
+        id = id,
+        playerId = playerId,
+        prompt = "Choose",
+        context = DecisionContext(),
     )
 
     test("typed closure is versioned, serializable, and does not carry exception text") {
@@ -216,6 +226,111 @@ class EpisodeClosureContractTest : FunSpec({
         environment.diagnostics shouldBe beforeDiagnostics
         val closure = environment.episodeClosure.shouldBeInstanceOf<EpisodeClosureV1.Failed>()
         closure.reason shouldBe EpisodeFailureReason.PUBLIC_CHOICE_REJECTED
+    }
+
+    test("structured decision submitted without a pending decision is a public-choice rejection") {
+        val environment = GameEnvironment.create(registry())
+        environment.reset(config())
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry()),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            gym.submitDecision(YesNoResponse("missing-decision", choice = true))
+        }
+
+        gym.episodeClosure shouldBe EpisodeClosureV1.Failed(
+            stepCount = 0,
+            reason = EpisodeFailureReason.PUBLIC_CHOICE_REJECTED,
+        )
+    }
+
+    test("structured decision submitted by the wrong actor is a public-choice rejection") {
+        val environment = GameEnvironment.create(registry())
+        environment.reset(config())
+        val pending = yesNoDecision(environment.playerIds.first())
+        environment.restore(
+            state = environment.state.copy(pendingDecision = pending),
+            playerIds = environment.playerIds,
+            stepCount = environment.stepCount,
+        )
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry()),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            gym.submitDecision(
+                YesNoResponse(pending.id, choice = true),
+                actorId = environment.playerIds.last(),
+            )
+        }
+
+        gym.episodeClosure shouldBe EpisodeClosureV1.Failed(
+            stepCount = 0,
+            reason = EpisodeFailureReason.PUBLIC_CHOICE_REJECTED,
+        )
+    }
+
+    test("structured decision with a stale decision ID is a public-choice rejection") {
+        val environment = GameEnvironment.create(registry())
+        environment.reset(config())
+        val pending = yesNoDecision(environment.playerIds.first())
+        environment.restore(
+            state = environment.state.copy(pendingDecision = pending),
+            playerIds = environment.playerIds,
+            stepCount = environment.stepCount,
+        )
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry()),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            gym.submitDecision(
+                YesNoResponse("stale-decision", choice = true),
+                actorId = pending.playerId,
+            )
+        }
+
+        gym.episodeClosure shouldBe EpisodeClosureV1.Failed(
+            stepCount = 0,
+            reason = EpisodeFailureReason.PUBLIC_CHOICE_REJECTED,
+        )
+    }
+
+    test("stale resolved decision with no pending decision is a public-choice rejection") {
+        val environment = GameEnvironment.create(registry())
+        environment.reset(config())
+        val pending = yesNoDecision(environment.playerIds.first())
+        environment.restore(
+            state = environment.state.copy(pendingDecision = pending),
+            playerIds = environment.playerIds,
+            stepCount = environment.stepCount,
+        )
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = registry()),
+        )
+        val actionId = (gym.observe().observation as TrainingObservation).legalActions.first().actionId
+
+        environment.restore(
+            state = environment.state.copy(pendingDecision = null),
+            playerIds = environment.playerIds,
+            stepCount = environment.stepCount,
+        )
+
+        shouldThrow<IllegalArgumentException> { gym.step(actionId) }
+
+        gym.episodeClosure shouldBe EpisodeClosureV1.Failed(
+            stepCount = 0,
+            reason = EpisodeFailureReason.PUBLIC_CHOICE_REJECTED,
+        )
     }
 
     test("Gym adapter exceptions classify the episode as observation failure") {

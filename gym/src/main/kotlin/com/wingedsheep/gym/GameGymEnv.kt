@@ -173,12 +173,13 @@ class GameGymEnv(
         response: DecisionResponse,
         actorId: com.wingedsheep.sdk.model.EntityId? = null
     ): ObservationResult = classifyExternalFailure {
-        val pending = environment.state.pendingDecision
-            ?: throw IllegalStateException("Env is not paused on a decision")
-        check(actorId == null || actorId == pending.playerId) {
+        val pending = requireNotNull(environment.state.pendingDecision) {
+            "Env is not paused on a decision"
+        }
+        require(actorId == null || actorId == pending.playerId) {
             "Decision actor mismatch: actor=$actorId, expected=${pending.playerId}"
         }
-        check(response.decisionId == pending.id) {
+        require(response.decisionId == pending.id) {
             "Decision ID mismatch: response=${response.decisionId}, pending=${pending.id}"
         }
         environment.stepStrict(SubmitDecision(pending.playerId, response))
@@ -311,8 +312,9 @@ class GameGymEnv(
                 environment.stepFromCandidateStrict(resolved.legalAction, resolved.action)
             }
             is ResolvedAction.Decision -> {
-                val pending = environment.state.pendingDecision
-                    ?: throw IllegalStateException("Registry has a decision response but env is not paused")
+                val pending = requireNotNull(environment.state.pendingDecision) {
+                    "Registry has a decision response but env is not paused"
+                }
                 environment.stepStrict(SubmitDecision(pending.playerId, resolved.response))
             }
             ResolvedAction.Unknown ->
