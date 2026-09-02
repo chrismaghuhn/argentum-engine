@@ -131,10 +131,10 @@ The live issue/PR inventory showed:
 - B2 issue #100 open and dependent on B1.
 - Issue #106 remains open; its payment-domain work is relevant to payment enumeration cost but is
   not altered or reinterpreted by this audit.
-- The current canonicalization characterization worktree is clean at
-  `5d974a85dcfc0e8256c4c52da54985c126df25af` and contains the independent measurement report
-  `docs/ml/b1-canonicalization-characterization.md`; its production optimization task remains
-  unstarted. It remains independent of this report.
+- The independent measurement report `docs/ml/b1-canonicalization-characterization.md` used here
+  was recorded at `5d974a85dcfc0e8256c4c52da54985c126df25af`; that branch may advance with
+  metadata-only follow-ups, but its production optimization task remains out of scope and it was
+  not touched by this report.
 
 The current `main` tree has no checked-in `gym/build/reports/b0` artifact writer or separate
 `B0CommanderSoakHarnessTest`. The exact-pair acceptance source is the available first-party B0
