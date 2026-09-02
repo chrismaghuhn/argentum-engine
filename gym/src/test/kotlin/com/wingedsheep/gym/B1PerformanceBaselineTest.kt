@@ -14,7 +14,6 @@ import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
-import com.wingedsheep.gym.contract.B1CanonicalizationProbe
 import com.wingedsheep.gym.contract.ObservationCanonicalizer
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.StateDigest
@@ -48,14 +47,12 @@ import kotlin.time.Duration.Companion.hours
 /**
  * Opt-in, test-only performance measurement for the trusted Akiri/Chevill Gym path.
  *
- * This test intentionally lives under src/test and is disabled unless b1.profile=true or
- * b1.characterize=true. It drives the same public MultiEnvService/DeterministicExternalPolicy
- * boundary as the exact-pair acceptance test. It does not change decks, policy choices, replay
- * contracts, or horizons; characterization only activates disabled scalar diagnostics.
+ * This test intentionally lives under src/test and is disabled unless b1.profile=true. It drives
+ * the same public MultiEnvService/DeterministicExternalPolicy boundary as the exact-pair
+ * acceptance test. It does not change decks, policy choices, replay contracts, or horizons.
  */
 class B1PerformanceBaselineTest : FunSpec({
-    val enabled = System.getProperty("b1.profile") == "true" ||
-        System.getProperty("b1.characterize") == "true"
+    val enabled = System.getProperty("b1.profile") == "true"
 
     test("writes the requested B1 performance baseline").config(
         enabled = enabled,
@@ -123,18 +120,10 @@ private fun runProfiledWorkload() {
 
     val recording = openJfrRecording()
     val countersBefore = JvmSnapshot.capture()
-    val characterizationSession = if (
-        System.getProperty("b1.characterize") == "true" && mode == "baseline"
-    ) {
-        B1CanonicalizationProbe.start()
-    } else {
-        null
-    }
     val workloadStart = System.nanoTime()
     var measurement: WorkloadMeasurement? = null
     var workloadWallNanos = 0L
     var countersAfter: JvmSnapshot? = null
-    var characterizationSnapshot: B1CanonicalizationProbe.Snapshot? = null
     var recordingStopNanos = 0L
     var recordingDumpNanos = 0L
     try {
@@ -142,9 +131,6 @@ private fun runProfiledWorkload() {
     } finally {
         workloadWallNanos = System.nanoTime() - workloadStart
         countersAfter = JvmSnapshot.capture()
-        characterizationSnapshot = characterizationSession?.let { session ->
-            B1CanonicalizationProbe.stop(session)
-        }
         recording?.let { current ->
             try {
                 val stopStart = System.nanoTime()
@@ -193,38 +179,6 @@ private fun runProfiledWorkload() {
     println("B1_JFR_DUMP_SECONDS=" + formatSeconds(finalMeasurement.recordingDumpNanos))
     println("B1_SERIALIZATION_SECONDS=" + formatSeconds(serializationNanos))
     println("B1_JSON_WRITE_SECONDS=" + formatSeconds(jsonWriteNanos))
-    characterizationSnapshot?.let { snapshot ->
-        val characterization = snapshot.toCharacterization(
-            workload = workloadName,
-            mode = mode,
-            measurement = finalMeasurement,
-        )
-        val characterizationPath = outputDir.resolve(
-            "canonicalization-" + workloadName + "-" + mode + ".json",
-        )
-        Files.writeString(
-            characterizationPath,
-            b1Json.encodeToString(CanonicalizationMetrics.serializer(), characterization),
-        )
-        println("B1_CANONICALIZATION_PATH=" + characterizationPath)
-        println("B1_CANONICALIZATION_SEMANTIC_JSON_CALLS=" + snapshot.semanticJsonCalls)
-        println("B1_CANONICALIZATION_STATE_DIGEST_CALLS=" + snapshot.stateDigestCalls)
-        println("B1_CANONICALIZATION_STATE_DIGEST_INPUT_BYTES=" + snapshot.stateDigestInputBytes)
-        snapshot.largestSemanticCall?.let { call ->
-            println("B1_CANONICALIZATION_MAX_N=" + call.legalActionCount)
-            println("B1_CANONICALIZATION_MAX_F=" + call.semanticActionFingerprintCalls)
-            println("B1_CANONICALIZATION_MAX_M=" + call.legalActionSortKeyEvaluations)
-            println("B1_CANONICALIZATION_MAX_STRUCTURED_M=" + call.structuredDomainSortKeyEvaluations)
-            println(
-                "B1_CANONICALIZATION_SORT_KEY_DUPLICATE=" +
-                    if (call.legalActionSortKeyEvaluations > call.semanticActionFingerprintCalls) {
-                        "YES"
-                    } else {
-                        "NOT_FOUND"
-                    },
-            )
-        }
-    }
     check(finalMeasurement.status == "PASS") {
         "B1 profiling workload failed: " + finalMeasurement.status
     }
@@ -950,95 +904,6 @@ private data class BaselineMetrics(
     val replayGc: Map<String, GcDelta>? = null,
     val jfrPath: String? = null,
 )
-
-@Serializable
-private data class CanonicalizationMetrics(
-    val baseHead: String,
-    val profileWorkload: String,
-    val mode: String,
-    val productionOptimizations: Int,
-    val productionSemanticChanges: Int,
-    val diagnosticProductionHooks: Boolean,
-    val probeDefaultEnabled: Boolean,
-    val episodes: Int,
-    val transitions: Long,
-    val semanticDecisions: Long,
-    val externalTransitions: Long,
-    val engineProgress: Long,
-    val observationBuilderCalls: Long,
-    val legalActionEnumerationCalls: Long,
-    val semanticJsonCalls: Long,
-    val wireJsonCalls: Long,
-    val semanticActionFingerprintCalls: Long,
-    val legalActionSortKeyEvaluations: Long,
-    val structuredDomainSortKeyEvaluations: Long,
-    val finalCanonicalizationCalls: Long,
-    val semanticJsonChars: Long,
-    val wireJsonChars: Long,
-    val stateDigestCalls: Long,
-    val stateDigestInputBytes: Long,
-    val sha256Calls: Long,
-    val digestHexFormattingCalls: Long,
-    val maxN: Int? = null,
-    val maxF: Long? = null,
-    val maxM: Long? = null,
-    val maxStructuredM: Long? = null,
-    val maxSemanticChars: Int? = null,
-)
-
-private fun B1CanonicalizationProbe.Snapshot.toCharacterization(
-    workload: String,
-    mode: String,
-    measurement: BaselineMetrics,
-): CanonicalizationMetrics {
-    check(mode == "baseline") { "Canonicalization characterization requires baseline mode" }
-    check(semanticJsonCalls == stateDigestCalls) {
-        "Expected one semanticJson call per baseline StateDigest call, got semanticJsonCalls=" +
-            semanticJsonCalls + ", stateDigestCalls=" + stateDigestCalls
-    }
-    check(sha256Calls == stateDigestCalls) {
-        "Expected one SHA-256 call per StateDigest call, got sha256Calls=" +
-            sha256Calls + ", stateDigestCalls=" + stateDigestCalls
-    }
-    check(digestHexFormattingCalls == stateDigestCalls) {
-        "Expected one digest formatter call per StateDigest call, got digestHexFormattingCalls=" +
-            digestHexFormattingCalls + ", stateDigestCalls=" + stateDigestCalls
-    }
-    val largest = largestSemanticCall
-    return CanonicalizationMetrics(
-        baseHead = B1_BASE_HEAD,
-        profileWorkload = workload,
-        mode = mode,
-        productionOptimizations = 0,
-        productionSemanticChanges = 0,
-        diagnosticProductionHooks = true,
-        probeDefaultEnabled = false,
-        episodes = measurement.episodes,
-        transitions = measurement.transitions,
-        semanticDecisions = measurement.semanticDecisions,
-        externalTransitions = measurement.externalTransitions,
-        engineProgress = measurement.engineProgress,
-        observationBuilderCalls = observationBuilderCalls,
-        legalActionEnumerationCalls = legalActionEnumerationCalls,
-        semanticJsonCalls = semanticJsonCalls,
-        wireJsonCalls = wireJsonCalls,
-        semanticActionFingerprintCalls = semanticActionFingerprintCalls,
-        legalActionSortKeyEvaluations = legalActionSortKeyEvaluations,
-        structuredDomainSortKeyEvaluations = structuredDomainSortKeyEvaluations,
-        finalCanonicalizationCalls = finalCanonicalizationCalls,
-        semanticJsonChars = semanticJsonChars,
-        wireJsonChars = wireJsonChars,
-        stateDigestCalls = stateDigestCalls,
-        stateDigestInputBytes = stateDigestInputBytes,
-        sha256Calls = sha256Calls,
-        digestHexFormattingCalls = digestHexFormattingCalls,
-        maxN = largest?.legalActionCount,
-        maxF = largest?.semanticActionFingerprintCalls,
-        maxM = largest?.legalActionSortKeyEvaluations,
-        maxStructuredM = largest?.structuredDomainSortKeyEvaluations,
-        maxSemanticChars = largest?.semanticChars,
-    )
-}
 
 @Serializable
 private data class PassSnapshot(

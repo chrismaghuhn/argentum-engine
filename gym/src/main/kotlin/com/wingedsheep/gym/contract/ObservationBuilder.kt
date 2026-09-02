@@ -201,7 +201,6 @@ class ObservationBuilder(
         legalActions: List<LegalAction>,
         truncated: Boolean = false
     ): ObservationResult {
-        B1CanonicalizationProbe.recordObservationBuild()
         val players = state.turnOrder.map { buildPlayerView(state, it, perspectivePlayerId) }
 
         val zones = buildZones(state, perspectivePlayerId)

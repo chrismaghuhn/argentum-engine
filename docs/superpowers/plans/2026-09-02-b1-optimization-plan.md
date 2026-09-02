@@ -220,7 +220,7 @@ Expected status: PASS for each available workload with the existing 1/1, 4/4, an
 - Modify: gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationCanonicalizer.kt only when Task 3 proves m>n
 - Remove: diagnostic probe files after measurement unless an independent review accepts them as test instrumentation
 
-- [ ] **Step 1: Write the RED contract only for a proven duplicate.**
+- [x] **Step 1: Write the RED contract only for a proven duplicate.**
 
 When Task 3 proves m>n, assert that one semanticJson execution evaluates the legal-action sort key exactly once per semantic fingerprint. Also add two distinct semantic fingerprints that intentionally produce the same canonical sort key and assert that their pre-existing stable input order is preserved after the fix:
 
@@ -242,7 +242,7 @@ semantic shouldBe expectedSemanticJson
 
 Run the focused test before changing production code and record FAIL with the measured m and n. If m==n, record SORT_KEY_DUPLICATE=NOT_FOUND, do not write this RED assertion, and move to the next measured hotspot.
 
-- [ ] **Step 2: Apply only the smallest proven fix.**
+- [x] **Step 2: Apply only the smallest proven fix.**
 
 If the RED test fails solely because the selector is evaluated more than once, decorate each semantic fingerprint with its existing canonical sort string once, sort by the stored string, and project the fingerprint back. Preserve stable ordering, equal-key ordering, the existing canonicalize implementation, and the final JSON tree:
 
@@ -260,7 +260,7 @@ semantic["legalActions"] = JsonArray(semanticActions)
 
 Do not change the serializer, legal-action membership, candidate order before canonical sorting, unordered-array policy, privacy filters, StateDigest algorithm, or any Rules/Gym execution path. Remove the diagnostic hook from hard benchmarks.
 
-- [ ] **Step 3: Turn RED to GREEN and benchmark.**
+- [x] **Step 3: Turn RED to GREEN and benchmark.**
 
 Run the focused test, then matched witness, normal4, corpus8, and replay2 baseline profiles. Use at least two correct corpus8 runs and report the median. Compare workload-only wall time, episodes/sec, semantic decisions/sec, external transitions/sec, engine progress/sec, process CPU, pass-local allocation, heap peak, and GC. Keep JFR recording stop/dump outside the workload and keep replay capture/verify allocation denominators separate.
 
@@ -362,3 +362,11 @@ PRODUCTION_OPTIMIZATIONS=0
 DATA_TRUSTED=NO
 NEXT=B1_OPTIMIZATION_AFTER_INDEPENDENT_REVIEW
 ```
+
+## Task 4 execution handoff
+
+Task 4 is implemented on the approved branch. The diagnostic production probe and its
+ThreadLocal hooks were removed before the matched benchmark; the remaining production change is
+the stable decorate-sort for legal-action semantic fingerprints plus its equal-key contract test.
+Task 5 and Task 6 remain unexecuted and unauthorized. `DATA_TRUSTED=NO` remains in force until the
+optimization commit is independently reviewed and the final trust gates are authorized.

@@ -18,7 +18,6 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
-import com.wingedsheep.gym.contract.B1CanonicalizationProbe
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 
@@ -398,7 +397,6 @@ class GameEnvironment private constructor(
         // executable Gym action: selecting it would only produce "No valid targets available" at
         // simulation time. Keep the action space executable so random agents cannot manufacture
         // an Illegal result from a supposedly legal observation.
-        B1CanonicalizationProbe.recordLegalActionEnumeration()
         return enumerator.enumerate(state, playerId, EnumerationMode.ACTIONS_ONLY)
             .filterNot { it.hasUnfillableTargetRequirement }
     }
