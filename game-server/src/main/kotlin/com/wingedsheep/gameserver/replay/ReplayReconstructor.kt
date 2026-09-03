@@ -19,22 +19,6 @@ import com.wingedsheep.sdk.model.EntityId
 import org.slf4j.LoggerFactory
 import org.springframework.stereotype.Component
 
-/** How faithfully a re-simulation reproduced the game that was actually played. */
-enum class ReplayFidelity {
-    /** Every recorded action applied, and every checkpoint matched. This is the real game. */
-    EXACT,
-
-    /** Every recorded action applied, but the replay proof is absent or incomplete. */
-    UNVERIFIED,
-
-    /**
-     * The re-simulation stopped early: an action no longer applies, or a checkpoint proved the board
-     * had drifted from the one that was played. Frames past the divergence are withheld rather than
-     * shown, because they describe a game that never happened.
-     */
-    DIVERGED,
-}
-
 /**
  * Diagnostics re-executed from a compact replay together with the trust status of that replay.
  *
@@ -107,71 +91,56 @@ class ReplayReconstructor(
         val setup = replay.setup
         val seats = setup.players.map { SpectatorSeat(EntityId(it.playerId), it.name) }
 
-        var state = engine.initialState(replay)
-        var previous = engine.spectatorStateBuilder.buildState(state, seats, setup.seatRoster, replay.gameId)
-        val initial = previous
         val deltas = ArrayList<SpectatorReplayDelta>(replay.actions.size)
-        var divergence: String? = null
-        var tailVerified = false
 
-        // v3 includes the zero-action state in the same tail-checkpoint contract. Legacy records
-        // deliberately retain their previous behavior and did not verify an initial checkpoint.
-        if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version)) {
-            when (val initialCheck = engine.verifyCheckpoint(replay, state, afterActionCount = 0)) {
-                is CheckpointCheck.Mismatch -> divergence = initialCheck.failure
-                CheckpointCheck.Match -> if (replay.actions.isEmpty()) tailVerified = true
-                CheckpointCheck.None -> Unit
-            }
-        }
-
-        for ((index, action) in replay.actions.withIndex()) {
-            if (divergence != null) break
-            val step = engine.applyAction(replay, state, action, index)
-            if (step.failure != null) {
-                divergence = step.failure
-                logger.warn(
-                    "Replay {} (recorded on {}) diverged at action {} ({}): {} — truncating to {} frames",
-                    replay.gameId, replay.engineVersion, index, action::class.simpleName,
-                    step.failure, 1 + deltas.size,
+        var initialSnapshot: ServerMessage.SpectatorStateUpdate? = null
+        var previousSnapshot: ServerMessage.SpectatorStateUpdate? = null
+        val forward = foldReplay(
+            replay = replay,
+            engine = engine,
+            catchCallbackFailures = false,
+            onFrame = { frame, state ->
+                val snapshot = engine.spectatorStateBuilder.buildState(
+                    state,
+                    seats,
+                    setup.seatRoster,
+                    replay.gameId,
                 )
-                break
-            }
-            state = step.state!!
-            if (step.checkpointVerified && index + 1 == replay.actions.size) {
-                tailVerified = true
-            }
-            val snapshot = engine.spectatorStateBuilder.buildState(state, seats, setup.seatRoster, replay.gameId)
-            deltas.add(SpectatorReplayDiffCalculator.computeDelta(previous, snapshot))
-            previous = snapshot
+                if (frame == 0) {
+                    initialSnapshot = snapshot
+                    previousSnapshot = snapshot
+                } else {
+                    val previous = checkNotNull(previousSnapshot)
+                    deltas.add(SpectatorReplayDiffCalculator.computeDelta(previous, snapshot))
+                    previousSnapshot = snapshot
+                }
+            },
+        )
+        if (forward.divergedAtAction != null && forward.failure != null) {
+            val action = replay.actions.getOrNull(forward.divergedAtAction)
+            logger.warn(
+                "Replay {} (recorded on {}) diverged at action {} ({}): {} — truncating to {} frames",
+                replay.gameId,
+                replay.engineVersion,
+                forward.divergedAtAction,
+                action?.let { it::class.simpleName } ?: "initial checkpoint",
+                forward.failure,
+                1 + deltas.size,
+            )
         }
 
-        val unverifiedReason = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version) && divergence == null) {
-            val tailCount = replay.checkpoints.count { it.afterActionCount == replay.actions.size }
-            when {
-                tailCount == 0 ->
-                    "v3 replay has no checkpoint for the action-stream tail at ${replay.actions.size}"
-                tailCount > 1 ->
-                    "v3 replay has duplicate tail checkpoints at ${replay.actions.size}"
-                !tailVerified ->
-                    "v3 replay tail checkpoint at ${replay.actions.size} was not verified"
-                replay.checkpoints.any { it.afterActionCount !in 0..replay.actions.size } ->
-                    "v3 replay contains a checkpoint outside the applied action stream"
-                else -> null
-            }
-        } else null
-
-        val fidelity = when {
-            divergence != null -> ReplayFidelity.DIVERGED
-            unverifiedReason != null -> ReplayFidelity.UNVERIFIED
-            replay.checkpoints.isEmpty() -> ReplayFidelity.UNVERIFIED
-            else -> ReplayFidelity.EXACT
-        }
+        val initial = initialSnapshot ?: engine.spectatorStateBuilder.buildState(
+            forward.initialState,
+            seats,
+            setup.seatRoster,
+            replay.gameId,
+        )
         return ReconstructedReplay(
             initialSnapshot = initial,
             deltas = deltas,
-            fidelity = fidelity,
-            divergedAtFrame = if (divergence != null) deltas.size else null,
-            divergenceReason = divergence ?: unverifiedReason,
+            fidelity = forward.fidelity,
+            divergedAtFrame = forward.divergedAtAction,
+            divergenceReason = forward.failure ?: forward.unverifiedReason,
         )
     }
 
@@ -187,45 +156,210 @@ class ReplayReconstructor(
      * checkpoint-less replay.
      */
     fun reconstructDiagnostics(replay: CompactReplay): ReconstructedDiagnostics {
-        val engine = engineFor(replay)
-        var state = engine.initialState(replay)
-        val diagnostics = mutableListOf<DiagnosticSignal>()
+        val forward = foldReplay(
+            replay = replay,
+            engine = engineFor(replay),
+            catchCallbackFailures = false,
+        )
+        return ReconstructedDiagnostics(
+            diagnostics = forward.diagnostics,
+            fidelity = forward.fidelity,
+            divergedAtAction = forward.divergedAtAction,
+            failure = forward.failure ?: forward.unverifiedReason,
+        )
+    }
 
+    /**
+     * Fold one replay once, exposing only internal state to same-module adapters at each verified
+     * boundary. The callbacks are additive observation hooks around the existing replay fold; they
+     * never execute actions and cannot alter the reconstructed state.
+     */
+    internal fun replayForward(
+        replay: CompactReplay,
+        onBeforeAction: ((index: Int, state: GameState, action: GameAction) -> Unit)? = null,
+        onFrame: ((afterActionCount: Int, state: GameState) -> Unit)? = null,
+    ): ReplayForwardResult = foldReplay(
+        replay = replay,
+        engine = engineFor(replay),
+        onBeforeAction = onBeforeAction,
+        onFrame = onFrame,
+        catchCallbackFailures = true,
+    )
+
+    private fun foldReplay(
+        replay: CompactReplay,
+        engine: ReplayEngine,
+        onBeforeAction: ((index: Int, state: GameState, action: GameAction) -> Unit)? = null,
+        onFrame: ((afterActionCount: Int, state: GameState) -> Unit)? = null,
+        catchCallbackFailures: Boolean = false,
+    ): ReplayForwardResult {
+        var state = engine.initialState(replay)
+        val initialState = state
+        val diagnostics = mutableListOf<DiagnosticSignal>()
+        val verifiedCheckpoints = mutableSetOf<Int>()
+        var initialCheckpointVerified = false
+        var tailCheckpointVerified = false
+
+        // v3 includes the zero-action state in the same tail-checkpoint contract. Legacy records
+        // deliberately retain their previous behavior and did not verify an initial checkpoint.
         if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version)) {
             when (val initialCheck = engine.verifyCheckpoint(replay, state, afterActionCount = 0)) {
-                is CheckpointCheck.Mismatch -> {
-                    return ReconstructedDiagnostics(
-                        diagnostics = diagnostics,
-                        fidelity = ReplayFidelity.DIVERGED,
-                        divergedAtAction = 0,
-                        failure = initialCheck.failure,
-                    )
+                is CheckpointCheck.Mismatch -> return ReplayForwardResult(
+                    initialState = initialState,
+                    finalState = state,
+                    fidelity = ReplayFidelity.DIVERGED,
+                    appliedActionCount = 0,
+                    divergedAtAction = 0,
+                    failure = initialCheck.failure,
+                    unverifiedReason = null,
+                    initialCheckpointVerified = false,
+                    intermediateCheckpointsVerified = false,
+                    tailCheckpointVerified = false,
+                    diagnostics = diagnostics,
+                )
+
+                CheckpointCheck.Match -> {
+                    initialCheckpointVerified = true
+                    verifiedCheckpoints += 0
+                    if (replay.actions.isEmpty()) tailCheckpointVerified = true
                 }
-                CheckpointCheck.None, CheckpointCheck.Match -> Unit
+
+                CheckpointCheck.None -> Unit
             }
+        }
+
+        fun callbackFailure(index: Int, message: String): ReplayForwardResult = ReplayForwardResult(
+            initialState = initialState,
+            finalState = state,
+            fidelity = ReplayFidelity.DIVERGED,
+            appliedActionCount = index,
+            divergedAtAction = index,
+            failure = message,
+            unverifiedReason = null,
+            initialCheckpointVerified = initialCheckpointVerified,
+            intermediateCheckpointsVerified = verifiedIntermediateCheckpoints(
+                replay,
+                verifiedCheckpoints,
+                index,
+            ),
+            tailCheckpointVerified = false,
+            diagnostics = diagnostics,
+        )
+
+        if (catchCallbackFailures) {
+            try {
+                onFrame?.invoke(0, state)
+            } catch (failure: Exception) {
+                return callbackFailure(0, "public replay frame at action 0 failed: ${failure.message}")
+            }
+        } else {
+            onFrame?.invoke(0, state)
         }
 
         for ((index, action) in replay.actions.withIndex()) {
+            if (catchCallbackFailures) {
+                try {
+                    onBeforeAction?.invoke(index, state, action)
+                } catch (failure: Exception) {
+                    return callbackFailure(
+                        index,
+                        "public replay boundary at action $index failed: ${failure.message}",
+                    )
+                }
+            } else {
+                onBeforeAction?.invoke(index, state, action)
+            }
+
             val step = engine.applyAction(replay, state, action, index)
             diagnostics += step.diagnostics
             if (step.failure != null) {
-                return ReconstructedDiagnostics(
-                    diagnostics = diagnostics,
+                return ReplayForwardResult(
+                    initialState = initialState,
+                    finalState = state,
                     fidelity = ReplayFidelity.DIVERGED,
+                    appliedActionCount = index,
                     divergedAtAction = index,
                     failure = step.failure,
+                    unverifiedReason = null,
+                    initialCheckpointVerified = initialCheckpointVerified,
+                    intermediateCheckpointsVerified = verifiedIntermediateCheckpoints(
+                        replay,
+                        verifiedCheckpoints,
+                        index,
+                    ),
+                    tailCheckpointVerified = false,
+                    diagnostics = diagnostics,
                 )
             }
             state = step.state!!
+            if (step.checkpointVerified) {
+                verifiedCheckpoints += index + 1
+                if (index + 1 == replay.actions.size) tailCheckpointVerified = true
+            }
+
+            if (catchCallbackFailures) {
+                try {
+                    onFrame?.invoke(index + 1, state)
+                } catch (failure: Exception) {
+                    return callbackFailure(
+                        index + 1,
+                        "public replay frame at action ${index + 1} failed: ${failure.message}",
+                    )
+                }
+            } else {
+                onFrame?.invoke(index + 1, state)
+            }
         }
 
-        val reconstructed = reconstruct(replay)
-        return ReconstructedDiagnostics(
+        val unverifiedReason = if (ReplayCheckpointPolicy.requiresTailCheckpoint(replay.version)) {
+            val tailCount = replay.checkpoints.count { it.afterActionCount == replay.actions.size }
+            when {
+                tailCount == 0 ->
+                    "v3 replay has no checkpoint for the action-stream tail at ${replay.actions.size}"
+                tailCount > 1 ->
+                    "v3 replay has duplicate tail checkpoints at ${replay.actions.size}"
+                !tailCheckpointVerified ->
+                    "v3 replay tail checkpoint at ${replay.actions.size} was not verified"
+                replay.checkpoints.any { it.afterActionCount !in 0..replay.actions.size } ->
+                    "v3 replay contains a checkpoint outside the applied action stream"
+                else -> null
+            }
+        } else null
+
+        val fidelity = when {
+            unverifiedReason != null -> ReplayFidelity.UNVERIFIED
+            replay.checkpoints.isEmpty() -> ReplayFidelity.UNVERIFIED
+            else -> ReplayFidelity.EXACT
+        }
+        return ReplayForwardResult(
+            initialState = initialState,
+            finalState = state,
+            fidelity = fidelity,
+            appliedActionCount = replay.actions.size,
+            divergedAtAction = null,
+            failure = null,
+            unverifiedReason = unverifiedReason,
+            initialCheckpointVerified = initialCheckpointVerified,
+            intermediateCheckpointsVerified = verifiedIntermediateCheckpoints(
+                replay,
+                verifiedCheckpoints,
+                replay.actions.size,
+            ),
+            tailCheckpointVerified = tailCheckpointVerified,
             diagnostics = diagnostics,
-            fidelity = reconstructed.fidelity,
-            divergedAtAction = reconstructed.divergedAtFrame,
-            failure = reconstructed.divergenceReason,
         )
+    }
+
+    private fun verifiedIntermediateCheckpoints(
+        replay: CompactReplay,
+        verifiedCheckpoints: Set<Int>,
+        appliedActionCount: Int,
+    ): Boolean {
+        val expected = replay.checkpoints
+            .map { it.afterActionCount }
+            .filter { it in 1 until replay.actions.size }
+            .toSet()
+        return expected.all { it <= appliedActionCount && it in verifiedCheckpoints }
     }
 
     /**
@@ -259,6 +393,25 @@ class ReplayReconstructor(
     private fun engineFor(replay: CompactReplay): ReplayEngine =
         ReplayEngine(ReplayCardPin.overlay(cardRegistry, replay.pinnedCards), printingRegistry, tokenArtRegistry)
 }
+
+/** Internal result of the shared authoritative replay fold used by replay consumers. */
+internal data class ReplayForwardResult(
+    val initialState: GameState,
+    val finalState: GameState,
+    val fidelity: ReplayFidelity,
+    /** Number of action transitions whose resulting state was accepted by the fold. */
+    val appliedActionCount: Int,
+    /** Action coordinate that stopped the fold, or null when the input stream was consumed. */
+    val divergedAtAction: Int?,
+    /** A hard fold/callback failure; null when the fold consumed all actions. */
+    val failure: String?,
+    /** A consumed stream whose replay proof was incomplete. */
+    val unverifiedReason: String?,
+    val initialCheckpointVerified: Boolean,
+    val intermediateCheckpointsVerified: Boolean,
+    val tailCheckpointVerified: Boolean,
+    val diagnostics: List<DiagnosticSignal>,
+)
 
 /** Outcome of folding one recorded action: a new state, or the reason we can't trust it. */
 private class StepResult(

@@ -13,6 +13,9 @@ dependencies {
     implementation(project(":mtg-sets"))
     implementation(project(":mtg-search"))
     implementation(project(":ai"))
+    // Narrow A4 seam: the replay adapter emits only Gym's transport-free verified public frames.
+    // game-server must not depend on gym-trainer, which owns later trajectory storage contracts.
+    api(project(":gym"))
     // Argentum Assay — Oracle text -> CardDefinition, for the Scenario Builder's custom-card
     // sandbox only (dev-gated; see AssayCardService). Assay stays an auditor: nothing here loads
     // the card corpus through it, and a compiled card never leaves the session that asked for it.
@@ -35,8 +38,6 @@ dependencies {
     // Engine scenario harness (ScenarioTestBase, GameTestDriver, TestCards) — the canonical
     // home for the static-board scenario builder; game-server's ScenarioTestBase is a shim over it.
     testImplementation(testFixtures(project(":rules-engine")))
-    // Replay acceptance tests must cross the same Gym observation boundary as live execution.
-    testImplementation(project(":gym"))
     testImplementation(libs.springBootStarterTest)
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)

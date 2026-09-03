@@ -11,7 +11,7 @@ import com.wingedsheep.sdk.model.EntityId
  * perspective. Replay-facing projections must use this same rule instead of falling back to a
  * stale terminal priority.
  */
-internal object ObservationPerspective {
+object ObservationPerspective {
     fun resolve(
         state: GameState,
         playerIds: List<EntityId>,

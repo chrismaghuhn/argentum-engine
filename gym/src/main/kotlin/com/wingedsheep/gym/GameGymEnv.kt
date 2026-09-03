@@ -1,19 +1,12 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
-import com.wingedsheep.engine.core.CastSpell
-import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.DecisionResponse
-import com.wingedsheep.engine.core.DiagnosticCode
-import com.wingedsheep.engine.core.DiagnosticSignal
-import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.SubmitDecision
-import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.legalactions.LegalAction
-import com.wingedsheep.engine.mechanics.mana.PaymentPlanValidation
 import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
@@ -374,40 +367,12 @@ class GameGymEnv(
             return
         }
 
-        if (observationBuilder.paymentDomainV5For(environment.state, resolved.legalAction) == null) {
-            throw UnsupportedPathFailure(
-                listOf(DiagnosticSignal(DiagnosticCode.PAYMENT_DOMAIN_UNSUPPORTED))
-            )
-        }
-
-        val strategy = when (submitted) {
-            is ActivateAbility -> submitted.paymentStrategy
-            is CastSpell -> submitted.paymentStrategy
-            is CycleCard -> submitted.paymentStrategy
-            else -> throw IllegalArgumentException("Structured action changed its action type")
-        }
-
-        if (submitted is CycleCard) {
-            val explicitV3 = strategy as? PaymentStrategy.ExplicitV3
-                ?: throw IllegalArgumentException(
-                    "CycleCard payment must submit PaymentStrategy.ExplicitV3; automatic, pool, and legacy payments are not allowed"
-                )
-            require(explicitV3.paymentPlan != null) {
-                "CycleCard payment must submit a complete PaymentPlanV3; source IDs alone are not sufficient"
-            }
-            return
-        }
-
-        when (strategy) {
-            is PaymentStrategy.ExplicitV3 -> {
-                require(strategy.paymentPlan != null) {
-                    "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV3; source IDs alone are not sufficient"
-                }
-            }
-            else -> throw IllegalArgumentException(
-                "${resolved.legalAction.actionType} payment must submit a complete PaymentPlanV3; automatic, pool, and legacy payments are not allowed"
-            )
-        }
+        ActionPaymentPlanValidator.requireOrdinary(
+            state = environment.state,
+            legalAction = resolved.legalAction,
+            submitted = submitted,
+            observationBuilder = observationBuilder,
+        )
     }
 
     /** The public view registered for this opaque action handle; never recomputed from live state. */
@@ -485,41 +450,24 @@ class GameGymEnv(
 
         val activate = submitted as? ActivateAbility
             ?: throw IllegalArgumentException("Target-bound payment requires ActivateAbility")
-        val selectedTarget = activate.targets.singleOrNull() as? ChosenTarget.Permanent
-            ?: throw IllegalArgumentException(
-                "Target-bound payment requires exactly one permanent target",
-            )
-        val registeredBinding = registeredRelation.targetBindings
-            .singleOrNull { it.target == selectedTarget.entityId }
-            ?: throw IllegalArgumentException("Submitted target is outside the registered payment domain")
-        val currentBinding = currentRelation.targetBindings
-            .singleOrNull { it.target == selectedTarget.entityId }
-            ?: throw IllegalArgumentException("Submitted target is outside the current payment domain")
+        val registeredBinding = ActionPaymentPlanValidator.targetPaymentBindingFor(
+            registeredRelation,
+            activate,
+        )
+        val currentBinding = ActionPaymentPlanValidator.targetPaymentBindingFor(
+            currentRelation,
+            activate,
+        )
         require(registeredBinding == currentBinding) {
             "Selected target-payment binding is stale"
         }
-        require(currentBinding.affordable) {
-            "Selected target-payment binding is unaffordable"
-        }
 
-        val explicitV3 = activate.paymentStrategy as? PaymentStrategy.ExplicitV3
-            ?: throw IllegalArgumentException(
-                "Target-bound payment must submit PaymentStrategy.ExplicitV3",
-            )
-        val plan = explicitV3.paymentPlan
-            ?: throw IllegalArgumentException("Target-bound payment must submit a complete PaymentPlanV3")
-        when (val validation = observationBuilder.validateTargetPaymentPlanV3(
+        ActionPaymentPlanValidator.requireTargetPaymentPlan(
             state = environment.state,
             template = current.legalAction,
             submitted = activate,
-            plan = plan,
-            expectedRequiredCost = currentBinding.paymentDomain.requiredCost,
-        )) {
-            is PaymentPlanValidation.AcceptedV3 -> Unit
-            is PaymentPlanValidation.Rejected -> throw IllegalArgumentException(
-                "Target-bound PaymentPlanV3 rejected: ${validation.reason}",
-            )
-            else -> throw IllegalStateException("Unexpected target-bound payment validation result")
-        }
+            domain = currentRelation,
+            observationBuilder = observationBuilder,
+        )
     }
 }
