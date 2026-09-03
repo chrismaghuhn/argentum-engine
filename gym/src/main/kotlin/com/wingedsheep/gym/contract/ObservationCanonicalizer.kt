@@ -16,13 +16,15 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
+private const val TRIGGER_ORDER_OBJECT_HANDLE_PREFIX = "trigger-order-object-"
+
 /**
  * Deterministic projections of an already perspective-safe observation.
  *
  * This object is deliberately downstream of [ObservationBuilder]. It accepts no [GameState],
  * performs no visibility decisions, and is not a second public observation model.
  */
-internal object ObservationCanonicalizer {
+object ObservationCanonicalizer {
     private val json = Json {
         encodeDefaults = true
         explicitNulls = false
@@ -395,16 +397,11 @@ internal object ObservationCanonicalizer {
         val labels = domain["objectLabels"]?.jsonObject
         val cardInfo = domain["cardInfo"]?.jsonObject
         val objectSemantics = objectIds.map { id ->
-            buildJsonObject {
-                val opaque = id.startsWith("trigger-order-object-")
-                if (!opaque) put("entityId", id)
-                if (opaque) labels?.get(id)?.let { put("label", it) }
-                if (opaque) {
-                    cardInfo?.get(id)?.let {
-                        put("cardInfo", stripStructuredPresentation(it))
-                    }
-                }
-            }
+            semanticOrderingObject(
+                objectId = id,
+                label = labels?.get(id)?.jsonPrimitive?.content,
+                cardInfo = cardInfo?.get(id),
+            )
         }.sortedBy { canonicalize(it).toString() }
 
         return stripStructuredPresentation(buildJsonObject {
@@ -413,6 +410,22 @@ internal object ObservationCanonicalizer {
                 .forEach { (key, value) -> put(key, value) }
             put("objectSemantics", JsonArray(objectSemantics))
         }).jsonObject
+    }
+
+    /**
+     * Stable semantic object data for an ordering decision. Ordinary entity IDs remain the
+     * public reference; generated trigger-order handles are represented only by their stable
+     * label/card-information semantics.
+     */
+    fun semanticOrderingObject(
+        objectId: String,
+        label: String? = null,
+        cardInfo: JsonElement? = null,
+    ): JsonObject = buildJsonObject {
+        val opaque = objectId.startsWith(TRIGGER_ORDER_OBJECT_HANDLE_PREFIX)
+        if (!opaque) put("entityId", objectId)
+        if (opaque) label?.let { put("label", it) }
+        if (opaque) cardInfo?.let { put("cardInfo", stripStructuredPresentation(it)) }
     }
 
     /**

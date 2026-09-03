@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.InitialPoolBucketKeyV1
 import com.wingedsheep.engine.core.InitialPoolBucketV1
 import com.wingedsheep.engine.core.ManaResourceRefV1
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
+import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PaymentAllocationV1
 import com.wingedsheep.engine.core.PaymentCostKindV1
@@ -35,11 +36,13 @@ import com.wingedsheep.gym.contract.CombatDefenderDomain
 import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.CombatTargetKind
 import com.wingedsheep.gym.contract.ConditionalSelectionMinimumDomain
+import com.wingedsheep.gym.contract.DistributionDomain
 import com.wingedsheep.gym.contract.ManaSourceDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PendingDecisionView
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.OrderingDomain
 import com.wingedsheep.gym.contract.StateDigest
 import com.wingedsheep.gym.contract.StructuredCardInfo
 import com.wingedsheep.gym.contract.TargetRequirementDomain
@@ -415,12 +418,19 @@ class SemanticDecisionIdentityTest : FunSpec({
     test("semantic prefix action changes alter the prefix and decision identity") {
         val environment = environment()
         val source = observation(environment)
-        val changed = source.copy(
+        val baseline = source.copy(
             legalActions = source.legalActions.mapIndexed { index, action ->
-                if (index == 0) action.copy(affordable = !action.affordable) else action
+                if (index == 0) action.copy(affordable = true) else action
             }
         )
-        val firstDomain = CompleteLegalDomainV1.from(source)
+        val changed = baseline.copy(
+            legalActions = baseline.legalActions.mapIndexed { index, action ->
+                if (index == 0) action.copy(
+                    actionSemantics = buildJsonObject { put("type", "ChangedSemanticAction") }
+                ) else action
+            }
+        )
+        val firstDomain = CompleteLegalDomainV1.from(baseline)
         val secondDomain = CompleteLegalDomainV1.from(changed)
         val first = ChosenSemanticActionV1.from(firstDomain, firstDomain.candidates.first())
         val second = ChosenSemanticActionV1.from(secondDomain, secondDomain.candidates.first())
@@ -434,14 +444,14 @@ class SemanticDecisionIdentityTest : FunSpec({
     test("replay action order and history are bound") {
         val environment = environment()
         val source = observation(environment)
-        val firstAction = source.legalActions.first()
+        val firstAction = source.legalActions.first().copy(affordable = true)
         val domain = CompleteLegalDomainV1.from(
             source.copy(
                 legalActions = listOf(
                     firstAction,
                     firstAction.copy(
                         actionId = firstAction.actionId + 1,
-                        affordable = !firstAction.affordable,
+                        actionSemantics = buildJsonObject { put("type", "SecondSemanticAction") },
                     ),
                 )
             )
@@ -611,6 +621,21 @@ class SemanticDecisionIdentityTest : FunSpec({
         }
     }
 
+    test("unaffordable stored action candidates cannot be chosen") {
+        val environment = environment()
+        val source = observation(environment)
+        val unaffordable = source.legalActions.first().copy(affordable = false)
+        val domain = CompleteLegalDomainV1.from(
+            source.copy(legalActions = listOf(unaffordable))
+        )
+        val candidate = domain.candidates.single()
+
+        candidate["affordable"] shouldBe JsonPrimitive(false)
+        shouldThrow<IllegalArgumentException> {
+            ChosenSemanticActionV1.from(domain, candidate)
+        }
+    }
+
     test("required action payloads must be present and contain no unknown fields") {
         val environment = environment()
         val sourceDomain = actionDomain(environment)
@@ -633,6 +658,57 @@ class SemanticDecisionIdentityTest : FunSpec({
                 put("targets", buildJsonArray {})
                 put("unknown", true)
             })
+        }
+    }
+
+    test("every currently canonical but unsupported action payload family fails closed") {
+        val sourceDomain = actionDomain(environment())
+        val canonicalFields = listOf(
+            "targets",
+            "xValue",
+            "paymentStrategy",
+            "additionalCostPayment",
+            "costPayment",
+            "alternativePayment",
+            "manaColorChoice",
+            "damageDistribution",
+            "crewCreatures",
+            "saddleCreatures",
+            "repeatCount",
+            "graveyardLifeCost",
+            "chosenModes",
+            "modeTargetsOrdered",
+            "attackers",
+            "bands",
+            "blockers",
+            "orderedBlockers",
+        )
+        val fieldsValidatedByA3 = setOf(
+            "targets",
+            "xValue",
+            "paymentStrategy",
+            "manaColorChoice",
+            "attackers",
+            "bands",
+            "blockers",
+            "orderedBlockers",
+        )
+
+        canonicalFields.filterNot(fieldsValidatedByA3::contains).forEach { field ->
+            val candidate = candidateWithRequiredPayload(sourceDomain, listOf(field))
+            val domain = CompleteLegalDomainV1(
+                kind = CompleteLegalDomainKind.ACTION_CANDIDATES,
+                candidates = listOf(candidate),
+            )
+            shouldThrow<IllegalArgumentException> {
+                ChosenSemanticActionV1.from(
+                    domain,
+                    candidate,
+                    buildJsonObject {
+                        put(field, buildJsonObject { put("arbitrary", true) })
+                    },
+                )
+            }
         }
     }
 
@@ -973,6 +1049,12 @@ class SemanticDecisionIdentityTest : FunSpec({
             ChosenSemanticResponseV1.from(domain(listOf(a, b), minSelections = 1, maxSelections = 2, minTotalManaValue = 6), response(listOf(a, b)))
         }
         shouldThrow<IllegalArgumentException> {
+            ChosenSemanticResponseV1.from(
+                domain(listOf(a, b), minSelections = 0, maxSelections = 2, minTotalManaValue = 1),
+                response(emptyList()),
+            )
+        }
+        shouldThrow<IllegalArgumentException> {
             ChosenSemanticResponseV1.from(domain(listOf(a, b), minSelections = 2, maxSelections = 2, maxTotalPower = 3), response(listOf(a, b)))
         }
         shouldThrow<IllegalArgumentException> {
@@ -1015,6 +1097,96 @@ class SemanticDecisionIdentityTest : FunSpec({
             ChosenSemanticResponseV1.from(
                 domain(listOf(a, b), minSelections = 1, maxSelections = 2, cardInfo = null, onePerColor = true),
                 response(listOf(a)),
+            )
+        }
+    }
+
+    test("distribution minPerTarget applies to every stored target") {
+        val first = EntityId("target-a")
+        val second = EntityId("target-b")
+        val domain = CompleteLegalDomainV1(
+            kind = CompleteLegalDomainKind.STRUCTURED_DECISION,
+            decisionKind = PendingDecisionKind.DISTRIBUTE,
+            shape = DecisionShape(totalToDistribute = 2),
+            structuredDomain = DistributionDomain(
+                totalAmount = 2,
+                targets = listOf(first, second),
+                minPerTarget = 1,
+                maxPerTarget = mapOf(first to 2, second to 2),
+                allowPartial = false,
+            ),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            ChosenSemanticResponseV1.from(
+                domain,
+                com.wingedsheep.engine.core.DistributionResponse(
+                    decisionId = "decision",
+                    distribution = mapOf(first to 2),
+                ),
+            )
+        }
+        ChosenSemanticResponseV1.from(
+            domain,
+            com.wingedsheep.engine.core.DistributionResponse(
+                decisionId = "decision",
+                distribution = mapOf(first to 1, second to 1),
+            ),
+        )
+    }
+
+    test("trigger ordering uses stable public aliases instead of opaque handles") {
+        fun domain(handle: String): CompleteLegalDomainV1 {
+            val trigger = EntityId(handle)
+            return CompleteLegalDomainV1(
+                kind = CompleteLegalDomainKind.STRUCTURED_DECISION,
+                decisionKind = PendingDecisionKind.ORDER_OBJECTS,
+                shape = DecisionShape(),
+                structuredDomain = OrderingDomain(
+                    objects = listOf(trigger),
+                    cardInfo = mapOf(
+                        trigger to StructuredCardInfo(
+                            name = "Visible Trigger",
+                            manaCost = "{1}",
+                            typeLine = "Creature — Human",
+                            colors = listOf("RED"),
+                            power = 1,
+                        )
+                    ),
+                    objectLabels = mapOf(trigger to "Visible Trigger #1"),
+                ),
+            )
+        }
+
+        val first = ChosenSemanticResponseV1.from(
+            domain("trigger-order-object-first"),
+            OrderedResponse("decision-a", listOf(EntityId("trigger-order-object-first"))),
+        )
+        val second = ChosenSemanticResponseV1.from(
+            domain("trigger-order-object-second"),
+            OrderedResponse("decision-b", listOf(EntityId("trigger-order-object-second"))),
+        )
+
+        first shouldBe second
+        first.canonicalJson().contains("trigger-order-object-").shouldBeFalse()
+        SemanticReplayPrefixV1(
+            inputs = listOf(SemanticReplayInputV1.response(first)),
+        ).digest() shouldBe SemanticReplayPrefixV1(
+            inputs = listOf(SemanticReplayInputV1.response(second)),
+        ).digest()
+
+        shouldThrow<IllegalArgumentException> {
+            SemanticReplayInputV1(
+                kind = SemanticReplayInputKind.RESPONSE,
+                semanticValue = buildJsonObject {
+                    put("type", "chosen-response")
+                    put("response", buildJsonObject {
+                        put("type", "OrderedResponse")
+                        put("orderedObjects", buildJsonArray {
+                            add(JsonPrimitive("trigger-order-object-direct"))
+                        })
+                    })
+                },
             )
         }
     }

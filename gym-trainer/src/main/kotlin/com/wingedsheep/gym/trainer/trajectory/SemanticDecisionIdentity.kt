@@ -41,6 +41,8 @@ const val SEMANTIC_DECISION_IDENTITY_V1_VERSION: Int = 1
 const val SEMANTIC_DECISION_IDENTITY_SCHEMA_IDENTITY: String =
     "argentum-trajectory-semantic-decision@v1"
 
+private const val TRIGGER_ORDER_SEMANTIC_ALIAS_PREFIX = "trigger-order-semantic-"
+
 /** Closed semantic decision vocabulary used by the durable identity preimage. */
 @Serializable
 enum class SemanticDecisionKindV1 {
@@ -86,6 +88,7 @@ data class ChosenSemanticActionV1 private constructor(
         require(choicePayload.values.none { it is JsonNull }) {
             "Chosen semantic action payload cannot contain null choices"
         }
+        Companion.requireAffordableCandidate(candidate)
         CompleteLegalDomainV1(
             kind = CompleteLegalDomainKind.ACTION_CANDIDATES,
             candidates = listOf(candidate),
@@ -126,11 +129,20 @@ data class ChosenSemanticActionV1 private constructor(
                 "Chosen semantic action must match exactly one stored candidate"
             }
             val storedCandidate = matches.single()
+            requireAffordableCandidate(storedCandidate)
             validateChoicePayload(storedCandidate, choicePayload)
             return ChosenSemanticActionV1(
                 candidate = storedCandidate,
                 choicePayload = choicePayload,
             )
+        }
+
+        private fun requireAffordableCandidate(candidate: JsonObject) {
+            require(candidate["affordable"]?.let { value ->
+                value is JsonPrimitive && !value.isString && value.content == "true"
+            } == true) {
+                "Chosen semantic action must select an affordable stored candidate"
+            }
         }
 
         private fun validateChoicePayload(candidate: JsonObject, payload: JsonObject) {
@@ -178,6 +190,17 @@ data class ChosenSemanticActionV1 private constructor(
 
 /** Pure membership checks over the public action-domain data retained by A2. */
 private object StoredActionPayloadValidator {
+    private val fieldsWithCompleteStoredDomainValidation = setOf(
+        "targets",
+        "xValue",
+        "paymentStrategy",
+        "manaColorChoice",
+        "attackers",
+        "bands",
+        "blockers",
+        "orderedBlockers",
+    )
+
     private data class TargetRequirement(
         val minTargets: Int,
         val maxTargets: Int,
@@ -187,6 +210,11 @@ private object StoredActionPayloadValidator {
     )
 
     fun requireWithinCandidate(candidate: JsonObject, payload: JsonObject) {
+        val unsupportedFields = payload.keys - fieldsWithCompleteStoredDomainValidation
+        require(unsupportedFields.isEmpty()) {
+            "Chosen action payload has no complete stored-domain validator for: " +
+                unsupportedFields.sorted().joinToString(",")
+        }
         payload["targets"]?.let { requireTargets(candidate, it) }
         payload["xValue"]?.let { requireXValue(candidate, it) }
         payload["manaColorChoice"]?.let { requireManaColor(candidate, it) }
@@ -719,6 +747,7 @@ data class ChosenSemanticResponseV1 private constructor(
             "Unsupported chosen semantic-response identity"
         }
         A3SemanticJson.requireSemanticObject(response, "chosen semantic response")
+        A3SemanticJson.requireNoOpaqueTriggerHandles(response, "chosen semantic response")
         Companion.decodeResponse(response)
     }
 
@@ -757,16 +786,20 @@ data class ChosenSemanticResponseV1 private constructor(
             val semanticInput = removeManualPaymentRoutingFlag(response)
             A3SemanticJson.requireSemanticObject(semanticInput, "chosen semantic response")
             val decoded = decodeResponse(semanticInput)
-            val normalized = semanticResponseJson(decoded)
-            when (domain.kind) {
+            val normalized = when (domain.kind) {
                 CompleteLegalDomainKind.ACTION_CANDIDATES ->
                     throw IllegalArgumentException("Action-candidate domains require a chosen action")
 
-                CompleteLegalDomainKind.FOLDED_DECISION_OPTIONS ->
+                CompleteLegalDomainKind.FOLDED_DECISION_OPTIONS -> {
+                    val normalized = semanticResponseJson(decoded, domain)
                     requireFoldedMembership(domain, normalized)
+                    normalized
+                }
 
-                CompleteLegalDomainKind.STRUCTURED_DECISION ->
+                CompleteLegalDomainKind.STRUCTURED_DECISION -> {
                     validateStructuredMembership(domain, decoded)
+                    semanticResponseJson(decoded, domain)
+                }
             }
             return ChosenSemanticResponseV1(response = normalized)
         }
@@ -783,7 +816,10 @@ data class ChosenSemanticResponseV1 private constructor(
             )
         }
 
-        private fun semanticResponseJson(response: DecisionResponse): JsonObject {
+        private fun semanticResponseJson(
+            response: DecisionResponse,
+            domain: CompleteLegalDomainV1,
+        ): JsonObject {
             val encoded = A3SemanticJson.strictJson
                 .encodeToJsonElement(DecisionResponse.serializer(), response)
                 .jsonObject
@@ -791,7 +827,38 @@ data class ChosenSemanticResponseV1 private constructor(
                 add("decisionId")
                 if (response is ManaSourcesSelectedResponse) add("autoPay")
             }
-            return JsonObject(encoded.filterKeys { it !in excluded })
+            val semantic = JsonObject(encoded.filterKeys { it !in excluded })
+            val ordering = domain.structuredDomain as? OrderingDomain
+            if (response !is OrderedResponse || ordering == null) return semantic
+
+            val aliases = response.orderedObjects.map { objectId ->
+                stableOrderingObjectAlias(ordering, objectId)
+            }
+            require(aliases.distinct().size == aliases.size) {
+                "Ordering response contains indistinguishable public trigger objects"
+            }
+            return JsonObject(semantic + ("orderedObjects" to JsonArray(aliases.map(::JsonPrimitive))))
+        }
+
+        /**
+         * Replace a generated trigger-order handle with the same public label/card-info
+         * semantics used by ObservationCanonicalizer for ordering-domain identity.
+         */
+        private fun stableOrderingObjectAlias(domain: OrderingDomain, objectId: EntityId): String {
+            val label = domain.objectLabels?.get(objectId)?.takeIf(String::isNotBlank)
+            val cardInfo = domain.cardInfo?.get(objectId)
+            val semanticAlias = ObservationCanonicalizer.semanticOrderingObject(
+                objectId = objectId.value,
+                label = label,
+                cardInfo = cardInfo?.let {
+                    A3SemanticJson.strictJson.encodeToJsonElement(StructuredCardInfo.serializer(), it)
+                },
+            )
+            if ("entityId" in semanticAlias) return objectId.value
+            require(semanticAlias.isNotEmpty()) {
+                "Trigger ordering object has no stable public semantics"
+            }
+            return TRIGGER_ORDER_SEMANTIC_ALIAS_PREFIX + A3SemanticJson.canonicalJson(semanticAlias)
         }
 
         /** Remove the live manual-payment discriminator after rejecting the auto-pay branch. */
@@ -986,10 +1053,8 @@ data class ChosenSemanticResponseV1 private constructor(
                 }
             }
             domain.minTotalManaValue?.let { minimum ->
-                if (cards.selectedCards.isNotEmpty()) {
-                    require(manaValues.sumOf(Int::toLong) >= minimum.toLong()) {
-                        "Card-selection response does not meet the total mana-value minimum"
-                    }
+                require(manaValues.sumOf(Int::toLong) >= minimum.toLong()) {
+                    "Card-selection response does not meet the total mana-value minimum"
                 }
             }
             domain.maxTotalPower?.let { maximum ->
@@ -1114,6 +1179,13 @@ data class ChosenSemanticResponseV1 private constructor(
                 }
                 domain.maxPerTarget[target]?.let { max ->
                     require(amount <= max) { "Distribution response exceeds the stored maximum" }
+                }
+            }
+            if (domain.minPerTarget > 0) {
+                require(domain.targets.all { target ->
+                    distribution.distribution[target]?.let { it >= domain.minPerTarget } == true
+                }) {
+                    "Distribution response must provide the stored minimum for every target"
                 }
             }
         }

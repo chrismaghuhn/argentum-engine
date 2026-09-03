@@ -33,6 +33,8 @@ const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_VERSION: Int = 1
 const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_SCHEMA_IDENTITY: String =
     "argentum-trajectory-semantic-replay-prefix-digest@v1"
 
+internal const val A3_TRIGGER_ORDER_OBJECT_HANDLE_PREFIX = "trigger-order-object-"
+
 /** The semantic input kinds that can precede a later decision boundary. */
 @Serializable
 enum class SemanticReplayInputKind {
@@ -56,6 +58,7 @@ data class SemanticReplayInputV1(
             "Unsupported semantic replay input identity"
         }
         A3SemanticJson.requireSemanticObject(semanticValue, "semantic replay input")
+        A3SemanticJson.requireNoOpaqueTriggerHandles(semanticValue, "semantic replay input")
         val expectedType = when (kind) {
             SemanticReplayInputKind.ACTION -> "chosen-action"
             SemanticReplayInputKind.RESPONSE -> "chosen-response"
@@ -205,6 +208,21 @@ internal object A3SemanticJson {
 
             is JsonArray -> value.forEach { child -> requireNoForbiddenKeys(child, label) }
             else -> Unit
+        }
+    }
+
+    fun requireNoOpaqueTriggerHandles(value: JsonElement, label: String) {
+        when (value) {
+            is JsonObject -> value.values.forEach { child ->
+                requireNoOpaqueTriggerHandles(child, label)
+            }
+
+            is JsonArray -> value.forEach { child -> requireNoOpaqueTriggerHandles(child, label) }
+            is JsonPrimitive -> if (value.isString) {
+                require(!value.content.startsWith(A3_TRIGGER_ORDER_OBJECT_HANDLE_PREFIX)) {
+                    "$label contains an opaque trigger-order handle"
+                }
+            }
         }
     }
 
