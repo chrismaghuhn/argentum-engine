@@ -969,18 +969,22 @@ class SemanticDecisionIdentityTest : FunSpec({
         }
     }
 
-    test("stored card-selection constraints are enforced from public cardInfo") {
+    test("stored card-selection constraints and color budgets use public cardInfo") {
         val a = EntityId("a")
         val b = EntityId("b")
         val c = EntityId("c")
         val d = EntityId("d")
         val e = EntityId("e")
+        val f = EntityId("f")
+        val g = EntityId("g")
         val infos = mapOf(
             a to StructuredCardInfo("Alpha", "{2}", "Creature — Human", colors = listOf("RED"), power = 2),
             b to StructuredCardInfo("Beta", "{3}", "Creature — Elf", colors = listOf("RED"), power = 2),
             c to StructuredCardInfo("Alpha", "{1}", "Artifact", colors = listOf("BLUE"), power = 3),
             d to StructuredCardInfo("Forest One", "", "Basic Land — Forest", power = null),
             e to StructuredCardInfo("Forest Two", "", "Basic Land — Forest", power = null),
+            f to StructuredCardInfo("Hybrid", "{1}", "Artifact", colors = listOf("BLUE", "RED"), power = null),
+            g to StructuredCardInfo("Colorless", "{1}", "Artifact", colors = emptyList(), power = null),
         )
         fun domain(
             options: List<EntityId>,
@@ -1106,13 +1110,61 @@ class SemanticDecisionIdentityTest : FunSpec({
         }
         ChosenSemanticResponseV1.from(
             domain(
-                listOf(a, c),
+                listOf(c),
                 minSelections = 1,
                 maxSelections = 1,
                 onePerColor = true,
                 availableColors = listOf("BLUE"),
             ),
             response(listOf(c)),
+        )
+        ChosenSemanticResponseV1.from(
+            domain(
+                listOf(c, f),
+                minSelections = 1,
+                maxSelections = 1,
+                onePerColor = true,
+                availableColors = listOf("BLUE"),
+            ),
+            response(listOf(f)),
+        )
+        shouldThrow<IllegalArgumentException> {
+            ChosenSemanticResponseV1.from(
+                domain(
+                    listOf(g),
+                    minSelections = 1,
+                    maxSelections = 1,
+                    onePerColor = true,
+                    availableColors = listOf("BLUE"),
+                ),
+                response(listOf(g)),
+            )
+        }
+        ChosenSemanticResponseV1.from(
+            domain(listOf(g), minSelections = 1, maxSelections = 1, onePerColor = true),
+            response(listOf(g)),
+        )
+        shouldThrow<IllegalArgumentException> {
+            ChosenSemanticResponseV1.from(
+                domain(
+                    listOf(c),
+                    minSelections = 1,
+                    maxSelections = 1,
+                    onePerColor = true,
+                    availableColors = emptyList(),
+                ),
+                response(listOf(c)),
+            )
+        }
+        ChosenSemanticResponseV1.from(
+            domain(
+                emptyList(),
+                minSelections = 0,
+                maxSelections = 0,
+                onePerColor = true,
+                availableColors = emptyList(),
+            ),
+            response(emptyList()),
         )
         shouldThrow<IllegalArgumentException> {
             ChosenSemanticResponseV1.from(
