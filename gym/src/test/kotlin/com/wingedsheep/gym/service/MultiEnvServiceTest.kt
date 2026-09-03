@@ -310,7 +310,7 @@ class MultiEnvServiceTest : FunSpec({
         val pending = svc.observe(envId).observation.pendingDecision
         pending.shouldBeNull()
 
-        shouldThrow<IllegalStateException> {
+        shouldThrow<IllegalArgumentException> {
             svc.submitDecision(
                 envId,
                 com.wingedsheep.engine.core.YesNoResponse("no-such-decision", true)

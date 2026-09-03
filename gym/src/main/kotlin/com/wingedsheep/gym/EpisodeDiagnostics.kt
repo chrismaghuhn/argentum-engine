@@ -22,6 +22,13 @@ data class EpisodeDiagnostics(
     val nativePolicyFallbackCount: Int get() = count(DiagnosticKind.NATIVE_POLICY_FALLBACK)
     val totalCount: Int get() = events.size
 
+    /**
+     * Map existing typed diagnostic evidence to the generic closure taxonomy without exposing
+     * diagnostic text or changing the diagnostic ledger shape.
+     */
+    internal fun closureFailureReason(): EpisodeFailureReason? =
+        events.takeIf { it.isNotEmpty() }?.let { EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC }
+
     fun record(signals: List<DiagnosticSignal>): EpisodeDiagnostics =
         if (signals.isEmpty()) this else copy(events = events + signals)
 

@@ -41,7 +41,15 @@ data class StepResult(
     val pendingDecision: PendingDecision?,
 
     /** Additional metadata about the current game state. */
-    val info: StepInfo
+    val info: StepInfo,
+
+    /**
+     * Typed closure metadata for this episode, or null while the episode remains open.
+     *
+     * This additive sidecar does not alter the existing Gymnasium terminated/truncated/reward
+     * fields.
+     */
+    val episodeClosure: EpisodeClosureV1? = null,
 )
 
 /**

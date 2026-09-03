@@ -84,9 +84,12 @@ class GameGymEnv(
     override val isTruncated: Boolean get() = environment.isTruncated
     val diagnostics: EpisodeDiagnostics get() = environment.diagnostics
 
+    /** Typed lifecycle closure; null means the current episode is still open. */
+    val episodeClosure: EpisodeClosureV1? get() = environment.episodeClosure
+
     override fun observe(): ObservationResult = build()
 
-    override fun step(actionId: Int): ObservationResult {
+    override fun step(actionId: Int): ObservationResult = classifyExternalFailure {
         val resolved = registry.resolve(actionId)
         if (resolved is ResolvedAction.Legal) {
             ActionPayloadRequirements.requireTargetDomainSupported(resolved.legalAction)
@@ -104,7 +107,7 @@ class GameGymEnv(
             )
         }
         executeResolved(resolved, actionId)
-        return build()
+        build()
     }
 
     /**
@@ -113,7 +116,7 @@ class GameGymEnv(
      * opaque/runtime fields such as generated ability IDs. The caller must include every
      * required target, payment, mode, combat, or ordering field; this method selects none.
      */
-    fun step(actionId: Int, actionPayload: JsonObject): ObservationResult {
+    fun step(actionId: Int, actionPayload: JsonObject): ObservationResult = classifyExternalFailure {
         val resolved = registry.resolve(actionId)
         val legal = resolved as? ResolvedAction.Legal
             ?: throw IllegalArgumentException(
@@ -139,7 +142,7 @@ class GameGymEnv(
         ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
         requireActionPaymentPlan(legal, submitted, actionId)
         environment.stepFromCandidateStrict(legal.legalAction, submitted)
-        return build()
+        build()
     }
 
     override fun fork(): GymEnv =
@@ -169,17 +172,18 @@ class GameGymEnv(
     fun submitDecision(
         response: DecisionResponse,
         actorId: com.wingedsheep.sdk.model.EntityId? = null
-    ): ObservationResult {
-        val pending = environment.state.pendingDecision
-            ?: throw IllegalStateException("Env is not paused on a decision")
-        check(actorId == null || actorId == pending.playerId) {
+    ): ObservationResult = classifyExternalFailure {
+        val pending = requireNotNull(environment.state.pendingDecision) {
+            "Env is not paused on a decision"
+        }
+        require(actorId == null || actorId == pending.playerId) {
             "Decision actor mismatch: actor=$actorId, expected=${pending.playerId}"
         }
-        check(response.decisionId == pending.id) {
+        require(response.decisionId == pending.id) {
             "Decision ID mismatch: response=${response.decisionId}, pending=${pending.id}"
         }
         environment.stepStrict(SubmitDecision(pending.playerId, response))
-        return build()
+        build()
     }
 
     fun snapshot(codec: SnapshotCodec): SnapshotHandle =
@@ -190,6 +194,7 @@ class GameGymEnv(
             maxSteps = environment.maxSteps,
             diagnostics = environment.diagnostics,
             projectionGeneration = environment.projectionGeneration,
+            failureClosure = environment.episodeClosure as? EpisodeClosureV1.Failed,
         )
 
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
@@ -204,13 +209,25 @@ class GameGymEnv(
             maxSteps = snap.maxSteps,
             diagnostics = snap.diagnostics,
             projectionGeneration = snap.projectionGeneration,
+            failureClosure = snap.failureClosure,
         )
         return build()
     }
 
     // --- internals -----------------------------------------------------------
 
-    private fun build(): ObservationResult {
+    private fun build(): ObservationResult =
+        try {
+            buildObservation()
+        } catch (failure: UnsupportedPathFailure) {
+            environment.recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
+            throw failure
+        } catch (failure: RuntimeException) {
+            environment.recordFailure(EpisodeFailureReason.OBSERVATION_FAILURE)
+            throw failure
+        }
+
+    private fun buildObservation(): ObservationResult {
         val perspective = ObservationPerspective.resolve(
             state = environment.state,
             playerIds = environment.playerIds,
@@ -264,6 +281,20 @@ class GameGymEnv(
         return remapped
     }
 
+    private inline fun <T> classifyExternalFailure(block: () -> T): T =
+        try {
+            block()
+        } catch (failure: UnsupportedPathFailure) {
+            environment.recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
+            throw failure
+        } catch (failure: IllegalArgumentException) {
+            environment.recordFailure(EpisodeFailureReason.PUBLIC_CHOICE_REJECTED)
+            throw failure
+        } catch (failure: RuntimeException) {
+            environment.recordFailure(EpisodeFailureReason.ENGINE_EXCEPTION)
+            throw failure
+        }
+
     private fun allocateActionId(): Int {
         check(nextActionId != Int.MAX_VALUE) { "Action ID space exhausted for this environment" }
         return nextActionId++
@@ -281,8 +312,9 @@ class GameGymEnv(
                 environment.stepFromCandidateStrict(resolved.legalAction, resolved.action)
             }
             is ResolvedAction.Decision -> {
-                val pending = environment.state.pendingDecision
-                    ?: throw IllegalStateException("Registry has a decision response but env is not paused")
+                val pending = requireNotNull(environment.state.pendingDecision) {
+                    "Registry has a decision response but env is not paused"
+                }
                 environment.stepStrict(SubmitDecision(pending.playerId, resolved.response))
             }
             ResolvedAction.Unknown ->
