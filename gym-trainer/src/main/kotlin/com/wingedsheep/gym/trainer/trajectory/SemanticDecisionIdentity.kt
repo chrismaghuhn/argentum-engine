@@ -5,6 +5,7 @@ import com.wingedsheep.engine.legalactions.*
 import com.wingedsheep.gym.contract.*
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.sdk.core.CardType
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.Serializable
@@ -1085,6 +1086,14 @@ data class ChosenSemanticResponseV1 private constructor(
         private fun validateCardSelection(domain: CardSelectionDomain, response: DecisionResponse) {
             val cards = response as? CardsSelectedResponse
                 ?: throw IllegalArgumentException("Expected card-selection response")
+            val availableColors = domain.availableColors?.also { colors ->
+                require(colors.distinct() == colors.sorted()) {
+                    "Stored card-selection colors are not in producer order"
+                }
+                require(colors.all { color -> color in Color.entries.map(Color::name) }) {
+                    "Stored card-selection colors contain an unsupported color"
+                }
+            }?.toSet()
             require(cards.selectedCards.distinct().size == cards.selectedCards.size) {
                 "Card-selection response duplicates a card"
             }
@@ -1109,7 +1118,8 @@ data class ChosenSemanticResponseV1 private constructor(
                 domain.onePerPower ||
                 domain.maxTotalManaValue != null ||
                 domain.minTotalManaValue != null ||
-                domain.maxTotalPower != null
+                domain.maxTotalPower != null ||
+                availableColors != null
             val selectedInfo = if (needsCardInfo && cards.selectedCards.isNotEmpty()) {
                 val cardInfo = domain.cardInfo
                     ?: throw IllegalArgumentException("Card-selection constraints have no public card metadata")
@@ -1132,6 +1142,13 @@ data class ChosenSemanticResponseV1 private constructor(
                     info.colors
                 }.let { colors -> colors.distinct().size == colors.size }) {
                     "Card-selection response contains duplicate colors"
+                }
+            }
+            if (availableColors != null && selectedInfo.isNotEmpty()) {
+                require(selectedInfo.all { info ->
+                    info.colors.any { color -> color in availableColors }
+                }) {
+                    "Card-selection response contains a color outside the stored budget"
                 }
             }
             if (domain.onePerCardName && selectedInfo.isNotEmpty()) {

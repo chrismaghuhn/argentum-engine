@@ -989,6 +989,7 @@ class SemanticDecisionIdentityTest : FunSpec({
             cardInfo: Map<EntityId, StructuredCardInfo>? = infos,
             onePerCardType: Boolean = false,
             onePerColor: Boolean = false,
+            availableColors: List<String>? = null,
             onePerCardName: Boolean = false,
             onePerBasicLandType: Boolean = false,
             onePerPower: Boolean = false,
@@ -1015,7 +1016,7 @@ class SemanticDecisionIdentityTest : FunSpec({
                 nonSelectableOptions = emptyList(),
                 onePerCardType = onePerCardType,
                 onePerColor = onePerColor,
-                availableColors = null,
+                availableColors = availableColors,
                 onePerCardName = onePerCardName,
                 onePerBasicLandType = onePerBasicLandType,
                 onePerPower = onePerPower,
@@ -1090,6 +1091,28 @@ class SemanticDecisionIdentityTest : FunSpec({
         ChosenSemanticResponseV1.from(
             domain(listOf(a, b), minSelections = 0, maxSelections = 2, minTotalManaValue = 5),
             response(emptyList()),
+        )
+        shouldThrow<IllegalArgumentException> {
+            ChosenSemanticResponseV1.from(
+                domain(
+                    listOf(a, c),
+                    minSelections = 1,
+                    maxSelections = 1,
+                    onePerColor = true,
+                    availableColors = listOf("BLUE"),
+                ),
+                response(listOf(a)),
+            )
+        }
+        ChosenSemanticResponseV1.from(
+            domain(
+                listOf(a, c),
+                minSelections = 1,
+                maxSelections = 1,
+                onePerColor = true,
+                availableColors = listOf("BLUE"),
+            ),
+            response(listOf(c)),
         )
         shouldThrow<IllegalArgumentException> {
             ChosenSemanticResponseV1.from(
