@@ -24,6 +24,7 @@ import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -94,29 +95,39 @@ class CandidateDomainDigestTest : FunSpec({
 
     fun canonicalJson(domain: CompleteLegalDomainV1): String = domain.canonicalJson()
 
-    fun semanticCandidate(action: LegalActionView): kotlinx.serialization.json.JsonObject =
+    fun semanticPayload(type: String): JsonObject = buildJsonObject {
+        put("type", type)
+        if (type == "ActivateAbility") {
+            put("abilityKey", buildJsonObject {
+                put("origin", "test")
+                put("ordinal", 0)
+            })
+        }
+    }
+
+    fun semanticCandidate(action: LegalActionView): JsonObject =
         ObservationCanonicalizer.semanticActionFingerprint(action)
 
     fun replaceJsonValue(
-        objectValue: kotlinx.serialization.json.JsonObject,
+        objectValue: JsonObject,
         key: String,
         value: JsonElement,
-    ): kotlinx.serialization.json.JsonObject = buildJsonObject {
+    ): JsonObject = buildJsonObject {
         objectValue.forEach { (existingKey, existingValue) ->
             put(existingKey, if (existingKey == key) value else existingValue)
         }
     }
 
     fun removeJsonValue(
-        objectValue: kotlinx.serialization.json.JsonObject,
+        objectValue: JsonObject,
         key: String,
-    ): kotlinx.serialization.json.JsonObject = buildJsonObject {
+    ): JsonObject = buildJsonObject {
         objectValue.forEach { (existingKey, existingValue) ->
             if (existingKey != key) put(existingKey, existingValue)
         }
     }
 
-    fun domainJson(candidate: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
+    fun domainJson(candidate: JsonObject): JsonObject {
         val json = Json { encodeDefaults = true; explicitNulls = true; allowStructuredMapKeys = true }
         val domain = CompleteLegalDomainV1(
             kind = CompleteLegalDomainKind.ACTION_CANDIDATES,
@@ -127,7 +138,7 @@ class CandidateDomainDigestTest : FunSpec({
         ).jsonObject
     }
 
-    fun decodeDomain(domain: kotlinx.serialization.json.JsonObject): CompleteLegalDomainV1 {
+    fun decodeDomain(domain: JsonObject): CompleteLegalDomainV1 {
         val json = Json { encodeDefaults = true; explicitNulls = true; allowStructuredMapKeys = true }
         return json.decodeFromString(CompleteLegalDomainV1.serializer(), domain.toString())
     }
@@ -135,8 +146,8 @@ class CandidateDomainDigestTest : FunSpec({
     fun candidateWithNested(
         action: LegalActionView,
         nestedKey: String,
-        mutation: (kotlinx.serialization.json.JsonObject) -> kotlinx.serialization.json.JsonObject,
-    ): kotlinx.serialization.json.JsonObject {
+        mutation: (JsonObject) -> JsonObject,
+    ): JsonObject {
         val candidate = semanticCandidate(action)
         val nested = requireNotNull(candidate[nestedKey]).jsonObject
         return replaceJsonValue(candidate, nestedKey, mutation(nested))
@@ -279,6 +290,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "CastSpell",
             description = "target",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             targetEntityIds = listOf(EntityId("target-a"), EntityId("target-b")),
         )
         val persisted = domainJson(semanticCandidate(action))
@@ -301,12 +313,108 @@ class CandidateDomainDigestTest : FunSpec({
         }
     }
 
+    test("durable candidates require semantic action payloads") {
+        val env = environment()
+        val sourceCandidate = observation(env).legalActions.first()
+        val missing = removeJsonValue(semanticCandidate(sourceCandidate), "actionSemantics")
+
+        shouldThrow<IllegalArgumentException> {
+            CompleteLegalDomainV1(
+                kind = CompleteLegalDomainKind.ACTION_CANDIDATES,
+                candidates = listOf(missing),
+            )
+        }
+        CompleteLegalDomainV1.from(observation(env))
+    }
+
+    test("durable action semantics reject nested decision routing IDs") {
+        val env = environment()
+        val action = observation(env).legalActions.first().copy(
+            actionSemantics = buildJsonObject {
+                put("type", "CastSpell")
+                put("nested", buildJsonObject { put("decisionId", "routing-id") })
+            }
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            CompleteLegalDomainV1.from(observation(env).copy(legalActions = listOf(action)))
+        }
+    }
+
+    test("durable action semantics reject nested runtime ability IDs") {
+        val env = environment()
+        val action = observation(env).legalActions.first().copy(
+            actionSemantics = buildJsonObject {
+                put("type", "CastSpell")
+                put("nested", buildJsonObject { put("abilityId", "runtime-ability-id") })
+            }
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            CompleteLegalDomainV1.from(observation(env).copy(legalActions = listOf(action)))
+        }
+    }
+
+    test("required payload fields retain the shared canonical producer order") {
+        val env = environment()
+        val source = observation(env)
+        val candidate = source.legalActions.first().copy(
+            requiresStructuredAction = true,
+            requiredPayloadFields = listOf("targets", "paymentStrategy"),
+        )
+        val canonical = source.copy(legalActions = listOf(candidate))
+        val reversed = canonical.copy(
+            legalActions = listOf(candidate.copy(
+                requiredPayloadFields = listOf("paymentStrategy", "targets")
+            ))
+        )
+        val duplicate = canonical.copy(
+            legalActions = listOf(candidate.copy(
+                requiredPayloadFields = listOf("targets", "targets")
+            ))
+        )
+
+        CompleteLegalDomainV1.from(canonical)
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(reversed) }
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(duplicate) }
+    }
+
+    test("mode-selection producer order is validated at the durable boundary") {
+        val env = environment()
+        val domain = ModeSelectionDomain(
+            modes = listOf(
+                ModeOptionDomain(index = 0, text = "zero", available = true),
+                ModeOptionDomain(index = 1, text = "one", available = true),
+            ),
+            minModes = 1,
+            maxModes = 1,
+        )
+        val source = structuredObservation(env, domain, PendingDecisionKind.CHOOSE_MODE)
+        val reversed = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(modes = domain.modes.reversed())
+            )
+        )
+        val duplicate = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(
+                    modes = listOf(domain.modes.first(), domain.modes.first())
+                )
+            )
+        )
+
+        CompleteLegalDomainV1.from(source)
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(reversed) }
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(duplicate) }
+    }
+
     test("persisted action candidates reject an unknown target-domain version") {
         val action = LegalActionView(
             actionId = 100,
             kind = "CastSpell",
             description = "target",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             targetEntityIds = listOf(EntityId("target-a"), EntityId("target-b")),
             targetDomain = targetDomain(),
         )
@@ -329,6 +437,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareAttackers",
             description = "attack",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareAttackers"),
             attackDeclarationDomain = attackDomain(),
         )
         val candidate = candidateWithNested(action, "attackDeclarationDomain") {
@@ -350,6 +459,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareBlockers",
             description = "block",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareBlockers"),
             blockerDeclarationDomain = blockerDomain(),
         )
         val candidate = candidateWithNested(action, "blockerDeclarationDomain") {
@@ -371,6 +481,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "CastSpell",
             description = "payment",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             paymentDomain = paymentDomain(),
         )
         val candidate = candidateWithNested(action, "paymentDomain") {
@@ -392,6 +503,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "ActivateAbility",
             description = "target payment",
             affordable = true,
+            actionSemantics = semanticPayload("ActivateAbility"),
             targetPaymentDomain = TargetPaymentDomainV1(
                 targetBindings = listOf(
                     TargetPaymentBindingV1(
@@ -421,6 +533,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareAttackers",
             description = "attack",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareAttackers"),
             attackDeclarationDomain = attackDomain(),
         )
         val candidate = candidateWithNested(action, "attackDeclarationDomain") {
@@ -442,6 +555,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareBlockers",
             description = "block",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareBlockers"),
             blockerDeclarationDomain = blockerDomain(),
         )
         val candidate = candidateWithNested(action, "blockerDeclarationDomain") {
@@ -463,6 +577,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareBlockers",
             description = "block",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareBlockers"),
             blockerDeclarationDomain = blockerDomain(),
         )
         val candidate = candidateWithNested(action, "blockerDeclarationDomain") { domain ->
@@ -494,6 +609,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "CastSpell",
             description = "target",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             targetEntityIds = listOf(EntityId("target-a"), EntityId("target-b")),
             targetDomain = targetDomain(),
         )
@@ -526,6 +642,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareAttackers",
             description = "attack",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareAttackers"),
             attackDeclarationDomain = attackDomain(),
         )
         val reversed = action.copy(
@@ -545,6 +662,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "DeclareBlockers",
             description = "block",
             affordable = true,
+            actionSemantics = semanticPayload("DeclareBlockers"),
             blockerDeclarationDomain = blockerDomain(),
         )
         val reversed = action.copy(
@@ -572,6 +690,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "CastSpell",
             description = "payment",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             paymentDomain = paymentDomain("{0}"),
         )
         val changed = action.copy(paymentDomain = paymentDomain("{1}"))
@@ -606,6 +725,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "CastSpell",
             description = "ordered payment sources",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             paymentDomain = domain,
         )
         val reordered = action.copy(
@@ -623,6 +743,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "ActivateAbility",
             description = "target payment",
             affordable = true,
+            actionSemantics = semanticPayload("ActivateAbility"),
             targetPaymentDomain = TargetPaymentDomainV1(
                 targetBindings = listOf(
                     TargetPaymentBindingV1(
@@ -675,6 +796,7 @@ class CandidateDomainDigestTest : FunSpec({
                     kind = "ActivateAbility",
                     description = "color",
                     affordable = true,
+                    actionSemantics = semanticPayload("ActivateAbility"),
                     availableManaColors = listOf(Color.RED, Color.GREEN),
                 )
             )
@@ -696,6 +818,7 @@ class CandidateDomainDigestTest : FunSpec({
             kind = "CastSpell",
             description = "X spell",
             affordable = true,
+            actionSemantics = semanticPayload("CastSpell"),
             hasXCost = true,
             maxAffordableX = 2,
         )

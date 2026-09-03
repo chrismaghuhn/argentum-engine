@@ -304,6 +304,7 @@ private val candidateRequiredKeys = setOf(
     "isManaAbility",
     "requiresStructuredAction",
     "requiredPayloadFields",
+    "actionSemantics",
     "isDecisionOption",
 )
 
@@ -456,8 +457,8 @@ private object CandidateSemanticValidator {
             }
         }
         candidate.required("requiresStructuredAction").requireBoolean()
-        candidate.required("requiredPayloadFields").requireStringArray("requiredPayloadFields")
-        candidate["actionSemantics"]?.let { it.requireObject("actionSemantics") }
+        requireCanonicalRequiredPayloadFields(candidate.required("requiredPayloadFields"))
+        requireSemanticActionPayload(candidate.required("actionSemantics").requireObject("actionSemantics"))
         candidate.required("isDecisionOption").requireBoolean()
 
         candidate["targetDomain"]?.let { requireTargetDomain(it.requireObject("targetDomain")) }
@@ -763,6 +764,46 @@ private object CandidateSemanticValidator {
         decodeStrict("TargetPaymentDomainV1", TargetPaymentDomainV1.serializer(), value)
     }
 
+    private fun requireCanonicalRequiredPayloadFields(value: JsonElement) {
+        val fields = value.requireStringArray("requiredPayloadFields")
+        require(fields.distinct().size == fields.size) {
+            "Complete legal-domain candidate cannot duplicate required payload fields"
+        }
+        val canonical = try {
+            ActionPayloadRequirements.canonicalizeRequiredPayloadFields(fields.toSet())
+        } catch (_: RuntimeException) {
+            throw IllegalArgumentException("Complete legal-domain candidate has an unsupported payload field")
+        }
+        require(fields == canonical) {
+            "Complete legal-domain candidate has noncanonical required payload field order"
+        }
+    }
+
+    private val semanticRoutingKeys = setOf("actionId", "decisionId", "abilityId")
+
+    private fun requireSemanticActionPayload(value: JsonObject) {
+        val type = value.required("type").stringValue("action semantic type")
+        fun rejectRoutingKeys(element: JsonElement) {
+            when (element) {
+                is JsonObject -> {
+                    require(element.keys.none(semanticRoutingKeys::contains)) {
+                        "Complete legal-domain action semantics contain a routing field"
+                    }
+                    element.values.forEach(::rejectRoutingKeys)
+                }
+
+                is JsonArray -> element.forEach(::rejectRoutingKeys)
+                else -> Unit
+            }
+        }
+        rejectRoutingKeys(value)
+        if (type == "ActivateAbility") {
+            require(value["abilityKey"]?.let { it is JsonObject } == true) {
+                "ActivateAbility action semantics require a stable abilityKey"
+            }
+        }
+    }
+
     private fun <T> decodeStrict(label: String, serializer: KSerializer<T>, value: JsonObject): T =
         try {
             completeLegalDomainJson.decodeFromJsonElement(serializer, value)
@@ -812,7 +853,12 @@ private object CandidateSemanticValidator {
                 }
             }
 
-            is ModeSelectionDomain -> Unit
+            is ModeSelectionDomain -> {
+                val indices = domain.modes.map { it.index }
+                require(indices == indices.distinct().sorted()) {
+                    "Producer returned noncanonical mode order"
+                }
+            }
             is DistributionDomain -> requireSortedEntityIds(domain.targets, "distribution targets")
             is OrderingDomain -> requireSortedEntityIds(domain.objects, "ordering objects")
             is SplitPilesDomain -> requireSortedEntityIds(domain.cards, "split-pile cards")
