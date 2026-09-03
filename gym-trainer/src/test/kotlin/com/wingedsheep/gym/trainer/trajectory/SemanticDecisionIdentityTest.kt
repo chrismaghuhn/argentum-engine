@@ -1049,12 +1049,6 @@ class SemanticDecisionIdentityTest : FunSpec({
             ChosenSemanticResponseV1.from(domain(listOf(a, b), minSelections = 1, maxSelections = 2, minTotalManaValue = 6), response(listOf(a, b)))
         }
         shouldThrow<IllegalArgumentException> {
-            ChosenSemanticResponseV1.from(
-                domain(listOf(a, b), minSelections = 0, maxSelections = 2, minTotalManaValue = 1),
-                response(emptyList()),
-            )
-        }
-        shouldThrow<IllegalArgumentException> {
             ChosenSemanticResponseV1.from(domain(listOf(a, b), minSelections = 2, maxSelections = 2, maxTotalPower = 3), response(listOf(a, b)))
         }
         shouldThrow<IllegalArgumentException> {
@@ -1093,12 +1087,124 @@ class SemanticDecisionIdentityTest : FunSpec({
             ),
             response(listOf(a, b)),
         )
+        ChosenSemanticResponseV1.from(
+            domain(listOf(a, b), minSelections = 0, maxSelections = 2, minTotalManaValue = 5),
+            response(emptyList()),
+        )
         shouldThrow<IllegalArgumentException> {
             ChosenSemanticResponseV1.from(
                 domain(listOf(a, b), minSelections = 1, maxSelections = 2, cardInfo = null, onePerColor = true),
                 response(listOf(a)),
             )
         }
+    }
+
+    test("multiple conditional card-selection minimums are alternatives") {
+        val a = EntityId("a")
+        val b = EntityId("b")
+        val domain = CompleteLegalDomainV1(
+            kind = CompleteLegalDomainKind.STRUCTURED_DECISION,
+            decisionKind = PendingDecisionKind.SELECT_CARDS,
+            shape = DecisionShape(minSelections = 0, maxSelections = 2),
+            structuredDomain = CardSelectionDomain(
+                options = listOf(a, b),
+                minSelections = 0,
+                maxSelections = 2,
+                ordered = false,
+                cardInfo = null,
+                useTargetingUI = false,
+                selectedLabel = null,
+                remainderLabel = null,
+                nonSelectableOptions = emptyList(),
+                onePerCardType = false,
+                onePerColor = false,
+                availableColors = null,
+                onePerCardName = false,
+                onePerBasicLandType = false,
+                onePerPower = false,
+                maxTotalManaValue = null,
+                minTotalManaValue = null,
+                maxTotalPower = null,
+                conditionalMinimums = listOf(
+                    ConditionalSelectionMinimumDomain(
+                        requiredSelections = 2,
+                        minimumSelections = 1,
+                        matchingOptions = listOf(a),
+                        requiredMatches = 1,
+                        description = null,
+                    ),
+                    ConditionalSelectionMinimumDomain(
+                        requiredSelections = 2,
+                        minimumSelections = 1,
+                        matchingOptions = listOf(b),
+                        requiredMatches = 1,
+                        description = null,
+                    ),
+                ),
+            ),
+        )
+
+        ChosenSemanticResponseV1.from(
+            domain,
+            CardsSelectedResponse("decision", listOf(a)),
+        )
+    }
+
+    test("unordered card selections use producer order while ordered selections retain choice order") {
+        val a = EntityId("a")
+        val b = EntityId("b")
+
+        fun domain(ordered: Boolean) = CompleteLegalDomainV1(
+            kind = CompleteLegalDomainKind.STRUCTURED_DECISION,
+            decisionKind = PendingDecisionKind.SELECT_CARDS,
+            shape = DecisionShape(minSelections = 2, maxSelections = 2),
+            structuredDomain = CardSelectionDomain(
+                options = listOf(a, b),
+                minSelections = 2,
+                maxSelections = 2,
+                ordered = ordered,
+                cardInfo = null,
+                useTargetingUI = false,
+                selectedLabel = null,
+                remainderLabel = null,
+                nonSelectableOptions = emptyList(),
+                onePerCardType = false,
+                onePerColor = false,
+                availableColors = null,
+                onePerCardName = false,
+                onePerBasicLandType = false,
+                onePerPower = false,
+                maxTotalManaValue = null,
+                minTotalManaValue = null,
+                maxTotalPower = null,
+                conditionalMinimums = emptyList(),
+            ),
+        )
+
+        val unorderedAB = ChosenSemanticResponseV1.from(
+            domain(ordered = false),
+            CardsSelectedResponse("decision-a", listOf(a, b)),
+        )
+        val unorderedBA = ChosenSemanticResponseV1.from(
+            domain(ordered = false),
+            CardsSelectedResponse("decision-b", listOf(b, a)),
+        )
+        unorderedAB shouldBe unorderedBA
+        SemanticReplayPrefixV1(
+            inputs = listOf(SemanticReplayInputV1.response(unorderedAB)),
+        ).digest() shouldBe SemanticReplayPrefixV1(
+            inputs = listOf(SemanticReplayInputV1.response(unorderedBA)),
+        ).digest()
+
+        val orderedAB = ChosenSemanticResponseV1.from(
+            domain(ordered = true),
+            CardsSelectedResponse("decision-a", listOf(a, b)),
+        )
+        val orderedBA = ChosenSemanticResponseV1.from(
+            domain(ordered = true),
+            CardsSelectedResponse("decision-b", listOf(b, a)),
+        )
+        orderedAB shouldNotBe orderedBA
     }
 
     test("distribution minPerTarget applies to every stored target") {
@@ -1169,6 +1275,22 @@ class SemanticDecisionIdentityTest : FunSpec({
 
         first shouldBe second
         first.canonicalJson().contains("trigger-order-object-").shouldBeFalse()
+        val triggerValue = first.response.getValue("orderedObjects").jsonArray.single()
+        (triggerValue is JsonObject).shouldBeTrue()
+        val semanticTriggerAlias = triggerValue.jsonObject.getValue("semantic")
+        val collidingEntityId = EntityId(
+            "trigger-order-semantic-${A3SemanticJson.canonicalJson(semanticTriggerAlias)}"
+        )
+        val ordinary = ChosenSemanticResponseV1.from(
+            CompleteLegalDomainV1(
+                kind = CompleteLegalDomainKind.STRUCTURED_DECISION,
+                decisionKind = PendingDecisionKind.ORDER_OBJECTS,
+                shape = DecisionShape(),
+                structuredDomain = OrderingDomain(objects = listOf(collidingEntityId)),
+            ),
+            OrderedResponse("decision-c", listOf(collidingEntityId)),
+        )
+        ordinary shouldNotBe first
         SemanticReplayPrefixV1(
             inputs = listOf(SemanticReplayInputV1.response(first)),
         ).digest() shouldBe SemanticReplayPrefixV1(

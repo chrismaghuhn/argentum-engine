@@ -41,7 +41,9 @@ const val SEMANTIC_DECISION_IDENTITY_V1_VERSION: Int = 1
 const val SEMANTIC_DECISION_IDENTITY_SCHEMA_IDENTITY: String =
     "argentum-trajectory-semantic-decision@v1"
 
-private const val TRIGGER_ORDER_SEMANTIC_ALIAS_PREFIX = "trigger-order-semantic-"
+private const val ORDERING_REFERENCE_TYPE_FIELD = "referenceType"
+private const val ORDERING_ENTITY_REFERENCE = "ENTITY"
+private const val ORDERING_TRIGGER_REFERENCE = "TRIGGER"
 
 /** Closed semantic decision vocabulary used by the durable identity preimage. */
 @Serializable
@@ -748,7 +750,11 @@ data class ChosenSemanticResponseV1 private constructor(
         }
         A3SemanticJson.requireSemanticObject(response, "chosen semantic response")
         A3SemanticJson.requireNoOpaqueTriggerHandles(response, "chosen semantic response")
-        Companion.decodeResponse(response)
+        if (Companion.isSemanticOrderingResponse(response)) {
+            Companion.validateSemanticOrderingResponse(response)
+        } else {
+            Companion.decodeResponse(response)
+        }
     }
 
     /** Canonical full chosen-response JSON without the live decision ID. */
@@ -785,20 +791,32 @@ data class ChosenSemanticResponseV1 private constructor(
         ): ChosenSemanticResponseV1 {
             val semanticInput = removeManualPaymentRoutingFlag(response)
             A3SemanticJson.requireSemanticObject(semanticInput, "chosen semantic response")
-            val decoded = decodeResponse(semanticInput)
+            val semanticOrdering = isSemanticOrderingResponse(semanticInput)
+            val decoded = if (semanticOrdering) null else decodeResponse(semanticInput)
             val normalized = when (domain.kind) {
                 CompleteLegalDomainKind.ACTION_CANDIDATES ->
                     throw IllegalArgumentException("Action-candidate domains require a chosen action")
 
                 CompleteLegalDomainKind.FOLDED_DECISION_OPTIONS -> {
-                    val normalized = semanticResponseJson(decoded, domain)
+                    val normalized = semanticResponseJson(
+                        requireNotNull(decoded) { "Folded response has an unsupported semantic shape" },
+                        domain,
+                    )
                     requireFoldedMembership(domain, normalized)
                     normalized
                 }
 
                 CompleteLegalDomainKind.STRUCTURED_DECISION -> {
-                    validateStructuredMembership(domain, decoded)
-                    semanticResponseJson(decoded, domain)
+                    if (semanticOrdering) {
+                        val ordering = domain.structuredDomain as? OrderingDomain
+                            ?: throw IllegalArgumentException("Semantic ordering response requires an ordering domain")
+                        validateSemanticOrderingMembership(ordering, semanticInput)
+                        semanticInput
+                    } else {
+                        val responseValue = requireNotNull(decoded)
+                        validateStructuredMembership(domain, responseValue)
+                        semanticResponseJson(responseValue, domain)
+                    }
                 }
             }
             return ChosenSemanticResponseV1(response = normalized)
@@ -828,23 +846,36 @@ data class ChosenSemanticResponseV1 private constructor(
                 if (response is ManaSourcesSelectedResponse) add("autoPay")
             }
             val semantic = JsonObject(encoded.filterKeys { it !in excluded })
+            val cardSelection = domain.structuredDomain as? CardSelectionDomain
+            if (response is CardsSelectedResponse && cardSelection != null && !cardSelection.ordered) {
+                val selected = response.selectedCards.toSet()
+                val producerOrdered = cardSelection.options.filter(selected::contains)
+                require(producerOrdered.size == selected.size) {
+                    "Unordered card selection contains an outside-domain card"
+                }
+                return JsonObject(
+                    semantic +
+                        ("selectedCards" to JsonArray(producerOrdered.map { JsonPrimitive(it.value) }))
+                )
+            }
+
             val ordering = domain.structuredDomain as? OrderingDomain
             if (response !is OrderedResponse || ordering == null) return semantic
 
-            val aliases = response.orderedObjects.map { objectId ->
-                stableOrderingObjectAlias(ordering, objectId)
+            val references = response.orderedObjects.map { objectId ->
+                semanticOrderingReference(ordering, objectId)
             }
-            require(aliases.distinct().size == aliases.size) {
+            require(references.map(A3SemanticJson::canonicalJson).distinct().size == references.size) {
                 "Ordering response contains indistinguishable public trigger objects"
             }
-            return JsonObject(semantic + ("orderedObjects" to JsonArray(aliases.map(::JsonPrimitive))))
+            return JsonObject(semantic + ("orderedObjects" to JsonArray(references)))
         }
 
         /**
-         * Replace a generated trigger-order handle with the same public label/card-info
-         * semantics used by ObservationCanonicalizer for ordering-domain identity.
+         * Replace an ordering reference with a tagged semantic value. The tag makes trigger
+         * semantics structurally disjoint from arbitrary ordinary EntityId values.
          */
-        private fun stableOrderingObjectAlias(domain: OrderingDomain, objectId: EntityId): String {
+        private fun semanticOrderingReference(domain: OrderingDomain, objectId: EntityId): JsonObject {
             val label = domain.objectLabels?.get(objectId)?.takeIf(String::isNotBlank)
             val cardInfo = domain.cardInfo?.get(objectId)
             val semanticAlias = ObservationCanonicalizer.semanticOrderingObject(
@@ -854,11 +885,91 @@ data class ChosenSemanticResponseV1 private constructor(
                     A3SemanticJson.strictJson.encodeToJsonElement(StructuredCardInfo.serializer(), it)
                 },
             )
-            if ("entityId" in semanticAlias) return objectId.value
+            if ("entityId" in semanticAlias) {
+                return buildJsonObject {
+                    put(ORDERING_REFERENCE_TYPE_FIELD, ORDERING_ENTITY_REFERENCE)
+                    put("entityId", objectId.value)
+                }
+            }
             require(semanticAlias.isNotEmpty()) {
                 "Trigger ordering object has no stable public semantics"
             }
-            return TRIGGER_ORDER_SEMANTIC_ALIAS_PREFIX + A3SemanticJson.canonicalJson(semanticAlias)
+            return buildJsonObject {
+                put(ORDERING_REFERENCE_TYPE_FIELD, ORDERING_TRIGGER_REFERENCE)
+                put("semantic", semanticAlias)
+            }
+        }
+
+        private fun isSemanticOrderingResponse(response: JsonObject): Boolean =
+            response["type"]?.let(A3SemanticJson::stringOrNull) == "OrderedResponse" &&
+                response["orderedObjects"] is JsonArray &&
+                response.getValue("orderedObjects").jsonArray.any { it is JsonObject }
+
+        private fun validateSemanticOrderingResponse(response: JsonObject) {
+            require(response.keys == setOf("type", "orderedObjects")) {
+                "Semantic ordering response has an unsupported shape"
+            }
+            response.getValue("orderedObjects").jsonArray.forEach { element ->
+                val reference = element as? JsonObject
+                    ?: throw IllegalArgumentException("Semantic ordering response has a malformed reference")
+                val referenceType = reference[ORDERING_REFERENCE_TYPE_FIELD]
+                    ?.let(A3SemanticJson::stringOrNull)
+                    ?: throw IllegalArgumentException("Semantic ordering response has no reference type")
+                when (referenceType) {
+                    ORDERING_ENTITY_REFERENCE -> {
+                        require(reference.keys == setOf(ORDERING_REFERENCE_TYPE_FIELD, "entityId")) {
+                            "Semantic entity ordering reference has an unsupported shape"
+                        }
+                        require(A3SemanticJson.stringOrNull(reference.getValue("entityId"))?.isNotBlank() == true) {
+                            "Semantic entity ordering reference has no entity identity"
+                        }
+                    }
+
+                    ORDERING_TRIGGER_REFERENCE -> {
+                        require(reference.keys == setOf(ORDERING_REFERENCE_TYPE_FIELD, "semantic")) {
+                            "Semantic trigger ordering reference has an unsupported shape"
+                        }
+                        val semantic = reference["semantic"] as? JsonObject
+                            ?: throw IllegalArgumentException("Semantic trigger ordering reference has no semantics")
+                        require(semantic.isNotEmpty() && semantic.keys.all { it == "label" || it == "cardInfo" }) {
+                            "Semantic trigger ordering reference has malformed public semantics"
+                        }
+                        semantic["label"]?.let {
+                            require(A3SemanticJson.stringOrNull(it)?.isNotBlank() == true) {
+                                "Semantic trigger ordering reference has a malformed label"
+                            }
+                        }
+                        semantic["cardInfo"]?.let {
+                            A3SemanticJson.decodeStrict(
+                                StructuredCardInfo.serializer(),
+                                it,
+                                "semantic trigger ordering card info",
+                            )
+                        }
+                    }
+
+                    else -> throw IllegalArgumentException("Unsupported semantic ordering reference type")
+                }
+            }
+        }
+
+        private fun validateSemanticOrderingMembership(
+            domain: OrderingDomain,
+            response: JsonObject,
+        ) {
+            validateSemanticOrderingResponse(response)
+            val expected = domain.objects.map { objectId -> semanticOrderingReference(domain, objectId) }
+            require(expected.map(A3SemanticJson::canonicalJson).distinct().size == expected.size) {
+                "Ordering domain contains indistinguishable public objects"
+            }
+            val actual = response.getValue("orderedObjects").jsonArray
+            require(actual.map { A3SemanticJson.canonicalJson(it) }.distinct().size == actual.size) {
+                "Semantic ordering response duplicates an object"
+            }
+            require(actual.map(A3SemanticJson::canonicalJson).toSet() ==
+                expected.map(A3SemanticJson::canonicalJson).toSet()) {
+                "Semantic ordering response is outside the stored domain"
+            }
         }
 
         /** Remove the live manual-payment discriminator after rejecting the auto-pay branch. */
@@ -1053,8 +1164,10 @@ data class ChosenSemanticResponseV1 private constructor(
                 }
             }
             domain.minTotalManaValue?.let { minimum ->
-                require(manaValues.sumOf(Int::toLong) >= minimum.toLong()) {
-                    "Card-selection response does not meet the total mana-value minimum"
+                if (cards.selectedCards.isNotEmpty()) {
+                    require(manaValues.sumOf(Int::toLong) >= minimum.toLong()) {
+                        "Card-selection response does not meet the total mana-value minimum"
+                    }
                 }
             }
             domain.maxTotalPower?.let { maximum ->
@@ -1079,12 +1192,17 @@ data class ChosenSemanticResponseV1 private constructor(
                         minimum.minimumSelections >= 0 &&
                         minimum.requiredMatches >= 0
                 ) { "Card-selection conditional constraint has an invalid cardinality" }
-                if (selectedCards.size < minimum.requiredSelections) {
+            }
+            val unmet = domain.conditionalMinimums.filter { minimum ->
+                selectedCards.size < minimum.requiredSelections
+            }
+            if (unmet.isNotEmpty()) {
+                require(unmet.any { minimum ->
                     val matchingCount = selectedCards.count { it in minimum.matchingOptions }
-                    require(
-                        selectedCards.size >= minimum.minimumSelections &&
-                            matchingCount >= minimum.requiredMatches
-                    ) { "Card-selection response violates a conditional minimum" }
+                    selectedCards.size >= minimum.minimumSelections &&
+                        matchingCount >= minimum.requiredMatches
+                }) {
+                    "Card-selection response violates every conditional minimum alternative"
                 }
             }
         }
