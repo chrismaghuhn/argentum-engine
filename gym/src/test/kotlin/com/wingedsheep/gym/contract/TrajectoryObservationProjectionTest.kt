@@ -182,6 +182,47 @@ class TrajectoryObservationProjectionTest : FunSpec({
         project(base).semanticDigest() shouldNotBe project(changed).semanticDigest()
     }
 
+    test("semantic candidate payload remains bound through the source observation digest") {
+        val env = environment()
+        val base = observation(env, legalActions = env.legalActions())
+        val candidateIndex = base.legalActions.indexOfFirst { it.actionSemantics != null }
+        candidateIndex shouldNotBe -1
+        val candidate = base.legalActions[candidateIndex]
+        val changedSemantics = buildJsonObject {
+            checkNotNull(candidate.actionSemantics).forEach { (key, value) -> put(key, value) }
+            put("type", JsonPrimitive("SemanticCandidateVariant"))
+        }
+        val changedWithoutDigest = base.copy(
+            legalActions = base.legalActions.mapIndexed { index, action ->
+                if (index == candidateIndex) action.copy(actionSemantics = changedSemantics) else action
+            },
+            stateDigest = "",
+        )
+        val changed = changedWithoutDigest.copy(stateDigest = StateDigest.compute(changedWithoutDigest))
+
+        base.stateDigest shouldNotBe changed.stateDigest
+        val baseProjection = project(base)
+        val changedProjection = project(changed)
+        baseProjection.canonicalJson().contains("legalActions").shouldBeFalse()
+        changedProjection.canonicalJson().contains("legalActions").shouldBeFalse()
+        baseProjection shouldNotBe changedProjection
+        baseProjection.observationDigest shouldBe base.stateDigest
+        changedProjection.observationDigest shouldBe changed.stateDigest
+        baseProjection.semanticDigest() shouldNotBe changedProjection.semanticDigest()
+    }
+
+    test("source wire schema identity remains a projection binding") {
+        val env = environment()
+        val source = observation(env)
+        val changed = source.copy(schemaHash = "argentum-gym-contract@test-schema")
+        val sourceProjection = project(source)
+        val changedProjection = project(changed)
+
+        sourceProjection.wireSchemaHash shouldNotBe changedProjection.wireSchemaHash
+        sourceProjection shouldNotBe changedProjection
+        sourceProjection.semanticDigest() shouldNotBe changedProjection.semanticDigest()
+    }
+
     test("pending sourceEntityId is semantic") {
         val env = environment()
         val base = pendingObservation(env)
