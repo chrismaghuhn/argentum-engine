@@ -2,6 +2,8 @@ package com.wingedsheep.gym.contract
 
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -27,6 +29,30 @@ internal object ObservationCanonicalizer {
         prettyPrint = false
         classDiscriminator = "type"
         allowStructuredMapKeys = true
+    }
+    private val durableProjectionJson = Json {
+        encodeDefaults = true
+        explicitNulls = true
+        prettyPrint = false
+        classDiscriminator = "type"
+        allowStructuredMapKeys = true
+    }
+
+    /** Build the A1 projection from the already perspective-safe source DTO. */
+    internal fun playerObservationV1(observation: TrainingObservation): PlayerObservationV1 =
+        PlayerObservationV1.from(observation)
+
+    /** Canonical deterministic representation of a transport-free A1 projection. */
+    internal fun playerObservationJson(projection: PlayerObservationV1): String =
+        canonicalize(
+            durableProjectionJson.encodeToJsonElement(PlayerObservationV1.serializer(), projection)
+        ).toString()
+
+    /** SHA-256 over the canonical transport-free A1 projection. */
+    internal fun playerObservationDigest(projection: PlayerObservationV1): String {
+        val bytes = MessageDigest.getInstance("SHA-256")
+            .digest(playerObservationJson(projection).toByteArray(StandardCharsets.UTF_8))
+        return bytes.joinToString("") { "%02x".format(it) }
     }
 
     /** Serialize the actual wire DTO, retaining transport IDs and presentation fields. */
