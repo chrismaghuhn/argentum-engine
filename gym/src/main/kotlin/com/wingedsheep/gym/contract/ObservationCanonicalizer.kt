@@ -55,6 +55,32 @@ internal object ObservationCanonicalizer {
         return bytes.joinToString("") { "%02x".format(it) }
     }
 
+    /** Canonicalize a semantic JSON element without changing producer-owned sequence order. */
+    internal fun canonicalElement(element: JsonElement): JsonElement = canonicalize(element)
+
+    /** Canonical JSON for another Gym boundary contract. */
+    internal fun canonicalJson(element: JsonElement): String = canonicalize(element).toString()
+
+    /**
+     * Canonical domain JSON that preserves the complete domain's producer-owned candidate order.
+     * Nested candidate arrays still use the ordinary semantic unordered-field rules.
+     */
+    internal fun canonicalDomainJson(element: JsonElement): String {
+        val root = element as? JsonObject ?: return canonicalJson(element)
+        val canonicalRoot = JsonObject(
+            root.entries
+                .sortedBy { it.key }
+                .associate { (key, value) ->
+                    key to if (key == "candidates" && value is JsonArray) {
+                        JsonArray(value.map(::canonicalize))
+                    } else {
+                        canonicalize(value)
+                    }
+                }
+        )
+        return canonicalRoot.toString()
+    }
+
     /** Serialize the actual wire DTO, retaining transport IDs and presentation fields. */
     fun wireJson(observation: TrainingObservation): String =
         canonicalize(json.encodeToJsonElement(TrainingObservation.serializer(), observation)).toString()
@@ -354,7 +380,7 @@ internal object ObservationCanonicalizer {
      * entity IDs remain established public references; trigger ordering uses generated
      * `trigger-order-object-*` handles whose stable actor-facing labels are the semantic value.
      */
-    private fun semanticStructuredDomain(domain: JsonObject): JsonObject {
+    internal fun semanticStructuredDomain(domain: JsonObject): JsonObject {
         val type = domain["type"]?.jsonPrimitive?.content
         if (type == "mana-sources") {
             return stripStructuredPresentation(
