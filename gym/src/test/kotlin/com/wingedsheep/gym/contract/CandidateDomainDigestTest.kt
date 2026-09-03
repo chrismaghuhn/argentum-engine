@@ -1,10 +1,16 @@
 package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.ActivationCostComponentRefV1
+import com.wingedsheep.engine.core.AtomicManaCostUnitV1
+import com.wingedsheep.engine.core.PaymentCostKindV1
+import com.wingedsheep.engine.core.PaymentManaColor
+import com.wingedsheep.engine.core.ProductionChoice
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.assertions.throwables.shouldThrow
@@ -17,8 +23,11 @@ import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
@@ -85,6 +94,124 @@ class CandidateDomainDigestTest : FunSpec({
 
     fun canonicalJson(domain: CompleteLegalDomainV1): String = domain.canonicalJson()
 
+    fun semanticCandidate(action: LegalActionView): kotlinx.serialization.json.JsonObject =
+        ObservationCanonicalizer.semanticActionFingerprint(action)
+
+    fun replaceJsonValue(
+        objectValue: kotlinx.serialization.json.JsonObject,
+        key: String,
+        value: JsonElement,
+    ): kotlinx.serialization.json.JsonObject = buildJsonObject {
+        objectValue.forEach { (existingKey, existingValue) ->
+            put(existingKey, if (existingKey == key) value else existingValue)
+        }
+    }
+
+    fun removeJsonValue(
+        objectValue: kotlinx.serialization.json.JsonObject,
+        key: String,
+    ): kotlinx.serialization.json.JsonObject = buildJsonObject {
+        objectValue.forEach { (existingKey, existingValue) ->
+            if (existingKey != key) put(existingKey, existingValue)
+        }
+    }
+
+    fun domainJson(candidate: kotlinx.serialization.json.JsonObject): kotlinx.serialization.json.JsonObject {
+        val json = Json { encodeDefaults = true; explicitNulls = true; allowStructuredMapKeys = true }
+        val domain = CompleteLegalDomainV1(
+            kind = CompleteLegalDomainKind.ACTION_CANDIDATES,
+            candidates = listOf(candidate),
+        )
+        return json.parseToJsonElement(
+            json.encodeToString(CompleteLegalDomainV1.serializer(), domain)
+        ).jsonObject
+    }
+
+    fun decodeDomain(domain: kotlinx.serialization.json.JsonObject): CompleteLegalDomainV1 {
+        val json = Json { encodeDefaults = true; explicitNulls = true; allowStructuredMapKeys = true }
+        return json.decodeFromString(CompleteLegalDomainV1.serializer(), domain.toString())
+    }
+
+    fun candidateWithNested(
+        action: LegalActionView,
+        nestedKey: String,
+        mutation: (kotlinx.serialization.json.JsonObject) -> kotlinx.serialization.json.JsonObject,
+    ): kotlinx.serialization.json.JsonObject {
+        val candidate = semanticCandidate(action)
+        val nested = requireNotNull(candidate[nestedKey]).jsonObject
+        return replaceJsonValue(candidate, nestedKey, mutation(nested))
+    }
+
+    fun paymentDomain(requiredCost: String = "{0}"): PaymentDomainV5 = PaymentDomainV5(
+        requiredCost = requiredCost,
+        outerAtomicCostUnits = listOf(
+            AtomicManaCostUnitV1(
+                symbolIndex = 0,
+                unitIndexWithinSymbol = 0,
+                kind = PaymentCostKindV1.GENERIC,
+            )
+        ),
+        initialPoolBuckets = emptyList(),
+        sourceActivationOptions = emptyList(),
+    )
+
+    fun targetDomain(): ActionTargetDomainV1 = ActionTargetDomainV1(
+        requirements = listOf(
+            TargetRequirementDomain(
+                index = 0,
+                description = "presentation",
+                minTargets = 1,
+                maxTargets = 2,
+                candidates = listOf(EntityId("target-a"), EntityId("target-b")),
+                targetZone = null,
+                mustDifferFromEarlier = false,
+                sameController = false,
+                sameOwner = false,
+                sameCreatureType = false,
+                sameCardType = false,
+                totalManaValueAtMost = null,
+                differentNames = false,
+                xConstrainsManaValue = false,
+                xConstrainsManaValueExactly = false,
+                xConstrainsPower = false,
+                xConstrainsCount = false,
+            )
+        )
+    )
+
+    fun attackDomain(): AttackDeclarationDomainV2 = AttackDeclarationDomainV2(
+        attackerOrder = listOf(EntityId("attacker-a"), EntityId("attacker-b")),
+        attackerToDefenders = linkedMapOf(
+            EntityId("attacker-a") to listOf(EntityId("defender-a")),
+            EntityId("attacker-b") to listOf(EntityId("defender-a"), EntityId("defender-b")),
+        ),
+        mandatoryAttackers = listOf(EntityId("attacker-a")),
+        canDeclareZeroAttackers = false,
+        maxAttackers = 2,
+        coAttackerRequirements = emptyMap(),
+        bandConstraints = AttackBandConstraintsV1(emptyMap(), emptyMap()),
+    )
+
+    fun blockerDomain(): BlockerDeclarationDomainV1 = BlockerDeclarationDomainV1(
+        blockerOrder = listOf(EntityId("blocker-a"), EntityId("blocker-b")),
+        attackerOrder = listOf(EntityId("attacker-a"), EntityId("attacker-b")),
+        blockerToAttackers = linkedMapOf(
+            EntityId("blocker-a") to listOf(EntityId("attacker-a")),
+            EntityId("blocker-b") to listOf(EntityId("attacker-b")),
+        ),
+        maxAttackersByBlocker = linkedMapOf(
+            EntityId("blocker-a") to 1,
+            EntityId("blocker-b") to 1,
+        ),
+        minBlockersByAttacker = emptyMap(),
+        maxBlockersByAttacker = emptyMap(),
+        globalMaxBlockers = null,
+        coBlockerRequirements = emptyMap(),
+        requirements = emptyList(),
+        minimumSatisfiedRequirementCount = 0,
+        canDeclareZeroBlockers = true,
+    )
+
     test("action IDs do not change an action candidate domain or its digest") {
         val env = environment()
         val base = observation(env)
@@ -131,17 +258,553 @@ class CandidateDomainDigestTest : FunSpec({
             CandidateDomainDigestV1.from(reorderedDomain).value
     }
 
-    test("genuinely unordered candidate fields canonicalize without changing the digest") {
+    test("producer-canonical unordered candidate fields are accepted and raw order is rejected") {
         val env = environment()
         val candidate = observation(env).legalActions.first()
-        val first = observation(env).copy(
+        val canonical = observation(env).copy(
             legalActions = listOf(candidate.copy(targetEntityIds = listOf(EntityId("a"), EntityId("b"))))
         )
-        val second = observation(env).copy(
+        CompleteLegalDomainV1.from(canonical)
+
+        val noncanonical = observation(env).copy(
             legalActions = listOf(candidate.copy(targetEntityIds = listOf(EntityId("b"), EntityId("a"))))
         )
 
-        CandidateDomainDigestV1.from(first).value shouldBe CandidateDomainDigestV1.from(second).value
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(noncanonical) }
+    }
+
+    test("persisted candidates reject noncanonical producer arrays") {
+        val action = LegalActionView(
+            actionId = 99,
+            kind = "CastSpell",
+            description = "target",
+            affordable = true,
+            targetEntityIds = listOf(EntityId("target-a"), EntityId("target-b")),
+        )
+        val persisted = domainJson(semanticCandidate(action))
+        val candidate = persisted["candidates"]!!.jsonArray.single().jsonObject
+        val noncanonicalCandidate = replaceJsonValue(
+            candidate,
+            "targetEntityIds",
+            buildJsonArray {
+                add(JsonPrimitive("target-b"))
+                add(JsonPrimitive("target-a"))
+            },
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                persisted,
+                "candidates",
+                buildJsonArray { add(noncanonicalCandidate) },
+            ))
+        }
+    }
+
+    test("persisted action candidates reject an unknown target-domain version") {
+        val action = LegalActionView(
+            actionId = 100,
+            kind = "CastSpell",
+            description = "target",
+            affordable = true,
+            targetEntityIds = listOf(EntityId("target-a"), EntityId("target-b")),
+            targetDomain = targetDomain(),
+        )
+        val candidate = candidateWithNested(action, "targetDomain") {
+            replaceJsonValue(it, "version", JsonPrimitive(ACTION_TARGET_DOMAIN_VERSION + 1))
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted action candidates reject an unknown attack-domain version") {
+        val action = LegalActionView(
+            actionId = 101,
+            kind = "DeclareAttackers",
+            description = "attack",
+            affordable = true,
+            attackDeclarationDomain = attackDomain(),
+        )
+        val candidate = candidateWithNested(action, "attackDeclarationDomain") {
+            replaceJsonValue(it, "version", JsonPrimitive(ATTACK_DECLARATION_DOMAIN_V2_VERSION + 1))
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted action candidates reject an unknown blocker-domain version") {
+        val action = LegalActionView(
+            actionId = 102,
+            kind = "DeclareBlockers",
+            description = "block",
+            affordable = true,
+            blockerDeclarationDomain = blockerDomain(),
+        )
+        val candidate = candidateWithNested(action, "blockerDeclarationDomain") {
+            replaceJsonValue(it, "version", JsonPrimitive(BLOCKER_DECLARATION_DOMAIN_VERSION + 1))
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted action candidates reject an unknown PaymentDomainV5 version") {
+        val action = LegalActionView(
+            actionId = 103,
+            kind = "CastSpell",
+            description = "payment",
+            affordable = true,
+            paymentDomain = paymentDomain(),
+        )
+        val candidate = candidateWithNested(action, "paymentDomain") {
+            replaceJsonValue(it, "version", JsonPrimitive(PAYMENT_DOMAIN_V5_VERSION + 1))
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted action candidates reject an unknown target-payment version") {
+        val action = LegalActionView(
+            actionId = 104,
+            kind = "ActivateAbility",
+            description = "target payment",
+            affordable = true,
+            targetPaymentDomain = TargetPaymentDomainV1(
+                targetBindings = listOf(
+                    TargetPaymentBindingV1(
+                        target = EntityId("target-a"),
+                        affordable = true,
+                        paymentDomain = paymentDomain(),
+                    )
+                )
+            ),
+        )
+        val candidate = candidateWithNested(action, "targetPaymentDomain") {
+            replaceJsonValue(it, "version", JsonPrimitive(TARGET_PAYMENT_DOMAIN_V1_VERSION + 1))
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted attack candidates reject a missing required relation map") {
+        val action = LegalActionView(
+            actionId = 105,
+            kind = "DeclareAttackers",
+            description = "attack",
+            affordable = true,
+            attackDeclarationDomain = attackDomain(),
+        )
+        val candidate = candidateWithNested(action, "attackDeclarationDomain") {
+            removeJsonValue(it, "attackerToDefenders")
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted blocker candidates reject a missing required relation map") {
+        val action = LegalActionView(
+            actionId = 106,
+            kind = "DeclareBlockers",
+            description = "block",
+            affordable = true,
+            blockerDeclarationDomain = blockerDomain(),
+        )
+        val candidate = candidateWithNested(action, "blockerDeclarationDomain") {
+            removeJsonValue(it, "blockerToAttackers")
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("persisted blocker candidates reject duplicate relation members") {
+        val action = LegalActionView(
+            actionId = 107,
+            kind = "DeclareBlockers",
+            description = "block",
+            affordable = true,
+            blockerDeclarationDomain = blockerDomain(),
+        )
+        val candidate = candidateWithNested(action, "blockerDeclarationDomain") { domain ->
+            val relations = requireNotNull(domain["blockerToAttackers"]).jsonObject
+            val malformedRelations = replaceJsonValue(
+                relations,
+                "blocker-a",
+                buildJsonArray {
+                    add(JsonPrimitive("attacker-a"))
+                    add(JsonPrimitive("attacker-a"))
+                },
+            )
+            replaceJsonValue(domain, "blockerToAttackers", malformedRelations)
+        }
+
+        shouldThrow<IllegalArgumentException> {
+            decodeDomain(replaceJsonValue(
+                domainJson(semanticCandidate(action)),
+                "candidates",
+                buildJsonArray { add(candidate) },
+            ))
+        }
+    }
+
+    test("target-domain semantic payload changes the digest and raw candidate order fails closed") {
+        val env = environment()
+        val action = LegalActionView(
+            actionId = 108,
+            kind = "CastSpell",
+            description = "target",
+            affordable = true,
+            targetEntityIds = listOf(EntityId("target-a"), EntityId("target-b")),
+            targetDomain = targetDomain(),
+        )
+        val changed = action.copy(
+            targetDomain = targetDomain().copy(
+                requirements = listOf(targetDomain().requirements.single().copy(maxTargets = 1))
+            )
+        )
+        val reversed = action.copy(
+            targetDomain = targetDomain().copy(
+                requirements = listOf(
+                    targetDomain().requirements.single().copy(
+                        candidates = listOf(EntityId("target-b"), EntityId("target-a"))
+                    )
+                )
+            )
+        )
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(changed))).value
+        shouldThrow<IllegalArgumentException> {
+            CompleteLegalDomainV1.from(observation(env).copy(legalActions = listOf(reversed)))
+        }
+    }
+
+    test("attack-domain producer order is retained in the digest") {
+        val env = environment()
+        val action = LegalActionView(
+            actionId = 109,
+            kind = "DeclareAttackers",
+            description = "attack",
+            affordable = true,
+            attackDeclarationDomain = attackDomain(),
+        )
+        val reversed = action.copy(
+            attackDeclarationDomain = attackDomain().copy(
+                attackerOrder = attackDomain().attackerOrder.reversed()
+            )
+        )
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(reversed))).value
+    }
+
+    test("blocker-domain producer order is retained in the digest") {
+        val env = environment()
+        val action = LegalActionView(
+            actionId = 110,
+            kind = "DeclareBlockers",
+            description = "block",
+            affordable = true,
+            blockerDeclarationDomain = blockerDomain(),
+        )
+        val reversed = action.copy(
+            blockerDeclarationDomain = blockerDomain().copy(
+                blockerOrder = blockerDomain().blockerOrder.reversed(),
+                blockerToAttackers = linkedMapOf(
+                    EntityId("blocker-b") to listOf(EntityId("attacker-b")),
+                    EntityId("blocker-a") to listOf(EntityId("attacker-a")),
+                ),
+                maxAttackersByBlocker = linkedMapOf(
+                    EntityId("blocker-b") to 1,
+                    EntityId("blocker-a") to 1,
+                ),
+            )
+        )
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(reversed))).value
+    }
+
+    test("PaymentDomainV5 semantic payload is digest-bound") {
+        val env = environment()
+        val action = LegalActionView(
+            actionId = 111,
+            kind = "CastSpell",
+            description = "payment",
+            affordable = true,
+            paymentDomain = paymentDomain("{0}"),
+        )
+        val changed = action.copy(paymentDomain = paymentDomain("{1}"))
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(changed))).value
+    }
+
+    test("PaymentDomainV5 source-option producer order is retained") {
+        val env = environment()
+        fun source(sourceId: String, abilityKey: String): PaymentSourceActivationDomainV2 =
+            PaymentSourceActivationDomainV2(
+                sourceId = EntityId(sourceId),
+                sourceName = sourceId,
+                manaAbilityKey = abilityKey,
+                productionChoices = listOf(ProductionChoice(PaymentManaColor.GREEN)),
+                atomicActivationManaCostUnits = emptyList(),
+                activationSupportKind = PaymentActivationSupportKindV1.FixedManaAndTapSelf,
+                deterministicNonManaCosts = listOf(PaymentDeterministicNonManaCostKindV1.TapSelf),
+                activationCostOrderOptions = listOf(
+                    listOf(ActivationCostComponentRefV1.DeterministicNonManaComponent(0))
+                ),
+            )
+        val domain = paymentDomain().copy(
+            sourceActivationOptions = listOf(
+                source("source-a", "ability-a"),
+                source("source-b", "ability-b"),
+            )
+        )
+        val action = LegalActionView(
+            actionId = 115,
+            kind = "CastSpell",
+            description = "ordered payment sources",
+            affordable = true,
+            paymentDomain = domain,
+        )
+        val reordered = action.copy(
+            paymentDomain = domain.copy(sourceActivationOptions = domain.sourceActivationOptions.reversed())
+        )
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(reordered))).value
+    }
+
+    test("target-payment binding payload is digest-bound") {
+        val env = environment()
+        val action = LegalActionView(
+            actionId = 112,
+            kind = "ActivateAbility",
+            description = "target payment",
+            affordable = true,
+            targetPaymentDomain = TargetPaymentDomainV1(
+                targetBindings = listOf(
+                    TargetPaymentBindingV1(
+                        target = EntityId("target-a"),
+                        affordable = true,
+                        paymentDomain = paymentDomain(),
+                    ),
+                    TargetPaymentBindingV1(
+                        target = EntityId("target-b"),
+                        affordable = false,
+                        paymentDomain = paymentDomain("{1}"),
+                    )
+                )
+            ),
+        )
+        val changed = action.copy(
+            targetPaymentDomain = TargetPaymentDomainV1(
+                targetBindings = listOf(
+                    TargetPaymentBindingV1(
+                        target = EntityId("target-a"),
+                        affordable = false,
+                        paymentDomain = paymentDomain(),
+                    ),
+                    TargetPaymentBindingV1(
+                        target = EntityId("target-b"),
+                        affordable = false,
+                        paymentDomain = paymentDomain("{1}"),
+                    ),
+                )
+            )
+        )
+        val reordered = action.copy(
+            targetPaymentDomain = TargetPaymentDomainV1(
+                targetBindings = action.targetPaymentDomain!!.targetBindings.reversed()
+            )
+        )
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(changed))).value
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(reordered))).value
+    }
+
+    test("mana-color producer order is validated rather than repaired") {
+        val env = environment()
+        val canonical = observation(env).copy(
+            legalActions = listOf(
+                LegalActionView(
+                    actionId = 113,
+                    kind = "ActivateAbility",
+                    description = "color",
+                    affordable = true,
+                    availableManaColors = listOf(Color.RED, Color.GREEN),
+                )
+            )
+        )
+        val noncanonical = canonical.copy(
+            legalActions = listOf(canonical.legalActions.single().copy(
+                availableManaColors = listOf(Color.GREEN, Color.RED)
+            ))
+        )
+
+        CompleteLegalDomainV1.from(canonical)
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(noncanonical) }
+    }
+
+    test("X-cost semantic payload is digest-bound") {
+        val env = environment()
+        val action = LegalActionView(
+            actionId = 114,
+            kind = "CastSpell",
+            description = "X spell",
+            affordable = true,
+            hasXCost = true,
+            maxAffordableX = 2,
+        )
+        val changed = action.copy(maxAffordableX = 3)
+
+        CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(action))).value shouldNotBe
+            CandidateDomainDigestV1.from(observation(env).copy(legalActions = listOf(changed))).value
+    }
+
+    test("card-selection domain retains semantic options and rejects raw noncanonical order") {
+        val env = environment()
+        val cardA = EntityId("card-a")
+        val cardB = EntityId("card-b")
+        val domain = CardSelectionDomain(
+            options = listOf(cardA, cardB),
+            minSelections = 1,
+            maxSelections = 1,
+            ordered = false,
+            cardInfo = null,
+            useTargetingUI = false,
+            selectedLabel = null,
+            remainderLabel = null,
+            nonSelectableOptions = emptyList(),
+            onePerCardType = false,
+            onePerColor = false,
+            availableColors = null,
+            onePerCardName = false,
+            onePerBasicLandType = false,
+            onePerPower = false,
+            maxTotalManaValue = null,
+            minTotalManaValue = null,
+            maxTotalPower = null,
+            conditionalMinimums = emptyList(),
+        )
+        val source = structuredObservation(env, domain, PendingDecisionKind.SELECT_CARDS)
+        val changed = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(minSelections = 0)
+            )
+        )
+        val reversed = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(options = listOf(cardB, cardA))
+            )
+        )
+
+        CandidateDomainDigestV1.from(source).value shouldNotBe CandidateDomainDigestV1.from(changed).value
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(reversed) }
+    }
+
+    test("combat-resolution domain semantic payload is digest-bound") {
+        val env = environment()
+        val attacker = CombatAttackerDomain(
+            id = EntityId("attacker-a"),
+            name = "attacker",
+            power = 2,
+            toughness = 2,
+            hasTrample = false,
+            hasDeathtouch = false,
+            hasFirstStrike = false,
+            hasDoubleStrike = false,
+            dealsDamageThisStep = true,
+            bandId = null,
+            attackedDefenderId = EntityId("defender-a"),
+            blockedByIds = emptyList(),
+            markedDamage = 0,
+        )
+        val domain = CombatResolutionDomain(
+            firstStrike = false,
+            attackers = listOf(attacker, attacker.copy(id = EntityId("attacker-b"))),
+            blockers = emptyList(),
+            defenders = emptyList(),
+            edges = emptyList(),
+            coChooserId = null,
+        )
+        val source = structuredObservation(env, domain, PendingDecisionKind.COMBAT_RESOLUTION)
+        val changed = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(firstStrike = true)
+            )
+        )
+        val reversed = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(attackers = domain.attackers.reversed())
+            )
+        )
+
+        CandidateDomainDigestV1.from(source).value shouldNotBe CandidateDomainDigestV1.from(changed).value
+        shouldThrow<IllegalArgumentException> { CompleteLegalDomainV1.from(reversed) }
+    }
+
+    test("replacement domain relation payload is digest-bound") {
+        val env = environment()
+        val domain = ReplacementDomain(
+            fromOptions = listOf("from-a", "from-b"),
+            toOptions = listOf("to-a", "to-b"),
+            fromMetadata = listOf(OptionMetadataDomain(null, null, null, null), OptionMetadataDomain(null, null, null, null)),
+            toMetadata = listOf(OptionMetadataDomain(null, null, null, null), OptionMetadataDomain(null, null, null, null)),
+            allowedToByFrom = listOf(listOf(0), listOf(1)),
+            defaultFromIndex = 0,
+        )
+        val source = structuredObservation(env, domain, PendingDecisionKind.CHOOSE_REPLACEMENT)
+        val changed = source.copy(
+            pendingDecision = source.pendingDecision!!.copy(
+                structuredDomain = domain.copy(allowedToByFrom = listOf(listOf(0, 1), listOf(1)))
+            )
+        )
+
+        CandidateDomainDigestV1.from(source).value shouldNotBe CandidateDomainDigestV1.from(changed).value
     }
 
     test("Rules-significant structured producer order changes the domain digest") {
