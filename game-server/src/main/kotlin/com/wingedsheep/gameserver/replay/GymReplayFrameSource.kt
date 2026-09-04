@@ -24,6 +24,8 @@ import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 import com.wingedsheep.gym.contract.VerifiedReplayFrame
 import com.wingedsheep.gym.contract.VerifiedReplayFrameSource
 import com.wingedsheep.gym.contract.VerifiedReplayVerification
+import com.wingedsheep.gym.contract.ReplayVerificationBindingSource
+import com.wingedsheep.gym.contract.ReplayVerificationBindingV1
 import com.wingedsheep.gym.contract.ReplayFidelity as VerifiedReplayFidelity
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
@@ -47,7 +49,7 @@ class GymReplayFrameSource(
     private val fallbackPerspectivePlayerIndex: Int = 0,
     /** Lifecycle evidence supplied by the composition root for this replay's inclusive tail. */
     private val tailClosure: EpisodeClosureV1,
-) : VerifiedReplayFrameSource {
+) : VerifiedReplayFrameSource, ReplayVerificationBindingSource {
 
     private val replayPlayerIds = replay.setup.players.map { EntityId(it.playerId) }
     private val replayRegistry = ReplayCardPin.overlay(cardRegistry, replay.pinnedCards)
@@ -71,7 +73,14 @@ class GymReplayFrameSource(
         }
     }
 
-    override fun verify(): VerifiedReplayVerification {
+    override fun verify(): VerifiedReplayVerification = verifyInternal()
+
+    override fun verifyBinding(): ReplayVerificationBindingV1 = ReplayVerificationBindingV1(
+        replayContentIdentity = ReplayContentCanonicalizerV1.identity(replay),
+        verification = verifyInternal(),
+    )
+
+    private fun verifyInternal(): VerifiedReplayVerification {
         if (replay.version != CompactReplay.CURRENT_VERSION) {
             return failure(
                 fidelity = VerifiedReplayFidelity.DIVERGED,
