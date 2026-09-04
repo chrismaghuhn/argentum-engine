@@ -590,14 +590,29 @@ object ReplayContentCanonicalizerV1 {
     private fun collectAbilityAliases(parts: List<ReplayPart>): AbilityAliasPlan {
         val rawIds = linkedSetOf<String>()
         val generatedIds = linkedSetOf<String>()
+        val pinnedGeneratedIds = linkedSetOf<String>()
+        val replayReferenceGeneratedIds = linkedSetOf<String>()
         parts.forEach { part ->
+            val partRawIds = linkedSetOf<String>()
+            val partGeneratedIds = linkedSetOf<String>()
             collectAbilityIds(
                 element = part.element,
                 path = part.path,
                 descriptor = part.descriptor,
-                rawIds = rawIds,
-                generatedIds = generatedIds,
+                rawIds = partRawIds,
+                generatedIds = partGeneratedIds,
             )
+            rawIds += partRawIds
+            generatedIds += partGeneratedIds
+            when (part.path.firstOrNull()) {
+                "pinnedCards" -> pinnedGeneratedIds += partGeneratedIds
+                "actions", "yields" -> replayReferenceGeneratedIds += partGeneratedIds
+            }
+        }
+        val unanchoredGeneratedIds = replayReferenceGeneratedIds - pinnedGeneratedIds
+        require(unanchoredGeneratedIds.isEmpty()) {
+            "Generated replay ability handles require a pinned card-definition anchor: " +
+                unanchoredGeneratedIds.sorted()
         }
         val aliasTable = AbilityIdAliasTable(reservedRawIds = rawIds - generatedIds)
         val aliases = LinkedHashMap<String, String>()

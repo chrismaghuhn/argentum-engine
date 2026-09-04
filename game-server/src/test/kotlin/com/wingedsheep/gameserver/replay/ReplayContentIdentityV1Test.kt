@@ -315,38 +315,74 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
             preimage.contains("orderedAttackers") shouldBe false
         }
 
-        test("generated typed ability IDs are allocation-order independent while stable IDs remain semantic") {
+        test("unanchored generated ability handles in actions and yields fail closed") {
             fun action(abilityId: String) = ActivateAbility(
                 playerId = playerOne,
                 sourceId = EntityId("source"),
                 abilityId = AbilityId(abilityId),
             )
 
-            identity(replay(actions = listOf(action("ability_101")))) shouldBe
-                identity(replay(actions = listOf(action("ability_909"))))
+            listOf("ability_101", "ability_909").forEach { generatedId ->
+                shouldThrow<IllegalArgumentException> {
+                    identity(replay(actions = listOf(action(generatedId))))
+                }
+                shouldThrow<IllegalArgumentException> {
+                    identity(
+                        replay(
+                            yields = listOf(
+                                ReplayYieldEntry(
+                                    afterActionCount = 0,
+                                    playerId = playerOne.value,
+                                    op = ReplayYieldOp.CLEAR_ABILITY,
+                                    identity = AbilityIdentity(pinA.name, AbilityId(generatedId)),
+                                ),
+                            ),
+                        ),
+                    )
+                }
+            }
+        }
+
+        test("stable explicit ability IDs remain semantic") {
+            fun action(abilityId: String) = ActivateAbility(
+                playerId = playerOne,
+                sourceId = EntityId("source"),
+                abilityId = AbilityId(abilityId),
+            )
+
             identity(replay(actions = listOf(action("printed-a")))) shouldNotBe
                 identity(replay(actions = listOf(action("printed-b"))))
         }
 
         test("generated ability aliases reserve stable IDs") {
+            val generatedPinId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
+
             fun replayWith(generatedId: String): CompactReplay {
                 fun action(abilityId: String) = ActivateAbility(
                     playerId = playerOne,
                     sourceId = EntityId("source"),
                     abilityId = AbilityId(abilityId),
                 )
+                val pin = pinWithGeneratedAbility.copy(
+                    script = pinWithGeneratedAbility.script.copy(
+                        activatedAbilities = pinWithGeneratedAbility.script.activatedAbilities.map {
+                            it.copy(id = AbilityId(generatedId))
+                        },
+                    ),
+                )
                 return replay(
                     actions = listOf(action("A0"), action(generatedId)),
+                    pinnedCards = listOf(CardExporter.exportToCompactJson(pin)),
                 )
             }
 
-            identity(replayWith("ability_101")) shouldBe identity(replayWith("ability_909"))
-            val preimage = ReplayContentCanonicalizerV1.canonicalPreimage(replayWith("ability_101"))
+            identity(replayWith(generatedPinId)) shouldBe identity(replayWith("ability_909"))
+            val preimage = ReplayContentCanonicalizerV1.canonicalPreimage(replayWith(generatedPinId))
             preimage.contains("\"abilityId\":\"A0\"") shouldBe true
             preimage.contains("\"abilityId\":\"A1\"") shouldBe true
         }
 
-        test("generated ability references shared by pins and yields are normalized together") {
+        test("generated ability references shared by pinned actions and yields are normalized together") {
             val generatedPinId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
             val equivalentPin = pinWithGeneratedAbility.copy(
                 script = pinWithGeneratedAbility.script.copy(
@@ -370,10 +406,24 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
             )
 
             val first = replay(
+                actions = listOf(
+                    ActivateAbility(
+                        playerId = playerOne,
+                        sourceId = EntityId("source"),
+                        abilityId = AbilityId(generatedPinId),
+                    ),
+                ),
                 yields = listOf(firstYield),
                 pinnedCards = listOf(CardExporter.exportToCompactJson(pinWithGeneratedAbility)),
             )
             val second = replay(
+                actions = listOf(
+                    ActivateAbility(
+                        playerId = playerOne,
+                        sourceId = EntityId("source"),
+                        abilityId = AbilityId("ability_909"),
+                    ),
+                ),
                 yields = listOf(secondYield),
                 pinnedCards = listOf(CardExporter.exportToCompactJson(equivalentPin)),
             )
