@@ -735,7 +735,7 @@ private fun TrajectoryAdmissionResult.quarantineReason(): TrajectoryQuarantineRe
 private fun TrajectoryAdmissionResult.admittedEpisode(): ReplayAdmittedEpisodeV1 =
     shouldBeInstanceOf<TrajectoryAdmissionResult.Admitted>().episode
 
-private fun AdmissionFixture.withVerification(
+internal fun AdmissionFixture.withVerification(
     verification: VerifiedReplayVerification,
 ): AdmissionFixture = copy(
     binding = binding.copy(
@@ -756,7 +756,7 @@ private fun AdmissionFixture.withBindingIdentity(
     ),
 )
 
-private fun AdmissionFixture.withPolicySeed(policySeed: Long): AdmissionFixture {
+internal fun AdmissionFixture.withPolicySeed(policySeed: Long): AdmissionFixture {
     val metadataBase = trajectory.episodeMetadata.copy(
         policyProvenance = trajectory.episodeMetadata.policyProvenance.copy(policySeed = policySeed),
     )
@@ -768,7 +768,7 @@ private fun AdmissionFixture.withPolicySeed(policySeed: Long): AdmissionFixture 
     return copy(trajectory = trajectoryBase.copy(trajectoryId = trajectoryBase.recomputeTrajectoryId()))
 }
 
-private fun AdmissionFixture.withClosure(closure: EpisodeClosureV1): AdmissionFixture {
+internal fun AdmissionFixture.withClosure(closure: EpisodeClosureV1): AdmissionFixture {
     val metadata = trajectory.episodeMetadata.copy(closure = closure)
     val trajectoryBase = trajectory.copy(
         trajectoryId = "f".repeat(64),
