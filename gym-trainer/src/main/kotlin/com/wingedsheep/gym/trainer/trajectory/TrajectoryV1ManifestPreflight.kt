@@ -11,7 +11,7 @@ import java.nio.file.LinkOption
 import java.nio.file.Path
 
 /** Closed fail-closed vocabulary for the staged A7 dataset reader. */
-internal enum class TrajectoryV1ReadFailure {
+enum class TrajectoryV1ReadFailure {
     DATASET_NOT_PUBLISHED,
     MANIFEST_MISSING,
     MANIFEST_INVALID,
@@ -40,7 +40,7 @@ internal enum class TrajectoryV1ReadFailure {
 }
 
 /** A bounded diagnostic error: it deliberately carries no raw manifest or trajectory payload. */
-internal class TrajectoryV1ReadException(
+class TrajectoryV1ReadException(
     val failure: TrajectoryV1ReadFailure,
 ) : IllegalStateException("A7 trajectory read failed: ${failure.name}")
 
@@ -54,14 +54,16 @@ internal class PublishedTrajectoryDatasetManifestV1 internal constructor(
     manifest: DatasetManifestV1,
     shardPaths: List<Path>,
 ) {
-    val manifest: DatasetManifestV1 = manifest.copy(
-        metadata = manifest.metadata.copy(),
-        shards = manifest.shards.map(DatasetShardMetadataV1::copy),
-        episodes = manifest.episodes.map(DatasetEpisodeIndexV1::copy),
-        counts = manifest.counts.copy(),
-    )
+    val manifest: DatasetManifestV1 = manifest.snapshotForReadHandle()
     val shardPaths: List<Path> = shardPaths.toList()
 }
+
+internal fun DatasetManifestV1.snapshotForReadHandle(): DatasetManifestV1 = copy(
+    metadata = metadata.copy(),
+    shards = shards.map(DatasetShardMetadataV1::copy),
+    episodes = episodes.map(DatasetEpisodeIndexV1::copy),
+    counts = counts.copy(),
+)
 
 /**
  * A7.1's physical trust boundary. Membership is taken only from [DatasetManifestV1.shards]; this

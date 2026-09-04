@@ -15,7 +15,9 @@ import java.security.MessageDigest
 /** One manifest-owned shard plus its expected physical episode sequence. */
 internal data class ManifestBoundShardV1(
     val metadata: DatasetShardMetadataV1,
+    val datasetRoot: Path,
     val path: Path,
+    val contentReference: String,
     val expectedEpisodes: List<DatasetEpisodeIndexV1>,
     val maxShardBytes: Long,
     val maxEpisodesPerShard: Int,
@@ -43,7 +45,9 @@ internal object TrajectoryV1ShardValidationPlan {
         return dataset.manifest.shards.mapIndexed { index, shard ->
             ManifestBoundShardV1(
                 metadata = shard,
+                datasetRoot = dataset.datasetRoot,
                 path = dataset.shardPaths[index],
+                contentReference = shard.contentReference,
                 expectedEpisodes = expectedByShard.getValue(shard.shardOrdinal).toList(),
                 maxShardBytes = maxShardBytes,
                 maxEpisodesPerShard = maxEpisodesPerShard,
