@@ -32,6 +32,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.string.shouldNotContain
+import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.JsonObject
@@ -310,7 +311,7 @@ class TrajectoryV1WriterTest : FunSpec({
         val second = first.withPolicySeed(4259906L)
         val episodeLineSize = TrajectoryV1Admission.admit(first.trajectory, first.binding, 0)
             .shouldBeInstanceOf<TrajectoryAdmissionResult.Admitted>()
-            .episode.storageLineBytes().size
+            .episode.storageBytes().size
 
         val byCountOutput = Files.createTempDirectory("a6-count-rollover-")
         val byCount = TrajectoryV1Writer(
@@ -425,7 +426,7 @@ class TrajectoryV1WriterTest : FunSpec({
         val second = TrajectoryV1Admission.admit(reorderedTrajectory, fixture.binding, 0)
             .shouldBeInstanceOf<TrajectoryAdmissionResult.Admitted>()
 
-        first.episode.storageLineBytes().toList() shouldBe second.episode.storageLineBytes().toList()
+        first.episode.storageBytes().toList() shouldBe second.episode.storageBytes().toList()
     }
 
     test("writer owns order and finalization state, never the filesystem enumeration") {
@@ -577,10 +578,121 @@ class TrajectoryV1WriterTest : FunSpec({
             paths.anyMatch { path -> path.fileName.toString() == "manifest.json" } shouldBe true
         }
     }
+
+    test("publisher rejects an admitted artifact whose frozen ordinal is not next") {
+        val fixture = validFixture()
+        val admitted = TrajectoryV1Admission.admit(
+            fixture.trajectory,
+            fixture.binding,
+            episodeOrdinal = 7,
+        ).admittedEpisode()
+        val publisher = TrajectoryV1Publisher(
+            Files.createTempDirectory("a6-frozen-ordinal-test-"),
+            DatasetMetadataV1(maxShardBytes = 1_000_000, maxEpisodesPerShard = 2),
+        )
+
+        shouldThrow<TrajectoryV1StorageException> {
+            publisher.appendFinalizedEpisode(admitted)
+        }.reason shouldBe TrajectoryQuarantineReason.EPISODE_ORDER_MISMATCH
+    }
+
+    test("mutation of the source decisions after admission cannot change publication facts") {
+        val fixture = validFixture()
+        val mutableDecisions = fixture.trajectory.decisions.toMutableList()
+        val mutableTrajectory = fixture.trajectory.copy(decisions = mutableDecisions)
+        val admitted = TrajectoryV1Admission.admit(
+            mutableTrajectory,
+            fixture.binding,
+            episodeOrdinal = 0,
+        ).admittedEpisode()
+        mutableDecisions.clear()
+        val output = Files.createTempDirectory("a6-frozen-decisions-test-")
+        val publisher = TrajectoryV1Publisher(
+            output,
+            DatasetMetadataV1(maxShardBytes = 1_000_000, maxEpisodesPerShard = 2),
+        )
+
+        publisher.appendFinalizedEpisode(admitted)
+        val manifest = publisher.finalizeDataset()
+
+        manifest.episodes.single().episodeOrdinal shouldBe 0
+        manifest.episodes.single().decisionCount shouldBe 1
+        val shardPath = output.resolve("dataset-${manifest.datasetId}")
+            .resolve(manifest.shards.single().contentReference)
+        Files.readString(shardPath) shouldContain "\"recordType\":\"decision\""
+    }
+
+    test("every persisted event carries its own physical storage schema identity") {
+        val fixture = validFixture()
+        val admitted = TrajectoryV1Admission.admit(fixture.trajectory, fixture.binding, 0)
+            .admittedEpisode()
+
+        val storage = String(admitted.storageBytes(), Charsets.UTF_8)
+
+        storage shouldContain "\"storageSchemaVersion\":1"
+        storage shouldContain "\"storageSchemaIdentity\":\"argentum-trajectory-events@v1\""
+    }
+
+    test("manifest validation rejects self-consistent shards above configured bounds") {
+        val fixture = validFixture()
+        val metadata = DatasetMetadataV1(maxShardBytes = 1_000_000, maxEpisodesPerShard = 2)
+        val output = Files.createTempDirectory("a6-manifest-bound-test-")
+        val writer = TrajectoryV1Writer(output, metadata)
+        writer.appendEpisode(0, fixture.trajectory, fixture.binding)
+        val manifest = writer.finalizeDataset()
+        val oversizedShard = manifest.shards.single().copy(
+            byteCount = metadata.maxShardBytes!! + 1,
+        )
+        val invalidWithPlaceholderIds = manifest.copy(
+            datasetId = "0".repeat(64),
+            shards = listOf(oversizedShard),
+            manifestContentDigest = "0".repeat(64),
+        )
+        val invalidWithDatasetId = invalidWithPlaceholderIds.copy(
+            datasetId = invalidWithPlaceholderIds.recomputeDatasetId(),
+        )
+        val selfConsistent = invalidWithDatasetId.copy(
+            manifestContentDigest = invalidWithDatasetId.recomputeManifestContentDigest(),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            TrajectoryV1Manifest.validate(selfConsistent)
+        }
+
+        val episodeBoundShard = manifest.shards.single().copy(episodeCount = 3)
+        val episodeBoundEntries = (0..2).map { ordinal ->
+            manifest.episodes.single().copy(episodeOrdinal = ordinal)
+        }
+        val episodeBoundCounts = manifest.counts.copy(
+            episodeCount = 3,
+            decisionCount = 3,
+            gameTerminalCount = 3,
+        )
+        val episodeBoundPlaceholder = manifest.copy(
+            datasetId = "0".repeat(64),
+            shards = listOf(episodeBoundShard),
+            episodes = episodeBoundEntries,
+            counts = episodeBoundCounts,
+            manifestContentDigest = "0".repeat(64),
+        )
+        val episodeBoundWithDatasetId = episodeBoundPlaceholder.copy(
+            datasetId = episodeBoundPlaceholder.recomputeDatasetId(),
+        )
+        val episodeBoundSelfConsistent = episodeBoundWithDatasetId.copy(
+            manifestContentDigest = episodeBoundWithDatasetId.recomputeManifestContentDigest(),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            TrajectoryV1Manifest.validate(episodeBoundSelfConsistent)
+        }
+    }
 })
 
 private fun TrajectoryAdmissionResult.quarantineReason(): TrajectoryQuarantineReason =
     shouldBeInstanceOf<TrajectoryAdmissionResult.Quarantined>().metadata.reason
+
+private fun TrajectoryAdmissionResult.admittedEpisode(): ReplayAdmittedEpisodeV1 =
+    shouldBeInstanceOf<TrajectoryAdmissionResult.Admitted>().episode
 
 private fun AdmissionFixture.withVerification(
     verification: VerifiedReplayVerification,

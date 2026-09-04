@@ -70,26 +70,22 @@ class TrajectoryV1Publisher(
     }
 
     /** Append an already replay-admitted episode in explicit producer ordinal order. */
-    fun appendFinalizedEpisode(
-        episodeOrdinal: Int,
-        episode: ReplayAdmittedEpisodeV1,
-    ): TrajectoryAdmissionResult {
+    fun appendFinalizedEpisode(episode: ReplayAdmittedEpisodeV1): TrajectoryAdmissionResult {
         ensureWritable()
         try {
-            requireNextOrdinal(episodeOrdinal)
-            if (!seenCollectionJobs.add(episode.trajectory.collectionJobId)) {
+            requireNextOrdinal(episode.episodeOrdinal)
+            if (!seenCollectionJobs.add(episode.collectionJobId)) {
                 return fail(
                     TrajectoryQuarantineReason.DUPLICATE_JOB_OR_EPISODE_CONFLICT,
                     "A collection job was submitted more than once",
                 )
             }
 
-            val lineBytes = episode.storageLineBytes()
+            val lineBytes = episode.storageBytes()
             if (lineBytes.size.toLong() > maxShardBytes) {
                 val quarantineMetadata = QuarantineMetadataV1.from(
-                    trajectory = episode.trajectory,
+                    episode = episode,
                     reason = TrajectoryQuarantineReason.EPISODE_TOO_LARGE,
-                    episodeOrdinal = episodeOrdinal,
                 )
                 quarantineStore.persist(quarantineMetadata)
                 nextEpisodeOrdinal++
@@ -107,13 +103,13 @@ class TrajectoryV1Publisher(
             }
 
             val pending = PendingEpisode(
-                episodeOrdinal = episodeOrdinal,
+                episodeOrdinal = episode.episodeOrdinal,
                 lineBytes = lineBytes,
-                semanticEpisodeId = episode.trajectory.semanticEpisodeId,
-                collectionJobId = episode.trajectory.collectionJobId,
-                trajectoryId = episode.trajectory.trajectoryId,
-                decisionCount = episode.trajectory.decisions.size,
-                closureKind = episode.trajectory.closure.kind,
+                semanticEpisodeId = episode.semanticEpisodeId,
+                collectionJobId = episode.collectionJobId,
+                trajectoryId = episode.trajectoryId,
+                decisionCount = episode.decisionCount,
+                closureKind = episode.closureKind,
                 shardOrdinal = shardMetadata.size,
             )
             currentShardEpisodes += pending
@@ -463,6 +459,15 @@ class TrajectoryV1Publisher(
         } == true) {
             throw TrajectoryV1StorageException(TrajectoryQuarantineReason.SHARD_INTEGRITY_FAILURE)
         }
+        require(frame["storageSchemaVersion"]?.let { value ->
+            value.jsonPrimitive.intOrNull == TRAJECTORY_V1_STORAGE_SCHEMA_VERSION
+        } == true) {
+            throw TrajectoryV1StorageException(TrajectoryQuarantineReason.SHARD_INTEGRITY_FAILURE)
+        }
+        val storageIdentity = frame["storageSchemaIdentity"]?.let(::stringValue)
+        require(storageIdentity == TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY) {
+            throw TrajectoryV1StorageException(TrajectoryQuarantineReason.SHARD_INTEGRITY_FAILURE)
+        }
     }
 
     private fun stringValue(value: kotlinx.serialization.json.JsonElement): String? {
@@ -537,7 +542,7 @@ class TrajectoryV1Writer(
         )
         return when (admission) {
             is TrajectoryAdmissionResult.Admitted ->
-                publisher.appendFinalizedEpisode(episodeOrdinal, admission.episode)
+                publisher.appendFinalizedEpisode(admission.episode)
 
             is TrajectoryAdmissionResult.Quarantined ->
                 publisher.recordQuarantined(episodeOrdinal, admission.metadata)

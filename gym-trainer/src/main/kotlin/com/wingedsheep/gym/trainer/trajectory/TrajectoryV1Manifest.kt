@@ -6,6 +6,8 @@ import java.nio.charset.StandardCharsets
 
 /** The physical V1 shard representation selected for the trusted writer. */
 const val TRAJECTORY_V1_STORAGE_FORMAT: String = "canonical-trajectory-events-v1-ndjson"
+const val TRAJECTORY_V1_STORAGE_SCHEMA_VERSION: Int = 1
+const val TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY: String = "argentum-trajectory-events@v1"
 const val TRAJECTORY_V1_STORAGE_ENCODING: String = "UTF-8"
 const val TRAJECTORY_V1_STORAGE_LINE_ENDING: String = "LF"
 const val TRAJECTORY_V1_SHARD_EXTENSION: String = ".ndjson"
@@ -48,6 +50,14 @@ object TrajectoryV1Manifest {
     }
 
     fun validate(manifest: DatasetManifestV1) {
+        val maxShardBytes = requireNotNull(manifest.metadata.maxShardBytes) {
+            "Trusted dataset manifests require maxShardBytes"
+        }
+        val maxEpisodesPerShard = requireNotNull(manifest.metadata.maxEpisodesPerShard) {
+            "Trusted dataset manifests require maxEpisodesPerShard"
+        }
+        require(maxShardBytes > 0) { "Trusted dataset maxShardBytes must be positive" }
+        require(maxEpisodesPerShard > 0) { "Trusted dataset maxEpisodesPerShard must be positive" }
         require(manifest.metadata.deterministicEnumeration == "episode-ordinal-ascending") {
             "A6 requires episode-ordinal-ascending dataset enumeration"
         }
@@ -68,6 +78,11 @@ object TrajectoryV1Manifest {
         }
         require(manifest.shards.all { it.byteCount > 0 && it.episodeCount > 0 }) {
             "Dataset manifests cannot contain empty shards"
+        }
+        require(manifest.shards.all {
+            it.byteCount <= maxShardBytes && it.episodeCount <= maxEpisodesPerShard
+        }) {
+            "Dataset shard exceeds the configured A6 bounds"
         }
         require(manifest.shards.map { shard ->
             manifest.episodes.count { it.shardOrdinal == shard.shardOrdinal }

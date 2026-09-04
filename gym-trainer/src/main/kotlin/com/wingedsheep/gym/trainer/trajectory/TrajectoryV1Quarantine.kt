@@ -112,6 +112,18 @@ data class QuarantineMetadataV1(
             replayContentIdentity = trajectory.compactReplayLink.replayContentIdentity
                 .takeIf { it.matches(SHA256_HEX) },
         )
+
+        internal fun from(
+            episode: ReplayAdmittedEpisodeV1,
+            reason: TrajectoryQuarantineReason,
+        ): QuarantineMetadataV1 = QuarantineMetadataV1(
+            reason = reason,
+            episodeOrdinal = episode.episodeOrdinal,
+            semanticEpisodeId = episode.semanticEpisodeId,
+            collectionJobId = episode.collectionJobId,
+            trajectoryId = episode.trajectoryId,
+            replayContentIdentity = episode.replayContentIdentity,
+        )
     }
 }
 

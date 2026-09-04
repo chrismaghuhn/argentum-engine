@@ -30,7 +30,7 @@ Expected: compilation/test failure because the A6 admission, quarantine, and pub
 **Files:**
 - Create: `gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/trajectory/TrajectoryV1Writer.kt`
 
-- [ ] **Step 1: Define the closed typed admission result and quarantine reason vocabulary.** Keep `ReplayAdmittedEpisodeV1` privately constructible with an internal gate factory; expose only immutable trajectory/canonical-line evidence.
+- [ ] **Step 1: Define the closed typed admission result and quarantine reason vocabulary.** Keep `ReplayAdmittedEpisodeV1` privately constructible with an internal gate factory; expose only immutable publication facts and copied canonical event bytes, never the mutable source trajectory.
 - [ ] **Step 2: Implement `TrajectoryV1Admission.admit(trajectory, binding, episodeOrdinal)`.** Reuse `TrajectoryV1Validator.validate`, compare the linked replay identity/version/counts, require exact complete-range A4 evidence, compare every decision to the same-index frame and chosen input, require exact closure equality, then canonicalize the trajectory once. Return a typed quarantine result on every mismatch; never call `GameState`, `CompactReplay`, or `ReplayReconstructor`.
 - [ ] **Step 3: Implement canonical storage encoding.** Encode the typed trajectory and canonical episode-start/decision/episode-end frames with the strict existing serializer, recursively sort object keys with `A3SemanticJson`, preserve array order, append one UTF-8 LF terminator per frame, and reject storage-boundary privacy keys structurally before admission.
 - [ ] **Step 4: Run the admission tests to verify GREEN.**

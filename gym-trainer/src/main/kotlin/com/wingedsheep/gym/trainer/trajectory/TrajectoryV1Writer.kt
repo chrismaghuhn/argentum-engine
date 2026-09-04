@@ -11,6 +11,7 @@ import com.wingedsheep.gym.contract.REPLAY_VERIFICATION_BINDING_V1_SCHEMA_IDENTI
 import com.wingedsheep.gym.contract.REPLAY_VERIFICATION_BINDING_V1_VERSION
 import com.wingedsheep.gym.contract.ReplayFidelity
 import com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1
+import com.wingedsheep.gym.EpisodeClosureV1
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
@@ -37,22 +38,52 @@ sealed interface TrajectoryAdmissionResult {
  * private so callers cannot manufacture trusted input for the publisher from an arbitrary DTO.
  */
 class ReplayAdmittedEpisodeV1 private constructor(
-    val trajectory: TrajectoryV1,
-    private val lineBytes: ByteArray,
+    val episodeOrdinal: Int,
+    val semanticEpisodeId: String,
+    val collectionJobId: String,
+    val trajectoryId: String,
+    val replayContentIdentity: String,
+    val decisionCount: Int,
+    val closureKind: EpisodeClosureV1.Kind,
+    private val storageBytes: ByteArray,
 ) {
     init {
-        require(lineBytes.isNotEmpty() && lineBytes.last() == '\n'.code.toByte()) {
+        require(episodeOrdinal >= 0) {
+            "Admitted trajectory episode ordinal must not be negative"
+        }
+        require(decisionCount >= 0) {
+            "Admitted trajectory decision count must not be negative"
+        }
+        listOf(
+            semanticEpisodeId,
+            collectionJobId,
+            trajectoryId,
+            replayContentIdentity,
+        ).forEach { identity ->
+            A3SemanticJson.requireSha256(identity, "Admitted trajectory identity")
+        }
+        require(storageBytes.isNotEmpty() && storageBytes.last() == '\n'.code.toByte()) {
             "Admitted trajectory storage bytes must have LF framing"
         }
     }
 
-    internal fun storageLineBytes(): ByteArray = lineBytes.copyOf()
+    internal fun storageBytes(): ByteArray = storageBytes.copyOf()
 
     companion object {
         internal fun fromAdmission(
             trajectory: TrajectoryV1,
             lineBytes: ByteArray,
-        ): ReplayAdmittedEpisodeV1 = ReplayAdmittedEpisodeV1(trajectory, lineBytes.copyOf())
+            episodeOrdinal: Int,
+        ): ReplayAdmittedEpisodeV1 = ReplayAdmittedEpisodeV1(
+            episodeOrdinal = episodeOrdinal,
+            semanticEpisodeId = trajectory.semanticEpisodeId,
+            collectionJobId = trajectory.collectionJobId,
+            trajectoryId = trajectory.trajectoryId,
+            replayContentIdentity = trajectory.compactReplayLink.replayContentIdentity,
+            decisionCount = trajectory.decisions.size,
+            closureKind = trajectory.closure.kind,
+            storageBytes = lineBytes.copyOf(),
+        )
     }
 }
 
@@ -66,7 +97,17 @@ object TrajectoryV1Admission {
     fun admit(
         trajectory: TrajectoryV1,
         binding: ReplayTrajectoryBindingV1,
-        episodeOrdinal: Int? = null,
+        episodeOrdinal: Int = 0,
+    ): TrajectoryAdmissionResult = admitSnapshot(
+        trajectory = trajectory.copy(decisions = trajectory.decisions.toList()),
+        binding = binding,
+        episodeOrdinal = episodeOrdinal,
+    )
+
+    private fun admitSnapshot(
+        trajectory: TrajectoryV1,
+        binding: ReplayTrajectoryBindingV1,
+        episodeOrdinal: Int,
     ): TrajectoryAdmissionResult {
         when (val validation = TrajectoryV1Validator.validate(trajectory)) {
             is TrajectoryValidationResult.Valid -> Unit
@@ -92,6 +133,14 @@ object TrajectoryV1Admission {
                 },
                 episodeOrdinal = episodeOrdinal,
                 a5Reason = validation.reason,
+            )
+        }
+
+        if (episodeOrdinal < 0) {
+            return quarantined(
+                trajectory,
+                TrajectoryQuarantineReason.EPISODE_ORDER_MISMATCH,
+                episodeOrdinal,
             )
         }
 
@@ -236,21 +285,21 @@ object TrajectoryV1Admission {
         }
 
         val lineBytes = try {
-            TrajectoryV1StorageCodec.encodeLine(trajectory, episodeOrdinal ?: 0)
+            TrajectoryV1StorageCodec.encodeLine(trajectory, episodeOrdinal)
         } catch (_: TrajectoryPrivacyViolation) {
             return quarantined(trajectory, TrajectoryQuarantineReason.PRIVACY_REJECTION, episodeOrdinal)
         } catch (_: Exception) {
             return quarantined(trajectory, TrajectoryQuarantineReason.SERIALIZATION_FAILURE, episodeOrdinal)
         }
         return TrajectoryAdmissionResult.Admitted(
-            ReplayAdmittedEpisodeV1.fromAdmission(trajectory, lineBytes),
+            ReplayAdmittedEpisodeV1.fromAdmission(trajectory, lineBytes, episodeOrdinal),
         )
     }
 
     private fun quarantined(
         trajectory: TrajectoryV1,
         reason: TrajectoryQuarantineReason,
-        episodeOrdinal: Int?,
+        episodeOrdinal: Int,
         failureReplayActionIndex: Int? = null,
         a5Reason: TrajectoryValidationReason? = null,
     ): TrajectoryAdmissionResult.Quarantined = TrajectoryAdmissionResult.Quarantined(
@@ -362,6 +411,8 @@ internal object TrajectoryV1StorageCodec {
     @Serializable
     private data class EpisodeStartFrame(
         val recordType: String = "episode-start",
+        val storageSchemaVersion: Int = TRAJECTORY_V1_STORAGE_SCHEMA_VERSION,
+        val storageSchemaIdentity: String = TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY,
         val trajectorySchemaVersion: Int = TRAJECTORY_V1_VERSION,
         val semanticEpisodeId: String,
         val collectionJobId: String,
@@ -372,6 +423,8 @@ internal object TrajectoryV1StorageCodec {
     @Serializable
     private data class DecisionFrame(
         val recordType: String = "decision",
+        val storageSchemaVersion: Int = TRAJECTORY_V1_STORAGE_SCHEMA_VERSION,
+        val storageSchemaIdentity: String = TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY,
         val trajectorySchemaVersion: Int = TRAJECTORY_V1_VERSION,
         val semanticEpisodeId: String,
         val collectionJobId: String,
@@ -381,6 +434,8 @@ internal object TrajectoryV1StorageCodec {
     @Serializable
     private data class EpisodeEndFrame(
         val recordType: String = "episode-end",
+        val storageSchemaVersion: Int = TRAJECTORY_V1_STORAGE_SCHEMA_VERSION,
+        val storageSchemaIdentity: String = TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY,
         val trajectorySchemaVersion: Int = TRAJECTORY_V1_VERSION,
         val semanticEpisodeId: String,
         val collectionJobId: String,
