@@ -20,6 +20,18 @@ class TrajectoryV1ReaderTest : FunSpec({
             .all { constructor -> Modifier.isPrivate(constructor.modifiers) || constructor.isSynthetic } shouldBe true
     }
 
+    test("same-module arbitrary inputs cannot mint a validated dataset handle") {
+        val fixture = publishDataset(validFixture())
+
+        shouldThrow<IllegalArgumentException> {
+            ValidatedTrajectoryDatasetV1.fromPreflight(
+                manifest = fixture.manifest,
+                shards = emptyList(),
+                gate = Any(),
+            )
+        }
+    }
+
     test("openPublishedDataset preflights every shard before returning a handle") {
         val first = validFixture()
         val second = first.withPolicySeed(4259906L)

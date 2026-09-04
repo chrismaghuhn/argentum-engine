@@ -4,6 +4,8 @@ import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
 
+private val VALIDATED_DATASET_GATE = Any()
+
 /**
  * Opens only a finalized A6 dataset and completes A7.1/A7.2 validation for every manifest shard
  * before a caller can obtain any trajectory. This is storage/content validation only, not a claim
@@ -21,7 +23,11 @@ object TrajectoryV1Reader {
                 }
             }
         }
-        return ValidatedTrajectoryDatasetV1.fromPreflight(preflight.manifest, shardPlan)
+        return ValidatedTrajectoryDatasetV1.fromPreflight(
+            manifest = preflight.manifest,
+            shards = shardPlan,
+            gate = VALIDATED_DATASET_GATE,
+        )
     }
 
     private fun fail(failure: TrajectoryV1ReadFailure): Nothing = throw TrajectoryV1ReadException(failure)
@@ -111,6 +117,12 @@ class ValidatedTrajectoryDatasetV1 private constructor(
         internal fun fromPreflight(
             manifest: DatasetManifestV1,
             shards: List<ManifestBoundShardV1>,
-        ): ValidatedTrajectoryDatasetV1 = ValidatedTrajectoryDatasetV1(manifest, shards)
+            gate: Any,
+        ): ValidatedTrajectoryDatasetV1 {
+            require(gate === VALIDATED_DATASET_GATE) {
+                "ValidatedTrajectoryDatasetV1 can only be created by TrajectoryV1Reader"
+            }
+            return ValidatedTrajectoryDatasetV1(manifest, shards)
+        }
     }
 }
