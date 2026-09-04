@@ -123,15 +123,27 @@ class ReplayTrajectoryVerificationTest : ScenarioTestBase() {
             actions = actions,
         )
         val reconstructor = ReplayReconstructor(cardRegistry, null)
-        val initial = reconstructor.reconstructStateAt(base, 0).shouldNotBeNull()
         val middle = reconstructor.reconstructStateAt(base, 20).shouldNotBeNull()
         val final = reconstructor.reconstructStateAt(base, actions.size).shouldNotBeNull()
         return base.copy(
-            checkpoints = listOf(
-                ReplayCheckpoint(0, ReplayFingerprint.of(initial, base.version)),
-                ReplayCheckpoint(20, ReplayFingerprint.of(middle, base.version)),
-                ReplayCheckpoint(actions.size, ReplayFingerprint.of(final, base.version)),
-            )
+            checkpoints = ReplayCheckpointPolicy.withV3Tail(
+                checkpoints = listOf(
+                    ReplayCheckpoint(20, ReplayFingerprint.of(middle, base.version)),
+                ),
+                actionCount = actions.size,
+                fingerprint = ReplayFingerprint.of(final, base.version),
+            ),
+        )
+    }
+
+    private fun withInitialCheckpoint(replay: CompactReplay): CompactReplay {
+        val initial = ReplayReconstructor(cardRegistry, null)
+            .reconstructStateAt(replay, 0)
+            .shouldNotBeNull()
+        return replay.copy(
+            checkpoints = (replay.checkpoints +
+                ReplayCheckpoint(0, ReplayFingerprint.of(initial, replay.version)))
+                .sortedBy(ReplayCheckpoint::afterActionCount),
         )
     }
 
@@ -253,8 +265,21 @@ class ReplayTrajectoryVerificationTest : ScenarioTestBase() {
             )
         }
 
-        test("an initial checkpoint mutation fails before publishing a frame prefix") {
+        test("a normal V5 cadence-plus-tail replay verifies its initial boundary without checkpoint zero") {
             val replay = recordedReplay()
+
+            replay.checkpoints.map(ReplayCheckpoint::afterActionCount) shouldBe
+                listOf(ReplayRecordingPolicy.CHECKPOINT_EVERY_ACTIONS, replay.actions.size)
+
+            val verification = source(replay).verify()
+
+            verification.fidelity shouldBe VerifiedReplayFidelity.EXACT
+            verification.initialCheckpointVerified shouldBe true
+            verification.completeRangeVerified shouldBe true
+        }
+
+        test("an initial checkpoint mutation fails before publishing a frame prefix") {
+            val replay = withInitialCheckpoint(recordedReplay())
             val mutated = replay.copy(
                 checkpoints = replay.checkpoints.map { checkpoint ->
                     if (checkpoint.afterActionCount == 0) {

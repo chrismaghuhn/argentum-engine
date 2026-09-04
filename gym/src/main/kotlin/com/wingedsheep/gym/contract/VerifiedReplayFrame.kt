@@ -100,6 +100,11 @@ class VerifiedReplayVerification(
     val verifiedActionCount: Int,
     val fidelity: ReplayFidelity,
     frames: List<VerifiedReplayFrame> = emptyList(),
+    /**
+     * The initial public boundary was reconstructed. For non-empty v5 replays, action-count 0 is
+     * not required to be persisted; when a zero-action checkpoint is present, its fingerprint must
+     * still match the authoritative initial state.
+     */
     val initialCheckpointVerified: Boolean = false,
     val intermediateCheckpointsVerified: Boolean = false,
     val tailCheckpointVerified: Boolean = false,
@@ -158,7 +163,7 @@ class VerifiedReplayVerification(
                 "Exact verification requires the initial, intermediate, and tail frames"
             }
             require(initialCheckpointVerified) {
-                "Exact verification requires the initial checkpoint"
+                "Exact verification requires the initial public boundary"
             }
             require(intermediateCheckpointsVerified) {
                 "Exact verification requires all intermediate checkpoints"

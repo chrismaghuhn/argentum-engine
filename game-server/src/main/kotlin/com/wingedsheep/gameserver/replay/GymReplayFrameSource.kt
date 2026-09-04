@@ -118,8 +118,17 @@ class GymReplayFrameSource(
         }
         val closureFailure = tailBoundary?.let(::tailClosureFailure)
         val verifiedClosure = tailBoundary?.let { verifiedTailClosure() }
-        val initialCheckpointVerified = forward.initialCheckpointVerified &&
-            replay.checkpoints.count { it.afterActionCount == 0 } == 1
+        // CompactReplay v5 records cadence checkpoints plus a persistence tail.  The initial
+        // public boundary is authoritative even when v5 has no persisted checkpoint at count 0;
+        // if a producer did persist one, ReplayReconstructor has already checked its fingerprint.
+        // The zero-action replay is the one exception: its tail is also its initial checkpoint.
+        val initialCheckpointCount = replay.checkpoints.count { it.afterActionCount == 0 }
+        val initialCheckpointVerified = when {
+            replay.actions.isEmpty() -> forward.initialCheckpointVerified && initialCheckpointCount == 1
+            initialCheckpointCount == 0 -> true
+            initialCheckpointCount == 1 -> forward.initialCheckpointVerified
+            else -> false
+        }
         val tailCheckpointVerified = forward.tailCheckpointVerified &&
             replay.checkpoints.count { it.afterActionCount == replay.actions.size } == 1
         val intermediateCheckpointsVerified = forward.intermediateCheckpointsVerified &&
@@ -241,6 +250,10 @@ class GymReplayFrameSource(
             val decision = checkNotNull(state.pendingDecision) {
                 "Replay action $index has no authoritative pending decision"
             }
+            // A4 proves the reconstructed Rules boundary and routes the response through the
+            // existing validator.  DTO-level A3 semantic-response membership is deliberately an
+            // A5 admission concern: keeping it here would either duplicate that validator or add
+            // the forbidden game-server -> gym-trainer dependency.
             val validationFailure = DecisionValidators.validate(decision, rebound, state)
             require(validationFailure == null) {
                 "Replay response at action $index is not a valid public decision choice: " +
@@ -294,11 +307,11 @@ class GymReplayFrameSource(
                     outOfRange.afterActionCount
             duplicate != null ->
                 "v5 replay contains duplicate checkpoints at ${duplicate.key}"
-            counts.count { it == 0 } != 1 ->
-                "v5 replay requires exactly one initial checkpoint at action count 0"
+            replay.actions.isEmpty() && counts.count { it == 0 } != 1 ->
+                "v5 zero-action replay requires its tail checkpoint at action count 0"
             counts.count { it == replay.actions.size } != 1 ->
                 "v5 replay requires exactly one tail checkpoint at ${replay.actions.size}"
-            counts.sorted() != expectedCheckpointCounts() ->
+            counts.filterNot { it == 0 }.sorted() != expectedCheckpointCounts() ->
                 "v5 replay checkpoint coverage is incomplete; expected " +
                     expectedCheckpointCounts() + ", found ${counts.sorted()}"
             else -> null
@@ -306,7 +319,6 @@ class GymReplayFrameSource(
     }
 
     private fun expectedCheckpointCounts(): List<Int> = buildList {
-        add(0)
         var next = ReplayRecordingPolicy.CHECKPOINT_EVERY_ACTIONS
         while (next < replay.actions.size) {
             add(next)

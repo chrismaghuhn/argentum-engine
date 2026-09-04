@@ -1568,12 +1568,6 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 ?: error("Replay capture requires a TrainingObservation after reset")
             assertEnvironmentDiagnosticsZero(environment)
             recordFrame(observation)
-            if (captureAuthoritativeReplay) {
-                checkpoints += ReplayCheckpointData(
-                    afterActionCount = 0,
-                    fingerprint = authoritativeReplayFingerprint(environment.state),
-                )
-            }
 
             val policy = DeterministicExternalPolicy()
             var policyState = DeterministicPolicyState(policySeed(episode))
@@ -1700,12 +1694,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var observation = result.observation as? TrainingObservation
                 ?: error("Replay requires a TrainingObservation after reset")
             assertReplayFrame(trace, 0, observation, environment)
-            val checkpoints = mutableListOf(
-                ReplayCheckpointData(
-                    afterActionCount = 0,
-                    fingerprint = authoritativeReplayFingerprint(environment.state),
-                ),
-            )
+            val checkpoints = mutableListOf<ReplayCheckpointData>()
             val checkpointCadence = CompactReplayBridge.checkpointCadence(repositoryRoot())
 
             check(trace.actions.size == trace.decisions.size) {

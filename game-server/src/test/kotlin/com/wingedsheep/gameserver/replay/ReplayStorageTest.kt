@@ -218,6 +218,14 @@ class ReplayStorageTest : ScenarioTestBase() {
             ReplayFingerprint.of(replayed) shouldBe fingerprint
         }
 
+        test("a normal V5 flush keeps the cadence-plus-tail shape without an initial checkpoint") {
+            val session = playToActionCount(21)
+            val (record, _) = session.flushRecord()
+
+            record.checkpoints.map { it.afterActionCount } shouldContainExactly listOf(20, 21)
+            record.checkpoints.none { it.afterActionCount == 0 } shouldBe true
+        }
+
         test("a yield-only mutation marks an in-progress replay flush dirty") {
             val session = playPartialGame()
             val store = InMemoryReplayStore()
