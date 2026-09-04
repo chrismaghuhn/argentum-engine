@@ -76,16 +76,17 @@ The later implementation keeps one environment and one public-contract authority
   dataset publisher/manifest, reader, and quarantine because that module already owns training-data
   format choices.
 - game-server remains the owner of CompactReplay and ReplayReconstructor, and adds one adapter
-  implementation of the neutral VerifiedReplayFrameSource contract in :gym. The game-server main
-  source will take a narrow implementation dependency on :gym; it will not depend on
-  :gym-trainer, and the replay adapter will not emit GameState.
-- :gym owns VerifiedReplayFrame, VerifiedReplayVerification, and VerifiedReplayFrameSource. The
+  implementation of the neutral VerifiedReplayFrameSource and ReplayVerificationBindingSource
+  contracts in :gym. The game-server main source takes a narrow implementation dependency on :gym;
+  it does not depend on :gym-trainer, and the replay adapter does not emit GameState.
+- :gym owns VerifiedReplayFrame, the unchanged VerifiedReplayVerification V1 evidence contract,
+  ReplayContentIdentityV1, ReplayVerificationBindingV1, and their neutral source contracts. The
   source instance is bound to one CompactReplay by the composition root and exposes only verified
-  public frames and summary data.
+  public frames, content identity metadata, and proof evidence.
 - A future B2 generation/acceptance harness is the only composition point that knows the concrete
   game-server source and the gym-trainer writer/publisher. For each CompactReplay it constructs a
-  bound GymReplayFrameSource, obtains the full VerifiedReplayVerification, passes only that neutral
-  result to TrajectoryV1Writer.finishEpisode, and appends the finalized episode to the
+  bound GymReplayFrameSource, obtains the neutral replay-verification binding, passes it to
+  TrajectoryV1Writer.finishEpisode, and appends the finalized episode to the
   multi-episode publisher. This integration-only harness does not add a production dependency in
   either direction.
 
@@ -224,12 +225,12 @@ REUSE_AUDIT=COMPLETE
   controlled interruption, and semantic/integrity failure.
 - CandidateDomainDigestV1: a canonical digest over the complete public domain, independent of
   the observation's other fields.
-- SemanticReplayInputDigestV1 and a prefix accumulator that normalizes only typed runtime
-  references.
+- ReplayContentIdentityV1 and a neutral ReplayVerificationBindingV1 that binds the logical replay
+  content identity to unchanged A4 proof evidence.
 - ChosenSemanticActionV1 / ChosenSemanticResponseV1 and a DTO-level membership validator.
 - VerifiedReplayFrameSource: a reusable replay-to-public-observation cursor with complete-range
   verification, not a second ML environment; its harness seam must carry a full
-  VerifiedReplayVerification before finalization.
+  ReplayVerificationBindingV1 before finalization.
 
 These are generic boundary primitives. If the closure primitive or verified replay source cannot be
 accepted without changing Rules/Gym semantics, B2 stops at that follow-up and does not hide the
@@ -631,7 +632,7 @@ accepts only the public boundary:
 beginEpisode(EpisodeMetadataV1)
 recordDecision(PlayerObservationV1, CompleteLegalDomainV1, chosenSemanticActionOrResponse,
                replay coordinates)
-finishEpisode(EpisodeClosureV1, CompactReplayLinkV1, VerifiedReplayVerification)
+finishEpisode(EpisodeClosureV1, CompactReplayLinkV1, ReplayVerificationBindingV1)
 ~~~
 
 The capture adapter may receive one current TrainingObservation, but it derives the two arguments
@@ -653,18 +654,21 @@ The integration-only B2GenerationHarness is the replay integration seam:
 ~~~text
 for each CompactReplay:
   source = game-server GymReplayFrameSource(compactReplay)
-  verification = source.verify()
-  episode = writer.finishEpisode(closure, replayLink, verification)
+  binding = source.verifyBinding()
+  episode = writer.finishEpisode(closure, replayLink, binding)
   publisher.appendFinalizedEpisode(episode)
 publisher.finalizeDataset()
 ~~~
 
-The harness passes only the neutral VerifiedReplayVerification across the module boundary. The
+The harness passes only the neutral ReplayVerificationBindingV1 across the module boundary. The
 writer and publisher reject a missing result, a non-EXACT result, an incomplete range, or a frame
 mismatch. The publisher aggregates many episodes, each with its own collectionJobId, into one
 DatasetManifestV1. The writer and publisher do not import or call game-server ReplayReconstructor;
 the harness is the only caller of the concrete replay source. This plan deliberately chooses the
 harness composition path rather than adding a game-server source parameter to the publisher.
+
+The binding-aware writer call shown above is a future composition contract. This prerequisite adds
+the neutral binding source only; it does not implement or change the writer or publisher.
 
 At recordDecision it must:
 
@@ -686,9 +690,10 @@ At finishEpisode it must:
 
 - reject a second finish, an empty decision range where the environment requires a policy decision,
   an unclosed pending response, or an action/decision/frame count mismatch;
-- require the supplied VerifiedReplayVerification to cover the complete declared replay range,
+- require the supplied binding's verification to cover the complete declared replay range,
   including initial, intermediate, and tail frames, with ReplayFidelity.EXACT;
-- require the verification's replay version/content identity to match CompactReplayLinkV1;
+- require binding.replayContentIdentity to match CompactReplayLinkV1 and its verification replay
+  version to match the bound identity;
 - require GAME_TERMINAL to agree with the replayed Rules state;
 - require INTERRUPTED to be explicit and nonterminal;
 - route FAILED to quarantine and never to a published shard;
@@ -899,21 +904,25 @@ CompactReplay
   -> exact final closure and tail verification
 ~~~
 
-The cross-module contract is:
+The cross-module contracts are:
 
 ~~~text
 interface VerifiedReplayFrameSource {
   fun verify(): VerifiedReplayVerification
 }
+
+interface ReplayVerificationBindingSource {
+  fun verifyBinding(): ReplayVerificationBindingV1
+}
 ~~~
 
-The interface and VerifiedReplayVerification live in :gym and contain only the transport-free
-VerifiedReplayFrame stream, ReplayFidelity/checkpoint summary, complete-range coordinates, and
-factual closure evidence plus a stable replay version/content identity. A game-server
-GymReplayFrameSource instance is constructed with one CompactReplay and upcast to this interface
-at the composition root. B2GenerationHarness calls verify before TrajectoryV1Writer.finishEpisode
-and before any dataset shard is finalized. It then passes the validated episode to the gym-trainer
-publisher. Thus
+The interfaces and all neutral result types live in :gym. `VerifiedReplayVerification` remains the
+accepted V1 frame/proof evidence contract; `ReplayVerificationBindingV1` adds the independently
+versioned logical replay-content identity without changing that V1 meaning. A game-server
+`GymReplayFrameSource` instance is constructed with one `CompactReplay` and its binding API is
+upcast to the neutral interface at the composition root. `B2GenerationHarness` calls
+`verifyBinding()` before `TrajectoryV1Writer.finishEpisode` and before any dataset shard is finalized.
+It then passes the identity plus unchanged proof evidence to the gym-trainer publisher. Thus
 gym-trainer has no game-server dependency, game-server has no gym-trainer dependency, and the
 future integration/acceptance harness is the only place that wires both concrete modules.
 
@@ -1429,8 +1438,8 @@ trajectory hashes. Existing JsonlSelfPlaySink behavior remains unchanged and is 
 Acceptance:
 
 Only VALIDATED complete shards enter a deterministic DatasetManifestV1. The harness supplies the
-replay verification before the writer finalizes an episode; the writer and publisher never claim
-replay verification without the supplied VerifiedReplayVerification. Shards are immutable,
+replay-verification binding before the writer finalizes an episode; the writer and publisher never
+claim replay verification without the supplied ReplayVerificationBindingV1. Shards are immutable,
 bounded, checksum-addressed, LF-canonical, and safely published. Failed/partial/conflicting
 artifacts are quarantined and never listed.
 
@@ -1531,8 +1540,8 @@ Files/contracts affected:
   composition root; it may depend on :gym-trainer and :game-server while neither production
   source set depends on the other.
 - Wire the concrete game-server GymReplayFrameSource to the gym-trainer writer/publisher through
-  the neutral VerifiedReplayFrameSource result in the integration-only B2GenerationHarness. The
-  harness may depend on both modules; neither module's production source set may depend on the
+  the neutral ReplayVerificationBindingSource result in the integration-only B2GenerationHarness.
+  The harness may depend on both modules; neither module's production source set may depend on the
   other.
 - Update this design report only in a later acceptance task; this audit commit remains
   documentation-only.
@@ -1581,7 +1590,7 @@ rows in this audit-only commit.
 | 25 | Duplicate conflict | Same collectionJobId with conflicting payload rejected; the same semanticEpisodeId across distinct policy jobs is not conflated | TrajectoryV1ReaderTest |
 | 26 | Pending semantic context | Same YES_NO domain plus different sourceEntityId or triggeringEntityId changes PlayerObservationV1 and semanticDecisionId; prompt/sourceName/effectHint changes do not | TrajectoryObservationProjectionTest and SemanticDecisionIdentityTest |
 | 27 | Episode versus dataset identity | Multiple episodes have distinct semanticEpisodeId/collectionJobId/trajectoryId values but one deterministic DatasetManifestV1 and datasetId | TrajectoryV1WriterTest and TrajectoryV1ReaderTest |
-| 28 | Replay integration seam | Harness passes a complete EXACT VerifiedReplayVerification from the game-server source before writer finalization, with no production cross-dependency | ReplayTrajectoryVerificationTest and TrajectoryV1WriterTest |
+| 28 | Replay integration seam | Harness passes a complete EXACT verification inside a ReplayVerificationBindingV1 from the game-server source before writer finalization, with no production cross-dependency | ReplayTrajectoryVerificationTest and TrajectoryV1WriterTest |
 
 The surrounding regression set must include:
 
