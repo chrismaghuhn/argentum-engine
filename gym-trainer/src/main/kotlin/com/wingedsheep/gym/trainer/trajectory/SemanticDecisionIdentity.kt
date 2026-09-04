@@ -1630,7 +1630,7 @@ data class SemanticDecisionIdentityV1 private constructor(
          * Build the same frozen A3 identity from a linear prefix-digest snapshot. The snapshot
          * carries its input count so a digest cannot be paired with a different replay coordinate.
          */
-        fun from(
+        internal fun from(
             semanticEpisodeId: String,
             prefixSnapshot: SemanticReplayPrefixDigestSnapshotV1,
             replayActionIndex: Int = prefixSnapshot.inputCount,

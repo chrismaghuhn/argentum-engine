@@ -26,6 +26,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.security.MessageDigest
+import java.lang.reflect.Modifier
 
 /** Characterization of the accepted A3 prefix bytes before adding the linear seam. */
 class SemanticReplayPrefixAccumulatorTest : FunSpec({
@@ -351,22 +352,13 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
         }
     }
 
-    test("future or malformed digest snapshots fail closed") {
-        val emptyDigest = SemanticReplayPrefixV1().digest()
+    test("digest snapshots are opaque values rather than public serializable DTOs") {
+        val snapshot = SemanticReplayPrefixAccumulatorV1().snapshot()
 
-        shouldThrow<IllegalArgumentException> {
-            SemanticReplayPrefixDigestSnapshotV1(
-                version = SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION + 1,
-                inputCount = 0,
-                digest = emptyDigest,
-            )
-        }
-        shouldThrow<IllegalArgumentException> {
-            SemanticReplayPrefixDigestSnapshotV1(
-                inputCount = -1,
-                digest = emptyDigest,
-            )
-        }
+        snapshot.javaClass.declaredConstructors.none {
+            Modifier.isPublic(it.modifiers) && !it.isSynthetic
+        } shouldBe true
+        snapshot.javaClass.declaredMethods.none { it.name == "copy" } shouldBe true
     }
 
     test("append work only processes the new canonical input and snapshot work does not append to live state") {

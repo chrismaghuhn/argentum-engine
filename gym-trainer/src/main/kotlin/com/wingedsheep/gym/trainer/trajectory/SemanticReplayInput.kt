@@ -35,13 +35,6 @@ const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_VERSION: Int = 1
 const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_SCHEMA_IDENTITY: String =
     "argentum-trajectory-semantic-replay-prefix-digest@v1"
 
-/** Version of the in-memory prefix-digest snapshot used by sequential validators. */
-const val SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION: Int = 1
-
-/** Stable identity of an in-memory prefix-digest snapshot. */
-const val SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_SCHEMA_IDENTITY: String =
-    "argentum-trajectory-semantic-replay-prefix-digest-snapshot@v1"
-
 internal const val A3_TRIGGER_ORDER_OBJECT_HANDLE_PREFIX = "trigger-order-object-"
 
 /** The semantic input kinds that can precede a later decision boundary. */
@@ -167,23 +160,31 @@ data class SemanticReplayPrefixDigestV1(
  * This is an in-memory computation result, not a durable trajectory field. The count prevents a
  * caller from pairing a digest for one prefix with a different replay action coordinate.
  */
-@Serializable
-data class SemanticReplayPrefixDigestSnapshotV1(
-    val version: Int = SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION,
-    val schemaIdentity: String = SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_SCHEMA_IDENTITY,
-    val inputCount: Int,
-    val digest: SemanticReplayPrefixDigestV1,
+internal class SemanticReplayPrefixDigestSnapshotV1 private constructor(
+    internal val inputCount: Int,
+    internal val digest: SemanticReplayPrefixDigestV1,
 ) {
     init {
-        require(version == SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION) {
-            "Unsupported semantic replay-prefix digest snapshot version"
-        }
-        require(schemaIdentity == SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_SCHEMA_IDENTITY) {
-            "Unsupported semantic replay-prefix digest snapshot identity"
-        }
         require(inputCount >= 0) {
             "Semantic replay-prefix digest snapshot input count must not be negative"
         }
+    }
+
+    override fun equals(other: Any?): Boolean = other is SemanticReplayPrefixDigestSnapshotV1 &&
+        inputCount == other.inputCount &&
+        digest == other.digest
+
+    override fun hashCode(): Int = 31 * inputCount + digest.hashCode()
+
+    override fun toString(): String =
+        "SemanticReplayPrefixDigestSnapshotV1(inputCount=$inputCount, digest=$digest)"
+
+    companion object {
+        internal fun create(
+            inputCount: Int,
+            digest: SemanticReplayPrefixDigestV1,
+        ): SemanticReplayPrefixDigestSnapshotV1 =
+            SemanticReplayPrefixDigestSnapshotV1(inputCount, digest)
     }
 }
 
@@ -194,7 +195,7 @@ data class SemanticReplayPrefixDigestSnapshotV1(
  * accumulator only avoids rebuilding the already appended JSON when a sequential caller asks for
  * a prefix snapshot. It retains no historical inputs or serialized prefix bytes.
  */
-class SemanticReplayPrefixAccumulatorV1 private constructor(
+internal class SemanticReplayPrefixAccumulatorV1 private constructor(
     private val digestState: SemanticReplayDigestState,
     @Suppress("UNUSED_PARAMETER") privateMarker: Unit,
 ) {
@@ -213,7 +214,7 @@ class SemanticReplayPrefixAccumulatorV1 private constructor(
     }
 
     /** Append one already validated semantic input without retaining its historical value. */
-    fun append(input: SemanticReplayInputV1) {
+    internal fun append(input: SemanticReplayInputV1) {
         require(currentInputCount < Int.MAX_VALUE) {
             "Semantic replay-prefix accumulator input count overflow"
         }
@@ -228,11 +229,11 @@ class SemanticReplayPrefixAccumulatorV1 private constructor(
      * Finalize a copy of the current SHA-256 state with the fixed canonical JSON closing bytes.
      * The live accumulator remains open for later appends.
      */
-    fun snapshot(): SemanticReplayPrefixDigestSnapshotV1 {
+    internal fun snapshot(): SemanticReplayPrefixDigestSnapshotV1 {
         val digestBytes = digestState.snapshotDigest(
             SemanticReplayPrefixCanonicalFramingV1.closingBytes,
         )
-        return SemanticReplayPrefixDigestSnapshotV1(
+        return SemanticReplayPrefixDigestSnapshotV1.create(
             inputCount = currentInputCount,
             digest = SemanticReplayPrefixDigestV1(value = digestBytes.toLowerHex()),
         )
