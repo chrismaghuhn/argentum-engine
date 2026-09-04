@@ -1614,6 +1614,56 @@ data class SemanticDecisionIdentityV1 private constructor(
             require(replayActionIndex == prefix.inputs.size) {
                 "Replay action index must equal the supplied prefix length"
             }
+            return fromDigest(
+                semanticEpisodeId = semanticEpisodeId,
+                prefixDigest = prefix.digest(),
+                prefixInputCount = prefix.inputs.size,
+                replayActionIndex = replayActionIndex,
+                observation = observation,
+                domain = domain,
+                perspectivePlayerId = perspectivePlayerId,
+                decisionKind = decisionKind,
+            )
+        }
+
+        /**
+         * Build the same frozen A3 identity from a linear prefix-digest snapshot. The snapshot
+         * carries its input count so a digest cannot be paired with a different replay coordinate.
+         */
+        fun from(
+            semanticEpisodeId: String,
+            prefixSnapshot: SemanticReplayPrefixDigestSnapshotV1,
+            replayActionIndex: Int = prefixSnapshot.inputCount,
+            observation: PlayerObservationV1,
+            domain: CompleteLegalDomainV1,
+            perspectivePlayerId: String? = null,
+            decisionKind: SemanticDecisionKindV1? = null,
+        ): SemanticDecisionIdentityV1 {
+            return fromDigest(
+                semanticEpisodeId = semanticEpisodeId,
+                prefixDigest = prefixSnapshot.digest,
+                prefixInputCount = prefixSnapshot.inputCount,
+                replayActionIndex = replayActionIndex,
+                observation = observation,
+                domain = domain,
+                perspectivePlayerId = perspectivePlayerId,
+                decisionKind = decisionKind,
+            )
+        }
+
+        private fun fromDigest(
+            semanticEpisodeId: String,
+            prefixDigest: SemanticReplayPrefixDigestV1,
+            prefixInputCount: Int,
+            replayActionIndex: Int,
+            observation: PlayerObservationV1,
+            domain: CompleteLegalDomainV1,
+            perspectivePlayerId: String?,
+            decisionKind: SemanticDecisionKindV1?,
+        ): SemanticDecisionIdentityV1 {
+            require(replayActionIndex == prefixInputCount) {
+                "Replay action index must equal the supplied prefix snapshot input count"
+            }
             val derivedPerspectivePlayerId = observation.perspectivePlayerId.value
             require(perspectivePlayerId == null || perspectivePlayerId == derivedPerspectivePlayerId) {
                 "Perspective identity does not match the public observation"
@@ -1624,7 +1674,7 @@ data class SemanticDecisionIdentityV1 private constructor(
             }
             return SemanticDecisionIdentityV1(
                 semanticEpisodeId = semanticEpisodeId,
-                replayPrefixDigest = prefix.digest().value,
+                replayPrefixDigest = prefixDigest.value,
                 replayActionIndex = replayActionIndex,
                 perspectivePlayerId = derivedPerspectivePlayerId,
                 decisionKind = derivedDecisionKind,

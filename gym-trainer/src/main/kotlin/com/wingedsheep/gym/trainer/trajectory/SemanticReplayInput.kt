@@ -1,5 +1,7 @@
 package com.wingedsheep.gym.trainer.trajectory
 
+import java.nio.charset.StandardCharsets
+import java.security.MessageDigest
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -32,6 +34,13 @@ const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_VERSION: Int = 1
 /** Stable identity of a semantic replay-prefix digest. */
 const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_SCHEMA_IDENTITY: String =
     "argentum-trajectory-semantic-replay-prefix-digest@v1"
+
+/** Version of the in-memory prefix-digest snapshot used by sequential validators. */
+const val SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION: Int = 1
+
+/** Stable identity of an in-memory prefix-digest snapshot. */
+const val SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_SCHEMA_IDENTITY: String =
+    "argentum-trajectory-semantic-replay-prefix-digest-snapshot@v1"
 
 internal const val A3_TRIGGER_ORDER_OBJECT_HANDLE_PREFIX = "trigger-order-object-"
 
@@ -150,6 +159,145 @@ data class SemanticReplayPrefixDigestV1(
                 value = A3SemanticJson.sha256(prefix.canonicalJson().toByteArray(Charsets.UTF_8))
             )
     }
+}
+
+/**
+ * A content-addressed prefix digest paired with the number of inputs it covers.
+ *
+ * This is an in-memory computation result, not a durable trajectory field. The count prevents a
+ * caller from pairing a digest for one prefix with a different replay action coordinate.
+ */
+@Serializable
+data class SemanticReplayPrefixDigestSnapshotV1(
+    val version: Int = SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION,
+    val schemaIdentity: String = SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_SCHEMA_IDENTITY,
+    val inputCount: Int,
+    val digest: SemanticReplayPrefixDigestV1,
+) {
+    init {
+        require(version == SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_VERSION) {
+            "Unsupported semantic replay-prefix digest snapshot version"
+        }
+        require(schemaIdentity == SEMANTIC_REPLAY_PREFIX_DIGEST_SNAPSHOT_V1_SCHEMA_IDENTITY) {
+            "Unsupported semantic replay-prefix digest snapshot identity"
+        }
+        require(inputCount >= 0) {
+            "Semantic replay-prefix digest snapshot input count must not be negative"
+        }
+    }
+}
+
+/**
+ * Incremental, in-memory SHA-256 state for the accepted canonical semantic replay-prefix bytes.
+ *
+ * The legacy [SemanticReplayPrefixV1.digest] remains the compatibility and parity authority. This
+ * accumulator only avoids rebuilding the already appended JSON when a sequential caller asks for
+ * a prefix snapshot. It retains no historical inputs or serialized prefix bytes.
+ */
+class SemanticReplayPrefixAccumulatorV1 private constructor(
+    private val digestState: SemanticReplayDigestState,
+    @Suppress("UNUSED_PARAMETER") privateMarker: Unit,
+) {
+    constructor() : this(MessageDigestSemanticReplayDigestState(), Unit)
+
+    /** Narrow in-module seam for deterministic append-work characterization. */
+    internal constructor(digestState: SemanticReplayDigestState) : this(digestState, Unit)
+
+    private var currentInputCount: Int = 0
+
+    val inputCount: Int
+        get() = currentInputCount
+
+    init {
+        digestState.update(SemanticReplayPrefixCanonicalFramingV1.openingBytes)
+    }
+
+    /** Append one already validated semantic input without retaining its historical value. */
+    fun append(input: SemanticReplayInputV1) {
+        require(currentInputCount < Int.MAX_VALUE) {
+            "Semantic replay-prefix accumulator input count overflow"
+        }
+        if (currentInputCount > 0) {
+            digestState.update(SemanticReplayPrefixCanonicalFramingV1.separatorBytes)
+        }
+        digestState.update(input.canonicalJson().toByteArray(StandardCharsets.UTF_8))
+        currentInputCount += 1
+    }
+
+    /**
+     * Finalize a copy of the current SHA-256 state with the fixed canonical JSON closing bytes.
+     * The live accumulator remains open for later appends.
+     */
+    fun snapshot(): SemanticReplayPrefixDigestSnapshotV1 {
+        val digestBytes = digestState.snapshotDigest(
+            SemanticReplayPrefixCanonicalFramingV1.closingBytes,
+        )
+        return SemanticReplayPrefixDigestSnapshotV1(
+            inputCount = currentInputCount,
+            digest = SemanticReplayPrefixDigestV1(value = digestBytes.toLowerHex()),
+        )
+    }
+}
+
+private fun ByteArray.toLowerHex(): String = buildString(size * 2) {
+    for (byte in this@toLowerHex) {
+        append("%02x".format(byte))
+    }
+}
+
+/** Minimal state-copy abstraction used by the accumulator and its deterministic work test seam. */
+internal interface SemanticReplayDigestState {
+    fun update(bytes: ByteArray)
+
+    fun snapshotDigest(closingBytes: ByteArray): ByteArray
+}
+
+private class MessageDigestSemanticReplayDigestState : SemanticReplayDigestState {
+    private val digest = MessageDigest.getInstance("SHA-256")
+
+    override fun update(bytes: ByteArray) {
+        digest.update(bytes)
+    }
+
+    override fun snapshotDigest(closingBytes: ByteArray): ByteArray {
+        val copy = try {
+            digest.clone() as MessageDigest
+        } catch (exception: CloneNotSupportedException) {
+            throw IllegalStateException(
+                "The supported SHA-256 provider cannot copy digest state",
+                exception,
+            )
+        }
+        copy.update(closingBytes)
+        return copy.digest()
+    }
+}
+
+/**
+ * Derives the open/close framing from the accepted empty-prefix canonical bytes. The exact framing
+ * is therefore owned by [SemanticReplayPrefixV1.canonicalJson] rather than a separately guessed
+ * property order. The focused A3.5 characterization pins the resulting bytes.
+ */
+private object SemanticReplayPrefixCanonicalFramingV1 {
+    private val emptyPrefix = SemanticReplayPrefixV1().canonicalJson()
+    private val openingBracket = emptyPrefix.indexOf('[')
+    private val closingBracket = emptyPrefix.indexOf(']', openingBracket + 1)
+
+    init {
+        require(openingBracket >= 0 && closingBracket == openingBracket + 1) {
+            "Semantic replay-prefix canonical framing no longer has an empty inputs array"
+        }
+    }
+
+    val openingBytes: ByteArray = emptyPrefix
+        .substring(0, openingBracket + 1)
+        .toByteArray(StandardCharsets.UTF_8)
+
+    val closingBytes: ByteArray = emptyPrefix
+        .substring(closingBracket)
+        .toByteArray(StandardCharsets.UTF_8)
+
+    val separatorBytes: ByteArray = ",".toByteArray(StandardCharsets.UTF_8)
 }
 
 /** Shared strict JSON and fail-closed rules for the A3 transport-free contracts. */
