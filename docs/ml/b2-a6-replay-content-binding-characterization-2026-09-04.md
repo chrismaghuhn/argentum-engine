@@ -24,7 +24,7 @@ COMPACT_REPLAY_VERSION=5
 A4_VERIFICATION_SCHEMA=argentum-gym-verified-replay-verification@v1
 A5_TRAJECTORY_SCHEMA=argentum-trajectory@v1
 EXISTING_IDENTITY_CANDIDATE=NONE
-WHY_IT_QUALIFIES_OR_FAILS=NO_CANDIDATE_BINDS_THE_LOGICAL_REPLAY_INPUT_AND_COMPLETE_A4_PROOF_ON_BOTH_SIDES
+WHY_IT_QUALIFIES_OR_FAILS=NO_AUTHORITATIVE_REPLAY_CONTENT_IDENTITY_IS_PRODUCED_OR_CARRIED_BY_A4
 SMALLEST_GENERIC_PREREQUISITE=REPLAY_AUTHORITY_CANONICAL_IDENTITY_PLUS_NEUTRAL_A4_BINDING_AND_PER_ACTION_CHOICE_BINDING
 MODULE_OWNERSHIP=game-server canonical replay semantics; gym neutral carrier; gym-trainer consumer; harness composition
 OWNER_MODULE=game-server for replay-content production; gym for the neutral carrier
@@ -118,7 +118,7 @@ the actual A4 call path, not from the field names alone.
 | `yields` | `SEMANTIC_REPLAY_INPUT` | Re-applied at action count 0 and after each action; malformed coordinates/entries are rejected by the A4 adapter | Include in recorded order with typed yield fields |
 | `engineVersion` | `PROVENANCE_PRESENTATION` | Diagnostic/logging and persistence metadata; it does not select old executable code | Exclude; environment/engine provenance remains a separate A5 field |
 | `pinnedCards` | `SEMANTIC_REPLAY_INPUT` | `ReplayCardPin.overlay()` changes the card registry used to initialize, enumerate, and fold the replay | Include the logical pin content, independent of whether storage keeps it in a separate column |
-| `checkpoints` | `REPLAY_PROOF` | Shape, coordinate coverage, and every fingerprint affect A4 fidelity, divergence, and exactness | Include the complete proof list in a canonical coordinate order; do not treat one checkpoint as replay identity |
+| `checkpoints` | `REPLAY_PROOF` | Shape, coordinate coverage, and every fingerprint affect A4 fidelity, divergence, and exactness | Exclude from replay-content identity; retain as separate A4 proof evidence |
 
 The nested `ReplaySetup` fields are at `CompactReplay.kt:219-244` and `ReplayPlayerSetup` is at
 `CompactReplay.kt:246-255`. `ReplayEngine.initialState()` consumes `seed`, `format`, `attackMode`,
@@ -163,8 +163,8 @@ bytes are semantic. In particular:
 - `pinnedCards` are logical replay inputs even though `ReplayStore` removes them from the main blob and
   stores them through `ReplayCodec.encodePins()` separately (`ReplayStore.kt:185-232,288-298`).
 - `checkpoints` are not state reconstruction inputs, but they are A4 proof inputs: changing or omitting
-  one changes `EXACT`/`UNVERIFIED`/`DIVERGED` outcome. They must be bound when the identity is used to
-  prove the same complete A4-backed replay artifact.
+  one changes `EXACT`/`UNVERIFIED`/`DIVERGED` outcome. They remain separate proof evidence inside
+  `VerifiedReplayVerification`; they are not part of `ReplayContentIdentityV1`.
 - `gameId`, timestamps, winner/tournament labels, and `engineVersion` do not determine the replayed
   Rules input in the current source and must not become learner or replay-content identity.
 
@@ -222,7 +222,7 @@ occurrences are state/checkpoint proof paths, not a replay-content identity path
 ## SMALLEST_GENERIC_PREREQUISITE
 
 The smallest future prerequisite is two explicit, separate bindings; it is not an A6-writer-local
-hash.
+hash. Replay content and replay proof must remain different identities/roles.
 
 ### Replay content identity seam
 
@@ -230,7 +230,9 @@ Add, under a separately authorized change, one neutral typed content-identity ca
 bind it to the existing `VerifiedReplayVerification` result (or use a wrapper only if the maintainers
 reject extending that single-result contract). The smaller current shape is a typed field on the
 existing A4 result because the future design already passes exactly one verification result to the
-writer. The carrier must include an explicit identity schema/version and value; a bare caller-supplied
+writer. That field carries only the identity of the exact `CompactReplay` supplied to the source; the
+result's checkpoints, frames, closure, fidelity, and verification flags remain separate proof
+evidence. The carrier must include an explicit identity schema/version and value; a bare caller-supplied
 SHA-256 string is not sufficient.
 
 Ownership must remain:
@@ -250,6 +252,22 @@ future integration harness
 ```
 
 No `game-server -> gym-trainer` dependency is needed or allowed.
+
+The later A6 binding therefore has two independent checks:
+
+```text
+trajectory.compactReplayLink.replayContentIdentity
+    == verification.replayContentIdentity
+
+verification.fidelity == EXACT
+verification.completeRangeVerified == true
+verification.closure == trajectory.closure
+verification.replayActionCount == trajectory decision/action count
+```
+
+The second group is proof validation. It is not folded into the replay-content identity.
+No separate `ReplayProofIdentityV1` is required by the current A6 prerequisite; the existing
+`VerifiedReplayVerification` remains the proof-evidence carrier.
 
 ### Replay choice-binding seam
 
@@ -271,16 +289,52 @@ canonical representation of:
 identity-contract-version/schema
 CompactReplay.version
 semantic ReplaySetup fields in authoritative order
-  (seed, format, attackMode, starting/mulligan/smoother settings,
-   starting player, teams, ordered setup.players)
+  seed
+  format
+  attackMode
+  startingHandSize
+  skipMulligans
+  useHandSmoother
+  handSmootherCandidates
+  startingPlayerIndex
+  teams
+  ordered setup.players
+    playerId
+    name
+    deck
+    startingLife
+    commanderCardName
 ordered replay actions with every execution-affecting field
 ordered typed yield mutations at their action coordinates
 logical pinned-card definitions in a deterministic identity order
-complete checkpoint proof entries keyed by afterActionCount and fingerprint
 ```
 
-The preimage must exclude top-level presentation/provenance fields listed in the field audit and must
-normalize only explicitly typed runtime routing references whose replay authority proves non-semantic.
+The preimage must exclude top-level presentation/provenance fields listed in the field audit, plus
+`checkpoints`, `tailClosure`, `fidelity`, and verification flags. `tailClosure` is composition-root
+evidence rather than a CompactReplay field. Those values remain separately checked A4 proof state.
+The preimage must normalize only explicitly typed runtime routing references whose replay authority
+proves non-semantic.
+
+The explicit exclusion set is:
+
+```text
+gameId
+top-level players
+startedAt
+endedAt
+winnerName
+tournamentName
+tournamentRound
+engineVersion
+setup.seatRoster
+checkpoints
+tailClosure
+fidelity
+verification flags
+```
+
+`setup.seatRoster` is excluded only for this A4/Gym binding because it is used by the spectator
+presentation path, not by the replayed Rules/public-observation path.
 The existing `ReplayReconstructor.rebind()` proves only the typed pending-decision ID rebind
 (`ReplayReconstructor.kt:550-560`); the state canonicalizer's generated ability/decision aliases
 (`TransitionSemanticGameStateCanonicalizer.kt`) are a `GameState` fingerprint mechanism, not a
@@ -295,6 +349,8 @@ hashing `ReplayCodec.encode(replay)` or by reusing `ReplayFingerprint`.
   current preimage.
 - Require `CompactReplay.version == 5` for the accepted A5 link and require the A4 result to be
   `ReplayFidelity.EXACT` with complete initial/intermediate/tail proof and closure evidence.
+- Keep checkpoints, tail closure, fidelity, frame completeness, and closure comparison as separate
+  A4 proof checks; do not hash them into `ReplayContentIdentityV1`.
 - Do not substitute `gameId`, database IDs, paths, timestamps, UUIDs, `ReplayFingerprint`, a
   candidate-domain digest, or a semantic decision/trajectory identity.
 - Do not treat storage compression, Base64 text, migration output, or separately stored pin bytes as
@@ -370,9 +426,12 @@ diff.
 ```text
 COMMON_REPLAY_CONTENT_IDENTITY=NO
 REPLAY_CHOICE_BINDING_ALREADY_AVAILABLE=NO
+FIELD_ROLE_AUDIT=MOSTLY_PASS
+CONTENT_VS_PROOF_IDENTITY=FAIL
 A6_IMPLEMENTATION_UNBLOCKED=NO
 A6_AUTHORIZED=NO
 B2_FINAL_PASS=NO
+PR123_FINAL_ACCEPTANCE=NO
 DATA_TRUSTED=NO
 C0_AUTHORIZED=NO
 ```
