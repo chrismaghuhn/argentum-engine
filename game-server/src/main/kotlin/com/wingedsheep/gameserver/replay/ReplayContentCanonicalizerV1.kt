@@ -92,6 +92,107 @@ object ReplayContentCanonicalizerV1 {
         "YesNoResponse",
     )
 
+    /**
+     * Field allowlist for every audited replay carrier whose addition would require an identity
+     * review. Nested card/rules values are still serialized in full because their logical card
+     * definition is itself the pinned content; these root and payment/response carriers are the
+     * replay protocol surface that must fail closed when v5 grows.
+     */
+    private val supportedReplayFieldsByType = mapOf(
+        "ReplaySetup" to setOf(
+            "seed", "format", "attackMode", "startingHandSize", "skipMulligans",
+            "useHandSmoother", "handSmootherCandidates", "startingPlayerIndex", "teams",
+            "players", "seatRoster",
+        ),
+        "ReplayPlayerSetup" to setOf("playerId", "name", "deck", "startingLife", "commanderCardName"),
+        "Deck" to setOf("cards", "commander", "cardEntries", "commanderPrinting", "sideboard"),
+        "CardEntry" to setOf("name", "printing"),
+        "PrintingRef" to setOf("setCode", "collectorNumber"),
+        "ReplayYieldEntry" to setOf("afterActionCount", "playerId", "op", "identity", "kind"),
+        "Standard" to emptySet(),
+        "Commander" to setOf(
+            "commanderDamageThreshold", "deckSize", "startingLife", "startingHandSize",
+            "alwaysDivertToCommand",
+        ),
+        "MomirBasic" to setOf("startingLife", "startingHandSize", "avatarCardName", "eligibleCreatureNames"),
+        "TwoHeadedGiant" to setOf("startingLife", "startingHandSize", "poisonThreshold"),
+        "TeamVsTeam" to setOf(
+            "startingLife", "commanderDamageThreshold", "deckSize", "alwaysDivertToCommand",
+        ),
+        "PassPriority" to setOf("playerId"),
+        "CastSpell" to setOf(
+            "playerId", "cardId", "targets", "xValue", "paymentStrategy", "alternativePayment",
+            "additionalCostPayment", "castFaceDown", "declaredCostSlot", "wasWaterbendPaid",
+            "giftRecipient", "splicedCardIds", "damageDistribution", "useAlternativeCost", "chosenModes",
+            "modeTargetsOrdered", "modeTargetRequirementsOrdered", "modeDamageDistribution", "graveyardLifeCost",
+            "graveyardCastRider", "conspiredCreatures", "casualtyCreature", "faceIndex",
+            "useWithoutPayingManaCost", "alternativeCostType", "preResolvedZoneChangeIds",
+            "preResolvedSneakAttackDefenderId", "preResolvedWebSlingReturnedManaValue",
+        ),
+        "ActivateAbility" to setOf(
+            "playerId", "sourceId", "abilityId", "targets", "costPayment", "manaColorChoice", "xValue",
+            "repeatCount", "paymentStrategy", "alternativePayment", "damageDistribution",
+            "opponentTargetsChosen", "preResolvedZoneChangeIds",
+        ),
+        "CycleCard" to setOf("playerId", "cardId", "paymentStrategy", "xValue"),
+        "PlotCard" to setOf("playerId", "cardId", "paymentStrategy"),
+        "ForetellCard" to setOf("playerId", "cardId", "paymentStrategy"),
+        "SuspendCardFromHand" to setOf("playerId", "cardId", "paymentStrategy"),
+        "TypecycleCard" to setOf("playerId", "cardId", "paymentStrategy"),
+        "PlayLand" to setOf("playerId", "cardId"),
+        "DeclareAttackers" to setOf("playerId", "attackers", "bands"),
+        "DeclareBlockers" to setOf("playerId", "blockers"),
+        "OrderBlockers" to setOf("playerId", "attackerId", "orderedBlockers"),
+        "ChooseManaColor" to setOf("playerId", "color"),
+        "SubmitDecision" to setOf("playerId", "response"),
+        "TakeMulligan" to setOf("playerId"),
+        "KeepHand" to setOf("playerId"),
+        "BottomCards" to setOf("playerId", "cardIds"),
+        "Concede" to setOf("playerId"),
+        "CrewVehicle" to setOf("playerId", "vehicleId", "crewCreatures", "crewAbilityKey"),
+        "SaddleMount" to setOf("playerId", "mountId", "saddleCreatures"),
+        "TurnFaceUp" to setOf("playerId", "sourceId", "paymentStrategy", "costTargetIds", "xValue", "procedureIndex"),
+        "UnlockRoomDoor" to setOf("playerId", "roomId", "faceId", "paymentStrategy"),
+        "AutoPay" to emptySet(),
+        "FromPool" to emptySet(),
+        "Explicit" to setOf("manaAbilitiesToActivate", "paymentPlan"),
+        "ExplicitV2" to setOf("manaAbilitiesToActivate", "paymentPlan"),
+        "ExplicitV3" to setOf("paymentPlan"),
+        "TargetsResponse" to setOf("decisionId", "selectedTargets"),
+        "CardsSelectedResponse" to setOf("decisionId", "selectedCards"),
+        "YesNoResponse" to setOf("decisionId", "choice"),
+        "BatchYesNoResponse" to setOf("decisionId", "choice", "applyToAll"),
+        "ModesChosenResponse" to setOf("decisionId", "selectedModes"),
+        "ColorChosenResponse" to setOf("decisionId", "color"),
+        "NumberChosenResponse" to setOf("decisionId", "number"),
+        "DistributionResponse" to setOf("decisionId", "distribution"),
+        "OrderedResponse" to setOf("decisionId", "orderedObjects"),
+        "PilesSplitResponse" to setOf("decisionId", "piles"),
+        "OptionChosenResponse" to setOf("decisionId", "optionIndex"),
+        "ReplacementChosenResponse" to setOf("decisionId", "fromIndex", "toIndex"),
+        "BudgetModalResponse" to setOf("decisionId", "selectedModeIndices"),
+        "DamageAssignmentResponse" to setOf("decisionId", "assignments"),
+        "ManaSourcesSelectedResponse" to setOf(
+            "decisionId", "selectedSources", "autoPay", "waterbendPermanents", "declined",
+        ),
+        "CombatResolutionResponse" to setOf(
+            "decisionId", "edges", "orderedBlockers", "orderedAttackers",
+        ),
+        "CancelDecisionResponse" to setOf("decisionId"),
+        "CardDefinition" to setOf(
+            "name", "manaCost", "typeLine", "oracleText", "creatureStats", "keywords", "flags",
+            "keywordAbilities", "script", "equipCost", "oracleId", "setCode", "backFace", "metadata",
+            "startingLoyalty", "startingDefense", "legalFormats", "colorIdentityOverride", "colorIndicator",
+            "layout", "cardFaces", "hasNoManaCost", "meldResult",
+        ),
+        "CardFace" to setOf("name", "manaCost", "typeLine", "oracleText", "keywords", "script", "imageUri"),
+        "ScryfallMetadata" to setOf(
+            "collectorNumber", "rarity", "artist", "flavorText", "imageUri", "imageUriByCreatureSubtype",
+            "scryfallId", "releaseDate", "rulings", "imageRotation", "inBooster",
+        ),
+        "Ruling" to setOf("date", "text"),
+    )
+
     private data class ReplayPart(
         val element: JsonElement,
         val descriptor: SerialDescriptor,
@@ -129,6 +230,11 @@ object ReplayContentCanonicalizerV1 {
         requireReplayInputShape(replay)
 
         val setup = normalizedSetup(replay.setup)
+        requireTypedReplayShape(
+            element = setup,
+            descriptor = ReplaySetup.serializer().descriptor,
+            path = listOf(SETUP_PATH),
+        )
         val actions = JsonArray(
             replay.actions.map { action ->
                 persistenceJson.encodeToJsonElement(GameAction.serializer(), action)
@@ -270,9 +376,25 @@ object ReplayContentCanonicalizerV1 {
             require(player.deck.sideboard.all { it.name.isNotBlank() }) {
                 "Replay setup sideboard entry names must not be blank"
             }
+            (libraryEntries + player.deck.sideboard).forEach { entry ->
+                entry.printing?.let { printing ->
+                    val setCode = printing.setCode
+                    val collectorNumber = printing.collectorNumber
+                    require(setCode.isNotBlank() && collectorNumber.isNotBlank()) {
+                        "Replay setup printing references must have stable identities"
+                    }
+                }
+            }
             if (replay.setup.format.usesCommanders) {
                 require(!player.commanderCardName.isNullOrBlank()) {
                     "Commander replay setup requires a commander card name for every player"
+                }
+                player.deck.commanderPrinting?.let { printing ->
+                    val setCode = printing.setCode
+                    val collectorNumber = printing.collectorNumber
+                    require(setCode.isNotBlank() && collectorNumber.isNotBlank()) {
+                        "Replay setup commander printing references must have stable identities"
+                    }
                 }
             }
         }
@@ -296,6 +418,11 @@ object ReplayContentCanonicalizerV1 {
                     "CLEAR_ALL replay yield cannot carry an ability identity or kind"
                 }
             }
+            yield.identity?.let { identity ->
+                require(identity.cardDefinitionId.isNotBlank()) {
+                    "Replay yield ability identity requires a card-definition identity"
+                }
+            }
         }
     }
 
@@ -304,15 +431,17 @@ object ReplayContentCanonicalizerV1 {
         require(type in supportedActionTypes) {
             "Unsupported CompactReplay action type: ${type ?: "missing"}"
         }
+        requireKnownReplayFields(encoded.jsonObject, checkNotNull(type))
         if (type == "SubmitDecision") {
-            val responseType = encoded.jsonObject["response"]
-                ?.jsonObject
+            val response = encoded.jsonObject["response"]?.jsonObject
+            val responseType = response
                 ?.get("type")
                 ?.jsonPrimitive
                 ?.contentOrNull
             require(responseType in supportedDecisionResponseTypes) {
                 "Unsupported CompactReplay decision response type: ${responseType ?: "missing"}"
             }
+            requireKnownReplayFields(response, checkNotNull(responseType))
         }
         require(action.playerId.value.isNotBlank()) {
             "CompactReplay action player identity must not be blank"
@@ -328,6 +457,8 @@ object ReplayContentCanonicalizerV1 {
         when (element) {
             is JsonObject -> {
                 val concrete = resolvePolymorphicDescriptor(descriptor, element)
+                val typeName = concrete?.serialName?.substringAfterLast('.')
+                typeName?.let { requireKnownReplayFields(element, it) }
                 val mapDescriptor = concrete?.takeIf { it.kind == StructureKind.MAP }
                 if (mapDescriptor != null) {
                     val keyDescriptor = mapDescriptor.getElementDescriptor(0)
@@ -361,12 +492,25 @@ object ReplayContentCanonicalizerV1 {
             }
 
             is JsonPrimitive -> {
-                if (descriptor.isEntityIdDescriptor() || descriptor.isAbilityIdDescriptor()) {
+                if (
+                    descriptor.isEntityIdDescriptor() ||
+                    descriptor.isAbilityIdDescriptor() ||
+                    descriptor.isRoomFaceIdDescriptor()
+                ) {
                     require(element.isString && element.content.isNotBlank()) {
                         "Blank or malformed typed replay identity at ${path.joinToString(".")}"
                     }
                 }
             }
+        }
+    }
+
+    private fun requireKnownReplayFields(element: JsonObject?, typeName: String) {
+        val supportedFields = supportedReplayFieldsByType[typeName] ?: return
+        val discriminator = if (element != null && "type" in element) setOf("type") else emptySet()
+        val unknownFields = (element?.keys.orEmpty() - supportedFields - discriminator)
+        require(unknownFields.isEmpty()) {
+            "Unsupported replay fields for $typeName: ${unknownFields.sorted()}"
         }
     }
 
@@ -415,6 +559,14 @@ object ReplayContentCanonicalizerV1 {
                 throw IllegalArgumentException("Malformed pinned card definition", failure)
             }
             require(card.name.isNotBlank()) { "Pinned card definition requires a stable name" }
+            val setCode = card.setCode
+            val collectorNumber = card.metadata.collectorNumber
+            require(setCode == null || setCode.isNotBlank()) {
+                "Pinned card definition set identity must not be blank"
+            }
+            require(collectorNumber == null || collectorNumber.isNotBlank()) {
+                "Pinned card definition collector identity must not be blank"
+            }
             val identity = stableCardIdentity(card)
             val canonical = try {
                 CardSerialization.compactJson.parseToJsonElement(CardExporter.exportToCompactJson(card))
@@ -486,7 +638,7 @@ object ReplayContentCanonicalizerV1 {
                         }
                 } else {
                     entries.sortedBy(Map.Entry<String, JsonElement>::key).forEach { (key, value) ->
-                        if (shouldDropDecisionId(path, concrete, key)) return@forEach
+                        if (shouldDropReplayActionField(path, concrete, key)) return@forEach
                         collectAbilityIds(
                             value,
                             path + key,
@@ -596,7 +748,7 @@ object ReplayContentCanonicalizerV1 {
                 })
             } else {
                 val entries = element.entries
-                    .filterNot { (key, _) -> shouldDropDecisionId(path, concrete, key) }
+                    .filterNot { (key, _) -> shouldDropReplayActionField(path, concrete, key) }
                     .filterNot { (key, _) -> path == listOf(SETUP_PATH) && key == "seatRoster" }
                     .sortedBy(Map.Entry<String, JsonElement>::key)
                     .map { (key, value) ->
@@ -669,7 +821,7 @@ object ReplayContentCanonicalizerV1 {
             } else {
                 JsonObject(LinkedHashMap<String, JsonElement>().apply {
                     element.entries
-                        .filterNot { (key, _) -> shouldDropDecisionId(path, concrete, key) }
+                        .filterNot { (key, _) -> shouldDropReplayActionField(path, concrete, key) }
                         .filterNot { (key, _) -> path == listOf(SETUP_PATH) && key == "seatRoster" }
                         .sortedBy(Map.Entry<String, JsonElement>::key)
                         .forEach { (key, value) ->
@@ -726,6 +878,18 @@ object ReplayContentCanonicalizerV1 {
         path.lastOrNull() == "response" &&
         descriptor?.serialName?.substringAfterLast('.')?.endsWith("Response") == true
 
+    private fun shouldDropReplayActionField(
+        path: List<String>,
+        descriptor: SerialDescriptor?,
+        key: String,
+    ): Boolean = shouldDropDecisionId(path, descriptor, key) || (
+        path.size >= 3 &&
+            path.firstOrNull() == ACTIONS_PATH &&
+            path.lastOrNull() == "response" &&
+            descriptor?.serialName?.substringAfterLast('.') == "CombatResolutionResponse" &&
+            key in setOf("orderedBlockers", "orderedAttackers")
+        )
+
     private fun resolvePolymorphicDescriptor(
         descriptor: SerialDescriptor?,
         element: JsonObject,
@@ -769,6 +933,9 @@ object ReplayContentCanonicalizerV1 {
 
     private fun SerialDescriptor?.isAbilityIdDescriptor(): Boolean =
         this?.serialName == "com.wingedsheep.sdk.scripting.AbilityId"
+
+    private fun SerialDescriptor?.isRoomFaceIdDescriptor(): Boolean =
+        this?.serialName == "com.wingedsheep.engine.state.components.identity.RoomFaceId"
 
     private fun SerialDescriptor?.isEntityIdDescriptor(): Boolean =
         this?.serialName == "com.wingedsheep.sdk.model.EntityId"

@@ -1,10 +1,13 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.ActivateAbility
+import com.wingedsheep.engine.core.CombatResolutionResponse
+import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DeclareAttackers
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.PassPriority
 import com.wingedsheep.engine.core.SubmitDecision
+import com.wingedsheep.engine.core.UnlockRoomDoor
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.gameserver.ScenarioTestBase
 import com.wingedsheep.gameserver.protocol.ServerMessage
@@ -13,6 +16,7 @@ import com.wingedsheep.gym.contract.ReplayFidelity as VerifiedReplayFidelity
 import com.wingedsheep.gym.contract.ReplayVerificationBindingSource
 import com.wingedsheep.sdk.core.AttackMode
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.engine.state.components.identity.RoomFaceId
 import com.wingedsheep.sdk.model.CardEntry
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
@@ -282,6 +286,35 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
                 identity(replay(actions = listOf(action("nonce-b"))))
         }
 
+        test("decode-only combat response ordering fields do not alter replay content identity") {
+            fun action(
+                orderedBlockers: Map<EntityId, List<EntityId>>,
+                orderedAttackers: Map<EntityId, List<EntityId>>,
+            ) = SubmitDecision(
+                playerId = playerOne,
+                response = CombatResolutionResponse(
+                    decisionId = "nonce",
+                    edges = listOf(DamageEdgeAmount("edge", 1)),
+                    orderedBlockers = orderedBlockers,
+                    orderedAttackers = orderedAttackers,
+                ),
+            )
+
+            val first = action(
+                orderedBlockers = mapOf(EntityId("attacker-a") to listOf(EntityId("blocker-a"))),
+                orderedAttackers = mapOf(EntityId("attacker-a") to listOf(EntityId("blocker-a"))),
+            )
+            val second = action(
+                orderedBlockers = mapOf(EntityId("attacker-b") to listOf(EntityId("blocker-b"))),
+                orderedAttackers = mapOf(EntityId("attacker-b") to listOf(EntityId("blocker-b"))),
+            )
+
+            identity(replay(actions = listOf(first))) shouldBe identity(replay(actions = listOf(second)))
+            val preimage = ReplayContentCanonicalizerV1.canonicalPreimage(replay(actions = listOf(first)))
+            preimage.contains("orderedBlockers") shouldBe false
+            preimage.contains("orderedAttackers") shouldBe false
+        }
+
         test("generated typed ability IDs are allocation-order independent while stable IDs remain semantic") {
             fun action(abilityId: String) = ActivateAbility(
                 playerId = playerOne,
@@ -455,6 +488,33 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
                                 playerId = playerOne,
                                 sourceId = EntityId("source"),
                                 abilityId = AbilityId(""),
+                            ),
+                        ),
+                    ),
+                )
+            }
+            shouldThrow<IllegalArgumentException> {
+                identity(
+                    replay(
+                        actions = listOf(
+                            UnlockRoomDoor(
+                                playerId = playerOne,
+                                roomId = EntityId("room"),
+                                faceId = RoomFaceId(""),
+                            ),
+                        ),
+                    ),
+                )
+            }
+            shouldThrow<IllegalArgumentException> {
+                identity(
+                    replay(
+                        yields = listOf(
+                            ReplayYieldEntry(
+                                afterActionCount = 0,
+                                playerId = playerOne.value,
+                                op = ReplayYieldOp.CLEAR_ABILITY,
+                                identity = AbilityIdentity("", AbilityId("stable")),
                             ),
                         ),
                     ),
