@@ -443,94 +443,15 @@ class GameEnvironment private constructor(
     }
 
     /**
-     * Match a submitted action against the current enumerator templates without treating
-     * caller-supplied choice assignments as stale. Enumerators deliberately emit templates for
-     * casts, abilities, combat, cycling, turn-face-up, Crew, Saddle, and payment-only special
-     * actions; the client or AI fills the choice fields before submitting the action. Every
-     * branch below retains the candidate's actor and runtime/source identity fields. The rules
-     * engine remains authoritative for validating the submitted choices.
+     * Match a completed action against a current public candidate without selecting or executing
+     * any caller-supplied choices. Enumerators deliberately emit templates for casts, abilities,
+     * combat, cycling, turn-face-up, Crew, Saddle, and payment-only special actions; the client or
+     * AI fills the choice fields before submitting. Replay verification uses this same membership
+     * normalization as the live strict Gym boundary, while the Rules engine remains authoritative
+     * for validating the completed choices.
      */
     internal fun isCurrentActionCandidate(candidate: GameAction, submitted: GameAction): Boolean =
-        when {
-            candidate == submitted -> true
-            candidate is DeclareAttackers && submitted is DeclareAttackers ->
-                candidate.playerId == submitted.playerId
-            candidate is DeclareBlockers && submitted is DeclareBlockers ->
-                candidate.playerId == submitted.playerId
-            candidate is OrderBlockers && submitted is OrderBlockers ->
-                candidate.playerId == submitted.playerId &&
-                    candidate.attackerId == submitted.attackerId
-            candidate is CastSpell && submitted is CastSpell ->
-                normalizeCastSpellForMembership(candidate) == normalizeCastSpellForMembership(submitted)
-            candidate is ActivateAbility && submitted is ActivateAbility ->
-                normalizeActivateAbilityForMembership(candidate) == normalizeActivateAbilityForMembership(submitted)
-            candidate is CycleCard && submitted is CycleCard ->
-                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
-            candidate is PlotCard && submitted is PlotCard ->
-                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
-            candidate is ForetellCard && submitted is ForetellCard ->
-                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
-            candidate is SuspendCardFromHand && submitted is SuspendCardFromHand ->
-                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
-            candidate is TypecycleCard && submitted is TypecycleCard ->
-                candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
-            candidate is CrewVehicle && submitted is CrewVehicle ->
-                candidate.playerId == submitted.playerId &&
-                    candidate.vehicleId == submitted.vehicleId &&
-                    candidate.crewAbilityKey == submitted.crewAbilityKey
-            candidate is SaddleMount && submitted is SaddleMount ->
-                candidate.playerId == submitted.playerId && candidate.mountId == submitted.mountId
-            candidate is TurnFaceUp && submitted is TurnFaceUp ->
-                candidate.playerId == submitted.playerId &&
-                    candidate.sourceId == submitted.sourceId &&
-                    candidate.procedureIndex == submitted.procedureIndex
-            candidate is UnlockRoomDoor && submitted is UnlockRoomDoor ->
-                candidate.playerId == submitted.playerId &&
-                    candidate.roomId == submitted.roomId &&
-                    candidate.faceId == submitted.faceId
-            else -> false
-        }
-
-    /**
-     * Normalize caller-filled target/payment payloads while retaining the cast variant identity.
-     * LegalAction metadata is deliberately richer than the targetless engine action template: an
-     * AI may fill convoke, improvise, additional-cost, mode, X, or target choices before submit.
-     * The engine remains authoritative for validating those choices; Gym membership only checks
-     * that the underlying cast candidate is still current.
-     */
-    private fun normalizeCastSpellForMembership(action: CastSpell): CastSpell = action.copy(
-        targets = emptyList(),
-        damageDistribution = null,
-        modeTargetsOrdered = emptyList(),
-        modeDamageDistribution = emptyMap(),
-        paymentStrategy = PaymentStrategy.AutoPay,
-        additionalCostPayment = null,
-        alternativePayment = null,
-        chosenModes = emptyList(),
-        xValue = null,
-    )
-
-    /** Normalize caller-filled target/payment/choice payloads for an activated-ability template. */
-    private fun normalizeActivateAbilityForMembership(action: ActivateAbility): ActivateAbility = action.copy(
-        targets = emptyList(),
-        damageDistribution = null,
-        costPayment = null,
-        manaColorChoice = null,
-        xValue = null,
-        repeatCount = 1,
-        paymentStrategy = PaymentStrategy.AutoPay,
-        // Equip payment is a candidate identity: NORMAL and FREE_FIRST_EQUIP are distinct
-        // server-offered actions. Other alternative-payment assignments are caller-filled
-        // resource choices and remain normalized away as before.
-        alternativePayment = action.alternativePayment
-            ?.takeIf { it.equipPayment != null }
-            ?.copy(
-                delvedCards = emptyList(),
-                convokedCreatures = emptyMap(),
-                harmonizeCreature = null,
-                tapForGenericPermanents = emptySet(),
-            ),
-    )
+        GameActionCandidateMatcher.matches(candidate, submitted)
 
     /**
      * Evaluate the current board state from a player's perspective.
@@ -787,4 +708,88 @@ class GameEnvironment private constructor(
             )
         )
     }
+}
+
+/**
+ * Shared, state-free normalization for matching caller-filled actions to current Gym candidates.
+ *
+ * The Rules engine still validates the completed choices. This helper only retains candidate
+ * identity while removing fields the public controller is allowed to fill after enumeration.
+ */
+object GameActionCandidateMatcher {
+
+    fun matches(candidate: GameAction, submitted: GameAction): Boolean = when {
+        candidate == submitted -> true
+        candidate is DeclareAttackers && submitted is DeclareAttackers ->
+            candidate.playerId == submitted.playerId
+        candidate is DeclareBlockers && submitted is DeclareBlockers ->
+            candidate.playerId == submitted.playerId
+        candidate is OrderBlockers && submitted is OrderBlockers ->
+            candidate.playerId == submitted.playerId &&
+                candidate.attackerId == submitted.attackerId
+        candidate is CastSpell && submitted is CastSpell ->
+            normalizeCastSpell(candidate) == normalizeCastSpell(submitted)
+        candidate is ActivateAbility && submitted is ActivateAbility ->
+            normalizeActivateAbility(candidate) == normalizeActivateAbility(submitted)
+        candidate is CycleCard && submitted is CycleCard ->
+            candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+        candidate is PlotCard && submitted is PlotCard ->
+            candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+        candidate is ForetellCard && submitted is ForetellCard ->
+            candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+        candidate is SuspendCardFromHand && submitted is SuspendCardFromHand ->
+            candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+        candidate is TypecycleCard && submitted is TypecycleCard ->
+            candidate.playerId == submitted.playerId && candidate.cardId == submitted.cardId
+        candidate is CrewVehicle && submitted is CrewVehicle ->
+            candidate.playerId == submitted.playerId &&
+                candidate.vehicleId == submitted.vehicleId &&
+                candidate.crewAbilityKey == submitted.crewAbilityKey
+        candidate is SaddleMount && submitted is SaddleMount ->
+            candidate.playerId == submitted.playerId && candidate.mountId == submitted.mountId
+        candidate is TurnFaceUp && submitted is TurnFaceUp ->
+            candidate.playerId == submitted.playerId &&
+                candidate.sourceId == submitted.sourceId &&
+                candidate.procedureIndex == submitted.procedureIndex
+        candidate is UnlockRoomDoor && submitted is UnlockRoomDoor ->
+            candidate.playerId == submitted.playerId &&
+                candidate.roomId == submitted.roomId &&
+                candidate.faceId == submitted.faceId
+        else -> false
+    }
+
+    /** Retain cast identity while discarding fields completed by the public controller. */
+    private fun normalizeCastSpell(action: CastSpell): CastSpell = action.copy(
+        targets = emptyList(),
+        damageDistribution = null,
+        modeTargetsOrdered = emptyList(),
+        modeDamageDistribution = emptyMap(),
+        paymentStrategy = PaymentStrategy.AutoPay,
+        additionalCostPayment = null,
+        alternativePayment = null,
+        chosenModes = emptyList(),
+        xValue = null,
+    )
+
+    /** Discard caller-filled activated-ability choices while retaining candidate identity. */
+    private fun normalizeActivateAbility(action: ActivateAbility): ActivateAbility = action.copy(
+        targets = emptyList(),
+        damageDistribution = null,
+        costPayment = null,
+        manaColorChoice = null,
+        xValue = null,
+        repeatCount = 1,
+        paymentStrategy = PaymentStrategy.AutoPay,
+        // Equip payment is a candidate identity: NORMAL and FREE_FIRST_EQUIP are distinct
+        // server-offered actions. Other alternative-payment assignments are caller-filled
+        // resource choices and remain normalized away as before.
+        alternativePayment = action.alternativePayment
+            ?.takeIf { it.equipPayment != null }
+            ?.copy(
+                delvedCards = emptyList(),
+                convokedCreatures = emptyMap(),
+                harmonizeCreature = null,
+                tapForGenericPermanents = emptySet(),
+            ),
+    )
 }

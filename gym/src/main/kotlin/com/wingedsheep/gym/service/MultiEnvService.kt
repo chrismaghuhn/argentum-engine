@@ -9,6 +9,7 @@ import com.wingedsheep.gym.GameEnvironmentMode
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.gym.GymEnv
 import com.wingedsheep.gym.EpisodeDiagnostics
+import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.deckbuild.DeckbuildEnvironment
@@ -106,6 +107,9 @@ class MultiEnvService(
 
     /** Authoritative episode diagnostics for the JVM-side A9 harness. */
     fun diagnostics(envId: EnvId): EpisodeDiagnostics = requireGameEnv(envId).diagnostics
+
+    /** Authoritative lifecycle closure for a game environment, when the episode has closed. */
+    fun episodeClosure(envId: EnvId): EpisodeClosureV1? = requireGameEnv(envId).episodeClosure
 
     // =========================================================================
     // Observations / stepping

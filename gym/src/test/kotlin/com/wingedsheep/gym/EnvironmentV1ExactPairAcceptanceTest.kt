@@ -1,6 +1,7 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.BudgetModalResponse
+import com.wingedsheep.engine.core.CancelDecisionResponse
 import com.wingedsheep.engine.core.ActivationCostComponentRefV1
 import com.wingedsheep.engine.core.AtomicManaCostUnitV1
 import com.wingedsheep.engine.core.CardsSelectedResponse
@@ -68,8 +69,10 @@ import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.serialization.CardSerialization
 import io.kotest.core.spec.style.FunSpec
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -1218,6 +1221,81 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         evidence.traces.size shouldBe 2
     }
 
+    test("A4 rejects a semantic structured-response mutation")
+        .config(timeout = 15.minutes) {
+        val evidence = runExactPairReplayGate()
+        val trace = evidence.traces.firstOrNull { candidate ->
+            candidate.decisions.any { it is ReplayDecision.Structured }
+        } ?: error("Accepted exact-pair replay cases contain no structured response")
+        val index = trace.decisions.indexOfFirst { it is ReplayDecision.Structured }
+        val original = trace.actions[index] as? SubmitDecision
+            ?: error("Structured exact-pair decision did not record SubmitDecision")
+        val mutated = trace.copy(
+            actions = trace.actions.toMutableList().also { actions ->
+                actions[index] = original.copy(
+                    response = CancelDecisionResponse(original.response.decisionId)
+                )
+            }
+        )
+
+        val verification = CompactReplayBridge.verifyFrameSource(
+            trace = mutated,
+            registry = exactPairRegistry(),
+            repositoryRoot = repositoryRoot(),
+        )
+
+        verification.fidelity shouldNotBe "EXACT"
+    }
+
+    test("A4 ignores a fresh decision routing identity")
+        .config(timeout = 15.minutes) {
+        val evidence = runExactPairReplayGate()
+        val trace = evidence.traces.first()
+        val index = trace.actions.indexOfFirst { it is SubmitDecision }
+        check(index >= 0) { "Accepted exact-pair replay contains no decision response" }
+        val original = trace.actions[index] as SubmitDecision
+        val rebound = trace.copy(
+            actions = trace.actions.toMutableList().also { actions ->
+                actions[index] = original.copy(
+                    response = original.response.withDecisionId("fresh-a4-routing-id")
+                )
+            }
+        )
+
+        val verification = CompactReplayBridge.verifyFrameSource(
+            trace = rebound,
+            registry = exactPairRegistry(),
+            repositoryRoot = repositoryRoot(),
+        )
+
+        verification.fidelity shouldBe "EXACT"
+    }
+
+    test("A4 rejects a reconstructed frame whose public domain was mutated")
+        .config(timeout = 15.minutes) {
+        val evidence = runExactPairReplayGate()
+        val trace = evidence.traces.first()
+        val original = trace.frames.first()
+        val changedDomain = checkNotNull(original.domain).copy(candidates = emptyList())
+        val changedFrame = original.copy(
+            domain = changedDomain,
+            candidateDomainDigest = CandidateDomainDigestV1.from(changedDomain),
+        )
+        val mutated = trace.copy(
+            frames = trace.frames.toMutableList().also { frames ->
+                frames[0] = changedFrame
+            },
+        )
+
+        shouldThrow<IllegalStateException> {
+            CompactReplayBridge.verifyFrameSource(
+                trace = mutated,
+                registry = exactPairRegistry(),
+                repositoryRoot = repositoryRoot(),
+            )
+        }
+    }
+
     test("final exact-pair privacy gate audits both player perspectives")
         .config(timeout = 15.minutes) {
         val evidence = runExactPairPrivacyGate()
@@ -1474,7 +1552,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 }
             }
             fun recordFrame(game: TrainingObservation) {
-                frames += replayFrame(game)
+                frames += replayFrame(
+                    observation = game,
+                    includeBoundaryContracts = captureAuthoritativeReplay,
+                )
                 recordPublicReachability(game)
             }
             val checkpointCadence = if (captureAuthoritativeReplay) {
@@ -1487,12 +1568,6 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 ?: error("Replay capture requires a TrainingObservation after reset")
             assertEnvironmentDiagnosticsZero(environment)
             recordFrame(observation)
-            if (captureAuthoritativeReplay) {
-                checkpoints += ReplayCheckpointData(
-                    afterActionCount = 0,
-                    fingerprint = authoritativeReplayFingerprint(environment.state),
-                )
-            }
 
             val policy = DeterministicExternalPolicy()
             var policyState = DeterministicPolicyState(policySeed(episode))
@@ -1596,6 +1671,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 checkpoints = checkpoints,
                 gameConfig = gameConfig,
                 playerIds = environment.playerIds,
+                closure = environment.episodeClosure,
                 requiredPayloadFields = requiredPayloadFields,
                 observedActionKinds = observedActionKinds,
                 observedDecisionFamilies = observedDecisionFamilies,
@@ -1618,12 +1694,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             var observation = result.observation as? TrainingObservation
                 ?: error("Replay requires a TrainingObservation after reset")
             assertReplayFrame(trace, 0, observation, environment)
-            val checkpoints = mutableListOf(
-                ReplayCheckpointData(
-                    afterActionCount = 0,
-                    fingerprint = authoritativeReplayFingerprint(environment.state),
-                ),
-            )
+            val checkpoints = mutableListOf<ReplayCheckpointData>()
             val checkpointCadence = CompactReplayBridge.checkpointCadence(repositoryRoot())
 
             check(trace.actions.size == trace.decisions.size) {
@@ -1684,7 +1755,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                     fingerprint = authoritativeReplayFingerprint(environment.state),
                 )
             }
-            return trace.copy(checkpoints = checkpoints)
+            return trace.copy(
+                checkpoints = checkpoints,
+                closure = environment.episodeClosure,
+            )
         }
 
         /**
@@ -1777,11 +1851,24 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         private fun authoritativeReplayFingerprint(state: com.wingedsheep.engine.state.GameState): String =
             CompactReplayBridge.fingerprint(state)
 
-        private fun replayFrame(observation: TrainingObservation): ReplayFrame = ReplayFrame(
+        private fun replayFrame(
+            observation: TrainingObservation,
+            includeBoundaryContracts: Boolean = false,
+        ): ReplayFrame = ReplayFrame(
             semanticObservation = ObservationCanonicalizer.semanticJson(observation),
             stateDigest = observation.stateDigest,
             terminated = observation.terminated,
             truncated = observation.truncated,
+            winnerId = observation.winnerId,
+            playerObservation = PlayerObservationV1.from(observation).takeIf {
+                includeBoundaryContracts
+            },
+            domain = CompleteLegalDomainV1.from(observation).takeIf {
+                includeBoundaryContracts
+            },
+            candidateDomainDigest = CandidateDomainDigestV1.from(observation).takeIf {
+                includeBoundaryContracts
+            },
         )
 
         private fun semanticActionOrdinal(
@@ -3358,6 +3445,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         checkpoints = emptyList(),
                         gameConfig = checkNotNull(replayGameConfig),
                         playerIds = replayPlayerIds,
+                        closure = service.episodeClosure(checkNotNull(envId)),
                         requiredPayloadFields = replayRequiredPayloadFields,
                         observedActionKinds = replayObservedActionKinds,
                         observedDecisionFamilies = replayObservedDecisionFamilies,
@@ -3788,6 +3876,10 @@ private data class ReplayFrame(
     val stateDigest: String,
     val terminated: Boolean,
     val truncated: Boolean,
+    val winnerId: EntityId?,
+    val playerObservation: PlayerObservationV1? = null,
+    val domain: CompleteLegalDomainV1? = null,
+    val candidateDomainDigest: CandidateDomainDigestV1? = null,
 )
 
 private sealed interface ReplayDecision {
@@ -3812,6 +3904,7 @@ private data class ReplayTrace(
     val checkpoints: List<ReplayCheckpointData>,
     val gameConfig: GameConfig,
     val playerIds: List<EntityId>,
+    val closure: EpisodeClosureV1?,
     val requiredPayloadFields: Set<String>,
     val observedActionKinds: Map<String, Int>,
     val observedDecisionFamilies: Map<String, Int>,
@@ -3858,6 +3951,13 @@ private data class AuthoritativeReplayCase(
     val checkpointCount: Int,
 )
 
+private data class FrameSourceVerification(
+    val fidelity: String,
+    val frameCount: Int,
+    val failureReason: String?,
+    val frames: List<Any>,
+)
+
 private data class ReplayCheckpointData(
     val afterActionCount: Int,
     val fingerprint: String,
@@ -3874,6 +3974,8 @@ private object CompactReplayBridge {
     private const val REPLAY_CODEC = "com.wingedsheep.gameserver.replay.ReplayCodec"
     private const val REPLAY_FINGERPRINT = "com.wingedsheep.gameserver.replay.ReplayFingerprint"
     private const val REPLAY_RECONSTRUCTOR = "com.wingedsheep.gameserver.replay.ReplayReconstructor"
+    private const val GYM_REPLAY_FRAME_SOURCE =
+        "com.wingedsheep.gameserver.replay.GymReplayFrameSource"
     private const val REPLAY_SETUP = "com.wingedsheep.gameserver.replay.ReplaySetup"
     private const val REPLAY_PLAYER_SETUP = "com.wingedsheep.gameserver.replay.ReplayPlayerSetup"
     private const val REPLAY_PLAYER_INFO = "com.wingedsheep.gameserver.replay.ReplayPlayerInfo"
@@ -3931,15 +4033,116 @@ private object CompactReplayBridge {
             "CompactReplay reconstructed $frameCount frames; captured ${trace.frames.size}"
         }
 
+        val frameSourceVerification = verifyFrameSource(
+            replay = decoded,
+            replayRuntime = replayRuntime,
+            registry = registry,
+            trace = trace,
+        )
+        val verifiedFidelity = frameSourceVerification.fidelity
+        check(verifiedFidelity == "EXACT") {
+            "Verified replay frame source was $verifiedFidelity for ${trace.episode}: " +
+                frameSourceVerification.failureReason
+        }
+        val verifiedFrameCount = frameSourceVerification.frameCount
+        check(verifiedFrameCount == trace.frames.size) {
+            "Verified replay frame source reconstructed $verifiedFrameCount frames; " +
+                "captured ${trace.frames.size}"
+        }
+        assertFrameSourceMatches(trace, frameSourceVerification, replayRuntime)
+
         return AuthoritativeReplayCase(
             caseLabel = "${trace.episode.rosterLabel}/seed=${trace.episode.seed}/" +
                 "starting=${trace.episode.startingPlayerIndex}",
             replayVersion = replayVersion,
             codecRoundTrip = true,
-            fidelity = fidelity,
-            frameCount = frameCount,
+            fidelity = verifiedFidelity,
+            frameCount = verifiedFrameCount,
             checkpointCount = trace.checkpoints.size,
         )
+    }
+
+    fun verifyFrameSource(
+        trace: ReplayTrace,
+        registry: CardRegistry,
+        repositoryRoot: Path,
+    ): FrameSourceVerification {
+        val replayRuntime = runtime(repositoryRoot)
+        val replay = replayRuntime.compactReplay(trace)
+        val codec = replayRuntime.singleton(REPLAY_CODEC)
+        val encoded = replayRuntime.invoke(codec, "encode", replay) as String
+        val decoded = checkNotNull(replayRuntime.invoke(codec, "decode", encoded))
+        return verifyFrameSource(decoded, replayRuntime, registry, trace).also {
+            assertFrameSourceMatches(trace, it, replayRuntime)
+        }
+    }
+
+    private fun verifyFrameSource(
+        replay: Any,
+        replayRuntime: ReplayRuntime,
+        registry: CardRegistry,
+        trace: ReplayTrace,
+    ): FrameSourceVerification {
+        val frameSource = replayRuntime.newInstance(
+            GYM_REPLAY_FRAME_SOURCE,
+            arrayOf(
+                replayRuntime.loadClass(COMPACT_REPLAY),
+                CardRegistry::class.java,
+                com.wingedsheep.engine.registry.PrintingRegistry::class.java,
+                com.wingedsheep.engine.registry.TokenArtRegistry::class.java,
+                Int::class.javaPrimitiveType!!,
+                EpisodeClosureV1::class.java,
+            ),
+            arrayOf(replay, registry, null, null, 0, closureFor(trace)),
+        )
+        val verification = checkNotNull(replayRuntime.invoke(frameSource, "verify"))
+        val frames = checkNotNull(replayRuntime.invoke(verification, "getFrames")) as List<Any>
+        return FrameSourceVerification(
+            fidelity = checkNotNull(replayRuntime.invoke(verification, "getFidelity")).toString(),
+            frameCount = frames.size,
+            failureReason = replayRuntime.invoke(verification, "getFailureReason") as String?,
+            frames = frames,
+        )
+    }
+
+    private fun assertFrameSourceMatches(
+        trace: ReplayTrace,
+        verification: FrameSourceVerification,
+        replayRuntime: ReplayRuntime,
+    ) {
+        if (verification.fidelity != "EXACT") return
+        check(verification.frames.size == trace.frames.size) {
+            "Verified replay frame source reconstructed ${verification.frames.size} frames; " +
+                "captured ${trace.frames.size}"
+        }
+        trace.frames.forEachIndexed { index, expected ->
+            val actual = verification.frames[index]
+            check(replayRuntime.invoke(actual, "getReplayActionIndex") == index) {
+                "Verified replay frame $index has the wrong replay coordinate"
+            }
+            val expectedObservation = checkNotNull(expected.playerObservation) {
+                "Exact-pair capture omitted PlayerObservationV1 at frame $index"
+            }
+            val expectedDomain = checkNotNull(expected.domain) {
+                "Exact-pair capture omitted CompleteLegalDomainV1 at frame $index"
+            }
+            val expectedDigest = checkNotNull(expected.candidateDomainDigest) {
+                "Exact-pair capture omitted CandidateDomainDigestV1 at frame $index"
+            }
+            check(replayRuntime.invoke(actual, "getObservation") == expectedObservation) {
+                "Verified replay frame $index changed PlayerObservationV1"
+            }
+            check(replayRuntime.invoke(actual, "getDomain") == expectedDomain) {
+                "Verified replay frame $index changed CompleteLegalDomainV1"
+            }
+            check(replayRuntime.invoke(actual, "getCandidateDomainDigest") == expectedDigest) {
+                "Verified replay frame $index changed CandidateDomainDigestV1"
+            }
+        }
+    }
+
+    private fun closureFor(trace: ReplayTrace): EpisodeClosureV1 = checkNotNull(trace.closure) {
+        "Exact-pair replay trace has no authoritative lifecycle closure for ${trace.episode}"
     }
 
     private fun runtime(repositoryRoot: Path): ReplayRuntime {
