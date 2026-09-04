@@ -93,6 +93,82 @@ object ObservationCanonicalizer {
      */
     fun semanticJson(observation: TrainingObservation): String {
         val encoded = json.encodeToJsonElement(TrainingObservation.serializer(), observation).jsonObject
+        return semanticJson(
+            encoded = encoded,
+            legalActionFingerprints = observation.legalActions.map(::semanticActionFingerprint),
+        )
+    }
+
+    /**
+     * Reassemble the source semantic observation from the durable A1 projection and A2 domain.
+     * The projection deliberately omits legal actions and structured pending-domain data; those
+     * values are supplied by [domain]. This is a digest-recomputation seam, not a second
+     * observation or visibility model.
+     */
+    internal fun semanticJson(
+        observation: PlayerObservationV1,
+        domain: CompleteLegalDomainV1,
+    ): String {
+        requireDomainMatchesObservation(observation, domain)
+        val projection = json
+            .encodeToJsonElement(PlayerObservationV1.serializer(), observation)
+            .jsonObject
+            .toMutableMap()
+        projection["schemaHash"] = checkNotNull(projection.remove("wireSchemaHash"))
+        projection.remove("projectionVersion")
+        projection.remove("projectionSchemaIdentity")
+        projection.remove("observationDigest")
+
+        return semanticJson(
+            encoded = JsonObject(projection),
+            legalActionFingerprints = when (domain.kind) {
+                CompleteLegalDomainKind.ACTION_CANDIDATES,
+                CompleteLegalDomainKind.FOLDED_DECISION_OPTIONS,
+                -> domain.candidates
+
+                CompleteLegalDomainKind.STRUCTURED_DECISION -> emptyList()
+            },
+            structuredDomain = domain.structuredDomain,
+        )
+    }
+
+    private fun requireDomainMatchesObservation(
+        observation: PlayerObservationV1,
+        domain: CompleteLegalDomainV1,
+    ) {
+        val pending = observation.pendingDecision
+        val isActingPerspective = observation.agentToAct == observation.perspectivePlayerId
+        val expectedKind = when {
+            pending == null -> CompleteLegalDomainKind.ACTION_CANDIDATES
+            !isActingPerspective -> CompleteLegalDomainKind.ACTION_CANDIDATES
+            pending.requiresStructuredResponse -> CompleteLegalDomainKind.STRUCTURED_DECISION
+            else -> CompleteLegalDomainKind.FOLDED_DECISION_OPTIONS
+        }
+        require(domain.kind == expectedKind) {
+            "A1 observation and A2 domain have incompatible decision shapes"
+        }
+        if (pending != null && isActingPerspective) {
+            require(domain.decisionKind == pending.kind && domain.shape == pending.shape) {
+                "A1 observation and A2 domain have incompatible pending-decision metadata"
+            }
+            if (pending.requiresStructuredResponse) {
+                require(domain.structuredDomain != null) {
+                    "A1 structured observation has no A2 structured domain"
+                }
+            }
+        }
+        if (pending != null && !isActingPerspective) {
+            require(domain.candidates.isEmpty()) {
+                "A2 non-acting observation domain must be empty"
+            }
+        }
+    }
+
+    private fun semanticJson(
+        encoded: JsonObject,
+        legalActionFingerprints: List<JsonObject>,
+        structuredDomain: StructuredDecisionDomain? = null,
+    ): String {
         val semantic = encoded.toMutableMap()
         semantic.remove("stateDigest")
 
@@ -101,10 +177,15 @@ object ObservationCanonicalizer {
                 val pendingSemantic = pending.filterKeys {
                     it !in setOf("decisionId", "prompt", "sourceName", "effectHint")
                 }.toMutableMap()
-                pending["structuredDomain"]?.let { domain ->
-                    if (domain is JsonObject) {
-                        pendingSemantic["structuredDomain"] = semanticStructuredDomain(domain)
-                    }
+                val structuredSemantic = when {
+                    pending["structuredDomain"] is JsonObject ->
+                        semanticStructuredDomain(pending.getValue("structuredDomain").jsonObject)
+
+                    structuredDomain != null -> semanticStructuredDomain(structuredDomain)
+                    else -> null
+                }
+                structuredSemantic?.let { domain ->
+                    pendingSemantic["structuredDomain"] = domain
                 }
                 JsonObject(pendingSemantic)
             } else {
@@ -113,9 +194,7 @@ object ObservationCanonicalizer {
         }
 
         semantic["legalActions"] = JsonArray(
-            sortSemanticActionFingerprints(
-                observation.legalActions.map(::semanticActionFingerprint),
-            )
+            sortSemanticActionFingerprints(legalActionFingerprints)
         )
 
         return canonicalize(JsonObject(semantic)).toString()
@@ -411,6 +490,12 @@ object ObservationCanonicalizer {
             put("objectSemantics", JsonArray(objectSemantics))
         }).jsonObject
     }
+
+    /** Canonical semantic form of a typed public structured domain using source JSON settings. */
+    internal fun semanticStructuredDomain(domain: StructuredDecisionDomain): JsonObject =
+        semanticStructuredDomain(
+            json.encodeToJsonElement(StructuredDecisionDomain.serializer(), domain).jsonObject,
+        )
 
     /**
      * Stable semantic object data for an ordering decision. Ordinary entity IDs remain the
