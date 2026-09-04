@@ -633,6 +633,37 @@ class TrajectoryV1WriterTest : FunSpec({
         storage shouldContain "\"storageSchemaIdentity\":\"argentum-trajectory-events@v1\""
     }
 
+    test("unknown future storage schema version or identity fails closed during shard verification") {
+        listOf(
+            "\"storageSchemaVersion\":1" to "\"storageSchemaVersion\":2",
+            "\"storageSchemaIdentity\":\"argentum-trajectory-events@v1\"" to
+                "\"storageSchemaIdentity\":\"argentum-trajectory-events@v2\"",
+        ).forEach { (currentField, futureField) ->
+            val fixture = validFixture()
+            val output = Files.createTempDirectory("a6-storage-schema-negative-")
+            val mutateAfterShardMove: (java.nio.file.Path, java.nio.file.Path) -> Unit = { source, target ->
+                moveAtomically(source, target)
+                if (target.fileName.toString().endsWith(TRAJECTORY_V1_SHARD_EXTENSION)) {
+                    val current = Files.readString(target)
+                    check(current.contains(currentField))
+                    Files.writeString(target, current.replace(currentField, futureField))
+                }
+            }
+            val writer = TrajectoryV1Writer(
+                output,
+                DatasetMetadataV1(maxShardBytes = 1_000_000, maxEpisodesPerShard = 2),
+                atomicMove = mutateAfterShardMove,
+            )
+            writer.appendEpisode(0, fixture.trajectory, fixture.binding)
+
+            shouldThrow<TrajectoryV1StorageException> { writer.finalizeDataset() }
+                .reason shouldBe TrajectoryQuarantineReason.SHARD_INTEGRITY_FAILURE
+            Files.list(output).use { paths ->
+                paths.anyMatch { path -> path.fileName.toString().startsWith("dataset-") } shouldBe false
+            }
+        }
+    }
+
     test("manifest validation rejects self-consistent shards above configured bounds") {
         val fixture = validFixture()
         val metadata = DatasetMetadataV1(maxShardBytes = 1_000_000, maxEpisodesPerShard = 2)
