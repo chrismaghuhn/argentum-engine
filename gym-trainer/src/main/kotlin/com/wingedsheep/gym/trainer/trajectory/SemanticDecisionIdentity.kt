@@ -1626,14 +1626,11 @@ data class SemanticDecisionIdentityV1 private constructor(
             )
         }
 
-        /**
-         * Build the same frozen A3 identity from a linear prefix-digest snapshot. The snapshot
-         * carries its input count so a digest cannot be paired with a different replay coordinate.
-         */
+        /** Build the same frozen A3 identity from a real linear prefix accumulator. */
         internal fun from(
             semanticEpisodeId: String,
-            prefixSnapshot: SemanticReplayPrefixDigestSnapshotV1,
-            replayActionIndex: Int = prefixSnapshot.inputCount,
+            prefixAccumulator: SemanticReplayPrefixAccumulatorV1,
+            replayActionIndex: Int = prefixAccumulator.inputCount,
             observation: PlayerObservationV1,
             domain: CompleteLegalDomainV1,
             perspectivePlayerId: String? = null,
@@ -1641,8 +1638,8 @@ data class SemanticDecisionIdentityV1 private constructor(
         ): SemanticDecisionIdentityV1 {
             return fromDigest(
                 semanticEpisodeId = semanticEpisodeId,
-                prefixDigest = prefixSnapshot.digest,
-                prefixInputCount = prefixSnapshot.inputCount,
+                prefixDigest = prefixAccumulator.currentPrefixDigest(),
+                prefixInputCount = prefixAccumulator.inputCount,
                 replayActionIndex = replayActionIndex,
                 observation = observation,
                 domain = domain,
@@ -1662,7 +1659,7 @@ data class SemanticDecisionIdentityV1 private constructor(
             decisionKind: SemanticDecisionKindV1?,
         ): SemanticDecisionIdentityV1 {
             require(replayActionIndex == prefixInputCount) {
-                "Replay action index must equal the supplied prefix snapshot input count"
+                "Replay action index must equal the supplied prefix accumulator input count"
             }
             val derivedPerspectivePlayerId = observation.perspectivePlayerId.value
             require(perspectivePlayerId == null || perspectivePlayerId == derivedPerspectivePlayerId) {

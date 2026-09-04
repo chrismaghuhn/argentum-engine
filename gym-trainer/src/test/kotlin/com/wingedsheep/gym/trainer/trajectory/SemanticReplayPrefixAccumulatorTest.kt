@@ -25,8 +25,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
-import java.lang.reflect.Modifier
 
 /** Characterization of the accepted A3 prefix bytes before adding the linear seam. */
 class SemanticReplayPrefixAccumulatorTest : FunSpec({
@@ -173,37 +173,60 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
         }
     }
 
-    test("A35-01 empty snapshot has legacy digest parity") {
+    test("A35-01 empty accumulator identity has legacy digest parity") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val accumulator = SemanticReplayPrefixAccumulatorV1()
 
-        accumulator.snapshot().inputCount shouldBe 0
-        accumulator.snapshot().digest shouldBe legacyDigest(emptyList())
+        val identity = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
+        identity.replayActionIndex shouldBe 0
+        identity.replayPrefixDigest shouldBe legacyDigest(emptyList()).value
     }
 
-    test("A35-02 single action snapshot has legacy digest parity") {
+    test("A35-02 single action accumulator identity has legacy digest parity") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val inputs = listOf(action("PASS"))
         val accumulator = SemanticReplayPrefixAccumulatorV1()
         accumulator.append(inputs.single())
 
-        accumulator.snapshot().inputCount shouldBe 1
-        accumulator.snapshot().digest shouldBe legacyDigest(inputs)
+        val identity = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
+        identity.replayActionIndex shouldBe 1
+        identity.replayPrefixDigest shouldBe legacyDigest(inputs).value
     }
 
-    test("A35-03 single response snapshot has legacy digest parity") {
+    test("A35-03 single response accumulator identity has legacy digest parity") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val inputs = listOf(response(true))
         val accumulator = SemanticReplayPrefixAccumulatorV1()
         accumulator.append(inputs.single())
 
-        accumulator.snapshot().inputCount shouldBe 1
-        accumulator.snapshot().digest shouldBe legacyDigest(inputs)
+        val identity = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
+        identity.replayActionIndex shouldBe 1
+        identity.replayPrefixDigest shouldBe legacyDigest(inputs).value
     }
 
     test("A35-04 accepted structured response input crosses the existing A3 validator") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val inputs = listOf(acceptedStructuredResponse())
         val accumulator = SemanticReplayPrefixAccumulatorV1()
         accumulator.append(inputs.single())
 
-        accumulator.snapshot().digest shouldBe legacyDigest(inputs)
+        accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        ).replayPrefixDigest shouldBe legacyDigest(inputs).value
     }
 
     test("A35-04 mixed ordered prefixes retain legacy digest parity after every append") {
@@ -214,55 +237,86 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
             structuredResponse(),
             response(false),
         )
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val accumulator = SemanticReplayPrefixAccumulatorV1()
 
         inputs.forEachIndexed { index, input ->
             accumulator.append(input)
-            val snapshot = accumulator.snapshot()
-            snapshot.inputCount shouldBe index + 1
-            snapshot.digest shouldBe legacyDigest(inputs.take(index + 1))
+            accumulator.semanticDecisionIdentity(
+                semanticEpisodeId = semanticEpisodeId,
+                observation = observation,
+                domain = domain,
+            ).replayPrefixDigest shouldBe legacyDigest(inputs.take(index + 1)).value
         }
     }
 
-    test("A35-05 snapshots do not consume or mutate the live accumulator") {
+    test("A35-05 identity queries do not consume or mutate the live accumulator") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val firstInput = action("FIRST")
         val secondInput = response(true)
         val thirdInput = structuredResponse()
         val accumulator = SemanticReplayPrefixAccumulatorV1()
 
         accumulator.append(firstInput)
-        val first = accumulator.snapshot()
-        val repeated = accumulator.snapshot()
+        val first = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
+        val repeated = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
         first shouldBe repeated
 
         accumulator.append(secondInput)
-        val second = accumulator.snapshot()
-        second.digest shouldBe legacyDigest(listOf(firstInput, secondInput))
+        val second = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
+        second.replayPrefixDigest shouldBe legacyDigest(listOf(firstInput, secondInput)).value
 
         accumulator.append(thirdInput)
-        val third = accumulator.snapshot()
-        third.digest shouldBe legacyDigest(listOf(firstInput, secondInput, thirdInput))
-        first.digest shouldBe legacyDigest(listOf(firstInput))
+        val third = accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
+        third.replayPrefixDigest shouldBe legacyDigest(
+            listOf(firstInput, secondInput, thirdInput),
+        ).value
+        first.replayPrefixDigest shouldBe legacyDigest(listOf(firstInput)).value
     }
 
     test("A35-06 input ordering remains semantic") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val first = action("A")
         val second = response(true)
         val forward = SemanticReplayPrefixAccumulatorV1().also {
             it.append(first)
             it.append(second)
-        }.snapshot()
+        }.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
         val reverse = SemanticReplayPrefixAccumulatorV1().also {
             it.append(second)
             it.append(first)
-        }.snapshot()
+        }.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            observation = observation,
+            domain = domain,
+        )
 
-        forward.digest shouldBe legacyDigest(listOf(first, second))
-        reverse.digest shouldBe legacyDigest(listOf(second, first))
-        forward.digest shouldNotBe reverse.digest
+        forward.replayPrefixDigest shouldBe legacyDigest(listOf(first, second)).value
+        reverse.replayPrefixDigest shouldBe legacyDigest(listOf(second, first)).value
+        forward.replayPrefixDigest shouldNotBe reverse.replayPrefixDigest
     }
 
-    test("A35-07 incremental prefix snapshots produce the exact legacy semantic decision identity") {
+    test("A35-07 the accumulator produces the exact legacy semantic decision identity") {
         val (semanticEpisodeId, observation, domain) = identityFixture()
         val chosen = ChosenSemanticActionV1.from(domain, domain.candidates.first { candidate ->
             candidate["affordable"] == JsonPrimitive(true)
@@ -279,9 +333,8 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
             observation = observation,
             domain = domain,
         )
-        val incremental = SemanticDecisionIdentityV1.from(
+        val incremental = accumulator.semanticDecisionIdentity(
             semanticEpisodeId = semanticEpisodeId,
-            prefixSnapshot = accumulator.snapshot(),
             replayActionIndex = 1,
             observation = observation,
             domain = domain,
@@ -292,6 +345,7 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
     }
 
     test("A35-08 parity holds over a deterministic 256-input prefix") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
         val inputs = buildList {
             repeat(256) { index ->
                 add(if (index % 3 == 0) response(index % 2 == 0) else action("ACTION-$index"))
@@ -301,19 +355,22 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
 
         inputs.forEachIndexed { index, input ->
             accumulator.append(input)
-            accumulator.snapshot().digest shouldBe legacyDigest(inputs.take(index + 1))
+            accumulator.semanticDecisionIdentity(
+                semanticEpisodeId = semanticEpisodeId,
+                observation = observation,
+                domain = domain,
+            ).replayPrefixDigest shouldBe legacyDigest(inputs.take(index + 1)).value
         }
     }
 
-    test("A35-09 snapshot count must match replay action index") {
+    test("A35-09 accumulator count must match replay action index") {
         val (semanticEpisodeId, observation, domain) = identityFixture()
         val accumulator = SemanticReplayPrefixAccumulatorV1()
         accumulator.append(action("PASS"))
 
         shouldThrow<IllegalArgumentException> {
-            SemanticDecisionIdentityV1.from(
+            accumulator.semanticDecisionIdentity(
                 semanticEpisodeId = semanticEpisodeId,
-                prefixSnapshot = accumulator.snapshot(),
                 replayActionIndex = 2,
                 observation = observation,
                 domain = domain,
@@ -352,18 +409,27 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
         }
     }
 
-    test("digest snapshots are opaque values rather than public serializable DTOs") {
-        val snapshot = SemanticReplayPrefixAccumulatorV1().snapshot()
-
-        snapshot.javaClass.declaredConstructors.none {
-            Modifier.isPublic(it.modifiers) && !it.isSynthetic
-        } shouldBe true
-        snapshot.javaClass.declaredMethods.none { it.name == "copy" } shouldBe true
+    test("the linear accumulator identity path has no digest-state injection constructor") {
+        SemanticReplayPrefixAccumulatorV1::class.java.declaredConstructors
+            .filterNot { it.isSynthetic }
+            .none { it.parameterTypes.isNotEmpty() } shouldBe true
     }
 
-    test("append work only processes the new canonical input and snapshot work does not append to live state") {
-        val state = CountingDigestState()
-        val accumulator = SemanticReplayPrefixAccumulatorV1(state)
+    test("the linear identity path is obtained directly from a real accumulator") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
+        val accumulator = SemanticReplayPrefixAccumulatorV1()
+
+        accumulator.semanticDecisionIdentity(
+            semanticEpisodeId = semanticEpisodeId,
+            replayActionIndex = 0,
+            observation = observation,
+            domain = domain,
+        ).replayActionIndex shouldBe 0
+    }
+
+    test("append work only processes the new canonical input and identity queries do not append to live state") {
+        val (semanticEpisodeId, observation, domain) = identityFixture()
+        val accumulator = SemanticReplayPrefixAccumulatorV1()
         val inputs = buildList {
             repeat(256) { index ->
                 add(if (index % 2 == 0) action("ACTION-$index") else response(index % 3 == 0))
@@ -371,34 +437,27 @@ class SemanticReplayPrefixAccumulatorTest : FunSpec({
         }
 
         inputs.forEachIndexed { index, input ->
-            val beforeAppend = state.liveUpdatedByteCount
+            val beforeAppend = accumulator.processedByteCount
             accumulator.append(input)
-            val appendedBytes = state.liveUpdatedByteCount - beforeAppend
-            val expectedBytes = input.canonicalJson().toByteArray().size + if (index == 0) 0 else 1
+            val appendedBytes = accumulator.processedByteCount - beforeAppend
+            val expectedBytes = input.canonicalJson().toByteArray(StandardCharsets.UTF_8).size +
+                if (index == 0) 0 else 1
             appendedBytes shouldBe expectedBytes
 
-            val beforeSnapshot = state.liveUpdatedByteCount
-            accumulator.snapshot()
-            accumulator.snapshot()
-            state.liveUpdatedByteCount shouldBe beforeSnapshot
+            val beforeIdentity = accumulator.processedByteCount
+            accumulator.semanticDecisionIdentity(
+                semanticEpisodeId = semanticEpisodeId,
+                replayActionIndex = index + 1,
+                observation = observation,
+                domain = domain,
+            )
+            accumulator.semanticDecisionIdentity(
+                semanticEpisodeId = semanticEpisodeId,
+                replayActionIndex = index + 1,
+                observation = observation,
+                domain = domain,
+            )
+            accumulator.processedByteCount shouldBe beforeIdentity
         }
     }
 })
-
-private class CountingDigestState : SemanticReplayDigestState {
-    private val digest = MessageDigest.getInstance("SHA-256")
-
-    var liveUpdatedByteCount: Int = 0
-        private set
-
-    override fun update(bytes: ByteArray) {
-        digest.update(bytes)
-        liveUpdatedByteCount += bytes.size
-    }
-
-    override fun snapshotDigest(closingBytes: ByteArray): ByteArray {
-        val copy = digest.clone() as MessageDigest
-        copy.update(closingBytes)
-        return copy.digest()
-    }
-}

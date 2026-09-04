@@ -1,5 +1,7 @@
 package com.wingedsheep.gym.trainer.trajectory
 
+import com.wingedsheep.gym.contract.CompleteLegalDomainV1
+import com.wingedsheep.gym.contract.PlayerObservationV1
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import kotlinx.serialization.KSerializer
@@ -155,62 +157,26 @@ data class SemanticReplayPrefixDigestV1(
 }
 
 /**
- * A content-addressed prefix digest paired with the number of inputs it covers.
- *
- * This is an in-memory computation result, not a durable trajectory field. The count prevents a
- * caller from pairing a digest for one prefix with a different replay action coordinate.
- */
-internal class SemanticReplayPrefixDigestSnapshotV1 private constructor(
-    internal val inputCount: Int,
-    internal val digest: SemanticReplayPrefixDigestV1,
-) {
-    init {
-        require(inputCount >= 0) {
-            "Semantic replay-prefix digest snapshot input count must not be negative"
-        }
-    }
-
-    override fun equals(other: Any?): Boolean = other is SemanticReplayPrefixDigestSnapshotV1 &&
-        inputCount == other.inputCount &&
-        digest == other.digest
-
-    override fun hashCode(): Int = 31 * inputCount + digest.hashCode()
-
-    override fun toString(): String =
-        "SemanticReplayPrefixDigestSnapshotV1(inputCount=$inputCount, digest=$digest)"
-
-    companion object {
-        internal fun create(
-            inputCount: Int,
-            digest: SemanticReplayPrefixDigestV1,
-        ): SemanticReplayPrefixDigestSnapshotV1 =
-            SemanticReplayPrefixDigestSnapshotV1(inputCount, digest)
-    }
-}
-
-/**
  * Incremental, in-memory SHA-256 state for the accepted canonical semantic replay-prefix bytes.
  *
  * The legacy [SemanticReplayPrefixV1.digest] remains the compatibility and parity authority. This
  * accumulator only avoids rebuilding the already appended JSON when a sequential caller asks for
- * a prefix snapshot. It retains no historical inputs or serialized prefix bytes.
+ * a semantic identity. It retains no historical inputs or serialized prefix bytes.
  */
-internal class SemanticReplayPrefixAccumulatorV1 private constructor(
-    private val digestState: SemanticReplayDigestState,
-    @Suppress("UNUSED_PARAMETER") privateMarker: Unit,
-) {
-    constructor() : this(MessageDigestSemanticReplayDigestState(), Unit)
-
-    /** Narrow in-module seam for deterministic append-work characterization. */
-    internal constructor(digestState: SemanticReplayDigestState) : this(digestState, Unit)
-
+internal class SemanticReplayPrefixAccumulatorV1 {
+    private val digest = MessageDigest.getInstance("SHA-256")
     private var currentInputCount: Int = 0
+    private var processedByteCountValue: Long = 0
 
     val inputCount: Int
         get() = currentInputCount
 
+    /** Read-only characterization of bytes fed to the live digest state. */
+    internal val processedByteCount: Long
+        get() = processedByteCountValue
+
     init {
-        digestState.update(SemanticReplayPrefixCanonicalFramingV1.openingBytes)
+        update(SemanticReplayPrefixCanonicalFramingV1.openingBytes)
     }
 
     /** Append one already validated semantic input without retaining its historical value. */
@@ -219,48 +185,34 @@ internal class SemanticReplayPrefixAccumulatorV1 private constructor(
             "Semantic replay-prefix accumulator input count overflow"
         }
         if (currentInputCount > 0) {
-            digestState.update(SemanticReplayPrefixCanonicalFramingV1.separatorBytes)
+            update(SemanticReplayPrefixCanonicalFramingV1.separatorBytes)
         }
-        digestState.update(input.canonicalJson().toByteArray(StandardCharsets.UTF_8))
+        update(input.canonicalJson().toByteArray(StandardCharsets.UTF_8))
         currentInputCount += 1
     }
 
     /**
-     * Finalize a copy of the current SHA-256 state with the fixed canonical JSON closing bytes.
-     * The live accumulator remains open for later appends.
+     * Build the current semantic identity without exposing a digest or snapshot-construction seam.
      */
-    internal fun snapshot(): SemanticReplayPrefixDigestSnapshotV1 {
-        val digestBytes = digestState.snapshotDigest(
-            SemanticReplayPrefixCanonicalFramingV1.closingBytes,
-        )
-        return SemanticReplayPrefixDigestSnapshotV1.create(
-            inputCount = currentInputCount,
-            digest = SemanticReplayPrefixDigestV1(value = digestBytes.toLowerHex()),
-        )
-    }
-}
+    internal fun semanticDecisionIdentity(
+        semanticEpisodeId: String,
+        replayActionIndex: Int = currentInputCount,
+        observation: PlayerObservationV1,
+        domain: CompleteLegalDomainV1,
+        perspectivePlayerId: String? = null,
+        decisionKind: SemanticDecisionKindV1? = null,
+    ): SemanticDecisionIdentityV1 = SemanticDecisionIdentityV1.from(
+        semanticEpisodeId = semanticEpisodeId,
+        prefixAccumulator = this,
+        replayActionIndex = replayActionIndex,
+        observation = observation,
+        domain = domain,
+        perspectivePlayerId = perspectivePlayerId,
+        decisionKind = decisionKind,
+    )
 
-private fun ByteArray.toLowerHex(): String = buildString(size * 2) {
-    for (byte in this@toLowerHex) {
-        append("%02x".format(byte))
-    }
-}
-
-/** Minimal state-copy abstraction used by the accumulator and its deterministic work test seam. */
-internal interface SemanticReplayDigestState {
-    fun update(bytes: ByteArray)
-
-    fun snapshotDigest(closingBytes: ByteArray): ByteArray
-}
-
-private class MessageDigestSemanticReplayDigestState : SemanticReplayDigestState {
-    private val digest = MessageDigest.getInstance("SHA-256")
-
-    override fun update(bytes: ByteArray) {
-        digest.update(bytes)
-    }
-
-    override fun snapshotDigest(closingBytes: ByteArray): ByteArray {
+    /** Finalize a copy of the current digest state with the fixed canonical closing bytes. */
+    internal fun currentPrefixDigest(): SemanticReplayPrefixDigestV1 {
         val copy = try {
             digest.clone() as MessageDigest
         } catch (exception: CloneNotSupportedException) {
@@ -269,8 +221,19 @@ private class MessageDigestSemanticReplayDigestState : SemanticReplayDigestState
                 exception,
             )
         }
-        copy.update(closingBytes)
-        return copy.digest()
+        copy.update(SemanticReplayPrefixCanonicalFramingV1.closingBytes)
+        return SemanticReplayPrefixDigestV1(value = copy.digest().toLowerHex())
+    }
+
+    private fun update(bytes: ByteArray) {
+        digest.update(bytes)
+        processedByteCountValue += bytes.size.toLong()
+    }
+}
+
+private fun ByteArray.toLowerHex(): String = buildString(size * 2) {
+    for (byte in this@toLowerHex) {
+        append("%02x".format(byte))
     }
 }
 
