@@ -168,4 +168,54 @@ class ReplayChosenInputBindingV1Test : FunSpec({
             )
         }
     }
+
+    test("combined binding keeps A4 verification and chosen-input identity together") {
+        val (domain, candidate, action) = actionFixture()
+        val chosenInput = ReplayChosenInputV1(
+            replayActionIndex = 0,
+            perspectivePlayerId = action.playerId,
+            chosenSemanticAction = ChosenSemanticActionV1.fromRecordedAction(domain, candidate, action),
+        )
+        val identity = ReplayContentIdentityV1(replayVersion = 5, value = "c".repeat(64))
+        val chosenBinding = ReplayChosenInputBindingV1(
+            replayContentIdentity = identity,
+            replayActionCount = 1,
+            chosenInputs = listOf(chosenInput),
+        )
+        val verificationBinding = ReplayVerificationBindingV1(
+            replayContentIdentity = identity,
+            verification = VerifiedReplayVerification(
+                replayVersion = 5,
+                replayActionCount = 1,
+                verifiedActionCount = 1,
+                fidelity = ReplayFidelity.UNVERIFIED,
+            ),
+        )
+        val combined = ReplayTrajectoryBindingV1(
+            verificationBinding = verificationBinding,
+            chosenInputBinding = chosenBinding,
+        )
+
+        val encoded = Json.encodeToString(ReplayTrajectoryBindingV1.serializer(), combined)
+        Json.decodeFromString(ReplayTrajectoryBindingV1.serializer(), encoded) shouldBe combined
+        shouldThrow<IllegalArgumentException> { combined.copy(version = 2) }
+        shouldThrow<IllegalArgumentException> {
+            combined.copy(schemaIdentity = "future-replay-trajectory-binding@v2")
+        }
+        shouldThrow<IllegalArgumentException> {
+            combined.copy(
+                chosenInputBinding = chosenBinding.copy(
+                    replayContentIdentity = identity.copy(value = "d".repeat(64)),
+                ),
+            )
+        }
+        shouldThrow<IllegalArgumentException> {
+            combined.copy(
+                chosenInputBinding = chosenBinding.copy(
+                    replayActionCount = 0,
+                    chosenInputs = emptyList(),
+                ),
+            )
+        }
+    }
 })

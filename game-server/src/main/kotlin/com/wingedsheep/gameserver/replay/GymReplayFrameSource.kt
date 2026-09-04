@@ -24,6 +24,8 @@ import com.wingedsheep.gym.contract.PlayerObservationV1
 import com.wingedsheep.gym.contract.ReplayChosenInputBindingSource
 import com.wingedsheep.gym.contract.ReplayChosenInputBindingV1
 import com.wingedsheep.gym.contract.ReplayChosenInputV1
+import com.wingedsheep.gym.contract.ReplayTrajectoryBindingSource
+import com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 import com.wingedsheep.gym.contract.VerifiedReplayFrame
@@ -55,7 +57,8 @@ class GymReplayFrameSource(
     private val fallbackPerspectivePlayerIndex: Int = 0,
     /** Lifecycle evidence supplied by the composition root for this replay's inclusive tail. */
     private val tailClosure: EpisodeClosureV1,
-) : VerifiedReplayFrameSource, ReplayVerificationBindingSource, ReplayChosenInputBindingSource {
+) : VerifiedReplayFrameSource, ReplayVerificationBindingSource, ReplayChosenInputBindingSource,
+    ReplayTrajectoryBindingSource {
 
     private val replayPlayerIds = replay.setup.players.map { EntityId(it.playerId) }
     private val replayContentIdentity by lazy { ReplayContentCanonicalizerV1.identity(replay) }
@@ -88,16 +91,28 @@ class GymReplayFrameSource(
     )
 
     override fun verifyChosenInputBinding(): ReplayChosenInputBindingV1 {
+        return verifyWithChosenInputs().chosenInputBinding
+    }
+
+    override fun verifyTrajectoryBinding(): ReplayTrajectoryBindingV1 = verifyWithChosenInputs()
+
+    private fun verifyWithChosenInputs(): ReplayTrajectoryBindingV1 {
         val chosenInputs = mutableListOf<ReplayChosenInputV1>()
         val verification = verifyInternal { chosenInputs += it }
         require(chosenInputs.size == replay.actions.size) {
             "Replay chosen-input binding did not cover every replay action: " +
                 verification.failureReason
         }
-        return ReplayChosenInputBindingV1(
-            replayContentIdentity = replayContentIdentity,
-            replayActionCount = replay.actions.size,
-            chosenInputs = chosenInputs,
+        return ReplayTrajectoryBindingV1(
+            verificationBinding = ReplayVerificationBindingV1(
+                replayContentIdentity = replayContentIdentity,
+                verification = verification,
+            ),
+            chosenInputBinding = ReplayChosenInputBindingV1(
+                replayContentIdentity = replayContentIdentity,
+                replayActionCount = replay.actions.size,
+                chosenInputs = chosenInputs,
+            ),
         )
     }
 

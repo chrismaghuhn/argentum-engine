@@ -10,6 +10,13 @@ const val REPLAY_CHOSEN_INPUT_BINDING_V1_VERSION: Int = 1
 const val REPLAY_CHOSEN_INPUT_BINDING_V1_SCHEMA_IDENTITY: String =
     "argentum-gym-replay-chosen-input-binding@v1"
 
+/** Version of the additive A4-plus-chosen-input composition contract. */
+const val REPLAY_TRAJECTORY_BINDING_V1_VERSION: Int = 1
+
+/** Stable identity of one A4 verification plus chosen-input evidence composition. */
+const val REPLAY_TRAJECTORY_BINDING_V1_SCHEMA_IDENTITY: String =
+    "argentum-gym-replay-trajectory-binding@v1"
+
 /**
  * One externally controlled replay action at its authoritative pre-action public boundary.
  *
@@ -74,8 +81,46 @@ data class ReplayChosenInputBindingV1(
     }
 }
 
+/**
+ * Additive composition of the unchanged A4 verification binding and the per-action chosen-input
+ * binding. It is the one-pass API result for a future A6 composition root; neither nested V1
+ * contract is redefined here.
+ */
+@Serializable
+data class ReplayTrajectoryBindingV1(
+    val version: Int = REPLAY_TRAJECTORY_BINDING_V1_VERSION,
+    val schemaIdentity: String = REPLAY_TRAJECTORY_BINDING_V1_SCHEMA_IDENTITY,
+    val verificationBinding: ReplayVerificationBindingV1,
+    val chosenInputBinding: ReplayChosenInputBindingV1,
+) {
+    init {
+        require(version == REPLAY_TRAJECTORY_BINDING_V1_VERSION) {
+            "Unsupported replay trajectory binding version: $version"
+        }
+        require(schemaIdentity == REPLAY_TRAJECTORY_BINDING_V1_SCHEMA_IDENTITY) {
+            "Unsupported replay trajectory binding schema: $schemaIdentity"
+        }
+        require(
+            verificationBinding.replayContentIdentity == chosenInputBinding.replayContentIdentity,
+        ) {
+            "Replay verification and chosen-input bindings must identify the same replay content"
+        }
+        require(
+            verificationBinding.verification.replayActionCount == chosenInputBinding.replayActionCount,
+        ) {
+            "Replay verification and chosen-input bindings must cover the same action range"
+        }
+    }
+}
+
 /** Neutral source of chosen-input evidence produced alongside one replay verification fold. */
 interface ReplayChosenInputBindingSource {
     /** Return complete chosen-input evidence for the source replay, or fail closed. */
     fun verifyChosenInputBinding(): ReplayChosenInputBindingV1
+}
+
+/** Neutral source of one-pass A4 verification and chosen-input evidence. */
+interface ReplayTrajectoryBindingSource {
+    /** Return both evidence bindings produced by one replay fold. */
+    fun verifyTrajectoryBinding(): ReplayTrajectoryBindingV1
 }
