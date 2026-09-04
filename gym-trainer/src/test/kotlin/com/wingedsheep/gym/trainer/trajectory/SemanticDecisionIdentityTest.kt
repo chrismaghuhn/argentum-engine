@@ -1,5 +1,9 @@
 package com.wingedsheep.gym.trainer.trajectory
 
+import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.gym.contract.ChosenSemanticActionV1
+import com.wingedsheep.gym.contract.ChosenSemanticResponseV1
+import com.wingedsheep.gym.contract.SemanticDecisionKindV1
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.AtomicManaCostUnitV1
 import com.wingedsheep.engine.core.CombatResolutionResponse

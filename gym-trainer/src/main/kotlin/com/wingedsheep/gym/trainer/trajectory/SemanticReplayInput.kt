@@ -2,6 +2,10 @@ package com.wingedsheep.gym.trainer.trajectory
 
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.gym.contract.ChosenSemanticActionV1
+import com.wingedsheep.gym.contract.ChosenSemanticResponseV1
+import com.wingedsheep.gym.contract.SemanticDecisionKindV1
 import java.nio.charset.StandardCharsets
 import java.security.MessageDigest
 import kotlinx.serialization.KSerializer
@@ -37,7 +41,6 @@ const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_VERSION: Int = 1
 const val SEMANTIC_REPLAY_PREFIX_DIGEST_V1_SCHEMA_IDENTITY: String =
     "argentum-trajectory-semantic-replay-prefix-digest@v1"
 
-internal const val A3_TRIGGER_ORDER_OBJECT_HANDLE_PREFIX = "trigger-order-object-"
 
 /** The semantic input kinds that can precede a later decision boundary. */
 @Serializable
@@ -45,7 +48,6 @@ enum class SemanticReplayInputKind {
     ACTION,
     RESPONSE,
 }
-
 /** One fully transport-free semantic action or response in replay order. */
 @Serializable
 data class SemanticReplayInputV1(
@@ -262,114 +264,4 @@ private object SemanticReplayPrefixCanonicalFramingV1 {
         .toByteArray(StandardCharsets.UTF_8)
 
     val separatorBytes: ByteArray = ",".toByteArray(StandardCharsets.UTF_8)
-}
-
-/** Shared strict JSON and fail-closed rules for the A3 transport-free contracts. */
-internal object A3SemanticJson {
-    val strictJson: Json = Json {
-        encodeDefaults = true
-        explicitNulls = true
-        prettyPrint = false
-        classDiscriminator = "type"
-        allowStructuredMapKeys = true
-        ignoreUnknownKeys = false
-    }
-
-    private val forbiddenKeys = setOf(
-        "actionId",
-        "decisionId",
-        "pendingDecisionId",
-        "nonce",
-        "continuationNonce",
-        "projectionGeneration",
-        "recordingRevision",
-        "sessionId",
-        "gameSessionId",
-        "envId",
-        "EnvId",
-        "abilityId",
-        "runtimeAbilityId",
-        "autoPay",
-        "autoPaySuggestion",
-        "workerId",
-        "pid",
-        "wallTime",
-        "timestamp",
-        "collectionJobId",
-        "datasetId",
-        "trajectoryId",
-        "policyIdentity",
-        "policySeed",
-    )
-
-    fun requireSemanticObject(value: JsonObject, label: String) {
-        require(value["type"]?.let(::stringOrNull) != null) {
-            "$label requires a string type"
-        }
-        requireNoForbiddenKeys(value, label)
-    }
-
-    fun requireNoForbiddenKeys(value: JsonElement, label: String) {
-        when (value) {
-            is JsonObject -> {
-                require(value.keys.none(forbiddenKeys::contains)) {
-                    "$label contains a transport or provenance field"
-                }
-                value.values.forEach { child -> requireNoForbiddenKeys(child, label) }
-            }
-
-            is JsonArray -> value.forEach { child -> requireNoForbiddenKeys(child, label) }
-            else -> Unit
-        }
-    }
-
-    fun requireNoOpaqueTriggerHandles(value: JsonElement, label: String) {
-        when (value) {
-            is JsonObject -> value.values.forEach { child ->
-                requireNoOpaqueTriggerHandles(child, label)
-            }
-
-            is JsonArray -> value.forEach { child -> requireNoOpaqueTriggerHandles(child, label) }
-            is JsonPrimitive -> if (value.isString) {
-                require(!value.content.startsWith(A3_TRIGGER_ORDER_OBJECT_HANDLE_PREFIX)) {
-                    "$label contains an opaque trigger-order handle"
-                }
-            }
-        }
-    }
-
-    fun <T> decodeStrict(serializer: KSerializer<T>, value: JsonElement, label: String): T =
-        try {
-            strictJson.decodeFromJsonElement(serializer, value)
-        } catch (_: Exception) {
-            throw IllegalArgumentException("Malformed $label")
-        }
-
-    fun canonicalJson(value: JsonElement): String = canonicalElement(value).toString()
-
-    fun canonicalElement(value: JsonElement): JsonElement = when (value) {
-        is JsonObject -> JsonObject(value.entries.sortedBy { it.key }.associate { (key, child) ->
-            key to canonicalElement(child)
-        })
-
-        is JsonArray -> JsonArray(value.map(::canonicalElement))
-        else -> value
-    }
-
-    fun sha256(bytes: ByteArray): String = java.security.MessageDigest
-        .getInstance("SHA-256")
-        .digest(bytes)
-        .joinToString("") { byte -> "%02x".format(byte) }
-
-    fun requireSha256(value: String, label: String) {
-        require(value.matches(Regex("[0-9a-f]{64}"))) {
-            "$label must be lowercase SHA-256 hex"
-        }
-    }
-
-    fun stringOrNull(value: JsonElement): String? {
-        val primitive = value as? JsonPrimitive ?: return null
-        if (primitive is JsonNull || !primitive.isString) return null
-        return primitive.content
-    }
 }

@@ -16,9 +16,16 @@ import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
+import com.wingedsheep.gym.contract.ChosenSemanticActionV1
+import com.wingedsheep.gym.contract.ChosenSemanticResponseV1
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.ReplayChosenInputBindingSource
+import com.wingedsheep.gym.contract.ReplayChosenInputBindingV1
+import com.wingedsheep.gym.contract.ReplayChosenInputV1
+import com.wingedsheep.gym.contract.ReplayTrajectoryBindingSource
+import com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 import com.wingedsheep.gym.contract.VerifiedReplayFrame
@@ -30,6 +37,7 @@ import com.wingedsheep.gym.contract.ReplayFidelity as VerifiedReplayFidelity
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.gym.ActionPaymentPlanValidator
+import kotlinx.serialization.json.JsonObject
 
 /**
  * Game-server adapter that exposes one CompactReplay as verified Gym public boundaries.
@@ -49,9 +57,11 @@ class GymReplayFrameSource(
     private val fallbackPerspectivePlayerIndex: Int = 0,
     /** Lifecycle evidence supplied by the composition root for this replay's inclusive tail. */
     private val tailClosure: EpisodeClosureV1,
-) : VerifiedReplayFrameSource, ReplayVerificationBindingSource {
+) : VerifiedReplayFrameSource, ReplayVerificationBindingSource, ReplayChosenInputBindingSource,
+    ReplayTrajectoryBindingSource {
 
     private val replayPlayerIds = replay.setup.players.map { EntityId(it.playerId) }
+    private val replayContentIdentity by lazy { ReplayContentCanonicalizerV1.identity(replay) }
     private val replayRegistry = ReplayCardPin.overlay(cardRegistry, replay.pinnedCards)
     private val observationBuilder = ObservationBuilder(cardRegistry = replayRegistry)
     private val legalActionEnumerator = LegalActionEnumerator.create(replayRegistry)
@@ -76,11 +86,39 @@ class GymReplayFrameSource(
     override fun verify(): VerifiedReplayVerification = verifyInternal()
 
     override fun verifyBinding(): ReplayVerificationBindingV1 = ReplayVerificationBindingV1(
-        replayContentIdentity = ReplayContentCanonicalizerV1.identity(replay),
+        replayContentIdentity = replayContentIdentity,
         verification = verifyInternal(),
     )
 
-    private fun verifyInternal(): VerifiedReplayVerification {
+    override fun verifyChosenInputBinding(): ReplayChosenInputBindingV1 {
+        return verifyWithChosenInputs().chosenInputBinding
+    }
+
+    override fun verifyTrajectoryBinding(): ReplayTrajectoryBindingV1 = verifyWithChosenInputs()
+
+    private fun verifyWithChosenInputs(): ReplayTrajectoryBindingV1 {
+        val chosenInputs = mutableListOf<ReplayChosenInputV1>()
+        val verification = verifyInternal { chosenInputs += it }
+        require(chosenInputs.size == replay.actions.size) {
+            "Replay chosen-input binding did not cover every replay action: " +
+                verification.failureReason
+        }
+        return ReplayTrajectoryBindingV1(
+            verificationBinding = ReplayVerificationBindingV1(
+                replayContentIdentity = replayContentIdentity,
+                verification = verification,
+            ),
+            chosenInputBinding = ReplayChosenInputBindingV1(
+                replayContentIdentity = replayContentIdentity,
+                replayActionCount = replay.actions.size,
+                chosenInputs = chosenInputs,
+            ),
+        )
+    }
+
+    private fun verifyInternal(
+        chosenInputConsumer: ((ReplayChosenInputV1) -> Unit)? = null,
+    ): VerifiedReplayVerification {
         if (replay.version != CompactReplay.CURRENT_VERSION) {
             return failure(
                 fidelity = VerifiedReplayFidelity.DIVERGED,
@@ -96,7 +134,11 @@ class GymReplayFrameSource(
             reconstructor.replayForward(
                 replay = replay,
                 onFrame = { afterActionCount, state ->
-                    val boundary = buildBoundary(afterActionCount, state)
+                    val boundary = buildBoundary(
+                        afterActionCount = afterActionCount,
+                        state = state,
+                        includeChosenInput = chosenInputConsumer != null,
+                    )
                     require(afterActionCount == frames.size) {
                         "Replay public frame coordinate skipped from ${frames.size} to $afterActionCount"
                     }
@@ -110,7 +152,14 @@ class GymReplayFrameSource(
                     require(boundary.frame.replayActionIndex == index) {
                         "Replay action $index does not match its public boundary coordinate"
                     }
-                    verifyRecordedAction(index, state, boundary, action)
+                    verifyRecordedAction(
+                        index = index,
+                        state = state,
+                        boundary = boundary,
+                        action = action,
+                        includeChosenInput = chosenInputConsumer != null,
+                    )
+                        ?.let { chosenInputConsumer?.invoke(it) }
                 },
             )
         } catch (exception: Exception) {
@@ -180,6 +229,7 @@ class GymReplayFrameSource(
     private fun buildBoundary(
         afterActionCount: Int,
         state: GameState,
+        includeChosenInput: Boolean = false,
     ): PublicBoundary {
         val truncated = isTailBoundary(afterActionCount) &&
             tailClosure is EpisodeClosureV1.Interrupted
@@ -233,6 +283,19 @@ class GymReplayFrameSource(
                     .singleOrNull { view -> view.actionId == actionId }
                     ?.let { view -> action to view }
             },
+            legalActionCandidates = if (includeChosenInput) {
+                result.registry.legalActions.map { (actionId, action) ->
+                    val viewIndex = observation.legalActions.indexOfFirst { it.actionId == actionId }
+                    require(viewIndex >= 0) {
+                        "Replay boundary $afterActionCount has no public view for action $actionId"
+                    }
+                    action to (domain.candidates.getOrNull(viewIndex) ?: throw IllegalArgumentException(
+                        "Replay boundary $afterActionCount has no semantic candidate for action $actionId"
+                    ))
+                }
+            } else {
+                emptyList()
+            },
             pendingDecisionId = state.pendingDecision?.id,
         )
     }
@@ -242,7 +305,8 @@ class GymReplayFrameSource(
         state: GameState,
         boundary: PublicBoundary,
         action: GameAction,
-    ) {
+        includeChosenInput: Boolean,
+    ): ReplayChosenInputV1? {
         val pending = boundary.observation.pendingDecision
         if (pending != null) {
             val submitted = action as? SubmitDecision
@@ -274,7 +338,15 @@ class GymReplayFrameSource(
                     "Replay response at action $index is outside the folded public decision domain"
                 }
             }
-            return
+            if (!includeChosenInput) return null
+            return ReplayChosenInputV1(
+                replayActionIndex = index,
+                perspectivePlayerId = boundary.frame.perspectivePlayerId,
+                chosenSemanticResponse = ChosenSemanticResponseV1.from(
+                    domain = boundary.frame.domain,
+                    response = submitted.response,
+                ),
+            )
         }
 
         require(action !is SubmitDecision) {
@@ -300,6 +372,16 @@ class GymReplayFrameSource(
             submitted = action,
             observationBuilder = observationBuilder,
             publicView = boundary.publicViewFor(candidate),
+        )
+        if (!includeChosenInput) return null
+        return ReplayChosenInputV1(
+            replayActionIndex = index,
+            perspectivePlayerId = boundary.frame.perspectivePlayerId,
+            chosenSemanticAction = ChosenSemanticActionV1.fromRecordedAction(
+                domain = boundary.frame.domain,
+                candidate = boundary.semanticCandidateFor(candidate),
+                action = action,
+            ),
         )
     }
 
@@ -419,10 +501,15 @@ class GymReplayFrameSource(
         val registry: com.wingedsheep.gym.contract.ActionRegistry,
         val legalActions: List<LegalAction>,
         val legalActionViews: List<Pair<LegalAction, com.wingedsheep.gym.contract.LegalActionView>>,
+        val legalActionCandidates: List<Pair<LegalAction, JsonObject>>,
         val pendingDecisionId: String?,
     ) {
         fun publicViewFor(action: LegalAction): com.wingedsheep.gym.contract.LegalActionView? =
             legalActionViews.firstOrNull { (candidate, _) -> candidate == action }?.second
+
+        fun semanticCandidateFor(action: LegalAction): JsonObject =
+            legalActionCandidates.firstOrNull { (candidate, _) -> candidate == action }?.second
+                ?: throw IllegalArgumentException("Replay action has no semantic public candidate")
     }
 
     private fun ReplayFidelity.toVerified(): VerifiedReplayFidelity = when (this) {

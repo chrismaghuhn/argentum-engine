@@ -7,9 +7,11 @@ import com.wingedsheep.engine.core.PlayLand
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
+import com.wingedsheep.gym.contract.ReplayChosenInputBindingV1
 import com.wingedsheep.gym.contract.VerifiedReplayFrame
 import com.wingedsheep.gym.contract.VerifiedReplayVerification
 import com.wingedsheep.gym.contract.ReplayFidelity as VerifiedReplayFidelity
@@ -263,6 +265,55 @@ class ReplayTrajectoryVerificationTest : ScenarioTestBase() {
                 stepCount = verification.replayActionCount,
                 reason = com.wingedsheep.gym.EpisodeInterruptionReason.HORIZON_REACHED,
             )
+        }
+
+        test("chosen-input binding covers the complete replay range and shares A4 content identity") {
+            val replay = recordedReplay()
+            val source = source(replay)
+            val verificationBinding = source.verifyBinding()
+            val chosenBinding = source.verifyChosenInputBinding()
+
+            chosenBinding.replayContentIdentity shouldBe verificationBinding.replayContentIdentity
+            chosenBinding.replayActionCount shouldBe replay.actions.size
+            chosenBinding.chosenInputs.map { it.replayActionIndex } shouldBe
+                (0 until replay.actions.size).toList()
+            chosenBinding.chosenInputs.all {
+                it.chosenSemanticAction != null && it.chosenSemanticResponse == null
+            } shouldBe true
+        }
+
+        test("checkpoint proof changes do not change chosen-input content linkage") {
+            val replay = recordedReplay()
+            val withoutTailProof = replay.copy(checkpoints = replay.checkpoints.dropLast(1))
+
+            val original = source(replay).verifyChosenInputBinding()
+            val changed = source(withoutTailProof).verifyChosenInputBinding()
+            val changedProof = source(withoutTailProof).verifyBinding()
+
+            changed.replayContentIdentity shouldBe original.replayContentIdentity
+            changed.chosenInputs shouldBe original.chosenInputs
+            changedProof.verification.fidelity shouldBe VerifiedReplayFidelity.UNVERIFIED
+        }
+
+        test("chosen-input binding retains the replayed action payment choice") {
+            val replay = paidReplay()
+            val recordedCast = replay.actions.filterIsInstance<CastSpell>().single()
+            val explicitCast = recordedCast.copy(
+                paymentStrategy = PaymentStrategy.ExplicitV3(PaymentPlanV3()),
+            )
+            val explicitReplay = replay.copy(
+                actions = replay.actions.map { action ->
+                    if (action == recordedCast) explicitCast else action
+                },
+            )
+
+            val binding = source(explicitReplay).verifyChosenInputBinding()
+            val castIndex = explicitReplay.actions.indexOf(explicitCast)
+            val chosen = binding.chosenInputs[castIndex].chosenSemanticAction
+
+            chosen shouldNotBe null
+            chosen!!.choicePayload.keys shouldBe setOf("paymentStrategy")
+            chosen.choicePayload["paymentStrategy"].toString() shouldNotContain "AutoPay"
         }
 
         test("a normal V5 cadence-plus-tail replay verifies its initial boundary without checkpoint zero") {

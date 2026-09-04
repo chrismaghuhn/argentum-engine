@@ -2,12 +2,16 @@ package com.wingedsheep.gym.trainer.trajectory
 
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.contract.CANDIDATE_DOMAIN_DIGEST_SCHEMA_IDENTITY
+import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.gym.contract.ChosenSemanticActionV1
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
 import com.wingedsheep.gym.contract.COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY
 import com.wingedsheep.gym.contract.CompleteLegalDomainKind
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
+import com.wingedsheep.gym.contract.ChosenSemanticResponseV1
 import com.wingedsheep.gym.contract.PLAYER_OBSERVATION_V1_SCHEMA_IDENTITY
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.SemanticDecisionKindV1
 import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.StateDigest
 import kotlinx.serialization.Serializable

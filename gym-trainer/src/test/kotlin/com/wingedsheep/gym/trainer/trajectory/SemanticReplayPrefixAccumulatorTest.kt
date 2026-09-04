@@ -1,5 +1,7 @@
 package com.wingedsheep.gym.trainer.trajectory
 
+import com.wingedsheep.gym.contract.ChosenSemanticActionV1
+import com.wingedsheep.gym.contract.ChosenSemanticResponseV1
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.TargetsResponse
