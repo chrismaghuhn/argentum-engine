@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.trainer.trajectory
 
 import com.wingedsheep.engine.core.AtomicManaCostUnitV1
+import com.wingedsheep.engine.core.CardEntityFactory
 import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.GameConfig
@@ -21,6 +22,10 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.YesNoResponse
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.contract.CandidateDomainDigestV1
@@ -48,6 +53,7 @@ import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PendingDecisionView
 import com.wingedsheep.gym.contract.PlayerObservationV1
 import com.wingedsheep.gym.contract.ReplacementDomain
+import com.wingedsheep.gym.contract.StateDigest
 import com.wingedsheep.gym.contract.StructuredDecisionDomain
 import com.wingedsheep.gym.contract.StructuredCardInfo
 import com.wingedsheep.gym.contract.TargetRequirementDomain
@@ -56,6 +62,8 @@ import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.core.Zone
+import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.booleans.shouldBeFalse
 import io.kotest.matchers.booleans.shouldBeTrue
@@ -96,6 +104,75 @@ class TrajectoryV1ContractTest : FunSpec({
             legalActions = environment.legalActions(),
         ).observation as TrainingObservation
 
+    fun withRecomputedDigest(observation: TrainingObservation): TrainingObservation =
+        observation.copy(stateDigest = StateDigest.compute(observation))
+
+    fun observationForState(
+        environment: GameEnvironment,
+        state: GameState,
+        legalActions: List<com.wingedsheep.engine.legalactions.LegalAction> = environment.legalActions(),
+    ): TrainingObservation = ObservationBuilder(cardRegistry = registry()).build(
+        state = state,
+        perspectivePlayerId = environment.playerIds.first(),
+        legalActions = legalActions,
+    ).observation as TrainingObservation
+
+    fun fixtureFromSource(source: TrainingObservation): DecisionFixture {
+        val observation = PlayerObservationV1.from(source)
+        val domain = CompleteLegalDomainV1.from(source)
+        val candidate = domain.candidates.first { it["affordable"] == JsonPrimitive(true) }
+        return DecisionFixture(
+            observation = observation,
+            domain = domain,
+            chosenAction = ChosenSemanticActionV1.from(domain, candidate),
+        )
+    }
+
+    fun replaceCardsInZones(
+        state: GameState,
+        owner: EntityId,
+        replacementName: String,
+        zones: Set<Zone>,
+    ): GameState {
+        val replacement = CardEntityFactory
+            .create(registry().requireCard(replacementName), owner)
+            .get<CardComponent>()
+        val hiddenIds = zones.flatMap { zone -> state.getZone(ZoneKey(owner, zone)) }
+        val entities = state.entities.toMutableMap()
+        hiddenIds.forEach { id ->
+            entities[id] = checkNotNull(entities[id]).with(checkNotNull(replacement))
+        }
+        return state.copy(entities = entities)
+    }
+
+    fun moveOpponentCardFaceDownToBattlefield(
+        state: GameState,
+        opponent: EntityId,
+    ): Pair<GameState, EntityId> {
+        val cardId = state.getHand(opponent).first()
+        val handKey = ZoneKey(opponent, Zone.HAND)
+        val battlefieldKey = ZoneKey(opponent, Zone.BATTLEFIELD)
+        val zones = state.zones.toMutableMap()
+        zones[handKey] = state.getHand(opponent).drop(1)
+        zones[battlefieldKey] = state.getBattlefield(opponent) + cardId
+        val faceDownEntity = checkNotNull(state.getEntity(cardId)).with(FaceDownComponent)
+        return state.copy(
+            entities = state.entities + (cardId to faceDownEntity),
+            zones = zones,
+        ) to cardId
+    }
+
+    fun replaceCard(state: GameState, owner: EntityId, cardId: EntityId, replacementName: String): GameState {
+        val replacement = CardEntityFactory
+            .create(registry().requireCard(replacementName), owner)
+            .get<CardComponent>()
+        return state.copy(
+            entities = state.entities + (
+                cardId to checkNotNull(state.getEntity(cardId)).with(checkNotNull(replacement))
+            ),
+        )
+    }
+
     fun environment(): GameEnvironment {
         val environment = GameEnvironment.create(registry())
         environment.reset(
@@ -130,7 +207,6 @@ class TrajectoryV1ContractTest : FunSpec({
     ): EpisodeMetadataV1 {
         val policyValue = policy ?: defaultPolicy()
         val environment = EnvironmentIdentityV1(
-            environmentIdentity = "argentum-b2-test-environment-v1",
             engineCommit = "d7a81325783e8bdc5c91c4b24d42fd5f8f9f3a98",
             cardDefinitionIdentity = "portal-card-definitions-v1",
             akiriDeckIdentity = "akiri-deck-test",
@@ -237,8 +313,9 @@ class TrajectoryV1ContractTest : FunSpec({
                 ),
             ),
         )
-        val observation = PlayerObservationV1.from(foldedSource)
-        val domain = CompleteLegalDomainV1.from(foldedSource)
+        val digestBoundSource = withRecomputedDigest(foldedSource)
+        val observation = PlayerObservationV1.from(digestBoundSource)
+        val domain = CompleteLegalDomainV1.from(digestBoundSource)
         return DecisionFixture(
             observation = observation,
             domain = domain,
@@ -290,8 +367,9 @@ class TrajectoryV1ContractTest : FunSpec({
             ),
             legalActions = emptyList(),
         )
-        val observation = PlayerObservationV1.from(structuredSource)
-        val domain = CompleteLegalDomainV1.from(structuredSource)
+        val digestBoundSource = withRecomputedDigest(structuredSource)
+        val observation = PlayerObservationV1.from(digestBoundSource)
+        val domain = CompleteLegalDomainV1.from(digestBoundSource)
         return DecisionFixture(
             observation = observation,
             domain = domain,
@@ -325,8 +403,9 @@ class TrajectoryV1ContractTest : FunSpec({
             ),
             legalActions = emptyList(),
         )
-        val observation = PlayerObservationV1.from(structuredSource)
-        val domain = CompleteLegalDomainV1.from(structuredSource)
+        val digestBoundSource = withRecomputedDigest(structuredSource)
+        val observation = PlayerObservationV1.from(digestBoundSource)
+        val domain = CompleteLegalDomainV1.from(digestBoundSource)
         return DecisionFixture(
             observation = observation,
             domain = domain,
@@ -375,8 +454,9 @@ class TrajectoryV1ContractTest : FunSpec({
             ),
             legalActions = emptyList(),
         )
-        val observation = PlayerObservationV1.from(structuredSource)
-        val domain = CompleteLegalDomainV1.from(structuredSource)
+        val digestBoundSource = withRecomputedDigest(structuredSource)
+        val observation = PlayerObservationV1.from(digestBoundSource)
+        val domain = CompleteLegalDomainV1.from(digestBoundSource)
         return DecisionFixture(
             observation = observation,
             domain = domain,
@@ -409,8 +489,9 @@ class TrajectoryV1ContractTest : FunSpec({
             ),
             legalActions = emptyList(),
         )
-        val observation = PlayerObservationV1.from(structuredSource)
-        val domain = CompleteLegalDomainV1.from(structuredSource)
+        val digestBoundSource = withRecomputedDigest(structuredSource)
+        val observation = PlayerObservationV1.from(digestBoundSource)
+        val domain = CompleteLegalDomainV1.from(digestBoundSource)
         return DecisionFixture(
             observation = observation,
             domain = domain,
@@ -440,8 +521,9 @@ class TrajectoryV1ContractTest : FunSpec({
             ),
             legalActions = emptyList(),
         )
-        val observation = PlayerObservationV1.from(structuredSource)
-        val domain = CompleteLegalDomainV1.from(structuredSource)
+        val digestBoundSource = withRecomputedDigest(structuredSource)
+        val observation = PlayerObservationV1.from(digestBoundSource)
+        val domain = CompleteLegalDomainV1.from(digestBoundSource)
         return DecisionFixture(observation = observation, domain = domain, chosenResponse = response(domain))
     }
 
@@ -475,13 +557,14 @@ class TrajectoryV1ContractTest : FunSpec({
     ): DecisionFixture {
         val environment = environment()
         val source = sourceObservation(environment)
-        val observation = PlayerObservationV1.from(source)
+        val baseObservation = PlayerObservationV1.from(source)
         val sourceDomain = CompleteLegalDomainV1.from(source)
         val candidate = candidateWithRequiredPayload(sourceDomain, requiredFields, updates)
         val domain = CompleteLegalDomainV1(
             kind = CompleteLegalDomainKind.ACTION_CANDIDATES,
             candidates = listOf(candidate),
         )
+        val observation = baseObservation.copy(observationDigest = StateDigest.compute(baseObservation, domain))
         return DecisionFixture(
             observation = observation,
             domain = domain,
@@ -921,9 +1004,13 @@ class TrajectoryV1ContractTest : FunSpec({
         val trajectory = validTrajectory()
         val link = trajectory.compactReplayLink.copy(replayContentIdentity = "d".repeat(64))
         val changedLink = trajectory.episodeMetadata.copy(compactReplayLink = link)
+        val changedTrajectory = reidentified(trajectory, metadata = changedLink)
 
         changedLink.recomputeSemanticEpisodeId() shouldBe trajectory.semanticEpisodeId
         changedLink.recomputeCollectionJobId() shouldBe trajectory.collectionJobId
+        changedTrajectory.trajectoryId shouldBe trajectory.trajectoryId
+        TrajectoryV1Validator.validate(changedTrajectory)
+            .shouldBeInstanceOf<TrajectoryValidationResult.Valid>()
     }
 
     test("runtime decision routing identities do not enter durable trajectory content") {
@@ -934,6 +1021,48 @@ class TrajectoryV1ContractTest : FunSpec({
         first.semanticEpisodeId shouldBe second.semanticEpisodeId
         first.collectionJobId shouldBe second.collectionJobId
         first.trajectoryId shouldBe second.trajectoryId
+    }
+
+    test("environment identity is derived from canonical reproducibility fields") {
+        val trajectory = validTrajectory()
+        val environment = trajectory.episodeMetadata.environmentIdentity
+        val changedEnvironment = environment.copy(actualEngineSeed = environment.actualEngineSeed + 1)
+
+        environment.identityDigest().matches(Regex("[0-9a-f]{64}")).shouldBeTrue()
+        changedEnvironment.identityDigest() shouldNotBe environment.identityDigest()
+        trajectory.episodeMetadata.copy(environmentIdentity = changedEnvironment)
+            .recomputeSemanticEpisodeId() shouldNotBe trajectory.semanticEpisodeId
+    }
+
+    test("a declared replay range must contain exactly one decision record per action") {
+        val metadata = validMetadata(replayActionCount = 1)
+        val incomplete = TrajectoryV1(
+            trajectoryId = "d".repeat(64),
+            episodeMetadata = metadata,
+            decisions = emptyList(),
+        )
+        val identified = incomplete.copy(trajectoryId = incomplete.recomputeTrajectoryId())
+
+        requireRejected(TrajectoryV1Validator.validate(identified)).reason shouldBe
+            TrajectoryValidationReason.DECISION_COUNT_MISMATCH
+    }
+
+    test("ValidatedEpisodeV1 requires the private validation-gate capability") {
+        shouldThrow<IllegalArgumentException> {
+            ValidatedEpisodeV1.fromValidated(validTrajectory(), Any())
+        }
+    }
+
+    test("sequential validation covers a 256-decision episode without persisting replay prefixes") {
+        val fixture = actionFixture()
+        val trajectory = trajectoryOf(List(256) { fixture })
+
+        TrajectoryV1Validator.validate(trajectory)
+            .shouldBeInstanceOf<TrajectoryValidationResult.Valid>()
+        containsKey(
+            A3SemanticJson.strictJson.parseToJsonElement(TrajectoryV1Json.encode(trajectory)),
+            "prefix",
+        ).shouldBeFalse()
     }
 
     test("durable JSON contains complete public values but no transient routing or internal state") {
@@ -957,6 +1086,47 @@ class TrajectoryV1ContractTest : FunSpec({
         containsKey(element, "candidateDomainDigest").shouldBeTrue()
         containsKey(element, "observationBefore").shouldBeTrue()
         containsKey(element, "chosenSemanticResponse").shouldBeTrue()
+    }
+
+    test("serialized trajectories preserve privacy for hidden hand, library, and face-down cards") {
+        val base = environment()
+        val perspective = base.playerIds.first()
+        val opponent = base.playerIds[1]
+        val legalActions = base.legalActions()
+
+        val mountainHidden = replaceCardsInZones(
+            state = base.state,
+            owner = opponent,
+            replacementName = "Mountain",
+            zones = setOf(Zone.HAND, Zone.LIBRARY),
+        )
+        val goblinHidden = replaceCardsInZones(
+            state = base.state,
+            owner = opponent,
+            replacementName = "Raging Goblin",
+            zones = setOf(Zone.HAND, Zone.LIBRARY),
+        )
+        val hiddenMountainTrajectory = trajectoryOf(
+            listOf(fixtureFromSource(observationForState(base, mountainHidden, legalActions))),
+        )
+        val hiddenGoblinTrajectory = trajectoryOf(
+            listOf(fixtureFromSource(observationForState(base, goblinHidden, legalActions))),
+        )
+        TrajectoryV1Json.encode(hiddenMountainTrajectory) shouldBe
+            TrajectoryV1Json.encode(hiddenGoblinTrajectory)
+
+        val (faceDownMountain, faceDownId) = moveOpponentCardFaceDownToBattlefield(base.state, opponent)
+        val faceDownGoblin = replaceCard(faceDownMountain, opponent, faceDownId, "Raging Goblin")
+        val faceDownMountainTrajectory = trajectoryOf(
+            listOf(fixtureFromSource(observationForState(base, faceDownMountain, legalActions))),
+        )
+        val faceDownGoblinTrajectory = trajectoryOf(
+            listOf(fixtureFromSource(observationForState(base, faceDownGoblin, legalActions))),
+        )
+        TrajectoryV1Json.encode(faceDownMountainTrajectory) shouldBe
+            TrajectoryV1Json.encode(faceDownGoblinTrajectory)
+        TrajectoryV1Json.encode(faceDownGoblinTrajectory).contains("Raging Goblin").shouldBeFalse()
+        TrajectoryV1Json.encode(faceDownGoblinTrajectory).contains(faceDownId.value).shouldBeTrue()
     }
 
     test("dataset metadata and manifest contracts are deterministic and storage-neutral") {
@@ -1183,7 +1353,7 @@ class TrajectoryV1ContractTest : FunSpec({
             resultForJson(updateDecision(root, 0) {
                 replaceJsonValue(it, "observationBefore", malformedObservation)
             }),
-        ).reason shouldBe TrajectoryValidationReason.SEMANTIC_DECISION_IDENTITY_MISMATCH
+        ).reason shouldBe TrajectoryValidationReason.OBSERVATION_DIGEST_MISMATCH
     }
 
     test("sequence and identity mismatches reject without repairing producer data") {
@@ -1257,7 +1427,7 @@ class TrajectoryV1ContractTest : FunSpec({
         )
 
         requireRejected(TrajectoryV1Validator.validate(interrupted)).reason shouldBe
-            TrajectoryValidationReason.CLOSURE_MISMATCH
+            TrajectoryValidationReason.NONTERMINAL_DECISION_OBSERVATION
     }
 
     test("strict decoding rejects future versions, malformed components, and internal-field injection") {

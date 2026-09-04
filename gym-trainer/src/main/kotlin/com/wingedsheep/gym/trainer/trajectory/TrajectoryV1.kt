@@ -8,6 +8,7 @@ import com.wingedsheep.gym.contract.CompleteLegalDomainKind
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.PLAYER_OBSERVATION_V1_SCHEMA_IDENTITY
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.StateDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.encodeToString
@@ -141,7 +142,6 @@ data class RosterSeatV1(
 data class EnvironmentIdentityV1(
     val version: Int = ENVIRONMENT_IDENTITY_V1_VERSION,
     val schemaIdentity: String = ENVIRONMENT_IDENTITY_V1_SCHEMA_IDENTITY,
-    val environmentIdentity: String,
     val engineCommit: String,
     val cardDefinitionIdentity: String,
     val akiriDeckIdentity: String,
@@ -167,7 +167,6 @@ data class EnvironmentIdentityV1(
         require(schemaIdentity == ENVIRONMENT_IDENTITY_V1_SCHEMA_IDENTITY) {
             "Unsupported environment-identity identity: $schemaIdentity"
         }
-        requireNonBlank(environmentIdentity, "Environment identity")
         requireNonBlank(engineCommit, "Engine commit identity")
         requireNonBlank(cardDefinitionIdentity, "Card-definition identity")
         requireNonBlank(akiriDeckIdentity, "Akiri deck identity")
@@ -205,10 +204,17 @@ data class EnvironmentIdentityV1(
         }
     }
 
+    /** Canonical content identity of the reproducible environment/setup fields. */
+    fun identityDigest(): String = sha256Canonical(
+        buildJsonObject {
+            put("schema", ENVIRONMENT_IDENTITY_V1_SCHEMA_IDENTITY)
+            put("environment", semanticElement())
+        },
+    )
+
     internal fun semanticElement(): JsonObject = buildJsonObject {
         put("version", version)
         put("schemaIdentity", schemaIdentity)
-        put("environmentIdentity", environmentIdentity)
         put("engineCommit", engineCommit)
         put("cardDefinitionIdentity", cardDefinitionIdentity)
         put("akiriDeckIdentity", akiriDeckIdentity)
@@ -361,7 +367,7 @@ data class EpisodeMetadataV1(
     fun recomputeSemanticEpisodeId(): String = sha256Canonical(
         buildJsonObject {
             put("schema", SEMANTIC_EPISODE_IDENTITY_V1_SCHEMA_IDENTITY)
-            put("environmentIdentity", environmentIdentity.semanticElement())
+            put("environmentIdentityDigest", environmentIdentity.identityDigest())
         },
     )
 
@@ -508,8 +514,13 @@ data class TrajectoryV1(
     fun recomputeTrajectoryId(): String = sha256Canonical(
         buildJsonObject {
             put("schema", TRAJECTORY_IDENTITY_V1_SCHEMA_IDENTITY)
-            put("episodeMetadata", episodeMetadata.canonicalElement())
+            put("semanticEpisodeId", semanticEpisodeId)
+            put("collectionJobId", collectionJobId)
             put("decisions", JsonArray(decisions.map(DecisionRecordV1::canonicalElement)))
+            put(
+                "closure",
+                A3SemanticJson.strictJson.encodeToJsonElement(EpisodeClosureV1.serializer(), closure),
+            )
         },
     )
 }
@@ -751,13 +762,19 @@ private fun DatasetManifestV1.manifestContentElement(): JsonObject = buildJsonOb
     put("counts", counts.canonicalElement())
 }
 
+private val VALIDATED_EPISODE_GATE = Any()
+
 /** Marker for an A5 contract-valid episode; this is not replay verification or training trust. */
 class ValidatedEpisodeV1 private constructor(
     val trajectory: TrajectoryV1,
 ) {
     companion object {
-        internal fun fromValidated(trajectory: TrajectoryV1): ValidatedEpisodeV1 =
-            ValidatedEpisodeV1(trajectory)
+        internal fun fromValidated(trajectory: TrajectoryV1, gate: Any): ValidatedEpisodeV1 {
+            require(gate === VALIDATED_EPISODE_GATE) {
+                "ValidatedEpisodeV1 can only be created by the validation gate"
+            }
+            return ValidatedEpisodeV1(trajectory)
+        }
     }
 }
 
@@ -776,7 +793,10 @@ enum class TrajectoryValidationReason {
     DUPLICATE_DECISION,
     NON_CONTIGUOUS_DECISION_INDEX,
     BAD_REPLAY_COORDINATE,
+    DECISION_COUNT_MISMATCH,
     PERSPECTIVE_MISMATCH,
+    NONTERMINAL_DECISION_OBSERVATION,
+    OBSERVATION_DIGEST_MISMATCH,
     DECISION_KIND_MISMATCH,
     SEMANTIC_DECISION_IDENTITY_MISMATCH,
     SEMANTIC_EPISODE_IDENTITY_MISMATCH,
@@ -818,6 +838,10 @@ object TrajectoryV1Validator {
     fun validate(trajectory: TrajectoryV1): TrajectoryValidationResult = try {
         validateRoot(trajectory)
         validateMetadata(trajectory.episodeMetadata)
+        contractRequire(
+            trajectory.decisions.size == trajectory.compactReplayLink.replayActionCount,
+            TrajectoryValidationReason.DECISION_COUNT_MISMATCH,
+        )
         val prefixAccumulator = SemanticReplayPrefixAccumulatorV1()
         val seenDecisionIds = HashSet<SemanticDecisionIdV1>()
         trajectory.decisions.forEachIndexed { expectedIndex, record ->
@@ -837,7 +861,9 @@ object TrajectoryV1Validator {
         if (trajectory.closure is EpisodeClosureV1.Failed) {
             TrajectoryValidationResult.QuarantineEligible(TrajectoryValidationReason.FAILED_EPISODE)
         } else {
-            TrajectoryValidationResult.Valid(ValidatedEpisodeV1.fromValidated(trajectory))
+            TrajectoryValidationResult.Valid(
+                ValidatedEpisodeV1.fromValidated(trajectory, VALIDATED_EPISODE_GATE),
+            )
         }
     } catch (violation: ContractViolation) {
         when (violation.reason) {
@@ -895,8 +921,12 @@ object TrajectoryV1Validator {
             record.replayActionIndex == expectedIndex && record.replayFrameIndex == expectedIndex,
             TrajectoryValidationReason.BAD_REPLAY_COORDINATE,
         )
-        validateObservation(record.observationBefore, record.perspectivePlayerId)
         validateCompleteDomain(record.completeLegalDomain)
+        validateObservation(
+            observation = record.observationBefore,
+            perspectivePlayerId = record.perspectivePlayerId,
+            domain = record.completeLegalDomain,
+        )
 
         val recomputedDomainDigest = try {
             CandidateDomainDigestV1.from(record.completeLegalDomain)
@@ -945,6 +975,7 @@ object TrajectoryV1Validator {
     private fun validateObservation(
         observation: PlayerObservationV1,
         perspectivePlayerId: com.wingedsheep.sdk.model.EntityId,
+        domain: CompleteLegalDomainV1,
     ) {
         contractRequire(
             observation.perspectivePlayerId == perspectivePlayerId,
@@ -954,12 +985,25 @@ object TrajectoryV1Validator {
             observation.agentToAct == perspectivePlayerId,
             TrajectoryValidationReason.PERSPECTIVE_MISMATCH,
         )
+        contractRequire(
+            !observation.terminated && !observation.truncated && observation.winnerId == null,
+            TrajectoryValidationReason.NONTERMINAL_DECISION_OBSERVATION,
+        )
         contractRequire(observation.wireSchemaHash.isNotBlank(), TrajectoryValidationReason.SCHEMA_MISMATCH)
         try {
             requireSha256(observation.observationDigest, "Observation digest")
         } catch (_: IllegalArgumentException) {
             throw ContractViolation(TrajectoryValidationReason.SCHEMA_MISMATCH)
         }
+        val recomputedObservationDigest = try {
+            StateDigest.compute(observation, domain)
+        } catch (_: IllegalArgumentException) {
+            throw ContractViolation(TrajectoryValidationReason.SCHEMA_MISMATCH)
+        }
+        contractRequire(
+            observation.observationDigest == recomputedObservationDigest,
+            TrajectoryValidationReason.OBSERVATION_DIGEST_MISMATCH,
+        )
         contractRequire(
             observation.winnerId == null || observation.terminated,
             TrajectoryValidationReason.CLOSURE_MISMATCH,
