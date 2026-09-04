@@ -257,7 +257,8 @@ object ReplayContentCanonicalizerV1 {
             descriptor = ListSerializer(ReplayYieldEntry.serializer()).descriptor,
             path = listOf("yields"),
         )
-        val pinnedCards = JsonArray(canonicalPinnedCards(replay.pinnedCards).map(PinnedCardElement::element))
+        val pinnedCardElements = canonicalPinnedCards(replay.pinnedCards)
+        val pinnedCards = JsonArray(pinnedCardElements.map(PinnedCardElement::element))
         requireTypedReplayShape(
             element = pinnedCards,
             descriptor = ListSerializer(CardDefinition.serializer()).descriptor,
@@ -286,7 +287,7 @@ object ReplayContentCanonicalizerV1 {
                 path = listOf("pinnedCards"),
             ),
         )
-        val aliasPlan = collectAbilityAliases(parts)
+        val aliasPlan = collectAbilityAliases(parts, pinnedCardElements)
         val abilityAliases = AbilityIdAliasTable(
             initialAliases = aliasPlan.aliases,
             reservedRawIds = aliasPlan.reservedRawIds,
@@ -587,10 +588,12 @@ object ReplayContentCanonicalizerV1 {
     private fun stableCardIdentity(card: CardDefinition): String =
         listOfNotNull(card.name, card.setCode, card.metadata.collectorNumber).joinToString("#")
 
-    private fun collectAbilityAliases(parts: List<ReplayPart>): AbilityAliasPlan {
+    private fun collectAbilityAliases(
+        parts: List<ReplayPart>,
+        pinnedCards: List<PinnedCardElement>,
+    ): AbilityAliasPlan {
         val rawIds = linkedSetOf<String>()
         val generatedIds = linkedSetOf<String>()
-        val pinnedGeneratedIds = linkedSetOf<String>()
         val replayReferenceGeneratedIds = linkedSetOf<String>()
         parts.forEach { part ->
             val partRawIds = linkedSetOf<String>()
@@ -605,14 +608,32 @@ object ReplayContentCanonicalizerV1 {
             rawIds += partRawIds
             generatedIds += partGeneratedIds
             when (part.path.firstOrNull()) {
-                "pinnedCards" -> pinnedGeneratedIds += partGeneratedIds
                 "actions", "yields" -> replayReferenceGeneratedIds += partGeneratedIds
             }
         }
-        val unanchoredGeneratedIds = replayReferenceGeneratedIds - pinnedGeneratedIds
-        require(unanchoredGeneratedIds.isEmpty()) {
-            "Generated replay ability handles require a pinned card-definition anchor: " +
-                unanchoredGeneratedIds.sorted()
+
+        val pinnedGeneratedIdsByDefinition = linkedMapOf<String, MutableSet<String>>()
+        pinnedCards.forEach { pinnedCard ->
+            val pinnedGeneratedIds = linkedSetOf<String>()
+            collectAbilityIds(
+                element = pinnedCard.element,
+                path = listOf("pinnedCards", pinnedCard.identity),
+                descriptor = CardDefinition.serializer().descriptor,
+                rawIds = linkedSetOf(),
+                generatedIds = pinnedGeneratedIds,
+            )
+            pinnedGeneratedIds.forEach { generatedId ->
+                pinnedGeneratedIdsByDefinition
+                    .getOrPut(generatedId) { linkedSetOf() }
+                    .add(pinnedCard.identity)
+            }
+        }
+        val ambiguouslyAnchoredGeneratedIds = replayReferenceGeneratedIds
+            .filter { pinnedGeneratedIdsByDefinition[it]?.size != 1 }
+            .sorted()
+        require(ambiguouslyAnchoredGeneratedIds.isEmpty()) {
+            "Generated replay ability handles require exactly one pinned card-definition anchor: " +
+                ambiguouslyAnchoredGeneratedIds
         }
         val aliasTable = AbilityIdAliasTable(reservedRawIds = rawIds - generatedIds)
         val aliases = LinkedHashMap<String, String>()

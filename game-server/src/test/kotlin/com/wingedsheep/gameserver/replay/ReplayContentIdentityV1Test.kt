@@ -382,6 +382,28 @@ class ReplayContentIdentityV1Test : ScenarioTestBase() {
             preimage.contains("\"abilityId\":\"A1\"") shouldBe true
         }
 
+        test("generated ability handles anchored by multiple pinned definitions fail closed") {
+            val generatedId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
+            val otherPin = pinWithGeneratedAbility.copy(name = "Replay Identity Other Generated Pin")
+            val action = ActivateAbility(
+                playerId = playerOne,
+                sourceId = EntityId("source"),
+                abilityId = AbilityId(generatedId),
+            )
+
+            shouldThrow<IllegalArgumentException> {
+                identity(
+                    replay(
+                        actions = listOf(action),
+                        pinnedCards = listOf(
+                            CardExporter.exportToCompactJson(pinWithGeneratedAbility),
+                            CardExporter.exportToCompactJson(otherPin),
+                        ),
+                    ),
+                )
+            }
+        }
+
         test("generated ability references shared by pinned actions and yields are normalized together") {
             val generatedPinId = pinWithGeneratedAbility.script.activatedAbilities.single().id.value
             val equivalentPin = pinWithGeneratedAbility.copy(
