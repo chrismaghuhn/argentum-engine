@@ -4,7 +4,7 @@
 
 **Goal:** Admit only A5-valid trajectories whose complete semantic replay evidence matches, then publish deterministic, privacy-safe, bounded immutable NDJSON shards and an existing `DatasetManifestV1` atomically.
 
-**Architecture:** Keep replay reconstruction in the neutral `:gym` binding supplied by the caller. Add a pure A6 admission gate in `:gym-trainer`, a quarantine metadata writer, and a publisher that owns producer-order enforcement, current-shard buffering, byte/digest verification, manifest construction, and staging-directory publication. Use canonical JSON from `A3SemanticJson`, preserve arrays, and never enumerate the output directory for semantic ordering.
+**Architecture:** Keep replay reconstruction in the neutral `:gym` binding supplied by the caller. Add a pure A6 admission gate in `:gym-trainer`, a quarantine metadata writer, and a publisher that owns producer-order enforcement, current-shard buffering, byte/digest verification, manifest construction, and staging-directory publication. Emit the current V1 design's canonical episode-start/decision/episode-end NDJSON frames, use `A3SemanticJson`, preserve arrays, and never enumerate the output directory for semantic ordering.
 
 **Tech Stack:** Kotlin/JVM 21, kotlinx.serialization, `java.nio.file.Files`/`FileChannel`, Kotest, existing `TrajectoryV1`, `ReplayTrajectoryBindingV1`, `DatasetManifestV1`, and `A3SemanticJson` contracts.
 
@@ -32,7 +32,7 @@ Expected: compilation/test failure because the A6 admission, quarantine, and pub
 
 - [ ] **Step 1: Define the closed typed admission result and quarantine reason vocabulary.** Keep `ReplayAdmittedEpisodeV1` privately constructible with an internal gate factory; expose only immutable trajectory/canonical-line evidence.
 - [ ] **Step 2: Implement `TrajectoryV1Admission.admit(trajectory, binding, episodeOrdinal)`.** Reuse `TrajectoryV1Validator.validate`, compare the linked replay identity/version/counts, require exact complete-range A4 evidence, compare every decision to the same-index frame and chosen input, require exact closure equality, then canonicalize the trajectory once. Return a typed quarantine result on every mismatch; never call `GameState`, `CompactReplay`, or `ReplayReconstructor`.
-- [ ] **Step 3: Implement canonical storage encoding.** Encode the typed trajectory with the strict existing serializer, recursively sort object keys with `A3SemanticJson`, preserve array order, append one UTF-8 LF framing byte, and reject storage-boundary privacy keys structurally before admission.
+- [ ] **Step 3: Implement canonical storage encoding.** Encode the typed trajectory and canonical episode-start/decision/episode-end frames with the strict existing serializer, recursively sort object keys with `A3SemanticJson`, preserve array order, append one UTF-8 LF terminator per frame, and reject storage-boundary privacy keys structurally before admission.
 - [ ] **Step 4: Run the admission tests to verify GREEN.**
 
 Run: `& .\\gradlew.bat :gym-trainer:test --tests "com.wingedsheep.gym.trainer.trajectory.TrajectoryV1WriterTest" --console=plain`
