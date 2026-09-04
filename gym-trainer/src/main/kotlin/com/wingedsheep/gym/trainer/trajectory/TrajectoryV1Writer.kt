@@ -12,14 +12,6 @@ import com.wingedsheep.gym.contract.REPLAY_VERIFICATION_BINDING_V1_VERSION
 import com.wingedsheep.gym.contract.ReplayFidelity
 import com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1
 import com.wingedsheep.gym.EpisodeClosureV1
-import kotlinx.serialization.KSerializer
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.JsonArray
-import kotlinx.serialization.json.JsonElement
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.encodeToJsonElement
-import java.io.ByteArrayOutputStream
-import java.nio.charset.StandardCharsets
 
 /** Result of the A6 replay-backed admission boundary. */
 sealed interface TrajectoryAdmissionResult {
@@ -32,7 +24,6 @@ sealed interface TrajectoryAdmissionResult {
         val metadata: QuarantineMetadataV1,
     ) : TrajectoryAdmissionResult
 }
-
 /**
  * A trajectory that passed A5 and the complete replay-backed A6 comparison. The constructor is
  * private so callers cannot manufacture trusted input for the publisher from an arbitrary DTO.
@@ -86,8 +77,6 @@ class ReplayAdmittedEpisodeV1 private constructor(
         )
     }
 }
-
-private class TrajectoryPrivacyViolation : IllegalArgumentException()
 
 /**
  * Pure A6 gate. It consumes the combined neutral replay binding and never reconstructs a replay or
@@ -310,138 +299,5 @@ object TrajectoryV1Admission {
             failureReplayActionIndex = failureReplayActionIndex,
             a5Reason = a5Reason,
         ),
-    )
-}
-
-internal object TrajectoryV1StorageCodec {
-    private val forbiddenOperationalKeys = setOf(
-        "actionid",
-        "decisionid",
-        "pendingdecisionid",
-        "nonce",
-        "continuationnonce",
-        "projectiongeneration",
-        "recordingrevision",
-        "sessionid",
-        "gamesessionid",
-        "envid",
-        "abilityid",
-        "runtimeabilityid",
-        "autopay",
-        "autopaysuggestion",
-        "workerid",
-        "pid",
-        "walltime",
-        "timestamp",
-        "gamestate",
-        "rawaction",
-        "pendingdecisioninternal",
-    )
-
-    fun encodeLine(trajectory: TrajectoryV1, episodeOrdinal: Int = 0): ByteArray {
-        val trajectoryElement = A3SemanticJson.strictJson.encodeToJsonElement(
-            TrajectoryV1.serializer(),
-            trajectory,
-        )
-        rejectOperationalFields(trajectoryElement)
-        val canonicalTrajectoryJson = A3SemanticJson.canonicalJson(trajectoryElement)
-        val episodeContentDigest = A3SemanticJson.sha256(
-            canonicalTrajectoryJson.toByteArray(StandardCharsets.UTF_8),
-        )
-        val output = ByteArrayOutputStream()
-        output.write(
-            encodeFrame(
-                EpisodeStartFrame(
-                    semanticEpisodeId = trajectory.semanticEpisodeId,
-                    collectionJobId = trajectory.collectionJobId,
-                    episodeOrdinal = episodeOrdinal,
-                    episodeMetadata = trajectory.episodeMetadata,
-                ),
-                EpisodeStartFrame.serializer(),
-            ),
-        )
-        trajectory.decisions.forEach { decision ->
-            output.write(
-                encodeFrame(
-                    DecisionFrame(
-                        semanticEpisodeId = trajectory.semanticEpisodeId,
-                        collectionJobId = trajectory.collectionJobId,
-                        decision = decision,
-                    ),
-                    DecisionFrame.serializer(),
-                ),
-            )
-        }
-        output.write(
-            encodeFrame(
-                EpisodeEndFrame(
-                    semanticEpisodeId = trajectory.semanticEpisodeId,
-                    collectionJobId = trajectory.collectionJobId,
-                    trajectoryId = trajectory.trajectoryId,
-                    decisionCount = trajectory.decisions.size,
-                    episodeContentDigest = episodeContentDigest,
-                    closure = trajectory.closure,
-                ),
-                EpisodeEndFrame.serializer(),
-            ),
-        )
-        return output.toByteArray()
-    }
-
-    private fun <T> encodeFrame(value: T, serializer: KSerializer<T>): ByteArray {
-        val element = A3SemanticJson.strictJson.encodeToJsonElement(serializer, value)
-        rejectOperationalFields(element)
-        return (A3SemanticJson.canonicalJson(element) + "\n").toByteArray(StandardCharsets.UTF_8)
-    }
-
-    private fun rejectOperationalFields(element: JsonElement) {
-        when (element) {
-            is JsonObject -> {
-                require(element.keys.none { it.lowercase() in forbiddenOperationalKeys }) {
-                    throw TrajectoryPrivacyViolation()
-                }
-                element.values.forEach(::rejectOperationalFields)
-            }
-
-            is JsonArray -> element.forEach(::rejectOperationalFields)
-            else -> Unit
-        }
-    }
-
-    @Serializable
-    private data class EpisodeStartFrame(
-        val recordType: String = "episode-start",
-        val storageSchemaVersion: Int = TRAJECTORY_V1_STORAGE_SCHEMA_VERSION,
-        val storageSchemaIdentity: String = TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY,
-        val trajectorySchemaVersion: Int = TRAJECTORY_V1_VERSION,
-        val semanticEpisodeId: String,
-        val collectionJobId: String,
-        val episodeOrdinal: Int,
-        val episodeMetadata: EpisodeMetadataV1,
-    )
-
-    @Serializable
-    private data class DecisionFrame(
-        val recordType: String = "decision",
-        val storageSchemaVersion: Int = TRAJECTORY_V1_STORAGE_SCHEMA_VERSION,
-        val storageSchemaIdentity: String = TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY,
-        val trajectorySchemaVersion: Int = TRAJECTORY_V1_VERSION,
-        val semanticEpisodeId: String,
-        val collectionJobId: String,
-        val decision: DecisionRecordV1,
-    )
-
-    @Serializable
-    private data class EpisodeEndFrame(
-        val recordType: String = "episode-end",
-        val storageSchemaVersion: Int = TRAJECTORY_V1_STORAGE_SCHEMA_VERSION,
-        val storageSchemaIdentity: String = TRAJECTORY_V1_STORAGE_SCHEMA_IDENTITY,
-        val trajectorySchemaVersion: Int = TRAJECTORY_V1_VERSION,
-        val semanticEpisodeId: String,
-        val collectionJobId: String,
-        val trajectoryId: String,
-        val decisionCount: Int,
-        val episodeContentDigest: String,
-        val closure: com.wingedsheep.gym.EpisodeClosureV1,
     )
 }

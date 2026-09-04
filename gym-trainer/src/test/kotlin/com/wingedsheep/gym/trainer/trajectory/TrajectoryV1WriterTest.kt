@@ -633,6 +633,16 @@ class TrajectoryV1WriterTest : FunSpec({
         storage shouldContain "\"storageSchemaIdentity\":\"argentum-trajectory-events@v1\""
     }
 
+    test("the A6 canonical frame sequence keeps its established wire digest") {
+        val fixture = validFixture()
+
+        val bytes = TrajectoryV1Admission.admit(fixture.trajectory, fixture.binding, 0)
+            .admittedEpisode()
+            .storageBytes()
+
+        A3SemanticJson.sha256(bytes) shouldBe "6c499e42c475866781414a214d743f58752eaf8523d69134d0e9f1f0edbd8d97"
+    }
+
     test("unknown future storage schema version or identity fails closed during shard verification") {
         listOf(
             "\"storageSchemaVersion\":1" to "\"storageSchemaVersion\":2",
@@ -725,7 +735,7 @@ private fun TrajectoryAdmissionResult.quarantineReason(): TrajectoryQuarantineRe
 private fun TrajectoryAdmissionResult.admittedEpisode(): ReplayAdmittedEpisodeV1 =
     shouldBeInstanceOf<TrajectoryAdmissionResult.Admitted>().episode
 
-private fun AdmissionFixture.withVerification(
+internal fun AdmissionFixture.withVerification(
     verification: VerifiedReplayVerification,
 ): AdmissionFixture = copy(
     binding = binding.copy(
@@ -746,7 +756,7 @@ private fun AdmissionFixture.withBindingIdentity(
     ),
 )
 
-private fun AdmissionFixture.withPolicySeed(policySeed: Long): AdmissionFixture {
+internal fun AdmissionFixture.withPolicySeed(policySeed: Long): AdmissionFixture {
     val metadataBase = trajectory.episodeMetadata.copy(
         policyProvenance = trajectory.episodeMetadata.policyProvenance.copy(policySeed = policySeed),
     )
@@ -758,7 +768,7 @@ private fun AdmissionFixture.withPolicySeed(policySeed: Long): AdmissionFixture 
     return copy(trajectory = trajectoryBase.copy(trajectoryId = trajectoryBase.recomputeTrajectoryId()))
 }
 
-private fun AdmissionFixture.withClosure(closure: EpisodeClosureV1): AdmissionFixture {
+internal fun AdmissionFixture.withClosure(closure: EpisodeClosureV1): AdmissionFixture {
     val metadata = trajectory.episodeMetadata.copy(closure = closure)
     val trajectoryBase = trajectory.copy(
         trajectoryId = "f".repeat(64),
@@ -776,12 +786,12 @@ private fun reorderObject(value: JsonObject): JsonObject = JsonObject(
     value.entries.sortedByDescending { it.key }.associate { (key, child) -> key to child },
 )
 
-private data class AdmissionFixture(
+internal data class AdmissionFixture(
     val trajectory: TrajectoryV1,
     val binding: ReplayTrajectoryBindingV1,
 )
 
-private fun validFixture(): AdmissionFixture {
+internal fun validFixture(): AdmissionFixture {
     val registry = CardRegistry().also {
         it.register(PortalSet.cards)
         it.register(PortalSet.basicLands)
