@@ -11,7 +11,10 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.shouldNotBe
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.put
 
 class PlayerObservationDomainDigestTest : FunSpec({
@@ -127,6 +130,48 @@ class PlayerObservationDomainDigestTest : FunSpec({
         return structured.copy(stateDigest = StateDigest.compute(structured))
     }
 
+    fun orderingObservation(environment: GameEnvironment): TrainingObservation {
+        val source = sourceObservation(environment)
+        val player = source.perspectivePlayerId
+        val first = EntityId("trigger-order-object-a")
+        val second = EntityId("trigger-order-object-b")
+        val ordering = source.copy(
+            pendingDecision = PendingDecisionView(
+                decisionId = "runtime-ordering-id",
+                kind = PendingDecisionKind.ORDER_OBJECTS,
+                playerId = player,
+                prompt = "presentation",
+                requiresStructuredResponse = true,
+                shape = DecisionShape(),
+                structuredDomain = OrderingDomain(
+                    objects = listOf(first, second),
+                    cardInfo = mapOf(
+                        first to StructuredCardInfo(
+                            name = "First Trigger",
+                            manaCost = "{1}",
+                            typeLine = "Creature — Human",
+                            colors = listOf("RED"),
+                            power = 1,
+                        ),
+                        second to StructuredCardInfo(
+                            name = "Second Trigger",
+                            manaCost = "{2}",
+                            typeLine = "Creature — Wizard",
+                            colors = listOf("BLUE"),
+                            power = 2,
+                        ),
+                    ),
+                    objectLabels = mapOf(
+                        first to "First Trigger #1",
+                        second to "Second Trigger #1",
+                    ),
+                ),
+            ),
+            legalActions = emptyList(),
+        )
+        return ordering.copy(stateDigest = StateDigest.compute(ordering))
+    }
+
     fun assertSourceParity(source: TrainingObservation, domain: CompleteLegalDomainV1) {
         val projection = PlayerObservationV1.from(source)
 
@@ -153,6 +198,30 @@ class PlayerObservationDomainDigestTest : FunSpec({
 
         assertSourceParity(source, CompleteLegalDomainV1.from(source))
         source.pendingDecision?.structuredDomain shouldNotBe null
+    }
+
+    test("ordering structured domains preserve source digest parity") {
+        val source = orderingObservation(environment())
+        val projection = PlayerObservationV1.from(source)
+        val domain = CompleteLegalDomainV1.from(source)
+
+        StateDigest.compute(source) shouldBe StateDigest.compute(projection, domain)
+        source.stateDigest shouldBe StateDigest.compute(projection, domain)
+    }
+
+    test("ordering structured domains preserve both trigger semantics in canonical JSON") {
+        val source = orderingObservation(environment())
+        val projection = PlayerObservationV1.from(source)
+        val domain = CompleteLegalDomainV1.from(source)
+
+        ObservationCanonicalizer.semanticJson(source) shouldBe
+            ObservationCanonicalizer.semanticJson(projection, domain)
+        val semantic = Json.parseToJsonElement(
+            ObservationCanonicalizer.semanticJson(projection, domain),
+        ).jsonObject
+        semantic.getValue("pendingDecision").jsonObject
+            .getValue("structuredDomain").jsonObject
+            .getValue("objectSemantics").jsonArray.size shouldBe 2
     }
 
     test("a durable observation mutation changes the reassembled source digest") {

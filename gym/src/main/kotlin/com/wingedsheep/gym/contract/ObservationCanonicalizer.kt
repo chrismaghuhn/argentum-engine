@@ -177,15 +177,15 @@ object ObservationCanonicalizer {
                 val pendingSemantic = pending.filterKeys {
                     it !in setOf("decisionId", "prompt", "sourceName", "effectHint")
                 }.toMutableMap()
-                val encodedStructuredDomain = pending["structuredDomain"]
-                    ?.takeIf { it is JsonObject }
-                    ?: structuredDomain?.let(::semanticStructuredDomain)
-                encodedStructuredDomain?.let { domain ->
-                    pendingSemantic["structuredDomain"] = if (domain is JsonObject) {
-                        semanticStructuredDomain(domain)
-                    } else {
-                        domain
-                    }
+                val structuredSemantic = when {
+                    pending["structuredDomain"] is JsonObject ->
+                        semanticStructuredDomain(pending.getValue("structuredDomain").jsonObject)
+
+                    structuredDomain != null -> semanticStructuredDomain(structuredDomain)
+                    else -> null
+                }
+                structuredSemantic?.let { domain ->
+                    pendingSemantic["structuredDomain"] = domain
                 }
                 JsonObject(pendingSemantic)
             } else {
