@@ -8,6 +8,7 @@ import com.wingedsheep.gym.contract.CompleteLegalDomainKind
 import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.PLAYER_OBSERVATION_V1_SCHEMA_IDENTITY
 import com.wingedsheep.gym.contract.PlayerObservationV1
+import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.StateDigest
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.decodeFromString
@@ -989,7 +990,10 @@ object TrajectoryV1Validator {
             !observation.terminated && !observation.truncated && observation.winnerId == null,
             TrajectoryValidationReason.NONTERMINAL_DECISION_OBSERVATION,
         )
-        contractRequire(observation.wireSchemaHash.isNotBlank(), TrajectoryValidationReason.SCHEMA_MISMATCH)
+        contractRequire(
+            observation.wireSchemaHash == SchemaHash.CURRENT,
+            TrajectoryValidationReason.SCHEMA_MISMATCH,
+        )
         try {
             requireSha256(observation.observationDigest, "Observation digest")
         } catch (_: IllegalArgumentException) {

@@ -53,6 +53,7 @@ import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PendingDecisionView
 import com.wingedsheep.gym.contract.PlayerObservationV1
 import com.wingedsheep.gym.contract.ReplacementDomain
+import com.wingedsheep.gym.contract.SchemaHash
 import com.wingedsheep.gym.contract.StateDigest
 import com.wingedsheep.gym.contract.StructuredDecisionDomain
 import com.wingedsheep.gym.contract.StructuredCardInfo
@@ -1354,6 +1355,37 @@ class TrajectoryV1ContractTest : FunSpec({
                 replaceJsonValue(it, "observationBefore", malformedObservation)
             }),
         ).reason shouldBe TrajectoryValidationReason.OBSERVATION_DIGEST_MISMATCH
+    }
+
+    test("an unknown wire schema is rejected even when all dependent digests are recomputed") {
+        val trajectory = validTrajectory()
+        val originalRecord = trajectory.decisions.single()
+        val futureObservation = originalRecord.observation.copy(
+            wireSchemaHash = "argentum-gym-contract@future-version",
+        )
+        val digestBoundObservation = futureObservation.copy(
+            observationDigest = StateDigest.compute(futureObservation, originalRecord.domain),
+        )
+        val futureIdentity = SemanticDecisionIdentityV1.from(
+            semanticEpisodeId = trajectory.semanticEpisodeId,
+            prefix = SemanticReplayPrefixV1(),
+            replayActionIndex = originalRecord.replayActionIndex,
+            observation = digestBoundObservation,
+            domain = originalRecord.domain,
+            perspectivePlayerId = originalRecord.perspectivePlayerId.value,
+            decisionKind = originalRecord.decisionKind,
+        ).semanticDecisionId()
+        val futureRecord = originalRecord.copy(
+            observationBefore = digestBoundObservation,
+            semanticDecisionId = futureIdentity,
+        )
+        val futureTrajectory = reidentified(trajectory, decisions = listOf(futureRecord))
+
+        futureObservation.wireSchemaHash shouldNotBe SchemaHash.CURRENT
+        futureTrajectory.trajectoryId shouldBe futureTrajectory.recomputeTrajectoryId()
+        requireRejected(
+            TrajectoryV1Json.decodeAndValidate(TrajectoryV1Json.encode(futureTrajectory)),
+        ).reason shouldBe TrajectoryValidationReason.SCHEMA_MISMATCH
     }
 
     test("sequence and identity mismatches reject without repairing producer data") {
