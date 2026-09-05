@@ -824,7 +824,7 @@ internal fun validFixture(): AdmissionFixture {
         reason = GameEndReason.LIFE_ZERO,
     )
     val replayIdentity = ReplayContentIdentityV1(
-        replayVersion = 5,
+        replayVersion = COMPACT_REPLAY_V5_VERSION,
         value = "c".repeat(64),
     )
     val metadataBase = EpisodeMetadataV1(
@@ -858,6 +858,7 @@ internal fun validFixture(): AdmissionFixture {
             ),
             startingPlayer = EntityId("e0"),
             actualEngineSeed = 70L,
+            replaySchemaIdentity = COMPACT_REPLAY_V5_SCHEMA_IDENTITY,
         ),
         policyProvenance = PolicyProvenanceV1(
             behaviorPolicyIdentity = "behavior@v1",
@@ -869,6 +870,8 @@ internal fun validFixture(): AdmissionFixture {
             policySourceIdentity = "e".repeat(64),
         ),
         compactReplayLink = CompactReplayLinkV1(
+            replayVersion = COMPACT_REPLAY_V5_VERSION,
+            replaySchemaIdentity = COMPACT_REPLAY_V5_SCHEMA_IDENTITY,
             replayContentIdentity = replayIdentity.value,
             replayActionCount = 1,
         ),
@@ -912,7 +915,7 @@ internal fun validFixture(): AdmissionFixture {
     )
     val tailFrame = frame.copy(replayActionIndex = 1)
     val verification = VerifiedReplayVerification(
-        replayVersion = 5,
+        replayVersion = COMPACT_REPLAY_V5_VERSION,
         replayActionCount = 1,
         verifiedActionCount = 1,
         fidelity = ReplayFidelity.EXACT,
