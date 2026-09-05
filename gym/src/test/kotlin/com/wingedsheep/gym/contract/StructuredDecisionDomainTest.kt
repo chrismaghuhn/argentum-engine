@@ -2,6 +2,7 @@ package com.wingedsheep.gym.contract
 
 import com.wingedsheep.engine.core.CombatResolutionDecision
 import com.wingedsheep.engine.core.CombatResolutionResponse
+import com.wingedsheep.engine.core.CounterUnlessPaysManaSelectionContinuation
 import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModeOption
 import com.wingedsheep.engine.core.CardsSelectedResponse
@@ -45,12 +46,14 @@ import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.sdk.core.Color
+import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.SelectTargetEffect
+import com.wingedsheep.sdk.scripting.effects.WardCost
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.predicates.CardPredicate
 import com.wingedsheep.sdk.scripting.targets.TargetObject
@@ -346,11 +349,11 @@ class StructuredDecisionDomainTest : FunSpec({
             canDecline = true,
             waterbendPermanents = listOf(WaterbendPermanentChoice(source, "Mountain", false))
         )
-        val manaDomain = observation(env, mana).pendingDecision!!.structuredDomain
-            .shouldBeInstanceOf<ManaSourcesDomain>()
-        manaDomain.availableSources.single().entityId shouldBe source
-        manaDomain.requiredCost shouldBe "{1}"
-        manaDomain.canDecline shouldBe true
+        val manaView = observation(env, mana).pendingDecision!!
+        manaView.requiresStructuredResponse shouldBe true
+        // This synthetic menu has no Rules-backed payment source. The trusted producer must not
+        // promote its display metadata into a partial payment domain.
+        manaView.structuredDomain shouldBe null
     }
 
     test("pending target domains use an independent version while the global version stays V1") {
@@ -817,7 +820,7 @@ class StructuredDecisionDomainTest : FunSpec({
         )
     }
 
-    test("SelectManaSources domain constructs a response accepted by GameGymEnv and Rules") {
+    test("SelectManaSources with no V5 source activation publishes only an explicit decline") {
         val owner = environment().playerIds.first()
         val source = EntityId("mana-source-acceptance")
         val gym = gameWithPendingDecision(
@@ -830,19 +833,70 @@ class StructuredDecisionDomainTest : FunSpec({
                     ManaSourceOption(source, "Mountain", setOf(Color.RED), false)
                 ),
                 requiredCost = "{1}",
-                autoPaySuggestion = listOf(source)
+                autoPaySuggestion = listOf(source),
+                canDecline = true,
             )
         )
-        val view = pendingView(gym)
+        val observation = gym.observe().observation.shouldBeInstanceOf<TrainingObservation>()
+        val view = observation.pendingDecision ?: error("Missing pending mana decision")
+        view.requiresStructuredResponse shouldBe true
         val domain = view.structuredDomain.shouldBeInstanceOf<ManaSourcesDomain>()
+        domain.paymentDomain.sourceActivationOptions shouldBe emptyList()
+        domain.paymentDomain.initialPoolBuckets shouldBe emptyList()
+        ChosenSemanticResponseV1.from(
+            CompleteLegalDomainV1.from(observation),
+            ManaSourcesSelectedResponse(decisionId(view), declined = true),
+        ).response["declined"] shouldBe kotlinx.serialization.json.JsonPrimitive(true)
+    }
 
-        submitAndRequireResolved(
-            gym,
-            ManaSourcesSelectedResponse(
-                decisionId(view),
-                selectedSources = domain.availableSources.map { it.entityId }
+    test("non-declinable pending mana windows fail closed before publishing a V3 domain") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val decision = SelectManaSourcesDecision(
+            id = "non-declinable-mana",
+            playerId = owner,
+            prompt = "Pay {1}",
+            context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+            availableSources = emptyList(),
+            requiredCost = "{1}",
+            autoPaySuggestion = emptyList(),
+            canDecline = false,
+        )
+
+        observation(env, decision).pendingDecision!!.structuredDomain shouldBe null
+    }
+
+    test("composite Ward mana windows fail closed before publishing a partial V3 domain") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val decision = SelectManaSourcesDecision(
+            id = "composite-ward-mana",
+            playerId = owner,
+            prompt = "Pay {1} and 2 life",
+            context = DecisionContext(phase = DecisionPhase.RESOLUTION),
+            availableSources = emptyList(),
+            requiredCost = "{1}",
+            autoPaySuggestion = emptyList(),
+            canDecline = true,
+        )
+        val state = env.state.copy(pendingDecision = decision).pushContinuation(
+            CounterUnlessPaysManaSelectionContinuation(
+                decisionId = decision.id,
+                payingPlayerId = owner,
+                spellEntityId = EntityId("warded-spell"),
+                manaCost = ManaCost.parse("{1}"),
+                availableSources = emptyList(),
+                autoPaySuggestion = emptyList(),
+                remainingWardParts = listOf(WardCost.Life(2)),
             )
         )
+
+        ObservationBuilder(cardRegistry = registry())
+            .build(state, owner, emptyList())
+            .observation
+            .shouldBeInstanceOf<TrainingObservation>()
+            .pendingDecision!!
+            .structuredDomain shouldBe null
     }
 
     test("Rules rejects responses with candidates outside the projected domain") {
@@ -1142,7 +1196,7 @@ class StructuredDecisionDomainTest : FunSpec({
         StateDigest.compute(first) shouldBe StateDigest.compute(second)
     }
 
-    test("advisory mana autopay suggestions do not change the domain digest") {
+    test("legacy source and AutoPay metadata do not enlarge the V3 pending payment domain") {
         val env = environment()
         val owner = env.playerIds.first()
         val sourceA = EntityId("source-a")
@@ -1162,7 +1216,8 @@ class StructuredDecisionDomainTest : FunSpec({
                 context = DecisionContext(phase = DecisionPhase.RESOLUTION),
                 availableSources = sources,
                 requiredCost = "{1}",
-                autoPaySuggestion = suggestion
+                autoPaySuggestion = suggestion,
+                canDecline = true,
             )
 
         val base = observation(env, mana(listOf(sourceA)))
@@ -1183,8 +1238,16 @@ class StructuredDecisionDomainTest : FunSpec({
             )
         )
 
+        val baseDomain = base.pendingDecision!!.structuredDomain.shouldBeInstanceOf<ManaSourcesDomain>()
+        val suggestionDomain = differentSuggestion.pendingDecision!!.structuredDomain
+            .shouldBeInstanceOf<ManaSourcesDomain>()
+        val sourceDomain = differentDomain.pendingDecision!!.structuredDomain
+            .shouldBeInstanceOf<ManaSourcesDomain>()
+        baseDomain.paymentDomain shouldBe suggestionDomain.paymentDomain
+        baseDomain.paymentDomain shouldBe sourceDomain.paymentDomain
+        baseDomain.paymentDomain.sourceActivationOptions shouldBe emptyList()
         StateDigest.compute(base) shouldBe StateDigest.compute(differentSuggestion)
-        StateDigest.compute(base) shouldNotBe StateDigest.compute(differentDomain)
+        StateDigest.compute(base) shouldBe StateDigest.compute(differentDomain)
     }
 
     test("fork and snapshot restore preserve structured decision semantics") {

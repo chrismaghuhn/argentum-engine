@@ -2364,8 +2364,12 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         domain.coChooserId?.let(::add)
                     }
                     is ManaSourcesDomain -> {
-                        domain.availableSources.mapTo(this) { it.entityId }
-                        domain.waterbendPermanents.mapTo(this) { it.entityId }
+                        domain.paymentDomain.sourceActivationOptions.mapTo(this) { it.sourceId }
+                        domain.paymentDomain.initialPoolBuckets.mapNotNullTo(this) { bucket ->
+                            (bucket.key as? com.wingedsheep.engine.core.InitialPoolBucketKeyV1.CertifiedFloatingBucket)
+                                ?.key
+                                ?.sourceId
+                        }
                     }
                     is ReplacementDomain -> domain.fromMetadata
                         .plus(domain.toMetadata)

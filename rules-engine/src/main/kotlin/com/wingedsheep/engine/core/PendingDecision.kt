@@ -752,12 +752,12 @@ data class ReorderLibraryDecision(
 /**
  * Player must select mana sources to pay a cost (e.g., Lightning Rift's {1}).
  *
- * Shown after the player agrees to pay, before target selection.
- * Includes an "Auto Pay" shortcut that uses the solver's suggestion.
+ * Shown after the player agrees to pay, before target selection. Legacy clients may expose the
+ * solver's Auto Pay shortcut, but trusted Gym control uses an explicit V3 payment program.
  *
  * @property availableSources List of mana source entity IDs + metadata for display
  * @property requiredCost The mana cost string to display
- * @property autoPaySuggestion Pre-computed auto-tap suggestion (entity IDs to tap)
+ * @property autoPaySuggestion Pre-computed legacy UI suggestion (entity IDs to tap)
  */
 @Serializable
 @SerialName("SelectManaSourcesDecision")
@@ -1011,8 +1011,8 @@ data class DamageAssignmentResponse(
 /**
  * Response to SelectManaSourcesDecision.
  *
- * @property selectedSources Entity IDs of the mana sources to tap (ignored if autoPay is true)
- * @property autoPay If true, use the auto-tap suggestion instead of manual selection
+ * @property selectedSources Legacy entity IDs of mana sources to tap (ignored if autoPay is true)
+ * @property autoPay Legacy request to use the solver's suggestion; trusted Gym rejects it
  */
 @Serializable
 @SerialName("ManaSourcesSelectedResponse")
@@ -1020,6 +1020,15 @@ data class ManaSourcesSelectedResponse(
     override val decisionId: String,
     val selectedSources: List<EntityId> = emptyList(),
     val autoPay: Boolean = false,
+    /**
+     * Complete explicit payment program for a trusted pending mana payment.
+     *
+     * The legacy [selectedSources] carrier remains available to existing non-Gym clients, but it
+     * cannot identify a multi-production source's chosen output or the allocation of floating
+     * mana. Trusted callers submit this existing V3 payment program instead; Rules validates and
+     * executes it without selecting a source, production, allocation, or order on their behalf.
+     */
+    val paymentPlan: PaymentPlanV3? = null,
     /**
      * Untapped artifacts/creatures the player taps to help pay a Ward—Waterbend cost (Avatar:
      * The Last Airbender) — each pays {1} of the generic. Empty for an ordinary mana payment.
@@ -1047,6 +1056,7 @@ data class ManaSourcesSelectedResponse(
      */
     fun isDecline(floatingCoversCost: Boolean): Boolean = when {
         declined -> true
+        paymentPlan != null -> false
         autoPay -> false
         selectedSources.isNotEmpty() || waterbendPermanents.isNotEmpty() -> false
         else -> !floatingCoversCost

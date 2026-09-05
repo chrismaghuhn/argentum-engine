@@ -101,7 +101,7 @@ class VerifiedReplayVerification(
     val fidelity: ReplayFidelity,
     frames: List<VerifiedReplayFrame> = emptyList(),
     /**
-     * The initial public boundary was reconstructed. For non-empty v5 replays, action-count 0 is
+     * The initial public boundary was reconstructed. For non-empty v6 replays, action-count 0 is
      * not required to be persisted; when a zero-action checkpoint is present, its fingerprint must
      * still match the authoritative initial state.
      */

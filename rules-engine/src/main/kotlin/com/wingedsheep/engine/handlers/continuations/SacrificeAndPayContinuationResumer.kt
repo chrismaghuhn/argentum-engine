@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.PredicateContext
 import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
+import com.wingedsheep.engine.mechanics.mana.PendingManaPaymentPlanExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaPool
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
@@ -503,6 +504,18 @@ class SacrificeAndPayContinuationResumer(
             return ExecutionResult.error(state, "Expected mana sources selected response for pay or suffer")
         }
         val inner = continuation.inner
+        response.paymentPlan?.let {
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = inner.playerId,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "pay or suffer mana payment",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+            return checkForMore(explicit.state, explicit.events)
+        }
         val floated = ManaPaymentWindow.floatSelectedMana(
             state, inner.playerId, continuation.manaCost, response, continuation.availableSources, services
         )

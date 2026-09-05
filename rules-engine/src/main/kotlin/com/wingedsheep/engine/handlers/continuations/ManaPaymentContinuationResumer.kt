@@ -7,6 +7,7 @@ import com.wingedsheep.engine.handlers.effects.BattlefieldFilterUtils
 import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.life.LifePaymentService
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.PendingManaPaymentPlanExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.productionSourceSubtypes
@@ -165,7 +166,11 @@ class ManaPaymentContinuationResumer(
                 ),
                 availableSources = sourceOptions,
                 requiredCost = continuation.manaCost.toString(),
-                autoPaySuggestion = autoPaySuggestion
+                autoPaySuggestion = autoPaySuggestion,
+                // This is the source-selection half of an already offered "unless pays" choice.
+                // An explicit unpaid response is semantically the original no branch and prevents
+                // a V5 domain with no legal program from stranding the external controller.
+                canDecline = true,
             )
 
             val manaSelectionContinuation = CounterUnlessPaysManaSelectionContinuation(
@@ -635,6 +640,42 @@ class ManaPaymentContinuationResumer(
         var currentState = state
         val events = mutableListOf<GameEvent>()
 
+        response.paymentPlan?.let {
+            if (continuation.waterbend || continuation.remainingWardParts.isNotEmpty()) {
+                return ExecutionResult.error(
+                    state,
+                    "Explicit V3 pending payment does not support Waterbend or composite Ward costs",
+                )
+            }
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = playerId,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "counter unless pays mana",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+            chargeNextWardPartOrNull(
+                explicit.state,
+                explicit.events,
+                continuation.remainingWardParts,
+                continuation.spellEntityId,
+                continuation.payingPlayerId,
+                continuation.wardSourceId,
+                continuation.controllerId,
+                checkForMore,
+            )?.let { return it }
+            return runOnPaidThenCheckForMore(
+                explicit.state,
+                explicit.events,
+                continuation.onPaid,
+                continuation.controllerId ?: continuation.payingPlayerId,
+                continuation.sourceId,
+                checkForMore,
+            )
+        }
+
         // Ward—Waterbend (Avatar: The Last Airbender): tap the chosen artifacts/creatures first,
         // each paying {1} of the generic, through the shared waterbend payment machinery. The
         // remaining (reduced) cost is then paid with mana sources exactly as a plain ward {N}.
@@ -1033,6 +1074,32 @@ class ManaPaymentContinuationResumer(
                 .withDiagnosticsFrom(otherwiseResult.diagnostics)
         }
 
+        response.paymentPlan?.let {
+            if (continuation.waterbend) {
+                return ExecutionResult.error(
+                    state,
+                    "Explicit V3 pending payment does not support Waterbend cost reduction",
+                )
+            }
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = playerId,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "optional mana payment",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+            val effectResult = services.effectExecutorRegistry
+                .execute(explicit.state, continuation.effect, continuation.effectContext)
+                .toExecutionResult()
+            if (effectResult.error != null || effectResult.isPaused) {
+                return effectResult.copy(events = explicit.events + effectResult.events)
+            }
+            return checkForMore(effectResult.state, explicit.events + effectResult.events)
+                .withDiagnosticsFrom(effectResult.diagnostics)
+        }
+
         var currentState = state
         val events = mutableListOf<GameEvent>()
 
@@ -1303,6 +1370,40 @@ class ManaPaymentContinuationResumer(
         }
 
         val playerId = continuation.trigger.controllerId
+
+        response.paymentPlan?.let {
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = playerId,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "triggered optional mana payment",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+
+            val trigger = continuation.trigger
+            val innerEffect = trigger.ability.effect.asOptionalManaPayment()!!.then
+            val unwrappedAbility = trigger.ability.copy(effect = innerEffect)
+            val unwrappedTrigger = trigger.copy(ability = unwrappedAbility)
+            val result = services.triggerProcessor.processTargetedTrigger(
+                explicit.state,
+                unwrappedTrigger,
+                continuation.targetRequirement,
+            )
+            if (result.isPaused) {
+                return ExecutionResult.paused(
+                    result.state,
+                    result.pendingDecision!!,
+                    explicit.events + result.events,
+                    diagnostics = result.diagnostics,
+                )
+            }
+            if (!result.isSuccess) return result.copy(events = explicit.events + result.events)
+            return checkForMore(result.newState, explicit.events + result.events.toList())
+                .withDiagnosticsFrom(result.diagnostics)
+        }
+
         val playerEntity = state.getEntity(playerId)
             ?: return ExecutionResult.error(state, "Paying player not found")
 

@@ -10,6 +10,7 @@ import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.PaymentManaColor
 import com.wingedsheep.engine.core.tap
 import com.wingedsheep.engine.mechanics.mana.ManaPool
+import com.wingedsheep.engine.mechanics.mana.PendingManaPaymentPlanExecutor
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.mechanics.mana.fromManaPool
 import com.wingedsheep.engine.mechanics.mana.toManaPool
@@ -64,6 +65,26 @@ class CombatTaxContinuationResumer(
             return ExecutionResult.success(state)
         }
 
+        response.paymentPlan?.let {
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = continuation.attackingPlayer,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "attack tax",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+            return services.combatManager.attackPhase.commitAttackDeclaration(
+                state = explicit.state,
+                attackingPlayer = continuation.attackingPlayer,
+                attackers = continuation.attackers,
+                projected = explicit.state.projectedState,
+                taxEvents = explicit.events,
+                bands = continuation.bands,
+            )
+        }
+
         val paid = payTax(state, continuation.attackingPlayer, continuation.manaCost, continuation.availableSources, response)
             ?: return ExecutionResult.error(state, "Cannot pay attack tax of ${continuation.manaCost}")
 
@@ -87,6 +108,24 @@ class CombatTaxContinuationResumer(
         }
         if (response.isDecline(floatingCovers(state, continuation.blockingPlayer, continuation.manaCost))) {
             return ExecutionResult.success(state)
+        }
+
+        response.paymentPlan?.let {
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = continuation.blockingPlayer,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "block tax",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+            return services.combatManager.blockPhase.commitBlockDeclaration(
+                state = explicit.state,
+                blockingPlayer = continuation.blockingPlayer,
+                blockers = continuation.blockers,
+                taxEvents = explicit.events,
+            )
         }
 
         val paid = payTax(state, continuation.blockingPlayer, continuation.manaCost, continuation.availableSources, response)

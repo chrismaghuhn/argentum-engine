@@ -987,8 +987,31 @@ side-effect, and source-bound activated self-cost slices. `PaymentSourceActivati
 remains the structural identity
 of the entire selected activated ability (excluding runtime `id` and `descriptionOverride`); the
 side-effect certificate is an internal closure proof, not a second execution authority.
-The pending `ManaSourcesDomain` likewise uses stable `manaAbilityKey` values (domain version 2),
-while retaining its advisory `autoPaySuggestion` for existing decision-flow consumers.
+### Pending mana payment (ManaSourcesDomain V3)
+
+`ManaSourcesDomain` V3 publishes one complete `PaymentDomainV5` for a supported pending payment.
+That domain names every qualified source activation, production choice, initial-pool bucket, atomic
+cost unit, and legal allocation. The trusted responder supplies
+`ManaSourcesSelectedResponse.paymentPlan: PaymentPlanV3`; `GameGymEnv` validates the plan against
+the public domain before it reaches Rules, and Rules validates the same V3 program again before
+executing it.
+
+The durable response excludes the live `decisionId`, source-only `selectedSources`, and `autoPay`.
+`selectedSources` and `autoPay` remain legacy engine fields for non-Gym clients, but they cannot
+satisfy a trusted pending payment. `autoPaySuggestion` is not published in the V3 Gym domain.
+
+`CompactReplay` V6 is the durable engine carrier for a pending `PaymentPlanV3`. V5 and earlier
+records reject that carrier rather than silently decoding it as a legacy source-only response; V6
+retains the V4 transition-state fingerprint because the new semantics are in the ordered replay
+input stream.
+
+The V3 slice supports only pending payments that the existing V5 qualifier can represent and that
+retain an explicit unpaid branch. A source or pool shape that cannot produce one complete V5 domain,
+Waterbend's separate tap-to-reduce choice, composite Ward's later non-mana costs, and the historical
+targeted optional-payment continuation with no unpaid response publish no structured domain and fail
+closed at the trusted Gym boundary. Rules also rejects an explicit V3 response for Waterbend or a
+composite Ward before it can execute a partial payment. These cases never fall back to a solver,
+source order, or implicit mana color.
 
 The controller submits representable historical choices inside `PaymentStrategy.Explicit.paymentPlan`.
 When the current domain exposes joint floating buckets, it submits the versioned
@@ -1184,11 +1207,12 @@ ability window; state-based actions are not simulated until the ordinary priorit
 the outer action reserves positive PayLife, the public fixed-self-damage budget is the current
 life total minus that reservation; with no outer PayLife reservation the budget is unbounded.
 
-CompactReplay v5 is required for the persisted `ExplicitV3` action carrier. Replay v5 preserves
-the v4 transition-semantic fingerprint and checkpoint semantics while recording the complete V3
-program as part of the action stream. The replay payload does not serialize a Gym-domain hash or
-observation schema identity. Replay v4 plus `ExplicitV3` is rejected, and unknown future replay
-versions fail closed before action deserialization or reinterpretation.
+CompactReplay v5 is required for the persisted `ExplicitV3` action carrier; current CompactReplay
+v6 additionally carries a pending `ManaSourcesSelectedResponse.paymentPlan`. Both preserve the v4
+transition-semantic fingerprint and checkpoint semantics while recording the complete V3 program as
+part of the action stream. The replay payload does not serialize a Gym-domain hash or observation
+schema identity. Replay v4 plus `ExplicitV3`, and replay v5 plus a pending V3 plan, are rejected;
+unknown future replay versions fail closed before action deserialization or reinterpretation.
 
 ### Target-bound activated-ability payment (TargetPaymentDomainV1)
 

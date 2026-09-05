@@ -10,6 +10,7 @@ import com.wingedsheep.engine.core.BudgetModalDecision
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.CounterUnlessPaysManaSelectionContinuation
 import com.wingedsheep.engine.core.ChooseColorDecision
 import com.wingedsheep.engine.core.ChooseModeDecision
 import com.wingedsheep.engine.core.ChooseNumberDecision
@@ -2301,41 +2302,33 @@ class ObservationBuilder(
             coChooserId = coChooserId
         )
 
-    private fun SelectManaSourcesDecision.manaSourcesDomain(state: GameState): ManaSourcesDomain {
-        val runtimeSources = manaSolver.findAvailableManaSources(state, playerId).associateBy { it.entityId }
-        return ManaSourcesDomain(
-            availableSources = availableSources.sortedBy { it.entityId.value }.map { source ->
-                ManaSourceDomain(
-                    entityId = source.entityId,
-                    name = source.name,
-                    producesColors = source.producesColors,
-                    producesColorless = source.producesColorless,
-                    requiresSacrifice = source.requiresSacrifice,
-                    requiresTappingAnotherPermanent = source.requiresTappingAnotherPermanent,
-                    manaAbilityKey = source.manaAbilityId?.let { runtimeId ->
-                        runtimeSources[source.entityId]
-                            ?.let { runtimeSource ->
-                                (runtimeSource.producesColors.flatMap(runtimeSource::manaAbilityOptionsFor) +
-                                    runtimeSource.manaAbilityOptionsFor(null))
-                                    .firstOrNull { it.id == runtimeId }
-                            }
-                            ?.let(ManaAbilityIdentity::key)
-                    }
-                )
-            },
+    /**
+     * A pending payment has the same complete source/production/allocation boundary as an action
+     * payment. A trusted response must also be able to express the unpaid branch. Waterbend
+     * changes the outer mana cost after a separate selected subset, and composite Ward has later
+     * cost components whose joint life/selection budget V3 does not yet publish. Those shapes are
+     * intentionally outside this slice rather than receiving a partial or solver-backed domain.
+     */
+    private fun SelectManaSourcesDecision.manaSourcesDomain(state: GameState): ManaSourcesDomain? {
+        if (!canDecline || waterbendPermanents.isNotEmpty() || hasRemainingCompositeWardCost(state)) {
+            return null
+        }
+        val paymentDomain = paymentDomainBuilder.buildV5(
+            state = state,
+            playerId = playerId,
             requiredCost = requiredCost,
-            autoPaySuggestion = autoPaySuggestion,
+            spellContext = SpellPaymentContext(),
+        ) ?: return null
+        return ManaSourcesDomain(
+            paymentDomain = paymentDomain,
             canDecline = canDecline,
-            waterbendPermanents = waterbendPermanents.sortedBy { it.entityId.value }.map(::waterbendDomain)
         )
     }
 
-    private fun waterbendDomain(choice: WaterbendPermanentChoice): WaterbendPermanentDomain =
-        WaterbendPermanentDomain(
-            entityId = choice.entityId,
-            name = choice.name,
-            isCreature = choice.isCreature
-        )
+    private fun SelectManaSourcesDecision.hasRemainingCompositeWardCost(state: GameState): Boolean =
+        (state.peekContinuation() as? CounterUnlessPaysManaSelectionContinuation)
+            ?.let { it.decisionId == id && it.remainingWardParts.isNotEmpty() }
+            ?: false
 
     private fun unorderedEntityIds(ids: List<EntityId>): List<EntityId> =
         ids.sortedBy { it.value }

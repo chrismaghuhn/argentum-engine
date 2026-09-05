@@ -366,10 +366,11 @@ private fun validateStructuredDomainRelations(domain: StructuredDecisionDomain) 
 
         is ManaSourcesDomain -> {
             requireDistinct(
-                domain.availableSources.map { it.entityId to it.manaAbilityKey },
-                "Mana source options",
+                domain.paymentDomain.sourceActivationOptions.map { option ->
+                    option.sourceId to option.manaAbilityKey
+                },
+                "Pending payment source options",
             )
-            requireDistinct(domain.waterbendPermanents.map { it.entityId }, "Waterbend permanents")
         }
 
         is ReplacementDomain -> {
@@ -875,10 +876,8 @@ private object CandidateSemanticValidator {
                 domain.blockers.forEach { requireSortedEntityIds(it.blockedAttackerIds, "blocked attacker IDs") }
             }
 
-            is ManaSourcesDomain -> {
-                requireSortedEntityIds(domain.availableSources.map { it.entityId }, "mana sources")
-                requireSortedEntityIds(domain.waterbendPermanents.map { it.entityId }, "waterbend permanents")
-            }
+            // PaymentDomainV5 owns source/ability order and validates its own canonical identities.
+            is ManaSourcesDomain -> Unit
 
             is ReplacementDomain -> Unit
             is BudgetModalDomain -> Unit

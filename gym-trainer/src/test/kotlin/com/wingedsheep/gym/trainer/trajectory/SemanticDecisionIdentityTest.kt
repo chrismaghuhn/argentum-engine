@@ -41,7 +41,6 @@ import com.wingedsheep.gym.contract.CombatResolutionDomain
 import com.wingedsheep.gym.contract.CombatTargetKind
 import com.wingedsheep.gym.contract.ConditionalSelectionMinimumDomain
 import com.wingedsheep.gym.contract.DistributionDomain
-import com.wingedsheep.gym.contract.ManaSourceDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
 import com.wingedsheep.gym.contract.PendingDecisionKind
 import com.wingedsheep.gym.contract.PendingDecisionView
@@ -1482,27 +1481,14 @@ class SemanticDecisionIdentityTest : FunSpec({
         }
     }
 
-    test("explicit mana-source responses retain the manual choice and reject AutoPay") {
+    test("explicit pending-payment responses retain their V3 program and reject AutoPay") {
         val domain = CompleteLegalDomainV1(
             kind = CompleteLegalDomainKind.STRUCTURED_DECISION,
             decisionKind = PendingDecisionKind.SELECT_MANA_SOURCES,
             shape = DecisionShape(),
             structuredDomain = ManaSourcesDomain(
-                availableSources = listOf(
-                    ManaSourceDomain(
-                        entityId = EntityId("source"),
-                        name = "presentation",
-                        producesColors = setOf(com.wingedsheep.sdk.core.Color.RED),
-                        producesColorless = false,
-                        requiresSacrifice = false,
-                        requiresTappingAnotherPermanent = false,
-                        manaAbilityKey = "stable-source-key",
-                    )
-                ),
-                requiredCost = "{R}",
-                autoPaySuggestion = emptyList(),
+                paymentDomain = paymentDomain(),
                 canDecline = false,
-                waterbendPermanents = emptyList(),
             ),
         )
 
@@ -1510,11 +1496,21 @@ class SemanticDecisionIdentityTest : FunSpec({
             domain,
             ManaSourcesSelectedResponse(
                 decisionId = "decision",
-                selectedSources = listOf(EntityId("source")),
+                paymentPlan = PaymentPlanV3(
+                    outerAllocation = listOf(
+                        PaymentAllocationV1(
+                            target = PaymentTargetV1.OuterCostUnit(0, 0),
+                            resource = ManaResourceRefV1.InitialPoolResource(
+                                InitialPoolBucketKeyV1.UnrestrictedPoolBucket(PaymentManaColor.RED)
+                            ),
+                        )
+                    )
+                ),
                 autoPay = false,
             ),
         )
-        chosen.canonicalJson().contains("selectedSources").shouldBeTrue()
+        chosen.canonicalJson().contains("paymentPlan").shouldBeTrue()
+        chosen.canonicalJson().contains("selectedSources").shouldBeFalse()
         chosen.canonicalJson().contains("autoPay").shouldBeFalse()
 
         shouldThrow<IllegalArgumentException> {

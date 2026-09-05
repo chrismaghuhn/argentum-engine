@@ -1,14 +1,13 @@
 package com.wingedsheep.gym.contract
 
-import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /** Version of the typed structured-decision payloads nested in [PendingDecisionView]. */
 const val STRUCTURED_DECISION_DOMAIN_VERSION: Int = 1
-/** Version of the mana-source pending-decision payload after replacing runtime ability handles. */
-const val MANA_SOURCES_DOMAIN_VERSION: Int = 2
+/** Version of the pending payment payload backed by the complete V5 payment domain. */
+const val MANA_SOURCES_DOMAIN_VERSION: Int = 3
 /** Version of the pending target-domain payload carrying the shared target-requirement atom. */
 const val TARGETS_DOMAIN_VERSION: Int = 2
 
@@ -256,35 +255,19 @@ data class CombatResolutionDomain(
 ) : StructuredDecisionDomain
 
 @Serializable
-data class ManaSourceDomain(
-    val entityId: EntityId,
-    val name: String,
-    val producesColors: Set<Color>,
-    val producesColorless: Boolean,
-    val requiresSacrifice: Boolean,
-    val requiresTappingAnotherPermanent: Boolean,
-    /** Stable structural identity; runtime AbilityId handles are never published. */
-    val manaAbilityKey: String?
-)
-
-@Serializable
-data class WaterbendPermanentDomain(
-    val entityId: EntityId,
-    val name: String,
-    val isCreature: Boolean
-)
-
-@Serializable
 @SerialName("mana-sources")
 data class ManaSourcesDomain(
     override val version: Int = MANA_SOURCES_DOMAIN_VERSION,
-    val availableSources: List<ManaSourceDomain>,
-    val requiredCost: String,
-    /** Advisory only; it is never treated as the sole legal response. */
-    val autoPaySuggestion: List<EntityId>,
+    /** The complete public V5 source/production/pool/allocation capability domain. */
+    val paymentDomain: PaymentDomainV5,
     val canDecline: Boolean,
-    val waterbendPermanents: List<WaterbendPermanentDomain>
-) : StructuredDecisionDomain
+) : StructuredDecisionDomain {
+    init {
+        require(version == MANA_SOURCES_DOMAIN_VERSION) {
+            "Unsupported pending mana-payment domain version: $version"
+        }
+    }
+}
 
 @Serializable
 @SerialName("replacement")

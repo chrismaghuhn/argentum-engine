@@ -184,7 +184,7 @@ class ReplayFingerprintV3Test : FunSpec({
         ReplayFingerprint.of(base, 4) shouldNotBe ReplayFingerprint.of(joint, 4)
     }
 
-    test("v5 target-bound payment replay retains the v4 fingerprint semantics") {
+    test("v5 and v6 payment replay carriers retain the v4 fingerprint semantics") {
         val player = EntityId("p1")
         val source = EntityId("e108")
         val state = GameState().withEntity(
@@ -208,6 +208,7 @@ class ReplayFingerprintV3Test : FunSpec({
         )
 
         ReplayFingerprint.of(state, 5) shouldBe ReplayFingerprint.of(state, 4)
+        ReplayFingerprint.of(state, 6) shouldBe ReplayFingerprint.of(state, 4)
     }
 
     test("v3 fingerprint includes semantic yields and canonicalizes unordered sets") {
