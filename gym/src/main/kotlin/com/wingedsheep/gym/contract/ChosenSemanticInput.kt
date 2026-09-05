@@ -7,6 +7,7 @@ import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.JsonArray
@@ -250,6 +251,7 @@ internal object StoredActionPayloadValidator {
         "bands",
         "blockers",
         "orderedBlockers",
+        "costPayment",
     )
 
     private data class TargetRequirement(
@@ -279,6 +281,185 @@ internal object StoredActionPayloadValidator {
             requireBlockerOrder(candidate, payload)
         }
         payload["paymentStrategy"]?.let { requirePayment(candidate, payload, it) }
+        payload["costPayment"]?.let { requireCostPayment(candidate, it) }
+    }
+
+    /**
+     * Validate the non-mana payment acknowledgement using only the stored public action
+     * candidate.  This is deliberately separate from [requirePayment]: mana payment has its own
+     * V5 domain, while additional costs use the action candidate's published fields.
+     */
+    private fun requireCostPayment(candidate: JsonObject, value: JsonElement) {
+        val payment = A3SemanticJson.decodeStrict(
+            AdditionalCostPayment.serializer(),
+            value,
+            "cost payment",
+        )
+
+        val storedTargets = candidate.required("validSacrificeTargets")
+            .requireCanonicalEntityArray("stored sacrifice targets")
+            .map(::EntityId)
+        val sacrificeMin = candidate.required("sacrificeMinCount")
+            .nonNegativeIntValue("stored sacrifice minimum")
+        val sacrificeMax = candidate.required("sacrificeMaxCount")
+            .nonNegativeIntValue("stored sacrifice maximum")
+        require(sacrificeMax >= sacrificeMin) {
+            "Stored sacrifice domain has an invalid cardinality"
+        }
+        require(sacrificeMax <= storedTargets.size) {
+            "Stored sacrifice domain exceeds its published candidates"
+        }
+        if (sacrificeMin == sacrificeMax) {
+            require(
+                candidate.required("sacrificeCount").nonNegativeIntValue("stored sacrifice count") ==
+                    sacrificeMin
+            ) {
+                "Stored fixed sacrifice domain has an inconsistent count"
+            }
+        }
+
+        val sacrificed = payment.sacrificedPermanents
+        requireEntityIdsAreDistinctAndNonBlank(sacrificed, "sacrificed permanents")
+        require(sacrificed.all { it in storedTargets }) {
+            "Sacrificed permanent is outside the stored public domain"
+        }
+        require(sacrificed.size in sacrificeMin..sacrificeMax) {
+            "Sacrificed permanent count is outside the stored public domain"
+        }
+        fixedSacrificeCount(candidate)?.let { expectedCount ->
+            require(
+                candidate.required("sacrificeCount").nonNegativeIntValue("stored sacrifice count") ==
+                    expectedCount
+            ) {
+                "Stored fixed sacrifice semantics disagree with the public count"
+            }
+            require(sacrificed.size == expectedCount) {
+                "Sacrificed permanent count does not satisfy the fixed public cost"
+            }
+        }
+
+        val tapped = payment.tappedPermanents
+        requireEntityIdsAreDistinctAndNonBlank(tapped, "tapped permanents")
+        val expectedSourceBoundTaps = sourceBoundTapCount(candidate)
+        if (expectedSourceBoundTaps == 0) {
+            require(tapped.isEmpty()) {
+                "Tapped permanent has no complete stored public domain"
+            }
+        } else {
+            require(expectedSourceBoundTaps == 1) {
+                "Stored source-bound tap domain has an unsupported cardinality"
+            }
+            val source = candidate["sourceEntityId"]
+                ?.stringValue("source entity")
+                ?.takeIf(String::isNotBlank)
+                ?.let(::EntityId)
+                ?: throw IllegalArgumentException(
+                    "Source-bound tap has no stored source identity"
+                )
+            require(tapped == listOf(source)) {
+                "Tapped permanent is not the stored source-bound permanent"
+            }
+        }
+
+        // These channels are real fields of AdditionalCostPayment, but the current public action
+        // candidate carries no complete domains for them. Their only safe durable value here is
+        // the serializer-defined no-op. A future producer must publish a domain before this
+        // validator can admit a meaningful choice in one of these channels.
+        require(payment.discardedCards.isEmpty()) {
+            "Discarded-card payment has no complete stored public domain"
+        }
+        require(payment.lifePaid == 0) {
+            "Life payment has no complete stored public domain"
+        }
+        require(payment.exiledCards.isEmpty()) {
+            "Exiled-card payment has no complete stored public domain"
+        }
+        require(payment.variableCostPermanents.isEmpty()) {
+            "Variable permanent payment has no complete stored public domain"
+        }
+        require(payment.beheldCards.isEmpty()) {
+            "Beheld-card payment has no complete stored public domain"
+        }
+        require(payment.bouncedPermanents.isEmpty()) {
+            "Bounced-permanent payment has no complete stored public domain"
+        }
+        require(payment.blightTargets.isEmpty()) {
+            "Blight-target payment has no complete stored public domain"
+        }
+        require(payment.blightAmount == 0) {
+            "Blight amount has no complete stored public domain"
+        }
+        require(payment.payXLifeAmount == 0) {
+            "Pay-X-life amount has no complete stored public domain"
+        }
+        require(payment.distributedCounterRemovals.isEmpty()) {
+            "Distributed counter-removal payment has no complete stored public domain"
+        }
+    }
+
+    /**
+     * The only currently published tap domain for an action-level cost payment is the host
+     * permanent's own `CostTap` node.  The cost tree is already part of the transport-free public
+     * action semantics; no live Rules state or registry is consulted here.
+     */
+    private fun sourceBoundTapCount(candidate: JsonObject): Int {
+        val semantics = candidate["actionSemantics"] as? JsonObject ?: return 0
+        val abilityKey = semantics["abilityKey"] as? JsonObject ?: return 0
+        val ability = abilityKey["ability"] as? JsonObject ?: return 0
+        val cost = ability["cost"] ?: return 0
+        return countSourceBoundTapNodes(cost)
+    }
+
+    private fun fixedSacrificeCount(candidate: JsonObject): Int? {
+        val semantics = candidate["actionSemantics"] as? JsonObject ?: return null
+        val abilityKey = semantics["abilityKey"] as? JsonObject ?: return null
+        val ability = abilityKey["ability"] as? JsonObject ?: return null
+        val cost = ability["cost"] ?: return null
+        return countFixedSacrificeNodes(cost).takeIf { it > 0 }
+    }
+
+    private fun countFixedSacrificeNodes(value: JsonElement): Int {
+        val objectValue = value as? JsonObject ?: return 0
+        return when (objectValue["type"]?.stringValue("cost type")) {
+            "CostSacrificeSelf" -> 1
+            "CostAtomWrapper" -> {
+                val atom = objectValue["atom"] as? JsonObject ?: return 0
+                if (atom["type"]?.stringValue("cost atom type") == "AtomSacrifice") {
+                    atom["count"]?.nonNegativeIntValue("sacrifice count") ?: 0
+                } else {
+                    0
+                }
+            }
+            "CostComposite" -> objectValue["costs"]
+                ?.requireArray("cost components")
+                ?.sumOf(::countFixedSacrificeNodes)
+                ?: 0
+            else -> 0
+        }
+    }
+
+    private fun countSourceBoundTapNodes(value: JsonElement): Int {
+        val objectValue = value as? JsonObject ?: return 0
+        return when (objectValue["type"]?.stringValue("cost type")) {
+            "CostTap" -> 1
+            "CostComposite" -> objectValue["costs"]
+                ?.requireArray("cost components")
+                ?.sumOf(::countSourceBoundTapNodes)
+                ?: 0
+            else -> 0
+        }
+    }
+
+    private fun requireEntityIdsAreDistinctAndNonBlank(
+        ids: List<EntityId>,
+        label: String,
+    ) {
+        require(ids.all { it.value.isNotBlank() }) {
+            "$label contains a blank entity ID"
+        }
+        require(ids.distinct().size == ids.size) {
+            "$label contains duplicate semantic members"
+        }
     }
 
     private fun requireTargets(candidate: JsonObject, value: JsonElement): List<EntityId> {
@@ -781,6 +962,23 @@ internal object StoredActionPayloadValidator {
 
     private fun JsonElement.requireStringArray(label: String): List<String> =
         requireArray(label).map { it.stringValue(label) }
+
+    private fun JsonElement.requireEntityArray(label: String): List<String> =
+        requireStringArray(label).also { values ->
+            require(values.distinct().size == values.size) {
+                "$label contains duplicate semantic members"
+            }
+            require(values.all(String::isNotBlank)) {
+                "$label contains a blank entity ID"
+            }
+        }
+
+    private fun JsonElement.requireCanonicalEntityArray(label: String): List<String> =
+        requireEntityArray(label).also { values ->
+            require(values == values.sorted()) {
+                "$label is not in producer-canonical order"
+            }
+        }
 }
 
 /** A full semantic response validated against one stored folded or structured domain. */
