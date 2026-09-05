@@ -57,9 +57,48 @@ const val POLICY_PROVENANCE_V1_SCHEMA_IDENTITY: String = "argentum-trajectory-po
 const val COMPACT_REPLAY_LINK_V1_VERSION: Int = 1
 const val COMPACT_REPLAY_LINK_V1_SCHEMA_IDENTITY: String = "argentum-trajectory-compact-replay-link@v1"
 
-/** The accepted CompactReplay semantic version for the B2 replay linkage. */
+/** Historical CompactReplay semantic version retained by the V1 trajectory linkage. */
 const val COMPACT_REPLAY_V5_VERSION: Int = 5
 const val COMPACT_REPLAY_V5_SCHEMA_IDENTITY: String = "argentum-compact-replay@v5"
+
+/** Current CompactReplay semantic version carried by new replay recordings. */
+const val COMPACT_REPLAY_V6_VERSION: Int = 6
+const val COMPACT_REPLAY_V6_SCHEMA_IDENTITY: String = "argentum-compact-replay@v6"
+
+/** Current replay version used by newly constructed Trajectory V1 metadata. */
+const val CURRENT_TRAJECTORY_REPLAY_VERSION: Int = COMPACT_REPLAY_V6_VERSION
+
+/** Closed replay-version set supported by the Trajectory V1 linkage. */
+private val SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS: Map<Int, String> = mapOf(
+    COMPACT_REPLAY_V5_VERSION to COMPACT_REPLAY_V5_SCHEMA_IDENTITY,
+    COMPACT_REPLAY_V6_VERSION to COMPACT_REPLAY_V6_SCHEMA_IDENTITY,
+)
+
+val SUPPORTED_TRAJECTORY_REPLAY_VERSIONS: Set<Int> =
+    SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS.keys.toSet()
+
+private fun requireSupportedTrajectoryReplayPair(
+    replayVersion: Int,
+    replaySchemaIdentity: String,
+    label: String,
+) {
+    val expectedSchemaIdentity = SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS[replayVersion]
+    require(expectedSchemaIdentity != null) {
+        "Unsupported $label replay version: $replayVersion"
+    }
+    require(replaySchemaIdentity == expectedSchemaIdentity) {
+        "Unsupported $label replay schema identity: $replaySchemaIdentity"
+    }
+}
+
+private fun requireSupportedTrajectoryReplaySchemaIdentity(
+    replaySchemaIdentity: String,
+    label: String,
+) {
+    require(SUPPORTED_TRAJECTORY_REPLAY_SCHEMA_PAIRS.values.contains(replaySchemaIdentity)) {
+        "Unsupported $label replay schema identity: $replaySchemaIdentity"
+    }
+}
 
 /** Version and identity of one durable decision record. */
 const val DECISION_RECORD_V1_VERSION: Int = 1
@@ -163,7 +202,7 @@ data class EnvironmentIdentityV1(
     val observationSchemaIdentity: String = PLAYER_OBSERVATION_V1_SCHEMA_IDENTITY,
     val actionDomainSchemaIdentity: String = COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY,
     val candidateDomainDigestSchemaIdentity: String = CANDIDATE_DOMAIN_DIGEST_SCHEMA_IDENTITY,
-    val replaySchemaIdentity: String = COMPACT_REPLAY_V5_SCHEMA_IDENTITY,
+    val replaySchemaIdentity: String = COMPACT_REPLAY_V6_SCHEMA_IDENTITY,
 ) {
     init {
         require(version == ENVIRONMENT_IDENTITY_V1_VERSION) {
@@ -204,9 +243,7 @@ data class EnvironmentIdentityV1(
         require(candidateDomainDigestSchemaIdentity == CANDIDATE_DOMAIN_DIGEST_SCHEMA_IDENTITY) {
             "Unsupported candidate-domain digest schema identity"
         }
-        require(replaySchemaIdentity == COMPACT_REPLAY_V5_SCHEMA_IDENTITY) {
-            "Unsupported replay semantic schema identity"
-        }
+        requireSupportedTrajectoryReplaySchemaIdentity(replaySchemaIdentity, "environment")
     }
 
     /** Canonical content identity of the reproducible environment/setup fields. */
@@ -286,8 +323,8 @@ data class PolicyProvenanceV1(
 data class CompactReplayLinkV1(
     val version: Int = COMPACT_REPLAY_LINK_V1_VERSION,
     val schemaIdentity: String = COMPACT_REPLAY_LINK_V1_SCHEMA_IDENTITY,
-    val replayVersion: Int = COMPACT_REPLAY_V5_VERSION,
-    val replaySchemaIdentity: String = COMPACT_REPLAY_V5_SCHEMA_IDENTITY,
+    val replayVersion: Int = CURRENT_TRAJECTORY_REPLAY_VERSION,
+    val replaySchemaIdentity: String = COMPACT_REPLAY_V6_SCHEMA_IDENTITY,
     val replayContentIdentity: String,
     val replayActionStart: Int = 0,
     val replayActionCount: Int,
@@ -304,12 +341,7 @@ data class CompactReplayLinkV1(
         require(schemaIdentity == COMPACT_REPLAY_LINK_V1_SCHEMA_IDENTITY) {
             "Unsupported CompactReplay-link identity: $schemaIdentity"
         }
-        require(replayVersion == COMPACT_REPLAY_V5_VERSION) {
-            "Unsupported linked replay version: $replayVersion"
-        }
-        require(replaySchemaIdentity == COMPACT_REPLAY_V5_SCHEMA_IDENTITY) {
-            "Unsupported linked replay schema identity: $replaySchemaIdentity"
-        }
+        requireSupportedTrajectoryReplayPair(replayVersion, replaySchemaIdentity, "linked")
         requireSha256(replayContentIdentity, "Replay content identity")
         require(replayActionStart >= 0) { "Replay action start must not be negative" }
         require(replayActionCount >= 0) { "Replay action count must not be negative" }
@@ -908,6 +940,10 @@ object TrajectoryV1Validator {
         contractRequire(
             metadata.closure.stepCount == link.replayActionCount,
             TrajectoryValidationReason.CLOSURE_MISMATCH,
+        )
+        contractRequire(
+            metadata.environmentIdentity.replaySchemaIdentity == link.replaySchemaIdentity,
+            TrajectoryValidationReason.REPLAY_LINK_INVALID,
         )
     }
 
