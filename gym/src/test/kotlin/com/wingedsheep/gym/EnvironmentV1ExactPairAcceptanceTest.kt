@@ -1211,6 +1211,51 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         evidence.totalExternalTransitions shouldBe evidence.episodeTransitions.sum()
     }
 
+    test("HARNESS-REPLAY-01 corpus-captured replay frames include boundary contracts")
+        .config(timeout = 2.minutes) {
+        check(corpusReplayTraceCache.keys.containsAll(publicReplayCases)) {
+            "HARNESS-REPLAY-01 requires the exact-pair corpus cache to be populated first"
+        }
+        publicReplayCases.forEach { episode ->
+            val trace = checkNotNull(corpusReplayTraceCache[episode]) {
+                "Corpus replay cache omitted the exact-pair case $episode"
+            }
+            trace.frames.forEachIndexed { index, frame ->
+                checkNotNull(frame.playerObservation) {
+                    "Corpus replay frame $index omitted PlayerObservationV1"
+                }
+                checkNotNull(frame.domain) {
+                    "Corpus replay frame $index omitted CompleteLegalDomainV1"
+                }
+                checkNotNull(frame.candidateDomainDigest) {
+                    "Corpus replay frame $index omitted CandidateDomainDigestV1"
+                }
+            }
+        }
+    }
+
+    test("HARNESS-REPLAY-02 cached corpus traces retain complete boundary contracts")
+        .config(timeout = 15.minutes) {
+        check(corpusReplayTraceCache.keys.containsAll(publicReplayCases)) {
+            "HARNESS-REPLAY-02 requires the exact-pair corpus cache to be populated first"
+        }
+        val evidence = runExactPairReplayGate()
+        evidence.failures shouldBe emptyList()
+        evidence.traces.forEach { trace ->
+            trace.frames.forEachIndexed { index, frame ->
+                checkNotNull(frame.playerObservation) {
+                    "Cached replay frame $index omitted PlayerObservationV1"
+                }
+                checkNotNull(frame.domain) {
+                    "Cached replay frame $index omitted CompleteLegalDomainV1"
+                }
+                checkNotNull(frame.candidateDomainDigest) {
+                    "Cached replay frame $index omitted CandidateDomainDigestV1"
+                }
+            }
+        }
+    }
+
     test("exact-pair replay gate replays complete semantic trajectories")
         .config(timeout = 15.minutes) {
         val evidence = runExactPairReplayGate()
@@ -1484,7 +1529,10 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                             "Public replay checkpoints differ from the captured replay for $episode"
                         }
                     }
-                    traces += trace
+                    // Keep the replay-bound trace as the reusable evidence. It carries the same
+                    // public frames/actions as the corpus cache, plus the replay-owned checkpoint
+                    // and lifecycle binding that the authoritative verifier just validated.
+                    traces += replayedTrace
                     authoritative += CompactReplayBridge.verify(
                         // The complete public replay above supplies the authoritative checkpoint
                         // stream when the source trace came from the already-running corpus.  The
@@ -1545,11 +1593,13 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                         (observedActionKinds[candidate.kind] ?: 0) + 1
                     requiredPayloadFields += candidate.requiredPayloadFields
                 }
-                game.pendingDecision?.let { pending ->
-                    val family = pending.kind.name
-                    observedDecisionFamilies[family] =
-                        (observedDecisionFamilies[family] ?: 0) + 1
-                }
+                game.pendingDecision
+                    ?.takeIf { isExternallyActionablePendingBoundary(game) }
+                    ?.let { pending ->
+                        val family = pending.kind.name
+                        observedDecisionFamilies[family] =
+                            (observedDecisionFamilies[family] ?: 0) + 1
+                    }
             }
             fun recordFrame(game: TrainingObservation) {
                 frames += replayFrame(
@@ -1853,7 +1903,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
         private fun replayFrame(
             observation: TrainingObservation,
-            includeBoundaryContracts: Boolean = false,
+            includeBoundaryContracts: Boolean,
         ): ReplayFrame = ReplayFrame(
             semanticObservation = ObservationCanonicalizer.semanticJson(observation),
             stateDigest = observation.stateDigest,
@@ -3180,7 +3230,12 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
             fun countPublicBoundary(game: TrainingObservation) {
                 val pending = game.pendingDecision
-                val family = pending?.kind?.name ?: "PRIORITY"
+                val family = when {
+                    pending == null -> "PRIORITY"
+                    isExternallyActionablePendingBoundary(game) -> pending.kind.name
+                    else -> null
+                }
+                if (family == null) return
                 lastFamily = family
                 decisionFamilies[family] = (decisionFamilies[family] ?: 0) + 1
                 val publicText = listOf(
@@ -3216,17 +3271,24 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
 
             fun recordReplayObservation(game: TrainingObservation) {
                 if (replayTraceSink == null) return
-                replayFrames += replayFrame(game)
+                // Only the two publicReplayCases are consumed by the exact-pair replay gate. The
+                // other corpus replay cases retain lightweight telemetry for static closure.
+                replayFrames += replayFrame(
+                    game,
+                    includeBoundaryContracts = episode in publicReplayCases,
+                )
                 game.legalActions.forEach { candidate ->
                     replayObservedActionKinds[candidate.kind] =
                         (replayObservedActionKinds[candidate.kind] ?: 0) + 1
                     replayRequiredPayloadFields += candidate.requiredPayloadFields
                 }
-                game.pendingDecision?.let { pending ->
-                    val family = pending.kind.name
-                    replayObservedDecisionFamilies[family] =
-                        (replayObservedDecisionFamilies[family] ?: 0) + 1
-                }
+                game.pendingDecision
+                    ?.takeIf { isExternallyActionablePendingBoundary(game) }
+                    ?.let { pending ->
+                        val family = pending.kind.name
+                        replayObservedDecisionFamilies[family] =
+                            (replayObservedDecisionFamilies[family] ?: 0) + 1
+                    }
             }
 
             return try {
@@ -3955,7 +4017,6 @@ private data class FrameSourceVerification(
     val fidelity: String,
     val frameCount: Int,
     val failureReason: String?,
-    val frames: List<Any>,
 )
 
 private data class ReplayCheckpointData(
@@ -4049,8 +4110,6 @@ private object CompactReplayBridge {
             "Verified replay frame source reconstructed $verifiedFrameCount frames; " +
                 "captured ${trace.frames.size}"
         }
-        assertFrameSourceMatches(trace, frameSourceVerification, replayRuntime)
-
         return AuthoritativeReplayCase(
             caseLabel = "${trace.episode.rosterLabel}/seed=${trace.episode.seed}/" +
                 "starting=${trace.episode.startingPlayerIndex}",
@@ -4072,9 +4131,7 @@ private object CompactReplayBridge {
         val codec = replayRuntime.singleton(REPLAY_CODEC)
         val encoded = replayRuntime.invoke(codec, "encode", replay) as String
         val decoded = checkNotNull(replayRuntime.invoke(codec, "decode", encoded))
-        return verifyFrameSource(decoded, replayRuntime, registry, trace).also {
-            assertFrameSourceMatches(trace, it, replayRuntime)
-        }
+        return verifyFrameSource(decoded, replayRuntime, registry, trace)
     }
 
     private fun verifyFrameSource(
@@ -4097,26 +4154,28 @@ private object CompactReplayBridge {
         )
         val verification = checkNotNull(replayRuntime.invoke(frameSource, "verify"))
         val frames = checkNotNull(replayRuntime.invoke(verification, "getFrames")) as List<Any>
-        return FrameSourceVerification(
+        val result = FrameSourceVerification(
             fidelity = checkNotNull(replayRuntime.invoke(verification, "getFidelity")).toString(),
             frameCount = frames.size,
             failureReason = replayRuntime.invoke(verification, "getFailureReason") as String?,
-            frames = frames,
         )
+        assertFrameSourceMatches(trace, result, frames, replayRuntime)
+        return result
     }
 
     private fun assertFrameSourceMatches(
         trace: ReplayTrace,
         verification: FrameSourceVerification,
+        frames: List<Any>,
         replayRuntime: ReplayRuntime,
     ) {
         if (verification.fidelity != "EXACT") return
-        check(verification.frames.size == trace.frames.size) {
-            "Verified replay frame source reconstructed ${verification.frames.size} frames; " +
+        check(frames.size == trace.frames.size) {
+            "Verified replay frame source reconstructed ${frames.size} frames; " +
                 "captured ${trace.frames.size}"
         }
         trace.frames.forEachIndexed { index, expected ->
-            val actual = verification.frames[index]
+            val actual = frames[index]
             check(replayRuntime.invoke(actual, "getReplayActionIndex") == index) {
                 "Verified replay frame $index has the wrong replay coordinate"
             }
@@ -4448,6 +4507,21 @@ private data class Issue56Evidence(
         appendLine("resolvedCards=$resolvedCards; retargetingSites=$retargetingSites")
         evidence.forEach { appendLine(it) }
     }
+}
+
+/**
+ * Returns whether the public observation exposes a pending decision that the current policy can
+ * actually address. Privacy-masked and terminal/truncated placeholders are deliberately excluded
+ * without special-casing any decision family name.
+ */
+internal fun isExternallyActionablePendingBoundary(observation: TrainingObservation): Boolean {
+    val agentToAct = observation.agentToAct ?: return false
+    val pending = observation.pendingDecision ?: return false
+    return !observation.terminated &&
+        !observation.truncated &&
+        observation.perspectivePlayerId == agentToAct &&
+        pending.playerId == agentToAct &&
+        pending.decisionId != null
 }
 
 private val PUBLIC_ACTION_DOMAIN_FAMILIES = setOf(
