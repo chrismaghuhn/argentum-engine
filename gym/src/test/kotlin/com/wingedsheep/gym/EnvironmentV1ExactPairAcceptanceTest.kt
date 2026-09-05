@@ -3619,6 +3619,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
                 decisionId = decisionId,
                 edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
             )
+            is SemanticDecision.Payment -> selection.toDecisionResponse(decisionId)
         }
 
         fun corpusCases(): List<EpisodeConfig> {

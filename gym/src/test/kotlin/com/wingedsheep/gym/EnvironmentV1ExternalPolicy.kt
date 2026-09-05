@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.gym.contract.CardSelectionDomain
 import com.wingedsheep.gym.contract.ActionTargetComposition
 import com.wingedsheep.gym.contract.BLOCKER_DECLARATION_DOMAIN_VERSION
@@ -14,6 +15,7 @@ import com.wingedsheep.gym.contract.AttackDeclarationDomainV2
 import com.wingedsheep.gym.contract.ACTION_TARGET_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.ModeSelectionDomain
 import com.wingedsheep.gym.contract.ManaSourcesDomain
+import com.wingedsheep.gym.contract.MANA_SOURCES_DOMAIN_VERSION
 import com.wingedsheep.gym.contract.OrderingDomain
 import com.wingedsheep.gym.contract.PendingDecisionView
 import com.wingedsheep.gym.contract.ReorderLibraryDomain
@@ -108,7 +110,17 @@ sealed interface SemanticDecision {
     data class Replacement(val from: Int, val to: Int) : SemanticDecision
     data class Budget(val selected: List<Int>) : SemanticDecision
     data class Damage(val selected: List<EdgeAmount>) : SemanticDecision
+    /** Complete public pending-payment program; the live decision nonce is bound only on submit. */
+    data class Payment(val paymentPlan: PaymentPlanV3) : SemanticDecision
 }
+
+/** Bind a public semantic pending-payment choice to one current live decision nonce at submission. */
+internal fun SemanticDecision.Payment.toDecisionResponse(
+    decisionId: String,
+): ManaSourcesSelectedResponse = ManaSourcesSelectedResponse(
+    decisionId = decisionId,
+    paymentPlan = paymentPlan,
+)
 
 data class EdgeAmount(val edgeId: String, val amount: Int)
 
@@ -1079,16 +1091,29 @@ class DeterministicExternalPolicy {
             }
 
             is ManaSourcesDomain -> {
-                return SemanticChoice.Gap(
-                    family = "PAYMENT",
-                    code = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    reason =
-                        "Pending payment publishes no complete source, production, pool, and allocation domain",
-                    actionKind = "DECISION",
-                    diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
-                    publicDomain = domain.toString(),
-                    proposedFollowUp = "Publish PaymentDomainV5 for this pending payment",
-                )
+                if (domain.version != MANA_SOURCES_DOMAIN_VERSION) {
+                    return SemanticChoice.Gap(
+                        family = "PAYMENT",
+                        code = "PAYMENT_DOMAIN_UNSUPPORTED",
+                        reason = "Pending payment has an unsupported public domain version",
+                        actionKind = "DECISION",
+                        diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
+                        publicDomain = domain.toString(),
+                        proposedFollowUp = "Publish a supported complete pending PaymentDomainV5",
+                    )
+                }
+                val paymentPlan = paymentPlanV3FromPublic(domain.paymentDomain)
+                    ?: return SemanticChoice.Gap(
+                        family = "PAYMENT",
+                        code = "PAYMENT_DOMAIN_UNSUPPORTED",
+                        reason = "Published pending PaymentDomainV5 cannot be completed deterministically",
+                        actionKind = "DECISION",
+                        diagnostic = "PAYMENT_DOMAIN_UNSUPPORTED",
+                        publicDomain = domain.paymentDomain.toString(),
+                        proposedFollowUp =
+                            "Extend PaymentDomainV5 until source, production, pool, and allocation choices are representable",
+                    )
+                SemanticDecision.Payment(paymentPlan)
             }
 
             is ReplacementDomain -> {
