@@ -252,6 +252,7 @@ internal object StoredActionPayloadValidator {
         "blockers",
         "orderedBlockers",
         "costPayment",
+        "additionalCostPayment",
     )
 
     private data class TargetRequirement(
@@ -282,6 +283,7 @@ internal object StoredActionPayloadValidator {
         }
         payload["paymentStrategy"]?.let { requirePayment(candidate, payload, it) }
         payload["costPayment"]?.let { requireCostPayment(candidate, it) }
+        payload["additionalCostPayment"]?.let { requireAdditionalCostPayment(candidate, it) }
     }
 
     /**
@@ -290,11 +292,37 @@ internal object StoredActionPayloadValidator {
      * V5 domain, while additional costs use the action candidate's published fields.
      */
     private fun requireCostPayment(candidate: JsonObject, value: JsonElement) {
-        val payment = A3SemanticJson.decodeStrict(
+        val payment = decodeAdditionalCostPayment(value, "cost payment")
+
+        requireSacrificePayment(candidate, payment.sacrificedPermanents)
+        requireSourceBoundTapPayment(candidate, payment.tappedPermanents)
+        requireUnsupportedAdditionalPaymentChannelsAreNoOp(payment, allowTapped = true)
+    }
+
+    /**
+     * Validate CastSpell's additional-cost payment from the public action candidate.  This is a
+     * distinct contract from ActivateAbility's [requireCostPayment]: only sacrifice membership
+     * and cardinality are currently published for spell actions, so every other meaningful
+     * additional-cost channel remains fail-closed.
+     */
+    private fun requireAdditionalCostPayment(candidate: JsonObject, value: JsonElement) {
+        val payment = decodeAdditionalCostPayment(value, "additional cost payment")
+
+        requireSacrificePayment(candidate, payment.sacrificedPermanents)
+        requireUnsupportedAdditionalPaymentChannelsAreNoOp(payment, allowTapped = false)
+    }
+
+    private fun decodeAdditionalCostPayment(value: JsonElement, label: String): AdditionalCostPayment =
+        A3SemanticJson.decodeStrict(
             AdditionalCostPayment.serializer(),
             value,
-            "cost payment",
+            label,
         )
+
+    private fun requireSacrificePayment(
+        candidate: JsonObject,
+        sacrificed: List<EntityId>,
+    ) {
 
         val storedTargets = candidate.required("validSacrificeTargets")
             .requireCanonicalEntityArray("stored sacrifice targets")
@@ -318,7 +346,6 @@ internal object StoredActionPayloadValidator {
             }
         }
 
-        val sacrificed = payment.sacrificedPermanents
         requireEntityIdsAreDistinctAndNonBlank(sacrificed, "sacrificed permanents")
         require(sacrificed.all { it in storedTargets }) {
             "Sacrificed permanent is outside the stored public domain"
@@ -337,8 +364,14 @@ internal object StoredActionPayloadValidator {
                 "Sacrificed permanent count does not satisfy the fixed public cost"
             }
         }
+    }
 
-        val tapped = payment.tappedPermanents
+    /**
+     * The only currently published tap domain for an action-level cost payment is the host
+     * permanent's own `CostTap` node.  The cost tree is already part of the transport-free public
+     * action semantics; no live Rules state or registry is consulted here.
+     */
+    private fun requireSourceBoundTapPayment(candidate: JsonObject, tapped: List<EntityId>) {
         requireEntityIdsAreDistinctAndNonBlank(tapped, "tapped permanents")
         val expectedSourceBoundTaps = sourceBoundTapCount(candidate)
         if (expectedSourceBoundTaps == 0) {
@@ -360,7 +393,12 @@ internal object StoredActionPayloadValidator {
                 "Tapped permanent is not the stored source-bound permanent"
             }
         }
+    }
 
+    private fun requireUnsupportedAdditionalPaymentChannelsAreNoOp(
+        payment: AdditionalCostPayment,
+        allowTapped: Boolean,
+    ) {
         // These channels are real fields of AdditionalCostPayment, but the current public action
         // candidate carries no complete domains for them. Their only safe durable value here is
         // the serializer-defined no-op. A future producer must publish a domain before this
@@ -395,13 +433,13 @@ internal object StoredActionPayloadValidator {
         require(payment.distributedCounterRemovals.isEmpty()) {
             "Distributed counter-removal payment has no complete stored public domain"
         }
+        if (!allowTapped) {
+            require(payment.tappedPermanents.isEmpty()) {
+                "Tapped-permanent payment has no complete stored public domain"
+            }
+        }
     }
 
-    /**
-     * The only currently published tap domain for an action-level cost payment is the host
-     * permanent's own `CostTap` node.  The cost tree is already part of the transport-free public
-     * action semantics; no live Rules state or registry is consulted here.
-     */
     private fun sourceBoundTapCount(candidate: JsonObject): Int {
         val semantics = candidate["actionSemantics"] as? JsonObject ?: return 0
         val abilityKey = semantics["abilityKey"] as? JsonObject ?: return 0

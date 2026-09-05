@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
@@ -171,6 +172,95 @@ class EnvironmentV1ExactPairChosenCostPaymentTest : FunSpec({
 
             check(chosen != null) {
                 "The locked exact pair did not reach a public costPayment action"
+            }
+        } finally {
+            service.dispose(listOf(created.envId))
+        }
+    }
+
+    test("real exact-pair additionalCostPayment action crosses chosen semantic validation") {
+        val service = MultiEnvService(registry())
+        val created = service.create(config())
+        try {
+            var current = created.observation
+            var observation = current.observation as TrainingObservation
+            val policy = DeterministicExternalPolicy()
+            var policyState = DeterministicPolicyState(policySeed = 4_259_905L)
+            var transitions = 0
+            var chosen: ChosenSemanticActionV1? = null
+
+            while (chosen == null && !observation.terminated && !observation.truncated) {
+                check(transitions < EXACT_PAIR_PREFIX_MAX_STEPS) {
+                    "Exact-pair prefix did not reach additionalCostPayment before maxSteps"
+                }
+                val selection = policy.choose(observation, policyState)
+                policyState = policyState.afterChoice()
+                current = when (selection) {
+                    is SemanticChoice.Action -> {
+                        val view = observation.legalActions.singleOrNull {
+                            it.actionId == selection.actionId
+                        } ?: error("Exact-pair policy action was absent from the public list")
+
+                        if (selection.payload?.containsKey("additionalCostPayment") == true) {
+                            val candidate = ObservationCanonicalizer.semanticActionFingerprint(view)
+                            val domain = CompleteLegalDomainV1.from(observation)
+                            val resolved = current.registry.resolve(selection.actionId)
+                            val template = (resolved as? ResolvedAction.Legal)?.action
+                                ?: error(
+                                    "Real additionalCostPayment action did not resolve to a legal " +
+                                        "GameAction",
+                                )
+                            val recorded = recordAction(template, selection.payload)
+                            val recordedCast = recorded as? CastSpell
+                                ?: error("Real additionalCostPayment action was not a CastSpell")
+
+                            val accepted = ChosenSemanticActionV1.fromRecordedAction(
+                                domain = domain,
+                                candidate = candidate,
+                                action = recorded,
+                            )
+                            accepted.candidate shouldBe candidate
+                            accepted.choicePayload["additionalCostPayment"] shouldBe
+                                A3SemanticJson.strictJson
+                                    .encodeToJsonElement(GameAction.serializer(), recordedCast)
+                                    .jsonObject["additionalCostPayment"]
+                            chosen = accepted
+                            current
+                        } else {
+                            service.step(
+                                StepRequest(
+                                    envId = created.envId,
+                                    actionId = selection.actionId,
+                                    action = selection.payload,
+                                ),
+                            )
+                        }
+                    }
+
+                    is SemanticChoice.Structured -> {
+                        val pending = observation.pendingDecision
+                            ?: error("Structured exact-pair choice had no pending decision")
+                        val decisionId = pending.decisionId
+                            ?: error("Structured exact-pair choice had no decision ID")
+                        service.submitDecision(
+                            envId = created.envId,
+                            response = selection.toDecisionResponse(decisionId),
+                            actorId = observation.agentToAct,
+                        )
+                    }
+
+                    is SemanticChoice.Gap ->
+                        error(
+                            "Exact-pair prefix reached a policy gap before additionalCostPayment: " +
+                                selection,
+                        )
+                }
+                observation = current.observation as TrainingObservation
+                transitions++
+            }
+
+            check(chosen != null) {
+                "The locked exact pair did not reach a public additionalCostPayment action"
             }
         } finally {
             service.dispose(listOf(created.envId))
