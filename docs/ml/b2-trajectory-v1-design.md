@@ -195,7 +195,7 @@ REUSE_AUDIT=COMPLETE
 - StateDigest remains the public observation semantic digest.
 - DecisionValidators, ActionProcessor, and strict GameGymEnv submission checks remain the
   final Rules authority for an action or response.
-- CompactReplay V5, ReplaySetup, ReplayCodec version rejection, ReplayFingerprint, checkpoints,
+- CompactReplay V6, ReplaySetup, ReplayCodec version rejection, ReplayFingerprint, checkpoints,
   typed nonce rebinding, and pinned-card overlay remain the replay authority.
 - B1's separate environment/deck/definition identity fields are reused for semanticEpisodeId;
   policy identity and RNG fields are reused for collectionJobId. These are provenance contracts,
@@ -409,7 +409,7 @@ SUPPORTED_COMPONENTS=
   PaymentDomainV5
   TargetPaymentDomainV1
   StructuredDecisionDomain version 1
-  ManaSourcesDomain version 2
+  ManaSourcesDomain version 3
   TargetsDomain version 2
   ActionPayloadRequirements canonical field order
 ~~~
@@ -532,8 +532,9 @@ Canonicalization rules:
 - The canonicalizer must reject duplicate semantic members. It must not deduplicate equal
   blocker requirement instances, because the current blocker contract intentionally retains
   requirement multiplicity.
-- autoPaySuggestion is advisory and is excluded from semantic identity; it is not a legal
-  alternative to explicit payment.
+- Action-level and pending-payment AutoPay are not legal alternatives to explicit payment. Pending
+  `ManaSourcesDomain` V3 publishes `PaymentDomainV5`, and its durable response carries the same
+  complete `PaymentPlanV3` used by action payment.
 - Presentation-only descriptions, prompts, labels, image URIs, renderer flags, and human-facing
   copy are excluded as they are in the current semantic canonicalizer.
 - Unknown component versions, unknown domain kinds, unresolved generated ability provenance, and
@@ -1083,7 +1084,7 @@ Closure evidence rule:
 | BUDGET_MODAL | BudgetModalDomain | Not observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; preserve repeated mode selections and budget constraints. |
 | ASSIGN_DAMAGE | Current PendingDecision producer, but ObservationBuilder emits no structured domain | Not observed | Unsupported public producer. Do not serialize it by echoing raw state; add a generic public-domain follow-up or establish an exact pinned Environment/Deck/Config proof of unreachability. |
 | COMBAT_RESOLUTION | CombatResolutionDomain and CombatResolutionResponse | Not observed as a pending family in the snapshot | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; compare all edges, ownership, defaults, and final response amounts. |
-| SELECT_MANA_SOURCES | ManaSourcesDomain V2 and explicit source response | Not observed as a pending family; action-level V5 payments are observed | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof; autoPaySuggestion is advisory and never a chosen label. |
+| SELECT_MANA_SOURCES | ManaSourcesDomain V3: PaymentDomainV5 plus explicit PaymentPlanV3 response | A8 reachability evidence remains separate from this generic contract fix | Require a targeted legal witness or an exact pinned Environment/Deck/Config proof. Source-only selection and AutoPay are not trusted labels. Unsupported V5 shapes, Waterbend reductions, composite Ward remainder costs, and the targeted legacy continuation without an unpaid response fail closed. |
 | MULLIGAN | Rules actions exist, but no MulliganDecision public pending family or Gym legal-action branch is present | No public family under the pinned EnvConfig.skipMulligans=true input | PROVEN_UNREACHABLE_FOR_PINNED_ENVIRONMENT_V1 is valid here only because skipMulligans=true is an explicit pinned environment configuration. Non-skipped mulligan is not required for B2, and policy behavior is not evidence. |
 
 Every row must end in one of:

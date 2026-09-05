@@ -240,7 +240,7 @@ data class ChosenSemanticActionV1 private constructor(
 }
 
 /** Pure membership checks over the public action-domain data retained by A2. */
-private object StoredActionPayloadValidator {
+internal object StoredActionPayloadValidator {
     private val fieldsWithCompleteStoredDomainValidation = setOf(
         "targets",
         "xValue",
@@ -585,7 +585,8 @@ private object StoredActionPayloadValidator {
         paymentDomains.forEach { domain -> requirePaymentPlan(domain, plan) }
     }
 
-    private fun requirePaymentPlan(domain: PaymentDomainV5, plan: PaymentPlanV3) {
+    /** Shared A3 membership check for action-level and pending V3 payment programs. */
+    internal fun requirePaymentPlan(domain: PaymentDomainV5, plan: PaymentPlanV3) {
         val optionsByKey = domain.sourceActivationOptions.associateBy {
             it.sourceId to it.manaAbilityKey
         }
@@ -892,7 +893,16 @@ data class ChosenSemanticResponseV1 private constructor(
                 .jsonObject
             val excluded = buildSet {
                 add("decisionId")
-                if (response is ManaSourcesSelectedResponse) add("autoPay")
+                if (response is ManaSourcesSelectedResponse) {
+                    add("autoPay")
+                    if (response.paymentPlan != null) {
+                        // V3 is the complete pending-payment choice. The legacy empty/default
+                        // carriers must not become a second durable choice vocabulary.
+                        add("selectedSources")
+                        add("waterbendPermanents")
+                        if (!response.declined) add("declined")
+                    }
+                }
             }
             val semantic = JsonObject(encoded.filterKeys { it !in excluded })
             val cardSelection = domain.structuredDomain as? CardSelectionDomain
@@ -1545,24 +1555,25 @@ data class ChosenSemanticResponseV1 private constructor(
             val mana = response as? ManaSourcesSelectedResponse
                 ?: throw IllegalArgumentException("Expected mana-source response")
             require(!mana.autoPay) { "AutoPay is not a trusted semantic choice" }
-            require(domain.availableSources.map { it.entityId }.distinct().size == domain.availableSources.size) {
-                "Mana-source response cannot identify duplicate source options"
-            }
-            require(domain.availableSources.all { !it.manaAbilityKey.isNullOrBlank() }) {
-                "Mana-source response has an unresolved ability identity"
-            }
-            require(mana.selectedSources.distinct().size == mana.selectedSources.size) {
-                "Mana-source response duplicates a source"
-            }
-            require(mana.selectedSources.all { selected ->
-                domain.availableSources.any { it.entityId == selected }
-            }) { "Mana-source response contains an outside-domain source" }
-            require(mana.waterbendPermanents.all { selected ->
-                domain.waterbendPermanents.any { it.entityId == selected }
-            }) { "Mana-source response contains an outside-domain Waterbend permanent" }
             require(!mana.declined || domain.canDecline) {
                 "Mana-source response declines a non-declinable payment"
             }
+            if (mana.declined) {
+                require(mana.paymentPlan == null) {
+                    "A declined pending payment cannot include a payment plan"
+                }
+                require(mana.selectedSources.isEmpty() && mana.waterbendPermanents.isEmpty()) {
+                    "A declined pending payment cannot include legacy payment selections"
+                }
+                return
+            }
+            require(mana.selectedSources.isEmpty() && mana.waterbendPermanents.isEmpty()) {
+                "Trusted pending payment must use only its explicit V3 payment plan"
+            }
+            val plan = requireNotNull(mana.paymentPlan) {
+                "Trusted pending payment requires a complete explicit V3 payment plan"
+            }
+            StoredActionPayloadValidator.requirePaymentPlan(domain.paymentDomain, plan)
         }
 
         private fun validateReplacement(domain: ReplacementDomain, response: DecisionResponse) {

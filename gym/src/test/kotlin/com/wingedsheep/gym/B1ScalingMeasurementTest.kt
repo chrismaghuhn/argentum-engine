@@ -7,6 +7,7 @@ import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.ModesChosenResponse
+import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderedResponse
@@ -1548,6 +1549,7 @@ private fun toScalingDecisionResponse(
         decisionId = decisionId,
         edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
     )
+    is SemanticDecision.Payment -> selection.toDecisionResponse(decisionId)
 }
 
 private fun trainingObservation(result: ObservationResult): TrainingObservation {
@@ -1626,6 +1628,9 @@ private fun selectionFingerprint(selection: SemanticDecision): String = when (se
     is SemanticDecision.Replacement -> "${selection.from}->${selection.to}"
     is SemanticDecision.Budget -> selection.selected.joinToString(",")
     is SemanticDecision.Damage -> selection.selected.joinToString(",") { "${it.edgeId}:${it.amount}" }
+    is SemanticDecision.Payment -> canonicalScalingDefinitionJson(
+        b1ScalingJson.encodeToJsonElement(PaymentPlanV3.serializer(), selection.paymentPlan),
+    )
 }
 
 private data class ScalingEpisodeSpec(

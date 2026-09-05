@@ -23,8 +23,9 @@ import java.security.MessageDigest
  * transition-semantic canonicalizer and deliberately excludes fields introduced by the joint
  * floating-provenance change. Version 4 binds the authoritative joint provenance, so a replay
  * carrying [com.wingedsheep.engine.core.PaymentStrategy.ExplicitV2] cannot be mislabeled as v3.
- * Version 5 changes the persisted action carrier to ExplicitV3 but retains the v4 state-digest
- * semantics; the new payment program is already represented by the replayed action stream.
+ * Version 5 changes the persisted action carrier to ExplicitV3, and version 6 adds the pending
+ * PaymentPlanV3 decision-response carrier. Both retain the v4 state-digest semantics; their new
+ * payment programs are already represented by the replayed input stream.
  */
 object ReplayFingerprint {
 
@@ -35,7 +36,7 @@ object ReplayFingerprint {
     fun of(state: GameState, replayVersion: Int): String = when (replayVersion) {
         1, 2 -> legacy(state)
         3 -> v3(state)
-        4, 5 -> v4(state)
+        4, 5, 6 -> v4(state)
         else -> throw UnsupportedReplayVersionException(replayVersion, CompactReplay.CURRENT_VERSION)
     }
 

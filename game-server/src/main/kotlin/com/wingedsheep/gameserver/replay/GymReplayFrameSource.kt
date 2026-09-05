@@ -176,8 +176,8 @@ class GymReplayFrameSource(
         }
         val closureFailure = tailBoundary?.let(::tailClosureFailure)
         val verifiedClosure = tailBoundary?.let { verifiedTailClosure() }
-        // CompactReplay v5 records cadence checkpoints plus a persistence tail.  The initial
-        // public boundary is authoritative even when v5 has no persisted checkpoint at count 0;
+        // CompactReplay v6 records cadence checkpoints plus a persistence tail. The initial
+        // public boundary is authoritative even when v6 has no persisted checkpoint at count 0;
         // if a producer did persist one, ReplayReconstructor has already checked its fingerprint.
         // The zero-action replay is the one exception: its tail is also its initial checkpoint.
         val initialCheckpointCount = replay.checkpoints.count { it.afterActionCount == 0 }
@@ -394,16 +394,16 @@ class GymReplayFrameSource(
             .firstOrNull { it.value > 1 }
         return when {
             outOfRange != null ->
-                "v5 replay contains a checkpoint outside the applied action stream at " +
+                "v6 replay contains a checkpoint outside the applied action stream at " +
                     outOfRange.afterActionCount
             duplicate != null ->
-                "v5 replay contains duplicate checkpoints at ${duplicate.key}"
+                "v6 replay contains duplicate checkpoints at ${duplicate.key}"
             replay.actions.isEmpty() && counts.count { it == 0 } != 1 ->
-                "v5 zero-action replay requires its tail checkpoint at action count 0"
+                "v6 zero-action replay requires its tail checkpoint at action count 0"
             counts.count { it == replay.actions.size } != 1 ->
-                "v5 replay requires exactly one tail checkpoint at ${replay.actions.size}"
+                "v6 replay requires exactly one tail checkpoint at ${replay.actions.size}"
             counts.filterNot { it == 0 }.sorted() != expectedCheckpointCounts() ->
-                "v5 replay checkpoint coverage is incomplete; expected " +
+                "v6 replay checkpoint coverage is incomplete; expected " +
                     expectedCheckpointCounts() + ", found ${counts.sorted()}"
             else -> null
         }
@@ -423,7 +423,7 @@ class GymReplayFrameSource(
             it.afterActionCount !in 0..replay.actions.size
         }
         if (invalidYield != null) {
-            return "v5 replay contains a yield outside the applied action stream at " +
+            return "v6 replay contains a yield outside the applied action stream at " +
                 invalidYield.afterActionCount
         }
         val malformedYield = replay.yields.firstOrNull { yield ->
@@ -437,7 +437,7 @@ class GymReplayFrameSource(
             EntityId(it.playerId) !in replayPlayerIds
         }
         return (malformedYield ?: unknownPlayerYield)?.let {
-            "v5 replay contains an incomplete yield mutation at action count " +
+            "v6 replay contains an incomplete yield mutation at action count " +
                 it.afterActionCount
         }
     }

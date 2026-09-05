@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.core.DecisionResponse
+import com.wingedsheep.engine.core.SelectManaSourcesDecision
 import com.wingedsheep.engine.core.UnsupportedPathFailure
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.GameConfig
@@ -11,6 +12,8 @@ import com.wingedsheep.gym.contract.ActionRegistry
 import com.wingedsheep.gym.contract.ActionPayloadRequirements
 import com.wingedsheep.gym.contract.AttackDeclarationDomainSubmission
 import com.wingedsheep.gym.contract.BlockerDeclarationDomainSubmission
+import com.wingedsheep.gym.contract.ChosenSemanticResponseV1
+import com.wingedsheep.gym.contract.CompleteLegalDomainV1
 import com.wingedsheep.gym.contract.LegalActionView
 import com.wingedsheep.gym.contract.ManaColorDomainSubmission
 import com.wingedsheep.gym.contract.ObservationBuilder
@@ -174,6 +177,15 @@ class GameGymEnv(
         }
         require(response.decisionId == pending.id) {
             "Decision ID mismatch: response=${response.decisionId}, pending=${pending.id}"
+        }
+        if (pending is SelectManaSourcesDecision) {
+            // Pending mana payment has no trustworthy legacy fallback. Validate the submitted
+            // response against the same complete public V5 domain that a trajectory records before
+            // it can cross the Rules boundary; this rejects AutoPay, source-only selection, and
+            // incomplete production/allocation witnesses without consulting hidden state.
+            val current = build().observation as? TrainingObservation
+                ?: error("Pending mana payment did not produce a TrainingObservation")
+            ChosenSemanticResponseV1.from(CompleteLegalDomainV1.from(current), response)
         }
         environment.stepStrict(SubmitDecision(pending.playerId, response))
         build()

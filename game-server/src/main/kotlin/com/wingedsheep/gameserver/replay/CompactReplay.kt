@@ -6,6 +6,8 @@ import com.wingedsheep.engine.core.CycleCard
 import com.wingedsheep.engine.core.ForetellCard
 import com.wingedsheep.engine.core.GameAction
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
+import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.PlotCard
 import com.wingedsheep.engine.core.SuspendCardFromHand
 import com.wingedsheep.engine.core.TurnFaceUp
@@ -91,6 +93,9 @@ data class CompactReplay(
         require(version >= 5 || actions.none(GameAction::usesPaymentPlanV3)) {
             "PaymentStrategy.ExplicitV3 requires CompactReplay v5 or newer"
         }
+        require(version >= 6 || actions.none(GameAction::usesPendingPaymentPlanV3)) {
+            "Pending PaymentPlanV3 requires CompactReplay v6 or newer"
+        }
     }
 
     /** Number of reconstructable frames: the initial state plus one per applied action. */
@@ -104,14 +109,15 @@ data class CompactReplay(
          * fingerprint, typed decision aliases, and the mandatory verified tail checkpoint; v4 adds
          * the joint floating-mana provenance state and the explicitly versioned
          * PaymentStrategy.ExplicitV2 action carrier. v5 adds the ordered
-         * PaymentStrategy.ExplicitV3 action carrier and its activation-cost ledger references. The
+         * PaymentStrategy.ExplicitV3 action carrier and its activation-cost ledger references. v6
+         * adds the pending `ManaSourcesSelectedResponse.paymentPlan` carrier. The
          * action-level target-domain fields,
          * attack-declaration domain DTOs, and Gym schema hashes are additive observation
          * contract data and do not change replay reconstruction semantics. The codec still
          * tolerates unknown fields on supported versions, but rejects versions newer than this
          * constant before deserialization.
          */
-        const val CURRENT_VERSION = 5
+        const val CURRENT_VERSION = 6
 
         const val UNKNOWN_VERSION = "unknown"
     }
@@ -145,6 +151,12 @@ private fun GameAction.usesPaymentPlanV3(): Boolean = when (this) {
     else -> false
 }
 
+/** A pending V3 plan changes replay execution and cannot be decoded as historical v5. */
+private fun GameAction.usesPendingPaymentPlanV3(): Boolean = when (this) {
+    is SubmitDecision -> (response as? ManaSourcesSelectedResponse)?.paymentPlan != null
+    else -> false
+}
+
 /**
  * A position fingerprint taken after [afterActionCount] recorded actions had been applied to the
  * live game. See [ReplayFingerprint] for what goes into it and why.
@@ -165,7 +177,7 @@ data class ReplayCheckpoint(
  * makes that a live race, since the game thread advances between calls.
  */
 data class ReplayRecordingSnapshot(
-    /** Replay semantics carried by the recording being flushed; new sessions use v5. */
+    /** Replay semantics carried by the recording being flushed; new sessions use v6. */
     val version: Int = CompactReplay.CURRENT_VERSION,
     val setup: ReplaySetup,
     val actions: List<com.wingedsheep.engine.core.GameAction>,

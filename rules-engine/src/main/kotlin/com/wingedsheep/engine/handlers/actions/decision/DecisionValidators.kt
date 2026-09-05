@@ -678,6 +678,12 @@ object DecisionValidators {
         if (response.selectedSources.size != response.selectedSources.toSet().size) {
             return "The same mana source cannot be selected more than once"
         }
+        if (response.paymentPlan != null &&
+            (response.autoPay || response.selectedSources.isNotEmpty() ||
+                response.waterbendPermanents.isNotEmpty() || response.declined)
+        ) {
+            return "Explicit pending payment cannot mix a V3 plan with legacy payment fields"
+        }
         val validSources = decision.availableSources.map { it.entityId }.toSet()
         val invalidSources = response.selectedSources.filter { it !in validSources }
         if (invalidSources.isNotEmpty()) {

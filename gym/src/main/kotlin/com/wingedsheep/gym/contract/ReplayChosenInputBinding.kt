@@ -46,7 +46,7 @@ data class ReplayChosenInputV1(
 /**
  * Complete ordered chosen-input evidence for one replay content identity.
  *
- * CompactReplay v5 currently records every submitted [com.wingedsheep.engine.core.GameAction] in
+ * CompactReplay v6 currently records every submitted [com.wingedsheep.engine.core.GameAction] in
  * its action stream; continuation resumes performed inside the replay fold are not separate
  * replay actions. The binding therefore reuses A5's one-record-per-action coordinate contract.
  *

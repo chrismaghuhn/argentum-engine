@@ -1,9 +1,11 @@
 package com.wingedsheep.gameserver.replay
 
 import com.wingedsheep.engine.core.CastSpell
+import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.core.PaymentPlanV2
 import com.wingedsheep.engine.core.PaymentPlanV3
 import com.wingedsheep.engine.core.PaymentStrategy
+import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.gameserver.persistence.persistenceJson
 import com.wingedsheep.sdk.core.AttackMode
@@ -65,15 +67,16 @@ class ReplayVersionCompatibilityTest : FunSpec({
         ReplayFingerprint.of(GameState(), decoded.version).length shouldBe 16
     }
 
-    test("checkpoint policy covers historical v3/v4 and current v5") {
+    test("checkpoint policy covers historical v3-v5 and current v6") {
         ReplayCheckpointPolicy.requiresTailCheckpoint(3) shouldBe true
         ReplayCheckpointPolicy.requiresTailCheckpoint(2) shouldBe false
         ReplayCheckpointPolicy.requiresTailCheckpoint(4) shouldBe true
         ReplayCheckpointPolicy.requiresTailCheckpoint(5) shouldBe true
+        ReplayCheckpointPolicy.requiresTailCheckpoint(6) shouldBe true
     }
 
-    test("current CompactReplay version is v5") {
-        CompactReplay.CURRENT_VERSION shouldBe 5
+    test("current CompactReplay version is v6") {
+        CompactReplay.CURRENT_VERSION shouldBe 6
     }
 
     test("ExplicitV2 cannot be carried under the historical CompactReplay-v3 label") {
@@ -120,6 +123,22 @@ class ReplayVersionCompatibilityTest : FunSpec({
         )
         val original = replay(version = 5).copy(actions = listOf(action))
 
+        ReplayCodec.decode(ReplayCodec.encode(original)) shouldBe original
+    }
+
+    test("pending explicit V3 payment cannot be carried under the historical CompactReplay-v5 label") {
+        val action = SubmitDecision(
+            playerId = com.wingedsheep.sdk.model.EntityId("p1"),
+            response = ManaSourcesSelectedResponse(
+                decisionId = "pending-payment",
+                paymentPlan = PaymentPlanV3(),
+            ),
+        )
+
+        shouldThrow<IllegalArgumentException> {
+            replay(version = 5).copy(actions = listOf(action))
+        }
+        val original = replay(version = 6).copy(actions = listOf(action))
         ReplayCodec.decode(ReplayCodec.encode(original)) shouldBe original
     }
 })

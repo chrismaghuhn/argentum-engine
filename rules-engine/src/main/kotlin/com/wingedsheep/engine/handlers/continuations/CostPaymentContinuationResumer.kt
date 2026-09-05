@@ -8,6 +8,7 @@ import com.wingedsheep.engine.core.DecisionPhase
 import com.wingedsheep.engine.core.DecisionRequestedEvent
 import com.wingedsheep.engine.core.ManaSourcesSelectedResponse
 import com.wingedsheep.engine.mechanics.mana.ManaPaymentWindow
+import com.wingedsheep.engine.mechanics.mana.PendingManaPaymentPlanExecutor
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
@@ -176,6 +177,18 @@ class CostPaymentContinuationResumer(
             return ExecutionResult.error(state, "Expected mana sources selected response for cost payment")
         }
         val inner = continuation.inner
+        response.paymentPlan?.let {
+            val explicit = PendingManaPaymentPlanExecutor.executeIfPresent(
+                state = state,
+                playerId = inner.payerId,
+                cost = continuation.manaCost,
+                response = response,
+                services = services,
+                reason = "cost payment",
+            ) ?: error("Expected explicit pending payment result")
+            if (explicit.error != null) return ExecutionResult.error(state, explicit.error)
+            return paid(explicit.state, explicit.events, inner, checkForMore)
+        }
         val floated = ManaPaymentWindow.floatSelectedMana(
             state, inner.payerId, continuation.manaCost, response, continuation.availableSources, services
         )

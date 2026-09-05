@@ -7,6 +7,8 @@ tasks.named<Test>("test") {
     // The exact-pair acceptance suite is an explicit heavyweight trust gate, not part of the
     // normal PR/unit-test critical path. Run it through :environmentV1AcceptanceTest instead.
     exclude("**/EnvironmentV1ExactPairAcceptanceTest*")
+    // Pending-payment contract tests read the immutable locked Commander artifact directly.
+    inputs.file(rootProject.layout.projectDirectory.file("docs/ml/curriculum/akiri-v0.1.txt"))
 }
 
 tasks.register<Test>("environmentV1AcceptanceTest") {
@@ -60,6 +62,9 @@ dependencies {
     // (:gym-server) already supply a binding.
     runtimeOnly(libs.slf4jApi)
 
+    // Focused pending-payment tests use the existing Rules scenario fixture only to reach a real
+    // engine decision boundary; this does not create a production dependency.
+    testImplementation(testFixtures(project(":rules-engine")))
     testImplementation(project(":mtg-sets"))
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)

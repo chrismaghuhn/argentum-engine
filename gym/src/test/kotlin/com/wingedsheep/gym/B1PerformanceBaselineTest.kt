@@ -583,6 +583,7 @@ private fun toDecisionResponse(
         decisionId = decisionId,
         edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
     )
+    is SemanticDecision.Payment -> selection.toDecisionResponse(decisionId)
 }
 
 private fun semanticActionOrdinal(

@@ -43,7 +43,7 @@ object ReplayContentCanonicalizerV1 {
     private const val ACTIONS_PATH = "actions"
 
     /**
-     * The v5 action discriminator allow-list is deliberate. A newly added action must receive an
+     * The v6 action discriminator allow-list is deliberate. A newly added action must receive an
      * explicit replay-content audit instead of being silently included by generic serialization.
      */
     private val supportedActionTypes = setOf(
@@ -96,7 +96,7 @@ object ReplayContentCanonicalizerV1 {
      * Field allowlist for every audited replay carrier whose addition would require an identity
      * review. Nested card/rules values are still serialized in full because their logical card
      * definition is itself the pinned content; these root and payment/response carriers are the
-     * replay protocol surface that must fail closed when v5 grows.
+     * replay protocol surface that must fail closed when v6 grows.
      */
     private val supportedReplayFieldsByType = mapOf(
         "ReplaySetup" to setOf(
@@ -173,7 +173,7 @@ object ReplayContentCanonicalizerV1 {
         "BudgetModalResponse" to setOf("decisionId", "selectedModeIndices"),
         "DamageAssignmentResponse" to setOf("decisionId", "assignments"),
         "ManaSourcesSelectedResponse" to setOf(
-            "decisionId", "selectedSources", "autoPay", "waterbendPermanents", "declined",
+            "decisionId", "selectedSources", "autoPay", "paymentPlan", "waterbendPermanents", "declined",
         ),
         "CombatResolutionResponse" to setOf(
             "decisionId", "edges", "orderedBlockers", "orderedAttackers",
