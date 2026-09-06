@@ -19,12 +19,12 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
-/** Version of the complete public-domain contract. */
-const val COMPLETE_LEGAL_DOMAIN_VERSION: Int = 1
+/** Current version of the complete public-domain action/decision contract. */
+const val COMPLETE_LEGAL_DOMAIN_VERSION: Int = 2
 
-/** Stable identity for the complete action/decision domain contract. */
+/** Stable identity for the current complete action/decision domain contract. */
 const val COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY: String =
-    "argentum-gym-action-domain@v1"
+    "argentum-gym-action-domain@v2"
 
 /** Version of the standalone candidate-domain digest contract. */
 const val CANDIDATE_DOMAIN_DIGEST_VERSION: Int = 1

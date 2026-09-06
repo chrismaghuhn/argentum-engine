@@ -750,7 +750,8 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.26-repeat-count-domain`. The preceding
+The Gym wire contract is currently `argentum-gym-contract@v1.26-repeat-count-domain`, and the
+complete stored action-domain contract is `argentum-gym-action-domain@v2`. The preceding
 `argentum-gym-contract@v1.25-target-payment-domain` and
 `argentum-gym-contract@v1.24-mana-color-domain` identifiers remain historical and must not be
 interpreted as the current observation schema.

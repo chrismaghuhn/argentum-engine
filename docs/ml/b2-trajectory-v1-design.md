@@ -261,7 +261,7 @@ and it is not a reward-labeled MCTS buffer.
     "wireSchemaHash": "argentum-gym-contract@v1.26-repeat-count-domain",
     "durableProjection": "argentum-gym-player-observation@v1"
   },
-  "actionDomainSchemaIdentity": "argentum-gym-action-domain@v1",
+  "actionDomainSchemaIdentity": "argentum-gym-action-domain@v2",
   "candidateDomainDigestSchemaIdentity": "argentum-gym-candidate-domain-digest@v1",
   "semanticDecisionIdentitySchema": "argentum-trajectory-semantic-decision@v1",
   "trajectoryId": "TRAJECTORY_CONTENT_SHA256",
@@ -401,13 +401,15 @@ the nested JsonObject action-semantics vocabulary.
 ## ACTION_DOMAIN_SCHEMA_IDENTITY=
 
 ~~~text
-ACTION_DOMAIN_SCHEMA_IDENTITY=argentum-gym-action-domain@v1
+ACTION_DOMAIN_SCHEMA_VERSION=2
+ACTION_DOMAIN_SCHEMA_IDENTITY=argentum-gym-action-domain@v2
 SUPPORTED_COMPONENTS=
   ActionTargetDomainV1
   AttackDeclarationDomainV2
   BlockerDeclarationDomainV1
   PaymentDomainV5
   TargetPaymentDomainV1
+  RepeatCountDomainV1
   StructuredDecisionDomain version 1
   ManaSourcesDomain version 3
   TargetsDomain version 2
@@ -508,6 +510,7 @@ never replaces the chosen semantic payload.
 
 ~~~text
 CANDIDATE_DOMAIN_DIGEST=argentum-gym-candidate-domain-digest@v1
+CANDIDATE_DOMAIN_INPUT_SCHEMA=argentum-gym-action-domain@v2
 ALGORITHM=lowercase SHA-256 over UTF-8 canonical domain JSON
 PREIMAGE_PREFIX=argentum-gym-candidate-domain-digest@v1\n
 ~~~
