@@ -60,8 +60,9 @@ UPSTREAM_MAIN=5021faf88093a93091e4de7914fbe0f411499d58
 ```
 
 The authoritative rules reference used for the information-set audit is the current Wizards
-[Comprehensive Rules text](https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt),
-effective August 7, 2026. The relevant rules state, in substance:
+[Rules page](https://magic.wizards.com/en/rules). At audit time that page links the current
+[Comprehensive Rules TXT](https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt),
+which states that the rules are effective August 7, 2026. The relevant rules state, in substance:
 
 - `400.2`: library and hand are hidden zones; graveyard, battlefield, stack, exile, and command are
   public zones, while a public zone can still contain specifically face-down cards.
@@ -388,10 +389,10 @@ The later engine capability must be event-driven and immutable. At minimum it ne
 ledger with:
 
 ```text
-perspectivePlayerId
-knowledgeEpoch
-known semantic card/object fact
-acquiredAt committed action/event coordinate
+    perspectivePlayerId
+    knowledgeEpoch
+    known semantic card/object fact
+    acquiredAt internal committed action/event coordinate
 audience / reason class
 invalidation coordinate and invalidation reason, when applicable
 ```
@@ -401,7 +402,7 @@ The ledger must be updated by the authoritative transition path, not reconstruct
 
 | Situation | Required future behavior |
 | --- | --- |
-| Public reveal | Add a public fact at that event coordinate; never rewrite earlier entries. |
+| Public reveal | Add a public fact at that internal event coordinate; after projection, emit only the contiguous perspective-local ordinal and never rewrite earlier entries. |
 | Private look/search | Add only to the acting player's ledger; no opponent entry. |
 | Known card enters a hidden zone | Preserve only the knowledge that the Rules/visibility policy actually preserves; do not infer location or position. |
 | Shuffle/randomization | Advance/invalidate the affected library knowledge epoch according to the authoritative rule path. |
@@ -583,8 +584,7 @@ PerspectiveHistoryV1 {
 }
 
 PerspectiveHistoryEntryV1 {
-    committedActionIndex
-    withinTransitionOrdinal
+    perspectiveHistoryOrdinal
     eventFamily
     visibilityClass
     semanticPayload
@@ -603,18 +603,32 @@ This exact name is a recommendation, not an implementation authorization.
 
 ### 10.2 Entry rules
 
+Coordinate boundary:
+
+```text
+AUTHORITATIVE_SOURCE_COORDINATE
+    = internal provenance / replay binding only
+
+PERSPECTIVE_HISTORY_ORDINAL
+    = contiguous coordinate assigned after perspective projection
+```
+
 `PerspectiveHistoryEntryV1` must satisfy:
 
-- `committedActionIndex` is the authoritative external transition coordinate;
-- `withinTransitionOrdinal` preserves engine event order without pretending that every event is a
-  separate policy decision;
-- entries are producer-ordered and never sorted by runtime ID;
+- `perspectiveHistoryOrdinal` is contiguous in the serialized stream and is assigned only after the
+  event/knowledge projection for this perspective; omitted events cannot leave gaps;
+- raw source action/decision coordinates and raw event ordinals are internal provenance/replay
+  bindings only and are not model-facing fields;
+- a global action/decision coordinate may be serialized only after a separate proof that its
+  existence and value are invariant under hidden-only mutations for this perspective;
+- entries retain the projected producer order, but are never sorted by runtime ID;
 - `visibilityClass` is source-owned, for example `PUBLIC`, `PERSPECTIVE_PRIVATE`, or an omitted
   event that is not observable to this perspective;
 - `semanticPayload` contains only public or perspective-private facts valid at that historical point;
 - raw `GameState`, raw `GameEvent`, `GameAction`, `PendingDecision`, continuation, prompt, runtime
   decision ID, PID, host, timestamp, and framework artifacts are excluded;
-- `knowledgeEpoch` changes only through an authoritative reveal/look/invalidation transition;
+- `knowledgeEpoch` changes only when an authoritative reveal/look/invalidation transition changes
+  this perspective's knowledge; a hidden-only transition cannot advance the serialized epoch;
 - a future reveal appends an entry and cannot mutate an earlier serialized entry;
 - an entry referencing an object uses a separately validated semantic reference, never an unqualified
   raw `EntityId` as a stable alias;
@@ -627,7 +641,11 @@ responsibilities:
 
 1. **Committed transition event capture**
    - receive the exact ordered event list produced by the committed Rules transition;
-   - attach the external action coordinate and within-transition ordinal;
+   - retain the source action/event coordinates only as internal provenance and replay bindings;
+   - project visibility and knowledge first, then assign contiguous `perspectiveHistoryOrdinal`
+     values to the emitted entries;
+   - never let hidden-event count or position, or a private decision boundary, alter the
+     perspective-facing coordinates or digest;
    - never capture candidate-simulation or fork-only transitions as live history.
 2. **Perspective knowledge ledger**
    - maintain per-player known facts and invalidation epochs;
@@ -651,8 +669,7 @@ schema/digest identity. The digest must include:
 version/schema identity
 semantic episode identity
 perspective identity
-producer event order
-event coordinates
+contiguous perspective-local entry order
 visibility class
 knowledge epoch
 semantic payload/reference values
@@ -664,6 +681,8 @@ It must not include:
 map iteration order
 raw runtime allocation order
 raw EntityId unless explicitly part of a validated public reference
+raw source action/event coordinates
+global action/decision coordinates without a hidden-state non-interference proof
 decision nonce
 action handle
 prompt/presentation text
@@ -715,15 +734,16 @@ fixture-only inference.
 | `HIST-01` | Same-perspective prior accepted choices | P1 history retains P1 semantic actions/responses in committed order, including structured responses. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
 | `HIST-02` | Opponent hidden-hand mutation | Changing only opponent hidden hand contents leaves P1 history bytes unchanged. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
 | `HIST-03` | Opponent library permutation | Hidden opponent library permutation leaves P1 history unchanged unless a public knowledge fact differs. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
-| `HIST-04` | Public reveal | A public reveal appends a public entry for every authorized perspective, with event-time coordinate. | `BLOCKED_ON_GENERIC_METADATA` |
+| `HIST-04` | Public reveal | A public reveal appends a public entry for every authorized perspective, with a perspective-local ordinal assigned after projection. | `BLOCKED_ON_GENERIC_METADATA` |
 | `HIST-05` | Reveal followed by shuffle | Shuffle/reorder invalidates knowledge only through the authoritative epoch policy; no stale position remains. | `BLOCKED_ON_GENERIC_METADATA` |
 | `HIST-06` | Face-down identity | Face-down identity is absent for unauthorized perspectives in every history entry and reference. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
 | `HIST-07` | Future reveal non-retroactivity | A later reveal changes later history only; serialized earlier history bytes remain unchanged. | `BLOCKED_ON_GENERIC_METADATA` |
 | `HIST-08` | P1/P2 isolation | P1 and P2 maintain independent history streams; a P2-private fact never appears in P1 history. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
 | `HIST-09` | Episode reset | Reset starts a new semantic episode and clears prior recurrent/history state. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
-| `HIST-10` | Structured continuation order | Multiple typed responses remain separate and ordered by their committed action coordinates. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
+| `HIST-10` | Structured continuation order | Multiple typed responses remain separate and ordered by committed transition order, with any emitted perspective ordinals assigned after projection. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
 | `HIST-11` | Replay-only hidden facts | A replay adapter cannot emit hidden replay state or private opponent response facts into model history. | `BLOCKED_ON_REPLAY_PROJECTION_SEAM` |
 | `HIST-12` | Raw EntityId alias rejection | A raw `EntityId` without an incarnation/public-reference witness is rejected as a stable history alias. | `BLOCKED_ON_FUTURE_ALIAS_SEAM` |
+| `HIST-13` | Hidden event insertion/removal | Executions differing only by an event or decision invisible to P, with otherwise identical visible events, produce identical `PerspectiveHistoryV1(P)` semantic bytes; no hidden count, position, or source-coordinate difference is serialized. | `BLOCKED_ON_FUTURE_HISTORY_SEAM` |
 
 Additional required canaries for the known source gaps:
 
@@ -731,6 +751,8 @@ Additional required canaries for the known source gaps:
   future ledger must not silently assume persistence;
 - a `ZoneChangeEvent` to hand/library is not emitted as a public named-card history entry merely
   because the raw event contains `entityName`;
+- inserting or removing a hidden-only event does not create a perspective-ordinal gap or digest
+  difference;
 - a `GameEnvironment.fork()` transition is rejected by the live-history source;
 - a legacy `DecisionRecordFactory` candidate simulation is rejected as history;
 - hidden opponent changes preserve the actor's current `PlayerObservationV1` and history bytes;
@@ -743,8 +765,9 @@ The next implementation work should be split into separately reviewed slices:
 ### C0-HISTORY-A — committed perspective event source
 
 Create an engine-owned, immutable per-transition event sidecar. It should receive only committed
-Rules output, assign action/event coordinates, and provide a single projection seam. It must not
-change `GameEvent` wire semantics or expose raw events to learners.
+Rules output, retain source action/event coordinates only as internal provenance, project for one
+perspective, then assign contiguous perspective-local ordinals. It must not change `GameEvent` wire
+semantics or expose raw events/source coordinates to learners.
 
 ### C0-HISTORY-B — known-information ledger
 
@@ -803,6 +826,8 @@ HIDDEN_STATE_NON_INTERFERENCE_DESIGN=PASS
 PERSPECTIVE_ISOLATION_CONTRACT=PASS
 DECISION_BOUNDARY_HISTORY_CONTRACT=PASS
 STRUCTURED_CONTINUATION_HISTORY_CONTRACT=PASS
+P1_SOURCE_COORDINATE_NON_INTERFERENCE=PASS
+P2_CURRENT_CR_REFERENCE=PASS
 
 KNOWN_INFORMATION_METADATA_DEPENDENCY=OPEN
 PUBLIC_EVENT_PROJECTION_DEPENDENCY=OPEN
@@ -862,8 +887,8 @@ COMMANDER_TRAJECTORY_BINDING_IMPLEMENTED=NO
 FOCUSED_TESTS=PASS_BASELINE_ONLY__CommanderPublicObservationTest_14_of_14__CommanderGymContractTest_5_of_5
 GIT_DIFF_CHECK=BOUND_AFTER_DOCUMENTATION_EDIT
 
-P1_FINDINGS=OPEN__raw_event_history_and_known_information_metadata_are_not_model_safe
-P2_FINDINGS=OPEN__stable_public_cross_step_alias_and_subject_provenance_are_not_available
+P1_FINDINGS=NONE_IN_THIS_REMEDIATION__future_event_projection_and_knowledge_metadata_remain_open_dependencies
+P2_FINDINGS=NONE_IN_THIS_REMEDIATION__future_stable_alias_metadata_remains_an_open_dependency
 
 C0_HISTORY_CHARACTERIZATION_IMPLEMENTATION_PASS=YES
 C0_HISTORY_CODE_REVIEW_PASS=NO
