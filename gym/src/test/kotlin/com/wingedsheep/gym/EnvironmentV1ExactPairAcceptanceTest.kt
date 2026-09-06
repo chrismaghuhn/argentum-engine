@@ -689,7 +689,7 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
         selectedIds shouldBe listOf(firstTarget.value, secondTarget.value)
     }
 
-    test("the external policy completes repeatCount from public action semantics") {
+    test("the external policy completes repeatCount from the public repeat domain") {
         val action = LegalActionView(
             actionId = 111,
             kind = "ActivateAbility",
@@ -697,9 +697,12 @@ class EnvironmentV1ExactPairAcceptanceTest : FunSpec({
             affordable = true,
             requiresStructuredAction = true,
             requiredPayloadFields = listOf("repeatCount"),
+            repeatCountDomain = RepeatCountDomainV1(maxCount = 3),
             actionSemantics = buildJsonObject {
                 put("type", "ActivateAbility")
-                put("repeatCount", 1)
+                // The semantic action value is only a template hint. The public domain is the
+                // authority used to construct the external choice.
+                put("repeatCount", 99)
             },
         )
 

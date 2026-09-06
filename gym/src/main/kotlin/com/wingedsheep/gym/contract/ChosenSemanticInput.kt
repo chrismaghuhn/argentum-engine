@@ -246,6 +246,7 @@ internal object StoredActionPayloadValidator {
         "targets",
         "xValue",
         "paymentStrategy",
+        "repeatCount",
         "manaColorChoice",
         "attackers",
         "bands",
@@ -271,6 +272,7 @@ internal object StoredActionPayloadValidator {
         }
         payload["targets"]?.let { requireTargets(candidate, it) }
         payload["xValue"]?.let { requireXValue(candidate, it) }
+        payload["repeatCount"]?.let { requireRepeatCount(candidate, it) }
         payload["manaColorChoice"]?.let { requireManaColor(candidate, it) }
         if (payload.containsKey("attackers") || payload.containsKey("bands")) {
             requireAttackDeclaration(candidate, payload)
@@ -297,6 +299,17 @@ internal object StoredActionPayloadValidator {
         requireSacrificePayment(candidate, payment.sacrificedPermanents)
         requireSourceBoundTapPayment(candidate, payment.tappedPermanents)
         requireUnsupportedAdditionalPaymentChannelsAreNoOp(payment, allowTapped = true)
+    }
+
+    /** Validate the repeat choice exclusively against the stored public repeat-count domain. */
+    private fun requireRepeatCount(candidate: JsonObject, value: JsonElement) {
+        val domainValue = candidate["repeatCountDomain"]
+            ?: throw IllegalArgumentException("Repeat-count choice has no stored public domain")
+        val domain = decodeRepeatCountDomain(domainValue)
+        val repeatCount = value.intValue("repeat count")
+        require(repeatCount in domain.minCount..domain.maxCount) {
+            "Repeat count is outside the stored public domain"
+        }
     }
 
     /**

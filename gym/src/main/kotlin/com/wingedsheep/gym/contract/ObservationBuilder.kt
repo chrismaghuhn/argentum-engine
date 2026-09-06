@@ -688,6 +688,9 @@ class ObservationBuilder(
             maxAffordableX = la.maxAffordableX,
             minTargets = singleRequirement?.minTargets ?: 0,
             maxTargets = singleRequirement?.maxTargets ?: 0,
+            repeatCountDomain = la.maxRepeatableActivations
+                ?.takeIf { it > 1 }
+                ?.let { maxCount -> RepeatCountDomainV1(maxCount = maxCount) },
             validSacrificeTargets = sacrificeInfo?.validSacrificeTargets
                 ?.sortedBy { it.value }
                 ?: emptyList(),

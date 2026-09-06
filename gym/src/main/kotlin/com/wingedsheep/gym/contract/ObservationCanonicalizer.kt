@@ -237,6 +237,9 @@ object ObservationCanonicalizer {
         put("maxAffordableX", action.maxAffordableX)
         put("minTargets", action.minTargets)
         put("maxTargets", action.maxTargets)
+        action.repeatCountDomain?.let {
+            put("repeatCountDomain", json.encodeToJsonElement(RepeatCountDomainV1.serializer(), it))
+        }
         put(
             "validSacrificeTargets",
             buildJsonArray {

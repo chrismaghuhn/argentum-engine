@@ -1192,7 +1192,7 @@ class TrajectoryV1ContractTest : FunSpec({
 
         val root = rootJson(trajectory)
         val digestOnlyDomain = buildJsonObject {
-            put("version", 1)
+            put("version", com.wingedsheep.gym.contract.COMPLETE_LEGAL_DOMAIN_VERSION)
             put("schemaIdentity", com.wingedsheep.gym.contract.COMPLETE_LEGAL_DOMAIN_SCHEMA_IDENTITY)
             put("kind", "ACTION_CANDIDATES")
         }
@@ -1316,7 +1316,11 @@ class TrajectoryV1ContractTest : FunSpec({
             }),
         ).reason shouldBe TrajectoryValidationReason.SCHEMA_MISMATCH
 
-        val futureDomain = replaceJsonValue(domain, "version", JsonPrimitive(2))
+        val futureDomain = replaceJsonValue(
+            domain,
+            "version",
+            JsonPrimitive(com.wingedsheep.gym.contract.COMPLETE_LEGAL_DOMAIN_VERSION + 1),
+        )
         requireRejected(
             resultForJson(updateDecision(root, 0) {
                 replaceJsonValue(it, "completeLegalDomain", futureDomain)

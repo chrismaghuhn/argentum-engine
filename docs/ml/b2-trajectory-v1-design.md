@@ -116,7 +116,7 @@ not merely safe to hash.
 | Current type/field | Producer and consumer | Deterministic across equivalent replay | Perspective-safe | Durable trajectory use | Role and treatment |
 | --- | --- | --- | --- | --- | --- |
 | TrainingObservation.stateDigest | StateDigest.compute over ObservationCanonicalizer.semanticJson; consumed by MCTS, B1 traces, and clients | Yes, subject to the current canonicalizer contract | Yes | Yes as an observation binding and verification witness | SEMANTIC. Reuse as the public observation digest, but do not mistake it for a domain-only digest. |
-| TrainingObservation.schemaHash | SchemaHash.CURRENT; compared by external clients | Yes for a pinned source | Yes | Yes in schema metadata; not a learner feature | PROVENANCE. Current value is argentum-gym-contract@v1.25-target-payment-domain. A durable projection also needs its own version because JsonObject action semantics can change without changing the Kotlin DTO shape. |
+| TrainingObservation.schemaHash | SchemaHash.CURRENT; compared by external clients | Yes for a pinned source | Yes | Yes in schema metadata; not a learner feature | PROVENANCE. Current value is argentum-gym-contract@v1.26-repeat-count-domain. A durable projection also needs its own version because JsonObject action semantics can change without changing the Kotlin DTO shape. |
 | TrainingObservation.perspectivePlayerId, agentToAct, turn/phase/step, public players, visible zones, stack, terminal flags, and winner | ObservationBuilder; consumed by the external policy and public clients | Yes when seed, roster, and card definitions are pinned | Yes when the builder returns with no diagnostics | Yes through a transport-free PlayerObservationV1 projection | SEMANTIC. This is the model-facing public information set. Raw GameState is never substituted. |
 | LegalActionView.actionId | ActionRegistry and GameGymEnv.nextActionId; consumed by step routing | No; it is regenerated and monotonically allocated per adapter lifetime | It is not gameplay information, but it is an operational handle | No | FRESHNESS_ROUTING. Omit from durable observation, domain identity, chosen identity, and replay equivalence. |
 | LegalActionView.kind, affordable, source/target/cost fields, required payload fields, and versioned nested domains | ObservationBuilder.legalActionToView; consumed by external policies and strict submission validators | Yes when the Rules producer and public ordering contract are pinned | Yes if ObservationBuilder reports no diagnostic | Yes as the complete action candidate projection | SEMANTIC. Preserve complete producer-owned order where order is meaningful. |
@@ -258,10 +258,10 @@ and it is not a reward-labeled MCTS buffer.
 {
   "trajectorySchemaVersion": 1,
   "observationSchemaIdentity": {
-    "wireSchemaHash": "argentum-gym-contract@v1.25-target-payment-domain",
+    "wireSchemaHash": "argentum-gym-contract@v1.26-repeat-count-domain",
     "durableProjection": "argentum-gym-player-observation@v1"
   },
-  "actionDomainSchemaIdentity": "argentum-gym-action-domain@v1",
+  "actionDomainSchemaIdentity": "argentum-gym-action-domain@v2",
   "candidateDomainDigestSchemaIdentity": "argentum-gym-candidate-domain-digest@v1",
   "semanticDecisionIdentitySchema": "argentum-trajectory-semantic-decision@v1",
   "trajectoryId": "TRAJECTORY_CONTENT_SHA256",
@@ -401,13 +401,15 @@ the nested JsonObject action-semantics vocabulary.
 ## ACTION_DOMAIN_SCHEMA_IDENTITY=
 
 ~~~text
-ACTION_DOMAIN_SCHEMA_IDENTITY=argentum-gym-action-domain@v1
+ACTION_DOMAIN_SCHEMA_VERSION=2
+ACTION_DOMAIN_SCHEMA_IDENTITY=argentum-gym-action-domain@v2
 SUPPORTED_COMPONENTS=
   ActionTargetDomainV1
   AttackDeclarationDomainV2
   BlockerDeclarationDomainV1
   PaymentDomainV5
   TargetPaymentDomainV1
+  RepeatCountDomainV1
   StructuredDecisionDomain version 1
   ManaSourcesDomain version 3
   TargetsDomain version 2
@@ -508,6 +510,7 @@ never replaces the chosen semantic payload.
 
 ~~~text
 CANDIDATE_DOMAIN_DIGEST=argentum-gym-candidate-domain-digest@v1
+CANDIDATE_DOMAIN_INPUT_SCHEMA=argentum-gym-action-domain@v2
 ALGORITHM=lowercase SHA-256 over UTF-8 canonical domain JSON
 PREIMAGE_PREFIX=argentum-gym-candidate-domain-digest@v1\n
 ~~~

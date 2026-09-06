@@ -750,8 +750,10 @@ A snapshot is exact but **not editable** in the card-search builder; the builder
 
 ## Gym structured decision observations
 
-The Gym contract is currently `argentum-gym-contract@v1.25-target-payment-domain`. The preceding
-`argentum-gym-contract@v1.24-mana-color-domain` identifier remains historical and must not be
+The Gym wire contract is currently `argentum-gym-contract@v1.26-repeat-count-domain`, and the
+complete stored action-domain contract is `argentum-gym-action-domain@v2`. The preceding
+`argentum-gym-contract@v1.25-target-payment-domain` and
+`argentum-gym-contract@v1.24-mana-color-domain` identifiers remain historical and must not be
 interpreted as the current observation schema.
 `TrainingObservation.pendingDecision` is a perspective-safe `PendingDecisionView`. When the
 perspective owns a complex decision, `structuredDomain` contains a typed, versioned domain copied
@@ -1172,9 +1174,10 @@ checks that the key is currently certified and never merges a client-supplied su
 Rules state. V1 remains accepted only where `(floatingSourceId, poolColor)` identifies exactly one
 joint bucket; if both `{Forest}` and `{}` exist for the pair, V1 rejects and V2 is required.
 
-The preceding Gym observation schema was
+The preceding Gym observation schemas were
+`argentum-gym-contract@v1.25-target-payment-domain` and
 `argentum-gym-contract@v1.24-mana-color-domain`. Current observations use
-`argentum-gym-contract@v1.25-target-payment-domain`. `PaymentDomainV4` remains a historical
+`argentum-gym-contract@v1.26-repeat-count-domain`. `PaymentDomainV4` remains a historical
 payment-domain DTO. A client must compare the hash before interpreting the current payment domain
 and fail closed on mismatch. Historical V4 payloads remain decodable only through their historical
 DTO and are not reinterpreted as V5.

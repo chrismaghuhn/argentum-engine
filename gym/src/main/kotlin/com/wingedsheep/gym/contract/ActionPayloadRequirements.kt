@@ -100,7 +100,7 @@ object ActionPayloadRequirements {
             is SaddleMount -> add("saddleCreatures")
             else -> if (action.tapForPower) add(additionalPaymentField(action.action))
         }
-        if (action.maxRepeatableActivations != null) add("repeatCount")
+        if (action.maxRepeatableActivations?.let { it > 1 } == true) add("repeatCount")
         if (action.requiresForage) add("additionalCostPayment")
         if (action.additionalLifeCost > 0) add("graveyardLifeCost")
         if (action.modalEnumeration != null) {
