@@ -540,7 +540,25 @@ overwriting it.
 `REPLACE_EXISTING`; it rewrites the whole corpus. That fallback is not acceptable for a trusted
 status/publisher primitive.
 
-### V1 status algorithm
+### Frozen requirement; implementation pending provider characterization
+
+The D0 decision is an invariant, not a selected replacement algorithm:
+
+```text
+ATOMIC_PUBLICATION_REQUIREMENT=
+    old valid status must survive failed publication
+    no torn status may be accepted by a reader
+    no non-atomic overwrite fallback
+
+ATOMIC_REPLACEMENT_IMPLEMENTATION=NEEDS_D1_PROVIDER_CHARACTERIZATION
+```
+
+D1 must characterize the actual supported Windows/NTFS and Linux filesystem providers before
+selecting one of the following implementations: (A) atomic replacement of `run-status.json`, (B)
+immutable sequence files plus an atomic pointer/selection record, or (C) provider unsupported.
+Until then, the report does not freeze option A as portable fact.
+
+### Candidate status publication flow
 
 ```text
 serialize bounded status with strict UTF-8 JSON
@@ -557,9 +575,8 @@ current Windows/Linux provider's behavior for `ATOMIC_MOVE` plus replacement. Ja
 an atomic move is provider-dependent, that other options may be ignored, and that replacement of an
 existing target is implementation-specific. If atomic replacement is unavailable or ambiguous,
 retain the old valid status, report a non-fatal diagnostics failure, and do not fall back to a
-non-atomic overwrite. A versioned-file/pointer variant may be considered in D3 if the current
-providers cannot provide safe replacement, but it must still preserve the `run-status.json` reader
-contract.
+non-atomic overwrite. A versioned-file/pointer variant remains a D1 selection candidate, but it
+must still preserve the `run-status.json` reader contract.
 
 Expected failure behavior:
 
@@ -865,18 +882,34 @@ change the current closure enum. Auto-recovery and retry are outside D0.
 All four stages below are plans only. `D1_AUTHORIZED=NO`, `D2_AUTHORIZED=NO`,
 `D3_AUTHORIZED=NO`, and `D4_AUTHORIZED=NO`.
 
+The phase boundary is strict:
+
+```text
+D1 = generic diagnostics library only
+     RunStatusV1, ProgressVectorV1, StageRefV1, clock, recorder, scheduler,
+     coalescing publisher, atomic-status primitive, and synthetic generic tests
+
+D1 MUST NOT add a gym adapter, gym-trainer adapter, replay adapter, or workload integration.
+
+D4 = all real workload adapters and their owner-bound progress events.
+```
+
+D1 may define the typed event API and counter meanings, but it does not connect those events to
+`GameEnvironment`, `GameGymEnv`, `TrajectoryV1*`, `ReplayReconstructor`, `SelfPlayLoop`, or any
+other workload. Precise real-producer ownership is verified in D4, not claimed by D1.
+
 ### D1 — in-process diagnostic seam
 
 | Item | Plan |
 | --- | --- |
-| Likely files/modules | Add a standalone `run-diagnostics` JVM module and `application` entrypoint wiring in `settings.gradle.kts`; likely sources under `run-diagnostics/src/main/kotlin/.../RunStatusV1.kt`, `ProgressVectorV1.kt`, `StageRefV1.kt`, `MonotonicClock.kt`, `DiagnosticsRecorder.kt`, and `AtomicStatusPublisher.kt`. Add only narrow adapters at future `gym`/`gym-trainer` owners; do not touch Rules semantics. |
+| Likely files/modules | Add only the standalone `run-diagnostics` JVM module and its generic sources: `RunStatusV1.kt`, `ProgressVectorV1.kt`, `StageRefV1.kt`, `MonotonicClock.kt`, `DiagnosticsRecorder.kt`, and `AtomicStatusPublisher.kt`, plus `settings.gradle.kts`/module build wiring. No `gym`, `gym-trainer`, `game-server`, Rules, replay, trajectory, learner, or evaluation adapter is part of D1. |
 | Conceptual types | `RunStatusV1`, `ProgressVectorV1`, `StageRefV1`, `ArtifactCounterV1`, `DiagnosticsMode`, `StatusPublicationResult`, injectable `MonotonicClock`, and a scalar-only recorder/publisher. |
-| Visibility | Status/stage schema and adapter interfaces public to workload owners and the external supervisor; low-level atomic writer, ring implementation, and failure mapping internal; no type depends on `GameState`. |
-| Tests | Schema/version/unknown-field rejection; monotonic counter ownership; null-versus-zero; process-relative time; disabled-path no-op; bounded ring; no hidden-field JSON scan; atomic temp/replace success and injected failure. |
+| Visibility | Status/stage schema and generic recorder API public to the future supervisor/integration modules; low-level atomic writer, ring implementation, and failure mapping internal; no type depends on `GameState` and no workload adapter is added. |
+| Tests | Generic schema/version/unknown-field rejection; monotonic counter API; null-versus-zero; process-relative time; disabled-path no-op; bounded ring; no hidden-field JSON scan; atomic temp/replace fault model; provider characterization on Windows/NTFS and the supported Linux filesystem for initial publish, existing-target replacement, interruption, and unsupported atomic move. |
 | Failure modes | Non-fatal status write/serialization/atomic-replace failure; publisher queue coalescing; scheduler close; directory disappearance; old-status preservation. |
 | Privacy | Reject raw state/action/domain/observation fields structurally; only opaque public-safe IDs; document privileged data as a separate channel. |
 | Performance | Measure disabled vs scalar-only vs status publication; no per-transition serialization in disabled mode; publication is off the workload thread. |
-| Acceptance | `RunStatusV1` is versioned and bounded; accepted-transition counters have precise owners; no Rules/Gym/replay/trajectory schema change; `git diff --check`; focused D1 tests. |
+| Acceptance | `RunStatusV1` is versioned and bounded; the generic recorder accepts typed events without any real workload caller; atomic publication invariants are tested, but `ATOMIC_REPLACEMENT_IMPLEMENTATION=NEEDS_D1_PROVIDER_CHARACTERIZATION` remains until the provider matrix selects atomic replacement, sequence files/pointer, or unsupported; no Rules/Gym/replay/trajectory schema change; `git diff --check`; focused D1 tests. |
 
 ### D2 — external supervisor
 
@@ -908,14 +941,14 @@ All four stages below are plans only. `D1_AUTHORIZED=NO`, `D2_AUTHORIZED=NO`,
 
 | Item | Plan |
 | --- | --- |
-| Likely files/modules | Narrow adapters in `gym` around `GameEnvironment`/`GameGymEnv`/`MultiEnvService`; `gym-trainer` around `SelfPlayLoop`, `TrajectoryV1Writer`, `TrajectoryV1Publisher`, `TrajectoryV1Reader`; `game-server` around `ReplayReconstructor`/`ReplayCheckpointFlusher`; optional test-only B0/B1 adapter wiring. No current source file is authorized now. |
+| Likely files/modules | All real workload adapters, and only those adapters: `gym` around `GameEnvironment`/`GameGymEnv`/`MultiEnvService`; `gym-trainer` around `SelfPlayLoop`, `TrajectoryV1Writer`, `TrajectoryV1Publisher`, `TrajectoryV1Reader`; `game-server` around `ReplayReconstructor`/`ReplayCheckpointFlusher`; optional test-only B0/B1 wiring. No current source file is authorized now; D1 does not pre-implement any of these integrations. |
 | Conceptual types | Workload-specific stage-family enums/validators, `GymProgressAdapterV1`, `TrajectoryPublicationAdapterV1`, `ReplayVerificationAdapterV1`, and `ReaderProgressAdapterV1`. |
 | Visibility | Adapters public only where a workload owns them; raw-state callbacks remain internal/privileged; sidecar receives scalar projections. |
 | Tests | One bounded smoke per selected workload; strict transition/replay/trajectory/read invariants; A6 admission and A7 yield counts; no new trusted dataset membership from diagnostics. |
 | Failure modes | Adapter callback failure is non-fatal diagnostics failure; workload semantic failure remains its existing typed failure/quarantine; status cannot turn a prefix into trusted data. |
 | Security/privacy | No raw `TrainerContext`, `GameState`, domains, hidden cards, replay internals, or JFR content cross into normal status. |
 | Performance | Match #119 source/policy/deck boundaries; report diagnostics-enabled overhead separately; ensure D4 adapters do not add per-transition work when disabled. |
-| Acceptance | Each workload reports only precise owned cursors; sidecar does not change semantic bytes/digests/replay/trajectory schema; supervisor distinguishes actor/reader/writer/learner stages; no training or large corpus run is implied. |
+| Acceptance | Each workload reports only precise owned cursors; all real counter ownership is accepted here rather than in D1; sidecar does not change semantic bytes/digests/replay/trajectory schema; supervisor distinguishes actor/reader/writer/learner stages; no training or large corpus run is implied. |
 
 ## 24. Unresolved questions
 
@@ -954,7 +987,8 @@ PROGRESS_MODEL=optional owned monotonic counters plus current stage and process-
 STAGE_MODEL=versioned per-workload stage families (C/B hybrid), no giant global enum
 HEARTBEAT_OWNER=hybrid; dedicated daemon scheduler for heartbeat, workload adapters for useful progress, coalescing publisher for file I/O
 MONOTONIC_TIME_SOURCE=System.nanoTime via injectable clock; process-relative elapsed values; wall clock for correlation only
-ATOMIC_PUBLICATION_MODEL=same-directory bounded temp + force/close + atomic replace; no non-atomic fallback; old status retained on failure
+ATOMIC_PUBLICATION_MODEL=REQUIREMENT_ONLY; old valid status survives failure, no torn accepted status, no non-atomic fallback
+ATOMIC_REPLACEMENT_IMPLEMENTATION=NEEDS_D1_PROVIDER_CHARACTERIZATION; select atomic replacement, immutable sequence/pointer, or provider unsupported after Windows/Linux tests
 EXTERNAL_SUPERVISOR_MODEL=neutral Kotlin/JDK21 application module; status/PID/OS metrics/safe artifacts only; Windows/Linux adapters
 JVM_DIAGNOSTIC_MODEL=jcmd primary, bounded target-only commands; jstack fallback; optional privileged JFR; no heap dump in normal mode
 STALL_CLASSIFICATION_MODEL=multi-signal pipeline: heartbeat/useful age + CPU/RSS/GC/threads/artifacts + bounded dumps; classification is not root cause
@@ -968,6 +1002,8 @@ D1_PLAN_READY=YES
 D2_PLAN_READY=YES
 D3_PLAN_READY=YES
 D4_PLAN_READY=YES
+D1_SCOPE=GENERIC_LIBRARY_ONLY; no gym, gym-trainer, replay, or workload adapter
+D4_SCOPE=ALL_REAL_WORKLOAD_ADAPTERS_AND_OWNER_BOUND_PROGRESS_EVENTS
 ```
 
 ## 26. D0 completion boundary
