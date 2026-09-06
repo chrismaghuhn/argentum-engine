@@ -219,18 +219,31 @@ expose every historical Commander fact needed by a general policy.
 
 | Information | Classification | Current evidence and consequence |
 | --- | --- | --- |
-| Commander identity | SAFELY_DERIVABLE_FROM_ACCEPTED_PUBLIC_SOURCE | ObservationBuilder emits the public COMMAND zone and visible EntityFeatures including cardDefinitionId/name; EnvironmentIdentityV1 also carries commanderDefinitionIdentity in the roster. There is no dedicated isCommander field in PlayerObservationV1, so the adapter must use the public zone/roster contract, not infer from a name alone. |
-| Commander current zone | EXPLICIT_IN_PLAYER_OBSERVATION | ZoneView includes Zone.COMMAND, and the accepted visibility policy treats the command zone as public. The current visible card/entity is therefore representable. |
+| Commander designation/identity | MISSING_PUBLIC_POLICY_INFORMATION | A public COMMAND-zone card and its cardDefinitionId/name are visible, but PlayerObservationV1 has no isCommander/designated-commander mapping once that card moves to the battlefield, graveyard, or exile. EnvironmentIdentityV1.commanderDefinitionIdentity is provenance-only and cannot become model input. |
+| Command-zone contents and generic public card zone | EXPLICIT_IN_PLAYER_OBSERVATION | ZoneView includes Zone.COMMAND, and the accepted visibility policy treats the command zone as public. This exposes public command-zone cards and their current generic zone, but does not identify the designated commander after it leaves that zone. |
+| Designated commander's current zone | MISSING_PUBLIC_POLICY_INFORMATION | The generic zone of every visible card is present, but the designated-commander relation needed to interpret one of those cards as the commander is absent from the model-facing observation. |
 | Commander cast count | MISSING_PUBLIC_POLICY_INFORMATION | CommanderComponent.castsFromCommandZone is Rules/GameState state. It is not a PlayerObservationV1, PlayerView, EntityFeatures, CompleteLegalDomain, or TrajectoryV1 field. No action/event history is available from which to recover it safely. |
 | Commander tax for the current commander cast | EXPLICIT_IN_COMPLETE_LEGAL_DOMAIN | CostCalculator applies the current tax while enumerating a command-zone cast. The resulting LegalAction.manaCostString and, for the qualified payment shape, PaymentDomainV5.requiredCost carry the effective cost. This exposes the current payment consequence, not the historical cast count. |
 | Commander damage by commander/opponent | MISSING_PUBLIC_POLICY_INFORMATION | GameState.commanderDamage and the client-only commanderDamage projection exist, but PlayerObservationV1/TrainingObservation/PlayerView have no per-commander damage ledger. EntityFeatures.damageMarked is damage on a permanent, not damage dealt to a player. |
-| Current 903.9a command-zone choice or command-zone cast/action availability | EXPLICIT_IN_PLAYER_OBSERVATION | When the Rules boundary pauses for the owner, the pending YES_NO context is in the observation and its response/domain is in the accepted decision surface. Current command-zone actions are in CompleteLegalDomain. |
+| Current 903.9a decision context | EXPLICIT_IN_PLAYER_OBSERVATION | When the Rules boundary pauses for the owner, PlayerObservationV1 says that a YES_NO decision exists and retains its public source/trigger context. |
+| Exact 903.9a response domain and command-zone cast/action availability | EXPLICIT_IN_COMPLETE_LEGAL_DOMAIN | CompleteLegalDomain carries the folded YES_NO response candidates or the current command-zone action candidates. The observation does not by itself enumerate the response set. |
 | Format.alwaysDivertToCommand latent configuration | NOT_POLICY_RELEVANT_FOR_ENVIRONMENT_V1 | The locked Environment V1 construction uses the default Format.Commander configuration, where the choice is exposed rather than silently auto-answered. A future non-default environment must bind this configuration in its environment identity before it is used for learning. |
 
-The smallest future engine-owned follow-up is a versioned public observation/domain extension for
-the missing commander cast-count and per-commander/per-opponent damage facts. It must be emitted by
-the perspective-safe source, included in the relevant observation/digest/replay contracts, and
-validated without exposing GameState. No such extension is implemented here.
+The smallest future engine-owned follow-up is a versioned public observation/domain extension that
+keeps EnvironmentIdentityV1 as provenance and adds a player-knowledge surface, for example:
+
+~~~text
+PlayerObservationVNext or an equivalent public context:
+    designated commander entity/card -> owner/player mapping
+    isCommander or equivalent stable public designation
+    castsFromCommandZone / current commander-tax basis
+    commanderDamage[commander, defendingPlayer, amount, threshold]
+    any additional command-zone choice state needed by the actor
+~~~
+
+The extension must be emitted by the perspective-safe source, included in the relevant
+observation/digest/replay contracts, and validated without exposing GameState. No such extension
+is implemented here.
 
 ~~~text
 COMMANDER_PUBLIC_INFORMATION_CHARACTERIZATION=COMPLETE_FOR_CURRENT_SOURCE
@@ -238,6 +251,7 @@ COMMANDER_PUBLIC_INFORMATION_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY
 OBSERVATION_ENGINE_FOLLOWUP_REQUIRED=YES
 DATA_TRUSTED=YES (source integrity; this does not assert model-facing information sufficiency)
 MODEL_FACING_COMMANDER_INFORMATION_SUFFICIENCY=BLOCKED_ON_ENGINE_DEPENDENCY
+COMMANDER_DESIGNATION_MODEL_INPUT_BOUNDARY=BLOCKED_ON_ENGINE_DEPENDENCY
 ~~~
 
 The same rule applies to persistent cross-step entity aliases. Current EntityId values are safe
@@ -936,6 +950,9 @@ MODEL_FACING_SAMPLE_CONTRACT=READY_TO_FREEZE
 OBSERVATION_ENCODING_CONTRACT=NEEDS_CHARACTERIZATION
 COMMANDER_PUBLIC_INFORMATION_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY
 OBSERVATION_ENGINE_FOLLOWUP_REQUIRED=YES
+COMMANDER_DESIGNATION_MODEL_INPUT_BOUNDARY=BLOCKED_ON_ENGINE_DEPENDENCY
+P1_COMMANDER_DESIGNATION_MODEL_INPUT_BOUNDARY=OPEN
+P2_COMMAND_ZONE_DECISION_CLASSIFICATION=RESOLVED
 CANDIDATE_SCORING_CONTRACT=READY_TO_FREEZE
 STRUCTURED_DECISION_MODEL=B
 STRUCTURED_DECISION_STATUS=READY_TO_FREEZE
