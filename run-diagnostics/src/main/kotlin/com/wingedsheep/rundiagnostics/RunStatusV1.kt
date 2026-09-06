@@ -57,6 +57,7 @@ public data class ArtifactCounterV1(
 public data class ProgressVectorV1(
     public val schemaVersion: Int = DiagnosticsSchema.PROGRESS_VECTOR_SCHEMA_VERSION,
     public val schemaIdentity: String = DiagnosticsSchema.PROGRESS_VECTOR_SCHEMA_IDENTITY,
+    public val usefulProgressSequence: Long = 0,
     public val episodeOrdinal: Long? = null,
     public val engineProgressCount: Long? = null,
     public val authoritativeTransitionCount: Long? = null,
@@ -71,6 +72,7 @@ public data class ProgressVectorV1(
     init {
         requireSchemaVersion(schemaVersion, DiagnosticsSchema.PROGRESS_VECTOR_SCHEMA_VERSION, "schemaVersion")
         requireSchemaIdentity(schemaIdentity, DiagnosticsSchema.PROGRESS_VECTOR_SCHEMA_IDENTITY, "schemaIdentity")
+        require(usefulProgressSequence >= 0) { "usefulProgressSequence must be non-negative" }
         requireNonNegative(episodeOrdinal, "episodeOrdinal")
         requireNonNegative(engineProgressCount, "engineProgressCount")
         requireNonNegative(authoritativeTransitionCount, "authoritativeTransitionCount")

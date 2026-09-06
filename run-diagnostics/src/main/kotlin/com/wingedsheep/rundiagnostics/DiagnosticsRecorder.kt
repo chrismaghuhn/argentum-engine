@@ -48,7 +48,8 @@ public interface DiagnosticsRecorder : AutoCloseable {
 
     /**
      * Applies only explicitly supplied scalar deltas. A null field means unavailable/no update; zero is
-     * an explicit known delta. No field is inferred from another counter.
+     * an explicit known delta. No field is inferred from another counter. Useful progress advances
+     * only when a supplied counter delta is positive; gauge updates alone are not progress.
      */
     public fun recordUsefulProgress(
         episodeOrdinal: Long? = null,
@@ -62,7 +63,10 @@ public interface DiagnosticsRecorder : AutoCloseable {
         shardsFinalizedDelta: Long? = null,
     )
 
-    /** Replaces the bounded scalar artifact view with caller-owned, public-safe counters. */
+    /**
+     * Replaces the bounded scalar artifact view with caller-owned, public-safe counters. This is an
+     * observation only and never refreshes useful-progress time or sequence.
+     */
     public fun recordArtifactCounters(counters: List<ArtifactCounterV1>)
 
     /** Returns a point-in-time scalar status, or null for the disabled implementation. */
@@ -224,6 +228,16 @@ private class DefaultDiagnosticsRecorder(
         validateDelta(bytesSerializedDelta, "bytesSerializedDelta")
         validateDelta(shardsFinalizedDelta, "shardsFinalizedDelta")
 
+        val counterAdvanced =
+            (engineProgressDelta != null && engineProgressDelta > 0) ||
+                (authoritativeTransitionDelta != null && authoritativeTransitionDelta > 0) ||
+                (semanticDecisionDelta != null && semanticDecisionDelta > 0) ||
+                (trajectoryDecisionDelta != null && trajectoryDecisionDelta > 0) ||
+                (replayFramesVerifiedDelta != null && replayFramesVerifiedDelta > 0) ||
+                (episodesAdmittedDelta != null && episodesAdmittedDelta > 0) ||
+                (bytesSerializedDelta != null && bytesSerializedDelta > 0) ||
+                (shardsFinalizedDelta != null && shardsFinalizedDelta > 0)
+
         episodeOrdinal?.let {
             this.episodeOrdinal.set(it)
         }
@@ -237,8 +251,10 @@ private class DefaultDiagnosticsRecorder(
         addDelta(shardsFinalized, shardsFinalizedDelta, "shardsFinalizedDelta")
 
         val elapsed = elapsedClock.nowElapsedNanos()
-        markUseful(elapsed)
-        appendHistory(ProgressHistoryKind.USEFUL_PROGRESS, elapsed)
+        if (counterAdvanced) {
+            markUseful(elapsed)
+            appendHistory(ProgressHistoryKind.USEFUL_PROGRESS, elapsed)
+        }
     }
 
     override fun recordArtifactCounters(counters: List<ArtifactCounterV1>) {
@@ -253,7 +269,6 @@ private class DefaultDiagnosticsRecorder(
             counters.sortedWith(compareBy(ArtifactCounterV1::artifactKind, { it.logicalName.orEmpty() })).toList(),
         )
         val elapsed = elapsedClock.nowElapsedNanos()
-        markUseful(elapsed)
         appendHistory(ProgressHistoryKind.ARTIFACT_COUNTERS, elapsed)
     }
 
@@ -277,6 +292,7 @@ private class DefaultDiagnosticsRecorder(
             stageSequence = stageSequence.get(),
             stageStartedWallClock = stageStartedWallClock.get().toString(),
             progress = ProgressVectorV1(
+                usefulProgressSequence = usefulProgressSequence.get(),
                 episodeOrdinal = episodeOrdinal.get().knownOrNull(),
                 engineProgressCount = engineProgressCount.get().knownOrNull(),
                 authoritativeTransitionCount = authoritativeTransitionCount.get().knownOrNull(),
