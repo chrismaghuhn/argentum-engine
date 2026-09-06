@@ -7,6 +7,12 @@ tasks.named<Test>("test") {
     // The exact-pair acceptance suite is an explicit heavyweight trust gate, not part of the
     // normal PR/unit-test critical path. Run it through :environmentV1AcceptanceTest instead.
     exclude("**/EnvironmentV1ExactPairAcceptanceTest*")
+    // The bounded A9 generation gate is an explicit data-publication run, never an ordinary unit
+    // test. Run it through :environmentV1TrustedGenerationTest instead.
+    exclude("**/EnvironmentV1TrustedGenerationTest*")
+    // The serialized A8 closure audit reopens large finalized shards and is also an explicit
+    // opt-in trust gate. Run it through :environmentV1DecisionFamilyClosureAuditTest instead.
+    exclude("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
     // Pending-payment contract tests read the immutable locked Commander artifact directly.
     inputs.file(rootProject.layout.projectDirectory.file("docs/ml/curriculum/akiri-v0.1.txt"))
 }
@@ -17,6 +23,27 @@ tasks.register<Test>("environmentV1AcceptanceTest") {
     testClassesDirs = sourceSets["test"].output.classesDirs
     classpath = sourceSets["test"].runtimeClasspath
     include("**/EnvironmentV1ExactPairAcceptanceTest*")
+}
+
+tasks.register<Test>("environmentV1TrustedGenerationTest") {
+    description = "Runs the bounded trusted Environment V1 generation and publication gate."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/EnvironmentV1TrustedGenerationTest*")
+    // A single 2,000-step trajectory is intentionally canonicalized as one published episode.
+    // Give this opt-in data-integrity gate enough heap without changing ordinary test workers.
+    maxHeapSize = "8g"
+}
+
+tasks.register<Test>("environmentV1DecisionFamilyClosureAuditTest") {
+    description = "Audits serialized A9 decision families against the accepted A8 closure matrix."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
+    // A7 shard validation recomputes large trajectory identities before the closure scan.
+    maxHeapSize = "8g"
 }
 
 // B1 performance/scaling characterization is opt-in test-only work. Forward its controls to the
@@ -44,6 +71,8 @@ tasks.withType<Test>().configureEach {
         "b1.resetHeavy.resets",
         "b1.resetHeavy.outputDir",
         "b1.contract",
+        "a9.episodeLimit",
+        "a9.auditDatasetRoot",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
@@ -66,6 +95,12 @@ dependencies {
     // engine decision boundary; this does not create a production dependency.
     testImplementation(testFixtures(project(":rules-engine")))
     testImplementation(project(":mtg-sets"))
+    // Integration-only A9 generation composition root. Production :gym remains independent from
+    // :game-server and :gym-trainer; only this test source set crosses both existing boundaries.
+    testImplementation(project(":game-server")) {
+        isTransitive = false
+    }
+    testImplementation(project(":gym-trainer"))
     testImplementation(libs.kotestRunner)
     testImplementation(libs.kotestAssertions)
     testImplementation(libs.kotestProperty)
