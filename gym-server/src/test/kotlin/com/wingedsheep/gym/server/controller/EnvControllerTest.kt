@@ -161,7 +161,7 @@ class EnvControllerTest : FunSpec() {
             val response = get("/schema-hash")
             response.statusCode() shouldBe 200
             val parsed = json.decodeFromString<SchemaHashResponse>(response.body())
-            parsed.schemaHash shouldBe "argentum-gym-contract@v1.25-target-payment-domain"
+            parsed.schemaHash shouldBe "argentum-gym-contract@v1.26-repeat-count-domain"
             parsed.schemaHash shouldBe SchemaHash.CURRENT
         }
 
