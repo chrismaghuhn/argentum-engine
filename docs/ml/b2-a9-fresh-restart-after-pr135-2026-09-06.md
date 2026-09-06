@@ -267,3 +267,6 @@ A9_GENERATION_RESUMED=NO
 DATASET_GENERATION_RUN=TEMPORARY_TEST_OUTPUT_ONLY
 PR_CREATED=NO
 ```
+
+The serialized decision-family closure addendum for this finalized dataset is documented in
+[`b2-a9-decision-family-closure-audit-2026-09-06.md`](b2-a9-decision-family-closure-audit-2026-09-06.md).

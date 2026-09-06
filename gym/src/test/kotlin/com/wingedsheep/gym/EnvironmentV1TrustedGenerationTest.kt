@@ -122,6 +122,7 @@ class EnvironmentV1TrustedGenerationTest : FunSpec({
             evidence.chosenNotInDomain shouldBe 0
             evidence.replayDiverged shouldBe 0
             evidence.replayIncomplete shouldBe 0
+            evidence.serializedClosureAudit.pass shouldBe true
 
             val episodeLimit = evidence.episodes.size
             if (episodeLimit >= A9_PRIMARY_EPISODES) {
@@ -221,11 +222,15 @@ private object A9TrustedGenerationHarness {
 
         val finalizedManifest = checkNotNull(manifest)
         val datasetRoot = outputRoot.resolve("dataset-${finalizedManifest.datasetId}")
-        val readSummaries = TrajectoryV1Reader
-            .openPublishedDataset(datasetRoot)
-            .streamEpisodes()
-            .map(::readSummary)
-            .toList()
+        val reader = TrajectoryV1Reader.openPublishedDataset(datasetRoot)
+        val readSummaries = mutableListOf<EpisodeSummary>()
+        val serializedClosureAccumulator = A9DecisionFamilyClosureAudit.Accumulator()
+        reader.streamEpisodes().forEach { trajectory ->
+            readSummaries += readSummary(trajectory)
+            serializedClosureAccumulator.accept(trajectory)
+        }
+        val serializedClosureAudit = serializedClosureAccumulator.finish(reader.manifest)
+        check(serializedClosureAudit.pass) { serializedClosureAudit.failureSummary() }
         val writtenSummaries = generated.toList()
         check(readSummaries == writtenSummaries.map(::withoutRepeatIndices)) {
             "A7 reader changed the ordered trajectory identities or closure metadata"
@@ -267,6 +272,13 @@ private object A9TrustedGenerationHarness {
             .filter { (spec, index) -> spec?.ordinal == 2 && index in 1_750..1_790 }
             .map { (_, index) -> index }
 
+        val liveObservedActionKinds = aggregateCounts(generated) { it.observedActionKinds }
+        val liveObservedDecisionFamilies = aggregateCounts(generated) { it.observedDecisionFamilies }
+        val liveRequiredPayloadFields = generated
+            .flatMap { it.requiredPayloadFields }
+            .toSortedSet()
+            .toList()
+
         return A9GenerationEvidence(
             baseSha = A9_BASE_SHA,
             repositoryRoot = repositoryRoot,
@@ -279,6 +291,10 @@ private object A9TrustedGenerationHarness {
             determinismSpotCheck = determinismSpotCheck,
             ordinalTwoRepeatActions = ordinalTwoRepeatActions,
             formerRepeatPathReached = ordinalTwoRepeatActions.isNotEmpty(),
+            observedActionKinds = liveObservedActionKinds,
+            observedDecisionFamilies = liveObservedDecisionFamilies,
+            requiredPayloadFields = liveRequiredPayloadFields,
+            serializedClosureAudit = serializedClosureAudit,
             failed = 0,
             quarantined = 0,
             unsupportedDiagnostics = 0,
@@ -814,6 +830,14 @@ private object A9TrustedGenerationHarness {
 
     private fun repositoryRoot(): Path = generateSequence(Path.of(System.getProperty("user.dir"))) { it.parent }
         .first { Files.isDirectory(it.resolve("docs/ml/curriculum")) }
+
+    private fun aggregateCounts(
+        summaries: List<EpisodeSummary>,
+        selector: (EpisodeSummary) -> Map<String, Int>,
+    ): Map<String, Int> = summaries
+        .flatMap { selector(it).entries }
+        .groupingBy { it.key }
+        .fold(0) { total, entry -> total + entry.value }
 }
 
 private data class A9EpisodeSpec(
@@ -875,6 +899,10 @@ private data class A9GenerationEvidence(
     val determinismSpotCheck: Int,
     val ordinalTwoRepeatActions: List<Int>,
     val formerRepeatPathReached: Boolean,
+    val observedActionKinds: Map<String, Int>,
+    val observedDecisionFamilies: Map<String, Int>,
+    val requiredPayloadFields: List<String>,
+    val serializedClosureAudit: A9DecisionFamilyClosureAudit.Result,
     val failed: Int,
     val quarantined: Int,
     val unsupportedDiagnostics: Int,
@@ -914,6 +942,11 @@ private data class A9GenerationEvidence(
         appendLine("POLICY_IDENTITY=$A9_POLICY_IDENTITY")
         appendLine("POLICY_RNG_IDENTITY=$A9_POLICY_RNG_IDENTITY")
         appendLine("POLICY_SOURCE_IDENTITY=$policySourceIdentity")
+        appendLine("FAIL_FAST_PROVEN_ZERO=YES")
+        appendLine("LIVE_OBSERVED_ACTION_KINDS=${formatA9Counts(observedActionKinds)}")
+        appendLine("LIVE_OBSERVED_DECISION_FAMILIES=${formatA9Counts(observedDecisionFamilies)}")
+        appendLine("LIVE_REQUIRED_PAYLOAD_FIELDS=$requiredPayloadFields")
+        append(serializedClosureAudit.render())
         appendLine("REPLAY_EXACT=${episodes.size - replayDiverged}")
         appendLine("REPLAY_DIVERGED=$replayDiverged")
         appendLine("REPLAY_INCOMPLETE=$replayIncomplete")
@@ -944,3 +977,8 @@ private data class A9GenerationEvidence(
         appendLine("TRAINING_AUTHORIZED=NO")
     }
 }
+
+private fun formatA9Counts(counts: Map<String, Int>): String = counts
+    .toSortedMap()
+    .entries
+    .joinToString(prefix = "{", postfix = "}") { (key, value) -> "$key=$value" }

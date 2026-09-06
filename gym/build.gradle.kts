@@ -10,6 +10,9 @@ tasks.named<Test>("test") {
     // The bounded A9 generation gate is an explicit data-publication run, never an ordinary unit
     // test. Run it through :environmentV1TrustedGenerationTest instead.
     exclude("**/EnvironmentV1TrustedGenerationTest*")
+    // The serialized A8 closure audit reopens large finalized shards and is also an explicit
+    // opt-in trust gate. Run it through :environmentV1DecisionFamilyClosureAuditTest instead.
+    exclude("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
     // Pending-payment contract tests read the immutable locked Commander artifact directly.
     inputs.file(rootProject.layout.projectDirectory.file("docs/ml/curriculum/akiri-v0.1.txt"))
 }
@@ -30,6 +33,16 @@ tasks.register<Test>("environmentV1TrustedGenerationTest") {
     include("**/EnvironmentV1TrustedGenerationTest*")
     // A single 2,000-step trajectory is intentionally canonicalized as one published episode.
     // Give this opt-in data-integrity gate enough heap without changing ordinary test workers.
+    maxHeapSize = "8g"
+}
+
+tasks.register<Test>("environmentV1DecisionFamilyClosureAuditTest") {
+    description = "Audits serialized A9 decision families against the accepted A8 closure matrix."
+    group = "verification"
+    testClassesDirs = sourceSets["test"].output.classesDirs
+    classpath = sourceSets["test"].runtimeClasspath
+    include("**/EnvironmentV1DecisionFamilyClosureAuditTest*")
+    // A7 shard validation recomputes large trajectory identities before the closure scan.
     maxHeapSize = "8g"
 }
 
@@ -59,6 +72,7 @@ tasks.withType<Test>().configureEach {
         "b1.resetHeavy.outputDir",
         "b1.contract",
         "a9.episodeLimit",
+        "a9.auditDatasetRoot",
     )) {
         System.getProperty(property)?.let { systemProperty(property, it) }
     }
