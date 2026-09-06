@@ -63,6 +63,7 @@ Direct source locations audited at BASE include:
 | Episode and dataset contracts | gym/src/main/kotlin/com/wingedsheep/gym/EpisodeClosure.kt; gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/trajectory/TrajectoryV1.kt; SemanticReplayInput.kt; SemanticDecisionIdentity.kt |
 | Reader/storage/replay linkage | gym-trainer/src/main/kotlin/com/wingedsheep/gym/trainer/trajectory/TrajectoryV1Reader.kt; TrajectoryV1ManifestPreflight.kt; TrajectoryV1ShardValidator.kt; TrajectoryV1StorageFrames.kt; TrajectoryV1Manifest.kt; TrajectoryV1Writer.kt |
 | Rules response/action vocabulary | rules-engine/src/main/kotlin/com/wingedsheep/engine/core/GameAction.kt; PendingDecision.kt; CombatResolution.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/legalactions/LegalAction.kt |
+| Commander characterization | gym/src/main/kotlin/com/wingedsheep/gym/contract/ObservationBuilder.kt; gym/src/test/kotlin/com/wingedsheep/gym/CommanderGymContractTest.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/state/components/identity/CommanderComponent.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/mechanics/mana/CostCalculator.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/legalactions/enumerators/CastFromZoneEnumerator.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/state/GameState.kt; rules-engine/src/main/kotlin/com/wingedsheep/engine/view/ClientStateTransformer.kt |
 
 ## 1. Current accepted source contracts
 
@@ -209,19 +210,34 @@ batching representation, never an entity/candidate. A fixed maximum is not a C0 
 oracleText is printed/base source text, not guaranteed effective projected rules text. It may be used
 as an auxiliary public feature but is not authoritative Rules semantics.
 
-### 3.3 Commander and cross-step identity findings
+### 3.3 Commander-public-information availability
 
-The current Gym observation does not expose dedicated commander features. The engine/client layer
-has commander identity and commander-damage data, but TrainingObservation and PlayerObservationV1
-do not carry commander damage tallies, commander tax/cast count, or a commander-specific public
-zone/choice surface. Generic visible card features and life totals may be used when supplied;
-commander state must not be reconstructed from GameState or a card name.
+The Commander audit distinguishes the legal information set from the engine's internal
+CommanderComponent and commander-damage state. The current accepted source exposes some facts
+directly and exposes the current effective tax through the legal-domain path, but it does not
+expose every historical Commander fact needed by a general policy.
+
+| Information | Classification | Current evidence and consequence |
+| --- | --- | --- |
+| Commander identity | SAFELY_DERIVABLE_FROM_ACCEPTED_PUBLIC_SOURCE | ObservationBuilder emits the public COMMAND zone and visible EntityFeatures including cardDefinitionId/name; EnvironmentIdentityV1 also carries commanderDefinitionIdentity in the roster. There is no dedicated isCommander field in PlayerObservationV1, so the adapter must use the public zone/roster contract, not infer from a name alone. |
+| Commander current zone | EXPLICIT_IN_PLAYER_OBSERVATION | ZoneView includes Zone.COMMAND, and the accepted visibility policy treats the command zone as public. The current visible card/entity is therefore representable. |
+| Commander cast count | MISSING_PUBLIC_POLICY_INFORMATION | CommanderComponent.castsFromCommandZone is Rules/GameState state. It is not a PlayerObservationV1, PlayerView, EntityFeatures, CompleteLegalDomain, or TrajectoryV1 field. No action/event history is available from which to recover it safely. |
+| Commander tax for the current commander cast | EXPLICIT_IN_COMPLETE_LEGAL_DOMAIN | CostCalculator applies the current tax while enumerating a command-zone cast. The resulting LegalAction.manaCostString and, for the qualified payment shape, PaymentDomainV5.requiredCost carry the effective cost. This exposes the current payment consequence, not the historical cast count. |
+| Commander damage by commander/opponent | MISSING_PUBLIC_POLICY_INFORMATION | GameState.commanderDamage and the client-only commanderDamage projection exist, but PlayerObservationV1/TrainingObservation/PlayerView have no per-commander damage ledger. EntityFeatures.damageMarked is damage on a permanent, not damage dealt to a player. |
+| Current 903.9a command-zone choice or command-zone cast/action availability | EXPLICIT_IN_PLAYER_OBSERVATION | When the Rules boundary pauses for the owner, the pending YES_NO context is in the observation and its response/domain is in the accepted decision surface. Current command-zone actions are in CompleteLegalDomain. |
+| Format.alwaysDivertToCommand latent configuration | NOT_POLICY_RELEVANT_FOR_ENVIRONMENT_V1 | The locked Environment V1 construction uses the default Format.Commander configuration, where the choice is exposed rather than silently auto-answered. A future non-default environment must bind this configuration in its environment identity before it is used for learning. |
+
+The smallest future engine-owned follow-up is a versioned public observation/domain extension for
+the missing commander cast-count and per-commander/per-opponent damage facts. It must be emitted by
+the perspective-safe source, included in the relevant observation/digest/replay contracts, and
+validated without exposing GameState. No such extension is implemented here.
 
 ~~~text
-CURRENT_SAFE_ENCODING=generic public observation only
-COMMANDER_SPECIFIC_FEATURES=NOT_AVAILABLE_IN_PLAYER_OBSERVATION_V1
-FUTURE_REQUIREMENT=versioned public observation/environment-contract change
-STATUS=BLOCKED_ON_ENGINE_DEPENDENCY
+COMMANDER_PUBLIC_INFORMATION_CHARACTERIZATION=COMPLETE_FOR_CURRENT_SOURCE
+COMMANDER_PUBLIC_INFORMATION_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY
+OBSERVATION_ENGINE_FOLLOWUP_REQUIRED=YES
+DATA_TRUSTED=YES (source integrity; this does not assert model-facing information sufficiency)
+MODEL_FACING_COMMANDER_INFORMATION_SUFFICIENCY=BLOCKED_ON_ENGINE_DEPENDENCY
 ~~~
 
 The same rule applies to persistent cross-step entity aliases. Current EntityId values are safe
@@ -384,6 +400,23 @@ C0 preserves typed adapters:
   AutoPay or inferred source/production/allocation;
 - all outputs are checked by ChosenSemanticResponseV1 and, at execution, by server/Rules.
 
+The constrained-decoding boundary is strict:
+
+~~~text
+Structured adapters may decode only from the complete published StructuredDecisionDomain.
+NO GameState
+NO Rules query
+NO live registry
+NO hidden solver state
+NO validator-guided retry policy
+NO fallback
+~~~
+
+Cross-field constraints may be enforced only from the published typed domain. An invalid decoded
+response is an inference failure. ChosenSemanticResponseV1 and Rules validation remain the
+authority and membership/legality gate; they are not a search oracle and may not be used to retry
+until a different response is found. C0 does not select the final neural decoder architecture.
+
 This is required by the accepted source shape, not implementation convenience. A universal candidate
 list requires a future versioned enumerated response contract. C0 does not add it.
 
@@ -456,11 +489,24 @@ that actor's private recurrent state; public consequences are in the next curren
 - Do not expose isLast, closure, future episode length, winner, or a window position revealing future.
 - First row has explicit BOS/no-previous-input; it does not borrow another episode/player.
 
-The source has no public event history or model-owned stable cross-step alias. The recurrent wrapper
-may summarize prior same-perspective samples but may not reconstruct missing history or use raw
-EntityIds as memory keys. Richer history/identity is BLOCKED_ON_ENGINE_DEPENDENCY.
+The source has no complete public event/action-history field or model-owned stable cross-step
+alias. The conservative SequenceViewV1 described above contains only prior same-perspective
+decision samples and their current observations. It does not feed opponent decisions into the
+state and does not synthesize them from replay.
 
-RECURRENT_SEQUENCE_CONTRACT=READY_TO_FREEZE for reset/order/window semantics.
+That distinction matters: opponent action A and opponent action B can lead to the same current
+public board while leaving different public histories and beliefs. The current derived view cannot
+claim to preserve that difference. A full perspective-visible history requires an engine-owned
+event/action-history contract; it may not be reconstructed by querying GameState or by using a
+validator/search loop.
+
+~~~text
+RECURRENT_RESET_WINDOW_CONTRACT=READY_TO_FREEZE
+RECURRENT_PERSPECTIVE_STATE_ISOLATION=READY_TO_FREEZE
+FULL_REAL_PERSPECTIVE_HISTORY_AVAILABLE=NO
+RECURRENT_HISTORY_INPUT_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY
+RECURRENT_SEQUENCE_CONTRACT=NEEDS_CHARACTERIZATION
+~~~
 
 ## 8. Feed-forward versus recurrent causal experiment
 
@@ -509,12 +555,20 @@ member set.
 - The minimum unit is a complete episode; never randomize decision rows.
 - All recurrent windows from one episode remain in one split.
 - Replay frames, chosen-input bindings, reanalysis, and derived compact rows inherit membership.
-- Related generated variants must be grouped when generation establishes one statistical unit.
-  For four orientation/start variants sharing one numeric engine seed, do not infer counterfactual
-  equivalence from seed equality. Require an explicit schedule/variant-family identity or a
-  source-owned seed-coupling characterization.
-- Until characterized, the split is not final. Conservative grouping may include the full declared
-  variant family, but records external grouping input rather than inventing a TrajectoryV1 field.
+- For the current locked Environment V1 dataset, define the leakage group key as the frozen
+  dataset/environment-generation identity plus actualEngineSeed. All four roster/start variants
+  sharing that seed in that generation therefore receive the same train/validation/test assignment.
+- This conservative grouping rule makes no claim that the four variants have equivalent RNG
+  histories, are counterfactual pairs, or require paired statistical analysis. It only prevents
+  closely related generated variants from crossing a split boundary.
+- The grouping input is an external frozen generation-schedule artifact referenced by
+  groupingInputDigest; it does not add a field to TrajectoryV1.
+- Keep statistical seed pairing separate. The #119 start-player RNG-coupling characterization
+  determines whether paired or block-aware uncertainty analysis is justified.
+
+~~~text
+SPLIT_GROUPING != STATISTICAL_SEED_BLOCKING
+~~
 
 Recommended deterministic assignment:
 
@@ -529,8 +583,14 @@ test: 900 <= bucket < 1000
 These thresholds are a C0 default, not a final statistical claim. Freeze test membership before
 model/hyperparameter selection. A new dataset/grouping/schema means a new split identity.
 
-SPLIT_CONTRACT=NEEDS_CHARACTERIZATION. Physical split materialization is BLOCKED_ON_#119 only where
-large-scale I/O/footprint evidence is needed.
+~~~text
+SPLIT_LEAKAGE_GROUPING=READY_TO_FREEZE
+SPLIT_CONTRACT=READY_TO_FREEZE for leakage semantics
+STATISTICAL_SEED_BLOCKING=NEEDS_CHARACTERIZATION via #119
+~~
+
+Physical split materialization is BLOCKED_ON_#119 only where large-scale I/O/footprint evidence is
+needed. The split rule itself does not require counterfactual-equivalent RNG trajectories.
 
 ## 10. Frozen evaluation contract
 
@@ -818,11 +878,11 @@ FINAL_MODEL_ARCHITECTURE_LOCKED=NO.
 
 | Question/dependency | Why it matters | Boundary |
 | --- | --- | --- |
-| Commander damage/tax/commander metadata absent from PlayerObservationV1. | No authoritative Commander feature can be learned from the current public source. | Future versioned environment/observation contract. BLOCKED_ON_ENGINE_DEPENDENCY. |
-| Public action/event history absent from observation. | Recurrent adapter cannot claim a full public event log. | Future environment-owned history contract. BLOCKED_ON_ENGINE_DEPENDENCY. |
+| Commander availability is mixed: public command-zone identity/zone and current effective tax are available, but cast count and commander-damage ledger are absent. | Source integrity remains trusted, but a Commander-complete model input is not available. | Future versioned public observation/domain extension. OBSERVATION_ENGINE_FOLLOWUP_REQUIRED=YES; BLOCKED_ON_ENGINE_DEPENDENCY. |
+| Public action/event history absent from observation. | Same-perspective derived rows are safe but are not full real perspective-visible history. | Future environment-owned history contract. RECURRENT_HISTORY_INPUT_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY. |
 | Stable cross-step entity aliases not separately specified. | Raw UUID/string IDs must not become learned identity features. | C0 uses per-step relation keys; persistent memory needs characterization/new contract. NEEDS_CHARACTERIZATION. |
-| Four orientation/start variants reuse numeric seeds. | Seed equality does not prove statistical coupling. | Explicit schedule/variant characterization before split freeze. NEEDS_CHARACTERIZATION. |
-| Structured responses are typed constraints, not universally enumerated candidates. | Universal softmax risks truncation or a second legality engine. | Preserve family adapters; enumeration requires future source contract. READY_TO_FREEZE for B. |
+| Four orientation/start variants reuse numeric seeds. | Seed equality does not prove statistical coupling, but it is sufficient for conservative leakage grouping within one frozen generation. | SPLIT_LEAKAGE_GROUPING=READY_TO_FREEZE; STATISTICAL_SEED_BLOCKING=NEEDS_CHARACTERIZATION via #119. |
+| Structured responses are typed constraints, not universally enumerated candidates. | Universal softmax risks truncation or a second legality engine. | Preserve family adapters; constrained decoding is domain-only, no validator-guided retry/fallback. READY_TO_FREEZE for B. |
 | Printed oracleText can differ from effective copied text. | It is a public feature, not complete Rules semantics. | Encode source text only. READY_TO_FREEZE with limitation. |
 | Physical storage/reader/batch scaling. | A derived layout may be needed without semantic drift. | #119. BLOCKED_ON_#119 for physical choices only. |
 | Teacher quality and RL reward. | Collection provenance is not teacher strength; facts are not rewards. | Separate C1 decisions. DEFER_TO_C1. |
@@ -836,8 +896,8 @@ These are future implementation gates, not changes authorized by this report:
 2. Add deterministic adapter fixtures for every accepted flat/folded and reachable structured
    family. Assert exact cardinality, target membership, required fields, and no routing/hidden
    fields.
-3. Characterize seed-family grouping and create content-addressed SplitContractV1; freeze test
-   membership before model selection.
+3. Freeze the conservative same-seed leakage grouping in content-addressed SplitContractV1;
+   characterize statistical seed blocking separately through #119 before model selection.
 4. Build offline metrics reporting family, candidate-count, perspective, episode, and uncertainty
    strata. Keep systems measurements separate.
 5. Freeze the conceptual checkpoint manifest and round-trip it against immutable weight artifacts;
@@ -858,24 +918,37 @@ No step authorizes changes to Rules, Gym/replay semantics, TrajectoryV1, locked 
 | Decision-family completeness | PASS for accepted Environment V1 inventory | §§4–5; unknown families fail closed. |
 | Structured-domain authority | PASS | §5; typed adapters preserve the domain. |
 | Sequence reset semantics | PASS | §7; no cross-episode/player state carry. |
-| Split leakage | NEEDS_CHARACTERIZATION | §9; seed-family coupling is not inferred. |
+| Split leakage grouping | PASS for conservative same-seed grouping | §9; grouping prevents leakage without claiming RNG/counterfactual equivalence. |
+| Statistical seed blocking | NEEDS_CHARACTERIZATION | §9; #119 owns start-player RNG-coupling evidence. |
 | Checkpoint provenance | PASS as design | §11; semantic ID, artifact, alias are distinct. |
 | Replay/data authority | PASS | §§1–2 and §16; reader/replay stay upstream. |
 | Value/reward separation | PASS | §13; INTERRUPTED has no terminal target and RL is deferred. |
 | Algorithm neutrality | PASS | §§6, 8, 17; no final architecture/RL algorithm. |
-| Commander/history source gaps | BLOCKED_ON_ENGINE_DEPENDENCY | §§3.3 and 18; no invented feature. |
+| Commander public information | BLOCKED_ON_ENGINE_DEPENDENCY | §3.3; cast count and commander-damage ledger remain missing without inventing features. |
+| Recurrent reset/window/isolation | PASS | §7; reset and per-perspective state are frozen. |
+| Recurrent full history input | BLOCKED_ON_ENGINE_DEPENDENCY | §7; same-perspective derived rows are not complete public history. |
+| Structured decoder authority | PASS | §5; published-domain-only decoding, no validator-guided retry/fallback. |
 
 ## 21. Required decision table
 
 ~~~text
 MODEL_FACING_SAMPLE_CONTRACT=READY_TO_FREEZE
 OBSERVATION_ENCODING_CONTRACT=NEEDS_CHARACTERIZATION
+COMMANDER_PUBLIC_INFORMATION_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY
+OBSERVATION_ENGINE_FOLLOWUP_REQUIRED=YES
 CANDIDATE_SCORING_CONTRACT=READY_TO_FREEZE
 STRUCTURED_DECISION_MODEL=B
 STRUCTURED_DECISION_STATUS=READY_TO_FREEZE
+STRUCTURED_DECODING_AUTHORITY_BOUNDARY=READY_TO_FREEZE
 FEED_FORWARD_REFERENCE=READY_TO_FREEZE
-RECURRENT_SEQUENCE_CONTRACT=READY_TO_FREEZE
-SPLIT_CONTRACT=NEEDS_CHARACTERIZATION
+RECURRENT_SEQUENCE_CONTRACT=NEEDS_CHARACTERIZATION
+RECURRENT_RESET_WINDOW_CONTRACT=READY_TO_FREEZE
+RECURRENT_PERSPECTIVE_STATE_ISOLATION=READY_TO_FREEZE
+RECURRENT_HISTORY_INPUT_CONTRACT=BLOCKED_ON_ENGINE_DEPENDENCY
+FULL_REAL_PERSPECTIVE_HISTORY_AVAILABLE=NO
+SPLIT_LEAKAGE_GROUPING=READY_TO_FREEZE
+SPLIT_CONTRACT=READY_TO_FREEZE
+STATISTICAL_SEED_BLOCKING=NEEDS_CHARACTERIZATION
 EVALUATION_CONTRACT=READY_TO_FREEZE
 EVALUATION_SYSTEMS_MEASUREMENT=BLOCKED_ON_#119
 CHECKPOINT_IDENTITY_CONTRACT=READY_TO_FREEZE
