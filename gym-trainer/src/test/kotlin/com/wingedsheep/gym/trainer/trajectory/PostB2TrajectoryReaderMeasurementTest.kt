@@ -51,10 +51,14 @@ class PostB2TrajectoryReaderMeasurementTest : FunSpec({
             println("MANIFEST_CONTENT_DIGEST=${dataset.manifest.manifestContentDigest}")
             println("EPISODES=$episodeCount")
             println("DECISIONS=$decisionCount")
-            println("A7_PREFLIGHT_MILLIS=${preflightNanos / 1_000_000.0}")
-            println("A7_STREAM_TOTAL_MILLIS=${streamNanos / 1_000_000.0}")
-            println("A7_DECISIONS_PER_SEC=${ratePerSecond(decisionCount, streamNanos)}")
-            println("A7_EPISODES_PER_SEC=${ratePerSecond(episodeCount, streamNanos)}")
+            println("A7_PREFLIGHT_TIME_MILLIS=${preflightNanos / 1_000_000.0}")
+            println("A7_STREAM_TIME_MILLIS=${streamNanos / 1_000_000.0}")
+            println(
+                "A7_TOTAL_STRICT_READER_TIME_MILLIS=" +
+                    ((preflightNanos + streamNanos) / 1_000_000.0),
+            )
+            println("A7_STREAM_DECISIONS_PER_SEC=${ratePerSecond(decisionCount, streamNanos)}")
+            println("A7_STREAM_EPISODES_PER_SEC=${ratePerSecond(episodeCount, streamNanos)}")
             println("JVM_HEAP_USED_AFTER_PREFLIGHT_BYTES=${heapSamples.first()}")
             println("JVM_HEAP_USED_MAX_SAMPLED_BYTES=${heapSamples.maxOrNull()}")
             println("JVM_HEAP_USED_AFTER_STREAM_BYTES=${heapSamples.last()}")

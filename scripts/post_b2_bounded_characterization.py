@@ -12,6 +12,7 @@ import argparse
 import collections
 import gzip
 import hashlib
+import importlib.util
 import json
 import math
 import shutil
@@ -19,6 +20,7 @@ import statistics
 import tarfile
 import tempfile
 import time
+import zlib
 from pathlib import Path
 from typing import Any, Iterable, NoReturn
 
@@ -369,12 +371,7 @@ def stats(values: list[int], *, include_p999: bool = False) -> dict[str, Any]:
     }
     if include_p999:
         result["p99.9"] = nearest_rank(values, 0.999)
-    if len(values) < 1_000:
-        result["sampleLabel"] = "LOW_N"
-    elif len(values) < 10_000:
-        result["sampleLabel"] = "LIMITED_N"
-    else:
-        result["sampleLabel"] = "SUPPORTED"
+    result["sampleLabel"] = sample_label(len(values))
     return result
 
 
@@ -532,6 +529,89 @@ class CountingWriter:
         self.target.flush()
 
 
+class FamilyGzipAccumulator:
+    """Count one analytical family through an isolated in-memory gzip stream."""
+
+    def __init__(self, level: int = 6) -> None:
+        self.compressed = zlib.compressobj(level=level, method=zlib.DEFLATED, wbits=31)
+        self.raw_bytes = 0
+        self.compressed_bytes = 0
+        self.sample_count = 0
+        self.finished = False
+
+    def add(self, raw: bytes) -> None:
+        if self.finished:
+            fail("family gzip accumulator received data after finish")
+        self.raw_bytes += len(raw)
+        self.sample_count += 1
+        self.compressed_bytes += len(self.compressed.compress(raw))
+
+    def finish(self) -> dict[str, Any]:
+        if not self.finished:
+            self.compressed_bytes += len(self.compressed.flush())
+            self.finished = True
+        return {
+            "sampleCount": self.sample_count,
+            "rawBytes": self.raw_bytes,
+            "compressedBytes": self.compressed_bytes,
+            "compressionRatio": self.raw_bytes / self.compressed_bytes,
+            "codec": "gzip",
+            "level": 6,
+            "sampleLabel": sample_label(self.sample_count),
+        }
+
+
+def sample_label(sample_count: int) -> str:
+    if sample_count < 1_000:
+        return "LOW_N"
+    if sample_count < 10_000:
+        return "LIMITED_N"
+    return "SUPPORTED"
+
+
+def zstd_availability() -> dict[str, Any]:
+    executable = shutil.which("zstd")
+    try:
+        python_module = importlib.util.find_spec("zstandard") is not None
+    except (ImportError, ValueError):
+        python_module = False
+    if executable is None and not python_module:
+        reason = "zstd executable unavailable; Python zstandard module independently checked and unavailable"
+    elif executable is None:
+        reason = "zstd executable unavailable; Python zstandard module is available but was not invoked"
+    elif not python_module:
+        reason = "zstd executable is available; Python zstandard module independently checked and unavailable; codec was not invoked"
+    else:
+        reason = "zstd executable and Python zstandard module are available; codec was not invoked in this run"
+    return {
+        "executableAvailable": executable is not None,
+        "executablePath": executable,
+        "pythonModuleAvailable": python_module,
+        "reason": reason,
+    }
+
+
+def finish_family_compression(
+    accumulators: dict[str, FamilyGzipAccumulator],
+) -> dict[str, dict[str, Any]]:
+    return {
+        family: accumulator.finish()
+        for family, accumulator in sorted(accumulators.items())
+    }
+
+
+def add_family_frame(
+    accumulators: dict[str, FamilyGzipAccumulator],
+    family: str,
+    raw: bytes,
+) -> None:
+    accumulator = accumulators.get(family)
+    if accumulator is None:
+        accumulator = FamilyGzipAccumulator()
+        accumulators[family] = accumulator
+    accumulator.add(raw)
+
+
 def deterministic_tar_gzip(files: list[tuple[str, Path]], level: int) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="argentum-post-b2-gzip-") as temp_dir:
         output = Path(temp_dir) / f"dataset.tar.gz.{level}"
@@ -623,6 +703,9 @@ def characterize(
     family_bytes: collections.defaultdict[str, list[int]] = collections.defaultdict(list)
     surface_bytes: collections.defaultdict[str, list[int]] = collections.defaultdict(list)
     dimension_bytes: collections.defaultdict[str, list[int]] = collections.defaultdict(list)
+    family_compression: dict[str, FamilyGzipAccumulator] = {}
+    surface_compression: dict[str, FamilyGzipAccumulator] = {}
+    dimension_compression: dict[str, FamilyGzipAccumulator] = {}
     frame_counts: collections.Counter[str] = collections.Counter()
     decision_kind_counts: collections.Counter[str] = collections.Counter()
     episodes: list[dict[str, Any]] = []
@@ -674,8 +757,14 @@ def characterize(
                     family_bytes[family].append(line_bytes)
                     surface_bytes[surface].append(line_bytes)
                     decision_kind_counts[family] += 1
-                    for dimension in decision_dimensions(frame):
+                    dimensions = decision_dimensions(frame)
+                    if not skip_compression:
+                        add_family_frame(family_compression, family, raw)
+                        add_family_frame(surface_compression, surface, raw)
+                    for dimension in dimensions:
                         dimension_bytes[dimension].append(line_bytes)
+                        if not skip_compression:
+                            add_family_frame(dimension_compression, dimension, raw)
                 elif record_type == "episode-end":
                     if current is None:
                         fail(f"episode-end without start at {reference}:{line_number}")
@@ -720,23 +809,14 @@ def characterize(
     if sum(component_totals.values()) != total_shard_bytes:
         fail("component totals are not internally reconciled to shard frame bytes")
 
-    compression: list[dict[str, Any]] = []
-    if shutil.which("zstd") is None:
-        compression.append(
-            {
-                "codec": "zstd",
-                "status": "NOT_RUN",
-                "reason": "zstd executable and Python zstandard module are unavailable; no dependency was added",
-            }
-        )
-    else:
-        compression.append(
-            {
-                "codec": "zstd",
-                "status": "NOT_RUN",
-                "reason": "scanner does not invoke an unqualified external codec in this run",
-            }
-        )
+    zstd = zstd_availability()
+    compression: list[dict[str, Any]] = [
+        {
+            "codec": "zstd",
+            "status": "NOT_RUN",
+            **zstd,
+        }
+    ]
     if not skip_compression:
         for level in gzip_levels:
             compression.append(deterministic_tar_gzip(files, level))
@@ -765,7 +845,7 @@ def characterize(
         "manifestCounts": manifest_counts,
         "shards": shard_measurements,
         "frames": dict(frame_counts),
-        "episodes": stats(episode_bytes),
+        "episodes": stats(episode_bytes, include_p999=True),
         "decisions": {
             "frameLineBytes": stats(decision_bytes, include_p999=True),
             "decisionRecordValueBytes": stats(decision_record_bytes, include_p999=True),
@@ -783,6 +863,15 @@ def characterize(
             key: {"n": len(values), "bytes": stats(values)}
             for key, values in sorted(dimension_bytes.items())
         },
+        "compressionByDecisionKind": (
+            finish_family_compression(family_compression) if not skip_compression else {}
+        ),
+        "compressionByActionSurface": (
+            finish_family_compression(surface_compression) if not skip_compression else {}
+        ),
+        "compressionByDecisionDimension": (
+            finish_family_compression(dimension_compression) if not skip_compression else {}
+        ),
         "decisionKindCounts": dict(sorted(decision_kind_counts.items())),
         "compression": compression,
         "analyticalMethod": {
@@ -791,6 +880,7 @@ def characterize(
             "decisionByteUnit": "full canonical decision frame line including LF",
             "percentileMethod": "nearest-rank",
             "canonicalDatasetBytesIncludes": ["manifest.json", "manifest-owned shard files"],
+            "familyCompression": "independent gzip-6 streams over original decision-frame lines; decision-kind and action-surface groups are disjoint, decision-dimension groups overlap",
         },
     }
 
@@ -801,7 +891,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--expected-dataset-id", default=EXPECTED_DATASET_ID)
     parser.add_argument("--expected-manifest-digest", default=EXPECTED_MANIFEST_DIGEST)
     parser.add_argument("--output", type=Path)
-    parser.add_argument("--gzip-levels", default="1,6")
+    parser.add_argument("--gzip-levels", default="1,6,9")
     parser.add_argument("--skip-compression", action="store_true")
     return parser.parse_args()
 

@@ -93,10 +93,16 @@ The clean native fallback baseline for the combined :gym:test :gym-trainer:test 
 
 ### Measurement commands
 
-The analytical scan was run with:
+The original global compression scan was run with:
 
 ~~~powershell
 C:\Python313\python.exe scripts/post_b2_bounded_characterization.py <dataset-root> --gzip-levels 1,6 --output <temporary-json>
+~~~
+
+This amendment reran the exact dataset with gzip level 9 and the family-compression pass:
+
+~~~powershell
+C:\Python313\python.exe scripts/post_b2_bounded_characterization.py <dataset-root> --gzip-levels 9 --output <temporary-json>
 ~~~
 
 The strict reader probe was run with the exact dataset and -DeclCollect=true, which selects the repository's 4 GB test heap:
@@ -138,6 +144,7 @@ Population: N=64 finalized episodes; one episode per shard.
 | p50 | 97,822,707 |
 | p95 | 111,428,010 |
 | p99 | 118,597,540 |
+| p99.9 | 118,597,540 |
 | max | 118,597,540 |
 | mean | 95,810,858.859 |
 
@@ -270,7 +277,9 @@ Zstandard was not available:
 
 ~~~text
 ZSTD_RESULTS=NOT_RUN
-ZSTD_REASON=zstd executable and Python zstandard module unavailable; no production dependency added
+ZSTD_EXECUTABLE_AVAILABLE=NO
+ZSTD_PYTHON_MODULE_AVAILABLE=NO (independently checked with importlib.util.find_spec)
+ZSTD_REASON=zstd executable unavailable; Python zstandard module independently checked and unavailable
 ~~~
 
 Measured gzip results:
@@ -279,6 +288,7 @@ Measured gzip results:
 |---|---:|---:|---:|---:|---:|
 | gzip level 1 | 758,561,434 | 8.083648x | 6,045.711 | 146.733 MiB/s | 451.742 MiB/s |
 | gzip level 6 | 558,150,197 | 10.986189x | 4,448.440 | 64.692 MiB/s | 510.966 MiB/s |
+| gzip level 9 | 540,543,031 | 11.344043x | 4,308.111 | 20.362 MiB/s | 263.416 MiB/s |
 
 Compression wall times were:
 
@@ -287,9 +297,58 @@ GZIP_LEVEL_1_COMPRESS_SECONDS=39.854
 GZIP_LEVEL_1_DECOMPRESS_SECONDS=12.945
 GZIP_LEVEL_6_COMPRESS_SECONDS=90.396
 GZIP_LEVEL_6_DECOMPRESS_SECONDS=11.445
+GZIP_LEVEL_9_COMPRESS_SECONDS=287.203
+GZIP_LEVEL_9_DECOMPRESS_SECONDS=22.200
 ~~~
 
-The archive-input-to-compressed ratios were 8.083721x and 10.986288x respectively; the table uses canonical dataset bytes for the requested canonical-to-compressed ratio. Gzip is a physical archive comparison, not semantic authority.
+The archive-input-to-compressed ratios were 8.083721x, 10.986288x, and 11.344145x respectively; the table uses canonical dataset bytes for the requested canonical-to-compressed ratio. Gzip is a physical archive comparison, not semantic authority.
+
+### Compression by decision family
+
+The following is an analytical family view, not a new shard layout. Each family receives an
+independent deterministic gzip-6 stream of the original full canonical decision-frame lines in
+encounter order. `rawBytes` is the sum of those original frame bytes; `compressedBytes` includes
+that family's gzip member header/trailer. Decision-kind and chosen-surface families are disjoint.
+Dimension families overlap and must not be summed. LOW_N/LIMITED_N labels follow the same sample
+rules as the raw family tables.
+
+#### Semantic decision kind
+
+| Family | N | Raw bytes | Compressed bytes | Ratio | Sample |
+|---|---:|---:|---:|---:|---|
+| PRIORITY | 122,832 | 6,035,079,822 | 548,074,891 | 11.011415x | SUPPORTED |
+| SELECT_CARDS | 2,336 | 88,439,819 | 8,452,450 | 10.463217x | LIMITED_N |
+| CHOOSE_COLOR | 129 | 3,397,734 | 227,346 | 14.945211x | LOW_N |
+| YES_NO | 106 | 3,151,474 | 296,379 | 10.633256x | LOW_N |
+| CHOOSE_TARGETS | 68 | 1,589,476 | 150,605 | 10.553939x | LOW_N |
+
+#### Chosen action/response surface
+
+| Family | N | Raw bytes | Compressed bytes | Ratio | Sample |
+|---|---:|---:|---:|---:|---|
+| ActivateAbility | 43,017 | 2,412,987,953 | 222,900,453 | 10.825406x | SUPPORTED |
+| PassPriority | 76,523 | 3,483,132,688 | 313,633,831 | 11.105730x | SUPPORTED |
+| PlayLand | 2,132 | 89,549,855 | 7,949,455 | 11.264905x | LIMITED_N |
+| CardsSelectedResponse | 2,336 | 88,439,819 | 8,452,450 | 10.463217x | LIMITED_N |
+| CastSpell | 731 | 33,932,983 | 3,219,454 | 10.539981x | LOW_N |
+| DeclareAttackers | 388 | 13,486,497 | 1,198,637 | 11.251527x | LOW_N |
+| CycleCard | 41 | 1,989,846 | 187,814 | 10.594769x | LOW_N |
+| ColorChosenResponse | 129 | 3,397,734 | 227,346 | 14.945211x | LOW_N |
+| YesNoResponse | 106 | 3,151,474 | 296,379 | 10.633256x | LOW_N |
+| TargetsResponse | 68 | 1,589,476 | 150,605 | 10.553939x | LOW_N |
+
+#### Overlapping dimensions
+
+| Dimension | N | Raw bytes | Compressed bytes | Ratio | Sample |
+|---|---:|---:|---:|---:|---|
+| repeatCount-bearing actions | 43,017 | 2,412,987,953 | 222,900,453 | 10.825406x | SUPPORTED |
+| priority | 122,832 | 6,035,079,822 | 548,074,891 | 11.011415x | SUPPORTED |
+| structured pending decision | 2,639 | 96,578,503 | 9,101,030 | 10.611821x | LIMITED_N |
+| target-bearing actions | 2,023 | 80,384,912 | 5,914,934 | 13.590162x | LIMITED_N |
+| payment-bearing actions | 515 | 39,467,945 | 3,647,794 | 10.819675x | LOW_N |
+| card selections | 2,336 | 88,439,819 | 8,452,450 | 10.463217x | LIMITED_N |
+| color choices | 129 | 3,397,734 | 227,346 | 14.945211x | LOW_N |
+| yes/no | 106 | 3,151,474 | 296,379 | 10.633256x | LOW_N |
 
 ## Strict A7 reader characterization
 
@@ -304,9 +363,10 @@ A7_READER_TEST_EXIT=0
 A7_READER_TEST_BODY_SECONDS=3199.067
 A7_NATIVE_INVOCATION_WALL_SECONDS=3217.172
 A7_PREFLIGHT_TIME_SECONDS=1429.667
-A7_STREAM_TOTAL_TIME_SECONDS=1768.797
-A7_DECISIONS_PER_SEC=70.936
-A7_EPISODES_PER_SEC=0.036183
+A7_STREAM_TIME_SECONDS=1768.797
+A7_TOTAL_STRICT_READER_TIME_SECONDS=3198.463
+A7_STREAM_DECISIONS_PER_SEC=70.936
+A7_STREAM_EPISODES_PER_SEC=0.036183
 EPISODES=64
 DECISIONS=125471
 A7_PREFLIGHT=PASS
@@ -434,7 +494,7 @@ Compressed values use the measured gzip level 6 canonical-to-compressed ratio of
 CLASSIFICATION=STRUCTURAL_STORAGE_OPTIMIZATION_LIKELY_NEEDED
 ~~~
 
-Compression is sufficient as an immediate distribution/archive layer for a bounded near-term sample: gzip-6 measured an approximately 11x reduction. It is not sufficient as the sole answer for canonical multi-million storage because the canonical format remains large and the strict reader required a 4 GB heap and approximately 53.6 minutes for the full 64-episode preflight-plus-stream pass on this host.
+Compression is sufficient as an immediate distribution/archive layer for a bounded near-term sample: gzip-6 measured an approximately 11x reduction. It is not sufficient as the sole answer for canonical multi-million storage because the canonical format remains large and the strict reader required a 4 GB heap and approximately 53.3 minutes for the measured preflight-plus-stream phases (53.6 minutes including the native invocation boundary) on this host.
 
 ### C. Dominant storage cost
 
@@ -456,10 +516,25 @@ Recommendations only; none is implemented here:
 5. Investigate dictionary/string interning only after direct measurement of repeated-string contribution; this scan did not isolate it.
 6. Do not reinterpret a derived learner view or compressed archive as a replacement for the authoritative sample.
 
+## Remaining #119 audit boundary
+
+~~~text
+P1_COMPRESSION_BY_DOMAIN_FAMILY=CLOSED_BY_THIS_AMENDMENT
+P1_START_PLAYER_RNG_COUPLING_AUDIT=OPEN_NOT_RUN
+P2_EPISODE_P99_9=CLOSED_BY_THIS_AMENDMENT
+P2_GZIP_HIGH_LEVEL=CLOSED_BY_THIS_AMENDMENT (gzip level 9 measured)
+P2_A7_RATE_NAMING=CLOSED_BY_THIS_AMENDMENT
+P2_ZSTD_MODULE_EVIDENCE=CLOSED_BY_THIS_AMENDMENT
+START_PLAYER_RNG_COUPLING_AUDIT=REQUIRED_AS_SEPARATE_NEXT_TASK
+~~
+
+The start-player RNG coupling audit was intentionally not performed here. No claim about
+same-seed early RNG equivalence or divergence is made by this report.
+
 ## Unavailable or unmeasured fields
 
 ~~~text
-ZSTD_LEVEL_RESULTS=UNMEASURED/NOT_RUN (codec unavailable)
+ZSTD_LEVEL_RESULTS=UNMEASURED/NOT_RUN (codec unavailable; executable and Python module checked independently)
 RAW_IO_THROUGHPUT=NOT_RUN
 A7_MANIFEST_ONLY_TIME=UNMEASURED
 A7_PHYSICAL_CHECKSUM_ONLY_TIME=UNMEASURED
@@ -485,7 +560,7 @@ No privacy failure, A7 validation failure, manifest/digest mismatch, replay dive
 ## Completion status
 
 ~~~text
-POST_B2_CHARACTERIZATION_IMPLEMENTATION_PASS=YES
+POST_B2_CHARACTERIZATION_IMPLEMENTATION_PASS=NO
 POST_B2_HOSTED_CI_PASS=NOT_RUN
 POST_B2_CODE_REVIEW_PASS=NO
 POST_B2_FINAL_ACCEPTANCE_PASS=NO
