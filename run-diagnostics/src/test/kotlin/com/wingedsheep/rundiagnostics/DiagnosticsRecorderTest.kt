@@ -174,6 +174,78 @@ class DiagnosticsRecorderTest : FunSpec({
         recorder.close()
     }
 
+    test("repeated same-stage reports do not create a transition or useful progress") {
+        val recorder = newRecorder()
+        val before = recorder.snapshot()!!
+        val historyBefore = recorder.recentHistory()
+
+        recorder.advanceStage(sampleStage())
+        recorder.advanceStage(sampleStage())
+
+        val after = recorder.snapshot()!!
+        after.stageSequence shouldBe before.stageSequence
+        after.stageStartedWallClock shouldBe before.stageStartedWallClock
+        after.monotonicAgeData.stageStartedElapsedNanos shouldBe
+            before.monotonicAgeData.stageStartedElapsedNanos
+        after.progress.usefulProgressSequence shouldBe before.progress.usefulProgressSequence
+        after.progress.lastUsefulProgressElapsedNanos shouldBe before.progress.lastUsefulProgressElapsedNanos
+        recorder.recentHistory() shouldBe historyBefore
+        recorder.close()
+    }
+
+    test("heartbeat advances after a same-stage report while useful progress stays unchanged") {
+        val clock = ControlledMonotonicClock(60_000)
+        val recorder = newRecorder(monotonicClock = clock)
+        val before = recorder.snapshot()!!
+
+        clock.advanceBy(100)
+        recorder.advanceStage(sampleStage())
+        recorder.heartbeatTick()
+
+        val after = recorder.snapshot()!!
+        after.heartbeatSequence shouldBe 1
+        after.stageSequence shouldBe before.stageSequence
+        after.progress.usefulProgressSequence shouldBe before.progress.usefulProgressSequence
+        after.progress.lastUsefulProgressElapsedNanos shouldBe before.progress.lastUsefulProgressElapsedNanos
+        recorder.close()
+    }
+
+    test("a different stage creates exactly one transition and useful-progress increment") {
+        val clock = ControlledMonotonicClock(70_000)
+        val recorder = newRecorder(monotonicClock = clock)
+        val before = recorder.snapshot()!!
+
+        clock.advanceBy(10)
+        recorder.advanceStage(sampleStage("POLICY_DECISION"))
+
+        val after = recorder.snapshot()!!
+        after.currentStage shouldBe sampleStage("POLICY_DECISION")
+        after.stageSequence shouldBe before.stageSequence + 1
+        after.monotonicAgeData.stageStartedElapsedNanos shouldBe 10
+        after.progress.usefulProgressSequence shouldBe before.progress.usefulProgressSequence + 1
+        after.progress.lastUsefulProgressElapsedNanos shouldBe 10
+        recorder.close()
+    }
+
+    test("A-to-B-to-B counts only the first B transition") {
+        val clock = ControlledMonotonicClock(80_000)
+        val recorder = newRecorder(monotonicClock = clock)
+        val stageB = sampleStage("POLICY_DECISION")
+
+        clock.advanceBy(10)
+        recorder.advanceStage(stageB)
+        clock.advanceBy(10)
+        recorder.advanceStage(stageB)
+
+        val after = recorder.snapshot()!!
+        after.stageSequence shouldBe 1
+        after.progress.usefulProgressSequence shouldBe 1
+        after.progress.lastUsefulProgressElapsedNanos shouldBe 10
+        after.monotonicAgeData.stageStartedElapsedNanos shouldBe 10
+        recorder.recentHistory().count { it.kind == ProgressHistoryKind.STAGE_CHANGED } shouldBe 2
+        recorder.close()
+    }
+
     test("heartbeat continues while non-progress reports leave useful progress unchanged") {
         val clock = ControlledMonotonicClock(50_000)
         val recorder = newRecorder(monotonicClock = clock)

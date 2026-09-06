@@ -197,13 +197,19 @@ private class DefaultDiagnosticsRecorder(
 
     override fun advanceStage(stage: StageRefV1) {
         if (closed.get()) return
-        val elapsed = elapsedClock.nowElapsedNanos()
-        currentStage.set(stage)
-        stageSequence.incrementAndGet()
-        stageStartedElapsedNanos.set(elapsed)
-        stageStartedWallClock.set(wallClock.instant())
-        markUseful(elapsed)
-        appendHistory(ProgressHistoryKind.STAGE_CHANGED, elapsed)
+        while (!closed.get()) {
+            val previousStage = currentStage.get()
+            if (previousStage == stage) return
+            if (currentStage.compareAndSet(previousStage, stage)) {
+                val elapsed = elapsedClock.nowElapsedNanos()
+                stageSequence.incrementAndGet()
+                stageStartedElapsedNanos.set(elapsed)
+                stageStartedWallClock.set(wallClock.instant())
+                markUseful(elapsed)
+                appendHistory(ProgressHistoryKind.STAGE_CHANGED, elapsed)
+                return
+            }
+        }
     }
 
     override fun recordUsefulProgress(
