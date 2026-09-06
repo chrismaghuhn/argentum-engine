@@ -41,7 +41,6 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.encodeToJsonElement
-import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
@@ -388,20 +387,17 @@ class DeterministicExternalPolicy {
         }
 
         if ("repeatCount" in requiredFieldSet) {
-            val publicRepeatCount = action.actionSemantics
-                ?.get("repeatCount")
-                ?.jsonPrimitive
-                ?.intOrNull
-                ?.takeIf { it >= 1 }
+            val repeatCountDomain = action.repeatCountDomain
                 ?: return SemanticChoice.Gap(
                     family = action.kind,
                     code = "A5_DECISION_GAP",
-                    reason = "repeatCount is required but is absent from public action semantics",
+                    reason = "repeatCount is required but is absent from its public domain",
                     actionKind = action.kind,
                     publicDomain =
                         "requiredPayloadFields=$requiredFields; " +
-                            "actionSemantics=${action.actionSemantics}",
+                            "repeatCountDomain=${action.repeatCountDomain}",
                 )
+            val publicRepeatCount = repeatCountDomain.minCount
             payload["repeatCount"] = JsonPrimitive(publicRepeatCount)
             completedChoice = true
         }

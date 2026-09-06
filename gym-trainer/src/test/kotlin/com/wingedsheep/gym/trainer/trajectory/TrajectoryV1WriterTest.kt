@@ -640,7 +640,10 @@ class TrajectoryV1WriterTest : FunSpec({
             .admittedEpisode()
             .storageBytes()
 
-        A3SemanticJson.sha256(bytes) shouldBe "6c499e42c475866781414a214d743f58752eaf8523d69134d0e9f1f0edbd8d97"
+        // The fixture intentionally uses the current Gym wire schema. This golden changes only
+        // because the repeat-count field advances SchemaHash.CURRENT; historical v5 replay
+        // metadata and trajectory contracts remain explicit and unchanged.
+        A3SemanticJson.sha256(bytes) shouldBe "9c8b4d4a274449d1981625556863c09fba2c85d50eeb5f61f414aaf5a8416bb6"
     }
 
     test("unknown future storage schema version or identity fails closed during shard verification") {

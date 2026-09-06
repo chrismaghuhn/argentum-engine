@@ -266,6 +266,8 @@ data class LegalActionView(
     val maxAffordableX: Int? = null,
     val minTargets: Int = 0,
     val maxTargets: Int = 0,
+    /** Complete Rules-owned domain for a required repeat-count choice. */
+    val repeatCountDomain: RepeatCountDomainV1? = null,
     /** Eligible permanents for an additional sacrifice cost, from the current legal-action domain. */
     val validSacrificeTargets: List<EntityId> = emptyList(),
     /** Fixed sacrifice cardinality, or the variable cost's lower-bound/cardinality hint. */

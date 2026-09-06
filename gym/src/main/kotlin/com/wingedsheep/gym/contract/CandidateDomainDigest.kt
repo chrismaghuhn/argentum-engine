@@ -273,6 +273,7 @@ private val candidateKeys = setOf(
     "maxAffordableX",
     "minTargets",
     "maxTargets",
+    "repeatCountDomain",
     "validSacrificeTargets",
     "sacrificeCount",
     "sacrificeMinCount",
@@ -409,6 +410,14 @@ private object CandidateSemanticValidator {
         action.blockerDeclarationDomain?.let(::requireProducerCanonical)
         action.paymentDomain?.let(::requirePaymentDomain)
         action.targetPaymentDomain?.let(::requireTargetPaymentDomain)
+        action.repeatCountDomain?.let { domain ->
+            decodeRepeatCountDomain(
+                completeLegalDomainJson.encodeToJsonElement(
+                    RepeatCountDomainV1.serializer(),
+                    domain,
+                ),
+            )
+        }
     }
 
     fun requireValid(candidate: JsonObject) {
@@ -434,6 +443,7 @@ private object CandidateSemanticValidator {
         require(candidate.required("maxTargets").intValue() >= candidate.required("minTargets").intValue()) {
             "Complete legal-domain candidate has an invalid target range"
         }
+        candidate["repeatCountDomain"]?.let { decodeRepeatCountDomain(it) }
         candidate.required("validSacrificeTargets").requireCanonicalEntityArray("validSacrificeTargets")
         candidate.required("sacrificeCount").requireNonNegativeInt()
         candidate.required("sacrificeMinCount").requireNonNegativeInt()
