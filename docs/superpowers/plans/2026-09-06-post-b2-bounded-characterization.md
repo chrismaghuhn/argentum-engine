@@ -130,7 +130,7 @@ Run just test-gym, just test-gym-trainer, just test-server, and git diff --check
 
 Confirm no Trajectory V1, PlayerObservationV1, CompleteLegalDomain, CandidateDomainDigest, CompactReplay, A5/A6/A7, Rules, deck, privacy, or golden files changed.
 
-- [ ] Step 3: Commit and push the focused branch.
+- [x] Step 3: Commit and push the focused branch.
 
 Run:
 
