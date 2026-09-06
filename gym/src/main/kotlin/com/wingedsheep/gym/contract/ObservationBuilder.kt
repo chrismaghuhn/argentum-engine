@@ -344,7 +344,11 @@ class ObservationBuilder(
             observation = digested,
             registry = actionRegistry,
             diagnostics = diagnostics,
-            commanderPublicState = CommanderPublicStateBuilder.build(state, perspectivePlayerId),
+            commanderPublicState = CommanderPublicStateBuilder.build(
+                state = state,
+                perspectivePlayerId = perspectivePlayerId,
+                observation = digested,
+            ),
         )
     }
 

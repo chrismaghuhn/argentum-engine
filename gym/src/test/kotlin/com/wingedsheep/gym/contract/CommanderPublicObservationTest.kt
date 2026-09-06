@@ -7,6 +7,8 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.CommanderComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.gym.GameEnvironment
 import com.wingedsheep.gym.GameGymEnv
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
@@ -55,14 +57,20 @@ class CommanderPublicObservationTest : FunSpec({
         return env
     }
 
+    fun observationResult(
+        env: GameEnvironment,
+        state: com.wingedsheep.engine.state.GameState = env.state,
+        perspective: com.wingedsheep.sdk.model.EntityId = env.playerIds.first(),
+    ): ObservationResult =
+        ObservationBuilder(cardRegistry = registry())
+            .build(state, perspective, emptyList())
+
     fun publicState(
         env: GameEnvironment,
         state: com.wingedsheep.engine.state.GameState = env.state,
         perspective: com.wingedsheep.sdk.model.EntityId = env.playerIds.first(),
     ): CommanderPublicStateV1 = checkNotNull(
-        ObservationBuilder(cardRegistry = registry())
-            .build(state, perspective, emptyList())
-            .commanderPublicState,
+        observationResult(env, state, perspective).commanderPublicState,
     )
 
     test("CMD-PUB-01 exposes designated commanders without using runtime entity identity") {
@@ -100,6 +108,35 @@ class CommanderPublicObservationTest : FunSpec({
         commander.castsFromCommandZone shouldBe 2
     }
 
+    test("CMD-PUB-01 public graveyard, stack, and face-up exile zones remain exact") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val commanderId = env.state.getZone(owner, Zone.COMMAND).single()
+        val commandKey = ZoneKey(owner, Zone.COMMAND)
+
+        val graveyardState = env.state.moveToZone(
+            commanderId,
+            commandKey,
+            ZoneKey(owner, Zone.GRAVEYARD),
+        )
+        publicState(env, graveyardState).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.GRAVEYARD
+
+        val stackState = env.state
+            .removeFromZone(commandKey, commanderId)
+            .pushToStack(commanderId)
+        publicState(env, stackState).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.STACK
+
+        val exileState = env.state.moveToZone(
+            commanderId,
+            commandKey,
+            ZoneKey(owner, Zone.EXILE),
+        )
+        publicState(env, exileState).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.EXILE
+    }
+
     test("CMD-PUB-03 leaves current effective commander cost to the legal-domain authority") {
         val env = environment()
         val public = publicState(env)
@@ -131,24 +168,108 @@ class CommanderPublicObservationTest : FunSpec({
         commanders.map { it.ownerPlayerId }.distinct() shouldHaveSize 2
     }
 
-    test("CMD-PUB-07 hidden physical zone has no entity or library-position leakage") {
+    test("CMD-PUB-07 hidden hand and library membership are UNKNOWN to an opponent") {
         val env = environment()
         val owner = env.playerIds.first()
+        val opponent = env.playerIds[1]
         val commanderId = env.state.getZone(owner, Zone.COMMAND).single()
-        val state = env.state.moveToZone(
+        val handState = env.state.moveToZone(
+            commanderId,
+            ZoneKey(owner, Zone.COMMAND),
+            ZoneKey(owner, Zone.HAND),
+        )
+        val libraryState = env.state.moveToZone(
             commanderId,
             ZoneKey(owner, Zone.COMMAND),
             ZoneKey(owner, Zone.LIBRARY),
         )
 
-        val ownerView = publicState(env, state, owner).commanders.single { it.ownerPlayerId == owner }
-        val opponentView = publicState(env, state, env.playerIds[1]).commanders.single { it.ownerPlayerId == owner }
-        ownerView.publicCurrentZone shouldBe CommanderPublicZoneKind.LIBRARY
-        opponentView.publicCurrentZone shouldBe CommanderPublicZoneKind.LIBRARY
+        publicState(env, handState, owner).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.HAND
+        publicState(env, handState, opponent).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.UNKNOWN
+        publicState(env, libraryState, owner).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.UNKNOWN
+        publicState(env, libraryState, opponent).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.UNKNOWN
 
-        val encoded = publicState(env, state, env.playerIds[1]).canonicalJson()
+        val encoded = publicState(env, libraryState, opponent).canonicalJson()
         encoded shouldNotContain commanderId.value
         encoded shouldNotContain "libraryIndex"
+    }
+
+    test("CMD-PUB-07 paired hidden hand/library states have identical opponent bytes") {
+        val env = environment()
+        val viewer = env.playerIds.first()
+        val hiddenOwner = env.playerIds[1]
+        val commanderId = env.state.getZone(hiddenOwner, Zone.COMMAND).single()
+        val libraryCard = env.state.getLibrary(hiddenOwner).first()
+
+        val commanderInHand = env.state.moveToZone(
+            commanderId,
+            ZoneKey(hiddenOwner, Zone.COMMAND),
+            ZoneKey(hiddenOwner, Zone.HAND),
+        )
+        val commanderInLibrary = env.state
+            .moveToZone(
+                commanderId,
+                ZoneKey(hiddenOwner, Zone.COMMAND),
+                ZoneKey(hiddenOwner, Zone.LIBRARY),
+            )
+            .moveToZone(
+                libraryCard,
+                ZoneKey(hiddenOwner, Zone.LIBRARY),
+                ZoneKey(hiddenOwner, Zone.HAND),
+            )
+
+        val handPublic = publicState(env, commanderInHand, viewer)
+        val libraryPublic = publicState(env, commanderInLibrary, viewer)
+        val handObservation = observationResult(env, commanderInHand, viewer).observation as TrainingObservation
+        val libraryObservation = observationResult(env, commanderInLibrary, viewer).observation as TrainingObservation
+        handObservation.zones.map { it.ownerId to it.zoneType to it.size } shouldBe
+            libraryObservation.zones.map { it.ownerId to it.zoneType to it.size }
+        handPublic.commanders.single { it.ownerPlayerId == hiddenOwner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.UNKNOWN
+        libraryPublic.commanders.single { it.ownerPlayerId == hiddenOwner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.UNKNOWN
+        handPublic.canonicalJson() shouldBe libraryPublic.canonicalJson()
+    }
+
+    test("CMD-PUB-07 revealed library identity permits the exact library zone") {
+        val env = environment()
+        val viewer = env.playerIds[1]
+        val owner = env.playerIds.first()
+        val commanderId = env.state.getZone(owner, Zone.COMMAND).single()
+        val state = env.state
+            .moveToZone(
+                commanderId,
+                ZoneKey(owner, Zone.COMMAND),
+                ZoneKey(owner, Zone.LIBRARY),
+            )
+            .updateEntity(commanderId) { it.with(RevealedToComponent.to(viewer)) }
+
+        publicState(env, state, viewer).commanders.single { it.ownerPlayerId == owner }
+            .publicCurrentZone shouldBe CommanderPublicZoneKind.LIBRARY
+    }
+
+    test("CMD-PUB-07 face-down exile remains UNKNOWN") {
+        val env = environment()
+        val owner = env.playerIds.first()
+        val commanderId = env.state.getZone(owner, Zone.COMMAND).single()
+        val state = env.state
+            .moveToZone(
+                commanderId,
+                ZoneKey(owner, Zone.COMMAND),
+                ZoneKey(owner, Zone.EXILE),
+            )
+            .updateEntity(commanderId) { it.with(FaceDownComponent) }
+
+        env.playerIds.forEach { perspective ->
+            val commander = publicState(env, state, perspective).commanders
+                .single { it.ownerPlayerId == owner }
+            commander.publicCurrentZone shouldBe CommanderPublicZoneKind.UNKNOWN
+            publicState(env, state, perspective).canonicalJson() shouldNotContain commanderId.value
+        }
     }
 
     test("CMD-PUB-06 hidden-only opponent card changes do not alter commander public state") {

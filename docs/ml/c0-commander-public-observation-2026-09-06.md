@@ -106,7 +106,7 @@ separate reviewed contract decision.
 | --- | --- | --- |
 | `ownerPlayerId` | `CommanderComponent.ownerId` | Public player identity; not a hidden card identity. |
 | `publicCommanderIdentity` | `CardComponent.cardDefinitionId` on the entity carrying `CommanderComponent` | Semantic designation identity. The raw commander `EntityId` is never emitted. |
-| `publicCurrentZone` | `GameState.zones` or public `GameState.stack` | Emits only `COMMAND`, `BATTLEFIELD`, `STACK`, `GRAVEYARD`, `EXILE`, `HAND`, `LIBRARY`, or `UNKNOWN`. No library index, object stamp, or physical handle. |
+| `publicCurrentZone` | Existing perspective-safe `TrainingObservation.zones` / `TrainingObservation.stack` projection | Emits an exact semantic zone only when the Commander entity is already present in the perspective's visible observation; otherwise emits `UNKNOWN`. No raw zone scan, library index, object stamp, or physical handle. |
 | `castsFromCommandZone` | `CommanderComponent.castsFromCommandZone` | Direct authoritative fact; never inferred from cost. |
 | `commanderDamageThreshold` | `state.format.commanderDamageThreshold` | Public format threshold; null when the format has no Commander damage threshold. |
 | `damageByDefendingPlayer` | `GameState.commanderDamageOf(commanderId, defendingPlayerId)` | Includes one deterministic entry per `state.turnOrder` player, including zero, with no raw commander ID. |
@@ -139,7 +139,9 @@ Allowed:
 
 - public designation identity from the authoritative CommanderComponent/CardComponent relationship;
 - owner and defending-player IDs;
-- current semantic zone kind, including HAND or LIBRARY when the designated commander is there;
+- current semantic zone kind when the designated Commander object is present in the existing
+  perspective-safe observation; this includes HAND or LIBRARY only when that observation already
+  exposes the card identity/object;
 - cumulative public Commander damage and the format threshold.
 
 Never exposed:
@@ -147,12 +149,16 @@ Never exposed:
 - the commander entity ID;
 - an object-identity stamp or allocation order;
 - a library index or library ordering;
+- hidden hand/library membership when the object is absent from the perspective-safe observation;
 - any other hand/library card identity;
 - raw GameState, component containers, continuations, or hidden state.
 
 The semantic designation survives a zone change because the source-owned CommanderComponent remains
-the authority. This is different from exposing a hidden physical object reference. The public zone
-kind is a location fact; the physical library position is not represented.
+the authority. Current-zone knowledge is a separate projection: `CommanderPublicStateV1` consumes
+only the already-masked `TrainingObservation` object lists and stack view. If the perspective cannot
+see the Commander object there, the result is `UNKNOWN`; it does not recover the location from
+`GameState`. A revealed library card may therefore produce `LIBRARY`, while an ordinary hidden
+library card and an opponent's hidden-hand card both produce `UNKNOWN`.
 
 For a hidden-only mutation of an unrelated opponent library card, the CommanderPublicStateV1
 projection remains byte-identical. A commander with malformed source metadata fails closed rather
@@ -181,7 +187,7 @@ wrapper reaches WSL and fails before Gradle (`/bin/bash` missing / WinError 193)
 Focused new tests:
 
 ```text
-CommanderPublicObservationTest=10 tests, 0 failures, 0 errors, 0 skips: PASS
+CommanderPublicObservationTest=14 tests, 0 failures, 0 errors, 0 skips: PASS
 ```
 
 The existing Commander path was also run:
@@ -197,7 +203,7 @@ Required module/regression evidence:
 
 ```text
 RULES_ENGINE_TEST=PASS (native gradlew.bat :rules-engine:test :mtg-sets:scenarioTest; BUILD SUCCESSFUL)
-GYM_TEST=PASS (native gradlew.bat :gym:test; 600 tests, 0 failures, 0 errors, 6 configured skips)
+GYM_TEST=PASS (native gradlew.bat :gym:test; 604 tests, 0 failures, 0 errors, 6 configured skips)
 GYM_TRAINER_TEST=PASS (native gradlew.bat :gym-trainer:test; BUILD SUCCESSFUL)
 GIT_DIFF_CHECK=PASS
 ```
@@ -224,6 +230,7 @@ COMMANDER_CURRENT_ZONE_PUBLIC_SOURCE=PASS
 COMMANDER_CAST_COUNT_PUBLIC_SOURCE=PASS
 COMMANDER_DAMAGE_PUBLIC_SOURCE=PASS
 COMMANDER_HIDDEN_ZONE_PRIVACY=PASS
+HIDDEN_ZONE_NON_INTERFERENCE=PASS
 
 PLAYER_OBSERVATION_V1_UNCHANGED=YES
 TRAJECTORY_V1_UNCHANGED=YES

@@ -12,9 +12,13 @@ internal object CommanderPublicStateBuilder {
     fun build(
         state: GameState,
         perspectivePlayerId: EntityId,
+        observation: TrainingObservation,
     ): CommanderPublicStateV1 {
         require(perspectivePlayerId in state.turnOrder) {
             "Commander-public projection perspective is not a game player"
+        }
+        require(observation.perspectivePlayerId == perspectivePlayerId) {
+            "Commander-public projection observation has a different perspective"
         }
 
         val playerOrder = state.turnOrder.withIndex().associate { it.value to it.index }
@@ -33,7 +37,7 @@ internal object CommanderPublicStateBuilder {
                 CommanderPublicEntryV1(
                     ownerPlayerId = commander.ownerId,
                     publicCommanderIdentity = card.cardDefinitionId,
-                    publicCurrentZone = currentZone(state, commanderId),
+                    publicCurrentZone = currentZone(observation, commanderId),
                     castsFromCommandZone = commander.castsFromCommandZone,
                     commanderDamageThreshold = state.format.commanderDamageThreshold,
                     damageByDefendingPlayer = state.turnOrder.map { defendingPlayerId ->
@@ -52,24 +56,39 @@ internal object CommanderPublicStateBuilder {
     }
 
     /**
-     * The zone kind is public semantic knowledge; no physical EntityId, library index, or hidden
-     * card slot is carried by CommanderPublicStateV1. The designation identity comes from the
-     * public CommanderComponent/CardComponent relationship rather than the current zone.
+     * The zone kind is read from the already perspective-safe observation; hidden objects are not
+     * recovered from GameState. No physical EntityId, library index, or hidden card slot is carried
+     * by CommanderPublicStateV1. The designation identity comes from the public
+     * CommanderComponent/CardComponent relationship rather than the current zone.
      */
-    private fun currentZone(state: GameState, commanderId: EntityId): CommanderPublicZoneKind {
-        if (commanderId in state.stack) return CommanderPublicZoneKind.STACK
-        val zone = state.zones.entries
-            .firstOrNull { (_, entityIds) -> commanderId in entityIds }
-            ?.key
-            ?.zoneType
-        return when (zone) {
-            Zone.COMMAND -> CommanderPublicZoneKind.COMMAND
-            Zone.BATTLEFIELD -> CommanderPublicZoneKind.BATTLEFIELD
-            Zone.GRAVEYARD -> CommanderPublicZoneKind.GRAVEYARD
-            Zone.EXILE -> CommanderPublicZoneKind.EXILE
-            Zone.HAND -> CommanderPublicZoneKind.HAND
-            Zone.LIBRARY -> CommanderPublicZoneKind.LIBRARY
-            else -> CommanderPublicZoneKind.UNKNOWN
+    private fun currentZone(
+        observation: TrainingObservation,
+        commanderId: EntityId,
+    ): CommanderPublicZoneKind {
+        val visibleZones = buildList {
+            observation.zones.forEach { zoneView ->
+                if (zoneView.cards.any { it.entityId == commanderId }) {
+                    add(zoneView.zoneType.toCommanderPublicZoneKind())
+                }
+            }
+            if (observation.stack.any { it.entityId == commanderId }) {
+                add(CommanderPublicZoneKind.STACK)
+            }
         }
+
+        // A hidden object is absent from the perspective-safe observation. Multiple matches are
+        // also fail-closed rather than selecting a location from malformed or contradictory data.
+        return visibleZones.singleOrNull() ?: CommanderPublicZoneKind.UNKNOWN
+    }
+
+    private fun Zone.toCommanderPublicZoneKind(): CommanderPublicZoneKind = when (this) {
+        Zone.COMMAND -> CommanderPublicZoneKind.COMMAND
+        Zone.BATTLEFIELD -> CommanderPublicZoneKind.BATTLEFIELD
+        Zone.STACK -> CommanderPublicZoneKind.STACK
+        Zone.GRAVEYARD -> CommanderPublicZoneKind.GRAVEYARD
+        Zone.EXILE -> CommanderPublicZoneKind.EXILE
+        Zone.HAND -> CommanderPublicZoneKind.HAND
+        Zone.LIBRARY -> CommanderPublicZoneKind.LIBRARY
+        else -> CommanderPublicZoneKind.UNKNOWN
     }
 }
