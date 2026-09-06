@@ -60,9 +60,12 @@ UPSTREAM_MAIN=5021faf88093a93091e4de7914fbe0f411499d58
 ```
 
 The authoritative rules reference used for the information-set audit is the current Wizards
-[Rules page](https://magic.wizards.com/en/rules). At audit time that page links the current
-[Comprehensive Rules TXT](https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt),
-which states that the rules are effective August 7, 2026. The relevant rules state, in substance:
+[Rules page](https://magic.wizards.com/en/rules), which is the normative primary source. At this
+audit, direct inspection of that page exposed the current
+[Comprehensive Rules TXT](https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt)
+with HTTP 200; that fetched document states that the rules are effective August 7, 2026. The
+resolved TXT URL is recorded as audit provenance, not as a substitute for the Rules page. The
+relevant rules state, in substance:
 
 - `400.2`: library and hand are hidden zones; graveyard, battlefield, stack, exile, and command are
   public zones, while a public zone can still contain specifically face-down cards.
