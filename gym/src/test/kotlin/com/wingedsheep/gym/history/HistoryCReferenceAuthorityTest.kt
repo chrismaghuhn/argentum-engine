@@ -1,0 +1,231 @@
+package com.wingedsheep.gym.history
+
+import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.TurnedFaceDownEvent
+import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ComponentContainer
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.gym.CommittedPerspectiveEventSource
+import com.wingedsheep.gym.CommittedRulesTransition
+import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.model.EntityId
+import io.kotest.core.spec.style.FunSpec
+import io.kotest.matchers.collections.shouldHaveSize
+import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+class HistoryCReferenceAuthorityTest : FunSpec({
+
+    val perspective = EntityId.of("p1")
+    val card = EntityId.of("card-1")
+
+    fun registry(): CardRegistry = CardRegistry().apply {
+        register(PortalSet.cards)
+        register(PortalSet.basicLands)
+    }
+
+    fun state(stamp: Long): GameState = GameState(
+        entities = mapOf(
+            perspective to ComponentContainer.EMPTY,
+            card to ComponentContainer.EMPTY,
+        ),
+        zones = mapOf(ZoneKey(perspective, Zone.BATTLEFIELD) to listOf(card)),
+        turnOrder = listOf(perspective),
+        objectIdentityStamps = mapOf(card to stamp),
+    )
+
+    fun candidate(
+        eventOrdinal: Int = 0,
+        roleOrdinal: Int = 0,
+        beforeWitness: HistoryCObjectWitness? = null,
+        afterWitness: HistoryCObjectWitness? = HistoryCObjectWitness(card, 2L),
+        identityDisclosure: HistoryCIdentityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
+        cardDefinitionId: String? = null,
+        semanticDescriptor: kotlinx.serialization.json.JsonObject = buildJsonObject {
+            put("type", "object_reference")
+            put("visibility", "opaque")
+        },
+    ) = HistoryCReferenceCandidateV1(
+        slot = HistoryCReferenceSlot(
+            eventOrdinal = eventOrdinal,
+            role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+            roleOrdinal = roleOrdinal,
+        ),
+        referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+        beforeWitness = beforeWitness,
+        afterWitness = afterWitness,
+        identityDisclosure = identityDisclosure,
+        cardDefinitionId = cardDefinitionId,
+        orderProof = HistoryCOrderProof(
+            authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
+            rank = roleOrdinal,
+        ),
+        semanticDescriptor = semanticDescriptor,
+    )
+
+    fun envelope(
+        version: Int = HISTORY_C_REFERENCE_EVIDENCE_V1_VERSION,
+        candidates: List<HistoryCReferenceCandidateV1> = listOf(candidate()),
+    ) = HistoryCReferenceEnvelopeV1(
+        version = version,
+        schemaIdentity = HISTORY_C_REFERENCE_EVIDENCE_V1_SCHEMA_IDENTITY,
+        perspectivePlayerId = perspective,
+        candidates = candidates,
+    )
+
+    fun resultFor(
+        event: GameEvent,
+        envelope: HistoryCReferenceEnvelopeV1,
+        before: GameState = state(1L),
+        after: GameState = state(2L),
+    ): HistoryCReferenceAuthorityResult {
+        val source = CommittedPerspectiveEventSource(registry())
+        source.capture(
+            CommittedRulesTransition(
+                beforeState = before,
+                afterState = after,
+                events = listOf(event),
+                sourceStepCount = 1,
+            ),
+        )
+        return source.lastCommittedReferenceEvidence(envelope)
+    }
+
+    test("HISTC-01 raw runtime identity is rejected at the semantic seam") {
+        val event = CardsRevealedEvent(
+            revealingPlayerId = perspective,
+            cardIds = listOf(card),
+            cardNames = listOf("Mountain"),
+        )
+        val result = resultFor(
+            event = event,
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        semanticDescriptor = buildJsonObject {
+                            put("type", "object_reference")
+                            put("entityId", "runtime-card-id")
+                        },
+                    ),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.RAW_RUNTIME_ID_AT_SEMANTIC_SEAM
+    }
+
+    test("HISTC-02 repeated references retain the same internal incarnation witness without allocation") {
+        val event = CardsRevealedEvent(
+            revealingPlayerId = perspective,
+            cardIds = listOf(card),
+            cardNames = listOf("Mountain"),
+        )
+        val result = resultFor(
+            event = event,
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(roleOrdinal = 0),
+                    candidate(roleOrdinal = 1),
+                ),
+            ),
+        )
+
+        val accepted = result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+        accepted.evidence.candidates shouldHaveSize 2
+        accepted.evidence.candidates.map { it.afterWitness } shouldBe
+            listOf(HistoryCObjectWitness(card, 2L), HistoryCObjectWitness(card, 2L))
+    }
+
+    test("HISTC-06 public reveal candidate is accepted with definition knowledge") {
+        val event = CardsRevealedEvent(
+            revealingPlayerId = perspective,
+            cardIds = listOf(card),
+            cardNames = listOf("Mountain"),
+        )
+        val result = resultFor(
+            event = event,
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "mtn",
+                        semanticDescriptor = buildJsonObject {
+                            put("type", "object_reference")
+                            put("visibility", "public")
+                        },
+                    ),
+                ),
+            ),
+        )
+
+        val accepted = result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+        accepted.evidence.candidates.single().identityDisclosure shouldBe
+            HistoryCIdentityDisclosure.DEFINITION_KNOWN
+        accepted.evidence.candidates.single().cardDefinitionId shouldBe "mtn"
+    }
+
+    test("HISTC-07 face-down object is accepted as opaque without printed identity") {
+        val event = TurnedFaceDownEvent(entityId = card, controllerId = perspective)
+        val result = resultFor(
+            event = event,
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        beforeWitness = HistoryCObjectWitness(card, 2L),
+                        afterWitness = HistoryCObjectWitness(card, 2L),
+                    ),
+                ),
+            ),
+            before = state(2L),
+            after = state(2L),
+        )
+
+        val accepted = result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+        accepted.evidence.candidates.single().identityDisclosure shouldBe
+            HistoryCIdentityDisclosure.OPAQUE
+        accepted.evidence.candidates.single().cardDefinitionId shouldBe null
+    }
+
+    test("HISTC-24 unknown reference schema version fails closed") {
+        val event = CardsRevealedEvent(
+            revealingPlayerId = perspective,
+            cardIds = listOf(card),
+            cardNames = listOf("Mountain"),
+        )
+        val result = resultFor(
+            event = event,
+            envelope = envelope(version = HISTORY_C_REFERENCE_EVIDENCE_V1_VERSION + 1),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.UNKNOWN_REFERENCE_SCHEMA_VERSION
+    }
+
+    test("HISTC-A missing committed transition fails closed with a typed diagnostic") {
+        val source = CommittedPerspectiveEventSource(registry())
+
+        val result = source.lastCommittedReferenceEvidence(
+            envelope = envelope(),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.UNCOMMITTED_TRANSITION
+    }
+
+    test("HISTC-A speculative source fails closed with a typed diagnostic") {
+        val source = CommittedPerspectiveEventSource(registry(), captureEnabled = false)
+
+        val result = source.lastCommittedReferenceEvidence(
+            envelope = envelope(),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.FORK_OR_SPECULATIVE_SOURCE
+    }
+})
