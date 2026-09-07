@@ -307,18 +307,18 @@ internal object HistoryCReferenceAuthority {
         cardIds: List<EntityId>,
         candidate: HistoryCReferenceCandidateV1,
     ): HistoryCFailure? {
-        if (viewingPlayerId != perspectivePlayerId || cardIds.size != 1) {
+        if (viewingPlayerId != perspectivePlayerId || cardIds.isEmpty()) {
             return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
         }
         if (candidate.referenceKind != HistoryCReferenceKind.CARD_OR_RULES_OBJECT ||
             candidate.slot.role != HistoryCReferenceSlotRole.EVENT_SUBJECT ||
-            candidate.slot.roleOrdinal != 0 ||
+            candidate.slot.roleOrdinal !in cardIds.indices ||
             candidate.orderProof.authority != HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER ||
-            candidate.orderProof.rank != 0
+            candidate.orderProof.rank != candidate.slot.roleOrdinal
         ) {
             return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
         }
-        if (!candidateWitnessesEntity(candidate, cardIds.single())) {
+        if (!candidateWitnessesEntity(candidate, cardIds[candidate.slot.roleOrdinal])) {
             return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
         }
         return validateDefinitionAgainstWitnessState(transition, candidate)

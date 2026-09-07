@@ -27,6 +27,8 @@ import com.wingedsheep.engine.state.components.player.KnownInformationLedgerComp
 import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.gym.CommittedPerspectiveEventSource
 import com.wingedsheep.gym.contract.PerspectiveEventBatchV1
+import com.wingedsheep.gym.contract.PerspectiveEventFamily
+import com.wingedsheep.gym.contract.PerspectiveEventV1
 import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
@@ -150,10 +152,14 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         )
     }
 
-    fun twoCardState(cardStamp: Long, otherStamp: Long): GameState {
+    fun twoCardState(
+        cardStamp: Long,
+        otherStamp: Long,
+        otherDefinition: String = "forest",
+    ): GameState {
         val base = state(stamp = cardStamp)
         return base.copy(
-            entities = base.entities + (otherCard to cardContainer(p2, definition = "forest")),
+            entities = base.entities + (otherCard to cardContainer(p2, definition = otherDefinition)),
             zones = mapOf(ZoneKey(p2, Zone.BATTLEFIELD) to listOf(card, otherCard)),
             objectIdentityStamps = mapOf(card to cardStamp, otherCard to otherStamp),
         )
@@ -166,11 +172,12 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         definition: String? = null,
         role: HistoryCReferenceSlotRole = HistoryCReferenceSlotRole.MOVED_OBJECT,
         eventOrdinal: Int = 0,
+        roleOrdinal: Int = 0,
     ) = HistoryCReferenceCandidateV1(
         slot = HistoryCReferenceSlot(
             eventOrdinal = eventOrdinal,
             role = role,
-            roleOrdinal = 0,
+            roleOrdinal = roleOrdinal,
         ),
         referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
         beforeWitness = before,
@@ -179,7 +186,7 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         cardDefinitionId = definition,
         orderProof = HistoryCOrderProof(
             authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
-            rank = 0,
+            rank = roleOrdinal,
         ),
         semanticDescriptor = buildJsonObject {
             put("type", "object_reference")
@@ -190,9 +197,25 @@ class PerspectiveReferenceProjectorTest : FunSpec({
     fun evidence(
         perspective: EntityId = p1,
         candidates: List<HistoryCReferenceCandidateV1>,
+        privateLook: Boolean = false,
     ) = HistoryCReferenceEvidenceV1(
         perspectivePlayerId = perspective,
-        eventBatch = PerspectiveEventBatchV1(perspectivePlayerId = perspective, entries = emptyList()),
+        eventBatch = PerspectiveEventBatchV1(
+            perspectivePlayerId = perspective,
+            entries = if (privateLook) {
+                listOf(
+                    PerspectiveEventV1(
+                        perspectiveEventOrdinal = 0,
+                        eventFamily = PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
+                        semanticPayload = buildJsonObject {
+                            put("type", "private_hand_looked_at")
+                        },
+                    ),
+                )
+            } else {
+                emptyList()
+            },
+        ),
         candidates = candidates,
     )
 
@@ -203,6 +226,7 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         registry: PerspectiveAliasRegistryV1 = registry(),
         perspective: EntityId = p1,
         events: List<GameEvent> = emptyList(),
+        privateLook: Boolean = false,
     ): PerspectiveReferenceProjectionResult = PerspectiveReferenceProjectorV1(
         CardRegistry().apply {
             register(PortalSet.cards)
@@ -217,7 +241,7 @@ class PerspectiveReferenceProjectorTest : FunSpec({
             events = events,
             sourceStepCount = 1,
         ),
-        evidence = evidence(perspective, candidates),
+        evidence = evidence(perspective, candidates, privateLook),
         registry = registry,
     )
 
@@ -484,7 +508,7 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         unrelatedProjection.nextRegistry.nextAliasOrdinal shouldBe 0L
     }
 
-    test("HISTC-05 real Rules producer characterizes the multi-card look shape") {
+    test("HISTC-C-MULTI-08 real Rules producer projects the multi-card look") {
         val driver = GameTestDriver().apply {
             registerCards(PortalSet.cards)
             registerCards(PortalSet.basicLands)
@@ -545,6 +569,56 @@ class PerspectiveReferenceProjectorTest : FunSpec({
                 ?.get<RevealedToComponent>()
                 ?.isRevealedTo(unrelated) shouldBe false
         }
+
+        val lookOnlyTransition = transition.copy(events = listOf(lookEvents.single()))
+        val source = CommittedPerspectiveEventSource(driver.cardRegistry)
+        source.capture(lookOnlyTransition)
+        val viewerResult = source.lastCommittedReferenceProjection(
+            semanticEpisodeId = "episode-multi-live",
+            registry = registry(viewer).copy(semanticEpisodeId = "episode-multi-live"),
+            envelope = HistoryCReferenceEnvelopeV1(
+                perspectivePlayerId = viewer,
+                candidates = listOf(
+                    candidate(
+                        eventOrdinal = 0,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        after = HistoryCObjectWitness(
+                            lookedCardA,
+                            lookOnlyTransition.afterState.objectIdentityStamps.getValue(lookedCardA),
+                        ),
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = lookOnlyTransition.afterState.getEntity(lookedCardA)
+                            ?.get<CardComponent>()?.cardDefinitionId,
+                    ),
+                    candidate(
+                        eventOrdinal = 0,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 1,
+                        after = HistoryCObjectWitness(
+                            lookedCardB,
+                            lookOnlyTransition.afterState.objectIdentityStamps.getValue(lookedCardB),
+                        ),
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = lookOnlyTransition.afterState.getEntity(lookedCardB)
+                            ?.get<CardComponent>()?.cardDefinitionId,
+                    ),
+                ),
+            ),
+        )
+        val viewerProjection = accepted(viewerResult)
+        viewerProjection.referenceOccurrences shouldHaveSize 2
+        viewerProjection.incarnationRelations.shouldBeEmpty()
+
+        val unrelatedResult = source.lastCommittedReferenceProjection(
+            semanticEpisodeId = "episode-multi-live",
+            registry = registry(unrelated).copy(semanticEpisodeId = "episode-multi-live"),
+            envelope = HistoryCReferenceEnvelopeV1(
+                perspectivePlayerId = unrelated,
+                candidates = emptyList(),
+            ),
+        )
+        accepted(unrelatedResult).referenceOccurrences.shouldBeEmpty()
     }
 
     test("HISTC-10_VISIBLE_ZONE_CHANGE_RELATIONSHIP_POLICY") {
@@ -589,6 +663,130 @@ class PerspectiveReferenceProjectorTest : FunSpec({
 
         result.referenceOccurrences.map { it.alias.canonical() } shouldBe listOf("o0", "o1", "o2", "o3")
         result.referenceOccurrences.map { it.candidateIndex } shouldBe listOf(0, 0, 1, 1)
+    }
+
+    test("HISTC-C-MULTI-01 differently identified private-look cards receive references") {
+        val result = accepted(
+            project(
+                before = twoCardState(cardStamp = 1L, otherStamp = 1L),
+                after = twoCardState(cardStamp = 1L, otherStamp = 1L),
+                privateLook = true,
+                candidates = listOf(
+                    candidate(
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "mtn",
+                        after = HistoryCObjectWitness(card, 1L),
+                    ),
+                    candidate(
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "forest",
+                        after = HistoryCObjectWitness(otherCard, 1L),
+                    ),
+                ),
+            ),
+        )
+
+        result.referenceOccurrences shouldHaveSize 2
+        result.referenceOccurrences.map { it.cardDefinitionId to it.alias.canonical() }
+            .toMap() shouldBe mapOf("forest" to "o0", "mtn" to "o1")
+    }
+
+    test("HISTC-C-MULTI-02 raw private-look card order does not change semantic aliases") {
+        fun run(candidates: List<HistoryCReferenceCandidateV1>) = accepted(
+            project(
+                before = twoCardState(cardStamp = 1L, otherStamp = 1L),
+                after = twoCardState(cardStamp = 1L, otherStamp = 1L),
+                privateLook = true,
+                candidates = candidates,
+            ),
+        ).referenceOccurrences.associate { it.cardDefinitionId to it.alias.canonical() }
+
+        val first = run(
+            listOf(
+                candidate(
+                    disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                    definition = "mtn",
+                    after = HistoryCObjectWitness(card, 1L),
+                ),
+                candidate(
+                    disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                    definition = "forest",
+                    after = HistoryCObjectWitness(otherCard, 1L),
+                ),
+            ),
+        )
+        val reversed = run(
+            listOf(
+                candidate(
+                    disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                    definition = "forest",
+                    after = HistoryCObjectWitness(otherCard, 1L),
+                ),
+                candidate(
+                    disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                    definition = "mtn",
+                    after = HistoryCObjectWitness(card, 1L),
+                ),
+            ),
+        )
+
+        reversed shouldBe first
+    }
+
+    test("HISTC-C-MULTI-03 same-definition private-look cards fail symmetry closed") {
+        val initial = registry()
+        val result = rejected(
+            project(
+                before = twoCardState(cardStamp = 1L, otherStamp = 1L, otherDefinition = "mtn"),
+                after = twoCardState(cardStamp = 1L, otherStamp = 1L, otherDefinition = "mtn"),
+                registry = initial,
+                privateLook = true,
+                candidates = listOf(
+                    candidate(
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "mtn",
+                        after = HistoryCObjectWitness(card, 1L),
+                    ),
+                    candidate(
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "mtn",
+                        after = HistoryCObjectWitness(otherCard, 1L),
+                    ),
+                ),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
+    }
+
+    test("HISTC-C-MULTI-04 wrong stamp rejects the complete batch atomically") {
+        val initial = registry()
+        val result = rejected(
+            project(
+                before = twoCardState(cardStamp = 1L, otherStamp = 1L),
+                after = twoCardState(cardStamp = 1L, otherStamp = 1L),
+                registry = initial,
+                privateLook = true,
+                candidates = listOf(
+                    candidate(
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "mtn",
+                        after = HistoryCObjectWitness(card, 1L),
+                    ),
+                    candidate(
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "forest",
+                        after = HistoryCObjectWitness(otherCard, 99L),
+                    ),
+                ),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.STALE_AFTER_WITNESS
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
     }
 
     test("HISTC-11_BLINK_NEW_ALIAS") {

@@ -10,6 +10,7 @@ import com.wingedsheep.engine.state.components.player.KnownInformationFactV1
 import com.wingedsheep.engine.state.components.player.KnownInformationLedgerComponentV1
 import com.wingedsheep.engine.view.Visibility
 import com.wingedsheep.gym.CommittedRulesTransition
+import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 
@@ -75,8 +76,15 @@ internal class PerspectiveReferenceProjectorV1(
             is PerspectiveAliasAllocationResult.Accepted -> check
         }
 
+        val orderedCandidates = when (val ordering = orderCandidates(evidence)) {
+            is CandidateOrdering.Accepted -> ordering.candidates
+            is CandidateOrdering.Rejected ->
+                return PerspectiveReferenceProjectionResult.Rejected(ordering.failure)
+        }
         val orderedEndpoints = mutableListOf<Endpoint>()
-        for ((candidateIndex, candidate) in evidence.candidates.withIndex()) {
+        for (indexedCandidate in orderedCandidates) {
+            val candidateIndex = indexedCandidate.originalCandidateIndex
+            val candidate = indexedCandidate.candidate
             val endpoints = endpointsFor(candidateIndex, candidate, transition)
             for (endpoint in endpoints) {
                 when (val decision = authorize(endpoint, perspectivePlayerId)) {
@@ -183,6 +191,47 @@ internal class PerspectiveReferenceProjectorV1(
             else -> emptyList()
         }
     }
+
+    private fun orderCandidates(
+        evidence: HistoryCReferenceEvidenceV1,
+    ): CandidateOrdering {
+        val ordered = mutableListOf<IndexedCandidate>()
+        val groups = evidence.candidates.indices.groupBy { evidence.candidates[it].slot.eventOrdinal }
+        for (group in groups.values) {
+            val candidates = group.map { index ->
+                IndexedCandidate(index, evidence.candidates[index])
+            }
+            if (candidates.size <= 1 || !isPrivateLook(evidence, group.first())) {
+                ordered += candidates
+                continue
+            }
+
+            // A multi-object private look has no public producer-order authority. Only already
+            // authorized printed identities may provide a deterministic semantic sort key. If
+            // any member remains opaque, C fails closed rather than using raw cardIds/hand order.
+            if (candidates.any {
+                    it.candidate.identityDisclosure != HistoryCIdentityDisclosure.DEFINITION_KNOWN ||
+                        it.candidate.cardDefinitionId.isNullOrBlank()
+                }
+            ) {
+                return CandidateOrdering.Rejected(
+                    HistoryCFailure(HistoryCFailureCode.UNORDERED_SYMMETRY),
+                )
+            }
+            ordered += candidates.sortedWith(
+                compareBy<IndexedCandidate>({ it.candidate.cardDefinitionId }, { it.candidate.slot.roleOrdinal }),
+            )
+        }
+        return CandidateOrdering.Accepted(ordered)
+    }
+
+    private fun isPrivateLook(
+        evidence: HistoryCReferenceEvidenceV1,
+        eventOrdinal: Int,
+    ): Boolean = evidence.eventBatch.entries.getOrNull(eventOrdinal)?.eventFamily in setOf(
+        PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
+        PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+    )
 
     private fun authorize(
         endpoint: Endpoint,
@@ -385,6 +434,11 @@ internal class PerspectiveReferenceProjectorV1(
         val isAfter: Boolean,
     )
 
+    private data class IndexedCandidate(
+        val originalCandidateIndex: Int,
+        val candidate: HistoryCReferenceCandidateV1,
+    )
+
     private data class EndpointGroupKey(
         val eventOrdinal: Int,
         val isAfter: Boolean,
@@ -394,6 +448,11 @@ internal class PerspectiveReferenceProjectorV1(
         data class Reference(val endpoint: Endpoint) : EndpointDecision
         data class Reject(val failure: HistoryCFailure) : EndpointDecision
         data object Omit : EndpointDecision
+    }
+
+    private sealed interface CandidateOrdering {
+        data class Accepted(val candidates: List<IndexedCandidate>) : CandidateOrdering
+        data class Rejected(val failure: HistoryCFailure) : CandidateOrdering
     }
 
     private sealed interface EndpointAllocation {

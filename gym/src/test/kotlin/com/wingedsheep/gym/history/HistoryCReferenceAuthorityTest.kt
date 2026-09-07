@@ -236,7 +236,7 @@ class HistoryCReferenceAuthorityTest : FunSpec({
             .evidence.candidates.single().afterWitness shouldBe HistoryCObjectWitness(card, 2L)
     }
 
-    test("HISTC-C-05 multi-object private look remains unsupported") {
+    test("HISTC-C-05 multi-object private look binds each exact witness") {
         val event = LookedAtCardsEvent(
             playerId = perspective,
             cardIds = listOf(card, otherCard),
@@ -244,12 +244,27 @@ class HistoryCReferenceAuthorityTest : FunSpec({
         )
         val result = resultFor(
             events = listOf(event),
-            envelope = envelope(candidates = listOf(candidate())),
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        roleOrdinal = 0,
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "mtn",
+                    ),
+                    candidate(
+                        roleOrdinal = 1,
+                        afterWitness = HistoryCObjectWitness(otherCard, 3L),
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "other",
+                    ),
+                ),
+            ),
             after = state(2L, includeOtherCard = true),
         )
 
-        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
-            .failure.code shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED
+        val accepted = result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+        accepted.evidence.candidates shouldHaveSize 2
+        accepted.evidence.candidates.map { it.slot.roleOrdinal } shouldBe listOf(0, 1)
     }
 
     test("HISTC-07 face-down object is accepted as opaque without printed identity") {
