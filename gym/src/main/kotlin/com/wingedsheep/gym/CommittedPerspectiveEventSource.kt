@@ -6,6 +6,11 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.gym.contract.PerspectiveEventProjector
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
+import com.wingedsheep.gym.history.HistoryCReferenceAuthority
+import com.wingedsheep.gym.history.HistoryCReferenceAuthorityResult
+import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeV1
+import com.wingedsheep.gym.history.HistoryCFailure
+import com.wingedsheep.gym.history.HistoryCFailureCode
 
 /**
  * Internal token produced only after one successful strict Rules transition.
@@ -61,5 +66,23 @@ internal class CommittedPerspectiveEventSource(
             beforeState = transition.beforeState,
             afterState = transition.afterState,
         )
+    }
+
+    /** Validate internal History-C candidates against the last committed before/after witnesses. */
+    internal fun lastCommittedReferenceEvidence(
+        envelope: HistoryCReferenceEnvelopeV1,
+    ): HistoryCReferenceAuthorityResult {
+        if (!captureEnabled) {
+            return HistoryCReferenceAuthorityResult.Rejected(
+                HistoryCFailure(HistoryCFailureCode.FORK_OR_SPECULATIVE_SOURCE),
+            )
+        }
+        val transition = lastTransition ?: return HistoryCReferenceAuthorityResult.Rejected(
+            HistoryCFailure(HistoryCFailureCode.UNCOMMITTED_TRANSITION),
+        )
+        val projection = checkNotNull(projectLast(envelope.perspectivePlayerId)) {
+            "Committed History-C projection disappeared after capture"
+        }
+        return HistoryCReferenceAuthority.validate(transition, projection, envelope)
     }
 }
