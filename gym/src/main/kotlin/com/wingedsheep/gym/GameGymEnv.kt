@@ -278,6 +278,7 @@ class GameGymEnv(
             observation = remappedObservation,
             registry = result.registry.remapIds(idMapping),
             diagnostics = result.diagnostics,
+            commanderPublicState = result.commanderPublicState,
         )
         cachedObservation = remapped
         cachedStepCount = environment.stepCount
