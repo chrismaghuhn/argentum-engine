@@ -11,6 +11,9 @@ import com.wingedsheep.gym.history.HistoryCReferenceAuthorityResult
 import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeV1
 import com.wingedsheep.gym.history.HistoryCFailure
 import com.wingedsheep.gym.history.HistoryCFailureCode
+import com.wingedsheep.gym.history.PerspectiveAliasRegistryV1
+import com.wingedsheep.gym.history.PerspectiveReferenceProjectorV1
+import com.wingedsheep.gym.history.PerspectiveReferenceProjectionResult
 
 /**
  * Internal token produced only after one successful strict Rules transition.
@@ -37,6 +40,7 @@ internal class CommittedPerspectiveEventSource(
     private val captureEnabled: Boolean = true,
 ) {
     private val projector = PerspectiveEventProjector(cardRegistry)
+    private val referenceProjector = PerspectiveReferenceProjectorV1(cardRegistry)
 
     private var lastTransition: CommittedRulesTransition? = null
 
@@ -84,5 +88,38 @@ internal class CommittedPerspectiveEventSource(
             "Committed History-C projection disappeared after capture"
         }
         return HistoryCReferenceAuthority.validate(transition, projection, envelope)
+    }
+
+    /**
+     * Project the last successful committed transition through the accepted A+B+C seam.
+     *
+     * This adapter is internal and obtains A evidence from this source itself; callers cannot
+     * turn arbitrary model-facing or speculative state into trusted History-C references.
+     */
+    internal fun lastCommittedReferenceProjection(
+        semanticEpisodeId: String,
+        registry: PerspectiveAliasRegistryV1,
+        envelope: HistoryCReferenceEnvelopeV1,
+    ): PerspectiveReferenceProjectionResult {
+        if (!captureEnabled) {
+            return PerspectiveReferenceProjectionResult.Rejected(
+                HistoryCFailure(HistoryCFailureCode.FORK_OR_SPECULATIVE_SOURCE),
+            )
+        }
+        val transition = lastTransition ?: return PerspectiveReferenceProjectionResult.Rejected(
+            HistoryCFailure(HistoryCFailureCode.UNCOMMITTED_TRANSITION),
+        )
+        return when (val evidence = lastCommittedReferenceEvidence(envelope)) {
+            is HistoryCReferenceAuthorityResult.Rejected ->
+                PerspectiveReferenceProjectionResult.Rejected(evidence.failure)
+
+            is HistoryCReferenceAuthorityResult.Accepted -> referenceProjector.project(
+                semanticEpisodeId = semanticEpisodeId,
+                perspectivePlayerId = envelope.perspectivePlayerId,
+                transition = transition,
+                evidence = evidence.evidence,
+                registry = registry,
+            )
+        }
     }
 }

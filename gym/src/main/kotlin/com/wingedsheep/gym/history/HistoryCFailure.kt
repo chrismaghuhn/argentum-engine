@@ -30,6 +30,9 @@ internal enum class HistoryCFailureCode {
     INVALID_REGISTRY_SCHEMA_IDENTITY,
     INVALID_REGISTRY_STATE,
     CROSS_INCARNATION_REFERENCE_UNSUPPORTED,
+    MISSING_HISTORY_B_CONTINUITY_EVIDENCE,
+    IDENTITY_AUTHORITY_MISMATCH,
+    BLOCKED_ON_AUTHORITATIVE_METADATA,
 }
 
 /** Non-wire diagnostic; it deliberately carries no entity IDs, card names, or hidden values. */

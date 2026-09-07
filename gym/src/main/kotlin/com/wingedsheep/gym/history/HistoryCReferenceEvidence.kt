@@ -2,6 +2,8 @@ package com.wingedsheep.gym.history
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.HandLookedAtEvent
+import com.wingedsheep.engine.core.LookedAtCardsEvent
 import com.wingedsheep.engine.core.TurnedFaceDownEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.state.GameState
@@ -191,7 +193,12 @@ internal object HistoryCReferenceAuthority {
 
         val rawEvent = rawEventForProjectedOrdinal(transition, projection, candidate.slot.eventOrdinal)
             ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
-        validateCandidateAgainstRawEvent(transition, rawEvent, candidate)?.let { return it }
+        validateCandidateAgainstRawEvent(
+            transition = transition,
+            event = rawEvent,
+            candidate = candidate,
+            perspectivePlayerId = projection.batch.perspectivePlayerId,
+        )?.let { return it }
 
         if (candidate.beforeWitness != null &&
             !containsWitness(transition.beforeState, candidate.beforeWitness)
@@ -247,8 +254,25 @@ internal object HistoryCReferenceAuthority {
         transition: CommittedRulesTransition,
         event: GameEvent,
         candidate: HistoryCReferenceCandidateV1,
+        perspectivePlayerId: EntityId,
     ): HistoryCFailure? = when (event) {
         is CardsRevealedEvent -> validateCardsRevealedCandidate(transition, event, candidate)
+        is HandLookedAtEvent -> validateSingleObjectLookCandidate(
+            transition = transition,
+            perspectivePlayerId = perspectivePlayerId,
+            viewingPlayerId = event.viewingPlayerId,
+            cardIds = event.cardIds,
+            candidate = candidate,
+        )
+
+        is LookedAtCardsEvent -> validateSingleObjectLookCandidate(
+            transition = transition,
+            perspectivePlayerId = perspectivePlayerId,
+            viewingPlayerId = event.playerId,
+            cardIds = event.cardIds,
+            candidate = candidate,
+        )
+
         is TurnedFaceDownEvent -> validateSingleObjectCandidate(
             transition = transition,
             eventEntityId = event.entityId,
@@ -274,6 +298,30 @@ internal object HistoryCReferenceAuthority {
         )
 
         else -> HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+    }
+
+    private fun validateSingleObjectLookCandidate(
+        transition: CommittedRulesTransition,
+        perspectivePlayerId: EntityId,
+        viewingPlayerId: EntityId,
+        cardIds: List<EntityId>,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCFailure? {
+        if (viewingPlayerId != perspectivePlayerId || cardIds.isEmpty()) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+        }
+        if (candidate.referenceKind != HistoryCReferenceKind.CARD_OR_RULES_OBJECT ||
+            candidate.slot.role != HistoryCReferenceSlotRole.EVENT_SUBJECT ||
+            candidate.slot.roleOrdinal !in cardIds.indices ||
+            candidate.orderProof.authority != HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER ||
+            candidate.orderProof.rank != candidate.slot.roleOrdinal
+        ) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        if (!candidateWitnessesEntity(candidate, cardIds[candidate.slot.roleOrdinal])) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        return validateDefinitionAgainstWitnessState(transition, candidate)
     }
 
     private fun validateCardsRevealedCandidate(

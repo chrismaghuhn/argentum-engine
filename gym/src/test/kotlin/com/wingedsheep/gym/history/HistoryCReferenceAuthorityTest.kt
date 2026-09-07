@@ -2,6 +2,7 @@ package com.wingedsheep.gym.history
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.LookedAtCardsEvent
 import com.wingedsheep.engine.core.TurnedFaceDownEvent
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
@@ -211,6 +212,59 @@ class HistoryCReferenceAuthorityTest : FunSpec({
         accepted.evidence.candidates.single().identityDisclosure shouldBe
             HistoryCIdentityDisclosure.DEFINITION_KNOWN
         accepted.evidence.candidates.single().cardDefinitionId shouldBe "mtn"
+    }
+
+    test("HISTC-C-05 single-object private look binds the exact viewed witness") {
+        val event = LookedAtCardsEvent(
+            playerId = perspective,
+            cardIds = listOf(card),
+            source = "private look",
+        )
+        val result = resultFor(
+            events = listOf(event),
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "mtn",
+                    ),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+            .evidence.candidates.single().afterWitness shouldBe HistoryCObjectWitness(card, 2L)
+    }
+
+    test("HISTC-C-05 multi-object private look binds each exact witness") {
+        val event = LookedAtCardsEvent(
+            playerId = perspective,
+            cardIds = listOf(card, otherCard),
+            source = "private look",
+        )
+        val result = resultFor(
+            events = listOf(event),
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        roleOrdinal = 0,
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "mtn",
+                    ),
+                    candidate(
+                        roleOrdinal = 1,
+                        afterWitness = HistoryCObjectWitness(otherCard, 3L),
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "other",
+                    ),
+                ),
+            ),
+            after = state(2L, includeOtherCard = true),
+        )
+
+        val accepted = result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+        accepted.evidence.candidates shouldHaveSize 2
+        accepted.evidence.candidates.map { it.slot.roleOrdinal } shouldBe listOf(0, 1)
     }
 
     test("HISTC-07 face-down object is accepted as opaque without printed identity") {
