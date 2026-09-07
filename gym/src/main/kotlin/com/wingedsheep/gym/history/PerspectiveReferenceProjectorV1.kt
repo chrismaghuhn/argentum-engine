@@ -75,17 +75,12 @@ internal class PerspectiveReferenceProjectorV1(
             is PerspectiveAliasAllocationResult.Accepted -> check
         }
 
-        val beforeEndpoints = mutableListOf<Endpoint>()
-        val afterEndpoints = mutableListOf<Endpoint>()
+        val orderedEndpoints = mutableListOf<Endpoint>()
         for ((candidateIndex, candidate) in evidence.candidates.withIndex()) {
             val endpoints = endpointsFor(candidateIndex, candidate, transition)
             for (endpoint in endpoints) {
                 when (val decision = authorize(endpoint, perspectivePlayerId)) {
-                    is EndpointDecision.Reference -> if (endpoint.isAfter) {
-                        afterEndpoints += decision.endpoint
-                    } else {
-                        beforeEndpoints += decision.endpoint
-                    }
+                    is EndpointDecision.Reference -> orderedEndpoints += decision.endpoint
 
                     EndpointDecision.Omit -> Unit
                     is EndpointDecision.Reject -> {
@@ -95,29 +90,36 @@ internal class PerspectiveReferenceProjectorV1(
             }
         }
 
+        validateEndpointGroups(
+            registry = registryCheck.registry,
+            endpoints = orderedEndpoints,
+            evidence = evidence,
+            semanticEpisodeId = semanticEpisodeId,
+        )?.let { return PerspectiveReferenceProjectionResult.Rejected(it) }
+
         var nextRegistry = registryCheck.registry
         val occurrences = mutableListOf<PerspectiveAliasAssignment>()
 
-        when (val before = allocateEndpoints(nextRegistry, beforeEndpoints, evidence, semanticEpisodeId)) {
-            is EndpointAllocation.Accepted -> {
-                nextRegistry = before.registry
-                occurrences += before.assignments
+        // Preserve A's first-reference order exactly. A before/after pair is adjacent in this
+        // sequence; C must not introduce a global old-endpoint phase followed by a new-endpoint
+        // phase. Symmetry is validated separately per event/endpoint phase below so sequential
+        // single-endpoint allocation cannot weaken HISTC-B's duplicate policy.
+        for (endpoint in orderedEndpoints) {
+            when (val allocation = allocateEndpoints(
+                nextRegistry,
+                listOf(endpoint),
+                evidence,
+                semanticEpisodeId,
+            )) {
+                is EndpointAllocation.Accepted -> {
+                    nextRegistry = allocation.registry
+                    occurrences += allocation.assignments
+                }
+
+                is EndpointAllocation.Rejected -> return PerspectiveReferenceProjectionResult.Rejected(
+                    allocation.failure,
+                )
             }
-
-            is EndpointAllocation.Rejected -> return PerspectiveReferenceProjectionResult.Rejected(
-                before.failure,
-            )
-        }
-
-        when (val after = allocateEndpoints(nextRegistry, afterEndpoints, evidence, semanticEpisodeId)) {
-            is EndpointAllocation.Accepted -> {
-                nextRegistry = after.registry
-                occurrences += after.assignments
-            }
-
-            is EndpointAllocation.Rejected -> return PerspectiveReferenceProjectionResult.Rejected(
-                after.failure,
-            )
         }
 
         nextRegistry = reconcile(nextRegistry, transition.afterState, perspectivePlayerId)
@@ -304,6 +306,35 @@ internal class PerspectiveReferenceProjectorV1(
         }
     }
 
+    /**
+     * Preserve B's symmetry policy without letting a before/after pair look like two unordered
+     * candidates. The validation registry is disposable; only the ordered single-endpoint pass
+     * below can mutate the returned registry.
+     */
+    private fun validateEndpointGroups(
+        registry: PerspectiveAliasRegistryV1,
+        endpoints: List<Endpoint>,
+        evidence: HistoryCReferenceEvidenceV1,
+        semanticEpisodeId: String,
+    ): HistoryCFailure? {
+        var validationRegistry = registry
+        val groups = endpoints.groupBy { EndpointGroupKey(it.candidate.slot.eventOrdinal, it.isAfter) }
+        for (group in groups.values) {
+            if (group.size <= 1) continue
+            when (
+                val allocation = PerspectiveAliasAllocator.allocate(
+                    registry = validationRegistry,
+                    semanticEpisodeId = semanticEpisodeId,
+                    evidence = evidence.copy(candidates = group.map { it.candidate }),
+                )
+            ) {
+                is PerspectiveAliasAllocationResult.Rejected -> return allocation.failure
+                is PerspectiveAliasAllocationResult.Accepted -> validationRegistry = allocation.registry
+            }
+        }
+        return null
+    }
+
     private fun reconcile(
         registry: PerspectiveAliasRegistryV1,
         afterState: GameState,
@@ -351,6 +382,11 @@ internal class PerspectiveReferenceProjectorV1(
         val candidate: HistoryCReferenceCandidateV1,
         val witness: HistoryCObjectWitness,
         val state: GameState,
+        val isAfter: Boolean,
+    )
+
+    private data class EndpointGroupKey(
+        val eventOrdinal: Int,
         val isAfter: Boolean,
     )
 

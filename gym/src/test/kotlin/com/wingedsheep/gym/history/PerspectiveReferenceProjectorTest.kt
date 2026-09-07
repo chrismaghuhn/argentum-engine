@@ -1,5 +1,13 @@
 package com.wingedsheep.gym.history
 
+/**
+ * Rules provenance verified during HISTC-C implementation on 2026-09-07:
+ * https://magic.wizards.com/en/rules links to
+ * https://media.wizards.com/2026/downloads/MagicCompRules%2020260819.txt.
+ * The linked TXT states that the rules are effective as of August 7, 2026. The older
+ * `MagicCompRules 20260807.txt` URL is not currently published (HTTP 404).
+ */
+
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
@@ -134,6 +142,15 @@ class PerspectiveReferenceProjectorTest : FunSpec({
             stack = if (zone == Zone.STACK) listOf(entityId) else emptyList(),
             turnOrder = players,
             objectIdentityStamps = mapOf(entityId to stamp),
+        )
+    }
+
+    fun twoCardState(cardStamp: Long, otherStamp: Long): GameState {
+        val base = state(stamp = cardStamp)
+        return base.copy(
+            entities = base.entities + (otherCard to cardContainer(p2, definition = "forest")),
+            zones = mapOf(ZoneKey(p2, Zone.BATTLEFIELD) to listOf(card, otherCard)),
+            objectIdentityStamps = mapOf(card to cardStamp, otherCard to otherStamp),
         )
     }
 
@@ -362,6 +379,32 @@ class PerspectiveReferenceProjectorTest : FunSpec({
 
         result.referenceOccurrences.map { it.alias.canonical() } shouldBe listOf("o0", "o1")
         result.incarnationRelations.shouldBeEmpty()
+    }
+
+    test("HISTC-C-REVIEW-15_MULTI_MOVEMENT_OCCURRENCE_ORDER_PRESERVED") {
+        val result = accepted(
+            project(
+                before = twoCardState(cardStamp = 1L, otherStamp = 3L),
+                after = twoCardState(cardStamp = 2L, otherStamp = 4L),
+                candidates = listOf(
+                    candidate(
+                        before = HistoryCObjectWitness(card, 1L),
+                        after = HistoryCObjectWitness(card, 2L),
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "mtn",
+                    ),
+                    candidate(
+                        before = HistoryCObjectWitness(otherCard, 3L),
+                        after = HistoryCObjectWitness(otherCard, 4L),
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = "forest",
+                    ),
+                ),
+            ),
+        )
+
+        result.referenceOccurrences.map { it.alias.canonical() } shouldBe listOf("o0", "o1", "o2", "o3")
+        result.referenceOccurrences.map { it.candidateIndex } shouldBe listOf(0, 0, 1, 1)
     }
 
     test("HISTC-11_BLINK_NEW_ALIAS") {
