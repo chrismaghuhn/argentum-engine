@@ -134,14 +134,14 @@ data class PerspectiveEventBatchV1(
 }
 
 /** Disposition assigned to every raw event seen by the projector. This is operational metadata. */
-enum class PerspectiveEventDisposition {
+internal enum class PerspectiveEventDisposition {
     EMITTED,
     INTENTIONALLY_HIDDEN,
     UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
 }
 
 /** Why an event could not cross the A projection boundary. This is operational metadata. */
-enum class PerspectiveEventUnsupportedReason {
+internal enum class PerspectiveEventUnsupportedReason {
     REQUIRES_KNOWLEDGE_LEDGER_B,
     REQUIRES_SEMANTIC_REFERENCE_C,
     REQUIRES_BOTH_B_AND_C,
@@ -150,13 +150,13 @@ enum class PerspectiveEventUnsupportedReason {
 }
 
 /** Operational evidence for one unsupported raw event. Never part of model-facing serialization. */
-data class PerspectiveEventDiagnostic(
+internal data class PerspectiveEventDiagnostic(
     val rawEventType: String,
     val reason: PerspectiveEventUnsupportedReason,
 )
 
 /** Complete classification aligned one-for-one with the input raw event list. */
-data class PerspectiveEventClassification(
+internal data class PerspectiveEventClassification(
     val rawEventType: String,
     val disposition: PerspectiveEventDisposition,
     val reason: PerspectiveEventUnsupportedReason? = null,
@@ -194,7 +194,7 @@ data class PerspectiveEventClassification(
  * This operational result is not serializable and is not itself a model input. Only [batch] may
  * cross the model boundary, and only when [isComplete] is true.
  */
-data class PerspectiveEventProjectionResult(
+internal data class PerspectiveEventProjectionResult(
     val batch: PerspectiveEventBatchV1,
     val classifications: List<PerspectiveEventClassification>,
 ) {
@@ -214,7 +214,7 @@ data class PerspectiveEventProjectionResult(
     val isComplete: Boolean
         get() = diagnostics.isEmpty()
 
-    fun requireComplete(): PerspectiveEventBatchV1 {
+    internal fun requireComplete(): PerspectiveEventBatchV1 {
         require(isComplete) {
             "Perspective event projection is incomplete: ${diagnostics.joinToString()}"
         }

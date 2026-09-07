@@ -62,8 +62,8 @@ event list to the model-facing contract.
 The wrapper calls the existing strict environment operation first, consumes the resulting committed
 token, and then hands it to `CommittedPerspectiveEventSource`. A thrown validation, stale-action,
 unsupported-path, or engine exception reaches the existing failure classification before a new
-source capture is made. The last retrievable projection is invalidated on an external failure so a
-failed call cannot be mistaken for a newly committed batch.
+source capture is made. A failed call cannot create a new batch. Once the strict Rules transition
+has been captured, a later observation-build failure does not invalidate that committed source fact.
 
 ### 2.3 Explicit exclusions
 
@@ -95,7 +95,8 @@ PERSPECTIVE_EVENT_BATCH_V1_SCHEMA_IDENTITY=argentum-gym-perspective-event-batch@
 The additive DTO is in `gym` and does not change `TrainingObservation`, `PlayerObservationV1`,
 `CompleteLegalDomainV1`, `TrajectoryV1`, `CommanderPublicStateV1`, or the existing `SchemaHash`.
 The top-level `perspectivePlayerId` scopes which player information set the batch represents. It is
-not an event-object identity and is not repeated inside event payloads.
+an explicitly validated public player-scope reference: the Gym seam accepts only a player from the
+current episode roster. It is not an event-object identity and is not repeated inside event payloads.
 
 ```text
 PerspectiveEventBatchV1 {
@@ -156,8 +157,11 @@ reasons are:
 - no visible source or destination endpoint for a `ZoneChangeEvent` under the shared `Visibility`
   service;
 - a `HandLookedAtEvent` viewed by a player other than its `viewingPlayerId`;
-- a `LookedAtCardsEvent` for a player other than its `playerId`;
-- a `CardsRevealedEvent` whose explicit `revealToSelf=false` excludes the revealing player.
+- a `LookedAtCardsEvent` for a player other than its `playerId`.
+
+`CardsRevealedEvent.revealToSelf` is not an audience rule. It controls a client overlay only; the
+event's semantic contract says the reveal was shown to all players, so both perspectives receive
+the public occurrence fact.
 
 `UNSUPPORTED_FOR_PERSPECTIVE_HISTORY` produces an operational diagnostic with the raw event type
 and one of the B/C/event-time/uncharacterized reasons. It is not converted into an empty successful
@@ -206,7 +210,7 @@ The following event families currently have an emitted path that omits raw refer
 | `DrawFailedEvent` | Relative player role; diagnostic reason omitted |
 | `LibraryShuffledEvent`, `LibrarySearchedEvent` | Relative player role; no knowledge epoch or card content |
 | `ScriedEvent`, `SurveiledEvent` | Relative player role and count; looked-at cards omitted |
-| `HandRevealedEvent`, `CardsRevealedEvent` | Public reveal fact and count; revealed IDs/names omitted |
+| `HandRevealedEvent`, `CardsRevealedEvent` | Public reveal fact and count; revealed IDs/names omitted; `revealToSelf` is ignored for history audience |
 | `HandLookedAtEvent`, `LookedAtCardsEvent` for the authorized viewer | Perspective-private fact and count; card IDs/names omitted |
 | `AttackersDeclaredEvent`, `BlockersDeclaredEvent`, `DamageAssignedEvent` | Public role/count/aggregate damage facts; object references omitted |
 | `CreatureTypeChosenEvent` | Relative player role and chosen type |
@@ -219,7 +223,7 @@ identity or knowledge continuity associated with that event is already available
 
 ### 4.3 No stable semantic aliases
 
-The batch never serializes:
+Event payloads never serialize:
 
 ```text
 raw EntityId
@@ -228,6 +232,10 @@ allocation order / UUID
 runtime action handle
 decision ID / continuation ID
 ```
+
+The batch does intentionally serialize `perspectivePlayerId` as the validated public player-scope
+reference described in §3.1. That field identifies the authorized information-set owner; it is not
+a physical card/object identity and is not an event payload reference.
 
 Card names or face names are not used as cross-step identity. A public card-definition fact may be
 added by a later slice only where the event-time visibility proof is explicit. Cross-step physical
@@ -245,7 +253,7 @@ count is reported separately because some emitted families have an explicit hidd
 ```text
 CURRENT_EVENT_FAMILIES_TOTAL=104
 EMITTED_SAFE_FAMILIES=36
-INTENTIONALLY_HIDDEN_FAMILIES=4 (overlaps emitted families with conditional hidden paths)
+INTENTIONALLY_HIDDEN_FAMILIES=3 (overlaps emitted families with conditional hidden paths)
 DEFERRED_TO_HISTORY_B=1
 DEFERRED_TO_HISTORY_C=46
 DEFERRED_TO_BOTH=9
@@ -294,12 +302,11 @@ SpellCopiedEvent
 ResolvedEvent
 ```
 
-### 5.2 Explicit hidden paths (4, overlapping 5.1)
+### 5.2 Explicit hidden paths (3, overlapping 5.1)
 
 ```text
 ZoneChangeEvent
 HandLookedAtEvent
-CardsRevealedEvent
 LookedAtCardsEvent
 ```
 
@@ -469,16 +476,17 @@ Focused tests live in
 
 ```text
 HISTA-01 strict committed action → one repeatable immutable batch
-HISTA-02 failed action → no new authoritative batch
+HISTA-02 failed action → no new authoritative batch; prior commit remains identifiable
 HISTA-03 forked Gym transition → no committed capture
 legacy GameEnvironment simulation → no committed capture
 HISTA-04 hidden opponent hand/card mutation → identical P1 bytes and digest
 HISTA-05 hidden opponent library movement → identical P1 bytes and intentional hiding
 HISTA-06 hidden event insertion → no ordinal gap or digest change
 HISTA-07 private P2 hand look → absent from P1, present only for P2
-HISTA-08 public life event → emitted for both perspectives
+HISTA-08 public life/reveal events → emitted for both perspectives, including `revealToSelf=false`
+post-commit observation/consumer failure → committed source remains available
 HISTA-09 face-down identity → absent from serialization
-HISTA-10 raw EntityId/source-coordinate fields → absent; DTO rejects identity keys
+HISTA-10 raw event-object EntityId/source-coordinate fields → absent; DTO rejects identity keys
 HISTA-11 uncharacterized event → unsupported diagnostic, not silent drop
 HISTA-12 identical seed/config/decision → identical bytes and digest
 HISTA-13 reset → source cleared
@@ -493,7 +501,7 @@ The focused native Gradle run completed successfully after the RED compile chara
   --tests com.wingedsheep.gym.CommittedPerspectiveEventSourceTest \
   --console=plain
 
-16 tests completed, 0 failed
+17 tests completed, 0 failed
 BUILD SUCCESSFUL
 ```
 
@@ -523,9 +531,8 @@ LOCKED_DECKS_UNCHANGED=YES
 ```
 
 No event history is added to `ObservationResult`, `TrainingObservation`, `PlayerObservationV1`, or
-`TrajectoryV1`. The raw capture/projector remain internal; `GameGymEnv` exposes only the
-non-serialized projection result (batch plus operational diagnostics) pending a later reviewed
-history binding.
+`TrajectoryV1`. The raw capture/projector and projection result remain internal; only the
+serializable `PerspectiveEventBatchV1` DTO is public, pending a later reviewed history binding.
 
 ## 10. Limitations and next dependencies
 
@@ -579,12 +586,13 @@ SPECULATIVE_FORK_REJECTION=PASS
 PERSPECTIVE_EVENT_PROJECTION=PASS
 PERSPECTIVE_LOCAL_ORDINALS=PASS
 HIDDEN_EVENT_NON_INTERFERENCE=PASS
-RAW_ENTITY_ID_SERIALIZED=NO
+RAW_ENTITY_ID_SERIALIZED=NO_FOR_EVENT_OBJECTS
+PERSPECTIVE_PLAYER_ID_SERIALIZED=YES_EXPLICIT_VALIDATED_PUBLIC_PLAYER_SCOPE
 RAW_SOURCE_COORDINATE_SERIALIZED=NO
 
 CURRENT_EVENT_FAMILIES_TOTAL=104
 EMITTED_SAFE_FAMILIES=36
-INTENTIONALLY_HIDDEN_FAMILIES=4
+INTENTIONALLY_HIDDEN_FAMILIES=3
 DEFERRED_TO_HISTORY_B=1
 DEFERRED_TO_HISTORY_C=46
 DEFERRED_TO_BOTH=9
@@ -596,7 +604,7 @@ STABLE_SEMANTIC_ALIAS_IMPLEMENTED=NO
 PERSPECTIVE_HISTORY_V1_IMPLEMENTED=NO
 TRAJECTORY_BINDING_IMPLEMENTED=NO
 
-FOCUSED_TESTS=PASS__16_of_16
+FOCUSED_TESTS=PASS__17_of_17
 RULES_TESTS=NOT_RUN__no_Rules_production_code_changed
 GYM_TESTS=PASS__native_gradle_full_module
 GYM_TRAINER_TESTS=PASS__native_gradle_full_module

@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.BendPerformedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
+import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
@@ -29,6 +30,7 @@ import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.string.shouldContain
 import io.kotest.matchers.string.shouldNotContain
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -86,6 +88,10 @@ class CommittedPerspectiveEventSourceTest : FunSpec({
         val repeatedProjection = gym.lastCommittedPerspectiveEventProjection(environment.playerIds[0])
             ?: error("Expected repeated projection for the committed Gym transition")
         projection.batch shouldBe repeatedProjection.batch
+        projection.batch.canonicalJson() shouldContain environment.playerIds[0].value
+        shouldThrow<IllegalArgumentException> {
+            gym.lastCommittedPerspectiveEventProjection(EntityId.of("not-a-player"))
+        }
     }
 
     test("HISTA-02 failed action produces no authoritative batch") {
@@ -101,11 +107,13 @@ class CommittedPerspectiveEventSourceTest : FunSpec({
         val pass = gym.observe().observation.legalActions.first { it.kind == "PassPriority" }
         gym.step(pass.actionId)
         gym.committedPerspectiveTransitionCount shouldBe 1
+        val previous = gym.lastCommittedPerspectiveEventProjection(environment.playerIds[0])
+            ?: error("Expected the prior committed projection")
 
         shouldThrow<IllegalArgumentException> { gym.step(Int.MAX_VALUE) }
 
         gym.committedPerspectiveTransitionCount shouldBe 1
-        gym.lastCommittedPerspectiveEventProjection(environment.playerIds[0]) shouldBe null
+        gym.lastCommittedPerspectiveEventProjection(environment.playerIds[0]) shouldBe previous
     }
 
     test("HISTA-03 forked Gym transitions cannot enter committed history") {
@@ -226,6 +234,38 @@ class CommittedPerspectiveEventSourceTest : FunSpec({
         p2Projection.batch.entries.single().eventFamily shouldBe PerspectiveEventFamily.LIFE_CHANGED
         p1Projection.batch.entries.single().semanticPayload["newLife"] shouldBe
             p2Projection.batch.entries.single().semanticPayload["newLife"]
+
+        val publicReveal = CardsRevealedEvent(
+            revealingPlayerId = p2,
+            cardIds = listOf(EntityId.of("revealed-card")),
+            cardNames = listOf("Revealed Card"),
+            revealToSelf = false,
+        )
+        project(listOf(publicReveal), p1).classifications.single().disposition shouldBe
+            PerspectiveEventDisposition.EMITTED
+        project(listOf(publicReveal), p2).classifications.single().disposition shouldBe
+            PerspectiveEventDisposition.EMITTED
+    }
+
+    test("committed source survives a failure after Rules commit") {
+        val cardRegistry = registry()
+        val environment = GameEnvironment.create(cardRegistry, executionMode = GameEnvironmentMode.TRUSTED)
+        environment.reset(config())
+        val source = CommittedPerspectiveEventSource(cardRegistry)
+        val actor = environment.playerIds[0]
+        val action = environment.legalActions().first().action
+
+        environment.stepStrict(action)
+        val committed = environment.consumeCommittedTransition()
+            ?: error("Expected a committed Rules transition token")
+        source.capture(committed)
+        val priorProjection = source.projectLast(actor)
+            ?: error("Expected a committed source projection")
+
+        shouldThrow<IllegalStateException> { error("post-commit observation failure") }
+
+        source.committedTransitionCount shouldBe 1
+        source.projectLast(actor) shouldBe priorProjection
     }
 
     test("HISTA-09 face-down identity is never serialized") {

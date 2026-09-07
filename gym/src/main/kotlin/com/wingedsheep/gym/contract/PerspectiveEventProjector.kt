@@ -199,17 +199,13 @@ internal class PerspectiveEventProjector(
             put("cardCount", event.cardIds.size)
         }
 
-        is CardsRevealedEvent -> if (!event.revealToSelf &&
-            event.revealingPlayerId == perspectivePlayerId
-        ) {
-            hidden("Reveal event explicitly excludes its revealing player")
-        } else {
-            emit(PerspectiveEventFamily.PUBLIC_CARDS_REVEALED) {
-                put("revealingPlayerRole", playerRole(event.revealingPlayerId, perspectivePlayerId))
-                put("cardCount", event.cardIds.size)
-                event.fromZone?.let { put("fromZone", it.name) }
-                event.toZone?.let { put("toZone", it.name) }
-            }
+        // `revealToSelf` controls a client overlay only. The GameEvent contract says the cards
+        // were revealed to all players, so it cannot be used as a history audience decision.
+        is CardsRevealedEvent -> emit(PerspectiveEventFamily.PUBLIC_CARDS_REVEALED) {
+            put("revealingPlayerRole", playerRole(event.revealingPlayerId, perspectivePlayerId))
+            put("cardCount", event.cardIds.size)
+            event.fromZone?.let { put("fromZone", it.name) }
+            event.toZone?.let { put("toZone", it.name) }
         }
 
         is LookedAtCardsEvent -> if (event.playerId == perspectivePlayerId) {

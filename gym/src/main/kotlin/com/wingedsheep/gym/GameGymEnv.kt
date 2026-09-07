@@ -172,7 +172,7 @@ class GameGymEnv(
      * forked/speculative Gym environment). An incomplete result is not safe to consume as a
      * complete history unit; inspect [PerspectiveEventProjectionResult.isComplete] first.
      */
-    fun lastCommittedPerspectiveEventProjection(
+    internal fun lastCommittedPerspectiveEventProjection(
         perspectivePlayerId: EntityId,
     ): PerspectiveEventProjectionResult? {
         require(perspectivePlayerId in environment.playerIds) {
@@ -343,15 +343,12 @@ class GameGymEnv(
         try {
             block()
         } catch (failure: UnsupportedPathFailure) {
-            committedPerspectiveEventSource.invalidateLastProjection()
             environment.recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
             throw failure
         } catch (failure: IllegalArgumentException) {
-            committedPerspectiveEventSource.invalidateLastProjection()
             environment.recordFailure(EpisodeFailureReason.PUBLIC_CHOICE_REJECTED)
             throw failure
         } catch (failure: RuntimeException) {
-            committedPerspectiveEventSource.invalidateLastProjection()
             environment.recordFailure(EpisodeFailureReason.ENGINE_EXCEPTION)
             throw failure
         }

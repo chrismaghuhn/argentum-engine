@@ -43,11 +43,6 @@ internal class CommittedPerspectiveEventSource(
         committedTransitionCount = 0
     }
 
-    /** Remove the previous result after a failed external call without rewriting commit count. */
-    fun invalidateLastProjection() {
-        lastTransition = null
-    }
-
     fun capture(transition: CommittedRulesTransition) {
         if (!captureEnabled) return
         require(transition.sourceStepCount > 0) {
