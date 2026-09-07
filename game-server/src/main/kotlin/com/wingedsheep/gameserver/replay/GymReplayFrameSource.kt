@@ -37,6 +37,7 @@ import com.wingedsheep.gym.contract.ReplayFidelity as VerifiedReplayFidelity
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.gym.ActionPaymentPlanValidator
+import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
 import kotlinx.serialization.json.JsonObject
 
 /**
@@ -57,6 +58,8 @@ class GymReplayFrameSource(
     private val fallbackPerspectivePlayerIndex: Int = 0,
     /** Lifecycle evidence supplied by the composition root for this replay's inclusive tail. */
     private val tailClosure: EpisodeClosureV1,
+    /** Optional operational diagnostics owned by this replay verification run. */
+    private val diagnosticsRecorder: DiagnosticsRecorder? = null,
 ) : VerifiedReplayFrameSource, ReplayVerificationBindingSource, ReplayChosenInputBindingSource,
     ReplayTrajectoryBindingSource {
 
@@ -119,6 +122,17 @@ class GymReplayFrameSource(
     private fun verifyInternal(
         chosenInputConsumer: ((ReplayChosenInputV1) -> Unit)? = null,
     ): VerifiedReplayVerification {
+        recordDiagnostics { advanceStage(ReplayDiagnosticsStageV1.VERIFYING) }
+        return try {
+            verifyInternalBody(chosenInputConsumer)
+        } finally {
+            recordDiagnostics { advanceStage(ReplayDiagnosticsStageV1.COMPLETE) }
+        }
+    }
+
+    private fun verifyInternalBody(
+        chosenInputConsumer: ((ReplayChosenInputV1) -> Unit)? = null,
+    ): VerifiedReplayVerification {
         if (replay.version != CompactReplay.CURRENT_VERSION) {
             return failure(
                 fidelity = VerifiedReplayFidelity.DIVERGED,
@@ -143,6 +157,11 @@ class GymReplayFrameSource(
                         "Replay public frame coordinate skipped from ${frames.size} to $afterActionCount"
                     }
                     frames += boundary.frame
+                    if (afterActionCount > 0) {
+                        recordDiagnostics {
+                            recordUsefulProgress(replayFramesVerifiedDelta = 1L)
+                        }
+                    }
                     currentBoundary = boundary
                 },
                 onBeforeAction = { index, state, action ->
@@ -211,7 +230,7 @@ class GymReplayFrameSource(
             else -> VerifiedReplayFidelity.EXACT
         }
 
-        return VerifiedReplayVerification(
+        val verification = VerifiedReplayVerification(
             replayVersion = replay.version,
             replayActionCount = replay.actions.size,
             verifiedActionCount = forward.appliedActionCount,
@@ -224,6 +243,17 @@ class GymReplayFrameSource(
             failureAtReplayActionIndex = forward.divergedAtAction,
             failureReason = forward.failure ?: shapeFailure ?: closureFailure ?: forward.unverifiedReason,
         )
+        return verification
+    }
+
+    /** Diagnostics callbacks are best-effort and cannot change replay verification output. */
+    private inline fun recordDiagnostics(block: DiagnosticsRecorder.() -> Unit) {
+        val recorder = diagnosticsRecorder ?: return
+        try {
+            recorder.block()
+        } catch (_: Exception) {
+            // Operational diagnostics must never alter replay fidelity or semantic output.
+        }
     }
 
     private fun buildBoundary(

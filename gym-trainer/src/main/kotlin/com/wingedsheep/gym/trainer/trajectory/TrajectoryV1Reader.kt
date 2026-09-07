@@ -1,5 +1,6 @@
 package com.wingedsheep.gym.trainer.trajectory
 
+import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
 import java.nio.file.Files
 import java.nio.file.LinkOption
 import java.nio.file.Path
@@ -12,7 +13,13 @@ private val VALIDATED_DATASET_GATE = Any()
  * that the dataset is accepted for training.
  */
 object TrajectoryV1Reader {
-    fun openPublishedDataset(datasetDirectory: Path): ValidatedTrajectoryDatasetV1 {
+    fun openPublishedDataset(
+        datasetDirectory: Path,
+        diagnosticsRecorder: DiagnosticsRecorder? = null,
+    ): ValidatedTrajectoryDatasetV1 {
+        diagnosticsRecorder.reportDiagnostics {
+            advanceStage(ReaderDiagnosticsStageV1.PREFLIGHT)
+        }
         val preflight = TrajectoryV1ManifestPreflight.open(datasetDirectory)
         val shardPlan = TrajectoryV1ShardValidationPlan.from(preflight)
         val collectionJobs = HashSet<String>()
@@ -23,11 +30,14 @@ object TrajectoryV1Reader {
                 }
             }
         }
-        return ValidatedTrajectoryDatasetV1.fromPreflight(
+        val dataset = ValidatedTrajectoryDatasetV1.fromPreflight(
             manifest = preflight.manifest,
             shards = shardPlan,
             gate = VALIDATED_DATASET_GATE,
+            diagnosticsRecorder = diagnosticsRecorder,
         )
+        diagnosticsRecorder.reportDiagnostics { advanceStage(ReaderDiagnosticsStageV1.OPEN) }
+        return dataset
     }
 
     private fun fail(failure: TrajectoryV1ReadFailure): Nothing = throw TrajectoryV1ReadException(failure)
@@ -42,6 +52,7 @@ object TrajectoryV1Reader {
 class ValidatedTrajectoryDatasetV1 private constructor(
     manifest: DatasetManifestV1,
     shards: List<ManifestBoundShardV1>,
+    private val diagnosticsRecorder: DiagnosticsRecorder?,
 ) {
     val manifest: DatasetManifestV1 = manifest.snapshotForReadHandle()
     private val shards: List<ManifestBoundShardV1> = shards.map { shard ->
@@ -52,12 +63,19 @@ class ValidatedTrajectoryDatasetV1 private constructor(
     }
 
     fun streamEpisodes(): Sequence<TrajectoryV1> = sequence {
+        diagnosticsRecorder.reportDiagnostics { advanceStage(ReaderDiagnosticsStageV1.STREAMING) }
         shards.forEach { shard ->
             requireStillSafe(shard)
             TrajectoryV1ShardValidator.validate(shard).episodes.forEach { episode ->
+                diagnosticsRecorder.reportDiagnostics {
+                    recordUsefulProgress(
+                        trajectoryDecisionDelta = episode.trajectory.decisions.size.toLong(),
+                    )
+                }
                 yield(episode.trajectory)
             }
         }
+        diagnosticsRecorder.reportDiagnostics { advanceStage(ReaderDiagnosticsStageV1.COMPLETE) }
     }
 
     private fun requireStillSafe(shard: ManifestBoundShardV1) {
@@ -118,11 +136,22 @@ class ValidatedTrajectoryDatasetV1 private constructor(
             manifest: DatasetManifestV1,
             shards: List<ManifestBoundShardV1>,
             gate: Any,
+            diagnosticsRecorder: DiagnosticsRecorder? = null,
         ): ValidatedTrajectoryDatasetV1 {
             require(gate === VALIDATED_DATASET_GATE) {
                 "ValidatedTrajectoryDatasetV1 can only be created by TrajectoryV1Reader"
             }
-            return ValidatedTrajectoryDatasetV1(manifest, shards)
+            return ValidatedTrajectoryDatasetV1(manifest, shards, diagnosticsRecorder)
         }
+    }
+}
+
+/** Diagnostics callbacks are best-effort and cannot change A7 validation or stream output. */
+private inline fun DiagnosticsRecorder?.reportDiagnostics(block: DiagnosticsRecorder.() -> Unit) {
+    val recorder = this ?: return
+    try {
+        recorder.block()
+    } catch (_: Exception) {
+        // Operational diagnostics must never reject or truncate a trusted reader operation.
     }
 }
