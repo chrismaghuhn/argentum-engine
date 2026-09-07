@@ -484,6 +484,69 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         unrelatedProjection.nextRegistry.nextAliasOrdinal shouldBe 0L
     }
 
+    test("HISTC-05 real Rules producer characterizes the multi-card look shape") {
+        val driver = GameTestDriver().apply {
+            registerCards(PortalSet.cards)
+            registerCards(PortalSet.basicLands)
+        }
+        val deck = Deck.of("Island" to 20, "Forest" to 20)
+        val players = driver.initMultiplayer(
+            decks = listOf(deck, deck, deck),
+            skipMulligans = true,
+            startingPlayer = 0,
+        )
+        val viewer = players[0]
+        val owner = players[1]
+        val unrelated = players[2]
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val lookedCardA = driver.putCardInHand(owner, "Forest")
+        val lookedCardB = driver.putCardInHand(owner, "Island")
+        val ownerHand = ZoneKey(owner, Zone.HAND)
+        driver.replaceState(
+            driver.state.copy(
+                zones = driver.state.zones + (ownerHand to listOf(lookedCardA, lookedCardB)),
+            ),
+        )
+
+        val thief = driver.putCardInHand(viewer, "Ingenious Thief")
+        driver.giveMana(viewer, Color.BLUE, 2)
+        driver.castSpell(viewer, thief).isSuccess shouldBe true
+
+        var lookTransition: CommittedRulesTransition? = null
+        repeat(40) {
+            if (lookTransition != null) return@repeat
+            if (driver.state.pendingDecision != null) {
+                driver.submitTargetSelection(viewer, listOf(owner))
+            } else {
+                val priority = driver.state.priorityPlayerId ?: return@repeat
+                val before = driver.state
+                val result = driver.passPriority(priority)
+                if (result.events.any { it is HandLookedAtEvent }) {
+                    lookTransition = CommittedRulesTransition(
+                        beforeState = before,
+                        afterState = driver.state,
+                        events = result.events,
+                        sourceStepCount = 1,
+                    )
+                }
+            }
+        }
+
+        val transition = checkNotNull(lookTransition) { "Real multi-card look did not emit an event" }
+        val lookEvents = transition.events.filterIsInstance<HandLookedAtEvent>()
+        lookEvents.size shouldBe 1
+        lookEvents.single().cardIds shouldBe listOf(lookedCardA, lookedCardB)
+        listOf(lookedCardA, lookedCardB).forEach { cardId ->
+            transition.afterState.getEntity(cardId)
+                ?.get<RevealedToComponent>()
+                ?.isRevealedTo(viewer) shouldBe true
+            transition.afterState.getEntity(cardId)
+                ?.get<RevealedToComponent>()
+                ?.isRevealedTo(unrelated) shouldBe false
+        }
+    }
+
     test("HISTC-10_VISIBLE_ZONE_CHANGE_RELATIONSHIP_POLICY") {
         val result = accepted(
             project(
