@@ -1,9 +1,15 @@
 package com.wingedsheep.gym.history
 
+import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.TurnedFaceDownEvent
+import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.gym.contract.A3SemanticJson
 import com.wingedsheep.gym.contract.PerspectiveEventBatchV1
+import com.wingedsheep.gym.contract.PerspectiveEventDisposition
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.json.JsonArray
@@ -183,6 +189,10 @@ internal object HistoryCReferenceAuthority {
             return HistoryCFailure(HistoryCFailureCode.MISSING_EVENT_TIME_WITNESS)
         }
 
+        val rawEvent = rawEventForProjectedOrdinal(transition, projection, candidate.slot.eventOrdinal)
+            ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+        validateCandidateAgainstRawEvent(transition, rawEvent, candidate)?.let { return it }
+
         if (candidate.beforeWitness != null &&
             !containsWitness(transition.beforeState, candidate.beforeWitness)
         ) {
@@ -216,6 +226,128 @@ internal object HistoryCReferenceAuthority {
         }
 
         return validateSemanticDescriptor(candidate.semanticDescriptor)
+    }
+
+    /** Map A's projected ordinal back to the exact raw event without exposing that coordinate. */
+    private fun rawEventForProjectedOrdinal(
+        transition: CommittedRulesTransition,
+        projection: PerspectiveEventProjectionResult,
+        projectedOrdinal: Int,
+    ): GameEvent? {
+        var emittedOrdinal = 0
+        for ((rawIndex, classification) in projection.classifications.withIndex()) {
+            if (classification.disposition != PerspectiveEventDisposition.EMITTED) continue
+            if (emittedOrdinal == projectedOrdinal) return transition.events.getOrNull(rawIndex)
+            emittedOrdinal++
+        }
+        return null
+    }
+
+    private fun validateCandidateAgainstRawEvent(
+        transition: CommittedRulesTransition,
+        event: GameEvent,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCFailure? = when (event) {
+        is CardsRevealedEvent -> validateCardsRevealedCandidate(transition, event, candidate)
+        is TurnedFaceDownEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.entityId,
+            eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+            eventRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+            candidate = candidate,
+            identityMustBeOpaque = true,
+        )
+
+        is ZoneChangeEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.entityId,
+            eventKind = if (event.fromZone == com.wingedsheep.sdk.core.Zone.STACK ||
+                event.toZone == com.wingedsheep.sdk.core.Zone.STACK
+            ) {
+                HistoryCReferenceKind.STACK_OBJECT
+            } else {
+                HistoryCReferenceKind.CARD_OR_RULES_OBJECT
+            },
+            eventRole = HistoryCReferenceSlotRole.MOVED_OBJECT,
+            candidate = candidate,
+            identityMustBeOpaque = false,
+        )
+
+        else -> HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+    }
+
+    private fun validateCardsRevealedCandidate(
+        transition: CommittedRulesTransition,
+        event: CardsRevealedEvent,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCFailure? {
+        if (candidate.referenceKind != HistoryCReferenceKind.CARD_OR_RULES_OBJECT ||
+            candidate.slot.role !in setOf(
+                HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                HistoryCReferenceSlotRole.MOVED_OBJECT,
+            ) ||
+            candidate.slot.roleOrdinal !in event.cardIds.indices ||
+            candidate.orderProof.rank != candidate.slot.roleOrdinal
+        ) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+
+        val expectedEntityId = event.cardIds[candidate.slot.roleOrdinal]
+        if (!candidateWitnessesEntity(candidate, expectedEntityId)) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        return validateDefinitionAgainstWitnessState(transition, candidate)
+    }
+
+    private fun validateSingleObjectCandidate(
+        transition: CommittedRulesTransition,
+        eventEntityId: EntityId,
+        eventKind: HistoryCReferenceKind,
+        eventRole: HistoryCReferenceSlotRole,
+        candidate: HistoryCReferenceCandidateV1,
+        identityMustBeOpaque: Boolean,
+    ): HistoryCFailure? {
+        if (candidate.referenceKind != eventKind ||
+            candidate.slot.role != eventRole ||
+            candidate.slot.roleOrdinal != 0 ||
+            candidate.orderProof.rank != 0 ||
+            (identityMustBeOpaque &&
+                candidate.identityDisclosure != HistoryCIdentityDisclosure.OPAQUE)
+        ) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        if (!candidateWitnessesEntity(candidate, eventEntityId)) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        return validateDefinitionAgainstWitnessState(transition, candidate)
+    }
+
+    private fun candidateWitnessesEntity(
+        candidate: HistoryCReferenceCandidateV1,
+        expectedEntityId: EntityId,
+    ): Boolean = listOfNotNull(candidate.beforeWitness, candidate.afterWitness)
+        .all { it.entityId == expectedEntityId }
+
+    private fun validateDefinitionAgainstWitnessState(
+        transition: CommittedRulesTransition,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCFailure? {
+        val expectedDefinition = candidate.cardDefinitionId ?: return null
+        val witness = candidate.afterWitness ?: candidate.beforeWitness
+            ?: return HistoryCFailure(HistoryCFailureCode.MISSING_EVENT_TIME_WITNESS)
+        val state = if (candidate.afterWitness != null &&
+            containsWitness(transition.afterState, witness)
+        ) {
+            transition.afterState
+        } else {
+            transition.beforeState
+        }
+        val actualDefinition = state.getEntity(witness.entityId)?.get<CardComponent>()?.cardDefinitionId
+        return if (actualDefinition == expectedDefinition) {
+            null
+        } else {
+            HistoryCFailure(HistoryCFailureCode.RAW_EVENT_DEFINITION_MISMATCH)
+        }
     }
 
     private fun containsWitness(state: GameState, witness: HistoryCObjectWitness): Boolean =
