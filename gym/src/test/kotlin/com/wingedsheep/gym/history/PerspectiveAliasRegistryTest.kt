@@ -25,6 +25,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
         eventOrdinal: Int = 0,
         roleOrdinal: Int = 0,
         descriptor: String = "opaque",
+        publicPosition: Int? = null,
     ): HistoryCReferenceCandidateV1 = HistoryCReferenceCandidateV1(
         slot = HistoryCReferenceSlot(
             eventOrdinal = eventOrdinal,
@@ -42,6 +43,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
         semanticDescriptor = buildJsonObject {
             put("type", "object_reference")
             put("visibility", descriptor)
+            publicPosition?.let { put("publicPosition", it) }
         },
     )
 
@@ -68,21 +70,37 @@ class PerspectiveAliasRegistryTest : FunSpec({
     fun rejected(result: PerspectiveAliasAllocationResult): PerspectiveAliasAllocationResult.Rejected =
         result.shouldBeInstanceOf<PerspectiveAliasAllocationResult.Rejected>()
 
-    fun publicProof(candidateIndex: Int, rank: Int) = HistoryCPublicDistinctionProofV1(
+    fun publicProof(
+        candidateIndex: Int,
+        rank: Int,
+        kind: HistoryCPublicDistinctionKind = HistoryCPublicDistinctionKind.PUBLIC_POSITION,
+    ) = HistoryCPublicDistinctionProofV1(
         candidateIndex = candidateIndex,
-        kind = HistoryCPublicDistinctionKind.PRODUCER_PUBLIC_SLOT,
+        kind = kind,
         rank = rank,
+    )
+
+    fun allocate(
+        registry: PerspectiveAliasRegistryV1,
+        evidence: HistoryCReferenceEvidenceV1,
+        publicDistinctions: List<HistoryCPublicDistinctionProofV1> = emptyList(),
+        semanticEpisodeId: String = registry.semanticEpisodeId,
+    ): PerspectiveAliasAllocationResult = PerspectiveAliasAllocator.allocate(
+        registry = registry,
+        semanticEpisodeId = semanticEpisodeId,
+        evidence = evidence,
+        publicDistinctions = publicDistinctions,
     )
 
     test("HISTC-03 hidden hand mutation does not alter the perspective-local alias") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("hidden-a")))),
             ),
         )
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("hidden-b")))),
             ),
@@ -99,8 +117,8 @@ class PerspectiveAliasRegistryTest : FunSpec({
                 candidate(witness("visible-b", 2L), descriptor = "second", roleOrdinal = 1),
             ),
         )
-        val first = accepted(PerspectiveAliasAllocator.allocate(registry(), visible))
-        val second = accepted(PerspectiveAliasAllocator.allocate(registry(), visible))
+        val first = accepted(allocate(registry(), visible))
+        val second = accepted(allocate(registry(), visible))
 
         first.assignments.map { it.alias.canonical() } shouldBe listOf("o0", "o1")
         second.assignments.map { it.alias.canonical() } shouldBe listOf("o0", "o1")
@@ -108,7 +126,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-07 opaque face-down evidence allocates without definition identity") {
         val result = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("face-down")))),
             ),
@@ -120,13 +138,13 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-08 identity disclosure upgrades the same incarnation alias") {
         val opaque = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("face-down")))),
             ),
         )
         val known = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 opaque.registry,
                 evidence(
                     candidates = listOf(
@@ -147,13 +165,13 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-09 a new incarnation retires the old alias and allocates a fresh one") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("e17", 44L)))),
             ),
         )
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 first.registry,
                 evidence(candidates = listOf(candidate(witness("e17", 45L)))),
             ),
@@ -166,14 +184,14 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-15 retired token aliases are never reused") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("token", 1L)))),
             ),
         )
         val retired = PerspectiveAliasAllocator.retire(first.registry, witness("token", 1L))
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 retired,
                 evidence(candidates = listOf(candidate(witness("token", 1L)))),
             ),
@@ -185,13 +203,13 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-16 perspective namespaces are isolated") {
         val p1Result = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(perspective = p1),
                 evidence(perspective = p1, candidates = listOf(candidate(witness("public")))),
             ),
         )
         val p2Result = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(perspective = p2),
                 evidence(perspective = p2, candidates = listOf(candidate(witness("public")))),
             ),
@@ -203,7 +221,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-21 indistinguishable distinct witnesses fail closed") {
         val result = rejected(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(
                     candidates = listOf(
@@ -220,11 +238,11 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-22 public distinctions make collection allocation runtime-order independent") {
         val candidates = listOf(
-            candidate(witness("runtime-a"), roleOrdinal = 0),
-            candidate(witness("runtime-b", 2L), roleOrdinal = 1),
+            candidate(witness("runtime-a"), roleOrdinal = 0, publicPosition = 0),
+            candidate(witness("runtime-b", 2L), roleOrdinal = 1, publicPosition = 1),
         )
         val result = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = candidates),
                 publicDistinctions = listOf(publicProof(0, 0), publicProof(1, 1)),
@@ -236,14 +254,14 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-23 later identity disclosure does not mutate the earlier occurrence") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("opaque")))),
             ),
         )
         val firstOccurrence = first.assignments.single()
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 first.registry,
                 evidence(
                     candidates = listOf(
@@ -265,7 +283,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
     test("HISTC-B-REVIEW-01 rejected batch does not consume an ordinal") {
         val initial = registry()
         val result = rejected(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 initial,
                 evidence(
                     candidates = listOf(
@@ -283,13 +301,13 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-B-REVIEW-02 retired same witness receives a new alias") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(candidates = listOf(candidate(witness("same", 7L)))),
             ),
         )
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 PerspectiveAliasAllocator.retire(first.registry, witness("same", 7L)),
                 evidence(candidates = listOf(candidate(witness("same", 7L)))),
             ),
@@ -301,7 +319,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-B-REVIEW-03 definition contradiction fails closed") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(
                     candidates = listOf(
@@ -315,7 +333,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
             ),
         )
         val result = rejected(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 first.registry,
                 evidence(
                     candidates = listOf(
@@ -335,13 +353,13 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-B-REVIEW-04 episode namespaces do not share ordinals") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(episode = "episode-a"),
                 evidence(perspective = p1, candidates = listOf(candidate(witness("public")))),
             ),
         )
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(episode = "episode-b"),
                 evidence(perspective = p1, candidates = listOf(candidate(witness("public")))),
             ),
@@ -351,26 +369,41 @@ class PerspectiveAliasRegistryTest : FunSpec({
         second.assignments.single().alias.canonical() shouldBe "o0"
     }
 
+    test("HISTC-B-REVIEW-10 allocation rejects a mismatched requested episode") {
+        val initial = registry(episode = "episode-a")
+        val result = rejected(
+            allocate(
+                initial,
+                evidence(candidates = listOf(candidate(witness("episode-mismatch")))),
+                semanticEpisodeId = "episode-b",
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.EPISODE_MISMATCH
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
+    }
+
     test("HISTC-B-REVIEW-05 runtime EntityId variation preserves the alias sequence") {
         val first = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(
                     candidates = listOf(
-                        candidate(witness("runtime-a"), roleOrdinal = 0),
-                        candidate(witness("runtime-b", 2L), roleOrdinal = 1),
+                        candidate(witness("runtime-a"), roleOrdinal = 0, publicPosition = 0),
+                        candidate(witness("runtime-b", 2L), roleOrdinal = 1, publicPosition = 1),
                     ),
                 ),
                 publicDistinctions = listOf(publicProof(0, 0), publicProof(1, 1)),
             ),
         )
         val second = accepted(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(),
                 evidence(
                     candidates = listOf(
-                        candidate(witness("other-runtime-a"), roleOrdinal = 0),
-                        candidate(witness("other-runtime-b", 2L), roleOrdinal = 1),
+                        candidate(witness("other-runtime-a"), roleOrdinal = 0, publicPosition = 0),
+                        candidate(witness("other-runtime-b", 2L), roleOrdinal = 1, publicPosition = 1),
                     ),
                 ),
                 publicDistinctions = listOf(publicProof(0, 0), publicProof(1, 1)),
@@ -383,7 +416,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-B-REVIEW-06 unknown registry versions fail closed") {
         val result = rejected(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry().copy(version = PERSPECTIVE_ALIAS_REGISTRY_V1_VERSION + 1),
                 evidence(candidates = listOf(candidate(witness("versioned")))),
             ),
@@ -394,7 +427,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
     test("HISTC-B-REVIEW-07 blank episode identity fails closed") {
         val result = rejected(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 registry(episode = ""),
                 evidence(candidates = listOf(candidate(witness("episode")))),
             ),
@@ -406,7 +439,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
     test("HISTC-B-REVIEW-08 alias ordinal exhaustion is atomic") {
         val initial = registry().copy(nextAliasOrdinal = Long.MAX_VALUE)
         val result = rejected(
-            PerspectiveAliasAllocator.allocate(
+            allocate(
                 initial,
                 evidence(candidates = listOf(candidate(witness("overflow")))),
             ),
@@ -414,6 +447,46 @@ class PerspectiveAliasRegistryTest : FunSpec({
 
         result.failure.code shouldBe HistoryCFailureCode.ALIAS_SPACE_EXHAUSTED
         initial.nextAliasOrdinal shouldBe Long.MAX_VALUE
+        initial.activeBindings shouldBe emptyMap()
+    }
+
+    test("HISTC-B-REVIEW-09_MALFORMED_RETIRED_ALIAS_CANNOT_BE_REUSED") {
+        val initial = registry().copy(
+            nextAliasOrdinal = 0L,
+            retiredAliases = setOf(PerspectiveSemanticAlias(0L)),
+        )
+        val result = rejected(
+            allocate(
+                initial,
+                evidence(candidates = listOf(candidate(witness("tombstoned")))),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.INVALID_REGISTRY_STATE
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
+    }
+
+    test("HISTC-B-REVIEW-11 producer order is not a public distinction") {
+        val initial = registry()
+        val result = rejected(
+            allocate(
+                initial,
+                evidence(
+                    candidates = listOf(
+                        candidate(witness("symmetric-a"), roleOrdinal = 0),
+                        candidate(witness("symmetric-b", 2L), roleOrdinal = 1),
+                    ),
+                ),
+                publicDistinctions = listOf(
+                    publicProof(0, 0, HistoryCPublicDistinctionKind.PRODUCER_PUBLIC_SLOT),
+                    publicProof(1, 1, HistoryCPublicDistinctionKind.PRODUCER_PUBLIC_SLOT),
+                ),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION
+        initial.nextAliasOrdinal shouldBe 0L
         initial.activeBindings shouldBe emptyMap()
     }
 })

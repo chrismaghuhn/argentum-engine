@@ -1,6 +1,8 @@
 package com.wingedsheep.gym.history
 
 import com.wingedsheep.gym.contract.A3SemanticJson
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 
 internal enum class HistoryCPublicDistinctionKind {
     PRODUCER_PUBLIC_SLOT,
@@ -18,13 +20,19 @@ internal data class HistoryCPublicDistinctionProofV1(
 
 /** Pure immutable allocation and lifecycle operations for HISTC-B. */
 internal object PerspectiveAliasAllocator {
+    private val publicDistinctionDescriptorKeys = setOf("publicPosition", "publicRole")
+
     fun allocate(
         registry: PerspectiveAliasRegistryV1,
+        semanticEpisodeId: String,
         evidence: HistoryCReferenceEvidenceV1,
         publicDistinctions: List<HistoryCPublicDistinctionProofV1> = emptyList(),
     ): PerspectiveAliasAllocationResult {
         validateRegistry(registry)?.let { return PerspectiveAliasAllocationResult.Rejected(it) }
-        if (registry.semanticEpisodeId.isBlank()) {
+        if (semanticEpisodeId.isBlank() ||
+            registry.semanticEpisodeId.isBlank() ||
+            semanticEpisodeId != registry.semanticEpisodeId
+        ) {
             return rejected(HistoryCFailureCode.EPISODE_MISMATCH)
         }
         if (registry.perspectivePlayerId != evidence.perspectivePlayerId) {
@@ -43,7 +51,7 @@ internal object PerspectiveAliasAllocator {
         }
 
         val proofByCandidate = validatePublicDistinctions(
-            candidateCount = evidence.candidates.size,
+            candidates = evidence.candidates,
             proofs = publicDistinctions,
         ) ?: return rejected(HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION)
 
@@ -119,21 +127,41 @@ internal object PerspectiveAliasAllocator {
         if (aliases.any { it.ordinal >= registry.nextAliasOrdinal }) {
             return HistoryCFailure(HistoryCFailureCode.INVALID_REGISTRY_STATE)
         }
+        if ((aliases + registry.retiredAliases).any { it.ordinal >= registry.nextAliasOrdinal }) {
+            return HistoryCFailure(HistoryCFailureCode.INVALID_REGISTRY_STATE)
+        }
         return null
     }
 
     private fun validatePublicDistinctions(
-        candidateCount: Int,
+        candidates: List<HistoryCReferenceCandidateV1>,
         proofs: List<HistoryCPublicDistinctionProofV1>,
     ): Map<Int, HistoryCPublicDistinctionProofV1>? {
         val byCandidate = linkedMapOf<Int, HistoryCPublicDistinctionProofV1>()
         for (proof in proofs) {
-            if (proof.candidateIndex !in 0 until candidateCount ||
+            if (proof.candidateIndex !in candidates.indices ||
                 proof.rank < 0 ||
-                byCandidate.put(proof.candidateIndex, proof) != null
+                byCandidate.put(proof.candidateIndex, proof) != null ||
+                !isAuthoritativelyVerified(proof, candidates[proof.candidateIndex])
             ) return null
         }
         return byCandidate
+    }
+
+    private fun isAuthoritativelyVerified(
+        proof: HistoryCPublicDistinctionProofV1,
+        candidate: HistoryCReferenceCandidateV1,
+    ): Boolean = when (proof.kind) {
+        // A producer's order is useful for event binding, but it does not prove that two
+        // otherwise symmetric objects are publicly distinguishable to this perspective.
+        HistoryCPublicDistinctionKind.PRODUCER_PUBLIC_SLOT,
+        HistoryCPublicDistinctionKind.FACE_DOWN_PHYSICAL_DISTINCTION -> false
+
+        HistoryCPublicDistinctionKind.PUBLIC_POSITION ->
+            publicPosition(candidate) == proof.rank
+
+        HistoryCPublicDistinctionKind.PUBLIC_SEMANTIC_ROLE ->
+            publicRole(candidate) != null
     }
 
     private fun validateSymmetry(
@@ -147,7 +175,7 @@ internal object PerspectiveAliasAllocator {
                 referenceKind = candidate.referenceKind,
                 identityDisclosure = candidate.identityDisclosure,
                 cardDefinitionId = candidate.cardDefinitionId,
-                semanticDescriptor = A3SemanticJson.canonicalJson(candidate.semanticDescriptor),
+                semanticDescriptor = canonicalSymmetryDescriptor(candidate.semanticDescriptor),
             )
         }
         for (indices in groups.values) {
@@ -155,12 +183,51 @@ internal object PerspectiveAliasAllocator {
             if (distinctWitnesses.size <= 1) continue
             val groupProofs = indices.map { proofs[it] ?: return HistoryCFailure(HistoryCFailureCode.UNORDERED_SYMMETRY) }
             val ranks = groupProofs.map { it.rank }
-            if (ranks.distinct().size != ranks.size || ranks != ranks.sorted()) {
+            if (groupProofs.map { it.kind }.distinct().size != 1 ||
+                ranks.distinct().size != ranks.size ||
+                ranks != ranks.sorted()
+            ) {
                 return HistoryCFailure(HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION)
+            }
+            when (groupProofs.first().kind) {
+                HistoryCPublicDistinctionKind.PUBLIC_POSITION -> {
+                    val positions = indices.map { publicPosition(evidence.candidates[it]) }
+                    if (positions.any { it == null } || positions.distinct().size != positions.size) {
+                        return HistoryCFailure(HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION)
+                    }
+                }
+
+                HistoryCPublicDistinctionKind.PUBLIC_SEMANTIC_ROLE -> {
+                    val roles = indices.map { publicRole(evidence.candidates[it]) }
+                    if (roles.any { it == null } || roles.distinct().size != roles.size) {
+                        return HistoryCFailure(HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION)
+                    }
+                }
+
+                HistoryCPublicDistinctionKind.PRODUCER_PUBLIC_SLOT,
+                HistoryCPublicDistinctionKind.FACE_DOWN_PHYSICAL_DISTINCTION ->
+                    return HistoryCFailure(HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION)
             }
         }
         return null
     }
+
+    private fun publicPosition(candidate: HistoryCReferenceCandidateV1): Int? {
+        val value = candidate.semanticDescriptor["publicPosition"] as? JsonPrimitive ?: return null
+        if (value.isString) return null
+        return value.content.toIntOrNull()
+    }
+
+    private fun publicRole(candidate: HistoryCReferenceCandidateV1): String? {
+        val value = candidate.semanticDescriptor["publicRole"] as? JsonPrimitive ?: return null
+        if (!value.isString || value.content.isBlank()) return null
+        return value.content
+    }
+
+    private fun canonicalSymmetryDescriptor(descriptor: JsonObject): String =
+        A3SemanticJson.canonicalJson(
+            JsonObject(descriptor.filterKeys { it !in publicDistinctionDescriptorKeys }),
+        )
 
     private fun mergeIdentity(
         existing: PerspectiveAliasBinding,
