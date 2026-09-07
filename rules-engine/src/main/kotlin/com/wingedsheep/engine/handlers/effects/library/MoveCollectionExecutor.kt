@@ -18,6 +18,7 @@ import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.player.SacrificedFoodThisTurnComponent
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.CounterType
@@ -954,6 +955,10 @@ class MoveCollectionExecutor(
             if (cardIndex < startCardIndex) continue
 
             val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId ?: destPlayerId
+            val reestablishRevealToPlayerIds = newState.getEntity(cardId)
+                ?.get<RevealedToComponent>()
+                ?.playerIds
+                .orEmpty()
 
             // Commander 903.9b is part of this card's physical move, not a collection-wide
             // preflight. The ordered list is already the physical insertion plan (top moves
@@ -981,6 +986,7 @@ class MoveCollectionExecutor(
                             options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
                                 controllerId = actualDestPlayerId,
                                 libraryPlacement = libraryPlacement,
+                                reestablishRevealToPlayerIds = reestablishRevealToPlayerIds,
                             ),
                             fromZoneKey = fromZoneKey,
                             context = context,
@@ -1106,7 +1112,8 @@ class MoveCollectionExecutor(
                 faceDown = isBattlefieldFaceDown,
                 morphData = morphData,
                 faceDownMode = if (isBattlefieldFaceDown) faceDown else null,
-                faceDownExile = faceDown != null && destZone == Zone.EXILE
+                faceDownExile = faceDown != null && destZone == Zone.EXILE,
+                reestablishRevealToPlayerIds = reestablishRevealToPlayerIds,
             )
 
             // Delegate to ZoneTransitionService for full cleanup + entry

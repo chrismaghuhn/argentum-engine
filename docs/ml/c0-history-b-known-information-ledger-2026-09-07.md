@@ -69,7 +69,7 @@ The relevant current sources are:
 | `GatherCardsExecutor` | Records private library look/search knowledge supplied by the typed effect audience. Filtered searches record the whole searched library to the authorized viewer, not just the selected subset. |
 | `SelectFromCollectionExecutor` | Records exactly the cards exposed in a private typed selection decision when no preceding look marker exists. |
 | `LibraryAndZoneContinuationResumer` / `ReplacementContinuationResumer` | Record exact order only at producer-owned reorder completion, where the ordered card list is still available. |
-| `ZoneTransitionService` | Clears `RevealedToComponent` at the CR 400.7 zone-change atom, stamps library entry through the shared object-incarnation seam, and lets public/private producers re-establish current visibility when authorized. |
+| `ZoneTransitionService` | Clears `RevealedToComponent` at the CR 400.7 zone-change atom, stamps library entry through the shared object-incarnation seam, and re-establishes only producer-supplied existing reveal audiences on the new object. |
 | `GameState.reincarnateObject(s)` | Generic Rules-owned CR 701.20d object-incarnation primitive for revealed/reordered library objects without a zone-map move. |
 | `ActionProcessor` | Final authoritative post-action seam. Failed actions return before ledger finalization; successful results are finalized once after existing hand tracking. |
 | `GameState` serialization / Gym `SnapshotCodec` | Preserve the immutable component through state serialization and snapshot/restore. |
@@ -224,6 +224,13 @@ perspective-specific reveal/look permission is honored only because the existing
 explicitly authorizes it; the ledger does not invent a second face-down policy. `TurnFaceUpEvent`
 records public identity only when current identity visibility is established.
 
+When a library look producer moves the looked-at cards to another zone, the producer copies only
+the existing `RevealedToComponent.playerIds` audience into `ZoneEntryOptions`. The canonical zone
+transition clears the old per-object marker, then re-establishes exactly that supplied audience on
+the new object. This preserves effects such as `Expensive Taste` while avoiding a general
+"preserve reveal" rule or any new visibility inference. The `Decadent Dragon // Expensive Taste`
+scenario remains the regression boundary for face-down exile, private look, and owner privacy.
+
 ### 5.5 Epoch rule
 
 For one accepted transition, the ledger compares semantic active facts before and after the
@@ -361,6 +368,10 @@ rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/zones/Comma
     38 tests: committed `MoveCollection`/`ControllerChooses` order survives the central
     `ActionProcessor` post-pass and later same-transition library membership invalidation
     (`HISTB-REVIEW-26/27`) alongside Commander replacement coverage
+
+mtg-sets/2023/tests/src/test/kotlin/com/wingedsheep/engine/scenarios/WoeCardsBatch12ScenarioTest.kt
+    existing Decadent Dragon / Expensive Taste regression: face-down exiled cards retain only
+    the caster's producer-authorized look permission
 ```
 
 The focused tests cover public/private audience isolation, `revealToSelf=false`, private search,
@@ -378,7 +389,7 @@ WSL cannot start `/bin/bash`; this is reported as `BLOCKED`, not as a passing te
 Native Gradle was used as an explicitly labeled fallback:
 
 ```text
-FOCUSED_RULES_TESTS=PASS__27_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT__38_COMMANDER_ZONE_REPLACEMENT
+FOCUSED_RULES_TESTS=PASS__27_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT__38_COMMANDER_ZONE_REPLACEMENT__WOE_EXPENSIVE_TASTE
 RULES_ENGINE_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_TRAINER_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK

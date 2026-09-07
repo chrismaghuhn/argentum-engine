@@ -94,6 +94,12 @@ data class ZoneEntryOptions(
     val faceDownExile: Boolean = false,
     val lastKnownAttachedTo: EntityId? = null,
     /**
+     * Existing, producer-authorized identity viewers to re-establish on the new object after a
+     * zone change. This never infers visibility; callers must copy only an already authoritative
+     * [com.wingedsheep.engine.state.components.identity.RevealedToComponent] audience.
+     */
+    val reestablishRevealToPlayerIds: Set<EntityId> = emptySet(),
+    /**
      * True when this move is the exile of a material chosen to pay a Craft cost (CR 702.167).
      * Stamped onto the emitted [ZoneChangeEvent.craftMaterial] so a SELF "exiled while activating
      * a craft ability" trigger (Market Gnome) can distinguish it from any other exile. Set only by
@@ -802,6 +808,18 @@ object ZoneTransitionService {
             else -> {
                 // HAND, GRAVEYARD, STACK — simple addToZone
                 newState = newState.addToZone(destZoneKey, entityId)
+            }
+        }
+
+        // CR 400.7 creates a new object, so the old per-object reveal marker was cleared above.
+        // A producer may explicitly carry an already-authorized audience across this transition;
+        // no new viewer is inferred here.
+        if (options.reestablishRevealToPlayerIds.isNotEmpty()) {
+            newState = newState.updateEntity(entityId) { c ->
+                val existing = c.get<RevealedToComponent>()?.playerIds.orEmpty()
+                c.with(
+                    RevealedToComponent(existing + options.reestablishRevealToPlayerIds)
+                )
             }
         }
 
