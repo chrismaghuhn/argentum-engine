@@ -187,9 +187,11 @@ continuation now uses the same generic Rules stamp primitive instead of only cop
 The central post-action membership invalidation would otherwise run after that producer and erase
 the newly acquired order. Exact order producers therefore set a transient, Rules-owned
 `pendingLibraryOrderReacquisitionOwners` marker only after `recordLibraryOrder` has written the
-ordered facts. The post-pass consumes and clears this marker, skipping invalidation only for the
-explicitly re-established library owner. The marker is not serialized, model-facing, or a replay
-coordinate; it is not inferred from an epoch, final zone list, card names, or event counts.
+ordered facts. The generic `GameState.addToZone`/`removeFromZone` library membership seam clears
+that owner marker before every later library entry or exit. The post-pass consumes and clears the
+remaining marker, skipping invalidation only for the explicitly re-established library owner. The
+marker is not serialized, model-facing, or a replay coordinate; it is not inferred from an epoch,
+final zone list, card names, or event counts.
 
 Every accepted `ZoneChangeEvent` whose source or destination is `LIBRARY` also invalidates all
 currently known `POSITION_OR_ORDER` facts for that owner's current library. This is deliberately
@@ -356,8 +358,9 @@ gym/src/test/kotlin/com/wingedsheep/gym/KnownInformationLedgerSnapshotTest.kt
     1 test: Gym snapshot/restore preserves the ledger
 
 rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/zones/CommanderZoneReplacementTest.kt
-    37 tests: committed `MoveCollection`/`ControllerChooses` order survives the central
-    `ActionProcessor` post-pass (`HISTB-REVIEW-26`) alongside Commander replacement coverage
+    38 tests: committed `MoveCollection`/`ControllerChooses` order survives the central
+    `ActionProcessor` post-pass and later same-transition library membership invalidation
+    (`HISTB-REVIEW-26/27`) alongside Commander replacement coverage
 ```
 
 The focused tests cover public/private audience isolation, `revealToSelf=false`, private search,
@@ -375,7 +378,7 @@ WSL cannot start `/bin/bash`; this is reported as `BLOCKED`, not as a passing te
 Native Gradle was used as an explicitly labeled fallback:
 
 ```text
-FOCUSED_RULES_TESTS=PASS__27_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT__37_COMMANDER_ZONE_REPLACEMENT
+FOCUSED_RULES_TESTS=PASS__27_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT__38_COMMANDER_ZONE_REPLACEMENT
 RULES_ENGINE_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_TRAINER_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK

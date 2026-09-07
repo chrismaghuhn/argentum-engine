@@ -434,6 +434,73 @@ class CommanderZoneReplacementTest : FunSpec({
         }.knownPosition shouldBe 1
     }
 
+    test("HISTB-REVIEW-27 later library membership mutation invalidates earlier exact order") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(
+                addNormalCard(
+                    addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal A"),
+                    normalBId,
+                    "Normal B",
+                ),
+                secondLibraryCardId,
+                "Later Library Entry",
+            )
+        ).copy(activePlayerId = playerId, priorityPlayerId = playerId)
+        val context = EffectContext(
+            sourceId = null,
+            controllerId = playerId,
+            pipeline = PipelineState.EMPTY.copy(
+                storedCollections = mapOf(
+                    "cards" to listOf(normalAId, normalBId),
+                    "later" to listOf(secondLibraryCardId),
+                ),
+            ),
+        )
+        val trailingMove = MoveCollectionEffect(
+            from = "later",
+            destination = CardDestination.ToZone(
+                zone = Zone.LIBRARY,
+                placement = com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+            ),
+        )
+        val withTrailingEffect = state.pushContinuation(
+            EffectContinuation(
+                decisionId = "pending",
+                remainingEffects = listOf(trailingMove),
+                effectContext = context,
+            )
+        )
+        val orderPrompt = services.effectExecutorRegistry.execute(
+            withTrailingEffect,
+            MoveCollectionEffect(
+                from = "cards",
+                destination = CardDestination.ToZone(
+                    zone = Zone.LIBRARY,
+                    placement = com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+                ),
+                order = CardOrder.ControllerChooses,
+            ),
+            context,
+        )
+        val orderDecision = orderPrompt.pendingDecision.shouldBeInstanceOf<ReorderLibraryDecision>()
+        val committed = ActionProcessor(services).process(
+            orderPrompt.state,
+            SubmitDecision(
+                playerId,
+                OrderedResponse(orderDecision.id, listOf(normalAId, normalBId)),
+            ),
+        ).result
+
+        committed.error shouldBe null
+        committed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
+            listOf(secondLibraryCardId, normalAId, normalBId, libraryCardId)
+        KnownInformationLedger.forPlayer(committed.state, playerId).activeFacts.none {
+            it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                it.subjectEntityId in setOf(normalAId, normalBId)
+        } shouldBe true
+    }
+
     test("MC-ORDER-02: top order keeps ordinary cards relative when Commander chooses COMMAND") {
         val services = EngineServices(CardRegistry())
         val state = addLibrarySentinel(

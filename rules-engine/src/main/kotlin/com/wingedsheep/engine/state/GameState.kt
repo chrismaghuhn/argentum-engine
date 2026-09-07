@@ -512,6 +512,12 @@ data class GameState(
         // the same graveyard/hand/exile zone with the object that was originally targeted.
         var newState = copy(zones = zones + (key to current + entityId))
             .reincarnateObject(entityId)
+        if (key.zoneType == Zone.LIBRARY) {
+            newState = newState.copy(
+                pendingLibraryOrderReacquisitionOwners =
+                    newState.pendingLibraryOrderReacquisitionOwners - key.ownerId,
+            )
+        }
         if (key.zoneType != Zone.BATTLEFIELD && key.zoneType != Zone.STACK) {
             val container = newState.getEntity(entityId)
             if (container != null && container.get<TappedComponent>() != null) {
@@ -536,7 +542,15 @@ data class GameState(
      */
     fun removeFromZone(key: ZoneKey, entityId: EntityId): GameState {
         val current = zones[key] ?: return this
-        return copy(zones = zones + (key to current - entityId))
+        val removed = copy(zones = zones + (key to current - entityId))
+        return if (key.zoneType == Zone.LIBRARY) {
+            removed.copy(
+                pendingLibraryOrderReacquisitionOwners =
+                    removed.pendingLibraryOrderReacquisitionOwners - key.ownerId,
+            )
+        } else {
+            removed
+        }
     }
 
     /**
