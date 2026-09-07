@@ -16,7 +16,9 @@ import java.nio.file.StandardOpenOption.WRITE
 
 /**
  * Writes a bounded evidence bundle. Safe scalar files are kept at the bundle root; arbitrary JVM
- * command text is written only below privileged/ and is explicitly marked not dataset-safe.
+ * command text is written only below privileged/ and is explicitly marked not dataset-safe. The
+ * summary is published before the final bundle manifest so an existing manifest never claims a
+ * summary that failed to publish.
  */
 public class DiagnosticBundleWriter(
     root: Path,
@@ -319,47 +321,6 @@ public class DiagnosticBundleWriter(
             }
         }
 
-        val plannedBundleRecord = BundleFileRecordV1(
-            name = "bundle.json",
-            required = true,
-            availability = EvidenceAvailability.AVAILABLE,
-            datasetSafe = true,
-            probeAvailability = EvidenceAvailability.AVAILABLE,
-        )
-        val plannedSummaryRecord = BundleFileRecordV1(
-            name = "summary.json",
-            required = true,
-            availability = EvidenceAvailability.AVAILABLE,
-            datasetSafe = true,
-            probeAvailability = EvidenceAvailability.AVAILABLE,
-        )
-        val manifestBytes = encode(
-            DiagnosticBundleManifestV1.serializer(),
-            DiagnosticBundleManifestV1(
-                diagnosticRunId = input.diagnosticRunId,
-                stallId = input.stallId,
-                trigger = input.trigger,
-                classification = input.classification,
-                action = input.action,
-                configuration = input.configuration,
-                files = files + plannedBundleRecord + plannedSummaryRecord,
-            ),
-        )
-        writeBoundedFile(
-            name = "bundle.json",
-            required = true,
-            datasetSafe = true,
-            bytes = manifestBytes,
-            probeAvailability = EvidenceAvailability.AVAILABLE,
-        )
-        recordFile(
-            name = "summary.json",
-            required = true,
-            availability = EvidenceAvailability.AVAILABLE,
-            datasetSafe = true,
-            probeAvailability = EvidenceAvailability.AVAILABLE,
-        )
-
         val summary = try {
             DiagnosticBundleSummaryV1(
                 diagnosticRunId = input.diagnosticRunId,
@@ -385,19 +346,52 @@ public class DiagnosticBundleWriter(
         }
 
         val summaryBytes = encode(DiagnosticBundleSummaryV1.serializer(), summary)
-        if (bytesUsed + summaryBytes.size > maxBundleBytes) {
-            failures += SupervisorFailureCode.BUNDLE_TOO_LARGE
+        val summaryFileIndex = files.size
+        writeBoundedFile(
+            name = "summary.json",
+            required = true,
+            datasetSafe = true,
+            bytes = summaryBytes,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
+        )
+        val summaryFile = files.getOrNull(summaryFileIndex)
+        if (summaryFile?.availability != EvidenceAvailability.AVAILABLE) {
             return@synchronized DiagnosticBundleResult(
                 EvidenceAvailability.FAILED,
                 bundleDirectory,
                 failures = failures.distinct(),
             )
         }
-        try {
-            writeAtomicWithoutRecord(bundleDirectory.resolve("summary.json"), summaryBytes)
-            bytesUsed += summaryBytes.size
-        } catch (_: Exception) {
-            failures += SupervisorFailureCode.BUNDLE_FILE_FAILED
+
+        val plannedBundleRecord = BundleFileRecordV1(
+            name = "bundle.json",
+            required = true,
+            availability = EvidenceAvailability.AVAILABLE,
+            datasetSafe = true,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
+        )
+        val manifestBytes = encode(
+            DiagnosticBundleManifestV1.serializer(),
+            DiagnosticBundleManifestV1(
+                diagnosticRunId = input.diagnosticRunId,
+                stallId = input.stallId,
+                trigger = input.trigger,
+                classification = input.classification,
+                action = input.action,
+                configuration = input.configuration,
+                files = files + plannedBundleRecord,
+            ),
+        )
+        val bundleFileIndex = files.size
+        writeBoundedFile(
+            name = "bundle.json",
+            required = true,
+            datasetSafe = true,
+            bytes = manifestBytes,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
+        )
+        val bundleFile = files.getOrNull(bundleFileIndex)
+        if (bundleFile?.availability != EvidenceAvailability.AVAILABLE) {
             return@synchronized DiagnosticBundleResult(
                 EvidenceAvailability.FAILED,
                 bundleDirectory,
@@ -443,22 +437,6 @@ public class DiagnosticBundleWriter(
 
     private fun <T> encode(serializer: KSerializer<T>, value: T): ByteArray =
         json.encodeToString(serializer, value).toByteArray(Charsets.UTF_8)
-
-    private fun writeAtomicWithoutRecord(destination: Path, bytes: ByteArray) {
-        val normalized = destination.toAbsolutePath().normalize()
-        Files.createDirectories(normalized.parent)
-        val temporary = Files.createTempFile(normalized.parent, ".diagnostic-summary-", ".tmp")
-        try {
-            FileChannel.open(temporary, WRITE).use { channel ->
-                val buffer = ByteBuffer.wrap(bytes)
-                while (buffer.hasRemaining()) channel.write(buffer)
-                channel.force(true)
-            }
-            Files.move(temporary, normalized, ATOMIC_MOVE, REPLACE_EXISTING)
-        } finally {
-            Files.deleteIfExists(temporary)
-        }
-    }
 
     private fun latchRetentionFailure(diagnosticRunId: String, stallsDirectory: Path) {
         retentionFailureRunIds += diagnosticRunId

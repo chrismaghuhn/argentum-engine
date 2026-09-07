@@ -71,4 +71,40 @@ class D2BundleMetadataTest : FunSpec({
             root.toFile().deleteRecursively()
         }
     }
+
+    test("does not publish a manifest when the later summary cannot fit the bundle budget") {
+        val baselineRoot = Files.createTempDirectory("run-diagnostics-d2-ordering-baseline-")
+        val constrainedRoot = Files.createTempDirectory("run-diagnostics-d2-ordering-constrained-")
+        try {
+            val input = bundleInput(
+                status = null,
+                jvmResults = emptyList(),
+                safeArtifactSizes = emptyList(),
+            )
+            val baseline = DiagnosticBundleWriter(baselineRoot).write(input)
+            val baselineDirectory = baseline.bundleDirectory!!
+            val evidenceBytes = Files.walk(baselineDirectory).use { stream ->
+                stream.filter { Files.isRegularFile(it) }
+                    .filter { it.fileName.toString() !in setOf("bundle.json", "summary.json") }
+                    .mapToLong { path -> Files.size(path) }
+                    .sum()
+            }
+            val manifestBytes = Files.size(baselineDirectory.resolve("bundle.json"))
+            val summaryBytes = Files.size(baselineDirectory.resolve("summary.json"))
+            val constrainedBudget = (evidenceBytes + maxOf(manifestBytes, summaryBytes) + 128L).toInt()
+
+            val result = DiagnosticBundleWriter(
+                constrainedRoot,
+                maxBundleBytes = constrainedBudget,
+            ).write(input)
+            val constrainedDirectory = result.bundleDirectory!!
+
+            result.availability shouldBe EvidenceAvailability.FAILED
+            Files.exists(constrainedDirectory.resolve("summary.json")) shouldBe true
+            Files.exists(constrainedDirectory.resolve("bundle.json")) shouldBe false
+        } finally {
+            baselineRoot.toFile().deleteRecursively()
+            constrainedRoot.toFile().deleteRecursively()
+        }
+    }
 })
