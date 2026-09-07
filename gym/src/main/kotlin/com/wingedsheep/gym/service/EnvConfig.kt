@@ -50,6 +50,9 @@ data class EnvConfig(
      */
     val perspectivePlayerIndex: Int = 0,
 
+    /** Optional explicit trusted History-C episode identity; null keeps History-C inactive. */
+    val semanticEpisodeId: String? = null,
+
 ) {
     init {
         require(players.size >= 2) { "Need at least 2 players" }
@@ -64,6 +67,9 @@ data class EnvConfig(
         require(maxSteps == null || maxSteps > 0) { "maxSteps must be positive when supplied" }
         require(perspectivePlayerIndex in players.indices) {
             "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${players.size} players"
+        }
+        require(semanticEpisodeId == null || semanticEpisodeId.isNotBlank()) {
+            "semanticEpisodeId must be non-blank when supplied"
         }
     }
 }
