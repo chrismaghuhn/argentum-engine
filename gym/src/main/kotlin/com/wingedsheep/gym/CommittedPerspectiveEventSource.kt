@@ -9,10 +9,14 @@ import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.history.HistoryCReferenceAuthority
 import com.wingedsheep.gym.history.HistoryCReferenceAuthorityResult
 import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeV1
+import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeProducerResult
+import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeProducerV1
+import com.wingedsheep.gym.history.HistoryCReferenceEvidenceV1
 import com.wingedsheep.gym.history.HistoryCFailure
 import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.PerspectiveAliasRegistryV1
 import com.wingedsheep.gym.history.PerspectiveReferenceProjectorV1
+import com.wingedsheep.gym.history.PerspectiveReferenceProjectionV1
 import com.wingedsheep.gym.history.PerspectiveReferenceProjectionResult
 
 /**
@@ -32,6 +36,15 @@ internal data class CommittedPerspectiveEventSourceSnapshot(
     val transition: CommittedRulesTransition?,
     val committedTransitionCount: Int,
 )
+
+internal sealed interface AutomaticHistoryCReferenceProjectionResult {
+    data class Accepted(
+        val evidence: HistoryCReferenceEvidenceV1,
+        val projection: PerspectiveReferenceProjectionV1,
+    ) : AutomaticHistoryCReferenceProjectionResult
+
+    data class Rejected(val failure: HistoryCFailure) : AutomaticHistoryCReferenceProjectionResult
+}
 
 /**
  * One-transition source seam for perspective-safe event batches.
@@ -145,6 +158,66 @@ internal class CommittedPerspectiveEventSource(
                 evidence = evidence.evidence,
                 registry = registry,
             )
+        }
+    }
+
+    internal fun lastCommittedAutomaticReferenceProjection(
+        semanticEpisodeId: String,
+        perspectivePlayerId: EntityId,
+        registry: PerspectiveAliasRegistryV1,
+    ): AutomaticHistoryCReferenceProjectionResult {
+        if (!captureEnabled) {
+            return AutomaticHistoryCReferenceProjectionResult.Rejected(
+                HistoryCFailure(HistoryCFailureCode.FORK_OR_SPECULATIVE_SOURCE),
+            )
+        }
+        val transition = lastTransition ?: return AutomaticHistoryCReferenceProjectionResult.Rejected(
+            HistoryCFailure(HistoryCFailureCode.UNCOMMITTED_TRANSITION),
+        )
+        val perspectiveProjection = projectLast(perspectivePlayerId)
+            ?: return AutomaticHistoryCReferenceProjectionResult.Rejected(
+                HistoryCFailure(HistoryCFailureCode.UNCOMMITTED_TRANSITION),
+            )
+        val envelope = when (
+            val produced = HistoryCReferenceEnvelopeProducerV1.produce(
+                transition = transition,
+                projection = perspectiveProjection,
+            )
+        ) {
+            is HistoryCReferenceEnvelopeProducerResult.Rejected ->
+                return AutomaticHistoryCReferenceProjectionResult.Rejected(produced.failure)
+
+            is HistoryCReferenceEnvelopeProducerResult.Accepted -> produced.envelope
+        }
+        val evidence = when (
+            val validated = HistoryCReferenceAuthority.validate(
+                transition = transition,
+                projection = perspectiveProjection,
+                envelope = envelope,
+            )
+        ) {
+            is HistoryCReferenceAuthorityResult.Rejected ->
+                return AutomaticHistoryCReferenceProjectionResult.Rejected(validated.failure)
+
+            is HistoryCReferenceAuthorityResult.Accepted -> validated.evidence
+        }
+        return when (
+            val projected = referenceProjector.project(
+                semanticEpisodeId = semanticEpisodeId,
+                perspectivePlayerId = perspectivePlayerId,
+                transition = transition,
+                evidence = evidence,
+                registry = registry,
+            )
+        ) {
+            is PerspectiveReferenceProjectionResult.Rejected ->
+                AutomaticHistoryCReferenceProjectionResult.Rejected(projected.failure)
+
+            is PerspectiveReferenceProjectionResult.Accepted ->
+                AutomaticHistoryCReferenceProjectionResult.Accepted(
+                    evidence = evidence,
+                    projection = projected.projection,
+                )
         }
     }
 }

@@ -7,6 +7,8 @@ import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryCOperationException
 import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeV1
 import com.wingedsheep.gym.history.HistoryCSnapshotCodecV1
+import com.wingedsheep.gym.history.PerspectiveHistorySnapshotCodecV1
+import com.wingedsheep.gym.history.PerspectiveHistoryStateV1
 import com.wingedsheep.gym.history.PerspectiveReferenceProjectionResult
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.HistoryCContinuationAuthorityV1
@@ -111,6 +113,11 @@ class HistoryCDGameGymLifecycleTest : FunSpec({
         val codec = SnapshotCodec()
         val valid = HistoryCSnapshotCodecV1.encode(gym.historyCLifecycleState()!!, stepCount = 0)
         val corrupted = valid.copyOf().also { bytes -> bytes[bytes.lastIndex] = '!'.code.toByte() }
+        val historyContinuation = PerspectiveHistorySnapshotCodecV1.encode(
+            state = PerspectiveHistoryStateV1.start("episode-a", gym.environment.playerIds),
+            stepCount = 0,
+            projectionGeneration = 0L,
+        )
         val handle = codec.save(
             state = gym.environment.state,
             playerIds = gym.environment.playerIds,
@@ -118,6 +125,7 @@ class HistoryCDGameGymLifecycleTest : FunSpec({
             maxSteps = gym.environment.maxSteps,
             historyCContinuation = corrupted,
             historyCContinuationAuthority = HistoryCContinuationAuthorityV1.TRUSTED_COMMITTED,
+            perspectiveHistoryContinuation = historyContinuation,
         )
         val beforeDigest = gym.observe().observation.stateDigest
 

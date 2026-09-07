@@ -12,6 +12,7 @@ import com.wingedsheep.gym.EpisodeDiagnostics
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.PerspectiveHistoryV1
 import com.wingedsheep.gym.deckbuild.DeckbuildEnvironment
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
@@ -128,6 +129,10 @@ class MultiEnvService(
 
     /** Authoritative lifecycle closure for a game environment, when the episode has closed. */
     fun episodeClosure(envId: EnvId): EpisodeClosureV1? = requireGameEnv(envId).episodeClosure
+
+    /** Return the explicit trusted History-D contract for one perspective. */
+    fun perspectiveHistory(envId: EnvId, perspectivePlayerId: EntityId): PerspectiveHistoryV1 =
+        requireGameEnv(envId).perspectiveHistory(perspectivePlayerId)
 
     // =========================================================================
     // Observations / stepping

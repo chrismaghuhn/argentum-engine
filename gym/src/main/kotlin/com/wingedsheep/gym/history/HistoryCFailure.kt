@@ -46,6 +46,14 @@ internal enum class HistoryCFailureCode {
     HISTORY_C_SNAPSHOT_AUTHORITY_MISSING,
     HISTORY_C_SOURCE_SNAPSHOT_MISSING,
     HISTORY_C_EPISODE_ALREADY_ACTIVE,
+    HISTORY_D_NOT_ENABLED,
+    HISTORY_D_SNAPSHOT_MISSING,
+    INVALID_HISTORY_D_SNAPSHOT_VERSION,
+    INVALID_HISTORY_D_SNAPSHOT_SCHEMA_IDENTITY,
+    INVALID_HISTORY_D_SNAPSHOT_INTEGRITY,
+    INVALID_HISTORY_D_SNAPSHOT_STATE,
+    INVALID_HISTORY_D_SNAPSHOT_PERSPECTIVE,
+    HISTORY_D_PROJECTION_INCOMPLETE,
 }
 
 /** Non-wire diagnostic; it deliberately carries no entity IDs, card names, or hidden values. */
@@ -56,6 +64,10 @@ internal data class HistoryCFailure(
 internal class HistoryCOperationException(
     val failure: HistoryCFailure,
 ) : IllegalStateException("History-C operation rejected: ${failure.code}")
+
+internal class HistoryDOperationException(
+    val failure: HistoryCFailure,
+) : IllegalStateException("History-D operation rejected: ${failure.code}")
 
 internal sealed interface HistoryCReferenceAuthorityResult {
     data class Accepted(
