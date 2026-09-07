@@ -67,12 +67,12 @@ class ValidatedTrajectoryDatasetV1 private constructor(
         shards.forEach { shard ->
             requireStillSafe(shard)
             TrajectoryV1ShardValidator.validate(shard).episodes.forEach { episode ->
-                yield(episode.trajectory)
                 diagnosticsRecorder.reportDiagnostics {
                     recordUsefulProgress(
                         trajectoryDecisionDelta = episode.trajectory.decisions.size.toLong(),
                     )
                 }
+                yield(episode.trajectory)
             }
         }
         diagnosticsRecorder.reportDiagnostics { advanceStage(ReaderDiagnosticsStageV1.COMPLETE) }

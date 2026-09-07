@@ -47,6 +47,36 @@ class RunDiagnosticsReaderIntegrationTest : FunSpec({
         }
     }
 
+    test("D4-READER-13 advances progress immediately after iterator.next yields a unit") {
+        val fixture = validFixture()
+        val output = Files.createTempDirectory("d4-reader-lazy-yield-")
+        val writer = TrajectoryV1Writer(
+            outputDirectory = output,
+            metadata = DatasetMetadataV1(maxShardBytes = 1_000_000L, maxEpisodesPerShard = 2),
+        )
+        val manifest = try {
+            writer.appendEpisode(0, fixture.trajectory, fixture.binding)
+            writer.finalizeDataset()
+        } finally {
+            writer.close()
+        }
+
+        val recorder = recorder()
+        try {
+            val dataset = TrajectoryV1Reader.openPublishedDataset(
+                output.resolve("dataset-${manifest.datasetId}"),
+                diagnosticsRecorder = recorder,
+            )
+            val first = dataset.streamEpisodes().iterator().next()
+
+            first shouldBe fixture.trajectory
+            checkNotNull(recorder.snapshot()).progress.trajectoryDecisionCount shouldBe
+                fixture.trajectory.decisions.size.toLong()
+        } finally {
+            recorder.close()
+        }
+    }
+
     test("reader diagnostics failure does not change the trusted stream") {
         val fixture = validFixture()
         val output = Files.createTempDirectory("d4-reader-failure-")
