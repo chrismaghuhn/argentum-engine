@@ -147,7 +147,18 @@ class JvmDiagnosticsTest : FunSpec({
             captureTimeoutMillis = 10,
         )
 
-        JvmEvidenceCollector(config, runner, SupervisorSleeper { }).capture(FIXTURE_PID)
+        JvmEvidenceCollector(
+            config = config,
+            runner = runner,
+            sleeper = SupervisorSleeper { },
+            identityChecker = ProcessIdentityChecker(
+                object : ProcessHandleSource {
+                    override fun observe(pid: Long): ProcessHandleObservation =
+                        ProcessHandleObservation(pid, alive = true, startInstant = FIXTURE_START)
+                },
+                startToleranceMillis = 0,
+            ),
+        ).capture(FIXTURE_PID, FIXTURE_START)
 
         runner.kinds shouldBe listOf(
             JvmCommandKind.THREAD_PRINT,
