@@ -3,6 +3,9 @@ package com.wingedsheep.engine.handlers.effects.library
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
+import com.wingedsheep.engine.mechanics.KnownInformationLedger
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 
@@ -11,7 +14,10 @@ import com.wingedsheep.sdk.model.EntityId
  *
  * Reveals are stored as [RevealedToComponent] on the card entity. They persist while
  * the card is in a hidden zone (library/hand) and are cleared on shuffle so a freshly
- * shuffled library is once again opaque to everyone.
+ * shuffled library is once again opaque to the current client projection. This marker is not the
+ * historical knowledge ledger: a shuffle invalidates tracked position/order there but may retain
+ * identity/membership knowledge. Library position/order is recorded only by an explicit order-aware
+ * producer.
  */
 object LibraryRevealUtils {
 
@@ -19,7 +25,11 @@ object LibraryRevealUtils {
     fun markRevealed(
         state: GameState,
         cardIds: Collection<EntityId>,
-        playerIds: Collection<EntityId>
+        playerIds: Collection<EntityId>,
+        audience: KnownInformationAudience = KnownInformationAudience.PUBLIC,
+        acquisitionReason: KnownInformationAcquisitionReason =
+            KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+        includeLibraryPositions: Boolean = false,
     ): GameState {
         if (cardIds.isEmpty() || playerIds.isEmpty()) return state
         var newState = state
@@ -34,7 +44,14 @@ object LibraryRevealUtils {
                 container.with(merged)
             }
         }
-        return newState
+        return KnownInformationLedger.recordCards(
+            state = newState,
+            cardIds = cardIds,
+            perspectivePlayerIds = playerIds,
+            audience = audience,
+            acquisitionReason = acquisitionReason,
+            includeLibraryPositions = includeLibraryPositions,
+        )
     }
 
     /** Strip [RevealedToComponent] from every card currently in [ownerId]'s library. */

@@ -14,6 +14,7 @@ import com.wingedsheep.engine.handlers.effects.library.CastFromCollectionWithout
 import com.wingedsheep.engine.handlers.effects.library.ExileFromTopRepeatingExecutor
 import com.wingedsheep.engine.handlers.effects.library.AuraHostLegality
 import com.wingedsheep.engine.handlers.effects.library.MoveCollectionExecutor
+import com.wingedsheep.engine.mechanics.KnownInformationLedger
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -247,17 +248,39 @@ class LibraryAndZoneContinuationResumer(
                 source = continuation.sourceName,
             ),
         )
+        val completedWithKnowledge = if (continuation.destinationZone == Zone.LIBRARY) {
+            completed.copy(
+                state = KnownInformationLedger.recordLibraryOrder(
+                    state = completed.state,
+                    perspectivePlayerId = continuation.playerId,
+                    libraryOwnerId = continuation.destinationPlayerId,
+                    orderedCardIds = orderedCards,
+                    audience = if (continuation.revealed) {
+                        com.wingedsheep.engine.state.components.player.KnownInformationAudience.PUBLIC
+                    } else {
+                        com.wingedsheep.engine.state.components.player.KnownInformationAudience.PERSPECTIVE_PRIVATE
+                    },
+                    acquisitionReason = if (continuation.revealed) {
+                        com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                    } else {
+                        com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                    },
+                ),
+            )
+        } else {
+            completed
+        }
 
         val stateWithCollections = exposeCollectionsToNextFrame(
-            completed.state,
-            completed.updatedCollections,
-            completed.updatedStoredNumbers,
-            completed.updatedChosenValues,
+            completedWithKnowledge.state,
+            completedWithKnowledge.updatedCollections,
+            completedWithKnowledge.updatedStoredNumbers,
+            completedWithKnowledge.updatedChosenValues,
         )
         return checkForMore(
             stateWithCollections,
-            completed.events,
-        ).withDiagnosticsFrom(completed.diagnostics)
+            completedWithKnowledge.events,
+        ).withDiagnosticsFrom(completedWithKnowledge.diagnostics)
     }
 
     /**
@@ -304,7 +327,12 @@ class LibraryAndZoneContinuationResumer(
             )
         )
 
-        return checkForMore(newState, events)
+        val stateWithKnowledge = KnownInformationLedger.recordLibraryOrder(
+            state = newState,
+            perspectivePlayerId = playerId,
+            orderedCardIds = orderedCards,
+        )
+        return checkForMore(stateWithKnowledge, events)
     }
 
     fun resumePutFromHand(
@@ -889,7 +917,12 @@ class LibraryAndZoneContinuationResumer(
         // to every player so each library viewer shows the card face-up at its new slot.
         val finalState = if (cardId in transitionResult.state.getZone(ZoneKey(continuation.ownerId, Zone.LIBRARY))) {
             com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-                .markRevealed(transitionResult.state, listOf(cardId), transitionResult.state.turnOrder.toSet())
+                .markRevealed(
+                    state = transitionResult.state,
+                    cardIds = listOf(cardId),
+                    playerIds = transitionResult.state.turnOrder.toSet(),
+                    includeLibraryPositions = true,
+                )
         } else {
             transitionResult.state
         }
@@ -933,7 +966,12 @@ class LibraryAndZoneContinuationResumer(
         if (!transitionResult.isSuccess) return transitionResult.toExecutionResult()
 
         val newState = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-            .markRevealed(transitionResult.state, listOf(spellId), transitionResult.state.turnOrder.toSet())
+            .markRevealed(
+                state = transitionResult.state,
+                cardIds = listOf(spellId),
+                playerIds = transitionResult.state.turnOrder.toSet(),
+                includeLibraryPositions = true,
+            )
         val events = listOf(SpellCounteredEvent(spellId, spellName)) + transitionResult.events
         return checkForMore(newState, events)
             .withDiagnosticsFrom(transitionResult.diagnostics)

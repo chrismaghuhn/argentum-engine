@@ -639,6 +639,12 @@ object ZoneTransitionService {
             newState = newState.removeMayPlayPermissionsForCard(entityId)
         }
 
+        // A zone change creates a new object (CR 400.7). Any per-object reveal permission belongs
+        // to the old incarnation and must not silently follow it into a hidden destination. Public
+        // reveal/return producers re-establish current knowledge after this atom when the Rules
+        // effect actually authorizes it.
+        newState = newState.updateEntity(entityId) { c -> c.without<RevealedToComponent>() }
+
         // Drop any remaining linked-exile reference held by a granter still on the
         // battlefield (e.g. Maralen, Fae Ascendant). The card has just left exile by
         // some non-cast path — return, blink, exile-elsewhere — so the granter must

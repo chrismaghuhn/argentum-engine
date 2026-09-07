@@ -20,6 +20,8 @@ import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.effects.GatherCardsEffect
 import com.wingedsheep.sdk.scripting.effects.LookAudience
 import com.wingedsheep.sdk.scripting.references.Player
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import com.wingedsheep.engine.state.components.battlefield.AttachmentsComponent
 import com.wingedsheep.engine.state.components.battlefield.CrewSaddleContributorsComponent
 import com.wingedsheep.engine.state.components.battlefield.CraftedFromExiledComponent
@@ -374,8 +376,35 @@ class GatherCardsExecutor : EffectExecutor<GatherCardsEffect> {
             }
             else -> emptySet()
         }
+        val knowledgeCards = if (effect.revealed) {
+            // A public reveal is limited to the cards actually revealed by this gather.
+            cards
+        } else if (revealAudience.isNotEmpty() && isLibrarySource(effect.source)) {
+            // Searching a hidden library requires looking at the whole searched zone, not only
+            // the cards that matched the filter. For a top-of-library look, `cards` already is the
+            // complete looked-at slice. This preserves the distinction between private search/look
+            // knowledge and the later optional public reveal of selected cards.
+            (cards + libraryCardsSeen(state, effect.source, context)).distinct()
+        } else {
+            cards
+        }
         val newState = if (revealAudience.isNotEmpty()) {
-            LibraryRevealUtils.markRevealed(state, cards, revealAudience)
+            LibraryRevealUtils.markRevealed(
+                state = state,
+                cardIds = knowledgeCards,
+                playerIds = revealAudience,
+                audience = if (effect.revealed) {
+                    KnownInformationAudience.PUBLIC
+                } else {
+                    KnownInformationAudience.PERSPECTIVE_PRIVATE
+                },
+                acquisitionReason = if (effect.revealed) {
+                    KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                } else {
+                    KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                },
+                includeLibraryPositions = effect.source is CardSource.TopOfLibrary,
+            )
         } else {
             state
         }
@@ -390,6 +419,40 @@ class GatherCardsExecutor : EffectExecutor<GatherCardsEffect> {
         is CardSource.FromZone -> source.zone == Zone.LIBRARY
         is CardSource.FromMultipleZones -> source.zones.any { it == Zone.LIBRARY }
         else -> false
+    }
+
+    /**
+     * Cards a non-public library source legally exposes to its configured audience. A filtered
+     * `FromZone(LIBRARY, ...)` still requires inspecting every card in that library; only the
+     * matching subset is offered to the following selection effect.
+     */
+    private fun libraryCardsSeen(
+        state: GameState,
+        source: CardSource,
+        context: EffectContext,
+    ): List<EntityId> = when (source) {
+        is CardSource.TopOfLibrary -> {
+            // The caller's `cards` list is the evaluated top-N slice; no extra hidden cards exist.
+            emptyList()
+        }
+
+        is CardSource.FromZone -> if (source.zone == Zone.LIBRARY) {
+            resolvePlayers(source.player, context, state)
+                .orEmpty()
+                .flatMap { playerId -> state.getZone(ZoneKey(playerId, Zone.LIBRARY)) }
+        } else {
+            emptyList()
+        }
+
+        is CardSource.FromMultipleZones -> if (source.zones.contains(Zone.LIBRARY)) {
+            resolvePlayers(source.player, context, state)
+                .orEmpty()
+                .flatMap { playerId -> state.getZone(ZoneKey(playerId, Zone.LIBRARY)) }
+        } else {
+            emptyList()
+        }
+
+        else -> emptyList()
     }
 
     private fun resolvePlayer(player: Player, context: EffectContext, state: GameState): com.wingedsheep.sdk.model.EntityId? =

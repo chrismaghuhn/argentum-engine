@@ -31,6 +31,8 @@ import com.wingedsheep.engine.state.components.stack.captureEntitySnapshots
 import com.wingedsheep.sdk.scripting.effects.MoveType
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import java.util.UUID
 import kotlin.reflect.KClass
 
@@ -1166,7 +1168,21 @@ class MoveCollectionExecutor(
             } else {
                 setOf(context.controllerId)
             }
-            newState = LibraryRevealUtils.markRevealed(newState, libraryMovedIds, audience)
+            newState = LibraryRevealUtils.markRevealed(
+                state = newState,
+                cardIds = libraryMovedIds,
+                playerIds = audience,
+                audience = if (revealed) {
+                    KnownInformationAudience.PUBLIC
+                } else {
+                    KnownInformationAudience.PERSPECTIVE_PRIVATE
+                },
+                acquisitionReason = if (revealed) {
+                    KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                } else {
+                    KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                },
+            )
         }
 
         // Emit discard event if configured

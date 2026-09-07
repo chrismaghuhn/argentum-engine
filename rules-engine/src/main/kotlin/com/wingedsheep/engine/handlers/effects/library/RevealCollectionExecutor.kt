@@ -12,8 +12,8 @@ import kotlin.reflect.KClass
 /**
  * Executor for [RevealCollectionEffect].
  *
- * Emits a [CardsRevealedEvent] for all cards in the named stored collection.
- * Does not move or modify any cards — purely an event/information step.
+ * Emits a [CardsRevealedEvent] for all cards in the named stored collection and persists the public
+ * audience through the Rules-owned visibility/knowledge metadata. Does not move any cards.
  *
  * If the collection is empty, no event is emitted.
  */
@@ -52,6 +52,10 @@ class RevealCollectionExecutor : EffectExecutor<RevealCollectionEffect> {
             toZone = effect.toZone
         )
 
-        return EffectResult.success(state, listOf(event))
+        // RevealCollection is an information mutation even though it does not move the cards.
+        // Keep the audience in the same Rules-owned visibility metadata used by later projections;
+        // `revealToSelf` controls only the client overlay and is not an information boundary.
+        val revealedState = LibraryRevealUtils.markRevealed(state, cards, state.turnOrder)
+        return EffectResult.success(revealedState, listOf(event))
     }
 }

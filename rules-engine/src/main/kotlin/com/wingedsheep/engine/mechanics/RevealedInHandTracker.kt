@@ -9,6 +9,8 @@ import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 
@@ -73,14 +75,26 @@ object RevealedInHandTracker {
     private fun onCardsRevealed(state: GameState, event: CardsRevealedEvent): GameState {
         val inHand = event.cardIds.filter { isInOwnersHand(state, it) }
         if (inHand.isEmpty()) return state
-        return LibraryRevealUtils.markRevealed(state, inHand, state.turnOrder)
+        return LibraryRevealUtils.markRevealed(
+            state = state,
+            cardIds = inHand,
+            playerIds = state.turnOrder,
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+        )
     }
 
     private fun onZoneChange(state: GameState, event: ZoneChangeEvent): GameState {
         // Returned to hand from a public zone → known to the whole table.
         if (event.toZone == Zone.HAND && event.fromZone in PUBLIC_RETURN_SOURCES) {
             return if (isInOwnersHand(state, event.entityId)) {
-                LibraryRevealUtils.markRevealed(state, listOf(event.entityId), state.turnOrder)
+                LibraryRevealUtils.markRevealed(
+                    state = state,
+                    cardIds = listOf(event.entityId),
+                    playerIds = state.turnOrder,
+                    audience = KnownInformationAudience.PUBLIC,
+                    acquisitionReason = KnownInformationAcquisitionReason.VISIBLE_ZONE_TRANSITION,
+                )
             } else {
                 state
             }

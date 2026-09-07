@@ -203,7 +203,12 @@ class ReplacementContinuationResumer(
                 val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
                     .performPendingZoneChange(state, pending)
                 val revealed = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-                    .markRevealed(transition.state, listOf(pending.entityId), transition.state.turnOrder.toSet())
+                    .markRevealed(
+                        state = transition.state,
+                        cardIds = listOf(pending.entityId),
+                        playerIds = transition.state.turnOrder.toSet(),
+                        includeLibraryPositions = true,
+                    )
                 checkForMore(revealed, events + transition.events)
             }
             PendingGameEvent.StackSpellToLibraryZoneChangeCompletion -> {
@@ -214,7 +219,12 @@ class ReplacementContinuationResumer(
                     ?.name
                     ?: "Unknown"
                 val revealed = com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
-                    .markRevealed(transition.state, listOf(pending.entityId), transition.state.turnOrder.toSet())
+                    .markRevealed(
+                        state = transition.state,
+                        cardIds = listOf(pending.entityId),
+                        playerIds = transition.state.turnOrder.toSet(),
+                        includeLibraryPositions = true,
+                    )
                 checkForMore(
                     revealed,
                     events + SpellCounteredEvent(pending.entityId, spellName) + transition.events,
@@ -314,15 +324,39 @@ class ReplacementContinuationResumer(
                         ),
                     )
                 } ?: completed
+                val withOrderKnowledge = completion.orderCompletion?.let { order ->
+                    if (completion.destination.zone == com.wingedsheep.sdk.core.Zone.LIBRARY) {
+                        withOrderEvent.copy(
+                            state = com.wingedsheep.engine.mechanics.KnownInformationLedger.recordLibraryOrder(
+                                state = withOrderEvent.state,
+                                perspectivePlayerId = order.playerId,
+                                libraryOwnerId = completion.destPlayerId,
+                                orderedCardIds = completion.cards,
+                                audience = if (completion.revealed) {
+                                    com.wingedsheep.engine.state.components.player.KnownInformationAudience.PUBLIC
+                                } else {
+                                    com.wingedsheep.engine.state.components.player.KnownInformationAudience.PERSPECTIVE_PRIVATE
+                                },
+                                acquisitionReason = if (completion.revealed) {
+                                    com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                                } else {
+                                    com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                                },
+                            ),
+                        )
+                    } else {
+                        withOrderEvent
+                    }
+                } ?: withOrderEvent
                 val stateWithCollections = exposeCollectionsToNextFrame(
-                    withOrderEvent.state,
-                    withOrderEvent.updatedCollections,
-                    withOrderEvent.updatedStoredNumbers,
-                    withOrderEvent.updatedChosenValues,
+                    withOrderKnowledge.state,
+                    withOrderKnowledge.updatedCollections,
+                    withOrderKnowledge.updatedStoredNumbers,
+                    withOrderKnowledge.updatedChosenValues,
                 )
                 checkForMore(
                     stateWithCollections,
-                    events + transition.events + withOrderEvent.events,
+                    events + transition.events + withOrderKnowledge.events,
                 )
             }
         }
