@@ -331,7 +331,7 @@ rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/KnownInformationLe
     explicit public-stack/destination, and face-down cases
 
 rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/KnownInformationLedgerVisibilityTest.kt
-    1 test: continuous top-library visibility before and after shuffle
+    3 tests: continuous top-library, revealed-hand, and face-down visibility
 
 rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/library/RevealCollectionExecutorTest.kt
     1 test: reveal-only persistence RED → generic fix
@@ -354,7 +354,7 @@ WSL cannot start `/bin/bash`; this is reported as `BLOCKED`, not as a passing te
 Native Gradle was used as an explicitly labeled fallback:
 
 ```text
-FOCUSED_RULES_TESTS=PASS__25_LEDGER__1_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT
+FOCUSED_RULES_TESTS=PASS__25_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT
 RULES_ENGINE_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_TRAINER_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK

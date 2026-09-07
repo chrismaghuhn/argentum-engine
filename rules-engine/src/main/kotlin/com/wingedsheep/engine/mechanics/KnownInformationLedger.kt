@@ -288,6 +288,7 @@ object KnownInformationLedger {
             cardRegistry = cardRegistry,
         )
         state = recordCurrentlyVisibleLibraryCards(state, cardRegistry)
+        state = recordCurrentlyAuthorizedNonPublicIdentities(state, cardRegistry)
 
         state = upgradeNewSearchFacts(beforeState, state, events)
         state = finalizeEpochs(beforeState, state)
@@ -627,8 +628,66 @@ object KnownInformationLedger {
                     cardIds = listOf(topCardId),
                     perspectivePlayerIds = listOf(perspectivePlayerId),
                     audience = audience,
-                    acquisitionReason = KnownInformationAcquisitionReason.CONTINUOUS_LIBRARY_VISIBILITY,
+                    acquisitionReason = KnownInformationAcquisitionReason.CONTINUOUS_IDENTITY_VISIBILITY,
                     includeLibraryPositions = true,
+                )
+            }
+        }
+        return newState
+    }
+
+    private fun recordCurrentlyAuthorizedNonPublicIdentities(
+        state: GameState,
+        cardRegistry: CardRegistry,
+    ): GameState {
+        val visibility = Visibility(cardRegistry)
+        val candidates = linkedMapOf<EntityId, EntityId?>()
+        for (ownerId in state.turnOrder) {
+            state.getHand(ownerId).forEach { cardId -> candidates.putIfAbsent(cardId, ownerId) }
+            state.getExile(ownerId).filter { cardId ->
+                state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.FaceDownComponent>() == true
+            }.forEach { cardId -> candidates.putIfAbsent(cardId, ownerId) }
+            state.getBattlefield(ownerId).filter { cardId ->
+                state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.FaceDownComponent>() == true
+            }.forEach { cardId ->
+                candidates.putIfAbsent(
+                    cardId,
+                    state.projectedState.getController(cardId)
+                        ?: state.getEntity(cardId)?.get<CardComponent>()?.ownerId,
+                )
+            }
+        }
+        state.stack.filter { cardId ->
+            state.getEntity(cardId)?.has<com.wingedsheep.engine.state.components.identity.FaceDownComponent>() == true ||
+                state.getEntity(cardId)?.get<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
+                    ?.castFaceDown == true
+        }.forEach { cardId ->
+            candidates.putIfAbsent(
+                cardId,
+                state.getEntity(cardId)?.get<com.wingedsheep.engine.state.components.stack.SpellOnStackComponent>()
+                    ?.casterId,
+            )
+        }
+
+        var newState = state
+        for ((cardId, naturallyAuthorizedPlayerId) in candidates) {
+            val visiblePerspectives = state.turnOrder.filter { perspectivePlayerId ->
+                perspectivePlayerId != naturallyAuthorizedPlayerId &&
+                visibility.isEntityIdentityVisibleTo(state, cardId, perspectivePlayerId)
+            }
+            if (visiblePerspectives.isEmpty()) continue
+            val audience = if (visiblePerspectives.size == state.turnOrder.size) {
+                KnownInformationAudience.PUBLIC
+            } else {
+                KnownInformationAudience.PERSPECTIVE_PRIVATE
+            }
+            for (perspectivePlayerId in visiblePerspectives) {
+                newState = recordCards(
+                    state = newState,
+                    cardIds = listOf(cardId),
+                    perspectivePlayerIds = listOf(perspectivePlayerId),
+                    audience = audience,
+                    acquisitionReason = KnownInformationAcquisitionReason.CONTINUOUS_IDENTITY_VISIBILITY,
                 )
             }
         }
