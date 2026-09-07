@@ -165,7 +165,8 @@ private const val TARGET_COST_COMBINATION_LIMIT: Int = 4096
  */
 class ObservationBuilder(
     private val schemaHash: String = SchemaHash.CURRENT,
-    private val cardRegistry: CardRegistry,
+    /** Shared registry used by trusted Gym projections, including the history event projector. */
+    internal val cardRegistry: CardRegistry,
     private val paidManaSourceTimingCertifier: PaidManaSourceTimingCertifier? = null,
 ) {
     private val visibility = Visibility(cardRegistry)
