@@ -128,6 +128,12 @@ class GameEnvironment private constructor(
     private var explicitFailureClosure: EpisodeClosureV1.Failed? = null
 
     /**
+     * One-shot internal handoff from the strict committed Rules path to the Gym event source.
+     * Legacy simulation, forks, restores, and failures never publish this token.
+     */
+    private var pendingCommittedTransition: CommittedRulesTransition? = null
+
+    /**
      * Typed closure for the current episode, or null while the episode is still open.
      *
      * A recorded failure is intentionally checked first so a later state transition cannot
@@ -207,6 +213,7 @@ class GameEnvironment private constructor(
         this.maxSteps = maxSteps
         diagnostics = EpisodeDiagnostics.EMPTY
         explicitFailureClosure = null
+        pendingCommittedTransition = null
         projectionGeneration = 0L
         return buildStepResult(initResult.events)
     }
@@ -375,6 +382,9 @@ class GameEnvironment private constructor(
     }
 
     private fun simulateAndCommit(action: GameAction): StepResult {
+        // A legacy simulation is not an eligible source for perspective history. Clear any token
+        // left by a direct internal strict call before advancing through this compatibility path.
+        pendingCommittedTransition = null
 
         val simResult = if (action is SubmitDecision) {
             simulator.simulateDecision(state, action.response)
@@ -399,6 +409,7 @@ class GameEnvironment private constructor(
 
     /** Commit one direct ActionProcessor transition without legacy quiet-state simulation. */
     private fun processAndCommit(action: GameAction): StepResult {
+        val beforeState = state
         val result = processor.process(state, action).result
         if (result.diagnostics.isNotEmpty()) {
             recordExecutionDiagnostics(result.diagnostics)
@@ -413,6 +424,12 @@ class GameEnvironment private constructor(
         lastStepEvents = result.events
         stepCount++
         projectionGeneration++
+        pendingCommittedTransition = CommittedRulesTransition(
+            beforeState = beforeState,
+            afterState = result.state,
+            events = result.events.toList(),
+            sourceStepCount = stepCount,
+        )
 
         return buildStepResult(result.events)
     }
@@ -488,6 +505,7 @@ class GameEnvironment private constructor(
         forked.maxSteps = maxSteps
         forked.diagnostics = diagnostics
         forked.explicitFailureClosure = explicitFailureClosure
+        forked.pendingCommittedTransition = null
         forked.projectionGeneration = projectionGeneration
         return forked
     }
@@ -523,6 +541,7 @@ class GameEnvironment private constructor(
         this.maxSteps = maxSteps
         this.diagnostics = diagnostics
         this.explicitFailureClosure = failureClosure
+        this.pendingCommittedTransition = null
         this.projectionGeneration = projectionGeneration
     }
 
@@ -629,6 +648,10 @@ class GameEnvironment private constructor(
 
     internal fun projectionCursor(perspectivePlayerId: EntityId): ProjectionCursor =
         ProjectionCursor(projectionGeneration, perspectivePlayerId)
+
+    /** Consume the one strict-transition token without exposing raw state outside the Gym module. */
+    internal fun consumeCommittedTransition(): CommittedRulesTransition? =
+        pendingCommittedTransition.also { pendingCommittedTransition = null }
 
     internal fun recordObservationDiagnostics(
         cursor: ProjectionCursor,

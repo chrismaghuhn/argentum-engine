@@ -20,8 +20,10 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ResolvedAction
 import com.wingedsheep.gym.contract.TrainingObservation
+import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.SnapshotHandle
+import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -46,7 +48,8 @@ import kotlinx.serialization.json.jsonObject
 class GameGymEnv(
     val environment: GameEnvironment,
     perspectivePlayerIndex: Int,
-    private val observationBuilder: ObservationBuilder
+    private val observationBuilder: ObservationBuilder,
+    private val committedHistoryEnabled: Boolean = true,
 ) : GymEnv {
 
     private var fallbackPerspectivePlayerIndex: Int = perspectivePlayerIndex
@@ -68,6 +71,12 @@ class GameGymEnv(
 
     /** Env-local action handles are never reused, including after reset/restore. */
     private var nextActionId: Int = 0
+
+    /** One-transition committed source; disabled on forked Gym environments. */
+    private val committedPerspectiveEventSource = CommittedPerspectiveEventSource(
+        cardRegistry = observationBuilder.cardRegistry,
+        captureEnabled = committedHistoryEnabled,
+    )
 
     private val actionSerialization = Json {
         encodeDefaults = true
@@ -137,13 +146,40 @@ class GameGymEnv(
         ManaColorDomainSubmission.requireWithinRegisteredDomain(legal.legalAction, submitted)
         ActionPayloadRequirements.requireTargetPayloadPartition(legal.legalAction, submitted)
         requireActionPaymentPlan(legal, submitted, actionId)
-        environment.stepFromCandidateStrict(legal.legalAction, submitted)
+        commitStrict {
+            environment.stepFromCandidateStrict(legal.legalAction, submitted)
+        }
         build()
     }
 
     override fun fork(): GymEnv =
-        GameGymEnv(environment.fork(), fallbackPerspectivePlayerIndex, observationBuilder)
+        GameGymEnv(
+            environment = environment.fork(),
+            perspectivePlayerIndex = fallbackPerspectivePlayerIndex,
+            observationBuilder = observationBuilder,
+            committedHistoryEnabled = false,
+        )
             .also { it.build() }
+
+    /** Number of successful strict transitions captured by this Gym event source. */
+    internal val committedPerspectiveTransitionCount: Int
+        get() = committedPerspectiveEventSource.committedTransitionCount
+
+    /**
+     * Project the most recent successful strict Gym transition for one perspective.
+     *
+     * A null result means there is no captured transition (including after reset, restore, or on a
+     * forked/speculative Gym environment). An incomplete result is not safe to consume as a
+     * complete history unit; inspect [PerspectiveEventProjectionResult.isComplete] first.
+     */
+    fun lastCommittedPerspectiveEventProjection(
+        perspectivePlayerId: EntityId,
+    ): PerspectiveEventProjectionResult? {
+        require(perspectivePlayerId in environment.playerIds) {
+            "Perspective player is not part of the committed Gym episode: $perspectivePlayerId"
+        }
+        return committedPerspectiveEventSource.projectLast(perspectivePlayerId)
+    }
 
     // --- game-only operations (used by MultiEnvService via cast) -------------
 
@@ -156,6 +192,7 @@ class GameGymEnv(
         cachedObservation = null
         cachedStepCount = null
         cachedPerspectivePlayerId = null
+        committedPerspectiveEventSource.clear()
         environment.reset(gameConfig, maxSteps)
         require(perspectivePlayerIndex in environment.playerIds.indices) {
             "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${environment.playerIds.size} players"
@@ -187,7 +224,9 @@ class GameGymEnv(
                 ?: error("Pending mana payment did not produce a TrainingObservation")
             ChosenSemanticResponseV1.from(CompleteLegalDomainV1.from(current), response)
         }
-        environment.stepStrict(SubmitDecision(pending.playerId, response))
+        commitStrict {
+            environment.stepStrict(SubmitDecision(pending.playerId, response))
+        }
         build()
     }
 
@@ -207,6 +246,7 @@ class GameGymEnv(
         cachedObservation = null
         cachedStepCount = null
         cachedPerspectivePlayerId = null
+        committedPerspectiveEventSource.clear()
         environment.restore(
             state = snap.state,
             playerIds = snap.playerIds,
@@ -220,6 +260,18 @@ class GameGymEnv(
     }
 
     // --- internals -----------------------------------------------------------
+
+    /**
+     * Commit exactly one strict Rules transition, then hand its immutable result to the internal
+     * perspective-event source. The source is never called for a failed transition.
+     */
+    private inline fun commitStrict(block: () -> StepResult): StepResult {
+        val result = block()
+        val transition = environment.consumeCommittedTransition()
+            ?: error("Strict Rules transition completed without a committed transition token")
+        committedPerspectiveEventSource.capture(transition)
+        return result
+    }
 
     private fun build(): ObservationResult =
         try {
@@ -291,12 +343,15 @@ class GameGymEnv(
         try {
             block()
         } catch (failure: UnsupportedPathFailure) {
+            committedPerspectiveEventSource.invalidateLastProjection()
             environment.recordFailure(EpisodeFailureReason.UNSUPPORTED_DIAGNOSTIC)
             throw failure
         } catch (failure: IllegalArgumentException) {
+            committedPerspectiveEventSource.invalidateLastProjection()
             environment.recordFailure(EpisodeFailureReason.PUBLIC_CHOICE_REJECTED)
             throw failure
         } catch (failure: RuntimeException) {
+            committedPerspectiveEventSource.invalidateLastProjection()
             environment.recordFailure(EpisodeFailureReason.ENGINE_EXCEPTION)
             throw failure
         }
@@ -315,13 +370,17 @@ class GameGymEnv(
                 // Keep the registry's complete LegalAction certificate bound to the live
                 // candidate even for an action-ID-only call. This prevents a stale blocker handle
                 // from reaching the compatibility execution path after the live domain changes.
-                environment.stepFromCandidateStrict(resolved.legalAction, resolved.action)
+                commitStrict {
+                    environment.stepFromCandidateStrict(resolved.legalAction, resolved.action)
+                }
             }
             is ResolvedAction.Decision -> {
                 val pending = requireNotNull(environment.state.pendingDecision) {
                     "Registry has a decision response but env is not paused"
                 }
-                environment.stepStrict(SubmitDecision(pending.playerId, resolved.response))
+                commitStrict {
+                    environment.stepStrict(SubmitDecision(pending.playerId, resolved.response))
+                }
             }
             ResolvedAction.Unknown ->
                 throw IllegalArgumentException("Action ID $actionId is not valid for the current step")
