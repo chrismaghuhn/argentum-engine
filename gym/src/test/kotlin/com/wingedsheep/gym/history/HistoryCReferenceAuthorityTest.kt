@@ -8,6 +8,7 @@ import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.gym.CommittedPerspectiveEventSource
 import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
@@ -34,7 +35,11 @@ class HistoryCReferenceAuthorityTest : FunSpec({
         register(PortalSet.basicLands)
     }
 
-    fun state(stamp: Long, includeOtherCard: Boolean = false): GameState = GameState(
+    fun state(
+        stamp: Long,
+        includeOtherCard: Boolean = false,
+        faceDown: Boolean = false,
+    ): GameState = GameState(
         entities = buildMap {
             put(perspective, ComponentContainer.EMPTY)
             put(
@@ -47,7 +52,9 @@ class HistoryCReferenceAuthorityTest : FunSpec({
                         typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
                         ownerId = perspective,
                     ),
-                ),
+                ).let { container ->
+                    if (faceDown) container.with(FaceDownComponent) else container
+                },
             )
             if (includeOtherCard) {
                 put(
@@ -77,6 +84,7 @@ class HistoryCReferenceAuthorityTest : FunSpec({
         roleOrdinal: Int = 0,
         role: HistoryCReferenceSlotRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
         referenceKind: HistoryCReferenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+        orderAuthority: HistoryCOrderAuthority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
         beforeWitness: HistoryCObjectWitness? = null,
         afterWitness: HistoryCObjectWitness? = HistoryCObjectWitness(card, 2L),
         identityDisclosure: HistoryCIdentityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
@@ -97,7 +105,7 @@ class HistoryCReferenceAuthorityTest : FunSpec({
         identityDisclosure = identityDisclosure,
         cardDefinitionId = cardDefinitionId,
         orderProof = HistoryCOrderProof(
-            authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
+            authority = orderAuthority,
             rank = roleOrdinal,
         ),
         semanticDescriptor = semanticDescriptor,
@@ -304,6 +312,52 @@ class HistoryCReferenceAuthorityTest : FunSpec({
 
         result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
             .failure.code shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH
+    }
+
+    test("HISTC-A-REVIEW-04 visible zone change does not authorize hidden printed identity") {
+        val event = com.wingedsheep.engine.core.ZoneChangeEvent(
+            entityId = card,
+            entityName = "Mountain",
+            fromZone = Zone.BATTLEFIELD,
+            toZone = Zone.GRAVEYARD,
+            ownerId = perspective,
+        )
+        val result = resultFor(
+            events = listOf(event),
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(
+                        role = HistoryCReferenceSlotRole.MOVED_OBJECT,
+                        identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        cardDefinitionId = "mtn",
+                    ),
+                ),
+            ),
+            before = state(2L, faceDown = true),
+            after = state(2L, faceDown = true),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH
+    }
+
+    test("HISTC-A-REVIEW-05 reveal rejects a non-producer order authority") {
+        val event = CardsRevealedEvent(
+            revealingPlayerId = perspective,
+            cardIds = listOf(card),
+            cardNames = listOf("Mountain"),
+        )
+        val result = resultFor(
+            events = listOf(event),
+            envelope = envelope(
+                candidates = listOf(
+                    candidate(orderAuthority = HistoryCOrderAuthority.EXPLICIT_PLAYER_ORDER),
+                ),
+            ),
+        )
+
+        result.shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.RAW_EVENT_ORDER_AUTHORITY_MISMATCH
     }
 
     test("HISTC-A missing committed transition fails closed with a typed diagnostic") {

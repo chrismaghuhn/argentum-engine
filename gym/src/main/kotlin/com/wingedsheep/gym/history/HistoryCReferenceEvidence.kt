@@ -270,7 +270,7 @@ internal object HistoryCReferenceAuthority {
             },
             eventRole = HistoryCReferenceSlotRole.MOVED_OBJECT,
             candidate = candidate,
-            identityMustBeOpaque = false,
+            identityMustBeOpaque = true,
         )
 
         else -> HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
@@ -281,12 +281,16 @@ internal object HistoryCReferenceAuthority {
         event: CardsRevealedEvent,
         candidate: HistoryCReferenceCandidateV1,
     ): HistoryCFailure? {
+        if (candidate.orderProof.authority != HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_ORDER_AUTHORITY_MISMATCH)
+        }
         if (candidate.referenceKind != HistoryCReferenceKind.CARD_OR_RULES_OBJECT ||
             candidate.slot.role !in setOf(
                 HistoryCReferenceSlotRole.EVENT_SUBJECT,
                 HistoryCReferenceSlotRole.MOVED_OBJECT,
             ) ||
             candidate.slot.roleOrdinal !in event.cardIds.indices ||
+            candidate.orderProof.authority != HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER ||
             candidate.orderProof.rank != candidate.slot.roleOrdinal
         ) {
             return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
@@ -307,9 +311,13 @@ internal object HistoryCReferenceAuthority {
         candidate: HistoryCReferenceCandidateV1,
         identityMustBeOpaque: Boolean,
     ): HistoryCFailure? {
+        if (candidate.orderProof.authority != HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_ORDER_AUTHORITY_MISMATCH)
+        }
         if (candidate.referenceKind != eventKind ||
             candidate.slot.role != eventRole ||
             candidate.slot.roleOrdinal != 0 ||
+            candidate.orderProof.authority != HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER ||
             candidate.orderProof.rank != 0 ||
             (identityMustBeOpaque &&
                 candidate.identityDisclosure != HistoryCIdentityDisclosure.OPAQUE)

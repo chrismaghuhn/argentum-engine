@@ -20,6 +20,7 @@ internal enum class HistoryCFailureCode {
     RAW_EVENT_REFERENCE_UNSUPPORTED,
     RAW_EVENT_REFERENCE_MISMATCH,
     RAW_EVENT_DEFINITION_MISMATCH,
+    RAW_EVENT_ORDER_AUTHORITY_MISMATCH,
 }
 
 /** Non-wire diagnostic; it deliberately carries no entity IDs, card names, or hidden values. */
