@@ -9,6 +9,7 @@ import java.nio.ByteBuffer
 import java.nio.channels.FileChannel
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardOpenOption.CREATE_NEW
 import java.nio.file.StandardCopyOption.ATOMIC_MOVE
 import java.nio.file.StandardCopyOption.REPLACE_EXISTING
 import java.nio.file.StandardOpenOption.WRITE
@@ -21,6 +22,9 @@ public class DiagnosticBundleWriter(
     root: Path,
     private val maxDiagnosticBundles: Int = SupervisorSchema.DEFAULT_MAX_DIAGNOSTIC_BUNDLES,
     private val maxBundleBytes: Int = SupervisorSchema.DEFAULT_MAX_BUNDLE_BYTES,
+    private val retentionEnforcer: (Path, Int) -> DiagnosticRetentionResult = { stallsDirectory, maxBundles ->
+        DiagnosticRetention(stallsDirectory, maxBundles).enforce()
+    },
 ) : DiagnosticBundleSink {
     private val root = root.toAbsolutePath().normalize()
     private val json = Json {
@@ -29,13 +33,36 @@ public class DiagnosticBundleWriter(
         ignoreUnknownKeys = false
         prettyPrint = false
     }
+    private val retentionFailureRunIds = HashSet<String>()
 
     init {
         require(maxDiagnosticBundles > 0) { "maxDiagnosticBundles must be positive" }
         require(maxBundleBytes > 0) { "maxBundleBytes must be positive" }
     }
 
+    override fun captureEnabled(diagnosticRunId: String): Boolean = synchronized(this) {
+        if (!isSafeBundleToken(diagnosticRunId)) return@synchronized false
+        val marker = retentionMarker(root.resolve(diagnosticRunId).normalize())
+        if (diagnosticRunId in retentionFailureRunIds) return@synchronized false
+        try {
+            when {
+                Files.isSymbolicLink(marker) -> false
+                Files.exists(marker, java.nio.file.LinkOption.NOFOLLOW_LINKS) -> false
+                Files.notExists(marker, java.nio.file.LinkOption.NOFOLLOW_LINKS) -> true
+                else -> false
+            }
+        } catch (_: Exception) {
+            false
+        }
+    }
+
     override fun write(input: DiagnosticBundleInput): DiagnosticBundleResult = synchronized(this) {
+        if (!isSafeBundleToken(input.diagnosticRunId) || !isSafeBundleToken(input.stallId)) {
+            return@synchronized DiagnosticBundleResult(
+                availability = EvidenceAvailability.FAILED,
+                failures = listOf(SupervisorFailureCode.BUNDLE_DIRECTORY_FAILED),
+            )
+        }
         val runDirectory = root.resolve(input.diagnosticRunId).normalize()
         if (!runDirectory.startsWith(root)) {
             return@synchronized DiagnosticBundleResult(
@@ -44,6 +71,12 @@ public class DiagnosticBundleWriter(
             )
         }
         val stallsDirectory = runDirectory.resolve("stalls").normalize()
+        if (!captureEnabled(input.diagnosticRunId)) {
+            return@synchronized DiagnosticBundleResult(
+                availability = EvidenceAvailability.FAILED,
+                failures = listOf(SupervisorFailureCode.RETENTION_FAILED),
+            )
+        }
         try {
             Files.createDirectories(stallsDirectory)
         } catch (_: Exception) {
@@ -128,14 +161,50 @@ public class DiagnosticBundleWriter(
             }
         }
 
+        fun writeUnavailableArtifact(
+            name: String,
+            artifactKind: String,
+            availability: EvidenceAvailability,
+            failureCode: SupervisorFailureCode? = null,
+        ) {
+            writeBoundedFile(
+                name = name,
+                required = true,
+                datasetSafe = true,
+                bytes = encode(
+                    BundleArtifactV1.serializer(),
+                    BundleArtifactV1(
+                        artifactKind = artifactKind,
+                        availability = availability,
+                        failureCode = failureCode,
+                    ),
+                ),
+            )
+        }
+
         val status = input.status
         if (status == null) {
-            recordFile("status.json", required = true, EvidenceAvailability.MISSING, datasetSafe = true)
+            writeUnavailableArtifact(
+                name = "status.json",
+                artifactKind = "STATUS",
+                availability = EvidenceAvailability.MISSING,
+                failureCode = SupervisorFailureCode.STATUS_MISSING,
+            )
         } else {
             try {
-                writeBoundedFile("status.json", required = true, datasetSafe = true, RunStatusCodec.encode(status))
+                writeBoundedFile(
+                    name = "status.json",
+                    required = true,
+                    datasetSafe = true,
+                    bytes = RunStatusCodec.encode(status),
+                )
             } catch (_: Exception) {
-                recordFile("status.json", required = true, EvidenceAvailability.FAILED, datasetSafe = true, failureCode = SupervisorFailureCode.STATUS_SCHEMA_INVALID)
+                writeUnavailableArtifact(
+                    name = "status.json",
+                    artifactKind = "STATUS",
+                    availability = EvidenceAvailability.FAILED,
+                    failureCode = SupervisorFailureCode.STATUS_SCHEMA_INVALID,
+                )
             }
         }
 
@@ -147,22 +216,30 @@ public class DiagnosticBundleWriter(
         )
 
         if (input.safeArtifactSizes.isEmpty()) {
-            recordFile("artifact-sizes.json", required = false, EvidenceAvailability.NOT_CONFIGURED, datasetSafe = true)
+            writeUnavailableArtifact(
+                name = "artifact-sizes.json",
+                artifactKind = "ARTIFACT_SIZES",
+                availability = EvidenceAvailability.NOT_CONFIGURED,
+            )
         } else {
             writeBoundedFile(
                 name = "artifact-sizes.json",
-                required = false,
+                required = true,
                 datasetSafe = true,
                 bytes = encode(ListSerializer(SafeArtifactSizeV1.serializer()), input.safeArtifactSizes),
             )
         }
 
         if (input.recentHistory.isEmpty()) {
-            recordFile("recent-stages.json", required = false, EvidenceAvailability.NOT_CONFIGURED, datasetSafe = true)
+            writeUnavailableArtifact(
+                name = "recent-stages.json",
+                artifactKind = "RECENT_STAGES",
+                availability = EvidenceAvailability.NOT_CONFIGURED,
+            )
         } else {
             writeBoundedFile(
                 name = "recent-stages.json",
-                required = false,
+                required = true,
                 datasetSafe = true,
                 bytes = encode(ListSerializer(SupervisorHistoryEntryV1.serializer()), input.recentHistory),
             )
@@ -186,6 +263,21 @@ public class DiagnosticBundleWriter(
                 recordFile(name, required = false, result.availability, datasetSafe = false, failureCode = result.failureCode)
             }
         }
+
+        val manifestBytes = encode(
+            DiagnosticBundleManifestV1.serializer(),
+            DiagnosticBundleManifestV1(
+                diagnosticRunId = input.diagnosticRunId,
+                stallId = input.stallId,
+            ),
+        )
+        writeBoundedFile(
+            name = "bundle.json",
+            required = true,
+            datasetSafe = true,
+            bytes = manifestBytes,
+        )
+        recordFile("summary.json", required = true, EvidenceAvailability.AVAILABLE, datasetSafe = true)
 
         val summary = try {
             DiagnosticBundleSummaryV1(
@@ -231,10 +323,36 @@ public class DiagnosticBundleWriter(
             )
         }
 
-        val retention = DiagnosticRetention(stallsDirectory, maxDiagnosticBundles).enforce()
-        retention.failureCode?.let { failures += it }
+        val retention = try {
+            retentionEnforcer(stallsDirectory, maxDiagnosticBundles)
+        } catch (_: Exception) {
+            DiagnosticRetentionResult(
+                availability = EvidenceAvailability.FAILED,
+                deletedBundleCount = 0,
+                failureCode = SupervisorFailureCode.RETENTION_FAILED,
+            )
+        }
+        val retentionFailure = retention.failureCode
+            ?: if (retention.availability == EvidenceAvailability.FAILED) {
+                SupervisorFailureCode.RETENTION_FAILED
+            } else {
+                null
+            }
+        retentionFailure?.let {
+            failures += it
+            if (it == SupervisorFailureCode.RETENTION_FAILED) {
+                latchRetentionFailure(input.diagnosticRunId, stallsDirectory)
+            }
+        }
+        val requiredFileFailure = files.any {
+            it.required && it.availability != EvidenceAvailability.AVAILABLE
+        }
         return@synchronized DiagnosticBundleResult(
-            availability = if (retention.failureCode == null) EvidenceAvailability.AVAILABLE else EvidenceAvailability.FAILED,
+            availability = if (retentionFailure == null && !requiredFileFailure) {
+                EvidenceAvailability.AVAILABLE
+            } else {
+                EvidenceAvailability.FAILED
+            },
             bundleDirectory = bundleDirectory,
             summary = summary,
             failures = failures.distinct(),
@@ -258,5 +376,29 @@ public class DiagnosticBundleWriter(
         } finally {
             Files.deleteIfExists(temporary)
         }
+    }
+
+    private fun latchRetentionFailure(diagnosticRunId: String, stallsDirectory: Path) {
+        retentionFailureRunIds += diagnosticRunId
+        try {
+            Files.createDirectories(stallsDirectory)
+            val marker = retentionMarker(stallsDirectory.parent)
+            if (!Files.exists(marker, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+                Files.write(marker, RETENTION_FAILURE_MARKER, CREATE_NEW)
+            }
+        } catch (_: java.nio.file.FileAlreadyExistsException) {
+            // Another writer or an earlier call already established the run latch.
+        } catch (_: Exception) {
+            // The in-memory latch still protects this writer instance if the durable marker fails.
+        }
+    }
+
+    private fun retentionMarker(runDirectory: Path): Path = runDirectory.resolve("stalls/.retention-failed")
+
+    private fun isSafeBundleToken(value: String): Boolean =
+        value.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"))
+
+    private companion object {
+        val RETENTION_FAILURE_MARKER = "RETENTION_FAILED\n".toByteArray(Charsets.UTF_8)
     }
 }

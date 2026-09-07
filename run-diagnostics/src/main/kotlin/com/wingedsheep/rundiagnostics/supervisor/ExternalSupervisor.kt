@@ -55,11 +55,12 @@ public class ExternalSupervisor(
 ) : AutoCloseable {
     private val elapsedClock = ElapsedMonotonicClock(monotonicClock)
     private val classifier = StallClassifier(config)
-    private val jvmCollector = JvmEvidenceCollector(config, jvmRunner, sleeper)
+    private val jvmCollector = JvmEvidenceCollector(config, jvmRunner, sleeper, processIdentityChecker)
     private val history = BoundedHistoryRing<SupervisorHistoryEntryV1>(config.maxHistorySamples)
     private var state = SupervisorState()
     private var stopped = false
     private var nextStallOrdinal = 1L
+    private var retentionFailureLatched = false
 
     public fun pollOnce(): SupervisorPollResult {
         val now = elapsedClock.nowElapsedNanos()
@@ -75,12 +76,13 @@ public class ExternalSupervisor(
         var bundle: DiagnosticBundleResult? = null
         var captureAvailability = EvidenceAvailability.NOT_CONFIGURED
 
+        val diagnosticRunId = statusDiagnosticRunId(status)
         if (decision.action == SupervisorAction.CAPTURE_DIAGNOSTICS_AND_CONTINUE &&
             decision.trigger != StallTriggerKind.PROCESS_EXITED
         ) {
-            when (captureGate(now)) {
+            when (captureGate(now, diagnosticRunId)) {
                 CaptureGate.CAPTURE -> {
-                    evidence = jvmCollector.capture(config.targetPid)
+                    evidence = jvmCollector.capture(config.targetPid, expectedStart)
                     val captureState = samplingStateBefore.copy(
                         capturesCompleted = samplingStateBefore.capturesCompleted + 1,
                         lastCaptureElapsedNanos = now,
@@ -115,12 +117,16 @@ public class ExternalSupervisor(
                     } catch (_: Exception) {
                         null
                     }
+                    if (bundle?.failures?.contains(SupervisorFailureCode.RETENTION_FAILED) == true) {
+                        retentionFailureLatched = true
+                    }
                     captureAvailability = if (bundle == null) EvidenceAvailability.FAILED
                     else bundle.availability
                 }
 
                 CaptureGate.COOLDOWN -> captureAvailability = EvidenceAvailability.NOT_CONFIGURED
                 CaptureGate.MAX_BUNDLES -> captureAvailability = EvidenceAvailability.NOT_CONFIGURED
+                CaptureGate.RETENTION_FAILED -> captureAvailability = EvidenceAvailability.FAILED
             }
         }
 
@@ -207,13 +213,20 @@ public class ExternalSupervisor(
         }
     }
 
-    private fun captureGate(now: Long): CaptureGate {
+    private fun captureGate(now: Long, diagnosticRunId: String): CaptureGate {
+        if (retentionFailureLatched || !safeCaptureEnabled(diagnosticRunId)) return CaptureGate.RETENTION_FAILED
         if (state.capturesCompleted >= config.maxDiagnosticBundles) return CaptureGate.MAX_BUNDLES
         val lastCapture = state.lastCaptureElapsedNanos
         if (lastCapture != null && now - lastCapture < config.captureCooldownNanos()) {
             return CaptureGate.COOLDOWN
         }
         return CaptureGate.CAPTURE
+    }
+
+    private fun safeCaptureEnabled(diagnosticRunId: String): Boolean = try {
+        bundleSink.captureEnabled(diagnosticRunId)
+    } catch (_: Exception) {
+        false
     }
 
     private fun nextStallId(): String {
@@ -256,5 +269,6 @@ public class ExternalSupervisor(
         CAPTURE,
         COOLDOWN,
         MAX_BUNDLES,
+        RETENTION_FAILED,
     }
 }

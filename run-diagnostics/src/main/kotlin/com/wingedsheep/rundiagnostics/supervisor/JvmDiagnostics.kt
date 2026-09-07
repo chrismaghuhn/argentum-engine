@@ -2,6 +2,7 @@ package com.wingedsheep.rundiagnostics.supervisor
 
 import java.nio.file.Files
 import java.nio.file.Path
+import java.time.Instant
 
 /** Fixed-command adapter for the JDK tools; callers cannot supply an arbitrary subcommand. */
 public class JdkJvmCommandRunner(
@@ -194,31 +195,74 @@ public class JvmEvidenceCollector(
     private val config: SupervisorConfigV1,
     private val runner: JvmCommandRunner,
     private val sleeper: SupervisorSleeper = SupervisorSleeper { millis -> Thread.sleep(millis) },
+    private val identityChecker: ProcessIdentityChecker? = null,
 ) {
-    public fun capture(pid: Long): JvmEvidenceV1 {
+    public fun capture(pid: Long, expectedProcessStart: Instant? = null): JvmEvidenceV1 {
         val results = ArrayList<JvmCommandResult>(config.threadDumpCount + 2)
-        repeat(config.threadDumpCount) { index ->
-            val threadDump = safeRun(pid, JvmCommandKind.THREAD_PRINT)
+        var captureStopped = false
+
+        fun guardedRun(kind: JvmCommandKind): JvmCommandResult {
+            if (captureStopped) {
+                return unavailableAfterIdentityFailure(kind, SupervisorFailureCode.PROCESS_NOT_FOUND)
+            }
+            val identity = identityChecker?.let { checker ->
+                try {
+                    checker.observe(pid, expectedProcessStart)
+                } catch (_: Exception) {
+                    ProcessIdentityResult(ProcessLiveness.UNKNOWN, null)
+                }
+            }
+            if (identity != null && identity.liveness != ProcessLiveness.ALIVE) {
+                captureStopped = true
+                return unavailableAfterIdentityFailure(kind, identityFailureCode(identity.liveness))
+            }
+            return safeRun(pid, kind)
+        }
+
+        for (index in 0 until config.threadDumpCount) {
+            val threadDump = guardedRun(JvmCommandKind.THREAD_PRINT)
             results += if (
                 threadDump.availability == EvidenceAvailability.NOT_CONFIGURED &&
                 threadDump.failureCode == SupervisorFailureCode.COMMAND_TOOL_MISSING
             ) {
-                safeRun(pid, JvmCommandKind.JSTACK)
+                guardedRun(JvmCommandKind.JSTACK)
             } else {
                 threadDump
             }
+            if (captureStopped) break
             if (index + 1 < config.threadDumpCount) {
                 try {
                     sleeper.sleepMillis(config.threadDumpIntervalMillis)
                 } catch (_: InterruptedException) {
                     Thread.currentThread().interrupt()
-                    return JvmEvidenceAnalyzer.analyze(results)
+                    captureStopped = true
+                    break
                 }
             }
         }
-        results += safeRun(pid, JvmCommandKind.GC_HEAP_INFO)
-        results += safeRun(pid, JvmCommandKind.VM_FLAGS)
+        if (!captureStopped) {
+            results += guardedRun(JvmCommandKind.GC_HEAP_INFO)
+        }
+        if (!captureStopped) {
+            results += guardedRun(JvmCommandKind.VM_FLAGS)
+        }
         return JvmEvidenceAnalyzer.analyze(results)
+    }
+
+    private fun unavailableAfterIdentityFailure(
+        kind: JvmCommandKind,
+        failureCode: SupervisorFailureCode,
+    ) = JvmCommandResult(
+        kind = kind,
+        availability = EvidenceAvailability.FAILED,
+        failureCode = failureCode,
+    )
+
+    private fun identityFailureCode(liveness: ProcessLiveness): SupervisorFailureCode = when (liveness) {
+        ProcessLiveness.PROCESS_EXITED -> SupervisorFailureCode.PROCESS_NOT_FOUND
+        ProcessLiveness.IDENTITY_MISMATCH -> SupervisorFailureCode.PROCESS_IDENTITY_MISMATCH
+        ProcessLiveness.UNKNOWN -> SupervisorFailureCode.PROCESS_START_UNAVAILABLE
+        ProcessLiveness.ALIVE -> error("ALIVE has no identity failure")
     }
 
     private fun safeRun(pid: Long, kind: JvmCommandKind): JvmCommandResult = try {

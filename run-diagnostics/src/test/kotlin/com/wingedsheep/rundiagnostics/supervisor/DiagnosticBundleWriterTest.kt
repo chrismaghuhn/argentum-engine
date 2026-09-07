@@ -43,7 +43,7 @@ class DiagnosticBundleWriterTest : FunSpec({
         }
     }
 
-    test("records missing evidence rather than fabricating files") {
+    test("records missing evidence in bounded required files") {
         val root = Files.createTempDirectory("run-diagnostics-bundle-missing-")
         try {
             val result = DiagnosticBundleWriter(root).write(
@@ -60,9 +60,11 @@ class DiagnosticBundleWriterTest : FunSpec({
 
             val directory = result.bundleDirectory!!
             val summary = Files.readString(directory.resolve("summary.json"))
-            summary shouldContain "MISSING"
-            Files.exists(directory.resolve("status.json")) shouldBe false
-            Files.exists(directory.resolve("artifact-sizes.json")) shouldBe false
+            Files.readString(directory.resolve("status.json")) shouldContain "MISSING"
+            Files.exists(directory.resolve("status.json")) shouldBe true
+            Files.exists(directory.resolve("artifact-sizes.json")) shouldBe true
+            Files.exists(directory.resolve("recent-stages.json")) shouldBe true
+            Files.readString(directory.resolve("artifact-sizes.json")) shouldContain "NOT_CONFIGURED"
             result.summary!!.files.map { it.name } shouldContain "status.json"
         } finally {
             root.toFile().deleteRecursively()
