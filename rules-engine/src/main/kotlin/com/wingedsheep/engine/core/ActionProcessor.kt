@@ -11,6 +11,7 @@ import com.wingedsheep.engine.handlers.actions.priority.PriorityModule
 import com.wingedsheep.engine.handlers.actions.room.RoomModule
 import com.wingedsheep.engine.handlers.actions.special.SpecialActionsModule
 import com.wingedsheep.engine.handlers.actions.spell.SpellModule
+import com.wingedsheep.engine.mechanics.KnownInformationLedger
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.core.UndoPolicyComputer
@@ -101,6 +102,13 @@ class ActionProcessor(
         }
         val result = com.wingedsheep.engine.mechanics.RevealedInHandTracker
             .applyAfterAction(executed)
+            .let { knownInformationResult ->
+                KnownInformationLedger.applyAfterAction(
+                    beforeState = state,
+                    result = knownInformationResult,
+                    cardRegistry = services.cardRegistry,
+                )
+            }
         val undoPolicy = if (computeUndo) {
             UndoPolicyComputer.compute(action, state, result, services.cardRegistry)
         } else {

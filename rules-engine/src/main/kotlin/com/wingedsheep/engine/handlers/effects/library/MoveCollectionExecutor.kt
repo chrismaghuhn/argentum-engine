@@ -18,6 +18,7 @@ import com.wingedsheep.engine.state.components.battlefield.CountersComponent
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
+import com.wingedsheep.engine.state.components.identity.RevealedToComponent
 import com.wingedsheep.engine.state.components.player.SacrificedFoodThisTurnComponent
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.CounterType
@@ -31,6 +32,8 @@ import com.wingedsheep.engine.state.components.stack.captureEntitySnapshots
 import com.wingedsheep.sdk.scripting.effects.MoveType
 import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.effects.ZonePlacement
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import java.util.UUID
 import kotlin.reflect.KClass
 
@@ -952,6 +955,10 @@ class MoveCollectionExecutor(
             if (cardIndex < startCardIndex) continue
 
             val ownerId = newState.getEntity(cardId)?.get<OwnerComponent>()?.playerId ?: destPlayerId
+            val reestablishRevealToPlayerIds = newState.getEntity(cardId)
+                ?.get<RevealedToComponent>()
+                ?.playerIds
+                .orEmpty()
 
             // Commander 903.9b is part of this card's physical move, not a collection-wide
             // preflight. The ordered list is already the physical insertion plan (top moves
@@ -979,6 +986,7 @@ class MoveCollectionExecutor(
                             options = com.wingedsheep.engine.handlers.effects.ZoneEntryOptions(
                                 controllerId = actualDestPlayerId,
                                 libraryPlacement = libraryPlacement,
+                                reestablishRevealToPlayerIds = reestablishRevealToPlayerIds,
                             ),
                             fromZoneKey = fromZoneKey,
                             context = context,
@@ -1104,7 +1112,8 @@ class MoveCollectionExecutor(
                 faceDown = isBattlefieldFaceDown,
                 morphData = morphData,
                 faceDownMode = if (isBattlefieldFaceDown) faceDown else null,
-                faceDownExile = faceDown != null && destZone == Zone.EXILE
+                faceDownExile = faceDown != null && destZone == Zone.EXILE,
+                reestablishRevealToPlayerIds = reestablishRevealToPlayerIds,
             )
 
             // Delegate to ZoneTransitionService for full cleanup + entry
@@ -1166,7 +1175,21 @@ class MoveCollectionExecutor(
             } else {
                 setOf(context.controllerId)
             }
-            newState = LibraryRevealUtils.markRevealed(newState, libraryMovedIds, audience)
+            newState = LibraryRevealUtils.markRevealed(
+                state = newState,
+                cardIds = libraryMovedIds,
+                playerIds = audience,
+                audience = if (revealed) {
+                    KnownInformationAudience.PUBLIC
+                } else {
+                    KnownInformationAudience.PERSPECTIVE_PRIVATE
+                },
+                acquisitionReason = if (revealed) {
+                    KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                } else {
+                    KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                },
+            )
         }
 
         // Emit discard event if configured
