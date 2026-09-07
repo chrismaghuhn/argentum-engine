@@ -26,6 +26,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
         roleOrdinal: Int = 0,
         descriptor: String = "opaque",
         publicPosition: Int? = null,
+        publicRole: String? = null,
     ): HistoryCReferenceCandidateV1 = HistoryCReferenceCandidateV1(
         slot = HistoryCReferenceSlot(
             eventOrdinal = eventOrdinal,
@@ -44,6 +45,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
             put("type", "object_reference")
             put("visibility", descriptor)
             publicPosition?.let { put("publicPosition", it) }
+            publicRole?.let { put("publicRole", it) }
         },
     )
 
@@ -236,12 +238,12 @@ class PerspectiveAliasRegistryTest : FunSpec({
         registry().nextAliasOrdinal shouldBe 0L
     }
 
-    test("HISTC-22 public distinctions make collection allocation runtime-order independent") {
+    test("HISTC-22 public distinction authority is deferred to a typed future source") {
         val candidates = listOf(
             candidate(witness("runtime-a"), roleOrdinal = 0, publicPosition = 0),
             candidate(witness("runtime-b", 2L), roleOrdinal = 1, publicPosition = 1),
         )
-        val result = accepted(
+        val result = rejected(
             allocate(
                 registry(),
                 evidence(candidates = candidates),
@@ -249,7 +251,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
             ),
         )
 
-        result.assignments.map { it.alias.canonical() } shouldBe listOf("o0", "o1")
+        result.failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
     }
 
     test("HISTC-23 later identity disclosure does not mutate the earlier occurrence") {
@@ -390,11 +392,10 @@ class PerspectiveAliasRegistryTest : FunSpec({
                 registry(),
                 evidence(
                     candidates = listOf(
-                        candidate(witness("runtime-a"), roleOrdinal = 0, publicPosition = 0),
-                        candidate(witness("runtime-b", 2L), roleOrdinal = 1, publicPosition = 1),
+                        candidate(witness("runtime-a"), roleOrdinal = 0, descriptor = "first"),
+                        candidate(witness("runtime-b", 2L), roleOrdinal = 1, descriptor = "second"),
                     ),
                 ),
-                publicDistinctions = listOf(publicProof(0, 0), publicProof(1, 1)),
             ),
         )
         val second = accepted(
@@ -402,11 +403,10 @@ class PerspectiveAliasRegistryTest : FunSpec({
                 registry(),
                 evidence(
                     candidates = listOf(
-                        candidate(witness("other-runtime-a"), roleOrdinal = 0, publicPosition = 0),
-                        candidate(witness("other-runtime-b", 2L), roleOrdinal = 1, publicPosition = 1),
+                        candidate(witness("other-runtime-a"), roleOrdinal = 0, descriptor = "first"),
+                        candidate(witness("other-runtime-b", 2L), roleOrdinal = 1, descriptor = "second"),
                     ),
                 ),
-                publicDistinctions = listOf(publicProof(0, 0), publicProof(1, 1)),
             ),
         )
 
@@ -485,7 +485,50 @@ class PerspectiveAliasRegistryTest : FunSpec({
             ),
         )
 
-        result.failure.code shouldBe HistoryCFailureCode.INVALID_PUBLIC_DISTINCTION
+        result.failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
+    }
+
+    test("HISTC-B-REVIEW-12 forged public position fails closed") {
+        val initial = registry()
+        val result = rejected(
+            allocate(
+                initial,
+                evidence(
+                    candidates = listOf(
+                        candidate(witness("position-a"), publicPosition = 0),
+                        candidate(witness("position-b", 2L), publicPosition = 1),
+                    ),
+                ),
+                publicDistinctions = listOf(publicProof(0, 0), publicProof(1, 1)),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
+    }
+
+    test("HISTC-B-REVIEW-13 forged public role fails closed") {
+        val initial = registry()
+        val result = rejected(
+            allocate(
+                initial,
+                evidence(
+                    candidates = listOf(
+                        candidate(witness("role-a"), publicRole = "role-x"),
+                        candidate(witness("role-b", 2L), publicRole = "role-y"),
+                    ),
+                ),
+                publicDistinctions = listOf(
+                    publicProof(0, 0, HistoryCPublicDistinctionKind.PUBLIC_SEMANTIC_ROLE),
+                    publicProof(1, 1, HistoryCPublicDistinctionKind.PUBLIC_SEMANTIC_ROLE),
+                ),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
         initial.nextAliasOrdinal shouldBe 0L
         initial.activeBindings shouldBe emptyMap()
     }
