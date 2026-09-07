@@ -27,6 +27,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
         descriptor: String = "opaque",
         publicPosition: Int? = null,
         publicRole: String? = null,
+        foo: String? = null,
     ): HistoryCReferenceCandidateV1 = HistoryCReferenceCandidateV1(
         slot = HistoryCReferenceSlot(
             eventOrdinal = eventOrdinal,
@@ -46,6 +47,7 @@ class PerspectiveAliasRegistryTest : FunSpec({
             put("visibility", descriptor)
             publicPosition?.let { put("publicPosition", it) }
             publicRole?.let { put("publicRole", it) }
+            foo?.let { put("foo", it) }
         },
     )
 
@@ -113,17 +115,27 @@ class PerspectiveAliasRegistryTest : FunSpec({
     }
 
     test("HISTC-04 hidden event insertion cannot consume an alias ordinal") {
-        val visible = evidence(
-            candidates = listOf(
-                candidate(witness("visible-a"), descriptor = "first"),
-                candidate(witness("visible-b", 2L), descriptor = "second", roleOrdinal = 1),
+        val withHiddenEvent = accepted(
+            allocate(
+                registry(),
+                evidence(candidates = emptyList()),
             ),
         )
-        val first = accepted(allocate(registry(), visible))
-        val second = accepted(allocate(registry(), visible))
+        val first = accepted(
+            allocate(
+                withHiddenEvent.registry,
+                evidence(candidates = listOf(candidate(witness("visible-a")))),
+            ),
+        )
+        val second = accepted(
+            allocate(
+                registry(),
+                evidence(candidates = listOf(candidate(witness("visible-a")))),
+            ),
+        )
 
-        first.assignments.map { it.alias.canonical() } shouldBe listOf("o0", "o1")
-        second.assignments.map { it.alias.canonical() } shouldBe listOf("o0", "o1")
+        first.assignments.map { it.alias.canonical() } shouldBe listOf("o0")
+        second.assignments.map { it.alias.canonical() } shouldBe listOf("o0")
     }
 
     test("HISTC-07 opaque face-down evidence allocates without definition identity") {
@@ -392,8 +404,18 @@ class PerspectiveAliasRegistryTest : FunSpec({
                 registry(),
                 evidence(
                     candidates = listOf(
-                        candidate(witness("runtime-a"), roleOrdinal = 0, descriptor = "first"),
-                        candidate(witness("runtime-b", 2L), roleOrdinal = 1, descriptor = "second"),
+                        candidate(
+                            witness("runtime-a"),
+                            roleOrdinal = 0,
+                            identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                            cardDefinitionId = "mtn",
+                        ),
+                        candidate(
+                            witness("runtime-b", 2L),
+                            roleOrdinal = 1,
+                            identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                            cardDefinitionId = "forest",
+                        ),
                     ),
                 ),
             ),
@@ -403,8 +425,18 @@ class PerspectiveAliasRegistryTest : FunSpec({
                 registry(),
                 evidence(
                     candidates = listOf(
-                        candidate(witness("other-runtime-a"), roleOrdinal = 0, descriptor = "first"),
-                        candidate(witness("other-runtime-b", 2L), roleOrdinal = 1, descriptor = "second"),
+                        candidate(
+                            witness("other-runtime-a"),
+                            roleOrdinal = 0,
+                            identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                            cardDefinitionId = "mtn",
+                        ),
+                        candidate(
+                            witness("other-runtime-b", 2L),
+                            roleOrdinal = 1,
+                            identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                            cardDefinitionId = "forest",
+                        ),
                     ),
                 ),
             ),
@@ -524,6 +556,25 @@ class PerspectiveAliasRegistryTest : FunSpec({
                 publicDistinctions = listOf(
                     publicProof(0, 0, HistoryCPublicDistinctionKind.PUBLIC_SEMANTIC_ROLE),
                     publicProof(1, 1, HistoryCPublicDistinctionKind.PUBLIC_SEMANTIC_ROLE),
+                ),
+            ),
+        )
+
+        result.failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
+        initial.nextAliasOrdinal shouldBe 0L
+        initial.activeBindings shouldBe emptyMap()
+    }
+
+    test("HISTC-B-REVIEW-14 arbitrary descriptor difference fails closed") {
+        val initial = registry()
+        val result = rejected(
+            allocate(
+                initial,
+                evidence(
+                    candidates = listOf(
+                        candidate(witness("descriptor-a"), foo = "a"),
+                        candidate(witness("descriptor-b", 2L), foo = "b"),
+                    ),
                 ),
             ),
         )

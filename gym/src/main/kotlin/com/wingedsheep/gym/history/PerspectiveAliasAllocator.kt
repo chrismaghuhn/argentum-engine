@@ -1,8 +1,5 @@
 package com.wingedsheep.gym.history
 
-import com.wingedsheep.gym.contract.A3SemanticJson
-import kotlinx.serialization.json.JsonObject
-
 internal enum class HistoryCPublicDistinctionKind {
     PRODUCER_PUBLIC_SLOT,
     PUBLIC_SEMANTIC_ROLE,
@@ -22,9 +19,6 @@ internal object PerspectiveAliasAllocator {
     /** No current B input independently authorizes individual public distinctions. */
     private val currentlyAuthoritativePublicDistinctionKinds: Set<HistoryCPublicDistinctionKind> =
         emptySet()
-
-    /** Candidate fields that cannot independently distinguish a symmetric group. */
-    private val nonAuthoritativeDistinctionDescriptorKeys = setOf("publicPosition", "publicRole")
 
     fun allocate(
         registry: PerspectiveAliasRegistryV1,
@@ -162,7 +156,6 @@ internal object PerspectiveAliasAllocator {
                 referenceKind = candidate.referenceKind,
                 identityDisclosure = candidate.identityDisclosure,
                 cardDefinitionId = candidate.cardDefinitionId,
-                semanticDescriptor = canonicalSymmetryDescriptor(candidate.semanticDescriptor),
             )
         }
         for (indices in groups.values) {
@@ -182,11 +175,6 @@ internal object PerspectiveAliasAllocator {
         }
         return null
     }
-
-    private fun canonicalSymmetryDescriptor(descriptor: JsonObject): String =
-        A3SemanticJson.canonicalJson(
-            JsonObject(descriptor.filterKeys { it !in nonAuthoritativeDistinctionDescriptorKeys }),
-        )
 
     private fun mergeIdentity(
         existing: PerspectiveAliasBinding,
@@ -230,6 +218,5 @@ internal object PerspectiveAliasAllocator {
         val referenceKind: HistoryCReferenceKind,
         val identityDisclosure: HistoryCIdentityDisclosure,
         val cardDefinitionId: String?,
-        val semanticDescriptor: String,
     )
 }
