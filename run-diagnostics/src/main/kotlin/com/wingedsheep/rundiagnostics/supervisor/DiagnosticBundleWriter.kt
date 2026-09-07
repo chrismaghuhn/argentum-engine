@@ -114,6 +114,8 @@ public class DiagnosticBundleWriter(
             datasetSafe: Boolean,
             bytesWritten: Long? = null,
             failureCode: SupervisorFailureCode? = null,
+            probeAvailability: EvidenceAvailability? = null,
+            probeFailureCode: SupervisorFailureCode? = null,
         ) {
             files += BundleFileRecordV1(
                 name = name,
@@ -122,6 +124,8 @@ public class DiagnosticBundleWriter(
                 datasetSafe = datasetSafe,
                 bytesWritten = bytesWritten,
                 failureCode = failureCode,
+                probeAvailability = probeAvailability,
+                probeFailureCode = probeFailureCode,
             )
             failureCode?.let { failures += it }
         }
@@ -131,14 +135,32 @@ public class DiagnosticBundleWriter(
             required: Boolean,
             datasetSafe: Boolean,
             bytes: ByteArray,
+            probeAvailability: EvidenceAvailability? = null,
+            probeFailureCode: SupervisorFailureCode? = null,
         ) {
             if (bytesUsed + bytes.size > maxBundleBytes) {
-                recordFile(name, required, EvidenceAvailability.FAILED, datasetSafe, failureCode = SupervisorFailureCode.BUNDLE_TOO_LARGE)
+                recordFile(
+                    name = name,
+                    required = required,
+                    availability = EvidenceAvailability.FAILED,
+                    datasetSafe = datasetSafe,
+                    failureCode = SupervisorFailureCode.BUNDLE_TOO_LARGE,
+                    probeAvailability = probeAvailability,
+                    probeFailureCode = probeFailureCode,
+                )
                 return
             }
             val destination = bundleDirectory.resolve(name).normalize()
             if (!destination.startsWith(bundleDirectory)) {
-                recordFile(name, required, EvidenceAvailability.FAILED, datasetSafe, failureCode = SupervisorFailureCode.BUNDLE_FILE_FAILED)
+                recordFile(
+                    name = name,
+                    required = required,
+                    availability = EvidenceAvailability.FAILED,
+                    datasetSafe = datasetSafe,
+                    failureCode = SupervisorFailureCode.BUNDLE_FILE_FAILED,
+                    probeAvailability = probeAvailability,
+                    probeFailureCode = probeFailureCode,
+                )
                 return
             }
             try {
@@ -152,12 +174,28 @@ public class DiagnosticBundleWriter(
                     }
                     Files.move(temporary, destination, ATOMIC_MOVE, REPLACE_EXISTING)
                     bytesUsed += bytes.size
-                    recordFile(name, required, EvidenceAvailability.AVAILABLE, datasetSafe, bytes.size.toLong())
+                    recordFile(
+                        name = name,
+                        required = required,
+                        availability = EvidenceAvailability.AVAILABLE,
+                        datasetSafe = datasetSafe,
+                        bytesWritten = bytes.size.toLong(),
+                        probeAvailability = probeAvailability,
+                        probeFailureCode = probeFailureCode,
+                    )
                 } finally {
                     Files.deleteIfExists(temporary)
                 }
             } catch (_: Exception) {
-                recordFile(name, required, EvidenceAvailability.FAILED, datasetSafe, failureCode = SupervisorFailureCode.BUNDLE_FILE_FAILED)
+                recordFile(
+                    name = name,
+                    required = required,
+                    availability = EvidenceAvailability.FAILED,
+                    datasetSafe = datasetSafe,
+                    failureCode = SupervisorFailureCode.BUNDLE_FILE_FAILED,
+                    probeAvailability = probeAvailability,
+                    probeFailureCode = probeFailureCode,
+                )
             }
         }
 
@@ -179,6 +217,8 @@ public class DiagnosticBundleWriter(
                         failureCode = failureCode,
                     ),
                 ),
+                probeAvailability = availability,
+                probeFailureCode = failureCode,
             )
         }
 
@@ -197,6 +237,7 @@ public class DiagnosticBundleWriter(
                     required = true,
                     datasetSafe = true,
                     bytes = RunStatusCodec.encode(status),
+                    probeAvailability = EvidenceAvailability.AVAILABLE,
                 )
             } catch (_: Exception) {
                 writeUnavailableArtifact(
@@ -213,6 +254,8 @@ public class DiagnosticBundleWriter(
             required = true,
             datasetSafe = true,
             bytes = encode(ProcessMetricsV1.serializer(), input.metrics),
+            probeAvailability = input.metrics.availability,
+            probeFailureCode = input.metrics.failureCode,
         )
 
         if (input.safeArtifactSizes.isEmpty()) {
@@ -227,6 +270,7 @@ public class DiagnosticBundleWriter(
                 required = true,
                 datasetSafe = true,
                 bytes = encode(ListSerializer(SafeArtifactSizeV1.serializer()), input.safeArtifactSizes),
+                probeAvailability = EvidenceAvailability.AVAILABLE,
             )
         }
 
@@ -242,6 +286,7 @@ public class DiagnosticBundleWriter(
                 required = true,
                 datasetSafe = true,
                 bytes = encode(ListSerializer(SupervisorHistoryEntryV1.serializer()), input.recentHistory),
+                probeAvailability = EvidenceAvailability.AVAILABLE,
             )
         }
 
@@ -258,17 +303,46 @@ public class DiagnosticBundleWriter(
                     required = false,
                     datasetSafe = false,
                     result.output.toByteArray(Charsets.UTF_8),
+                    probeAvailability = result.availability,
+                    probeFailureCode = result.failureCode,
                 )
             } else {
-                recordFile(name, required = false, result.availability, datasetSafe = false, failureCode = result.failureCode)
+                recordFile(
+                    name = name,
+                    required = false,
+                    availability = result.availability,
+                    datasetSafe = false,
+                    failureCode = result.failureCode,
+                    probeAvailability = result.availability,
+                    probeFailureCode = result.failureCode,
+                )
             }
         }
 
+        val plannedBundleRecord = BundleFileRecordV1(
+            name = "bundle.json",
+            required = true,
+            availability = EvidenceAvailability.AVAILABLE,
+            datasetSafe = true,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
+        )
+        val plannedSummaryRecord = BundleFileRecordV1(
+            name = "summary.json",
+            required = true,
+            availability = EvidenceAvailability.AVAILABLE,
+            datasetSafe = true,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
+        )
         val manifestBytes = encode(
             DiagnosticBundleManifestV1.serializer(),
             DiagnosticBundleManifestV1(
                 diagnosticRunId = input.diagnosticRunId,
                 stallId = input.stallId,
+                trigger = input.trigger,
+                classification = input.classification,
+                action = input.action,
+                configuration = input.configuration,
+                files = files + plannedBundleRecord + plannedSummaryRecord,
             ),
         )
         writeBoundedFile(
@@ -276,8 +350,15 @@ public class DiagnosticBundleWriter(
             required = true,
             datasetSafe = true,
             bytes = manifestBytes,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
         )
-        recordFile("summary.json", required = true, EvidenceAvailability.AVAILABLE, datasetSafe = true)
+        recordFile(
+            name = "summary.json",
+            required = true,
+            availability = EvidenceAvailability.AVAILABLE,
+            datasetSafe = true,
+            probeAvailability = EvidenceAvailability.AVAILABLE,
+        )
 
         val summary = try {
             DiagnosticBundleSummaryV1(
@@ -289,6 +370,7 @@ public class DiagnosticBundleWriter(
                 action = input.action,
                 processLiveness = input.process.liveness,
                 files = files,
+                configuration = input.configuration,
             )
         } catch (_: Exception) {
             failures += SupervisorFailureCode.BUNDLE_FILE_FAILED

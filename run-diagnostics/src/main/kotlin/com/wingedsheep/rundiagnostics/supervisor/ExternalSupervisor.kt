@@ -111,6 +111,7 @@ public class ExternalSupervisor(
                         recentHistory = history.snapshot(),
                         jvmResults = evidence.results,
                         safeArtifactSizes = readSafeArtifactSizes(),
+                        configuration = config.bundleConfiguration(),
                     )
                     bundle = try {
                         bundleSink.write(input)

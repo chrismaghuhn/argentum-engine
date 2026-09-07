@@ -195,7 +195,7 @@ public class JvmEvidenceCollector(
     private val config: SupervisorConfigV1,
     private val runner: JvmCommandRunner,
     private val sleeper: SupervisorSleeper = SupervisorSleeper { millis -> Thread.sleep(millis) },
-    private val identityChecker: ProcessIdentityChecker? = null,
+    private val identityChecker: ProcessIdentityChecker,
 ) {
     public fun capture(pid: Long, expectedProcessStart: Instant? = null): JvmEvidenceV1 {
         val results = ArrayList<JvmCommandResult>(config.threadDumpCount + 2)
@@ -205,14 +205,12 @@ public class JvmEvidenceCollector(
             if (captureStopped) {
                 return unavailableAfterIdentityFailure(kind, SupervisorFailureCode.PROCESS_NOT_FOUND)
             }
-            val identity = identityChecker?.let { checker ->
-                try {
-                    checker.observe(pid, expectedProcessStart)
-                } catch (_: Exception) {
-                    ProcessIdentityResult(ProcessLiveness.UNKNOWN, null)
-                }
+            val identity = try {
+                identityChecker.observe(pid, expectedProcessStart)
+            } catch (_: Exception) {
+                ProcessIdentityResult(ProcessLiveness.UNKNOWN, null)
             }
-            if (identity != null && identity.liveness != ProcessLiveness.ALIVE) {
+            if (identity.liveness != ProcessLiveness.ALIVE) {
                 captureStopped = true
                 return unavailableAfterIdentityFailure(kind, identityFailureCode(identity.liveness))
             }
