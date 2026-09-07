@@ -1424,22 +1424,27 @@ object ZoneTransitionService {
         libraryZoneKey: ZoneKey,
         placement: LibraryPlacement
     ): GameState {
-        val currentLibrary = state.getZone(libraryZoneKey)
+        // Library entry is a real CR 400.7 zone entry too. Stamp before choosing the insertion
+        // position; the old implementation only rewrote `zones`, which left a hand/graveyard/
+        // stack incarnation indistinguishable from the new library object.
+        val stampedState = state.addToZone(libraryZoneKey, entityId)
+        val currentLibrary = stampedState.getZone(libraryZoneKey)
+            .filterNot { it == entityId }
         return when (placement) {
             LibraryPlacement.Top -> {
-                state.copy(zones = state.zones + (libraryZoneKey to listOf(entityId) + currentLibrary))
+                stampedState.copy(zones = stampedState.zones + (libraryZoneKey to listOf(entityId) + currentLibrary))
             }
             LibraryPlacement.Bottom -> {
-                state.copy(zones = state.zones + (libraryZoneKey to currentLibrary + entityId))
+                stampedState.copy(zones = stampedState.zones + (libraryZoneKey to currentLibrary + entityId))
             }
             LibraryPlacement.Shuffled -> {
-                val (newLibrary, shuffledState) = state.nextRandom { shuffle(currentLibrary + entityId) }
+                val (newLibrary, shuffledState) = stampedState.nextRandom { shuffle(currentLibrary + entityId) }
                 shuffledState.copy(zones = shuffledState.zones + (libraryZoneKey to newLibrary))
             }
             is LibraryPlacement.NthFromTop -> {
                 val insertIndex = placement.position.coerceAtMost(currentLibrary.size)
                 val newLibrary = currentLibrary.toMutableList().apply { add(insertIndex, entityId) }
-                state.copy(zones = state.zones + (libraryZoneKey to newLibrary))
+                stampedState.copy(zones = stampedState.zones + (libraryZoneKey to newLibrary))
             }
         }
     }

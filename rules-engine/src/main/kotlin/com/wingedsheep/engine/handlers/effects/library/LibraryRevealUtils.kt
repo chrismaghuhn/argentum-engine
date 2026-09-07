@@ -58,7 +58,10 @@ object LibraryRevealUtils {
     fun clearLibraryReveals(state: GameState, ownerId: EntityId): GameState {
         val library = state.getZone(ZoneKey(ownerId, Zone.LIBRARY))
         if (library.isEmpty()) return state
-        var newState = state
+        val revealedIds = library.filter { cardId ->
+            state.getEntity(cardId)?.get<RevealedToComponent>() != null
+        }
+        var newState = state.reincarnateObjects(revealedIds)
         for (cardId in library) {
             val container = newState.getEntity(cardId) ?: continue
             if (container.get<RevealedToComponent>() != null) {
@@ -78,7 +81,12 @@ object LibraryRevealUtils {
      */
     fun clearReveals(state: GameState, cardIds: Collection<EntityId>): GameState {
         if (cardIds.isEmpty()) return state
-        var newState = state
+        val libraryIds = cardIds.filter { cardId ->
+            state.zones.entries.any { (key, ids) ->
+                key.zoneType == Zone.LIBRARY && cardId in ids
+            } && state.getEntity(cardId)?.get<RevealedToComponent>() != null
+        }
+        var newState = state.reincarnateObjects(libraryIds)
         for (cardId in cardIds) {
             val container = newState.getEntity(cardId) ?: continue
             if (container.get<RevealedToComponent>() != null) {

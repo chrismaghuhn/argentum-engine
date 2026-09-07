@@ -342,6 +342,7 @@ class ReplacementContinuationResumer(
                                 } else {
                                     com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
                                 },
+                                objectIncarnationAlreadyAdvanced = true,
                             ),
                         )
                     } else {

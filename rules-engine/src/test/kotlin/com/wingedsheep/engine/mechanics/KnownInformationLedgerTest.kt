@@ -8,6 +8,7 @@ import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
 import com.wingedsheep.engine.core.TurnedFaceDownEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
+import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.handlers.effects.library.GatherCardsExecutor
@@ -39,6 +40,7 @@ import com.wingedsheep.sdk.scripting.references.Player
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 
@@ -196,6 +198,77 @@ class KnownInformationLedgerTest : FunSpec({
             KnownInformationAcquisitionReason.PRIVATE_CARD_LOOK
     }
 
+    test("HISTB-18 same-name hand ambiguity invalidates the ledger identity facts") {
+        val castCard = EntityId.of("same-name-cast")
+        val twinCard = EntityId.of("same-name-twin")
+        val initial = stateWith(
+            CardSpec(castCard, p2, Zone.HAND, "Ambiguous Card"),
+            CardSpec(twinCard, p2, Zone.HAND, "Ambiguous Card"),
+        )
+        val revealEvent = CardsRevealedEvent(
+            revealingPlayerId = p2,
+            cardIds = listOf(castCard, twinCard),
+            cardNames = listOf("Ambiguous Card", "Ambiguous Card"),
+        )
+        val revealed = RevealedInHandTracker.applyAfterAction(
+            ExecutionResult.success(initial, listOf(revealEvent))
+        )
+        val known = apply(initial, revealed)
+        val onStack = known
+            .removeFromZone(ZoneKey(p2, Zone.HAND), castCard)
+            .pushToStack(castCard)
+            .updateEntity(castCard) {
+                it.with(SpellOnStackComponent(casterId = p2, castFromZone = Zone.HAND))
+            }
+        val tracked = RevealedInHandTracker.applyAfterAction(
+            ExecutionResult.success(
+                onStack,
+                listOf(SpellCastEvent(castCard, "Ambiguous Card", p2)),
+            )
+        )
+        val after = KnownInformationLedger.applyAfterAction(
+            beforeState = known,
+            result = tracked,
+            cardRegistry = registry,
+        ).state
+
+        facts(after, p1).none {
+            it.subjectEntityId == twinCard && it.factKind == KnownInformationFactKind.IDENTITY
+        } shouldBe true
+        facts(after, p2).none {
+            it.subjectEntityId == twinCard && it.factKind == KnownInformationFactKind.IDENTITY
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-19 library reorder advances the Rules object incarnation") {
+        val cardId = EntityId.of("reordered-object")
+        val initial = stateWith(CardSpec(cardId, p1, Zone.LIBRARY))
+        val oldStamp = initial.objectIdentityStamps[cardId]
+
+        val reordered = KnownInformationLedger.recordLibraryOrder(
+            state = initial,
+            perspectivePlayerId = p1,
+            orderedCardIds = listOf(cardId),
+        )
+
+        reordered.objectIdentityStamps[cardId] shouldNotBe oldStamp
+    }
+
+    test("HISTB-REVIEW-20 library zone entry advances the Rules object incarnation") {
+        val cardId = EntityId.of("library-entry-object")
+        val initial = stateWith(CardSpec(cardId, p1, Zone.HAND))
+        val oldStamp = initial.objectIdentityStamps[cardId]
+
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = initial,
+            entityId = cardId,
+            destinationZone = Zone.LIBRARY,
+            fromZoneKey = ZoneKey(p1, Zone.HAND),
+        ).state
+
+        moved.objectIdentityStamps[cardId] shouldNotBe oldStamp
+    }
+
     test("HISTB-05 private search records searched library cards but not to the opponent") {
         val first = EntityId.of("search-card-a")
         val second = EntityId.of("search-card-b")
@@ -215,7 +288,7 @@ class KnownInformationLedgerTest : FunSpec({
         val after = apply(
             state,
             ExecutionResult.success(
-                gather.state,
+                LibraryRevealUtils.clearLibraryReveals(gather.state, p1),
                 listOf(LibraryShuffledEvent(p1), LibrarySearchedEvent(p1, "Search")),
             ),
         )

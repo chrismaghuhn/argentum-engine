@@ -100,6 +100,35 @@ object KnownInformationLedger {
         return newState
     }
 
+    /**
+     * Invalidate identity facts for explicit authoritative knowledge-loss IDs.
+     *
+     * The caller supplies the affected objects from a Rules-owned ambiguity/invalidation producer;
+     * this method never searches by card name or reconstructs the affected set heuristically.
+     * Epoch finalization at the committed ActionProcessor boundary records the semantic change.
+     */
+    fun invalidateIdentityFacts(
+        state: GameState,
+        cardIds: Collection<EntityId>,
+    ): GameState {
+        val invalidated = cardIds.toSet()
+        if (invalidated.isEmpty()) return state
+
+        var newState = state
+        for (perspectivePlayerId in state.turnOrder) {
+            val component = state.getEntity(perspectivePlayerId)
+                ?.get<KnownInformationLedgerComponentV1>()
+                ?: continue
+            val retained = component.activeFacts.filterNot {
+                it.subjectEntityId in invalidated && it.factKind == KnownInformationFactKind.IDENTITY
+            }
+            if (retained != component.activeFacts) {
+                newState = putLedger(newState, perspectivePlayerId, component.copy(activeFacts = retained))
+            }
+        }
+        return newState
+    }
+
     /** Record exact library order known to one perspective at an authoritative reorder producer. */
     fun recordLibraryOrder(
         state: GameState,
@@ -109,14 +138,25 @@ object KnownInformationLedger {
         audience: KnownInformationAudience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
         acquisitionReason: KnownInformationAcquisitionReason =
             KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK,
-    ): GameState = recordCards(
-        state = invalidateLibraryPositions(state, libraryOwnerId),
-        cardIds = orderedCardIds,
-        perspectivePlayerIds = listOf(perspectivePlayerId),
-        audience = audience,
-        acquisitionReason = acquisitionReason,
-        includeLibraryPositions = true,
-    )
+        objectIncarnationAlreadyAdvanced: Boolean = false,
+    ): GameState {
+        val orderedIds = orderedCardIds.distinct()
+        var prepared = invalidateObjectFacts(
+            invalidateLibraryPositions(state, libraryOwnerId),
+            orderedIds,
+        )
+        if (!objectIncarnationAlreadyAdvanced) {
+            prepared = prepared.reincarnateObjects(orderedIds)
+        }
+        return recordCards(
+            state = prepared,
+            cardIds = orderedIds,
+            perspectivePlayerIds = listOf(perspectivePlayerId),
+            audience = audience,
+            acquisitionReason = acquisitionReason,
+            includeLibraryPositions = true,
+        )
+    }
 
     /**
      * Apply authoritative invalidation and epoch semantics after one Rules action result.
@@ -139,13 +179,32 @@ object KnownInformationLedger {
         val zoneChangedIds = events.filterIsInstance<ZoneChangeEvent>()
             .map(ZoneChangeEvent::entityId)
             .toSet()
-        if (zoneChangedIds.isNotEmpty()) {
-            state = dropStaleObjectFacts(state, zoneChangedIds)
-        }
-
         val shuffledLibraryOwners = events.filterIsInstance<LibraryShuffledEvent>()
             .map(LibraryShuffledEvent::playerId)
             .distinct()
+        if (shuffledLibraryOwners.isNotEmpty()) {
+            state = reincarnateKnownShuffleObjects(
+                beforeState = beforeState,
+                state = state,
+                libraryOwners = shuffledLibraryOwners,
+                cardRegistry = cardRegistry,
+            )
+        }
+        val stampChangedIds = state.objectIdentityStamps.keys.filter { cardId ->
+            beforeState.objectIdentityStamps[cardId] != state.objectIdentityStamps[cardId]
+        }.toSet()
+        if (stampChangedIds.isNotEmpty()) {
+            state = rebaseKnownLibraryFacts(
+                beforeState = beforeState,
+                state = state,
+                stampChangedIds = stampChangedIds - zoneChangedIds,
+            )
+        }
+        val staleObjectIds = zoneChangedIds + stampChangedIds
+        if (staleObjectIds.isNotEmpty()) {
+            state = dropStaleObjectFacts(state, staleObjectIds)
+        }
+
         for (ownerId in shuffledLibraryOwners) {
             state = invalidateLibraryPositions(state, ownerId)
         }
@@ -228,6 +287,7 @@ object KnownInformationLedger {
             zoneChangedIds = zoneChangedIds,
             cardRegistry = cardRegistry,
         )
+        state = recordCurrentlyVisibleLibraryCards(state, cardRegistry)
 
         state = upgradeNewSearchFacts(beforeState, state, events)
         state = finalizeEpochs(beforeState, state)
@@ -322,6 +382,64 @@ object KnownInformationLedger {
                     locate(state, fact.subjectEntityId) != null &&
                     currentStamp == fact.objectIdentityStamp
             }
+            if (retained != component.activeFacts) {
+                newState = putLedger(newState, perspectivePlayerId, component.copy(activeFacts = retained))
+            }
+        }
+        return newState
+    }
+
+    private fun rebaseKnownLibraryFacts(
+        beforeState: GameState,
+        state: GameState,
+        stampChangedIds: Set<EntityId>,
+    ): GameState {
+        if (stampChangedIds.isEmpty()) return state
+        var newState = state
+        for (perspectivePlayerId in beforeState.turnOrder) {
+            val before = beforeState.getEntity(perspectivePlayerId)
+                ?.get<KnownInformationLedgerComponentV1>()
+            val currentBeforeRebase = forPlayer(state, perspectivePlayerId)
+            val sourceFacts = (before?.activeFacts.orEmpty() + currentBeforeRebase.activeFacts)
+                .distinctBy { FactKey(it.subjectEntityId, it.objectIdentityStamp, it.factKind) }
+            val rebased = sourceFacts.filter { fact ->
+                fact.subjectEntityId in stampChangedIds &&
+                    fact.knownZone == Zone.LIBRARY &&
+                    fact.factKind != KnownInformationFactKind.POSITION_OR_ORDER &&
+                    locate(state, fact.subjectEntityId)?.zone == Zone.LIBRARY
+            }.mapNotNull { fact ->
+                val currentStamp = state.objectIdentityStamps[fact.subjectEntityId]
+                    ?: return@mapNotNull null
+                fact.copy(
+                    objectIdentityStamp = currentStamp,
+                    knownZone = Zone.LIBRARY,
+                    knownPosition = null,
+                )
+            }
+            if (rebased.isEmpty()) continue
+            val currentLedger = forPlayer(newState, perspectivePlayerId)
+            val merged = (currentLedger.activeFacts + rebased)
+                .distinctBy { FactKey(it.subjectEntityId, it.objectIdentityStamp, it.factKind) }
+                .sortedWith(KnownInformationLedgerOrdering.comparator)
+            if (merged != currentLedger.activeFacts) {
+                newState = putLedger(newState, perspectivePlayerId, currentLedger.copy(activeFacts = merged))
+            }
+        }
+        return newState
+    }
+
+    private fun invalidateObjectFacts(
+        state: GameState,
+        objectIds: Collection<EntityId>,
+    ): GameState {
+        val invalidated = objectIds.toSet()
+        if (invalidated.isEmpty()) return state
+        var newState = state
+        for (perspectivePlayerId in state.turnOrder) {
+            val component = state.getEntity(perspectivePlayerId)
+                ?.get<KnownInformationLedgerComponentV1>()
+                ?: continue
+            val retained = component.activeFacts.filterNot { it.subjectEntityId in invalidated }
             if (retained != component.activeFacts) {
                 newState = putLedger(newState, perspectivePlayerId, component.copy(activeFacts = retained))
             }
@@ -441,6 +559,76 @@ object KnownInformationLedger {
                         KnownInformationAudience.PERSPECTIVE_PRIVATE
                     },
                     acquisitionReason = KnownInformationAcquisitionReason.VISIBLE_ZONE_TRANSITION,
+                )
+            }
+        }
+        return newState
+    }
+
+    private fun reincarnateKnownShuffleObjects(
+        beforeState: GameState,
+        state: GameState,
+        libraryOwners: Collection<EntityId>,
+        cardRegistry: CardRegistry,
+    ): GameState {
+        val visibility = Visibility(cardRegistry)
+        val objects = linkedSetOf<EntityId>()
+        for (ownerId in libraryOwners) {
+            val library = beforeState.getZone(ZoneKey(ownerId, Zone.LIBRARY)).toSet()
+            val top = beforeState.getLibrary(ownerId).firstOrNull()
+            if (top != null && beforeState.turnOrder.any {
+                    visibility.isEntityIdentityVisibleTo(beforeState, top, it)
+                }) {
+                objects += top
+            }
+            for (perspectivePlayerId in beforeState.turnOrder) {
+                objects += forPlayer(beforeState, perspectivePlayerId).activeFacts
+                    .filter {
+                        it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                            it.knownZone == Zone.LIBRARY &&
+                            it.subjectEntityId in library
+                    }
+                    .map { it.subjectEntityId }
+            }
+            objects += library.filter { cardId ->
+                beforeState.turnOrder.any { perspectivePlayerId ->
+                    visibility.isCardRevealedTo(beforeState, cardId, perspectivePlayerId)
+                }
+            }
+        }
+
+        val eligible = objects.filter { cardId ->
+            beforeState.objectIdentityStamps[cardId] != null &&
+                state.objectIdentityStamps[cardId] == beforeState.objectIdentityStamps[cardId]
+        }
+        return state.reincarnateObjects(eligible)
+    }
+
+    private fun recordCurrentlyVisibleLibraryCards(
+        state: GameState,
+        cardRegistry: CardRegistry,
+    ): GameState {
+        val visibility = Visibility(cardRegistry)
+        var newState = state
+        for (ownerId in state.turnOrder) {
+            val topCardId = state.getLibrary(ownerId).firstOrNull() ?: continue
+            val visiblePerspectives = state.turnOrder.filter { perspectivePlayerId ->
+                visibility.isEntityIdentityVisibleTo(state, topCardId, perspectivePlayerId)
+            }
+            if (visiblePerspectives.isEmpty()) continue
+            val audience = if (visiblePerspectives.size == state.turnOrder.size) {
+                KnownInformationAudience.PUBLIC
+            } else {
+                KnownInformationAudience.PERSPECTIVE_PRIVATE
+            }
+            for (perspectivePlayerId in visiblePerspectives) {
+                newState = recordCards(
+                    state = newState,
+                    cardIds = listOf(topCardId),
+                    perspectivePlayerIds = listOf(perspectivePlayerId),
+                    audience = audience,
+                    acquisitionReason = KnownInformationAcquisitionReason.CONTINUOUS_LIBRARY_VISIBILITY,
+                    includeLibraryPositions = true,
                 )
             }
         }

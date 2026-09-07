@@ -134,7 +134,10 @@ object RevealedInHandTracker {
                 container.get<CardComponent>()?.name == name
         }
         if (sameNamed.isEmpty()) return state
-        return LibraryRevealUtils.clearReveals(state, sameNamed)
+        return KnownInformationLedger.invalidateIdentityFacts(
+            state = LibraryRevealUtils.clearReveals(state, sameNamed),
+            cardIds = sameNamed,
+        )
     }
 
     private fun isInOwnersHand(state: GameState, cardId: EntityId): Boolean {

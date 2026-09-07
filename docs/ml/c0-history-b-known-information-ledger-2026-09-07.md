@@ -44,6 +44,11 @@ CR_CURRENT_TXT=https://media.wizards.com/2026/downloads/MagicCompRules%202026081
 CR_EFFECTIVE_DATE=August 7, 2026
 ```
 
+At this remediation audit, the live official page resolved its TXT link to the `20260819` file
+above. The `20260807` URL cited in the review is an earlier available rules artifact, not the
+current link returned by the official page at this audit time; the effective date remains August 7,
+2026.
+
 The TXT linked by the official page states the effective date above. The audit used the current
 rules for public/hidden zones and library/hand information (CR 400–402), new-object semantics
 (CR 400.7), and reveal/look/search/shuffle/reorder procedures (CR 701.20, 701.22, 701.23,
@@ -59,12 +64,13 @@ The relevant current sources are:
 | `GameState.objectIdentityStamps` / `nextObjectIdentityStamp` | Rules-owned CR 400.7 incarnation witness. It is internal ledger key material, never a learner alias. |
 | `Visibility` | Existing zone/identity visibility authority, including face-down and per-object reveal permissions; its identity predicate now also covers the separately stored public stack. |
 | `RevealedToComponent` | Current visibility permission used by client/AI projections; it is not itself a historical ledger. |
-| `LibraryRevealUtils` | Shared producer seam for public/private reveal metadata and ledger acquisition. |
-| `RevealedInHandTracker` | Existing narrow public hand-reveal lifecycle; now records the same ledger facts through the shared utility. |
+| `LibraryRevealUtils` | Shared producer seam for public/private reveal metadata and ledger acquisition; clearing a revealed library object advances its object incarnation before opacity is restored. |
+| `RevealedInHandTracker` | Existing narrow public hand-reveal lifecycle; now records the same ledger facts through the shared utility and explicitly invalidates entity-scoped ledger identity when same-name hand ambiguity is introduced. |
 | `GatherCardsExecutor` | Records private library look/search knowledge supplied by the typed effect audience. Filtered searches record the whole searched library to the authorized viewer, not just the selected subset. |
 | `SelectFromCollectionExecutor` | Records exactly the cards exposed in a private typed selection decision when no preceding look marker exists. |
 | `LibraryAndZoneContinuationResumer` / `ReplacementContinuationResumer` | Record exact order only at producer-owned reorder completion, where the ordered card list is still available. |
-| `ZoneTransitionService` | Clears `RevealedToComponent` at the CR 400.7 zone-change atom; public/private producers re-establish current visibility when authorized. |
+| `ZoneTransitionService` | Clears `RevealedToComponent` at the CR 400.7 zone-change atom, stamps library entry through the shared object-incarnation seam, and lets public/private producers re-establish current visibility when authorized. |
+| `GameState.reincarnateObject(s)` | Generic Rules-owned CR 701.20d object-incarnation primitive for revealed/reordered library objects without a zone-map move. |
 | `ActionProcessor` | Final authoritative post-action seam. Failed actions return before ledger finalization; successful results are finalized once after existing hand tracking. |
 | `GameState` serialization / Gym `SnapshotCodec` | Preserve the immutable component through state serialization and snapshot/restore. |
 
@@ -158,20 +164,31 @@ card identity was revealed
 
 ### 5.3 Shuffle and reorder
 
-`LibraryShuffledEvent` invalidates only `POSITION_OR_ORDER` facts for the affected current library.
-It retains identity/membership facts, so a known card does not become unknown solely because its
-library order was randomized. A shuffle with no tracked affected position does not bump the
-perspective epoch.
+`LibraryShuffledEvent` invalidates `POSITION_OR_ORDER` facts for the affected current library. If
+the pre-transition Rules state proves a revealed/looked-at library object, the generic
+`reincarnateObject(s)` seam advances that object's CR 701.20d incarnation before the old facts are
+removed. A tracked identity without order knowledge can remain an identity/membership fact; a
+revealed/reordered object does not silently retain its old object stamp. A shuffle with no tracked
+affected object or position does not create an artificial perspective epoch.
+
+When identity/membership knowledge was acquired before the shuffle and the same library object is
+still the authoritative current card, the ledger re-establishes those non-positional facts against
+the new stamp. This preserves legitimate search/reveal knowledge without preserving the old object
+or its position. Position/order facts are always discarded and may be reacquired only from the
+post-transition visibility/order producer.
 
 `LibraryReorderedEvent` itself contains only count/source presentation data and is not treated as
 an information authority. Exact ordered IDs are captured at the current continuation producer
-before the event is returned. No post-state/card-count/source-name reconstruction is used.
+before the event is returned. The explicit reorder producer advances the affected object
+incarnations, removes stale facts, and re-establishes only the authorized order knowledge. No
+post-state/card-count/source-name reconstruction is used. The special bottom-of-library
+continuation now uses the same generic Rules stamp primitive instead of only copying the zone list.
 
 ### 5.4 Zone changes and face-down objects
 
-Every zone entry already advances `GameState.objectIdentityStamps`. `ZoneTransitionService` also
-clears the old `RevealedToComponent` at the transition atom. The ledger drops facts tied to the old
-incarnation, then may record a new fact only when the existing `Visibility` authority proves that
+Every zone entry advances `GameState.objectIdentityStamps`, including library entry. `ZoneTransitionService`
+also clears the old `RevealedToComponent` at the transition atom. The ledger drops facts tied to the
+old incarnation, then may record a new fact only when the existing `Visibility` authority proves that
 the old pre-transition identity or the new post-transition identity was available to that
 perspective. This permits safe cases such as:
 
@@ -207,6 +224,20 @@ unaffected shuffle    → no artificial epoch change
 invalidation          → affected perspective changes once
 ```
 
+### 5.5 Explicit identity invalidation and continuous visibility
+
+The existing same-name hand ambiguity rule remains the authority for selecting affected card IDs.
+When a same-named card is played, `RevealedInHandTracker.forgetSameNamedInHand` supplies those
+specific IDs to the generic ledger invalidation operation. The ledger never searches by card name.
+Only identity facts are removed; the current hand-zone fact is not fabricated or rewritten.
+
+After every accepted transition, the ledger also projects the current top card of each library
+through the existing `Visibility` authority. This covers continuous `RevealTopOfLibrary`,
+`PlayFromTopOfLibrary`, and `LookAtTopOfLibrary` access even when no reveal or zone-change event is
+emitted for the newly visible top card. A public top is recorded for every perspective; a private
+top is recorded only for the authorized player. Shuffle/reorder invalidation is followed by the
+same post-transition visibility scan, so a newly exposed top is acquired immediately.
+
 ## 6. Knowledge transition inventory
 
 The following is the History-B semantic scope. “Supported” means the accepted producer path has a
@@ -226,13 +257,15 @@ metadata do not create invented facts; the actual producer path owns the fact.
 | Hidden → visible zone move | post-transition `Visibility` plus new incarnation | `SUPPORTED` |
 | Face-down transition | `Visibility`-controlled identity invalidation | `SUPPORTED` |
 | Zone-change new incarnation | `objectIdentityStamps` and stale-fact removal | `SUPPORTED` |
+| Same-name hand ambiguity | `RevealedInHandTracker` explicit affected-ID invalidation | `SUPPORTED` |
+| Continuous top-library visibility | post-transition `Visibility` projection for each current top | `SUPPORTED` |
 | Reset/new episode | new immutable `GameState` has no old component | `SUPPORTED` |
 | Fork | immutable state copy; parent is not mutated | `SUPPORTED` |
 | Snapshot/restore | additive `GameState` component serialization and Gym snapshot | `SUPPORTED` |
 
 ```text
-KNOWLEDGE_TRANSITIONS_TOTAL=16
-SUPPORTED=16
+KNOWLEDGE_TRANSITIONS_TOTAL=18
+SUPPORTED=18
 INTENTIONALLY_NO_PERSISTENT_KNOWLEDGE=0
 DEFERRED_TO_HISTORY_C_REFERENCE=0
 UNSUPPORTED_MISSING_METADATA=0
@@ -294,8 +327,11 @@ New focused coverage:
 
 ```text
 rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/KnownInformationLedgerTest.kt
-    22 tests: HISTB-01 through HISTB-17 plus explicit public-stack/destination, face-down, and
-    library-position privacy cases
+    25 tests: HISTB-01 through HISTB-17 plus same-name invalidation, object-incarnation REDs,
+    explicit public-stack/destination, and face-down cases
+
+rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/KnownInformationLedgerVisibilityTest.kt
+    1 test: continuous top-library visibility before and after shuffle
 
 rules-engine/src/test/kotlin/com/wingedsheep/engine/handlers/effects/library/RevealCollectionExecutorTest.kt
     1 test: reveal-only persistence RED → generic fix
@@ -305,9 +341,10 @@ gym/src/test/kotlin/com/wingedsheep/gym/KnownInformationLedgerSnapshotTest.kt
 ```
 
 The focused tests cover public/private audience isolation, `revealToSelf=false`, private search,
-shuffle position invalidation, exact producer-owned reorder, hidden-state non-interference, future
-reveal non-retroactivity, CR 400.7 incarnation separation, face-down identity invalidation,
-fork/reset isolation, serialization, and deterministic evolution.
+same-name ambiguity invalidation, library-entry/reorder incarnation, continuous top-library
+visibility, shuffle position invalidation, exact producer-owned reorder, hidden-state
+non-interference, future reveal non-retroactivity, CR 400.7 incarnation separation, face-down
+identity invalidation, fork/reset isolation, serialization, and deterministic evolution.
 
 ## 11. Verification record
 
@@ -317,11 +354,11 @@ WSL cannot start `/bin/bash`; this is reported as `BLOCKED`, not as a passing te
 Native Gradle was used as an explicitly labeled fallback:
 
 ```text
-FOCUSED_RULES_TESTS=PASS
-RULES_ENGINE_FULL_TEST=PASS
-GYM_FULL_TEST=PASS
-GYM_TRAINER_FULL_TEST=PASS
-GAME_SERVER_FULL_TEST=PASS
+FOCUSED_RULES_TESTS=PASS__25_LEDGER__1_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT
+RULES_ENGINE_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
+GYM_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
+GYM_TRAINER_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
+GAME_SERVER_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 REPLAY_SNAPSHOT_TESTS=PASS
 GIT_DIFF_CHECK=PASS
 ```
@@ -339,16 +376,16 @@ PARENT=caf688015a35712c07d6fc489319f48c71285dc4
 REMOTE_HEAD=COMPLETION_COMMIT_SHA_REPORTED_AFTER_PUSH
 UPSTREAM_SHA=5021faf88093a93091e4de7914fbe0f411499d58
 
-FILES_CHANGED=COMPLETION_COUNT_REPORTED_AFTER_COMMIT
-RULES_PRODUCTION_FILES_CHANGED=COMPLETION_COUNT_REPORTED_AFTER_COMMIT
+FILES_CHANGED=24
+RULES_PRODUCTION_FILES_CHANGED=19
 GYM_PRODUCTION_FILES_CHANGED=0
-TEST_FILES_CHANGED=3
+TEST_FILES_CHANGED=4
 DOC_FILES_CHANGED=1
 
 CURRENT_CR_VERIFIED=YES
 CR_EFFECTIVE_DATE=August 7, 2026
 
-RULES_INFORMATION_SEMANTICS_CHANGED=YES__ADDITIVE_LEDGER_AND_GENERIC_REVEAL_VISIBILITY_METADATA
+RULES_INFORMATION_SEMANTICS_CHANGED=YES__LEDGER_INVALIDATION_OBJECT_INCARNATION_AND_CONTINUOUS_VISIBILITY
 CARD_DEFINITION_CHANGED=NO
 LOCKED_DECKS_CHANGED=NO
 
@@ -387,8 +424,8 @@ PERSPECTIVE_HISTORY_V1_IMPLEMENTED=NO
 TRAJECTORY_BINDING_IMPLEMENTED=NO
 COMMANDER_HISTORY_BINDING_IMPLEMENTED=NO
 
-KNOWLEDGE_TRANSITIONS_TOTAL=16
-SUPPORTED=16
+KNOWLEDGE_TRANSITIONS_TOTAL=18
+SUPPORTED=18
 INTENTIONALLY_NO_PERSISTENT_KNOWLEDGE=0
 DEFERRED_TO_HISTORY_C_REFERENCE=0
 UNSUPPORTED_MISSING_METADATA=0
