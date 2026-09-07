@@ -217,6 +217,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         roleOrdinal = 0,
                         rank = 0,
                         entityId = rawEvent.entityId,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
                     ),
                 )
 
@@ -321,6 +322,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         role = HistoryCReferenceSlotRole.TARGET,
                         roleOrdinal = 0,
                     ),
+                    endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
                 ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
 
                 is TargetsChosenEvent -> required(
@@ -350,6 +352,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         rank = 0,
                         entityId = rawEvent.entityId,
                         referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
                     ),
                 )
 
@@ -540,6 +543,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
             roleOrdinal = 0,
             rank = rank++,
             entityId = event.attackerId,
+            endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
         ) ?: return null
         event.assignments.keys.forEachIndexed { targetOrdinal, targetId ->
             if (!hasCardOrRulesWitness(transition, targetId)) return@forEachIndexed
@@ -550,6 +554,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 roleOrdinal = targetOrdinal,
                 rank = rank++,
                 entityId = targetId,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
             ) ?: return null
         }
         return result
@@ -570,6 +575,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 roleOrdinal = 0,
                 rank = rank++,
                 entityId = sourceId,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
             ) ?: return null
         }
         result += opaqueCandidate(
@@ -579,6 +585,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
             roleOrdinal = 0,
             rank = rank,
             entityId = event.targetId,
+            endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
         ) ?: return null
         return result
     }
@@ -588,6 +595,8 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         eventOrdinal: Int,
         first: ReferenceSpec,
         second: ReferenceSpec,
+        endpointAuthority: HistoryCReferenceEndpointAuthority =
+            HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
     ): List<HistoryCReferenceCandidateV1>? = listOf(first, second)
         .mapIndexed { rank, spec ->
             opaqueCandidate(
@@ -598,6 +607,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 rank = rank,
                 entityId = spec.entityId,
                 referenceKind = spec.referenceKind,
+                endpointAuthority = endpointAuthority,
             ) ?: return null
         }
 
@@ -666,14 +676,10 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         entityId: EntityId,
     ): HistoryCReferenceCandidateV1? {
         val after = witness(transition.afterState, entityId)
-        val before = witness(transition.beforeState, entityId)
-        val definition = cardDefinition(transition.afterState, after)
-            ?: cardDefinition(transition.beforeState, before)
-            ?: return null
+        val definition = cardDefinition(transition.afterState, after) ?: return null
         return HistoryCReferenceCandidateV1(
             slot = HistoryCReferenceSlot(eventOrdinal, role, roleOrdinal),
             referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
-            beforeWitness = before,
             afterWitness = after,
             identityDisclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
             cardDefinitionId = definition,
@@ -682,6 +688,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 rank = roleOrdinal,
             ),
             semanticDescriptor = descriptor(),
+            endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
         )
     }
 
@@ -712,6 +719,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 rank = 0,
             ),
             semanticDescriptor = descriptor(),
+            endpointAuthority = HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR,
         )
     }
 
@@ -723,20 +731,49 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         rank: Int,
         entityId: EntityId,
         referenceKind: HistoryCReferenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+        endpointAuthority: HistoryCReferenceEndpointAuthority =
+            HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
     ): HistoryCReferenceCandidateV1? {
         val after = witness(transition.afterState, entityId)
         val before = witness(transition.beforeState, entityId)
-        val witness = after ?: before ?: return null
+        val selected = when (endpointAuthority) {
+            HistoryCReferenceEndpointAuthority.BEFORE_OBJECT -> {
+                if (before == null) return null
+                before to null
+            }
+
+            HistoryCReferenceEndpointAuthority.AFTER_OBJECT -> {
+                if (after == null) return null
+                null to after
+            }
+
+            HistoryCReferenceEndpointAuthority.SAME_INCARNATION -> {
+                if (before != null && after != null && before != after) return null
+                if (after != null) null to after else before to null
+            }
+
+            HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR -> {
+                if (before == null && after == null) return null
+                before to after
+            }
+
+            HistoryCReferenceEndpointAuthority.UNSPECIFIED -> {
+                if (after != null) null to after else before to null
+            }
+        }
+        if (selected.first == null && selected.second == null) return null
         return HistoryCReferenceCandidateV1(
             slot = HistoryCReferenceSlot(eventOrdinal, role, roleOrdinal),
             referenceKind = referenceKind,
-            afterWitness = witness,
+            beforeWitness = selected.first,
+            afterWitness = selected.second,
             identityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
             orderProof = HistoryCOrderProof(
                 authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
                 rank = rank,
             ),
             semanticDescriptor = descriptor(),
+            endpointAuthority = endpointAuthority,
         )
     }
 

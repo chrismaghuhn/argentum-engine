@@ -5,13 +5,17 @@ import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.DamageAssignedEvent
+import com.wingedsheep.engine.core.CreatureDestroyedEvent
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PermanentAttachedEvent
+import com.wingedsheep.engine.core.PermanentUnattachedEvent
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.StatsModifiedEvent
+import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
@@ -377,6 +381,139 @@ class PerspectiveHistoryCompositionTest : FunSpec({
         ).histories.getValue(p1)
 
         history.entries.filter { it.references.isNotEmpty() }.size shouldBe 5
+
+        fun historyFor(event: GameEvent): String {
+            val eventSource = com.wingedsheep.gym.CommittedPerspectiveEventSource(
+                CardRegistry().apply {
+                    register(PortalSet.cards)
+                    register(PortalSet.basicLands)
+                },
+            )
+            eventSource.capture(
+                CommittedRulesTransition(
+                    beforeState = state,
+                    afterState = state,
+                    events = listOf(event),
+                    sourceStepCount = 1,
+                ),
+            )
+            val result = eventSource.lastCommittedAutomaticReferenceProjection(
+                semanticEpisodeId = "episode-history",
+                perspectivePlayerId = p1,
+                registry = registry(p1),
+            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+            return PerspectiveHistoryComposerV1.append(
+                state = PerspectiveHistoryStateV1.start("episode-history", listOf(p1, p2)),
+                eventBatch = result.evidence.eventBatch,
+                evidence = result.evidence,
+                projection = result.projection,
+            ).histories.getValue(p1).canonicalJson()
+        }
+
+        historyFor(AttackersDeclaredEvent(listOf(attacker, blocker), attackingPlayerId = p1)) shouldBe
+            historyFor(AttackersDeclaredEvent(listOf(blocker, attacker), attackingPlayerId = p1))
+        historyFor(
+            BlockersDeclaredEvent(
+                blockers = linkedMapOf(blocker to listOf(attacker), target to listOf(attachment)),
+            ),
+        ) shouldBe historyFor(
+            BlockersDeclaredEvent(
+                blockers = linkedMapOf(target to listOf(attachment), blocker to listOf(attacker)),
+            ),
+        )
+        historyFor(
+            DamageAssignedEvent(
+                attackerId = attacker,
+                assignments = linkedMapOf(blocker to 1, target to 2),
+            ),
+        ) shouldBe historyFor(
+            DamageAssignedEvent(
+                attackerId = attacker,
+                assignments = linkedMapOf(target to 2, blocker to 1),
+            ),
+        )
+    }
+
+    test("HISTD-REVIEW-INC-01 destruction and unattach bind the BEFORE incarnation") {
+        val moving = EntityId("moving")
+        val attachment = EntityId("attachment")
+        val host = EntityId("host")
+        val before = cardState(
+            entities = mapOf(
+                p1 to ComponentContainer.EMPTY,
+                p2 to ComponentContainer.EMPTY,
+                moving to cardContainer(p1, "Mountain"),
+                attachment to cardContainer(p1, "Island"),
+                host to cardContainer(p1, "Forest"),
+            ),
+            zones = mapOf(
+                ZoneKey(p1, Zone.BATTLEFIELD) to listOf(moving, attachment, host),
+            ),
+            stamps = mapOf(moving to 41L, attachment to 41L, host to 41L),
+        )
+        val after = cardState(
+            entities = mapOf(
+                p1 to ComponentContainer.EMPTY,
+                p2 to ComponentContainer.EMPTY,
+                moving to cardContainer(p1, "Mountain"),
+                attachment to cardContainer(p1, "Island"),
+                host to cardContainer(p1, "Forest"),
+            ),
+            zones = mapOf(
+                ZoneKey(p1, Zone.BATTLEFIELD) to listOf(attachment),
+                ZoneKey(p1, Zone.GRAVEYARD) to listOf(moving, host),
+            ),
+            stamps = mapOf(moving to 42L, attachment to 41L, host to 42L),
+        )
+        val source = com.wingedsheep.gym.CommittedPerspectiveEventSource(
+            CardRegistry().apply {
+                register(PortalSet.cards)
+                register(PortalSet.basicLands)
+            },
+        )
+        source.capture(
+            CommittedRulesTransition(
+                beforeState = before,
+                afterState = after,
+                events = listOf(
+                    CreatureDestroyedEvent(
+                        entityId = moving,
+                        name = "Mountain",
+                        reason = "test",
+                        controllerId = p1,
+                    ),
+                    ZoneChangeEvent(
+                        entityId = moving,
+                        entityName = "Mountain",
+                        fromZone = Zone.BATTLEFIELD,
+                        toZone = Zone.GRAVEYARD,
+                        ownerId = p1,
+                    ),
+                    PermanentUnattachedEvent(
+                        attachmentId = attachment,
+                        attachmentName = "Island",
+                        attachedToId = host,
+                        controllerId = p1,
+                    ),
+                ),
+                sourceStepCount = 1,
+            ),
+        )
+        val projected = source.lastCommittedAutomaticReferenceProjection(
+            semanticEpisodeId = "episode-history",
+            perspectivePlayerId = p1,
+            registry = registry(p1),
+        ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+        val history = PerspectiveHistoryComposerV1.append(
+            state = PerspectiveHistoryStateV1.start("episode-history", listOf(p1, p2)),
+            eventBatch = projected.evidence.eventBatch,
+            evidence = projected.evidence,
+            projection = projected.projection,
+        ).histories.getValue(p1)
+
+        history.entries[0].references.single().semanticAlias shouldBe "o0"
+        history.entries[1].references.map { it.semanticAlias } shouldBe listOf("o0", "o1")
+        history.entries[2].references.map { it.semanticAlias } shouldBe listOf("o2", "o3")
     }
 
     test("HISTD reachable history-enabled cast and payment path appends successfully") {

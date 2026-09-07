@@ -78,6 +78,16 @@ internal enum class HistoryCIdentityDisclosure {
     DEFINITION_KNOWN,
 }
 
+/** Event-time endpoint authority for an internal witness; never model-facing. */
+internal enum class HistoryCReferenceEndpointAuthority {
+    /** Legacy/manual envelope value; authority is derived from the exact raw event family. */
+    UNSPECIFIED,
+    BEFORE_OBJECT,
+    AFTER_OBJECT,
+    SAME_INCARNATION,
+    ZONE_TRANSITION_PAIR,
+}
+
 /** Typed semantic slot; runtime/source coordinates remain internal to the envelope. */
 internal enum class HistoryCReferenceSlotRole {
     EVENT_SUBJECT,
@@ -114,6 +124,8 @@ internal data class HistoryCReferenceCandidateV1(
     val cardDefinitionId: String? = null,
     val orderProof: HistoryCOrderProof,
     val semanticDescriptor: JsonObject,
+    val endpointAuthority: HistoryCReferenceEndpointAuthority =
+        HistoryCReferenceEndpointAuthority.UNSPECIFIED,
 )
 
 /** Internal envelope supplied by a committed producer; it has no alias field. */
@@ -221,6 +233,7 @@ internal object HistoryCReferenceAuthority {
 
         val rawEvent = rawEventForProjectedOrdinal(transition, projection, candidate.slot.eventOrdinal)
             ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+        validateEndpointAuthority(rawEvent, candidate)?.let { return it }
         validateCandidateAgainstRawEvent(
             transition = transition,
             event = rawEvent,
@@ -261,6 +274,59 @@ internal object HistoryCReferenceAuthority {
         }
 
         return validateSemanticDescriptor(candidate.semanticDescriptor)
+    }
+
+    private fun validateEndpointAuthority(
+        event: GameEvent,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCFailure? {
+        val expected = when (event) {
+            is CreatureDestroyedEvent,
+            is DamageAssignedEvent,
+            is DamageDealtEvent,
+            is PermanentUnattachedEvent,
+            is ResolvedEvent,
+            -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+
+            is ZoneChangeEvent -> HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR
+
+            else -> HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+        }
+        if (candidate.endpointAuthority != HistoryCReferenceEndpointAuthority.UNSPECIFIED &&
+            candidate.endpointAuthority != expected
+        ) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        when (expected) {
+            HistoryCReferenceEndpointAuthority.BEFORE_OBJECT -> {
+                if (candidate.beforeWitness == null ||
+                    (candidate.afterWitness != null && candidate.afterWitness != candidate.beforeWitness)
+                ) {
+                    return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+                }
+            }
+
+            HistoryCReferenceEndpointAuthority.AFTER_OBJECT -> {
+                if (candidate.afterWitness == null ||
+                    (candidate.beforeWitness != null && candidate.beforeWitness != candidate.afterWitness)
+                ) {
+                    return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+                }
+            }
+
+            HistoryCReferenceEndpointAuthority.SAME_INCARNATION -> {
+                if (candidate.beforeWitness != null && candidate.afterWitness != null &&
+                    candidate.beforeWitness != candidate.afterWitness
+                ) {
+                    return HistoryCFailure(HistoryCFailureCode.CROSS_INCARNATION_REFERENCE_UNSUPPORTED)
+                }
+            }
+
+            HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR,
+            HistoryCReferenceEndpointAuthority.UNSPECIFIED,
+            -> Unit
+        }
+        return null
     }
 
     /** Map A's projected ordinal back to the exact raw event without exposing that coordinate. */

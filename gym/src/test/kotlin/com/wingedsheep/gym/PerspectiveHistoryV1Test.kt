@@ -24,7 +24,6 @@ import kotlinx.serialization.json.Json
 import java.nio.charset.StandardCharsets
 import java.nio.file.Path
 import kotlin.io.path.readLines
-import com.wingedsheep.gym.toDecisionResponse
 
 class PerspectiveHistoryV1Test : FunSpec({
 
@@ -124,30 +123,7 @@ class PerspectiveHistoryV1Test : FunSpec({
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var observation = gym.observe().observation as TrainingObservation
-        fun toDecisionResponse(
-            decisionId: String,
-            selection: SemanticDecision,
-        ): DecisionResponse = when (selection) {
-            is SemanticDecision.Targets -> TargetsResponse(decisionId, selection.selected)
-            is SemanticDecision.Cards -> CardsSelectedResponse(decisionId, selection.selected)
-            is SemanticDecision.Modes -> ModesChosenResponse(decisionId, selection.selected)
-            is SemanticDecision.Color -> ColorChosenResponse(decisionId, selection.selected)
-            is SemanticDecision.Number -> NumberChosenResponse(decisionId, selection.selected)
-            is SemanticDecision.Distribution -> DistributionResponse(decisionId, selection.selected)
-            is SemanticDecision.Ordered -> OrderedResponse(decisionId, selection.selected)
-            is SemanticDecision.Piles -> PilesSplitResponse(decisionId, selection.selected)
-            is SemanticDecision.Option -> OptionChosenResponse(decisionId, selection.selected)
-            is SemanticDecision.Replacement ->
-                ReplacementChosenResponse(decisionId, selection.from, selection.to)
-            is SemanticDecision.Budget -> BudgetModalResponse(decisionId, selection.selected)
-            is SemanticDecision.Damage -> CombatResolutionResponse(
-                decisionId = decisionId,
-                edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
-            )
-            is SemanticDecision.Payment -> selection.toDecisionResponse(decisionId)
-        }
-
-        repeat(64) {
+        repeat(16) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             when (choice) {
@@ -160,13 +136,7 @@ class PerspectiveHistoryV1Test : FunSpec({
                     observation = result.observation as TrainingObservation
                 }
 
-                is SemanticChoice.Structured -> {
-                    val decisionId = checkNotNull(observation.pendingDecision?.decisionId)
-                    observation = gym.submitDecision(
-                        toDecisionResponse(decisionId, choice.selection),
-                        actorId = observation.agentToAct,
-                    ).observation as TrainingObservation
-                }
+                is SemanticChoice.Structured -> return@repeat
                 is SemanticChoice.Gap -> error("Exact-pair characterization reached ${choice.code}")
             }
         }

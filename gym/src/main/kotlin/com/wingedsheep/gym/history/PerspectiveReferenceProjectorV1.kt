@@ -81,14 +81,14 @@ internal class PerspectiveReferenceProjectorV1(
             is CandidateOrdering.Rejected ->
                 return PerspectiveReferenceProjectionResult.Rejected(ordering.failure)
         }
-        val orderedEndpoints = mutableListOf<Endpoint>()
+        val authorizedEndpoints = mutableListOf<Endpoint>()
         for (indexedCandidate in orderedCandidates) {
             val candidateIndex = indexedCandidate.originalCandidateIndex
             val candidate = indexedCandidate.candidate
             val endpoints = endpointsFor(candidateIndex, candidate, transition)
             for (endpoint in endpoints) {
                 when (val decision = authorize(endpoint, perspectivePlayerId)) {
-                    is EndpointDecision.Reference -> orderedEndpoints += decision.endpoint
+                    is EndpointDecision.Reference -> authorizedEndpoints += decision.endpoint
 
                     EndpointDecision.Omit -> Unit
                     is EndpointDecision.Reject -> {
@@ -97,6 +97,11 @@ internal class PerspectiveReferenceProjectorV1(
                 }
             }
         }
+
+        val orderedEndpoints = canonicalizeUnorderedCollections(
+            endpoints = authorizedEndpoints,
+            evidence = evidence,
+        )
 
         validateEndpointGroups(
             registry = registryCheck.registry,
@@ -232,6 +237,60 @@ internal class PerspectiveReferenceProjectorV1(
         }
         return CandidateOrdering.Accepted(ordered)
     }
+
+    /**
+     * Canonicalize event-local collections only after Visibility/History-B has authorized each
+     * endpoint. Raw list/map order is not a semantic tie-breaker for these families. A same-key
+     * distinct-witness group is still rejected by B's symmetry validation before allocation.
+     */
+    private fun canonicalizeUnorderedCollections(
+        endpoints: List<Endpoint>,
+        evidence: HistoryCReferenceEvidenceV1,
+    ): List<Endpoint> {
+        val result = mutableListOf<Endpoint>()
+        var index = 0
+        while (index < endpoints.size) {
+            val first = endpoints[index]
+            val key = EndpointGroupKey(first.candidate.slot.eventOrdinal, first.isAfter)
+            val group = mutableListOf<Endpoint>()
+            while (index < endpoints.size) {
+                val endpoint = endpoints[index]
+                if (EndpointGroupKey(endpoint.candidate.slot.eventOrdinal, endpoint.isAfter) != key) {
+                    break
+                }
+                group += endpoint
+                index++
+            }
+            val eventFamily = evidence.eventBatch.entries
+                .getOrNull(key.eventOrdinal)
+                ?.eventFamily
+            if (group.size > 1 && eventFamily in unorderedCollectionFamilies) {
+                result += group.sortedWith(
+                    compareBy<Endpoint>(
+                        { it.candidate.identityDisclosure.ordinal },
+                        { it.candidate.cardDefinitionId ?: "" },
+                        { it.candidate.referenceKind.ordinal },
+                        { it.candidate.slot.role.ordinal },
+                    ),
+                )
+            } else {
+                result += group
+            }
+        }
+        return result
+    }
+
+    private val unorderedCollectionFamilies = setOf(
+        PerspectiveEventFamily.CARDS_DRAWN,
+        PerspectiveEventFamily.CARDS_DISCARDED,
+        PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
+        PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+        PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
+        PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
+        PerspectiveEventFamily.ATTACKERS_DECLARED,
+        PerspectiveEventFamily.BLOCKERS_DECLARED,
+        PerspectiveEventFamily.DAMAGE_ASSIGNED,
+    )
 
     private fun isPrivateLook(
         evidence: HistoryCReferenceEvidenceV1,
