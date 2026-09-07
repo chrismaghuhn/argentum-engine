@@ -201,26 +201,34 @@ internal class PerspectiveReferenceProjectorV1(
             val candidates = group.map { index ->
                 IndexedCandidate(index, evidence.candidates[index])
             }
-            if (candidates.size <= 1 || !isPrivateLook(evidence, group.first())) {
+            if (candidates.size <= 1) {
                 ordered += candidates
                 continue
             }
 
-            // A multi-object private look has no public producer-order authority. Only already
-            // authorized printed identities may provide a deterministic semantic sort key. If
-            // any member remains opaque, C fails closed rather than using raw cardIds/hand order.
-            if (candidates.any {
-                    it.candidate.identityDisclosure != HistoryCIdentityDisclosure.DEFINITION_KNOWN ||
-                        it.candidate.cardDefinitionId.isNullOrBlank()
-                }
+            if (isPrivateLook(evidence, group.first()) ||
+                isPublicReveal(evidence, group.first())
             ) {
-                return CandidateOrdering.Rejected(
-                    HistoryCFailure(HistoryCFailureCode.UNORDERED_SYMMETRY),
+                // Neither private hand-look order nor public reveal cardIds order is a safe
+                // semantic tie-breaker. The producer may provide a known printed identity; use
+                // that only, and keep same-definition distinct witnesses fail-closed in B.
+                if (candidates.any {
+                        it.candidate.identityDisclosure != HistoryCIdentityDisclosure.DEFINITION_KNOWN ||
+                            it.candidate.cardDefinitionId.isNullOrBlank()
+                    }
+                ) {
+                    return CandidateOrdering.Rejected(
+                        HistoryCFailure(HistoryCFailureCode.UNORDERED_SYMMETRY),
+                    )
+                }
+                ordered += candidates.sortedWith(
+                    compareBy<IndexedCandidate>({ it.candidate.cardDefinitionId })
+                        .thenBy { it.candidate.slot.role }
+                        .thenBy { it.candidate.slot.roleOrdinal },
                 )
+                continue
             }
-            ordered += candidates.sortedWith(
-                compareBy<IndexedCandidate>({ it.candidate.cardDefinitionId }, { it.candidate.slot.roleOrdinal }),
-            )
+            ordered += candidates
         }
         return CandidateOrdering.Accepted(ordered)
     }
@@ -231,6 +239,14 @@ internal class PerspectiveReferenceProjectorV1(
     ): Boolean = evidence.eventBatch.entries.getOrNull(eventOrdinal)?.eventFamily in setOf(
         PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
         PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+    )
+
+    private fun isPublicReveal(
+        evidence: HistoryCReferenceEvidenceV1,
+        eventOrdinal: Int,
+    ): Boolean = evidence.eventBatch.entries.getOrNull(eventOrdinal)?.eventFamily in setOf(
+        PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
+        PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
     )
 
     private fun authorize(

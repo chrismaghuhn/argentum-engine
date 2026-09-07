@@ -1,16 +1,45 @@
 package com.wingedsheep.gym.history
 
+import com.wingedsheep.engine.core.AbilityActivatedEvent
+import com.wingedsheep.engine.core.AbilityResolvedEvent
+import com.wingedsheep.engine.core.AbilityTriggeredEvent
+import com.wingedsheep.engine.core.AttackersDeclaredEvent
+import com.wingedsheep.engine.core.BecomesTargetEvent
+import com.wingedsheep.engine.core.BlockersDeclaredEvent
+import com.wingedsheep.engine.core.CardRevealedFromDrawEvent
+import com.wingedsheep.engine.core.CardsDiscardedEvent
+import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.CountersAddedEvent
+import com.wingedsheep.engine.core.CountersRemovedEvent
+import com.wingedsheep.engine.core.CreatureDestroyedEvent
+import com.wingedsheep.engine.core.DamageDealtEvent
+import com.wingedsheep.engine.core.DamageAssignedEvent
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
+import com.wingedsheep.engine.core.HandRevealedEvent
+import com.wingedsheep.engine.core.LandPlayedEvent
+import com.wingedsheep.engine.core.LandTappedForManaEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
+import com.wingedsheep.engine.core.ManaAddedEvent
+import com.wingedsheep.engine.core.ResolvedEvent
+import com.wingedsheep.engine.core.PermanentAttachedEvent
+import com.wingedsheep.engine.core.PermanentUnattachedEvent
+import com.wingedsheep.engine.core.SpellCastEvent
+import com.wingedsheep.engine.core.SpellCopiedEvent
+import com.wingedsheep.engine.core.TurnFaceUpEvent
+import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.TurnedFaceDownEvent
+import com.wingedsheep.engine.core.TransformedEvent
+import com.wingedsheep.engine.core.TargetsChosenEvent
+import com.wingedsheep.engine.core.UntappedEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.gym.contract.PerspectiveEventClassification
 import com.wingedsheep.gym.contract.PerspectiveEventDisposition
+import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
@@ -25,11 +54,49 @@ internal sealed interface HistoryCReferenceEnvelopeProducerResult {
 }
 
 /**
- * Generic internal producer for the raw event families whose A/C authority is already frozen.
- * It never scans the world for matches: every candidate is derived from the exact committed raw
- * event and its before/after witness stamps.
+ * Generic internal producer for raw event families whose A/C authority is frozen.
+ *
+ * The matrix below is deliberate: a family whose A payload is object-bearing must either produce
+ * exact event-bound candidates or reject with typed missing-authority evidence. A scalar-only A
+ * family produces no candidates by design. This prevents a new object-bearing family from being
+ * silently accepted as a reference-free History-D entry.
  */
 internal object HistoryCReferenceEnvelopeProducerV1 {
+    private val referenceBearingFamilies = setOf(
+        PerspectiveEventFamily.SPELL_CAST,
+        PerspectiveEventFamily.ABILITY_ACTIVATED,
+        PerspectiveEventFamily.ABILITY_TRIGGERED,
+        PerspectiveEventFamily.ABILITY_RESOLVED,
+        PerspectiveEventFamily.LAND_PLAYED,
+        PerspectiveEventFamily.ZONE_CHANGED,
+        PerspectiveEventFamily.TAPPED,
+        PerspectiveEventFamily.UNTAPPED,
+        PerspectiveEventFamily.PERMANENT_ATTACHED,
+        PerspectiveEventFamily.PERMANENT_UNATTACHED,
+        PerspectiveEventFamily.LAND_TAPPED_FOR_MANA,
+        PerspectiveEventFamily.COUNTERS_ADDED,
+        PerspectiveEventFamily.COUNTERS_REMOVED,
+        PerspectiveEventFamily.TARGETS_CHOSEN,
+        PerspectiveEventFamily.BECAME_TARGET,
+        PerspectiveEventFamily.CREATURE_DESTROYED,
+        PerspectiveEventFamily.DAMAGE_TO_OBJECT,
+        PerspectiveEventFamily.CARD_REVEALED_FROM_DRAW,
+        PerspectiveEventFamily.CARDS_DISCARDED,
+        PerspectiveEventFamily.CARDS_DRAWN,
+        PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
+        PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
+        PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
+        PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+        PerspectiveEventFamily.ATTACKERS_DECLARED,
+        PerspectiveEventFamily.BLOCKERS_DECLARED,
+        PerspectiveEventFamily.DAMAGE_ASSIGNED,
+        PerspectiveEventFamily.TURNED_FACE_UP,
+        PerspectiveEventFamily.TURNED_FACE_DOWN,
+        PerspectiveEventFamily.TRANSFORMED,
+        PerspectiveEventFamily.SPELL_COPIED,
+        PerspectiveEventFamily.RESOLVED,
+    )
+
     fun produce(
         transition: CommittedRulesTransition,
         projection: PerspectiveEventProjectionResult,
@@ -41,73 +108,341 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         val rawEvents = emittedRawEvents(transition.events, projection.classifications)
         val candidates = mutableListOf<HistoryCReferenceCandidateV1>()
         for ((eventOrdinal, rawEvent) in rawEvents.withIndex()) {
-            when (rawEvent) {
-                is CardsRevealedEvent -> {
-                    for (roleOrdinal in rawEvent.cardIds.indices) {
-                        val candidate = knownCandidate(
-                            transition = transition,
-                            eventOrdinal = eventOrdinal,
-                            role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
-                            roleOrdinal = roleOrdinal,
-                            entityId = rawEvent.cardIds[roleOrdinal],
-                        ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
-                        candidates += candidate
-                    }
+            val family = projection.batch.entries[eventOrdinal].eventFamily
+            val eventCandidates = when (rawEvent) {
+                is AbilityActivatedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.SOURCE,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.sourceId,
+                    ),
+                )
+
+                is AbilityTriggeredEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.SOURCE,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.sourceId,
+                    ),
+                )
+
+                is AbilityResolvedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.SOURCE,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.sourceId,
+                    ),
+                )
+
+                is AttackersDeclaredEvent -> requiredCollection(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    entityIds = rawEvent.attackers,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is BlockersDeclaredEvent -> blockerCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is CardRevealedFromDrawEvent -> required(
+                    knownCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        entityId = rawEvent.cardEntityId,
+                    ),
+                )
+
+                is CardsDiscardedEvent -> requiredCollection(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    entityIds = rawEvent.cardIds,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is CardsDrawnEvent -> requiredCollection(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    entityIds = rawEvent.cardIds,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is CardsRevealedEvent -> requiredKnownCollection(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    entityIds = rawEvent.cardIds,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is CountersAddedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is CountersRemovedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is CreatureDestroyedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is DamageDealtEvent -> if (rawEvent.targetIsPlayer) {
+                    emptyList()
+                } else {
+                    damageDealtCandidates(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        event = rawEvent,
+                    ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
                 }
+
+                is DamageAssignedEvent -> damageCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
 
                 is HandLookedAtEvent -> {
                     if (rawEvent.viewingPlayerId != projection.batch.perspectivePlayerId) {
                         return rejected(HistoryCFailureCode.PERSPECTIVE_MISMATCH)
                     }
-                    for (roleOrdinal in rawEvent.cardIds.indices) {
-                        val candidate = knownCandidate(
-                            transition = transition,
-                            eventOrdinal = eventOrdinal,
-                            role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
-                            roleOrdinal = roleOrdinal,
-                            entityId = rawEvent.cardIds[roleOrdinal],
-                        ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
-                        candidates += candidate
-                    }
+                    requiredKnownCollection(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        entityIds = rawEvent.cardIds,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                    ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
                 }
+
+                is HandRevealedEvent -> requiredKnownCollection(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    entityIds = rawEvent.cardIds,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is LandPlayedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.MOVED_OBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.cardId,
+                    ),
+                )
+
+                is LandTappedForManaEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.landId,
+                    ),
+                )
 
                 is LookedAtCardsEvent -> {
                     if (rawEvent.playerId != projection.batch.perspectivePlayerId) {
                         return rejected(HistoryCFailureCode.PERSPECTIVE_MISMATCH)
                     }
-                    for (roleOrdinal in rawEvent.cardIds.indices) {
-                        val candidate = knownCandidate(
-                            transition = transition,
-                            eventOrdinal = eventOrdinal,
-                            role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
-                            roleOrdinal = roleOrdinal,
-                            entityId = rawEvent.cardIds[roleOrdinal],
-                        ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
-                        candidates += candidate
-                    }
+                    requiredKnownCollection(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        entityIds = rawEvent.cardIds,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                    ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
                 }
 
-                is ZoneChangeEvent -> {
-                    val candidate = zoneChangeCandidate(
+                // ManaAddedEvent is scalar-only in the A contract. Its optional sourceId is
+                // operational provenance, not a model-facing object reference authority.
+                is ManaAddedEvent -> emptyList()
+
+                is PermanentAttachedEvent -> pairedCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    first = ReferenceSpec(
+                        entityId = rawEvent.attachmentId,
+                        role = HistoryCReferenceSlotRole.SOURCE,
+                        roleOrdinal = 0,
+                    ),
+                    second = ReferenceSpec(
+                        entityId = rawEvent.attachedToId,
+                        role = HistoryCReferenceSlotRole.TARGET,
+                        roleOrdinal = 0,
+                    ),
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is PermanentUnattachedEvent -> pairedCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    first = ReferenceSpec(
+                        entityId = rawEvent.attachmentId,
+                        role = HistoryCReferenceSlotRole.SOURCE,
+                        roleOrdinal = 0,
+                    ),
+                    second = ReferenceSpec(
+                        entityId = rawEvent.attachedToId,
+                        role = HistoryCReferenceSlotRole.TARGET,
+                        roleOrdinal = 0,
+                    ),
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is TargetsChosenEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.stackObjectId,
+                        referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+                    ),
+                )
+
+                is BecomesTargetEvent -> targetCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is ResolvedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                        referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+                    ),
+                )
+
+                is SpellCastEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.spellEntityId,
+                        referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+                    ),
+                )
+
+                is SpellCopiedEvent -> spellCopyCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is TappedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is TurnFaceUpEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is TurnedFaceDownEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is UntappedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is TransformedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is ZoneChangeEvent -> required(
+                    zoneChangeCandidate(
                         transition = transition,
                         eventOrdinal = eventOrdinal,
                         event = rawEvent,
-                    ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
-                    candidates += candidate
-                }
+                    ),
+                )
 
-                is TurnedFaceDownEvent -> {
-                    val after = witness(transition.afterState, rawEvent.entityId)
-                        ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
-                    candidates += opaqueCandidate(
-                        eventOrdinal = eventOrdinal,
-                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
-                        afterWitness = after,
-                    )
-                }
-
-                else -> Unit
+                else -> emptyList()
             }
+            if (eventCandidates.isEmpty() &&
+                family in referenceBearingFamilies &&
+                hasReferenceBearingObject(rawEvent)
+            ) {
+                return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+            }
+            candidates += eventCandidates
         }
         return HistoryCReferenceEnvelopeProducerResult.Accepted(
             HistoryCReferenceEnvelopeV1(
@@ -115,6 +450,212 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 candidates = candidates,
             ),
         )
+    }
+
+    private fun required(candidate: HistoryCReferenceCandidateV1?): List<HistoryCReferenceCandidateV1> =
+        listOfNotNull(candidate)
+
+    private fun requiredCollection(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        entityIds: List<EntityId>,
+        role: HistoryCReferenceSlotRole,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        entityIds.forEachIndexed { roleOrdinal, entityId ->
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = role,
+                roleOrdinal = roleOrdinal,
+                rank = roleOrdinal,
+                entityId = entityId,
+            ) ?: return null
+        }
+        return result
+    }
+
+    private fun requiredKnownCollection(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        entityIds: List<EntityId>,
+        role: HistoryCReferenceSlotRole,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        entityIds.forEachIndexed { roleOrdinal, entityId ->
+            result += knownCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = role,
+                roleOrdinal = roleOrdinal,
+                entityId = entityId,
+            ) ?: return null
+        }
+        return result
+    }
+
+    private fun blockerCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: BlockersDeclaredEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        var rank = 0
+        var blockerOrdinal = 0
+        var targetOrdinal = 0
+        event.blockers.forEach { (blockerId, attackerIds) ->
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.SOURCE,
+                roleOrdinal = blockerOrdinal++,
+                rank = rank++,
+                entityId = blockerId,
+            ) ?: return null
+            attackerIds.forEach { attackerId ->
+                result += opaqueCandidate(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    role = HistoryCReferenceSlotRole.TARGET,
+                    roleOrdinal = targetOrdinal++,
+                    rank = rank++,
+                    entityId = attackerId,
+                ) ?: return null
+            }
+        }
+        return result
+    }
+
+    private fun damageCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: DamageAssignedEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        var rank = 0
+        result += opaqueCandidate(
+            transition = transition,
+            eventOrdinal = eventOrdinal,
+            role = HistoryCReferenceSlotRole.SOURCE,
+            roleOrdinal = 0,
+            rank = rank++,
+            entityId = event.attackerId,
+        ) ?: return null
+        event.assignments.keys.forEachIndexed { targetOrdinal, targetId ->
+            if (!hasCardOrRulesWitness(transition, targetId)) return@forEachIndexed
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.TARGET,
+                roleOrdinal = targetOrdinal,
+                rank = rank++,
+                entityId = targetId,
+            ) ?: return null
+        }
+        return result
+    }
+
+    private fun damageDealtCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: DamageDealtEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        var rank = 0
+        event.sourceId?.let { sourceId ->
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.SOURCE,
+                roleOrdinal = 0,
+                rank = rank++,
+                entityId = sourceId,
+            ) ?: return null
+        }
+        result += opaqueCandidate(
+            transition = transition,
+            eventOrdinal = eventOrdinal,
+            role = HistoryCReferenceSlotRole.TARGET,
+            roleOrdinal = 0,
+            rank = rank,
+            entityId = event.targetId,
+        ) ?: return null
+        return result
+    }
+
+    private fun pairedCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        first: ReferenceSpec,
+        second: ReferenceSpec,
+    ): List<HistoryCReferenceCandidateV1>? = listOf(first, second)
+        .mapIndexed { rank, spec ->
+            opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = spec.role,
+                roleOrdinal = spec.roleOrdinal,
+                rank = rank,
+                entityId = spec.entityId,
+                referenceKind = spec.referenceKind,
+            ) ?: return null
+        }
+
+    private fun targetCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: BecomesTargetEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        var rank = 0
+        result += opaqueCandidate(
+            transition = transition,
+            eventOrdinal = eventOrdinal,
+            role = HistoryCReferenceSlotRole.SOURCE,
+            roleOrdinal = 0,
+            rank = rank++,
+            entityId = event.sourceEntityId,
+        ) ?: return null
+        if (!event.targetIsPlayer) {
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.TARGET,
+                roleOrdinal = 0,
+                rank = rank,
+                entityId = event.targetEntityId,
+            ) ?: return null
+        }
+        return result
+    }
+
+    private fun spellCopyCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: SpellCopiedEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = mutableListOf<HistoryCReferenceCandidateV1>()
+        result += opaqueCandidate(
+            transition = transition,
+            eventOrdinal = eventOrdinal,
+            role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+            roleOrdinal = 0,
+            rank = 0,
+            entityId = event.copyEntityId,
+            referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+        ) ?: return null
+        event.originalSpellId?.let { originalSpellId ->
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.SOURCE,
+                roleOrdinal = 0,
+                rank = 1,
+                entityId = originalSpellId,
+                referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+            ) ?: return null
+        }
+        return result
     }
 
     private fun knownCandidate(
@@ -175,20 +716,29 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
     }
 
     private fun opaqueCandidate(
+        transition: CommittedRulesTransition,
         eventOrdinal: Int,
         role: HistoryCReferenceSlotRole,
-        afterWitness: HistoryCObjectWitness,
-    ): HistoryCReferenceCandidateV1 = HistoryCReferenceCandidateV1(
-        slot = HistoryCReferenceSlot(eventOrdinal, role),
-        referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
-        afterWitness = afterWitness,
-        identityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
-        orderProof = HistoryCOrderProof(
-            authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
-            rank = 0,
-        ),
-        semanticDescriptor = descriptor(),
-    )
+        roleOrdinal: Int,
+        rank: Int,
+        entityId: EntityId,
+        referenceKind: HistoryCReferenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+    ): HistoryCReferenceCandidateV1? {
+        val after = witness(transition.afterState, entityId)
+        val before = witness(transition.beforeState, entityId)
+        val witness = after ?: before ?: return null
+        return HistoryCReferenceCandidateV1(
+            slot = HistoryCReferenceSlot(eventOrdinal, role, roleOrdinal),
+            referenceKind = referenceKind,
+            afterWitness = witness,
+            identityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
+            orderProof = HistoryCOrderProof(
+                authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
+                rank = rank,
+            ),
+            semanticDescriptor = descriptor(),
+        )
+    }
 
     private fun emittedRawEvents(
         events: List<GameEvent>,
@@ -218,7 +768,62 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         witness: HistoryCObjectWitness?,
     ): String? = witness?.let { state.getEntity(it.entityId)?.get<CardComponent>()?.cardDefinitionId }
 
+    private fun hasCardOrRulesWitness(
+        transition: CommittedRulesTransition,
+        entityId: EntityId,
+    ): Boolean = listOf(transition.beforeState, transition.afterState).any { state ->
+        witness(state, entityId) != null &&
+            state.getEntity(entityId)?.get<CardComponent>() != null
+    }
+
     private fun descriptor() = buildJsonObject { put("type", "object_reference") }
+
+    private fun hasReferenceBearingObject(event: GameEvent): Boolean = when (event) {
+        is AbilityResolvedEvent,
+        is AbilityActivatedEvent,
+        is AbilityTriggeredEvent,
+        is AttackersDeclaredEvent,
+        is BecomesTargetEvent,
+        is BlockersDeclaredEvent,
+        is CardRevealedFromDrawEvent,
+        is CardsDiscardedEvent,
+        is CardsDrawnEvent,
+        is CardsRevealedEvent,
+        is DamageDealtEvent,
+        is DamageAssignedEvent,
+        is CountersAddedEvent,
+        is CountersRemovedEvent,
+        is CreatureDestroyedEvent,
+        is HandLookedAtEvent,
+        is HandRevealedEvent,
+        is LandPlayedEvent,
+        is LandTappedForManaEvent,
+        is LookedAtCardsEvent,
+        is PermanentAttachedEvent,
+        is PermanentUnattachedEvent,
+        is ResolvedEvent,
+        is SpellCastEvent,
+        is SpellCopiedEvent,
+        is TargetsChosenEvent,
+        is TurnFaceUpEvent,
+        is TurnedFaceDownEvent,
+        is TappedEvent,
+        is TransformedEvent,
+        is UntappedEvent,
+        is ZoneChangeEvent,
+        -> true
+
+        is ManaAddedEvent -> false
+
+        else -> false
+    }
+
+    private data class ReferenceSpec(
+        val entityId: EntityId,
+        val role: HistoryCReferenceSlotRole,
+        val roleOrdinal: Int,
+        val referenceKind: HistoryCReferenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+    )
 
     private fun rejected(code: HistoryCFailureCode): HistoryCReferenceEnvelopeProducerResult.Rejected =
         HistoryCReferenceEnvelopeProducerResult.Rejected(HistoryCFailure(code))

@@ -1,7 +1,6 @@
 package com.wingedsheep.gym
 
-import com.wingedsheep.engine.core.GameConfig
-import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.*
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.history.HistoryCFailureCode
@@ -10,7 +9,10 @@ import com.wingedsheep.gym.history.PerspectiveHistorySnapshotDecodeResult
 import com.wingedsheep.gym.history.PerspectiveHistorySnapshotEnvelopeV1
 import com.wingedsheep.gym.history.PerspectiveHistoryStateV1
 import com.wingedsheep.gym.service.SnapshotCodec
+import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
+import com.wingedsheep.mtg.sets.MtgSetCatalog
+import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
@@ -20,6 +22,9 @@ import io.kotest.matchers.string.shouldNotContain
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
 import java.nio.charset.StandardCharsets
+import java.nio.file.Path
+import kotlin.io.path.readLines
+import com.wingedsheep.gym.toDecisionResponse
 
 class PerspectiveHistoryV1Test : FunSpec({
 
@@ -65,6 +70,109 @@ class PerspectiveHistoryV1Test : FunSpec({
             history.entries.indices.map { it.toLong() }
     }
 
+    test("HISTD bounded exact Akiri/Chevill path remains history-enabled") {
+        val repositoryRoot = generateSequence(Path.of(System.getProperty("user.dir"))) { it.parent }
+            .first { it.resolve("docs/ml/curriculum").toFile().isDirectory }
+        fun lockedDeck(fileName: String): List<String> = Path.of(
+            repositoryRoot.toString(),
+            "docs",
+            "ml",
+            "curriculum",
+            fileName,
+        ).readLines()
+            .filter { it.matches(Regex("^\\d{3}\\t.*")) }
+            .map { it.substringAfterLast('\t') }
+
+        val akiri = lockedDeck("akiri-v0.1.txt")
+        val chevill = lockedDeck("chevill-v0.1.txt")
+        val cardRegistry = CardRegistry().apply {
+            MtgSetCatalog.all.forEach { set ->
+                register(set.cards)
+                register(set.basicLands)
+            }
+        }
+        val environment = GameEnvironment.create(cardRegistry)
+        val gym = GameGymEnv(
+            environment = environment,
+            perspectivePlayerIndex = 0,
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+        )
+        gym.reset(
+            GameConfig(
+                players = listOf(
+                    PlayerConfig(
+                        name = "Akiri",
+                        deck = Deck(akiri.drop(1)),
+                        startingLife = 40,
+                        commanderCardName = akiri.first(),
+                    ),
+                    PlayerConfig(
+                        name = "Chevill",
+                        deck = Deck(chevill.drop(1)),
+                        startingLife = 40,
+                        commanderCardName = chevill.first(),
+                    ),
+                ),
+                startingHandSize = 7,
+                skipMulligans = true,
+                startingPlayerIndex = 0,
+                format = Format.Commander(),
+            ),
+            semanticEpisodeId = "episode-exact-pair",
+        )
+
+        val policy = DeterministicExternalPolicy()
+        var policyState = DeterministicPolicyState(policySeed = 0x41L)
+        var observation = gym.observe().observation as TrainingObservation
+        fun toDecisionResponse(
+            decisionId: String,
+            selection: SemanticDecision,
+        ): DecisionResponse = when (selection) {
+            is SemanticDecision.Targets -> TargetsResponse(decisionId, selection.selected)
+            is SemanticDecision.Cards -> CardsSelectedResponse(decisionId, selection.selected)
+            is SemanticDecision.Modes -> ModesChosenResponse(decisionId, selection.selected)
+            is SemanticDecision.Color -> ColorChosenResponse(decisionId, selection.selected)
+            is SemanticDecision.Number -> NumberChosenResponse(decisionId, selection.selected)
+            is SemanticDecision.Distribution -> DistributionResponse(decisionId, selection.selected)
+            is SemanticDecision.Ordered -> OrderedResponse(decisionId, selection.selected)
+            is SemanticDecision.Piles -> PilesSplitResponse(decisionId, selection.selected)
+            is SemanticDecision.Option -> OptionChosenResponse(decisionId, selection.selected)
+            is SemanticDecision.Replacement ->
+                ReplacementChosenResponse(decisionId, selection.from, selection.to)
+            is SemanticDecision.Budget -> BudgetModalResponse(decisionId, selection.selected)
+            is SemanticDecision.Damage -> CombatResolutionResponse(
+                decisionId = decisionId,
+                edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
+            )
+            is SemanticDecision.Payment -> selection.toDecisionResponse(decisionId)
+        }
+
+        repeat(64) {
+            val choice = policy.choose(observation, policyState)
+            policyState = policyState.afterChoice()
+            when (choice) {
+                is SemanticChoice.Action -> {
+                    val result = if (choice.payload == null) {
+                        gym.step(choice.actionId)
+                    } else {
+                        gym.step(choice.actionId, choice.payload)
+                    }
+                    observation = result.observation as TrainingObservation
+                }
+
+                is SemanticChoice.Structured -> {
+                    val decisionId = checkNotNull(observation.pendingDecision?.decisionId)
+                    observation = gym.submitDecision(
+                        toDecisionResponse(decisionId, choice.selection),
+                        actorId = observation.agentToAct,
+                    ).observation as TrainingObservation
+                }
+                is SemanticChoice.Gap -> error("Exact-pair characterization reached ${choice.code}")
+            }
+        }
+        gym.perspectiveHistory(environment.playerIds.first()).entries.shouldNotBeEmpty()
+    }
+
     test("HISTD-02 snapshot restore preserves the complete history prefix") {
         val cardRegistry = registry()
         val environment = GameEnvironment.create(cardRegistry)
@@ -85,6 +193,34 @@ class PerspectiveHistoryV1Test : FunSpec({
         gym.restore(codec, snapshot)
 
         gym.perspectiveHistory(environment.playerIds.first()).canonicalJson() shouldBe prefix
+    }
+
+    test("HISTD-11 checkpoint restore plus identical suffix preserves history bytes") {
+        fun newGym(): GameGymEnv {
+            val cardRegistry = registry()
+            val environment = GameEnvironment.create(cardRegistry)
+            return GameGymEnv(
+                environment = environment,
+                perspectivePlayerIndex = 0,
+                observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+            ).also { it.reset(config(), semanticEpisodeId = "episode-history") }
+        }
+
+        val gym = newGym()
+        val player = gym.environment.playerIds.first()
+        val prefixAction = gym.observe().observation.legalActions.first { it.kind == "PassPriority" }
+        gym.step(prefixAction.actionId)
+        val codec = SnapshotCodec()
+        val checkpoint = gym.snapshot(codec)
+
+        val uninterruptedAction = gym.observe().observation.legalActions.first { it.kind == "PassPriority" }
+        gym.step(uninterruptedAction.actionId)
+        val uninterrupted = gym.perspectiveHistory(player).canonicalJson()
+
+        gym.restore(codec, checkpoint)
+        val restoredAction = gym.observe().observation.legalActions.first { it.kind == "PassPriority" }
+        gym.step(restoredAction.actionId)
+        gym.perspectiveHistory(player).canonicalJson() shouldBe uninterrupted
     }
 
     test("HISTD-12 speculative fork cannot append trusted perspective history") {
@@ -135,7 +271,7 @@ class PerspectiveHistoryV1Test : FunSpec({
     }
 
     test("HISTD-04 hidden-only setup differences do not change perspective history") {
-        fun run(firstDeckCard: String): String {
+        fun run(secondDeckCard: String): String {
             val cardRegistry = registry()
             val environment = GameEnvironment.create(cardRegistry)
             val gym = GameGymEnv(
@@ -144,7 +280,7 @@ class PerspectiveHistoryV1Test : FunSpec({
                 observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
             )
             gym.reset(
-                config(firstDeckCard = firstDeckCard),
+                config(secondDeckCard = secondDeckCard),
                 semanticEpisodeId = "episode-history",
             )
             val pass = gym.observe().observation.legalActions.first { it.kind == "PassPriority" }
