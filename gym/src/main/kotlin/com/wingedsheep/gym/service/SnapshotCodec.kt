@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.service
 
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.gym.CommittedPerspectiveEventSourceSnapshot
 import com.wingedsheep.gym.EpisodeClosureV1
 import com.wingedsheep.gym.EpisodeDiagnostics
 import com.wingedsheep.sdk.model.EntityId
@@ -22,6 +23,12 @@ sealed interface SnapshotHandle {
     data class Slot(val slotId: Long) : SnapshotHandle
 }
 
+/** Provenance of a privileged History-C continuation stored in an in-process snapshot slot. */
+enum class HistoryCContinuationAuthorityV1 {
+    TRUSTED_COMMITTED,
+    SPECULATIVE_FORK,
+}
+
 /**
  * Stores [GameState] snapshots and their player-ID roster in-process. Since
  * `GameState` is fully immutable, saving is free — we just hold a reference
@@ -34,6 +41,7 @@ sealed interface SnapshotHandle {
  */
 class SnapshotCodec {
     private val slots = ConcurrentHashMap<Long, Entry>()
+    private val historyCSourceSnapshots = ConcurrentHashMap<Long, CommittedPerspectiveEventSourceSnapshot>()
     private val nextId = AtomicLong(1)
 
     data class Entry(
@@ -49,6 +57,8 @@ class SnapshotCodec {
         val failureClosure: EpisodeClosureV1.Failed? = null,
         /** Privileged versioned History-C continuation bytes, absent for ordinary snapshots. */
         val historyCContinuation: ByteArray? = null,
+        /** Explicit provenance for [historyCContinuation]; null means no History-C continuation. */
+        val historyCContinuationAuthority: HistoryCContinuationAuthorityV1? = null,
     )
 
     fun save(
@@ -60,7 +70,11 @@ class SnapshotCodec {
         projectionGeneration: Long = 0L,
         failureClosure: EpisodeClosureV1.Failed? = null,
         historyCContinuation: ByteArray? = null,
+        historyCContinuationAuthority: HistoryCContinuationAuthorityV1? = null,
     ): SnapshotHandle.Slot {
+        require(historyCContinuation != null || historyCContinuationAuthority == null) {
+            "History-C snapshot authority requires continuation bytes"
+        }
         val id = nextId.getAndIncrement()
         slots[id] = Entry(
             state,
@@ -71,6 +85,7 @@ class SnapshotCodec {
             projectionGeneration,
             failureClosure,
             historyCContinuation?.copyOf(),
+            historyCContinuationAuthority,
         )
         return SnapshotHandle.Slot(id)
     }
@@ -83,8 +98,31 @@ class SnapshotCodec {
         }
     }
 
+    internal fun attachHistoryCSource(
+        handle: SnapshotHandle,
+        source: CommittedPerspectiveEventSourceSnapshot,
+    ) {
+        val slot = handle as? SnapshotHandle.Slot
+            ?: error("Unsupported snapshot handle")
+        check(slots.containsKey(slot.slotId)) { "Snapshot slot ${slot.slotId} not found" }
+        historyCSourceSnapshots[slot.slotId] = source.copy(
+            transition = source.transition?.copy(events = source.transition.events.toList()),
+        )
+    }
+
+    internal fun loadHistoryCSource(handle: SnapshotHandle): CommittedPerspectiveEventSourceSnapshot? {
+        val slot = handle as? SnapshotHandle.Slot ?: return null
+        val source = historyCSourceSnapshots[slot.slotId] ?: return null
+        return source.copy(
+            transition = source.transition?.copy(events = source.transition.events.toList()),
+        )
+    }
+
     fun dispose(handle: SnapshotHandle) {
-        if (handle is SnapshotHandle.Slot) slots.remove(handle.slotId)
+        if (handle is SnapshotHandle.Slot) {
+            slots.remove(handle.slotId)
+            historyCSourceSnapshots.remove(handle.slotId)
+        }
     }
 
     fun size(): Int = slots.size

@@ -9,12 +9,14 @@ import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeV1
 import com.wingedsheep.gym.history.HistoryCSnapshotCodecV1
 import com.wingedsheep.gym.history.PerspectiveReferenceProjectionResult
 import com.wingedsheep.gym.service.SnapshotCodec
+import com.wingedsheep.gym.service.HistoryCContinuationAuthorityV1
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.types.shouldBeInstanceOf
 
 class HistoryCDGameGymLifecycleTest : FunSpec({
 
@@ -115,6 +117,7 @@ class HistoryCDGameGymLifecycleTest : FunSpec({
             stepCount = gym.environment.stepCount,
             maxSteps = gym.environment.maxSteps,
             historyCContinuation = corrupted,
+            historyCContinuationAuthority = HistoryCContinuationAuthorityV1.TRUSTED_COMMITTED,
         )
         val beforeDigest = gym.observe().observation.stateDigest
 
@@ -125,6 +128,48 @@ class HistoryCDGameGymLifecycleTest : FunSpec({
         gym.historyCLifecycleState()?.semanticEpisodeId shouldBe "episode-a"
         gym.environment.stepCount shouldBe 0
         gym.observe().observation.stateDigest shouldBe beforeDigest
+    }
+
+    test("HISTC-D-REVIEW-01 speculative fork snapshot cannot be restored into trusted parent") {
+        val parent = gym()
+        parent.reset(config(), semanticEpisodeId = "episode-a")
+        val fork = parent.fork() as GameGymEnv
+        val pass = fork.observe().observation.legalActions.first { it.kind == "PassPriority" }
+        fork.step(pass.actionId)
+        val codec = SnapshotCodec()
+        val speculativeSnapshot = fork.snapshot(codec)
+        fork.restore(codec, speculativeSnapshot)
+        fork.historyCLifecycleState()?.semanticEpisodeId shouldBe "episode-a"
+        val beforeDigest = parent.observe().observation.stateDigest
+        val beforeLifecycle = parent.historyCLifecycleState()
+
+        val failure = shouldThrow<HistoryCOperationException> {
+            parent.restore(codec, speculativeSnapshot)
+        }
+        failure.failure.code shouldBe HistoryCFailureCode.FORK_OR_SPECULATIVE_SOURCE
+        parent.observe().observation.stateDigest shouldBe beforeDigest
+        parent.historyCLifecycleState() shouldBe beforeLifecycle
+    }
+
+    test("HISTC-D-REVIEW-02 snapshot preserves the last committed reference source") {
+        val gym = gym()
+        gym.reset(config(), semanticEpisodeId = "episode-a")
+        val perspective = gym.environment.playerIds.first()
+        val envelope = HistoryCReferenceEnvelopeV1(
+            perspectivePlayerId = perspective,
+            candidates = emptyList(),
+        )
+        val pass = gym.observe().observation.legalActions.first { it.kind == "PassPriority" }
+        gym.step(pass.actionId)
+        gym.lastCommittedReferenceProjection(perspective, envelope)
+            .shouldBeInstanceOf<PerspectiveReferenceProjectionResult.Accepted>()
+
+        val codec = SnapshotCodec()
+        val handle = gym.snapshot(codec)
+        gym.restore(codec, handle)
+
+        gym.lastCommittedReferenceProjection(perspective, envelope)
+            .shouldBeInstanceOf<PerspectiveReferenceProjectionResult.Accepted>()
     }
 
     test("HISTC-D-03/D-04 fork copies immutable lifecycle state but cannot commit History-C") {

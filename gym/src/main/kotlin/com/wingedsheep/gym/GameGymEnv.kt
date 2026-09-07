@@ -28,6 +28,7 @@ import com.wingedsheep.gym.history.HistoryCLifecycleStateV1
 import com.wingedsheep.gym.history.HistoryCSnapshotCodecV1
 import com.wingedsheep.gym.history.HistoryCOperationException
 import com.wingedsheep.gym.history.PerspectiveReferenceProjectionResult
+import com.wingedsheep.gym.service.HistoryCContinuationAuthorityV1
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.SnapshotHandle
 import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
@@ -289,8 +290,15 @@ class GameGymEnv(
         build()
     }
 
-    fun snapshot(codec: SnapshotCodec): SnapshotHandle =
-        codec.save(
+    fun snapshot(codec: SnapshotCodec): SnapshotHandle {
+        val continuation = historyCLifecycleState?.let {
+            HistoryCSnapshotCodecV1.encode(
+                state = it,
+                stepCount = environment.stepCount,
+                projectionGeneration = environment.projectionGeneration,
+            )
+        }
+        val handle = codec.save(
             state = environment.state,
             playerIds = environment.playerIds,
             stepCount = environment.stepCount,
@@ -298,17 +306,40 @@ class GameGymEnv(
             diagnostics = environment.diagnostics,
             projectionGeneration = environment.projectionGeneration,
             failureClosure = environment.episodeClosure as? EpisodeClosureV1.Failed,
-            historyCContinuation = historyCLifecycleState?.let {
-                HistoryCSnapshotCodecV1.encode(
-                    state = it,
-                    stepCount = environment.stepCount,
-                    projectionGeneration = environment.projectionGeneration,
-                )
+            historyCContinuation = continuation,
+            historyCContinuationAuthority = historyCLifecycleState?.let {
+                if (committedHistoryEnabled) {
+                    HistoryCContinuationAuthorityV1.TRUSTED_COMMITTED
+                } else {
+                    HistoryCContinuationAuthorityV1.SPECULATIVE_FORK
+                }
             },
         )
+        if (historyCLifecycleState != null) {
+            codec.attachHistoryCSource(handle, committedPerspectiveEventSource.snapshotState())
+        }
+        return handle
+    }
 
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
         val snap = codec.load(handle)
+        if (snap.historyCContinuation == null && snap.historyCContinuationAuthority != null) {
+            throw HistoryCOperationException(
+                HistoryCFailure(HistoryCFailureCode.HISTORY_C_SNAPSHOT_AUTHORITY_MISSING),
+            )
+        }
+        if (snap.historyCContinuation != null && snap.historyCContinuationAuthority == null) {
+            throw HistoryCOperationException(
+                HistoryCFailure(HistoryCFailureCode.HISTORY_C_SNAPSHOT_AUTHORITY_MISSING),
+            )
+        }
+        if (snap.historyCContinuationAuthority == HistoryCContinuationAuthorityV1.SPECULATIVE_FORK &&
+            committedHistoryEnabled
+        ) {
+            throw HistoryCOperationException(
+                HistoryCFailure(HistoryCFailureCode.FORK_OR_SPECULATIVE_SOURCE),
+            )
+        }
         val restoredHistory = snap.historyCContinuation?.let { encoded ->
             when (
                 val decoded = HistoryCSnapshotCodecV1.decode(
@@ -322,6 +353,14 @@ class GameGymEnv(
                 is com.wingedsheep.gym.history.HistoryCSnapshotDecodeResult.Rejected ->
                     throw HistoryCOperationException(decoded.failure)
             }
+        }
+        val restoredSource = if (restoredHistory != null) {
+            codec.loadHistoryCSource(handle)
+                ?: throw HistoryCOperationException(
+                    HistoryCFailure(HistoryCFailureCode.HISTORY_C_SOURCE_SNAPSHOT_MISSING),
+                )
+        } else {
+            null
         }
         if (historyCLifecycleState != null && restoredHistory == null) {
             throw HistoryCOperationException(
@@ -340,7 +379,11 @@ class GameGymEnv(
         cachedObservation = null
         cachedStepCount = null
         cachedPerspectivePlayerId = null
-        committedPerspectiveEventSource.clear()
+        if (restoredSource != null && committedHistoryEnabled) {
+            committedPerspectiveEventSource.restoreState(restoredSource)
+        } else {
+            committedPerspectiveEventSource.clear()
+        }
         historyCLifecycleState = restoredHistory
         return build()
     }

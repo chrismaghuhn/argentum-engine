@@ -28,6 +28,11 @@ internal data class CommittedRulesTransition(
     val sourceStepCount: Int,
 )
 
+internal data class CommittedPerspectiveEventSourceSnapshot(
+    val transition: CommittedRulesTransition?,
+    val committedTransitionCount: Int,
+)
+
 /**
  * One-transition source seam for perspective-safe event batches.
  *
@@ -50,6 +55,26 @@ internal class CommittedPerspectiveEventSource(
     fun clear() {
         lastTransition = null
         committedTransitionCount = 0
+    }
+
+    internal fun snapshotState(): CommittedPerspectiveEventSourceSnapshot {
+        val transition = lastTransition
+        return CommittedPerspectiveEventSourceSnapshot(
+            transition = transition?.copy(events = transition.events.toList()),
+            committedTransitionCount = committedTransitionCount,
+        )
+    }
+
+    internal fun restoreState(snapshot: CommittedPerspectiveEventSourceSnapshot) {
+        if (!captureEnabled) {
+            clear()
+            return
+        }
+        require(snapshot.committedTransitionCount >= 0) {
+            "Committed perspective transition count must not be negative"
+        }
+        lastTransition = snapshot.transition?.copy(events = snapshot.transition.events.toList())
+        committedTransitionCount = snapshot.committedTransitionCount
     }
 
     fun capture(transition: CommittedRulesTransition) {
