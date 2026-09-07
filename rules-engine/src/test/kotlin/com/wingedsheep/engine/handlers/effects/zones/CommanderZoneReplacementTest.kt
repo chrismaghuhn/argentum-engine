@@ -3,8 +3,10 @@ package com.wingedsheep.engine.handlers.effects.zones
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.PipelineState
 import com.wingedsheep.engine.core.EffectResult
+import com.wingedsheep.engine.mechanics.KnownInformationLedger
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ExecutionResult
+import com.wingedsheep.engine.core.ActionProcessor
 import com.wingedsheep.engine.core.ContinuationFrame
 import com.wingedsheep.engine.core.EffectContinuation
 import com.wingedsheep.engine.core.ChooseOptionDecision
@@ -14,6 +16,7 @@ import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OptionalReplacementContinuation
 import com.wingedsheep.engine.core.ReorderLibraryDecision
+import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
@@ -32,6 +35,7 @@ import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.OwnerComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.SelfZoneRedirectComponent
+import com.wingedsheep.engine.state.components.player.KnownInformationFactKind
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
 import com.wingedsheep.engine.state.components.battlefield.ExileOnLeaveBattlefieldComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
@@ -391,6 +395,43 @@ class CommanderZoneReplacementTest : FunSpec({
         resumed.error shouldBe null
         resumed.state.getZone(ZoneKey(playerId, Zone.LIBRARY)) shouldBe
             listOf(commanderId, normalAId, libraryCardId)
+    }
+
+    test("HISTB-REVIEW-26 exact order knowledge survives the committed ActionProcessor transition") {
+        val services = EngineServices(CardRegistry())
+        val state = addLibrarySentinel(
+            addNormalCard(
+                addNormalCard(stateWithCommanderIn(Zone.BATTLEFIELD), normalAId, "Normal A"),
+                normalBId,
+                "Normal B",
+            )
+        ).copy(activePlayerId = playerId, priorityPlayerId = playerId)
+        val orderPrompt = orderedMovePrompt(
+            services,
+            state,
+            listOf(normalAId, normalBId),
+            com.wingedsheep.sdk.scripting.effects.ZonePlacement.Top,
+        )
+        val orderDecision = orderPrompt.pendingDecision.shouldBeInstanceOf<ReorderLibraryDecision>()
+        val committed = ActionProcessor(services).process(
+            orderPrompt.state,
+            SubmitDecision(
+                playerId,
+                OrderedResponse(orderDecision.id, listOf(normalAId, normalBId)),
+            ),
+        ).result
+
+        committed.error shouldBe null
+        committed.state.pendingLibraryOrderReacquisitionOwners shouldBe emptySet()
+        val ledger = KnownInformationLedger.forPlayer(committed.state, playerId)
+        ledger.activeFacts.single {
+            it.subjectEntityId == normalAId &&
+                it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        }.knownPosition shouldBe 0
+        ledger.activeFacts.single {
+            it.subjectEntityId == normalBId &&
+                it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        }.knownPosition shouldBe 1
     }
 
     test("MC-ORDER-02: top order keeps ordinary cards relative when Commander chooses COMMAND") {

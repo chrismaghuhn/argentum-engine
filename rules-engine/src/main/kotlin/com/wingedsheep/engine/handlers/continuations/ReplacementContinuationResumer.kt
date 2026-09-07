@@ -327,23 +327,28 @@ class ReplacementContinuationResumer(
                 val withOrderKnowledge = completion.orderCompletion?.let { order ->
                     if (completion.destination.zone == com.wingedsheep.sdk.core.Zone.LIBRARY) {
                         withOrderEvent.copy(
-                            state = com.wingedsheep.engine.mechanics.KnownInformationLedger.recordLibraryOrder(
-                                state = withOrderEvent.state,
-                                perspectivePlayerId = order.playerId,
-                                libraryOwnerId = completion.destPlayerId,
-                                orderedCardIds = completion.cards,
-                                audience = if (completion.revealed) {
-                                    com.wingedsheep.engine.state.components.player.KnownInformationAudience.PUBLIC
-                                } else {
-                                    com.wingedsheep.engine.state.components.player.KnownInformationAudience.PERSPECTIVE_PRIVATE
-                                },
-                                acquisitionReason = if (completion.revealed) {
-                                    com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PUBLIC_REVEAL
-                                } else {
-                                    com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
-                                },
-                                objectIncarnationAlreadyAdvanced = true,
-                            ),
+                            state = com.wingedsheep.engine.mechanics.KnownInformationLedger
+                                .markLibraryOrderReacquired(
+                                    state = com.wingedsheep.engine.mechanics.KnownInformationLedger
+                                        .recordLibraryOrder(
+                                            state = withOrderEvent.state,
+                                            perspectivePlayerId = order.playerId,
+                                            libraryOwnerId = completion.destPlayerId,
+                                            orderedCardIds = completion.cards,
+                                            audience = if (completion.revealed) {
+                                                com.wingedsheep.engine.state.components.player.KnownInformationAudience.PUBLIC
+                                            } else {
+                                                com.wingedsheep.engine.state.components.player.KnownInformationAudience.PERSPECTIVE_PRIVATE
+                                            },
+                                            acquisitionReason = if (completion.revealed) {
+                                                com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                                            } else {
+                                                com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                                            },
+                                            objectIncarnationAlreadyAdvanced = true,
+                                        ),
+                                    libraryOwnerId = completion.destPlayerId,
+                                ),
                         )
                     } else {
                         withOrderEvent

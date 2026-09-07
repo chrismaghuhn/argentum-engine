@@ -159,6 +159,18 @@ object KnownInformationLedger {
     }
 
     /**
+     * Mark an exact producer-owned order reacquisition for the current committed transition.
+     * This is internal Rules transition metadata, not a learner-facing fact or a source-event
+     * coordinate. The central post-pass consumes it so conservative membership invalidation cannot
+     * erase positions that were explicitly re-established later in the same transition.
+     */
+    fun markLibraryOrderReacquired(state: GameState, libraryOwnerId: EntityId): GameState =
+        state.copy(
+            pendingLibraryOrderReacquisitionOwners =
+                state.pendingLibraryOrderReacquisitionOwners + libraryOwnerId,
+        )
+
+    /**
      * Apply authoritative invalidation and epoch semantics after one Rules action result.
      *
      * The result already contains producer-side visibility writes (for example GatherCards and
@@ -186,6 +198,7 @@ object KnownInformationLedger {
             .filter { it.fromZone == Zone.LIBRARY || it.toZone == Zone.LIBRARY }
             .map(ZoneChangeEvent::ownerId)
             .distinct()
+        val producerReacquiredLibraryOwners = state.pendingLibraryOrderReacquisitionOwners
         if (shuffledLibraryOwners.isNotEmpty()) {
             state = reincarnateKnownShuffleObjects(
                 beforeState = beforeState,
@@ -210,8 +223,11 @@ object KnownInformationLedger {
         }
 
         for (ownerId in (shuffledLibraryOwners + libraryMembershipOwners).distinct()) {
-            state = invalidateLibraryPositions(state, ownerId)
+            if (ownerId !in producerReacquiredLibraryOwners) {
+                state = invalidateLibraryPositions(state, ownerId)
+            }
         }
+        state = state.copy(pendingLibraryOrderReacquisitionOwners = emptySet())
 
         for (event in events) {
             state = when (event) {

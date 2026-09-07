@@ -26,6 +26,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
 import com.wingedsheep.sdk.scripting.AbilityIdentity
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * Immutable snapshot of the entire game state.
@@ -231,6 +232,14 @@ data class GameState(
      * threading an explicit cause through the zone-move signature.
      */
     val pendingDiscardCauseControllers: Map<EntityId, EntityId> = emptyMap(),
+
+    /**
+     * Internal transition metadata: exact library-order producers have re-established
+     * authoritative position facts for these library owners after membership mutation. This is
+     * consumed by the central known-information post-pass and is deliberately not serialized.
+     */
+    @Transient
+    val pendingLibraryOrderReacquisitionOwners: Set<EntityId> = emptySet(),
 
     /**
      * Players (by entity id) who have committed a crime this turn (CR 700-level Outlaws of Thunder

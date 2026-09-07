@@ -250,22 +250,25 @@ class LibraryAndZoneContinuationResumer(
         )
         val completedWithKnowledge = if (continuation.destinationZone == Zone.LIBRARY) {
             completed.copy(
-                state = KnownInformationLedger.recordLibraryOrder(
-                    state = completed.state,
-                    perspectivePlayerId = continuation.playerId,
+                state = KnownInformationLedger.markLibraryOrderReacquired(
+                    state = KnownInformationLedger.recordLibraryOrder(
+                        state = completed.state,
+                        perspectivePlayerId = continuation.playerId,
+                        libraryOwnerId = continuation.destinationPlayerId,
+                        orderedCardIds = orderedCards,
+                        audience = if (continuation.revealed) {
+                            com.wingedsheep.engine.state.components.player.KnownInformationAudience.PUBLIC
+                        } else {
+                            com.wingedsheep.engine.state.components.player.KnownInformationAudience.PERSPECTIVE_PRIVATE
+                        },
+                        acquisitionReason = if (continuation.revealed) {
+                            com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PUBLIC_REVEAL
+                        } else {
+                            com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
+                        },
+                        objectIncarnationAlreadyAdvanced = true,
+                    ),
                     libraryOwnerId = continuation.destinationPlayerId,
-                    orderedCardIds = orderedCards,
-                    audience = if (continuation.revealed) {
-                        com.wingedsheep.engine.state.components.player.KnownInformationAudience.PUBLIC
-                    } else {
-                        com.wingedsheep.engine.state.components.player.KnownInformationAudience.PERSPECTIVE_PRIVATE
-                    },
-                    acquisitionReason = if (continuation.revealed) {
-                        com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PUBLIC_REVEAL
-                    } else {
-                        com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK
-                    },
-                    objectIncarnationAlreadyAdvanced = true,
                 ),
             )
         } else {
@@ -328,10 +331,13 @@ class LibraryAndZoneContinuationResumer(
             )
         )
 
-        val stateWithKnowledge = KnownInformationLedger.recordLibraryOrder(
-            state = newState,
-            perspectivePlayerId = playerId,
-            orderedCardIds = orderedCards,
+        val stateWithKnowledge = KnownInformationLedger.markLibraryOrderReacquired(
+            state = KnownInformationLedger.recordLibraryOrder(
+                state = newState,
+                perspectivePlayerId = playerId,
+                orderedCardIds = orderedCards,
+            ),
+            libraryOwnerId = playerId,
         )
         return checkForMore(stateWithKnowledge, events)
     }
