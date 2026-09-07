@@ -4,7 +4,7 @@
 
 **Goal:** Define the smallest reusable, perspective-safe capability that converts committed Rules object witnesses into deterministic semantic references without exposing runtime identity, and stage its future implementation behind the final History-B gate.
 
-**Architecture:** Use a hybrid design: an immutable, internal per-episode/per-perspective witness registry owned by the committed-history adapter, plus a pure perspective projection that validates every candidate through History-A, `Visibility`, and the accepted History-B ledger. Allocate compact aliases only for committed, legally referenceable candidates; never reuse an alias across a CR 400.7 incarnation. Keep optional cross-incarnation relationships separate from aliases and emit them only when an authoritative Rules transition witness proves that the perspective can know the relation.
+**Architecture:** Use a hybrid design: an immutable, internal per-episode/per-perspective witness registry owned by the committed-history adapter, plus a pure perspective projection that validates every candidate through History-A, `Visibility`, and the merged History-B ledger. Allocate compact aliases only for committed, legally referenceable candidates; never reuse an alias across a CR 400.7 incarnation. Keep optional cross-incarnation relationships separate from aliases and emit them only when an authoritative Rules transition witness proves that the perspective can know the relation.
 
 **Tech Stack:** Kotlin/JDK 21, immutable `GameState`, `CommittedPerspectiveEventSource`, `PerspectiveEventBatchV1`, `Visibility`, `KnownInformationLedgerComponentV1`, kotlinx.serialization, strict canonical JSON, Kotest, Gradle/`just` verification.
 
@@ -50,7 +50,7 @@ C0_HISTORY_B_FINAL_ACCEPTANCE_PASS=YES
 HISTORY_B_MERGED_IN_CURRENT_MAIN=YES
 ```
 
-At this plan audit the gate is closed. The accepted History-B review head is inspected as a detached authority only; its live branch is not promoted.
+At this revalidation the gate is open on the exact merged current-main authority below. This commit remains docs-only; HISTC-A is eligible for separate production authorization after plan review, while no History-C implementation is performed here.
 
 ## 2. Source authority / exact SHAs
 
@@ -61,20 +61,23 @@ At this plan audit the gate is closed. The accepted History-B review head is ins
 | Repository | `chrismaghuhn/argentum-engine` | Writable fork only |
 | `origin` | `https://github.com/chrismaghuhn/argentum-engine.git` | Branch base and push target |
 | `upstream` | `https://github.com/wingedsheep/argentum-engine.git` | Read-only reference |
-| `ORIGIN_MAIN` | `b270855aabf5afc7639010e921855918cf160b8b` | Dedicated plan branch base |
+| `PLAN_BASE_ORIGIN_MAIN` | `b270855aabf5afc7639010e921855918cf160b8b` | Original dedicated plan branch base |
+| `CURRENT_ORIGIN_MAIN` | `a7d73f7bf0e1061a696516b86246bcffb08eae8b` | Current merged-main authority after History-B PR #151 |
 | `UPSTREAM_MAIN` | `5021faf88093a93091e4de7914fbe0f411499d58` | Rules/source reference only |
-| accepted History-B review head | `995b683d0887f20f1ffebb33199c0c1c4de7cdb8` | Accepted design/implementation basis; not merged in `origin/main` |
-| live History-B branch | `8560a88007486568fcd758e3e4fd2d2f1def0ce0` | WIP only; not used as authority |
-| plan branch | `chris/c0-history-c-semantic-reference-plan` | Dedicated docs-only branch from `origin/main` |
+| `HISTORY_B_IMPLEMENTATION_HEAD` | `86d3c065a6dacd9c12e5959a8cf055f84d522062` | Final History-B implementation head contained in current `origin/main` |
+| `HISTORY_B_MERGE_SHA` | `a7d73f7bf0e1061a696516b86246bcffb08eae8b` | Merge of History-B into current `origin/main` |
+| historical accepted History-B review head | `995b683d0887f20f1ffebb33199c0c1c4de7cdb8` | Pre-merge audit reference only |
+| historical live History-B branch head | `8560a88007486568fcd758e3e4fd2d2f1def0ce0` | Pre-merge lineage reference only |
+| plan branch | `chris/c0-history-c-semantic-reference-plan` | Docs-only revalidation branch containing current-main merge |
 
-The accepted History-B head is not an ancestor of the current `origin/main`; the plan therefore reads it explicitly with `git show` and never merges or cherry-picks it. The live History-B branch is eleven graph commits ahead of the accepted head, comprising six non-merge patch commits plus five merge commits, and contains the following relevant WIP delta:
+History-B is now final and merged: `HISTORY_B_IMPLEMENTATION_HEAD=86d3c065...` and `HISTORY_B_MERGE_SHA=a7d73f7...` are both ancestors of current `origin/main`. The earlier `995b683d...` and `8560a880...` values remain historical audit refs only. The formerly WIP reveal-preservation change is now accepted current-main authority:
 
-- `ZoneTransitionService.ZoneEntryOptions.reestablishRevealToPlayerIds` can re-establish an already authorized reveal audience on a new object;
+- `ZoneTransitionService.ZoneEntryOptions.reestablishRevealToPlayerIds` re-establishes an already authorized reveal audience on a new object;
 - `MoveCollectionExecutor` supplies that existing audience across collection moves;
-- the History-B document records the changed continuity behavior;
-- the remaining live-branch commits are unrelated run-diagnostics WIP.
+- the History-B document records the accepted continuity behavior and the `Expensive Taste` regression;
+- generic hidden-zone continuity remains restricted to producer-authorized evidence and is not inferred from ownership, names, or raw IDs.
 
-This delta is classified as `WIP_DEPENDENCY_CANDIDATE`. It may improve the evidence available to History-C if separately accepted, but no rule below relies on it.
+This behavior is classified as `ACCEPTED_HISTORY_B_AUTHORITY`; no plan rule treats it as a generic cross-zone identity relation.
 
 ### Repository authorities audited
 
@@ -90,7 +93,7 @@ The current `origin/main` History-A and observation sources are:
 | `gym/src/main/kotlin/com/wingedsheep/gym/GameEnvironment.kt` | Strict commit token production, raw event accumulation, fork/restore clearing, and no token for legacy simulation. |
 | `gym/src/main/kotlin/com/wingedsheep/gym/GameGymEnv.kt` | Strict Gym seam, fork capture disablement, reset/restore source clear, and current observation cache. |
 | `rules-engine/src/main/kotlin/com/wingedsheep/engine/view/Visibility.kt` | Current zone visibility, object addressability, and identity visibility authority. |
-| accepted History-B at `995b683d...` | Rules-owned immutable known-information facts, epochs, object-incarnation invalidation, search/reorder/shuffle semantics, and snapshot participation. |
+| History-B at `86d3c065...`, merged by `a7d73f7...` | Current-main Rules-owned immutable known-information facts, epochs, object-incarnation invalidation, search/reorder/shuffle semantics, producer-authorized reveal preservation, and snapshot participation. |
 
 ### Official Rules authority
 
@@ -151,9 +154,9 @@ It does not provide:
 
 The current event-family inventory must remain the source of scope. Families presently marked `REQUIRES_SEMANTIC_REFERENCE_C` or `REQUIRES_BOTH_B_AND_C` may become History-C candidates only when their reference slots have an authoritative producer order and event-time witnesses. `UNCHARACTERIZED` events remain unsupported; History-C must not silently upgrade them.
 
-### Accepted History-B
+### Current merged History-B
 
-At `995b683d0887f20f1ffebb33199c0c1c4de7cdb8`, History-B provides a Rules-owned immutable `KnownInformationLedgerComponentV1` attached to each player. It contains active facts, not an append-only history log:
+At implementation head `86d3c065a6dacd9c12e5959a8cf055f84d522062`, merged into current `origin/main` by `a7d73f7bf0e1061a696516b86246bcffb08eae8b`, History-B provides a Rules-owned immutable `KnownInformationLedgerComponentV1` attached to each player. It contains active facts, not an append-only history log:
 
 ```text
 KnownInformationFactV1(
@@ -175,7 +178,7 @@ The accepted ledger supplies:
 - immutable `GameState` copy semantics, fork isolation, state serialization, and Gym snapshot/restore for the ledger component;
 - no learner-facing `EntityId`, `objectIdentityStamp`, library index, or semantic alias.
 
-History-C may query the ledger for evidence. It must not duplicate reveal, look, search, shuffle, reorder, same-name, face-down, or continuous-visibility rules. If a required evidence question cannot be answered by accepted History-B plus current `Visibility`, the result is `BLOCKED_ON_AUTHORITATIVE_METADATA` and the reference is not emitted.
+History-C may query the merged current-main ledger for evidence. It must not duplicate reveal, look, search, shuffle, reorder, same-name, face-down, or continuous-visibility rules. The accepted producer-authorized reveal-preservation path may carry an existing `RevealedToComponent.playerIds` audience onto the new incarnation; it does not infer a new viewer. If a required evidence question cannot be answered by current History-B plus `Visibility`, the result is `BLOCKED_ON_AUTHORITATIVE_METADATA` and the reference is not emitted.
 
 ## 4. Identity taxonomy
 
@@ -207,7 +210,7 @@ Referenceability is evaluated in this order:
 
 1. **Committed-source eligibility:** the candidate originates from one successful strict committed transition and has an event-time before/after witness. A current snapshot scan, fork, search state, debug reveal, legacy AI rollout, or arbitrary `GameState` is not eligible.
 2. **Object addressability:** use the existing `Visibility.isEntityReferenceAddressableTo` policy for the exact event-time state. This is weaker than identity visibility and permits an opaque public face-down permanent or stack object.
-3. **Identity disclosure:** use `Visibility.isEntityIdentityVisibleTo` and the accepted History-B facts for the exact current witness. Printed identity is an optional disclosure on a reference, not a prerequisite for an opaque object alias.
+3. **Identity disclosure:** use `Visibility.isEntityIdentityVisibleTo` and the merged History-B facts for the exact current witness. Printed identity is an optional disclosure on a reference, not a prerequisite for an opaque object alias.
 4. **Continuity:** for a hidden-zone object, require a current History-B fact combination that binds the same witness and has not been invalidated. Do not use a card name, current zone alone, or raw `EntityId` to recover continuity.
 5. **Reference-slot ordering:** allocate only after the candidate has a perspective-visible semantic slot and a stable public order. Unresolved symmetry is fail-closed.
 
@@ -219,7 +222,7 @@ Referenceability is evaluated in this order:
 | Printed identity reference | Current `Visibility.isEntityIdentityVisibleTo` or an active History-B `IDENTITY` fact for the same current stamp, with any required current-zone/continuity evidence. | `cardDefinitionId` in hidden full state, a prior identity fact on an old stamp, or a same-name match. |
 | Zone membership reference | Public current zone through event-time `Visibility`, or History-B `ZONE_MEMBERSHIP` for the current witness. | Hidden zone size, final-state reconstruction, or inferred owner/library membership. |
 | Position/order reference | History-B `POSITION_OR_ORDER` for the exact current library stamp and an authoritative order-producing event. | Identity reveal without position, a library list read from full state, a search result without order, or collection iteration. |
-| Continued hidden-zone reference | History-B `IDENTITY` plus `ZONE_MEMBERSHIP` on the current stamp, with continuity preserved by the authoritative producer; use the WIP reveal-preservation behavior only if separately accepted. | Old-stamp facts, a same-name card in hand, a known definition without current continuity, or `EntityId` equality across a zone change. |
+| Continued hidden-zone reference | History-B `IDENTITY` plus `ZONE_MEMBERSHIP` on the current stamp, with continuity preserved by the authoritative producer; the merged producer-authorized reveal-preservation path is supported for its exact move. | Old-stamp facts, a same-name card in hand, a known definition without current continuity, or `EntityId` equality across a zone change. |
 
 ### Public current objects
 
@@ -295,7 +298,7 @@ The History-C input allowlist is:
 - the committed History-A event ordinal and typed reference slot;
 - the event producer's semantically authoritative public order;
 - event-time `Visibility` decisions for the perspective;
-- accepted History-B evidence for the exact witness and epoch;
+- merged History-B evidence for the exact witness and epoch;
 - public semantic descriptors needed to distinguish candidates;
 - an explicit Rules-approved cross-incarnation relation witness.
 
@@ -377,7 +380,7 @@ If the Rules producer supplies a legal distinction, it is used before this polic
 | Two identical creature tokens enter simultaneously | Explicit public entry/order position or a public event slot that players can distinguish | No per-token aliases; reference-bearing event fails closed |
 | Two same-name cards revealed together | Producer-supplied ordered reveal/selection slot, if the effect makes that order meaningful | No distinct card aliases |
 | Multiple face-down permanents | CR 708.6-required physical distinction represented by accepted producer order/slot | Opaque aliases are not allocated per object |
-| Same-definition cards in a known ordered library segment | Accepted History-B position/order fact | No per-card order/reference alias |
+| Same-definition cards in a known ordered library segment | Merged History-B position/order fact | No per-card order/reference alias |
 | Identical visible features with different public controllers/roles | Controller/role is a semantic distinction | If roles also tie, fail closed |
 
 This policy prefers a safe unsupported result over an alias byte that changes with runtime allocation.
@@ -436,7 +439,7 @@ A relation may be emitted only when all of these hold:
 - History-B/`Visibility` proves any hidden-zone identity or continuity needed by P;
 - the relation is ordered and canonicalized without a runtime-ID tie-break.
 
-Current accepted History-A and History-B supply before/after states, `ZoneChangeEvent`, stamps, visibility, and facts, but they do not provide a complete explicit relation-kind/audience witness for every event family. Therefore:
+Current History-A and merged History-B supply before/after states, `ZoneChangeEvent`, stamps, visibility, and facts, but they do not provide a complete explicit relation-kind/audience witness for every event family. Therefore:
 
 ```text
 MISSING_RELATION_AUTHORITY -> NO_LINK
@@ -458,11 +461,11 @@ Examples:
 | Situation | Alias | Printed identity | Required authority |
 | --- | --- | --- | --- |
 | Face-down battlefield permanent visible to P | Allocate opaque alias if addressable. | Absent unless `Visibility.isEntityIdentityVisibleTo` or History-B authorizes it. | History-A event-time state plus `Visibility`; B only for acquired/retained identity. |
-| Controller/authorized player looks at the same face-down permanent | Reuse the same alias for the unchanged stamp. | Add only to the later reference occurrence. | Current `Visibility` look permission and accepted B identity fact. |
+| Controller/authorized player looks at the same face-down permanent | Reuse the same alias for the unchanged stamp. | Add only to the later reference occurrence. | Current `Visibility` look permission and merged B identity fact. |
 | Opponent's ordinary hidden hand | No individual alias. | No identity. | Hand count is not referenceability; CR 402.3 and `Visibility`. |
 | Individually known hidden hand card | Alias may remain only while B proves current identity and continuity. | Present only for the authorized perspective. | B `IDENTITY` + `ZONE_MEMBERSHIP`, current reveal permission, and same stamp. |
 | Same-name card played from a known/revealed hand | Retire ambiguous hand aliases selected by History-B; do not bind a remaining copy by name. | Do not preserve identity on an unidentifiable remaining card. | `RevealedInHandTracker` plus B invalidation. |
-| Face-down exile | Alias only for a perspective authorized to address/know it; no opponent alias from existence alone. | Absent unless explicit permission/reveal. | `Visibility` plus B continuity; no generic owner inference beyond the existing authority. |
+| Face-down exile | Alias only for a perspective authorized to address/know it; no opponent alias from existence alone. | Absent unless explicit permission/reveal. | `Visibility` plus B continuity; the accepted producer-authorized reveal audience may be re-established on the new incarnation for exact library-look paths such as `Expensive Taste`; no generic owner inference. |
 | Library card | No alias for arbitrary hidden membership. | No identity. | Only explicit top/reveal/look/search facts; B position/order for order references. |
 | Public face-up exile/graveyard/stack | Alias may be allocated on a committed reference. | Identity is public unless the object is specifically face down. | Event-time `Visibility` and current stamp. |
 | Future reveal of an earlier opaque alias | Reuse same alias if stamp is unchanged. | Add identity only to the later occurrence. | Public reveal or authorized look plus B/current visibility. |
@@ -602,18 +605,20 @@ Legend:
 - `P-CONDITIONAL` means true only when the listed perspective-specific authority exists.
 - `NEW` means a new alias is required for the new CR 400.7 object.
 - `NO-LINK` means the default when explicit relation evidence is absent.
-- `BLOCKED` means the current accepted A+B metadata does not yet prove the required semantic; no heuristic is permitted.
+- `SUPPORTED_EXACT` means merged History-B plus the named producer proves the exact continuity path; it does not generalize to arbitrary hidden-zone movement.
+- `BLOCKED` means current A+B metadata does not prove the required generic semantic; no heuristic is permitted.
 
 | Movement | OLD_INCARNATION_REFERENCEABLE? | NEW_INCARNATION_REFERENCEABLE? | NEW_ALIAS_REQUIRED? | CROSS_INCARNATION_LINK_ALLOWED? | KNOWS_IDENTITY_BEFORE? | KNOWS_IDENTITY_AFTER? | HISTORY_B_EVIDENCE_REQUIRED | CURRENT_METADATA_SUFFICIENT? |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | battlefield -> graveyard | YES for public face-up; opaque face-down object if addressable | YES for a public face-up destination; face-down departure must obey CR 708.9 | NEW | Only with committed Rules relation evidence; otherwise `NO-LINK` | `Visibility` before, identity conditional for face-down | YES for ordinary public card; face-down exit requires authoritative reveal | B only for hidden/face-down identity or continuity | YES face-up; `BLOCKED` for a missing face-down-exit reveal witness |
-| graveyard -> hand | YES for public graveyard object | YES for owner; P-CONDITIONAL for other players when public return/reveal knowledge survives | NEW | P-CONDITIONAL with old/new evidence; otherwise `NO-LINK` | YES for ordinary public graveyard | Owner YES; other P only with B/current reveal authority | B `IDENTITY` + `ZONE_MEMBERSHIP` for non-owner hidden continuity | YES for ordinary public return; WIP reveal-preservation is not accepted authority |
+| graveyard -> hand | YES for public graveyard object | YES for owner; P-CONDITIONAL for other players when public return/reveal knowledge survives | NEW | P-CONDITIONAL with old/new evidence; otherwise `NO-LINK` | YES for ordinary public graveyard | Owner YES; other P only with B/current reveal authority | B `IDENTITY` + `ZONE_MEMBERSHIP` for non-owner hidden continuity | YES for ordinary public return; accepted producer-authorized reveal preservation applies only to exact supported move paths |
 | hand -> battlefield | Owner YES; opponent P-CONDITIONAL for revealed/visible hand | YES, including opaque face-down permanent | NEW | Only if old hand reference and cast/move relation are both authorized; otherwise `NO-LINK` | Owner YES; opponent only if hand known | Face-up YES; face-down identity P-CONDITIONAL | B hand identity/continuity when old hidden card is referenced | YES for public destination aliases; relation is `BLOCKED` without relation evidence |
 | library -> hand | P-CONDITIONAL only for known/revealed/top/looked card | Owner YES; other P-CONDITIONAL on reveal | NEW | Only if old position/identity continuity and producer relation exist; ordinary draw has `NO-LINK` for opponents | Only with B identity/order or explicit top knowledge | Owner YES; other P only if public/revealed | B `IDENTITY` + `ZONE_MEMBERSHIP`; `POSITION_OR_ORDER` when old position is referenced | P-CONDITIONAL; ordinary opponent draw link is not sufficient |
+| library-look -> hidden destination (producer-authorized, including face-down exile) | P-CONDITIONAL for the looked-at card | P-CONDITIONAL only for the same producer-authorized reveal audience on the new incarnation | NEW | `NO-LINK` by default; a relation still requires separate Rules relation evidence | The looking perspective knows identity before | The existing authorized audience retains identity knowledge after; no new viewer is added | B `IDENTITY` + `ZONE_MEMBERSHIP` plus producer-supplied existing `RevealedToComponent.playerIds` | `SUPPORTED_EXACT` for the merged producer path; generic hidden-zone continuity remains conditional |
 | hand -> library | Owner/P-CONDITIONAL for a known card | P-CONDITIONAL; a library object is not generally addressable | NEW when a reference is required | Only for explicit producer-owned order relation; otherwise `NO-LINK` | P-CONDITIONAL | Only with explicit order/reveal/visibility authority | B membership plus `POSITION_OR_ORDER` for position references | `BLOCKED` for generic hidden placement; explicit reorder path is sufficient for its authorized perspective |
 | library -> graveyard | P-CONDITIONAL for known top/ordered/revealed card | YES for ordinary public graveyard destination | NEW | Only with old knowledge plus committed relation evidence; otherwise `NO-LINK` | B/top visibility or explicit reveal | YES ordinary public identity | B old identity/order when a prior reference is made | YES for public destination; old-to-new relation conditional |
 | face-up exile -> battlefield | YES public face-up | YES public face-up; opaque if face-down entry | NEW | Allowed only with event/effect relation evidence; otherwise `NO-LINK` | YES | Face-up YES; face-down P-CONDITIONAL | B only if an endpoint is hidden/face down | YES for aliases; relation conditional |
-| face-down exile -> battlefield | P-CONDITIONAL; no opponent alias from existence alone | YES as opaque battlefield object; identity P-CONDITIONAL | NEW | Only if P knew/ could reference old object and Rules relation evidence exists | Owner/authorized P-CONDITIONAL | Opaque for all; identity only where `Visibility` allows | B current identity/continuity for the old hidden object | `BLOCKED` for generic owner inference; conditional with explicit permission |
+| face-down exile -> battlefield | P-CONDITIONAL; no opponent alias from existence alone | YES as opaque battlefield object; identity P-CONDITIONAL | NEW | Only if P knew/ could reference old object and Rules relation evidence exists | Owner/authorized P-CONDITIONAL | Opaque for all; identity only where `Visibility` allows | B current identity/continuity; accepted producer audience when this is the exact supported look-preservation path | `SUPPORTED_EXACT` for producer-authorized continuity; generic owner inference remains `BLOCKED` |
 | blink (battlefield -> exile -> battlefield) | First old object YES/opaque if addressable | Exile and returning battlefield are each new incarnations; each may be addressable | NEW for exile and NEW for return | Each link is independently authorized; never one alias across the blink | Before YES/conditional for identity | Public return identity conditional on face-down mode | B for hidden/face-down endpoints | Aliases YES per endpoint; composite relation `BLOCKED` without producer evidence |
 | bounce / recast | Battlefield old YES; hand and stack endpoints P-CONDITIONAL by perspective | Hand, stack, and permanent each receive new aliases when referenceable | NEW at every incarnation | Separate links only when cast/move evidence and old reference exist | P-dependent | Stack/permanent public identity conditional on face-down casting | B for hidden hand continuity | Aliases YES for public endpoints; relation `BLOCKED` without explicit causal witness |
 | Commander battlefield -> command | YES public/opaque | YES public command object; designation is separate | NEW | Allowed only with committed public transition evidence; otherwise `NO-LINK` | YES unless face-down identity masked | YES for public commander card if identity visible | Usually none beyond public endpoint facts | YES for aliases; commander designation does not create alias reuse |
@@ -750,7 +755,7 @@ History-D is the first future layer allowed to compose History-A event entries, 
 
 ## 23. Future implementation sequencing
 
-The following slices are future work only and all start after the History-B merge/acceptance gate. Each slice follows `RED -> smallest generic implementation -> focused tests -> surrounding regressions -> standalone semantic commit -> exact-SHA independent review`.
+The following slices are future work only. The History-B merge/acceptance gate is now open on current `origin/main`; each slice still requires its own explicit authorization and follows `RED -> smallest generic implementation -> focused tests -> surrounding regressions -> standalone semantic commit -> exact-SHA independent review`.
 
 ### HISTC-A — reference authority and internal witness contract
 
@@ -797,11 +802,11 @@ The following slices are future work only and all start after the History-B merg
 
 **Future steps:**
 
-1. Write REDs for private/public audience isolation, old/new stamp separation, movement matrix aliases, no-link fallback, and explicit relation evidence.
-2. Run the tests against accepted History-B and stop on any missing fact authority; do not use the live WIP branch as a substitute.
-3. Implement the projector using `Visibility`, History-B read access, History-A complete classification, and the immutable registry.
+1. Write REDs for private/public audience isolation, old/new stamp separation, movement matrix aliases, no-link fallback, exact producer-authorized reveal preservation, and explicit relation evidence.
+2. Run the tests against merged History-B `86d3c065...` on current `origin/main` and stop on any missing fact authority; historical `8560a880...` is not a separate dependency.
+3. Implement the projector using `Visibility`, merged current-main History-B read access, History-A complete classification, and the immutable registry.
 4. Add explicit relation evidence only for producer paths that prove the Rules/effect relationship; all other paths return aliases without a link or fail closed when the relation is required.
-5. Run focused History-C, History-A, accepted History-B, and relevant Rules regressions with exact source/head labels.
+5. Run focused History-C, History-A, merged History-B, and relevant Rules regressions with exact source/head labels.
 6. Commit the integration slice separately and stop for independent review.
 
 ### HISTC-D — snapshot, fork, replay, and privacy closure
@@ -822,34 +827,34 @@ The following slices are future work only and all start after the History-B merg
 5. Run surrounding Gym/replay/snapshot regressions and the repository wrapper/native fallback gates separately.
 6. Commit the closure slice separately, record exact local/hosted status, and stop for independent review.
 
-No slice above is authorized by this plan's current state. History-D remains a separate future task after all four C slices have exact-head review and final acceptance.
+No slice above is implemented by this revalidation. HISTC-A is now eligible for separate explicit production authorization; HISTC-B/C/D remain gated by their own slice reviews. History-D remains a separate future task after all four C slices have exact-head review and final acceptance.
 
 ## 24. History-B dependency gate
 
-The plan must be revalidated against the exact merged History-B head immediately before HISTC-A begins. The current accepted baseline is `995b683d0887f20f1ffebb33199c0c1c4de7cdb8`; the live `8560a880...` branch is not an authority.
+The current gate is verified against the exact merged History-B authority:
 
-The WIP reveal-preservation candidate may change these C assumptions:
+```text
+C0_HISTORY_B_FINAL_ACCEPTANCE_PASS=YES
+HISTORY_B_MERGED_IN_CURRENT_MAIN=YES
+HISTORY_B_IMPLEMENTATION_HEAD=86d3c065a6dacd9c12e5959a8cf055f84d522062
+HISTORY_B_MERGE_SHA=a7d73f7bf0e1061a696516b86246bcffb08eae8b
+```
 
-- a known hidden card can retain a producer-authorized `RevealedToComponent` audience across a new object stamp;
-- a new hidden-zone incarnation may have stronger current continuity evidence than the accepted head;
-- movement rows for library-look-to-zone transitions may change from `BLOCKED`/conditional to supported for the exact producer path.
-
-If the WIP change is rejected, the plan remains valid because the accepted design already treats the missing continuity as a dependency and never reuses aliases. If it lands, update only the affected assumptions and RED expectations; do not restart the architecture or infer relation authority from the WIP marker.
+Current History-B supports the exact producer-authorized continuity path in which a library-look producer copies existing `RevealedToComponent.playerIds` onto the new incarnation. That authority covers the documented `Expensive Taste`/face-down-exile path without inferring any new viewer. It does not authorize generic arbitrary hidden-zone continuity, alias reuse, or cross-incarnation relation inference.
 
 ## 25. Risks and open authoritative metadata dependencies
 
 The following are explicit open dependencies, not implementation invitations:
 
-1. **Final History-B acceptance/merge:** the ledger is not in current `origin/main`; no C implementation starts before the two-part gate.
-2. **Semantic episode identity provider:** current Gym reset has no C-owned deterministic episode identity. A future caller/provider must supply a nonblank stable ID; wall-clock/UUID allocation is not acceptable for canonical bytes.
-3. **Reference-candidate envelope:** History-A's public batch intentionally omits object references. A future internal envelope must bind each supported event/reference slot to before/after witnesses and producer-order evidence without changing the public A payload.
-4. **Cross-incarnation relation authority:** accepted A+B have stamps and events but no complete typed relation-kind/audience witness. C must receive this authority or emit `NO_LINK`/`BLOCKED_ON_AUTHORITATIVE_METADATA`.
-5. **Unordered/symmetric producer order:** every multi-object event family must state whether its order is semantic and public. Missing rank is a fail-closed condition.
-6. **Face-down movement reveal evidence:** CR 708.9 requires a departing face-down object to be revealed; the future adapter must consume an authoritative event-time audience/identity witness rather than `ZoneChangeEvent.entityName`.
-7. **History-B continuity across producer paths:** accepted B has conservative new-object invalidation; live reveal re-establishment is WIP and cannot be assumed.
-8. **Ability and non-card reference coverage:** existing `abilityKey`/`AbilityIdentity` is reusable where sufficient, but every event family needing an ability, emblem, token, or stack reference needs a typed supported candidate or remains unsupported.
-9. **Commander physical-object history:** CR 903.3 designation and `CommanderPublicStateV1` are public semantic facts, not a physical alias or a History-D binding. Commander movement rows remain subject to ordinary C evidence.
-10. **Snapshot schema:** current `SnapshotCodec` does not store C registry state. The future snapshot version must be explicit and unknown versions must fail closed.
+1. **Semantic episode identity provider:** current Gym reset has no C-owned deterministic episode identity. A future caller/provider must supply a nonblank stable ID; wall-clock/UUID allocation is not acceptable for canonical bytes.
+2. **Reference-candidate envelope:** History-A's public batch intentionally omits object references. A future internal envelope must bind each supported event/reference slot to before/after witnesses and producer-order evidence without changing the public A payload.
+3. **Cross-incarnation relation authority:** current A+B have stamps and events but no complete typed relation-kind/audience witness. C must receive this authority or emit `NO_LINK`/`BLOCKED_ON_AUTHORITATIVE_METADATA`.
+4. **Unordered/symmetric producer order:** every multi-object event family must state whether its order is semantic and public. Missing rank is a fail-closed condition.
+5. **Face-down movement reveal evidence:** CR 708.9 requires a departing face-down object to be revealed; the future adapter must consume an authoritative event-time audience/identity witness rather than `ZoneChangeEvent.entityName`.
+6. **History-B genericity boundary:** exact producer-authorized reveal preservation is supported; arbitrary hidden-zone continuity, alias reuse, and relation inference remain unsupported and must fail closed.
+7. **Ability and non-card reference coverage:** existing `abilityKey`/`AbilityIdentity` is reusable where sufficient, but every event family needing an ability, emblem, token, or stack reference needs a typed supported candidate or remains unsupported.
+8. **Commander physical-object history:** CR 903.3 designation and `CommanderPublicStateV1` are public semantic facts, not a physical alias or a History-D binding. Commander movement rows remain subject to ordinary C evidence.
+9. **Snapshot schema:** current `SnapshotCodec` does not store C registry state. The future snapshot version must be explicit and unknown versions must fail closed.
 
 ## 26. Acceptance criteria
 
@@ -858,19 +863,19 @@ This plan is complete only because it freezes an answer to each required questio
 - **What exactly is one semantic alias identifying?** One authorized Rules object incarnation for one perspective in one semantic episode.
 - **When is an alias created?** After a committed, perspective-referenceable candidate passes event-time authority, ordering, and symmetry checks.
 - **Who owns allocation?** The History-C immutable registry/projector seam, not Rules `GameState`, not observations, not replay fingerprints.
-- **What authority makes an object referenceable?** Committed History-A source plus event-time `Visibility`, with History-B facts for hidden continuity and identity/order.
+- **What authority makes an object referenceable?** Committed History-A source plus event-time `Visibility`, with merged History-B facts for hidden continuity and identity/order.
 - **How is identity knowledge separated from referenceability?** Opaque aliases are allowed; identity is a per-occurrence disclosure upgrade on the same stamp/alias.
 - **When is an alias retired?** New object stamp, lost individual continuity, or terminal token existence; retired aliases are never reused.
-- **Can aliases survive hidden-zone transitions?** Only for the same incarnation (which a normal zone change does not preserve) or when accepted History-B continuity plus a new alias/relation proves the transition; alias reuse is never the mechanism.
+- **Can aliases survive hidden-zone transitions?** Only for the same incarnation (which a normal zone change does not preserve) or when merged History-B continuity plus a new alias/relation proves the transition; the accepted producer-authorized reveal-preservation path supports its exact move without alias reuse.
 - **How are CR 400.7 new objects represented?** New alias per referenceable new stamp, with optional separate relation evidence.
 - **How are legally known cross-zone relationships represented?** Two aliases plus a typed, perspective-authorized relation; never raw ID equality or alias reuse.
 - **How are identical objects handled?** Use a producer/public distinction; otherwise fail closed with no per-object alias.
 - **Why do hidden-only changes not alter visible alias bytes?** Hidden candidates never allocate; the allocator consumes only perspective-visible, ordered semantic candidates and keeps no hidden count/position input.
 - **How do fork/reset/snapshot/restore behave?** Fork is non-authoritative and cannot mutate the parent; reset requires a new deterministic episode ID; snapshot/restore includes the versioned C registry state; unknown snapshot versions fail closed.
 - **How does replay reproduce aliases?** The replay adapter invokes the same pure C transition function with the same seed, explicit episode ID, decisions, perspective, committed event order, and B evidence.
-- **How do History-A and History-B feed History-C?** A supplies committed ordered events/classification and before/after witnesses; B supplies post-transition facts/epochs and continuity/invalidation authority; C validates and allocates.
+- **How do History-A and History-B feed History-C?** A supplies committed ordered events/classification and before/after witnesses; merged B supplies post-transition facts/epochs and continuity/invalidation authority, including exact producer-authorized reveal preservation; C validates and allocates.
 - **What does History-C leave for History-D?** History entries, event-family/window/ordinal binding, sequence construction, Trajectory V1, and all learner/training concerns.
-- **What metadata gaps still block implementation?** Final B merge/acceptance, deterministic episode identity, internal reference-candidate/order envelope, typed relation authority, symmetric-object distinctions, and face-down exit evidence.
+- **What metadata gaps still block implementation?** Deterministic episode identity, internal reference-candidate/order envelope, typed relation authority, symmetric-object distinctions, and face-down exit evidence.
 
 The plan also satisfies the requested scope controls:
 
@@ -879,6 +884,10 @@ PRODUCTION_CODE_CHANGED=0
 TEST_CODE_CHANGED=0
 LOCKED_DECKS_CHANGED=0
 HISTORY_B_CHANGED=0
+HISTORY_B_FINAL_ACCEPTANCE_PASS=YES
+HISTORY_B_MERGED_IN_CURRENT_MAIN=YES
+HISTORY_B_IMPLEMENTATION_HEAD=86d3c065a6dacd9c12e5959a8cf055f84d522062
+HISTORY_B_MERGE_SHA=a7d73f7bf0e1061a696516b86246bcffb08eae8b
 HISTORY_D_IMPLEMENTED=NO
 TRAJECTORY_CHANGED=NO
 OBSERVATION_CHANGED=NO
@@ -887,13 +896,13 @@ RULES_POLICY_CHANGED=NO
 
 ## 27. Plan delivery verification
 
-This plan branch is docs-only and must be delivered as one commit from `ORIGIN_MAIN`:
+This revalidation branch is docs-only and its diff against current `origin/main=a7d73f7...` must contain only the plan document:
 
 ```text
 git diff --check
 git status --short
-git diff ORIGIN_MAIN..HEAD --name-status
-git diff ORIGIN_MAIN..HEAD --stat
+git diff origin/main..HEAD --name-status
+git diff origin/main..HEAD --stat
 ```
 
 Expected scope after the single commit:
