@@ -21,6 +21,13 @@ import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ResolvedAction
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
+import com.wingedsheep.gym.history.HistoryCFailure
+import com.wingedsheep.gym.history.HistoryCFailureCode
+import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeV1
+import com.wingedsheep.gym.history.HistoryCLifecycleStateV1
+import com.wingedsheep.gym.history.HistoryCSnapshotCodecV1
+import com.wingedsheep.gym.history.HistoryCOperationException
+import com.wingedsheep.gym.history.PerspectiveReferenceProjectionResult
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.SnapshotHandle
 import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
@@ -80,6 +87,9 @@ class GameGymEnv(
         cardRegistry = observationBuilder.cardRegistry,
         captureEnabled = committedHistoryEnabled,
     )
+
+    /** Immutable-by-value trusted History-C lifecycle state; null means the path is inactive. */
+    private var historyCLifecycleState: HistoryCLifecycleStateV1? = null
 
     private val actionSerialization = Json {
         encodeDefaults = true
@@ -163,7 +173,10 @@ class GameGymEnv(
             committedHistoryEnabled = false,
             diagnosticsRecorder = null,
         )
-            .also { it.build() }
+            .also {
+                it.historyCLifecycleState = historyCLifecycleState
+                it.build()
+            }
 
     /** Number of successful strict transitions captured by this Gym event source. */
     internal val committedPerspectiveTransitionCount: Int
@@ -185,6 +198,32 @@ class GameGymEnv(
         return committedPerspectiveEventSource.projectLast(perspectivePlayerId)
     }
 
+    /** Project and atomically retain one trusted History-C result for the active episode. */
+    internal fun lastCommittedReferenceProjection(
+        perspectivePlayerId: EntityId,
+        envelope: HistoryCReferenceEnvelopeV1,
+    ): PerspectiveReferenceProjectionResult {
+        val lifecycle = historyCLifecycleState
+            ?: return PerspectiveReferenceProjectionResult.Rejected(
+                HistoryCFailure(HistoryCFailureCode.HISTORY_C_NOT_ENABLED),
+            )
+        val registry = lifecycle.registries[perspectivePlayerId]
+            ?: return PerspectiveReferenceProjectionResult.Rejected(
+                HistoryCFailure(HistoryCFailureCode.PERSPECTIVE_MISMATCH),
+            )
+        val result = committedPerspectiveEventSource.lastCommittedReferenceProjection(
+            semanticEpisodeId = lifecycle.semanticEpisodeId,
+            registry = registry,
+            envelope = envelope,
+        )
+        if (result is PerspectiveReferenceProjectionResult.Accepted) {
+            historyCLifecycleState = lifecycle.withRegistry(result.projection.nextRegistry)
+        }
+        return result
+    }
+
+    internal fun historyCLifecycleState(): HistoryCLifecycleStateV1? = historyCLifecycleState
+
     /** Release optional recorder resources when the owning service disposes this environment. */
     internal fun closeDiagnostics() {
         try {
@@ -200,8 +239,10 @@ class GameGymEnv(
     fun reset(
         gameConfig: GameConfig,
         perspectivePlayerIndex: Int = fallbackPerspectivePlayerIndex,
-        maxSteps: Int? = null
+        maxSteps: Int? = null,
+        semanticEpisodeId: String? = null,
     ): ObservationResult {
+        validateHistoryReset(semanticEpisodeId)
         recordDiagnostics { advanceStage(GymDiagnosticsStageV1.RESETTING) }
         cachedObservation = null
         cachedStepCount = null
@@ -212,6 +253,9 @@ class GameGymEnv(
             "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${environment.playerIds.size} players"
         }
         fallbackPerspectivePlayerIndex = perspectivePlayerIndex
+        historyCLifecycleState = semanticEpisodeId?.let {
+            HistoryCLifecycleStateV1.start(it, environment.playerIds)
+        }
         recordDiagnostics { advanceStage(GymDiagnosticsStageV1.RUNNING) }
         return build()
     }
@@ -254,14 +298,36 @@ class GameGymEnv(
             diagnostics = environment.diagnostics,
             projectionGeneration = environment.projectionGeneration,
             failureClosure = environment.episodeClosure as? EpisodeClosureV1.Failed,
+            historyCContinuation = historyCLifecycleState?.let {
+                HistoryCSnapshotCodecV1.encode(
+                    state = it,
+                    stepCount = environment.stepCount,
+                    projectionGeneration = environment.projectionGeneration,
+                )
+            },
         )
 
     fun restore(codec: SnapshotCodec, handle: SnapshotHandle): ObservationResult {
         val snap = codec.load(handle)
-        cachedObservation = null
-        cachedStepCount = null
-        cachedPerspectivePlayerId = null
-        committedPerspectiveEventSource.clear()
+        val restoredHistory = snap.historyCContinuation?.let { encoded ->
+            when (
+                val decoded = HistoryCSnapshotCodecV1.decode(
+                    encoded = encoded,
+                    expectedPlayerIds = snap.playerIds,
+                    expectedStepCount = snap.stepCount,
+                    expectedProjectionGeneration = snap.projectionGeneration,
+                )
+            ) {
+                is com.wingedsheep.gym.history.HistoryCSnapshotDecodeResult.Accepted -> decoded.state
+                is com.wingedsheep.gym.history.HistoryCSnapshotDecodeResult.Rejected ->
+                    throw HistoryCOperationException(decoded.failure)
+            }
+        }
+        if (historyCLifecycleState != null && restoredHistory == null) {
+            throw HistoryCOperationException(
+                HistoryCFailure(HistoryCFailureCode.HISTORY_C_SNAPSHOT_MISSING),
+            )
+        }
         environment.restore(
             state = snap.state,
             playerIds = snap.playerIds,
@@ -271,7 +337,26 @@ class GameGymEnv(
             projectionGeneration = snap.projectionGeneration,
             failureClosure = snap.failureClosure,
         )
+        cachedObservation = null
+        cachedStepCount = null
+        cachedPerspectivePlayerId = null
+        committedPerspectiveEventSource.clear()
+        historyCLifecycleState = restoredHistory
         return build()
+    }
+
+    private fun validateHistoryReset(semanticEpisodeId: String?) {
+        if (semanticEpisodeId != null && semanticEpisodeId.isBlank()) {
+            throw HistoryCOperationException(
+                HistoryCFailure(HistoryCFailureCode.EPISODE_MISMATCH),
+            )
+        }
+        val current = historyCLifecycleState ?: return
+        if (semanticEpisodeId == null || semanticEpisodeId == current.semanticEpisodeId) {
+            throw HistoryCOperationException(
+                HistoryCFailure(HistoryCFailureCode.HISTORY_C_EPISODE_ALREADY_ACTIVE),
+            )
+        }
     }
 
     // --- internals -----------------------------------------------------------

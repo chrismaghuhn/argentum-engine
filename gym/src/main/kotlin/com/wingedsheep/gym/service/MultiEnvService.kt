@@ -76,7 +76,11 @@ class MultiEnvService(
             },
         )
         try {
-            gymEnv.reset(gameConfig, maxSteps = config.maxSteps)
+            gymEnv.reset(
+                gameConfig,
+                maxSteps = config.maxSteps,
+                semanticEpisodeId = config.semanticEpisodeId,
+            )
         } catch (failure: RuntimeException) {
             gymEnv.closeDiagnostics()
             throw failure
@@ -106,7 +110,8 @@ class MultiEnvService(
         requireGameEnv(envId).reset(
             config.toGameConfig(),
             perspectivePlayerIndex = config.perspectivePlayerIndex,
-            maxSteps = config.maxSteps
+            maxSteps = config.maxSteps,
+            semanticEpisodeId = config.semanticEpisodeId,
         )
 
     /** Drop envs from the registry. Idempotent. */

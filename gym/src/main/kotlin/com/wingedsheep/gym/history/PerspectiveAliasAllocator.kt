@@ -131,6 +131,9 @@ internal object PerspectiveAliasAllocator {
         return null
     }
 
+    internal fun validateRegistryState(registry: PerspectiveAliasRegistryV1): HistoryCFailure? =
+        validateRegistry(registry)
+
     private fun validatePublicDistinctions(
         candidates: List<HistoryCReferenceCandidateV1>,
         proofs: List<HistoryCPublicDistinctionProofV1>,

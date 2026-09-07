@@ -47,6 +47,8 @@ class SnapshotCodec {
         val projectionGeneration: Long = 0L,
         /** Explicit semantic/integrity failure closure, when the source episode has failed. */
         val failureClosure: EpisodeClosureV1.Failed? = null,
+        /** Privileged versioned History-C continuation bytes, absent for ordinary snapshots. */
+        val historyCContinuation: ByteArray? = null,
     )
 
     fun save(
@@ -57,6 +59,7 @@ class SnapshotCodec {
         diagnostics: EpisodeDiagnostics = EpisodeDiagnostics.EMPTY,
         projectionGeneration: Long = 0L,
         failureClosure: EpisodeClosureV1.Failed? = null,
+        historyCContinuation: ByteArray? = null,
     ): SnapshotHandle.Slot {
         val id = nextId.getAndIncrement()
         slots[id] = Entry(
@@ -67,13 +70,17 @@ class SnapshotCodec {
             diagnostics,
             projectionGeneration,
             failureClosure,
+            historyCContinuation?.copyOf(),
         )
         return SnapshotHandle.Slot(id)
     }
 
     fun load(handle: SnapshotHandle): Entry = when (handle) {
-        is SnapshotHandle.Slot -> slots[handle.slotId]
-            ?: throw NoSuchElementException("Snapshot slot ${handle.slotId} not found")
+        is SnapshotHandle.Slot -> {
+            val entry = slots[handle.slotId]
+                ?: throw NoSuchElementException("Snapshot slot ${handle.slotId} not found")
+            entry.copy(historyCContinuation = entry.historyCContinuation?.copyOf())
+        }
     }
 
     fun dispose(handle: SnapshotHandle) {
