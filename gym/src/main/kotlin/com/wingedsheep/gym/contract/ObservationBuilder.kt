@@ -340,7 +340,16 @@ class ObservationBuilder(
             stateDigest = ""
         )
         val digested = obs.copy(stateDigest = StateDigest.compute(obs))
-        return ObservationResult(digested, actionRegistry, diagnostics)
+        return ObservationResult(
+            observation = digested,
+            registry = actionRegistry,
+            diagnostics = diagnostics,
+            commanderPublicState = CommanderPublicStateBuilder.build(
+                state = state,
+                perspectivePlayerId = perspectivePlayerId,
+                observation = digested,
+            ),
+        )
     }
 
     // =========================================================================
@@ -2383,6 +2392,8 @@ data class ObservationResult(
     val registry: ActionRegistry,
     /** Internal non-wire diagnostics; the observation DTO itself remains unchanged. */
     val diagnostics: List<DiagnosticSignal> = emptyList(),
+    /** Additive in-process public Commander context; null for non-game observations. */
+    val commanderPublicState: CommanderPublicStateV1? = null,
 )
 
 private data class ActionDomainMapping(

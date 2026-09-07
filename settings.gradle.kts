@@ -43,6 +43,7 @@ include(":rules-engine")
 include(":mtg-sdk")
 include(":mtg-sets")
 include(":mtg-search")
+include(":run-diagnostics")
 
 // The card corpus, split out of :mtg-sets and nested underneath it. `:mtg-sets` still re-exports
 // all of it, so every existing `project(":mtg-sets")` dependency is unchanged — the split only
