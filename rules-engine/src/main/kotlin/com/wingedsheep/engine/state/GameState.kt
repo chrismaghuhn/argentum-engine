@@ -26,6 +26,7 @@ import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.model.GameRng
 import com.wingedsheep.sdk.scripting.AbilityIdentity
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.Transient
 
 /**
  * Immutable snapshot of the entire game state.
@@ -231,6 +232,14 @@ data class GameState(
      * threading an explicit cause through the zone-move signature.
      */
     val pendingDiscardCauseControllers: Map<EntityId, EntityId> = emptyMap(),
+
+    /**
+     * Internal transition metadata: exact library-order producers have re-established
+     * authoritative position facts for these library owners after membership mutation. This is
+     * consumed by the central known-information post-pass and is deliberately not serialized.
+     */
+    @Transient
+    val pendingLibraryOrderReacquisitionOwners: Set<EntityId> = emptySet(),
 
     /**
      * Players (by entity id) who have committed a crime this turn (CR 700-level Outlaws of Thunder
@@ -473,6 +482,25 @@ data class GameState(
         getZone(ZoneKey(playerId, zoneType))
 
     /**
+     * Advance the CR object incarnation for an object that is reordered without a zone-map move.
+     *
+     * This is intentionally separate from [addToZone]: CR 701.20d makes a revealed library card
+     * a new object when a shuffle/reorder changes its library order. The caller owns the rule path
+     * and must supply the exact affected objects; this helper does not infer them from card names.
+     */
+    fun reincarnateObject(entityId: EntityId): GameState {
+        val stamp = nextObjectIdentityStamp
+        return copy(
+            nextObjectIdentityStamp = stamp + 1L,
+            objectIdentityStamps = objectIdentityStamps + (entityId to stamp),
+        )
+    }
+
+    /** Advance object incarnations in the producer-supplied deterministic order. */
+    fun reincarnateObjects(entityIds: Collection<EntityId>): GameState =
+        entityIds.distinct().fold(this) { state, entityId -> state.reincarnateObject(entityId) }
+
+    /**
      * Add an entity to a zone (returns new state).
      * Automatically strips TappedComponent when moving to a non-battlefield zone,
      * since cards in the graveyard, exile, hand, or library are never tapped.
@@ -482,12 +510,14 @@ data class GameState(
         // Every zone entry creates a new object, including non-battlefield cards. Keeping this
         // stamp at the state boundary prevents resolution from confusing an id that returned to
         // the same graveyard/hand/exile zone with the object that was originally targeted.
-        val stamp = nextObjectIdentityStamp
-        var newState = copy(
-            zones = zones + (key to current + entityId),
-            nextObjectIdentityStamp = stamp + 1,
-            objectIdentityStamps = objectIdentityStamps + (entityId to stamp)
-        )
+        var newState = copy(zones = zones + (key to current + entityId))
+            .reincarnateObject(entityId)
+        if (key.zoneType == Zone.LIBRARY) {
+            newState = newState.copy(
+                pendingLibraryOrderReacquisitionOwners =
+                    newState.pendingLibraryOrderReacquisitionOwners - key.ownerId,
+            )
+        }
         if (key.zoneType != Zone.BATTLEFIELD && key.zoneType != Zone.STACK) {
             val container = newState.getEntity(entityId)
             if (container != null && container.get<TappedComponent>() != null) {
@@ -512,7 +542,15 @@ data class GameState(
      */
     fun removeFromZone(key: ZoneKey, entityId: EntityId): GameState {
         val current = zones[key] ?: return this
-        return copy(zones = zones + (key to current - entityId))
+        val removed = copy(zones = zones + (key to current - entityId))
+        return if (key.zoneType == Zone.LIBRARY) {
+            removed.copy(
+                pendingLibraryOrderReacquisitionOwners =
+                    removed.pendingLibraryOrderReacquisitionOwners - key.ownerId,
+            )
+        } else {
+            removed
+        }
     }
 
     /**
@@ -846,12 +884,7 @@ data class GameState(
         // already-stamped object (for example while a paused resolution keeps it coherent on the
         // stack) must not manufacture a new object identity.
         if (entityId in objectIdentityStamps) return copy(stack = stack + entityId)
-        val stamp = nextObjectIdentityStamp
-        return copy(
-            stack = stack + entityId,
-            nextObjectIdentityStamp = stamp + 1,
-            objectIdentityStamps = objectIdentityStamps + (entityId to stamp)
-        )
+        return copy(stack = stack + entityId).reincarnateObject(entityId)
     }
 
     /**

@@ -9,11 +9,14 @@ import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.ChooserResolution
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+import com.wingedsheep.engine.mechanics.KnownInformationLedger
 import com.wingedsheep.engine.mechanics.mana.ManaSolver
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Subtype
@@ -517,7 +520,17 @@ class SelectFromCollectionExecutor(
             restrictions = effect.restrictions
         )
 
-        val stateWithDecision = state.withPendingDecision(decision)
+        // A hidden collection shown in the typed decision is a legitimate private information
+        // boundary even when the preceding GatherCards used LookAudience.None. Record exactly the
+        // cards exposed in the decision payload; never infer the rest of the source zone.
+        val stateWithKnowledge = KnownInformationLedger.recordCards(
+            state = state,
+            cardIds = allDisplayCards,
+            perspectivePlayerIds = listOf(playerId),
+            audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
+            acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_DECISION_LOOK,
+        )
+        val stateWithDecision = stateWithKnowledge.withPendingDecision(decision)
         val stateWithContinuation = stateWithDecision.pushContinuation(continuation)
 
         return EffectResult.paused(

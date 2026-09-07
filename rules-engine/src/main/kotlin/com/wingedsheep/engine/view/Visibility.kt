@@ -9,6 +9,7 @@ import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
 import com.wingedsheep.engine.state.components.identity.RevealedToComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.ConditionalStaticAbility
@@ -132,6 +133,22 @@ class Visibility(
         viewingPlayerId: EntityId,
         isSpectator: Boolean = false,
     ): Boolean {
+        // The stack is a public zone, but it is stored separately from GameState.zones. Keep its
+        // identity semantics aligned with the zone-backed path: face-up spells are public and a
+        // face-down spell is visible only to an explicitly authorized viewer (normally its caster).
+        if (entityId in state.stack) {
+            val entity = state.getEntity(entityId) ?: return false
+            if (isCardRevealedTo(state, entityId, viewingPlayerId)) return true
+            val spell = entity.get<SpellOnStackComponent>()
+            val isFaceDown = entity.has<FaceDownComponent>() || spell?.castFaceDown == true
+            if (!isFaceDown) return true
+            if (isSpectator) return false
+            val controllerId = spell?.casterId
+                ?: state.projectedState.getController(entityId)
+                ?: entity.get<ControllerComponent>()?.playerId
+            return controllerId == viewingPlayerId
+        }
+
         val (zoneKey, _) = state.zones.entries.firstOrNull { (_, entityIds) -> entityId in entityIds }
             ?: return false
 

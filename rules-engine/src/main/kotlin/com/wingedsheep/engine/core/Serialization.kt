@@ -555,6 +555,7 @@ val engineSerializersModule = SerializersModule {
         subclass(ExhaustAbilitiesActivatedThisTurnComponent::class)
         subclass(WasDealtCombatDamageThisTurnComponent::class)
         subclass(CombatDamageReceivedThisTurnComponent::class)
+        subclass(KnownInformationLedgerComponentV1::class)
         subclass(WasDealtCombatDamageByLegendaryCreatureThisTurnComponent::class)
         subclass(AdditionalPhasesComponent::class)
         subclass(InAdditionalCombatPhaseComponent::class)

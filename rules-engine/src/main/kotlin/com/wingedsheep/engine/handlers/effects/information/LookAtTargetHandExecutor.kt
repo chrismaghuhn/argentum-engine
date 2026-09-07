@@ -4,8 +4,10 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
 import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.RevealedToComponent
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import com.wingedsheep.sdk.scripting.effects.LookAtTargetHandEffect
 import kotlin.reflect.KClass
 
@@ -42,18 +44,15 @@ class LookAtTargetHandExecutor : EffectExecutor<LookAtTargetHandEffect> {
             )
         }
 
-        // Mark each card as revealed to the viewing player
-        var newState = state
-        for (cardId in handCards) {
-            newState = newState.updateEntity(cardId) { container ->
-                val existing = container.get<RevealedToComponent>()
-                if (existing != null) {
-                    container.with(existing.withPlayer(viewingPlayerId))
-                } else {
-                    container.with(RevealedToComponent.to(viewingPlayerId))
-                }
-            }
-        }
+        // Mark each card as revealed to the viewing player through the shared visibility/knowledge
+        // seam. The event audience, not UI text, controls the private scope.
+        val newState = LibraryRevealUtils.markRevealed(
+            state = state,
+            cardIds = handCards,
+            playerIds = listOf(viewingPlayerId),
+            audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
+            acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_HAND_LOOK,
+        )
 
         return EffectResult.success(
             newState,

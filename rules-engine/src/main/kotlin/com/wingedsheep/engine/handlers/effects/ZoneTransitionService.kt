@@ -94,6 +94,12 @@ data class ZoneEntryOptions(
     val faceDownExile: Boolean = false,
     val lastKnownAttachedTo: EntityId? = null,
     /**
+     * Existing, producer-authorized identity viewers to re-establish on the new object after a
+     * zone change. This never infers visibility; callers must copy only an already authoritative
+     * [com.wingedsheep.engine.state.components.identity.RevealedToComponent] audience.
+     */
+    val reestablishRevealToPlayerIds: Set<EntityId> = emptySet(),
+    /**
      * True when this move is the exile of a material chosen to pay a Craft cost (CR 702.167).
      * Stamped onto the emitted [ZoneChangeEvent.craftMaterial] so a SELF "exiled while activating
      * a craft ability" trigger (Market Gnome) can distinguish it from any other exile. Set only by
@@ -639,6 +645,12 @@ object ZoneTransitionService {
             newState = newState.removeMayPlayPermissionsForCard(entityId)
         }
 
+        // A zone change creates a new object (CR 400.7). Any per-object reveal permission belongs
+        // to the old incarnation and must not silently follow it into a hidden destination. Public
+        // reveal/return producers re-establish current knowledge after this atom when the Rules
+        // effect actually authorizes it.
+        newState = newState.updateEntity(entityId) { c -> c.without<RevealedToComponent>() }
+
         // Drop any remaining linked-exile reference held by a granter still on the
         // battlefield (e.g. Maralen, Fae Ascendant). The card has just left exile by
         // some non-cast path — return, blink, exile-elsewhere — so the granter must
@@ -796,6 +808,18 @@ object ZoneTransitionService {
             else -> {
                 // HAND, GRAVEYARD, STACK — simple addToZone
                 newState = newState.addToZone(destZoneKey, entityId)
+            }
+        }
+
+        // CR 400.7 creates a new object, so the old per-object reveal marker was cleared above.
+        // A producer may explicitly carry an already-authorized audience across this transition;
+        // no new viewer is inferred here.
+        if (options.reestablishRevealToPlayerIds.isNotEmpty()) {
+            newState = newState.updateEntity(entityId) { c ->
+                val existing = c.get<RevealedToComponent>()?.playerIds.orEmpty()
+                c.with(
+                    RevealedToComponent(existing + options.reestablishRevealToPlayerIds)
+                )
             }
         }
 
@@ -1418,22 +1442,27 @@ object ZoneTransitionService {
         libraryZoneKey: ZoneKey,
         placement: LibraryPlacement
     ): GameState {
-        val currentLibrary = state.getZone(libraryZoneKey)
+        // Library entry is a real CR 400.7 zone entry too. Stamp before choosing the insertion
+        // position; the old implementation only rewrote `zones`, which left a hand/graveyard/
+        // stack incarnation indistinguishable from the new library object.
+        val stampedState = state.addToZone(libraryZoneKey, entityId)
+        val currentLibrary = stampedState.getZone(libraryZoneKey)
+            .filterNot { it == entityId }
         return when (placement) {
             LibraryPlacement.Top -> {
-                state.copy(zones = state.zones + (libraryZoneKey to listOf(entityId) + currentLibrary))
+                stampedState.copy(zones = stampedState.zones + (libraryZoneKey to listOf(entityId) + currentLibrary))
             }
             LibraryPlacement.Bottom -> {
-                state.copy(zones = state.zones + (libraryZoneKey to currentLibrary + entityId))
+                stampedState.copy(zones = stampedState.zones + (libraryZoneKey to currentLibrary + entityId))
             }
             LibraryPlacement.Shuffled -> {
-                val (newLibrary, shuffledState) = state.nextRandom { shuffle(currentLibrary + entityId) }
+                val (newLibrary, shuffledState) = stampedState.nextRandom { shuffle(currentLibrary + entityId) }
                 shuffledState.copy(zones = shuffledState.zones + (libraryZoneKey to newLibrary))
             }
             is LibraryPlacement.NthFromTop -> {
                 val insertIndex = placement.position.coerceAtMost(currentLibrary.size)
                 val newLibrary = currentLibrary.toMutableList().apply { add(insertIndex, entityId) }
-                state.copy(zones = state.zones + (libraryZoneKey to newLibrary))
+                stampedState.copy(zones = stampedState.zones + (libraryZoneKey to newLibrary))
             }
         }
     }

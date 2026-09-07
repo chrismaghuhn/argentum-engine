@@ -4,9 +4,11 @@ import com.wingedsheep.engine.core.EffectResult
 import com.wingedsheep.engine.core.LookedAtCardsEvent
 import com.wingedsheep.engine.handlers.EffectContext
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
+import com.wingedsheep.engine.handlers.effects.library.LibraryRevealUtils
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.components.identity.FaceDownComponent
-import com.wingedsheep.engine.state.components.identity.RevealedToComponent
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
 import com.wingedsheep.sdk.scripting.effects.FaceDownLookScope
 import com.wingedsheep.sdk.scripting.effects.LookAtFaceDownEffect
 import kotlin.reflect.KClass
@@ -44,14 +46,13 @@ class LookAtFaceDownExecutor : EffectExecutor<LookAtFaceDownEffect> {
         val targetId = context.resolveTarget(effect.target)
             ?: return EffectResult.error(state, "No valid target for look at face-down creature")
 
-        val newState = state.updateEntity(targetId) { container ->
-            val existing = container.get<RevealedToComponent>()
-            if (existing != null) {
-                container.with(existing.withPlayer(viewingPlayerId))
-            } else {
-                container.with(RevealedToComponent.to(viewingPlayerId))
-            }
-        }
+        val newState = LibraryRevealUtils.markRevealed(
+            state = state,
+            cardIds = listOf(targetId),
+            playerIds = listOf(viewingPlayerId),
+            audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
+            acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_CARD_LOOK,
+        )
 
         return EffectResult.success(
             newState,
@@ -78,17 +79,13 @@ class LookAtFaceDownExecutor : EffectExecutor<LookAtFaceDownEffect> {
             return EffectResult.success(state)
         }
 
-        var newState = state
-        for (creatureId in faceDownCreatures) {
-            newState = newState.updateEntity(creatureId) { container ->
-                val existing = container.get<RevealedToComponent>()
-                if (existing != null) {
-                    container.with(existing.withPlayer(viewingPlayerId))
-                } else {
-                    container.with(RevealedToComponent.to(viewingPlayerId))
-                }
-            }
-        }
+        val newState = LibraryRevealUtils.markRevealed(
+            state = state,
+            cardIds = faceDownCreatures,
+            playerIds = listOf(viewingPlayerId),
+            audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
+            acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_CARD_LOOK,
+        )
 
         return EffectResult.success(
             newState,
