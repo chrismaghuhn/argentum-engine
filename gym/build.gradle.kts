@@ -83,6 +83,9 @@ dependencies {
     implementation(project(":rules-engine"))
     implementation(project(":mtg-sdk"))
     implementation(project(":ai"))
+    // Optional operational diagnostics callbacks; the nullable seam keeps the workload path
+    // free of status serialization and filesystem publication when diagnostics are disabled.
+    api(project(":run-diagnostics"))
 
     implementation(libs.bundles.kotlinxEcosystem)
     // :ai's deck generation (SealedDeckGenerator → Draftsim autobuilder) logs via slf4j. We don't

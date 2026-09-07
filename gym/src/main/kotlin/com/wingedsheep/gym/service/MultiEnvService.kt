@@ -14,6 +14,7 @@ import com.wingedsheep.gym.contract.ObservationResult
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.deckbuild.DeckbuildEnvironment
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
 import com.wingedsheep.sdk.model.EntityId
 import java.util.concurrent.Callable
 import java.util.concurrent.ConcurrentHashMap
@@ -44,7 +45,9 @@ class MultiEnvService(
     val cardRegistry: CardRegistry,
     boosterGenerator: BoosterGenerator? = null,
     val workerPool: EnvWorkerPool = EnvWorkerPool(),
-    val snapshotCodec: SnapshotCodec = SnapshotCodec()
+    val snapshotCodec: SnapshotCodec = SnapshotCodec(),
+    /** Creates one recorder owned by each game environment; null keeps the hot path disabled. */
+    private val diagnosticsRecorderFactory: ((EnvId) -> DiagnosticsRecorder?)? = null,
 ) {
     private val envs = ConcurrentHashMap<EnvId, GymEnv>()
     val deckResolver: DeckResolver = DeckResolver(cardRegistry, boosterGenerator)
@@ -63,13 +66,21 @@ class MultiEnvService(
             cardRegistry,
             executionMode = GameEnvironmentMode.TRUSTED,
         )
-        env.reset(gameConfig, maxSteps = config.maxSteps)
+        val envId = EnvId.generate()
         val gymEnv = GameGymEnv(
             environment = env,
             perspectivePlayerIndex = config.perspectivePlayerIndex,
-            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry)
+            observationBuilder = ObservationBuilder(cardRegistry = cardRegistry),
+            diagnosticsRecorder = diagnosticsRecorderFactory?.let { factory ->
+                runCatching { factory(envId) }.getOrNull()
+            },
         )
-        val envId = EnvId.generate()
+        try {
+            gymEnv.reset(gameConfig, maxSteps = config.maxSteps)
+        } catch (failure: RuntimeException) {
+            gymEnv.closeDiagnostics()
+            throw failure
+        }
         envs[envId] = gymEnv
         return CreatedEnv(envId, gymEnv.observe())
     }
@@ -100,7 +111,9 @@ class MultiEnvService(
 
     /** Drop envs from the registry. Idempotent. */
     fun dispose(envIds: Collection<EnvId>) {
-        envIds.forEach { envs.remove(it) }
+        envIds.forEach { envId ->
+            (envs.remove(envId) as? GameGymEnv)?.closeDiagnostics()
+        }
     }
 
     fun listEnvs(): Set<EnvId> = envs.keys.toSet()

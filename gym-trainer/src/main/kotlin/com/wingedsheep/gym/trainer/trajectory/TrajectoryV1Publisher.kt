@@ -1,6 +1,7 @@
 package com.wingedsheep.gym.trainer.trajectory
 
 import com.wingedsheep.gym.contract.A3SemanticJson
+import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
 import java.io.BufferedInputStream
 import java.nio.charset.StandardCharsets
 import java.nio.ByteBuffer
@@ -522,6 +523,7 @@ class TrajectoryV1Writer(
     metadata: DatasetMetadataV1,
     atomicMove: (Path, Path) -> Unit = ::moveAtomically,
     quarantine: TrajectoryV1Quarantine? = null,
+    private val diagnosticsRecorder: DiagnosticsRecorder? = null,
 ) : AutoCloseable {
     private val publisher = TrajectoryV1Publisher(
         outputDirectory = outputDirectory,
@@ -535,21 +537,52 @@ class TrajectoryV1Writer(
         trajectory: TrajectoryV1,
         replayTrajectoryBinding: com.wingedsheep.gym.contract.ReplayTrajectoryBindingV1,
     ): TrajectoryAdmissionResult {
+        recordDiagnostics { advanceStage(TrajectoryDiagnosticsStageV1.ADMITTING) }
         val admission = TrajectoryV1Admission.admit(
             trajectory = trajectory,
             binding = replayTrajectoryBinding,
             episodeOrdinal = episodeOrdinal,
         )
         return when (admission) {
-            is TrajectoryAdmissionResult.Admitted ->
-                publisher.appendFinalizedEpisode(admission.episode)
+            is TrajectoryAdmissionResult.Admitted -> {
+                val result = publisher.appendFinalizedEpisode(admission.episode)
+                if (result is TrajectoryAdmissionResult.Admitted) {
+                    recordDiagnostics {
+                        recordUsefulProgress(
+                            trajectoryDecisionDelta = admission.episode.decisionCount.toLong(),
+                            episodesAdmittedDelta = 1L,
+                        )
+                    }
+                }
+                result
+            }
 
             is TrajectoryAdmissionResult.Quarantined ->
                 publisher.recordQuarantined(episodeOrdinal, admission.metadata)
         }
     }
 
-    fun finalizeDataset(): DatasetManifestV1 = publisher.finalizeDataset()
+    fun finalizeDataset(): DatasetManifestV1 {
+        recordDiagnostics { advanceStage(TrajectoryDiagnosticsStageV1.FINALIZING) }
+        val manifest = publisher.finalizeDataset()
+        recordDiagnostics {
+            recordUsefulProgress(shardsFinalizedDelta = manifest.shards.size.toLong())
+        }
+        recordDiagnostics {
+            advanceStage(TrajectoryDiagnosticsStageV1.PUBLISHED)
+        }
+        return manifest
+    }
 
     override fun close() = publisher.close()
+
+    /** Diagnostics callbacks are best-effort and cannot change A5/A6/storage results. */
+    private inline fun recordDiagnostics(block: DiagnosticsRecorder.() -> Unit) {
+        val recorder = diagnosticsRecorder ?: return
+        try {
+            recorder.block()
+        } catch (_: Exception) {
+            // Diagnostics failures must not reject, quarantine, or alter a trajectory operation.
+        }
+    }
 }

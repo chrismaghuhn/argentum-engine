@@ -15,6 +15,8 @@ import com.wingedsheep.gym.contract.ReplayChosenInputBindingV1
 import com.wingedsheep.gym.contract.VerifiedReplayFrame
 import com.wingedsheep.gym.contract.VerifiedReplayVerification
 import com.wingedsheep.gym.contract.ReplayFidelity as VerifiedReplayFidelity
+import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
+import com.wingedsheep.rundiagnostics.MonotonicClock
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.core.AttackMode
@@ -28,7 +30,10 @@ import io.kotest.matchers.string.shouldNotContain
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
+import java.time.Clock
 import java.time.Instant
+import java.time.ZoneOffset
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * RED characterization for the A4 public replay cursor.
@@ -149,13 +154,17 @@ class ReplayTrajectoryVerificationTest : ScenarioTestBase() {
         )
     }
 
-    private fun source(replay: CompactReplay): GymReplayFrameSource = GymReplayFrameSource(
+    private fun source(
+        replay: CompactReplay,
+        diagnosticsRecorder: DiagnosticsRecorder? = null,
+    ): GymReplayFrameSource = GymReplayFrameSource(
         replay = replay,
         cardRegistry = cardRegistry,
         tailClosure = EpisodeClosureV1.Interrupted(
             stepCount = replay.actions.size,
             reason = com.wingedsheep.gym.EpisodeInterruptionReason.HORIZON_REACHED,
         ),
+        diagnosticsRecorder = diagnosticsRecorder,
     )
 
     private fun exactSource(replay: CompactReplay): GymReplayFrameSource = source(replay)
@@ -265,6 +274,29 @@ class ReplayTrajectoryVerificationTest : ScenarioTestBase() {
                 stepCount = verification.replayActionCount,
                 reason = com.wingedsheep.gym.EpisodeInterruptionReason.HORIZON_REACHED,
             )
+        }
+
+        test("D4 replay diagnostics count only accepted real replay frames") {
+            val replay = recordedReplay()
+            val baseline = source(replay).verify()
+            val recorder = DiagnosticsRecorder.enabled(
+                diagnosticRunId = "d4-replay-run",
+                sourceCommit = "d".repeat(40),
+                workloadType = "replay",
+                initialStage = ReplayDiagnosticsStageV1.INITIALIZING,
+                processId = ProcessHandle.current().pid(),
+                wallClock = Clock.fixed(Instant.parse("2026-09-07T00:00:00Z"), ZoneOffset.UTC),
+                monotonicClock = TestMonotonicClock(),
+            )
+            try {
+                val observed = source(replay, recorder).verify()
+                observed shouldBe baseline
+                val status = checkNotNull(recorder.snapshot())
+                status.currentStage shouldBe ReplayDiagnosticsStageV1.COMPLETE
+                status.progress.replayFramesVerified shouldBe replay.actions.size.toLong()
+            } finally {
+                recorder.close()
+            }
         }
 
         test("chosen-input binding covers the complete replay range and shares A4 content identity") {
@@ -563,4 +595,10 @@ class ReplayTrajectoryVerificationTest : ScenarioTestBase() {
             verification.failureAtReplayActionIndex shouldBe replay.actions.indexOf(submitted)
         }
     }
+}
+
+private class TestMonotonicClock : MonotonicClock {
+    private val now = AtomicLong(0)
+
+    override fun nowNanos(): Long = now.getAndAdd(1_000_000L)
 }

@@ -16,6 +16,8 @@ dependencies {
     // Narrow A4 seam: the replay adapter emits only Gym's transport-free verified public frames.
     // game-server must not depend on gym-trainer, which owns later trajectory storage contracts.
     api(project(":gym"))
+    // Optional operational diagnostics callbacks for replay verification only.
+    api(project(":run-diagnostics"))
     // Argentum Assay — Oracle text -> CardDefinition, for the Scenario Builder's custom-card
     // sandbox only (dev-gated; see AssayCardService). Assay stays an auditor: nothing here loads
     // the card corpus through it, and a compiled card never leaves the session that asked for it.
