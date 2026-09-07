@@ -40,6 +40,8 @@ UPSTREAM=https://github.com/wingedsheep/argentum-engine.git
 
 The branch was created from the authorized origin/main SHA. origin/main advanced by unrelated merged D0/D1 work during this run; this branch was not rebased and the source head above remains the exact measurement base.
 
+The measurement source/build provenance above is historical evidence for the accepted dataset and host run. The current integration commit is separate branch history and does not relabel or reproduce any measurement on the newer main.
+
 ## Dataset identity and trust
 
 The exact finalized A9 dataset was found locally and selected by manifest identity, not by directory name:
@@ -520,16 +522,18 @@ Recommendations only; none is implemented here:
 
 ~~~text
 P1_COMPRESSION_BY_DOMAIN_FAMILY=CLOSED_BY_THIS_AMENDMENT
-P1_START_PLAYER_RNG_COUPLING_AUDIT=OPEN_NOT_RUN
+P1_START_PLAYER_RNG_COUPLING_AUDIT=CLOSED_BY_SEPARATE_FINAL_ACCEPTANCE
 P2_EPISODE_P99_9=CLOSED_BY_THIS_AMENDMENT
 P2_GZIP_HIGH_LEVEL=CLOSED_BY_THIS_AMENDMENT (gzip level 9 measured)
 P2_A7_RATE_NAMING=CLOSED_BY_THIS_AMENDMENT
 P2_ZSTD_MODULE_EVIDENCE=CLOSED_BY_THIS_AMENDMENT
-START_PLAYER_RNG_COUPLING_AUDIT=REQUIRED_AS_SEPARATE_NEXT_TASK
+START_PLAYER_RNG_COUPLING_AUDIT=FINAL_ACCEPTANCE_PASS (merged PR #145)
 ~~
 
-The start-player RNG coupling audit was intentionally not performed here. No claim about
-same-seed early RNG equivalence or divergence is made by this report.
+The start-player RNG coupling audit was completed separately and accepted through merged PR #145.
+Its classification is PARTIALLY_COUPLED_WITH_DEFINED_BOUNDARY: whole-trajectory blocking across
+start variants is not valid, pre-mulligan bounded analysis is conditional, and split grouping remains
+separate. This report references that accepted result without duplicating or changing the audit.
 
 ## Unavailable or unmeasured fields
 
@@ -560,9 +564,9 @@ No privacy failure, A7 validation failure, manifest/digest mismatch, replay dive
 ## Completion status
 
 ~~~text
-POST_B2_CHARACTERIZATION_IMPLEMENTATION_PASS=NO
+POST_B2_CHARACTERIZATION_IMPLEMENTATION_PASS=YES
 POST_B2_HOSTED_CI_PASS=NOT_RUN
-POST_B2_CODE_REVIEW_PASS=NO
+POST_B2_CODE_REVIEW_PASS=YES
 POST_B2_FINAL_ACCEPTANCE_PASS=NO
 
 DATA_TRUSTED=YES
