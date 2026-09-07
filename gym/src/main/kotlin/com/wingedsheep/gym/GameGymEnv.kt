@@ -23,6 +23,7 @@ import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.service.SnapshotCodec
 import com.wingedsheep.gym.service.SnapshotHandle
+import com.wingedsheep.rundiagnostics.DiagnosticsRecorder
 import com.wingedsheep.sdk.model.EntityId
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -50,6 +51,8 @@ class GameGymEnv(
     perspectivePlayerIndex: Int,
     private val observationBuilder: ObservationBuilder,
     private val committedHistoryEnabled: Boolean = true,
+    /** Optional operational diagnostics owned by this authoritative Gym environment. */
+    private val diagnosticsRecorder: DiagnosticsRecorder? = null,
 ) : GymEnv {
 
     private var fallbackPerspectivePlayerIndex: Int = perspectivePlayerIndex
@@ -158,6 +161,7 @@ class GameGymEnv(
             perspectivePlayerIndex = fallbackPerspectivePlayerIndex,
             observationBuilder = observationBuilder,
             committedHistoryEnabled = false,
+            diagnosticsRecorder = null,
         )
             .also { it.build() }
 
@@ -181,6 +185,15 @@ class GameGymEnv(
         return committedPerspectiveEventSource.projectLast(perspectivePlayerId)
     }
 
+    /** Release optional recorder resources when the owning service disposes this environment. */
+    internal fun closeDiagnostics() {
+        try {
+            diagnosticsRecorder?.close()
+        } catch (_: Exception) {
+            // Recorder shutdown is operational cleanup and cannot change disposal semantics.
+        }
+    }
+
     // --- game-only operations (used by MultiEnvService via cast) -------------
 
     /** Re-initialise the underlying game in place. */
@@ -189,6 +202,7 @@ class GameGymEnv(
         perspectivePlayerIndex: Int = fallbackPerspectivePlayerIndex,
         maxSteps: Int? = null
     ): ObservationResult {
+        recordDiagnostics { advanceStage(GymDiagnosticsStageV1.RESETTING) }
         cachedObservation = null
         cachedStepCount = null
         cachedPerspectivePlayerId = null
@@ -198,6 +212,7 @@ class GameGymEnv(
             "perspectivePlayerIndex=$perspectivePlayerIndex out of range for ${environment.playerIds.size} players"
         }
         fallbackPerspectivePlayerIndex = perspectivePlayerIndex
+        recordDiagnostics { advanceStage(GymDiagnosticsStageV1.RUNNING) }
         return build()
     }
 
@@ -270,7 +285,20 @@ class GameGymEnv(
         val transition = environment.consumeCommittedTransition()
             ?: error("Strict Rules transition completed without a committed transition token")
         committedPerspectiveEventSource.capture(transition)
+        recordDiagnostics {
+            recordUsefulProgress(authoritativeTransitionDelta = 1L)
+        }
         return result
+    }
+
+    /** Diagnostics callbacks are strictly best-effort and cannot change the Gym result. */
+    private inline fun recordDiagnostics(block: DiagnosticsRecorder.() -> Unit) {
+        val recorder = diagnosticsRecorder ?: return
+        try {
+            recorder.block()
+        } catch (_: Exception) {
+            // Operational diagnostics must never become a workload failure.
+        }
     }
 
     private fun build(): ObservationResult =
