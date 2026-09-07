@@ -182,6 +182,10 @@ object KnownInformationLedger {
         val shuffledLibraryOwners = events.filterIsInstance<LibraryShuffledEvent>()
             .map(LibraryShuffledEvent::playerId)
             .distinct()
+        val libraryMembershipOwners = events.filterIsInstance<ZoneChangeEvent>()
+            .filter { it.fromZone == Zone.LIBRARY || it.toZone == Zone.LIBRARY }
+            .map(ZoneChangeEvent::ownerId)
+            .distinct()
         if (shuffledLibraryOwners.isNotEmpty()) {
             state = reincarnateKnownShuffleObjects(
                 beforeState = beforeState,
@@ -205,7 +209,7 @@ object KnownInformationLedger {
             state = dropStaleObjectFacts(state, staleObjectIds)
         }
 
-        for (ownerId in shuffledLibraryOwners) {
+        for (ownerId in (shuffledLibraryOwners + libraryMembershipOwners).distinct()) {
             state = invalidateLibraryPositions(state, ownerId)
         }
 

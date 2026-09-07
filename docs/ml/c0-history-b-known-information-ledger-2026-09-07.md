@@ -184,6 +184,14 @@ incarnations, removes stale facts, and re-establishes only the authorized order 
 post-state/card-count/source-name reconstruction is used. The special bottom-of-library
 continuation now uses the same generic Rules stamp primitive instead of only copying the zone list.
 
+Every accepted `ZoneChangeEvent` whose source or destination is `LIBRARY` also invalidates all
+currently known `POSITION_OR_ORDER` facts for that owner's current library. This is deliberately
+conservative: a membership change can shift every other card's position, so the ledger removes
+the affected positions before the existing post-transition `Visibility` and exact producer paths
+reacquire positions that remain authoritative. It does not infer a new order from the zone list.
+This covers both library entry and library exit, including the case where a newly placed top card
+would otherwise leave an older top fact at position zero.
+
 ### 5.4 Zone changes and face-down objects
 
 Every zone entry advances `GameState.objectIdentityStamps`, including library entry. `ZoneTransitionService`
@@ -327,8 +335,9 @@ New focused coverage:
 
 ```text
 rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/KnownInformationLedgerTest.kt
-    25 tests: HISTB-01 through HISTB-17 plus same-name invalidation, object-incarnation REDs,
-    explicit public-stack/destination, and face-down cases
+    27 tests: HISTB-01 through HISTB-17 plus same-name invalidation, object-incarnation REDs,
+    explicit public-stack/destination, face-down cases, and library-membership position
+    invalidation (HISTB-REVIEW-24/25)
 
 rules-engine/src/test/kotlin/com/wingedsheep/engine/mechanics/KnownInformationLedgerVisibilityTest.kt
     3 tests: continuous top-library, revealed-hand, and face-down visibility
@@ -344,7 +353,8 @@ The focused tests cover public/private audience isolation, `revealToSelf=false`,
 same-name ambiguity invalidation, library-entry/reorder incarnation, continuous top-library
 visibility, shuffle position invalidation, exact producer-owned reorder, hidden-state
 non-interference, future reveal non-retroactivity, CR 400.7 incarnation separation, face-down
-identity invalidation, fork/reset isolation, serialization, and deterministic evolution.
+identity invalidation, conservative library-membership position invalidation, fork/reset isolation,
+serialization, and deterministic evolution.
 
 ## 11. Verification record
 
@@ -354,7 +364,7 @@ WSL cannot start `/bin/bash`; this is reported as `BLOCKED`, not as a passing te
 Native Gradle was used as an explicitly labeled fallback:
 
 ```text
-FOCUSED_RULES_TESTS=PASS__25_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT
+FOCUSED_RULES_TESTS=PASS__27_LEDGER__3_VISIBILITY__1_REVEAL_COLLECTION__1_SNAPSHOT
 RULES_ENGINE_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK
 GYM_TRAINER_FULL_TEST=PASS_NATIVE_GRADLE_FALLBACK

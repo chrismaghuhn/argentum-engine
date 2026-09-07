@@ -269,6 +269,61 @@ class KnownInformationLedgerTest : FunSpec({
         moved.objectIdentityStamps[cardId] shouldNotBe oldStamp
     }
 
+    test("HISTB-REVIEW-24 library entry invalidates other cards' stale positions") {
+        val first = EntityId.of("membership-first")
+        val second = EntityId.of("membership-second")
+        val entering = EntityId.of("membership-entering")
+        val initial = stateWith(
+            CardSpec(first, p1, Zone.LIBRARY),
+            CardSpec(second, p1, Zone.LIBRARY),
+            CardSpec(entering, p1, Zone.HAND),
+        )
+        val known = apply(
+            initial,
+            ExecutionResult.success(
+                KnownInformationLedger.recordLibraryOrder(initial, p1, listOf(first, second)),
+            ),
+        )
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = entering,
+            destinationZone = Zone.LIBRARY,
+            fromZoneKey = ZoneKey(p1, Zone.HAND),
+        )
+        val after = apply(known, ExecutionResult.success(moved.state, moved.events))
+
+        facts(after, p1).none {
+            it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                it.subjectEntityId in setOf(first, second)
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-25 library exit invalidates remaining cards' stale positions") {
+        val first = EntityId.of("exit-first")
+        val second = EntityId.of("exit-second")
+        val initial = stateWith(
+            CardSpec(first, p1, Zone.LIBRARY),
+            CardSpec(second, p1, Zone.LIBRARY),
+        )
+        val known = apply(
+            initial,
+            ExecutionResult.success(
+                KnownInformationLedger.recordLibraryOrder(initial, p1, listOf(first, second)),
+            ),
+        )
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = first,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p1, Zone.LIBRARY),
+        )
+        val after = apply(known, ExecutionResult.success(moved.state, moved.events))
+
+        facts(after, p1).none {
+            it.subjectEntityId == second && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        } shouldBe true
+    }
+
     test("HISTB-05 private search records searched library cards but not to the opponent") {
         val first = EntityId.of("search-card-a")
         val second = EntityId.of("search-card-b")
