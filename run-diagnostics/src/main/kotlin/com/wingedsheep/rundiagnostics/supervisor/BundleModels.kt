@@ -42,12 +42,77 @@ public data class BundleFileRecordV1(
     public val datasetSafe: Boolean,
     public val bytesWritten: Long? = null,
     public val failureCode: SupervisorFailureCode? = null,
+    /** Availability of the probe represented by this file, distinct from file-write availability. */
+    public val probeAvailability: EvidenceAvailability? = null,
+    public val probeFailureCode: SupervisorFailureCode? = null,
 ) {
     init {
         require(name.matches(Regex("[A-Za-z0-9][A-Za-z0-9._/-]{0,127}"))) {
             "bundle file name must be bounded"
         }
         requireNonNegative(bytesWritten, "bytesWritten")
+    }
+}
+
+/** Required bounded availability envelope for an unavailable non-privileged bundle artifact. */
+@Serializable
+internal data class BundleArtifactV1(
+    public val schemaVersion: Int = SupervisorSchema.BUNDLE_SCHEMA_VERSION,
+    public val schemaIdentity: String = SupervisorSchema.BUNDLE_SCHEMA_IDENTITY,
+    public val artifactKind: String,
+    public val availability: EvidenceAvailability,
+    public val failureCode: SupervisorFailureCode? = null,
+) {
+    init {
+        require(schemaVersion == SupervisorSchema.BUNDLE_SCHEMA_VERSION) {
+            "unsupported bundle artifact schemaVersion"
+        }
+        require(schemaIdentity == SupervisorSchema.BUNDLE_SCHEMA_IDENTITY) {
+            "unsupported bundle artifact schemaIdentity"
+        }
+        require(artifactKind.matches(Regex("[A-Za-z0-9][A-Za-z0-9_-]{0,63}"))) {
+            "artifactKind must be a bounded safe token"
+        }
+    }
+}
+
+/** Small manifest declaring the complete non-privileged bundle surface. */
+@Serializable
+public data class DiagnosticBundleManifestV1(
+    public val schemaVersion: Int = SupervisorSchema.BUNDLE_SCHEMA_VERSION,
+    public val schemaIdentity: String = SupervisorSchema.BUNDLE_SCHEMA_IDENTITY,
+    public val diagnosticRunId: String,
+    public val stallId: String,
+    public val trigger: StallTriggerKind,
+    public val classification: DiagnosticClassification,
+    public val action: SupervisorAction,
+    public val configuration: DiagnosticBundleConfigurationV1,
+    public val files: List<BundleFileRecordV1>,
+    public val requiredFiles: List<String> = REQUIRED_BUNDLE_FILES,
+    public val privilegedDirectory: String = "privileged",
+    public val privilegedDiagnosticPolicy: String =
+        "DEVELOPER_PRIVILEGED_DIAGNOSTIC_NOT_DATASET_SAFE",
+) {
+    init {
+        require(schemaVersion == SupervisorSchema.BUNDLE_SCHEMA_VERSION) {
+            "unsupported bundle manifest schemaVersion"
+        }
+        require(schemaIdentity == SupervisorSchema.BUNDLE_SCHEMA_IDENTITY) {
+            "unsupported bundle manifest schemaIdentity"
+        }
+        require(diagnosticRunId.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"))) {
+            "diagnosticRunId must be a bounded safe token"
+        }
+        require(stallId.matches(Regex("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}"))) {
+            "stallId must be a bounded safe token"
+        }
+        require(requiredFiles == REQUIRED_BUNDLE_FILES) {
+            "requiredFiles must match the V1 bundle contract"
+        }
+        require(files.size <= 256) { "files exceeds the bounded bundle metadata maximum" }
+        require(privilegedDirectory == "privileged") {
+            "privilegedDirectory must be privileged"
+        }
     }
 }
 
@@ -63,6 +128,7 @@ public data class DiagnosticBundleSummaryV1(
     public val action: SupervisorAction,
     public val processLiveness: ProcessLiveness,
     public val files: List<BundleFileRecordV1>,
+    public val configuration: DiagnosticBundleConfigurationV1 = DiagnosticBundleConfigurationV1(),
     public val privilegedDiagnosticPolicy: String =
         "DEVELOPER_PRIVILEGED_DIAGNOSTIC_NOT_DATASET_SAFE",
 ) {
@@ -91,6 +157,7 @@ public data class DiagnosticBundleInput(
     public val recentHistory: List<SupervisorHistoryEntryV1>,
     public val jvmResults: List<JvmCommandResult>,
     public val safeArtifactSizes: List<SafeArtifactSizeV1>,
+    public val configuration: DiagnosticBundleConfigurationV1 = DiagnosticBundleConfigurationV1(),
 )
 
 public data class DiagnosticBundleResult(
@@ -102,4 +169,16 @@ public data class DiagnosticBundleResult(
 
 public fun interface DiagnosticBundleSink {
     public fun write(input: DiagnosticBundleInput): DiagnosticBundleResult?
+
+    /** Returns false after a run-scoped retention failure has latched bundle capture off. */
+    public fun captureEnabled(diagnosticRunId: String): Boolean = true
 }
+
+private val REQUIRED_BUNDLE_FILES = listOf(
+    "bundle.json",
+    "summary.json",
+    "status.json",
+    "process-metrics.json",
+    "artifact-sizes.json",
+    "recent-stages.json",
+)
