@@ -69,7 +69,8 @@ public class ExternalSupervisor(
         val process = processForStatus(status, expectedStart)
         val metrics = safeMetrics(process, now)
         val baseInput = ClassifierInput(now, process, status, metrics)
-        var decision = classifier.classify(baseInput, state)
+        val samplingStateBefore = state
+        var decision = classifier.classify(baseInput, samplingStateBefore)
         var evidence: JvmEvidenceV1? = null
         var bundle: DiagnosticBundleResult? = null
         var captureAvailability = EvidenceAvailability.NOT_CONFIGURED
@@ -80,11 +81,21 @@ public class ExternalSupervisor(
             when (captureGate(now)) {
                 CaptureGate.CAPTURE -> {
                     evidence = jvmCollector.capture(config.targetPid)
-                    state = decision.nextState.copy(
-                        capturesCompleted = decision.nextState.capturesCompleted + 1,
+                    val captureState = samplingStateBefore.copy(
+                        capturesCompleted = samplingStateBefore.capturesCompleted + 1,
                         lastCaptureElapsedNanos = now,
                     )
-                    decision = classifier.classify(baseInput.copy(jvmEvidence = evidence), state)
+                    // Evidence capture must not replace the previous sampling baseline. The
+                    // second classification is for the same sample, so CPU/wall deltas remain
+                    // comparable to the sample that triggered capture.
+                    decision = classifier.classify(
+                        baseInput.copy(jvmEvidence = evidence),
+                        samplingStateBefore,
+                    )
+                    state = decision.nextState.copy(
+                        capturesCompleted = captureState.capturesCompleted,
+                        lastCaptureElapsedNanos = captureState.lastCaptureElapsedNanos,
+                    )
                     val input = DiagnosticBundleInput(
                         diagnosticRunId = statusDiagnosticRunId(status),
                         stallId = nextStallId(),

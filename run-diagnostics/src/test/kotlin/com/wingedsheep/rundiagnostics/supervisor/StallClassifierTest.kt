@@ -120,6 +120,52 @@ class StallClassifierTest : FunSpec({
         result.classification shouldBe DiagnosticClassification.BLOCKED_WAIT_SUSPECT
     }
 
+    test("does not choose a CPU or wait diagnosis for contradictory thread evidence") {
+        val classifier = StallClassifier(config())
+        val first = classifier.classify(
+            input(now = 0, heartbeat = 1, useful = 1, cpuNanos = 0),
+            SupervisorState(),
+        )
+
+        val result = classifier.classify(
+            input(
+                now = 200_000_000,
+                heartbeat = 2,
+                useful = 1,
+                cpuNanos = 200_000_000,
+                jvmEvidence = JvmEvidenceV1(
+                    availability = EvidenceAvailability.AVAILABLE,
+                    stableHotStack = true,
+                    stableWaitStack = true,
+                    ambiguousThreadStateEvidence = true,
+                ),
+            ),
+            first.nextState,
+        )
+
+        result.classification shouldBe DiagnosticClassification.SUSPECTED_STALL
+    }
+
+    test("does not claim GC pressure from uncharacterized evidence") {
+        val classifier = StallClassifier(config())
+        val first = classifier.classify(input(now = 0, heartbeat = 1, useful = 1), SupervisorState())
+
+        val result = classifier.classify(
+            input(
+                now = 200_000_000,
+                heartbeat = 2,
+                useful = 1,
+                jvmEvidence = JvmEvidenceV1(
+                    availability = EvidenceAvailability.AVAILABLE,
+                    gcPressure = true,
+                ),
+            ),
+            first.nextState,
+        )
+
+        result.classification shouldBe DiagnosticClassification.SUSPECTED_STALL
+    }
+
     test("emits DEADLOCK_DETECTED only for explicit JVM deadlock evidence") {
         val classifier = StallClassifier(config())
         val first = classifier.classify(input(now = 0, heartbeat = 1, useful = 1), SupervisorState())

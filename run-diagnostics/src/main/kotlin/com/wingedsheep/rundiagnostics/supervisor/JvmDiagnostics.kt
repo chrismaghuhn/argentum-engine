@@ -65,14 +65,13 @@ public object JvmEvidenceAnalyzer {
         val availableThreads = threadResults.filter {
             it.availability == EvidenceAvailability.AVAILABLE && it.output != null
         }
-        val signatures = availableThreads.map { stackSignature(it.output!!) }
-        val stable = signatures.size >= 2 && signatures.distinct().size == 1
-        val waiting = availableThreads.isNotEmpty() && availableThreads.all { hasWaitState(it.output!!) }
-        val hot = stable && availableThreads.isNotEmpty() && availableThreads.all { hasRunnableState(it.output!!) }
+        val parsedDumps = availableThreads.map { parseThreadDump(it.output!!) }
+        val stableHotPatterns = stablePatterns(parsedDumps, ThreadState.RUNNABLE)
+        val stableWaitPatterns = stablePatterns(parsedDumps, ThreadState.WAITING)
+        val ambiguousThreadStateEvidence = stableHotPatterns.size > 1 ||
+            stableWaitPatterns.size > 1 ||
+            (stableHotPatterns.isNotEmpty() && stableWaitPatterns.isNotEmpty())
         val deadlock = availableThreads.any { hasExplicitDeadlock(it.output!!) }
-        val gcPressure = results.firstOrNull { it.kind == JvmCommandKind.GC_HEAP_INFO }
-            ?.output
-            ?.contains("GC_PRESSURE=true", ignoreCase = true)
         val availability = when {
             results.isEmpty() -> EvidenceAvailability.NOT_CONFIGURED
             results.any { it.availability == EvidenceAvailability.AVAILABLE } -> EvidenceAvailability.AVAILABLE
@@ -81,36 +80,114 @@ public object JvmEvidenceAnalyzer {
         }
         return JvmEvidenceV1(
             availability = availability,
-            stableHotStack = hot,
-            stableWaitStack = stable && waiting,
+            stableHotStack = stableHotPatterns.isNotEmpty(),
+            stableWaitStack = stableWaitPatterns.isNotEmpty(),
+            ambiguousThreadStateEvidence = ambiguousThreadStateEvidence,
             deadlockDetected = deadlock,
-            gcPressure = gcPressure,
+            gcPressure = null,
             threadDumpCount = availableThreads.size,
             results = results,
         )
     }
 
-    private fun stackSignature(output: String): String = output.lineSequence()
-        .map(String::trim)
-        .filter { it.startsWith("at ") || it.contains("Thread.State:") }
-        .take(8)
-        .joinToString("\n")
-
-    private fun hasWaitState(output: String): Boolean {
-        val lower = output.lowercase()
-        return lower.contains("thread.state: waiting") ||
-            lower.contains("thread.state: blocked") ||
-            lower.contains("parking to wait")
+    private fun stablePatterns(
+        dumps: List<List<ThreadSnapshot>>,
+        state: ThreadState,
+    ): Set<ThreadSnapshot> {
+        if (dumps.size < 2) return emptySet()
+        val firstDumpCandidates = dumps.first().filter { it.state == state }.toSet()
+        return firstDumpCandidates.filter { candidate ->
+            dumps.drop(1).all { dump -> dump.contains(candidate) }
+        }.toSet()
     }
 
-    private fun hasRunnableState(output: String): Boolean =
-        output.contains("Thread.State: RUNNABLE", ignoreCase = true)
+    /** Parses only a bounded prefix of a standard jcmd/jstack thread dump. */
+    private fun parseThreadDump(output: String): List<ThreadSnapshot> {
+        val snapshots = ArrayList<ThreadSnapshot>()
+        var identity: String? = null
+        var state: ThreadState? = null
+        var frames = ArrayList<String>()
+        var unheadedOrdinal = 0
+
+        fun flush() {
+            val currentIdentity = identity
+            val currentState = state
+            if (currentIdentity != null && currentState != null && frames.isNotEmpty()) {
+                snapshots += ThreadSnapshot(currentIdentity, currentState, frames.toList())
+            }
+            identity = null
+            state = null
+            frames = ArrayList()
+        }
+
+        output.lineSequence().take(MAX_DUMP_LINES).forEach { rawLine ->
+            val line = rawLine.trim()
+            val headerIdentity = parseThreadHeader(line)
+            if (headerIdentity != null) {
+                flush()
+                identity = headerIdentity
+                return@forEach
+            }
+            if (line.regionMatches(0, THREAD_STATE_PREFIX, 0, THREAD_STATE_PREFIX.length, ignoreCase = true)) {
+                if (identity == null) identity = "unheaded-${unheadedOrdinal++}"
+                state = parseThreadState(line.substringAfter(':').trim())
+                return@forEach
+            }
+            if (state != null && line.startsWith("at ")) {
+                if (frames.size < MAX_STACK_FRAMES) frames += line.take(MAX_FRAME_LENGTH)
+                return@forEach
+            }
+            // Keep compatibility with short synthetic dumps that omit the quoted header.
+            if (identity == null && line.isNotEmpty()) identity = line.take(MAX_IDENTITY_LENGTH)
+        }
+        flush()
+        return snapshots
+    }
+
+    private fun parseThreadHeader(line: String): String? {
+        if (!line.startsWith('"')) return null
+        val closingQuote = line.indexOf('"', startIndex = 1)
+        if (closingQuote <= 1) return null
+        val name = line.substring(1, closingQuote).take(MAX_IDENTITY_LENGTH)
+        val suffix = line.substring(closingQuote + 1)
+        val threadNumber = THREAD_NUMBER_REGEX.find(suffix)?.groupValues?.get(1)
+        return if (threadNumber == null) name else "$name#$threadNumber"
+    }
+
+    private fun parseThreadState(value: String): ThreadState {
+        val upper = value.uppercase()
+        return when {
+            upper.startsWith("RUNNABLE") -> ThreadState.RUNNABLE
+            upper.startsWith("WAITING") || upper.startsWith("TIMED_WAITING") ||
+                upper.startsWith("BLOCKED") -> ThreadState.WAITING
+            else -> ThreadState.OTHER
+        }
+    }
 
     private fun hasExplicitDeadlock(output: String): Boolean {
         val lower = output.lowercase()
         return lower.contains("found one java-level deadlock") ||
             (lower.contains("deadlock") && lower.contains("waiting to lock"))
     }
+
+    private data class ThreadSnapshot(
+        val identity: String,
+        val state: ThreadState,
+        val frames: List<String>,
+    )
+
+    private enum class ThreadState {
+        RUNNABLE,
+        WAITING,
+        OTHER,
+    }
+
+    private const val MAX_DUMP_LINES = 4_096
+    private const val MAX_STACK_FRAMES = 64
+    private const val MAX_FRAME_LENGTH = 1_024
+    private const val MAX_IDENTITY_LENGTH = 256
+    private const val THREAD_STATE_PREFIX = "java.lang.Thread.State:"
+    private val THREAD_NUMBER_REGEX = Regex("""^\s+#(\d+)\b""")
 }
 
 public class JvmEvidenceCollector(

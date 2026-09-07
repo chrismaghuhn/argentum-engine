@@ -129,12 +129,91 @@ class ExternalSupervisorTest : FunSpec({
             supervisor.close()
         }
     }
+
+    test("fuses high CPU evidence against the pre-sample state") {
+        val clock = MutableSupervisorClock()
+        val statuses = ArrayDeque<StatusReadResult>().apply {
+            add(StatusReadResult.Available(fixtureStatus(heartbeatSequence = 1, usefulProgressSequence = 1)))
+            add(StatusReadResult.Available(fixtureStatus(heartbeatSequence = 2, usefulProgressSequence = 1)))
+        }
+        val metrics = ArrayDeque(
+            listOf(
+                ProcessMetricsV1(availability = EvidenceAvailability.AVAILABLE, cpuTimeNanos = 0),
+                ProcessMetricsV1(availability = EvidenceAvailability.AVAILABLE, cpuTimeNanos = 200_000_000),
+            ),
+        )
+        val hotDump = """
+            "hot-worker" #1 prio=5
+               java.lang.Thread.State: RUNNABLE
+                at worker.Hot.loop(Hot.kt:1)
+        """.trimIndent()
+        val supervisor = newSupervisor(
+            clock = clock,
+            statuses = statuses,
+            jvmRunner = FixedJvmRunner(hotDump),
+            metricsSampler = ProcessMetricsSampler { metrics.removeFirst() },
+            bundleSink = DiagnosticBundleSink { null },
+        )
+
+        try {
+            supervisor.pollOnce()
+            clock.elapsedNanos = 200_000_000
+            val result = supervisor.pollOnce()
+
+            result.decision.classification shouldBe DiagnosticClassification.CPU_SPIN_SUSPECT
+        } finally {
+            supervisor.close()
+        }
+    }
+
+    test("fuses low CPU waiting evidence against the pre-sample state") {
+        val clock = MutableSupervisorClock()
+        val statuses = ArrayDeque<StatusReadResult>().apply {
+            add(StatusReadResult.Available(fixtureStatus(heartbeatSequence = 1, usefulProgressSequence = 1)))
+            add(StatusReadResult.Available(fixtureStatus(heartbeatSequence = 2, usefulProgressSequence = 1)))
+        }
+        val metrics = ArrayDeque(
+            listOf(
+                ProcessMetricsV1(availability = EvidenceAvailability.AVAILABLE, cpuTimeNanos = 0),
+                ProcessMetricsV1(availability = EvidenceAvailability.AVAILABLE, cpuTimeNanos = 0),
+            ),
+        )
+        val waitingDump = """
+            "waiting-worker" #2 prio=5
+               java.lang.Thread.State: WAITING (parking)
+                at worker.Wait.await(Wait.kt:1)
+        """.trimIndent()
+        val supervisor = newSupervisor(
+            clock = clock,
+            statuses = statuses,
+            jvmRunner = FixedJvmRunner(waitingDump),
+            metricsSampler = ProcessMetricsSampler { metrics.removeFirst() },
+            bundleSink = DiagnosticBundleSink { null },
+        )
+
+        try {
+            supervisor.pollOnce()
+            clock.elapsedNanos = 200_000_000
+            val result = supervisor.pollOnce()
+
+            result.decision.classification shouldBe DiagnosticClassification.BLOCKED_WAIT_SUSPECT
+        } finally {
+            supervisor.close()
+        }
+    }
 })
 
 private fun newSupervisor(
     clock: MutableSupervisorClock,
     statuses: ArrayDeque<StatusReadResult>,
     jvmRunner: JvmCommandRunner = RecordingJvmRunner(AtomicInteger()),
+    metricsSampler: ProcessMetricsSampler = ProcessMetricsSampler {
+        ProcessMetricsV1(
+            availability = EvidenceAvailability.AVAILABLE,
+            cpuTimeNanos = 0,
+            sampledAtElapsedNanos = clock.elapsedNanos,
+        )
+    },
     bundleSink: DiagnosticBundleSink? = null,
     processSource: ProcessHandleSource = object : ProcessHandleSource {
         override fun observe(pid: Long): ProcessHandleObservation =
@@ -164,13 +243,7 @@ private fun newSupervisor(
                 statuses.removeFirst()
             }
         },
-        metricsSampler = ProcessMetricsSampler {
-            ProcessMetricsV1(
-                availability = EvidenceAvailability.AVAILABLE,
-                cpuTimeNanos = 0,
-                sampledAtElapsedNanos = clock.elapsedNanos,
-            )
-        },
+        metricsSampler = metricsSampler,
         jvmRunner = jvmRunner,
         monotonicClock = clock,
         wallClock = FIXTURE_WALL_CLOCK,
@@ -186,4 +259,16 @@ private class RecordingJvmRunner(
         calls.incrementAndGet()
         return JvmCommandResult(kind, EvidenceAvailability.AVAILABLE, exitCode = 0, output = "stable")
     }
+}
+
+private class FixedJvmRunner(
+    private val threadDump: String,
+) : JvmCommandRunner {
+    override fun run(pid: Long, kind: JvmCommandKind, timeoutMillis: Long, maxBytes: Int): JvmCommandResult =
+        JvmCommandResult(
+            kind = kind,
+            availability = EvidenceAvailability.AVAILABLE,
+            exitCode = 0,
+            output = if (kind == JvmCommandKind.THREAD_PRINT) threadDump else "metadata",
+        )
 }

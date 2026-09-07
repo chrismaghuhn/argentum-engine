@@ -138,11 +138,12 @@ public class StallClassifier(
         val evidence = input.jvmEvidence
         val classification = when {
             evidence?.deadlockDetected == true -> DiagnosticClassification.DEADLOCK_DETECTED
-            evidence?.gcPressure == true -> DiagnosticClassification.GC_PRESSURE_SUSPECT
-            usefulFresh.not() && evidence?.stableHotStack == true &&
+            usefulFresh.not() && evidence?.ambiguousThreadStateEvidence != true &&
+                evidence?.stableHotStack == true &&
                 cpuFraction != null && cpuFraction >= config.cpuActiveFraction ->
                 DiagnosticClassification.CPU_SPIN_SUSPECT
-            usefulFresh.not() && evidence?.stableWaitStack == true &&
+            usefulFresh.not() && evidence?.ambiguousThreadStateEvidence != true &&
+                evidence?.stableWaitStack == true &&
                 cpuFraction != null && cpuFraction <= config.cpuLowFraction ->
                 DiagnosticClassification.BLOCKED_WAIT_SUSPECT
             status.statusPublication.lastFailureCode in IO_FAILURE_CODES ->

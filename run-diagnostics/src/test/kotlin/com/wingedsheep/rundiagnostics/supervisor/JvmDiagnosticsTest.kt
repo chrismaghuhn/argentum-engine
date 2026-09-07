@@ -81,6 +81,61 @@ class JvmDiagnosticsTest : FunSpec({
         evidence.stableHotStack shouldBe true
     }
 
+    test("correlates a stable hot stack to its own thread when an unrelated wait stack changes") {
+        val evidence = JvmEvidenceAnalyzer.analyze(
+            listOf(
+                threadDumpResult(multiThreadDump("worker.Hot.loop(Hot.kt:1)", "worker.Wait.await(Wait.kt:1)")),
+                threadDumpResult(multiThreadDump("worker.Hot.loop(Hot.kt:1)", "worker.Wait.await(Wait.kt:2)")),
+            ),
+        )
+
+        evidence.stableHotStack shouldBe true
+        evidence.stableWaitStack shouldBe false
+        evidence.ambiguousThreadStateEvidence shouldBe false
+    }
+
+    test("correlates a stable wait stack to its own thread when an unrelated runnable stack changes") {
+        val evidence = JvmEvidenceAnalyzer.analyze(
+            listOf(
+                threadDumpResult(multiThreadDump("worker.Hot.loop(Hot.kt:1)", "worker.Wait.await(Wait.kt:1)")),
+                threadDumpResult(multiThreadDump("worker.Hot.loop(Hot.kt:2)", "worker.Wait.await(Wait.kt:1)")),
+            ),
+        )
+
+        evidence.stableHotStack shouldBe false
+        evidence.stableWaitStack shouldBe true
+        evidence.ambiguousThreadStateEvidence shouldBe false
+    }
+
+    test("marks independently stable hot and wait threads as contradictory evidence") {
+        val dump = multiThreadDump("worker.Hot.loop(Hot.kt:1)", "worker.Wait.await(Wait.kt:1)")
+        val evidence = JvmEvidenceAnalyzer.analyze(
+            listOf(threadDumpResult(dump), threadDumpResult(dump), threadDumpResult(dump)),
+        )
+
+        evidence.stableHotStack shouldBe true
+        evidence.stableWaitStack shouldBe true
+        evidence.ambiguousThreadStateEvidence shouldBe true
+    }
+
+    test("does not infer GC pressure from raw GC.heap_info text") {
+        val evidence = JvmEvidenceAnalyzer.analyze(
+            listOf(
+                JvmCommandResult(
+                    kind = JvmCommandKind.GC_HEAP_INFO,
+                    availability = EvidenceAvailability.AVAILABLE,
+                    output = """
+                        garbage-first heap   total 1024M, used 768M [0x0000000100000000, 0x0000000140000000)
+                         region size 4M, 12 young (48M), 2 survivors (8M)
+                        Metaspace       used 32M, committed 34M, reserved 1088M
+                    """.trimIndent(),
+                ),
+            ),
+        )
+
+        evidence.gcPressure shouldBe null
+    }
+
     test("falls back to bounded jstack capture when jcmd thread print is unavailable") {
         val runner = RecordingFallbackJvmRunner()
         val config = SupervisorConfigV1(
@@ -142,6 +197,21 @@ class JvmDiagnosticsTest : FunSpec({
         result.failureCode shouldBe SupervisorFailureCode.COMMAND_OUTPUT_TOO_LARGE
     }
 })
+
+private fun threadDumpResult(output: String) = JvmCommandResult(
+    kind = JvmCommandKind.THREAD_PRINT,
+    availability = EvidenceAvailability.AVAILABLE,
+    output = output,
+)
+
+private fun multiThreadDump(hotFrame: String, waitFrame: String): String = """
+    "hot-worker" #1 prio=5 os_prio=0 tid=0x1 nid=0x1 runnable
+       java.lang.Thread.State: RUNNABLE
+        at $hotFrame
+    "waiting-worker" #2 prio=5 os_prio=0 tid=0x2 nid=0x2 waiting on condition
+       java.lang.Thread.State: WAITING (parking)
+        at $waitFrame
+""".trimIndent()
 
 private fun toolPath(directory: Path, name: String): Path =
     if (System.getProperty("os.name").lowercase().contains("windows")) directory.resolve("$name.exe")
