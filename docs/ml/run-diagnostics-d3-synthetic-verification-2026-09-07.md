@@ -3,14 +3,16 @@
 Date: 2026-09-07
 
 This is a test-only verification slice for the accepted D1/D2 diagnostics implementation. It does
-not add workload integration or change diagnostic production behavior.
+not add workload integration or change diagnostic production behavior. It was synchronized after
+D2 remediation PR #149 merged into `main`.
 
 ## Provenance and boundary
 
 ```text
-BASE=70dcde4108dd05ba399902815bb05eb871e58561
+BASE=de736a4190504211cee44492ad812a4938a45e5e
+D3_PRE_SYNC_HEAD=88f30b1ca40ae56a88f4f52629da7eb0102cd9a4
 HEAD=the single D3 commit containing this report; exact SHA is in the completion report
-PARENT=BASE
+PARENT=the direct parent of the final D3 verification commit
 REMOTE_HEAD=the pushed D3 commit; exact SHA is in the completion report
 UPSTREAM_SHA=5021faf88093a93091e4de7914fbe0f411499d58
 
@@ -54,7 +56,7 @@ run a workload soak.
 | D3-10 stale sidecar + live process | Conservative suspected stall | PASS | Live process is not reported healthy solely because it is alive. |
 | D3-11 missing CPU | Generic suspected stall | PASS | Missing CPU is not converted to zero or a CPU diagnosis. |
 | D3-12 missing RSS | CPU evidence remains usable; RSS stays null | PASS | Missing RSS is not fabricated. |
-| D3-13 process exits during capture | Next sample exits without more attach | PASS | No new JVM commands after the observed exit. |
+| D3-13 process exits during capture | Capture stops at the next identity check; next sample exits | PASS | No JVM command after the synthetic mid-capture exit and no later attach. |
 | D3-14 unsupported atomic move | `PROVIDER_UNSUPPORTED`; old target retained | PASS | No silent non-atomic replacement fallback. |
 | D3-15 command timeout | Timed-out evidence is explicit; generic fallback | PASS | Bounded command path does not hang. |
 | D3-16 explicit deadlock report | `DEADLOCK_DETECTED`, continue-only | PASS | No target termination, retry, recovery, or semantic result. |
@@ -62,6 +64,16 @@ run a workload soak.
 | D3-18 cursor regression | `UNKNOWN`, continue | PASS | Regressed cursors do not become fresh progress or trigger capture. |
 | D3-19 PID/start mismatch | `IDENTITY_MISMATCH`, no attach | PASS | No metrics or JVM command is run for a reused identity. |
 | D3-20 missing/failed optional bundle evidence | Explicit availability metadata | PASS | Optional files are not fabricated; privileged files remain non-dataset-safe. |
+
+### Post-D2-remediation assertion strengthening
+
+- D3-13 now asserts that the real collector executes only `THREAD_PRINT` before the synthetic exit,
+  records the process-identity failure, and does not run later dumps, heap, or VM commands.
+- The retention fixture now drives the real `DiagnosticBundleWriter` through the real
+  `ExternalSupervisor`; after `RETENTION_FAILED`, no second stall directory or JVM capture is
+  created.
+- D3-20 now asserts all six required files, the manifest's trigger/classification/action/configuration
+  and file records, plus separate probe availability in the summary.
 
 ## Evidence and semantic boundaries
 
@@ -80,8 +92,12 @@ run a workload soak.
 
 - Injected atomic write and replace failures preserve the old valid `run-status.json`; partial
   temporary bytes are cleaned or ignored and never become the accepted target.
-- Real `DiagnosticBundleWriter` output is checked for `summary.json`, safe scalar files, explicit
-  `AVAILABLE`/`MISSING`/`FAILED`/`TIMED_OUT`/`NOT_CONFIGURED` records, and bounded total bytes.
+- Real `DiagnosticBundleWriter` output is checked for `bundle.json`, `summary.json`,
+  `status.json`, `process-metrics.json`, `artifact-sizes.json`, and `recent-stages.json`; it also
+  checks explicit `AVAILABLE`/`MISSING`/`FAILED`/`TIMED_OUT`/`NOT_CONFIGURED` records and bounded
+  total bytes.
+- `summary.json` is published before `bundle.json`; the manifest is therefore a final marker and
+  cannot claim an unavailable summary.
 - Privileged thread dumps, heap information, and VM flags are stored separately and marked
   `datasetSafe=false` under `DEVELOPER_PRIVILEGED_DIAGNOSTIC_NOT_DATASET_SAFE`.
 - Normal status and summary scans reject raw game state, observations, legal domains, action

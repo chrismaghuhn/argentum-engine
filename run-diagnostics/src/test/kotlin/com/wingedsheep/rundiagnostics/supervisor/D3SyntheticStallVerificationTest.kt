@@ -281,6 +281,8 @@ class D3SyntheticStallVerificationTest : FunSpec({
             val afterExit = fixture.supervisor.pollOnce()
 
             duringCapture.process.liveness shouldBe ProcessLiveness.ALIVE
+            jvmRunner.kinds shouldBe listOf(JvmCommandKind.THREAD_PRINT)
+            duringCapture.jvmEvidence?.results?.last()?.failureCode shouldBe SupervisorFailureCode.PROCESS_NOT_FOUND
             afterExit.process.liveness shouldBe ProcessLiveness.PROCESS_EXITED
             afterExit.decision.action shouldBe SupervisorAction.CONTINUE_OBSERVING
             jvmRunner.kinds.size shouldBe callsAfterCapture
@@ -449,6 +451,42 @@ class D3SyntheticStallVerificationTest : FunSpec({
         }
     }
 
+    test("retention failure latches the real writer and stops later supervisor capture") {
+        val fixture = newD3Supervisor(
+            statuses = listOf(
+                d3Status(heartbeatSequence = 1, usefulProgressSequence = 1),
+                d3Status(heartbeatSequence = 2, usefulProgressSequence = 1),
+                d3Status(heartbeatSequence = 3, usefulProgressSequence = 1),
+            ),
+            metrics = listOf(d3Metrics(), d3Metrics(), d3Metrics()),
+            jvmRunner = d3AvailableJvmRunner(d3HotDump()),
+            retentionEnforcer = { _, _ ->
+                DiagnosticRetentionResult(
+                    availability = EvidenceAvailability.FAILED,
+                    deletedBundleCount = 0,
+                    failureCode = SupervisorFailureCode.RETENTION_FAILED,
+                )
+            },
+        )
+        try {
+            fixture.supervisor.pollOnce()
+            fixture.clock.elapsedNanos = 200_000_000
+            val firstStall = fixture.supervisor.pollOnce()
+            val commandsAfterFailure = fixture.jvmRunner.kinds.size
+            fixture.clock.elapsedNanos = 400_000_000
+            val secondStall = fixture.supervisor.pollOnce()
+
+            firstStall.bundle!!.failures shouldBe listOf(SupervisorFailureCode.RETENTION_FAILED)
+            secondStall.bundle shouldBe null
+            secondStall.captureAvailability shouldBe EvidenceAvailability.FAILED
+            fixture.jvmRunner.kinds.size shouldBe commandsAfterFailure
+            Files.exists(fixture.root.resolve("supervisor-test-run/stalls/stall-000002")) shouldBe false
+            Files.exists(fixture.root.resolve("supervisor-test-run/stalls/.retention-failed")) shouldBe true
+        } finally {
+            fixture.close()
+        }
+    }
+
     test("D3-20 unavailable optional evidence is recorded without fabricated files") {
         val missingArtifact = Files.createTempDirectory("run-diagnostics-d3-missing-artifact-")
             .resolve("not-created.bin")
@@ -467,10 +505,31 @@ class D3SyntheticStallVerificationTest : FunSpec({
             val result = fixture.supervisor.pollOnce()
             val bundle = result.bundle!!
             val summary = bundle.summary!!
-            val summaryText = Files.readString(bundle.bundleDirectory!!.resolve("summary.json"))
+            val bundleDirectory = requireNotNull(bundle.bundleDirectory)
+            val summaryText = Files.readString(bundleDirectory.resolve("summary.json"))
+            val required = listOf(
+                "bundle.json",
+                "summary.json",
+                "status.json",
+                "process-metrics.json",
+                "artifact-sizes.json",
+                "recent-stages.json",
+            )
 
-            Files.readString(bundle.bundleDirectory.resolve("artifact-sizes.json"))
+            required.forEach { Files.exists(bundleDirectory.resolve(it)) shouldBe true }
+            val manifestText = Files.readString(bundleDirectory.resolve("bundle.json"))
+            required.forEach { manifestText.contains("\"$it\"") shouldBe true }
+            manifestText.contains("\"trigger\":") shouldBe true
+            manifestText.contains("\"classification\":") shouldBe true
+            manifestText.contains("\"action\":") shouldBe true
+            manifestText.contains("\"configuration\":") shouldBe true
+            manifestText.contains("\"files\":") shouldBe true
+            Files.readString(bundleDirectory.resolve("artifact-sizes.json"))
                 .contains("\"availability\":\"MISSING\"") shouldBe true
+            summary.files.single { it.name == "status.json" }.probeAvailability shouldBe
+                EvidenceAvailability.AVAILABLE
+            summary.files.single { it.name == "recent-stages.json" }.probeAvailability shouldBe
+                EvidenceAvailability.AVAILABLE
             summary.files.any {
                 it.name == "recent-stages.json" &&
                     it.availability == EvidenceAvailability.AVAILABLE &&

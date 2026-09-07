@@ -168,14 +168,24 @@ internal fun newD3Supervisor(
     threadDumpCount: Int = 3,
     maxBundleBytes: Int = 4 * 1024 * 1024,
     safeArtifactPaths: List<String> = emptyList(),
+    retentionEnforcer: ((Path, Int) -> DiagnosticRetentionResult)? = null,
 ): D3SupervisorFixture {
     val root = Files.createTempDirectory("run-diagnostics-d3-")
     val actualStatusPath = statusPath ?: root.resolve("run-status.json")
-    val actualBundleSink = bundleSink ?: DiagnosticBundleWriter(
-        root = root,
-        maxDiagnosticBundles = maxDiagnosticBundles,
-        maxBundleBytes = maxBundleBytes,
-    )
+    val actualBundleSink = bundleSink ?: if (retentionEnforcer == null) {
+        DiagnosticBundleWriter(
+            root = root,
+            maxDiagnosticBundles = maxDiagnosticBundles,
+            maxBundleBytes = maxBundleBytes,
+        )
+    } else {
+        DiagnosticBundleWriter(
+            root = root,
+            maxDiagnosticBundles = maxDiagnosticBundles,
+            maxBundleBytes = maxBundleBytes,
+            retentionEnforcer = retentionEnforcer,
+        )
+    }
     val config = SupervisorConfigV1(
         targetPid = FIXTURE_PID,
         statusPath = actualStatusPath.toString(),
