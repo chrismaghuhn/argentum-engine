@@ -10,6 +10,7 @@ package com.wingedsheep.gym.history
 
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.LibraryShuffledEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.state.ComponentContainer
@@ -26,12 +27,16 @@ import com.wingedsheep.engine.state.components.player.KnownInformationLedgerComp
 import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.gym.CommittedPerspectiveEventSource
 import com.wingedsheep.gym.contract.PerspectiveEventBatchV1
+import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.mtg.sets.definitions.por.PortalSet
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.sdk.core.CardType
+import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.ManaCost
+import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldBeEmpty
@@ -160,9 +165,10 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         disclosure: HistoryCIdentityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
         definition: String? = null,
         role: HistoryCReferenceSlotRole = HistoryCReferenceSlotRole.MOVED_OBJECT,
+        eventOrdinal: Int = 0,
     ) = HistoryCReferenceCandidateV1(
         slot = HistoryCReferenceSlot(
-            eventOrdinal = 0,
+            eventOrdinal = eventOrdinal,
             role = role,
             roleOrdinal = 0,
         ),
@@ -361,6 +367,121 @@ class PerspectiveReferenceProjectorTest : FunSpec({
         val accepted = accepted(result)
         accepted.referenceOccurrences.single().alias.canonical() shouldBe "o0"
         accepted.referenceOccurrences.single().cardDefinitionId shouldBe "mtn"
+    }
+
+    test("HISTC-05 real Rules private-look producer preserves only the viewer's knowledge") {
+        val driver = GameTestDriver().apply {
+            registerCards(PortalSet.cards)
+            registerCards(PortalSet.basicLands)
+        }
+        val deck = Deck.of("Island" to 20, "Forest" to 20)
+        val players = driver.initMultiplayer(
+            decks = listOf(deck, deck, deck),
+            skipMulligans = true,
+            startingPlayer = 0,
+        )
+        val viewer = players[0]
+        val owner = players[1]
+        val unrelated = players[2]
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val lookedCard = driver.putCardInHand(owner, "Forest")
+        val ownerHand = ZoneKey(owner, Zone.HAND)
+        driver.replaceState(
+            driver.state.copy(
+                zones = driver.state.zones + (ownerHand to listOf(lookedCard)),
+            ),
+        )
+
+        val thief = driver.putCardInHand(viewer, "Ingenious Thief")
+        driver.giveMana(viewer, Color.BLUE, 2)
+        driver.castSpell(viewer, thief).isSuccess shouldBe true
+
+        var lookTransition: CommittedRulesTransition? = null
+        repeat(40) {
+            if (lookTransition != null) return@repeat
+            if (driver.state.pendingDecision != null) {
+                driver.submitTargetSelection(viewer, listOf(owner))
+            } else {
+                val priority = driver.state.priorityPlayerId ?: return@repeat
+                val before = driver.state
+                val result = driver.passPriority(priority)
+                if (result.events.any { it is HandLookedAtEvent }) {
+                    lookTransition = CommittedRulesTransition(
+                        beforeState = before,
+                        afterState = driver.state,
+                        events = result.events,
+                        sourceStepCount = 1,
+                    )
+                }
+            }
+        }
+        val transition = checkNotNull(lookTransition) { "Real look producer did not emit HandLookedAtEvent" }
+        val lookEvent = transition.events.filterIsInstance<HandLookedAtEvent>().single()
+        lookEvent.viewingPlayerId shouldBe viewer
+        lookEvent.targetPlayerId shouldBe owner
+        lookEvent.cardIds shouldBe listOf(lookedCard)
+        transition.afterState.getEntity(lookedCard)
+            ?.get<RevealedToComponent>()
+            ?.isRevealedTo(viewer) shouldBe true
+        transition.afterState.getEntity(lookedCard)
+            ?.get<RevealedToComponent>()
+            ?.isRevealedTo(unrelated) shouldBe false
+
+        // The strict Rules step also emits unrelated stack/priority bookkeeping events. Keep the
+        // exact producer-emitted look event and its event-time states as the bounded C authority
+        // characterization; do not make A silently accept those unrelated families.
+        val lookOnlyTransition = transition.copy(events = listOf(lookEvent))
+        val perspectiveProjector = com.wingedsheep.gym.contract.PerspectiveEventProjector(driver.cardRegistry)
+        val projection = perspectiveProjector.project(
+            events = lookOnlyTransition.events,
+            perspectivePlayerId = viewer,
+            beforeState = lookOnlyTransition.beforeState,
+            afterState = lookOnlyTransition.afterState,
+        )
+        val rawIndex = lookOnlyTransition.events.indexOfFirst { it is HandLookedAtEvent }
+        val eventOrdinal = projection.classifications
+            .take(rawIndex)
+            .count { it.disposition == com.wingedsheep.gym.contract.PerspectiveEventDisposition.EMITTED }
+        val stamp = transition.afterState.objectIdentityStamps.getValue(lookedCard)
+        val definition = transition.afterState.getEntity(lookedCard)
+            ?.get<CardComponent>()
+            ?.cardDefinitionId
+            ?: error("Looked card lost its definition")
+        val source = CommittedPerspectiveEventSource(driver.cardRegistry)
+        source.capture(lookOnlyTransition)
+
+        val viewerResult = source.lastCommittedReferenceProjection(
+            semanticEpisodeId = "episode-live",
+            registry = registry(viewer).copy(semanticEpisodeId = "episode-live"),
+            envelope = HistoryCReferenceEnvelopeV1(
+                perspectivePlayerId = viewer,
+                candidates = listOf(
+                    candidate(
+                        eventOrdinal = eventOrdinal,
+                        after = HistoryCObjectWitness(lookedCard, stamp),
+                        disclosure = HistoryCIdentityDisclosure.DEFINITION_KNOWN,
+                        definition = definition,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                    ),
+                ),
+            ),
+        )
+        val viewerProjection = accepted(viewerResult)
+        viewerProjection.referenceOccurrences.single().identityDisclosure shouldBe
+            HistoryCIdentityDisclosure.DEFINITION_KNOWN
+
+        val unrelatedResult = source.lastCommittedReferenceProjection(
+            semanticEpisodeId = "episode-live",
+            registry = registry(unrelated).copy(semanticEpisodeId = "episode-live"),
+            envelope = HistoryCReferenceEnvelopeV1(
+                perspectivePlayerId = unrelated,
+                candidates = emptyList(),
+            ),
+        )
+        val unrelatedProjection = accepted(unrelatedResult)
+        unrelatedProjection.referenceOccurrences.shouldBeEmpty()
+        unrelatedProjection.nextRegistry.nextAliasOrdinal shouldBe 0L
     }
 
     test("HISTC-10_VISIBLE_ZONE_CHANGE_RELATIONSHIP_POLICY") {
