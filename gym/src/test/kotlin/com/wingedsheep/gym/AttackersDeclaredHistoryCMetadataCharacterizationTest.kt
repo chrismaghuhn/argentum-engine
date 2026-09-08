@@ -10,7 +10,6 @@ import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.GameConfig
-import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -19,31 +18,20 @@ import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
-import com.wingedsheep.engine.state.GameState
-import com.wingedsheep.engine.state.components.identity.CardComponent
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PerspectiveEventDisposition
-import com.wingedsheep.gym.contract.PerspectiveEventFamily
-import com.wingedsheep.gym.contract.PerspectiveEventProjector
-import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
-import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeProducerResult
-import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeProducerV1
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
-import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.types.shouldBeInstanceOf
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Test-only characterization of the current AttackersDeclared History-C metadata boundary. */
+/** Test-only locked-path regression for the now-accepted empty AttackersDeclared event. */
 class AttackersDeclaredHistoryCMetadataCharacterizationTest : FunSpec({
-    test("pins the exact candidate or relation metadata blocker") {
+    test("accepts the legal empty AttackersDeclared event on the locked path") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -101,15 +89,17 @@ class AttackersDeclaredHistoryCMetadataCharacterizationTest : FunSpec({
         var successfulChoices = 0
         var cardCycledChoices: Int? = null
         var cardCycledStep: Int? = null
+        var emptyAttackersChoices: Int? = null
+        var emptyAttackersStep: Int? = null
         var failure: HistoryDOperationException? = null
-        var beforeFailure: GameState? = null
-        var failingRawEvents: List<GameEvent> = emptyList()
-        var failingProjections: List<PerspectiveEventProjectionResult?> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated &&
+            !observation.truncated &&
+            failure == null &&
+            emptyAttackersStep == null
+        ) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
-            val beforeChoice = environment.state
             try {
                 observation = when (choice) {
                     is SemanticChoice.Action -> {
@@ -138,119 +128,34 @@ class AttackersDeclaredHistoryCMetadataCharacterizationTest : FunSpec({
                     cardCycledChoices = successfulChoices
                     cardCycledStep = environment.stepCount
                 }
+                if (environment.lastStepEvents.any { event ->
+                        event is AttackersDeclaredEvent &&
+                            event.attackers.isEmpty() &&
+                            event.declaredAttacks.isEmpty()
+                    }
+                ) {
+                    emptyAttackersChoices = successfulChoices
+                    emptyAttackersStep = environment.stepCount
+                }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
-                beforeFailure = beforeChoice
-                failingRawEvents = environment.lastStepEvents.toList()
-                failingProjections = environment.playerIds.map { playerId ->
-                    gym.lastCommittedPerspectiveEventProjection(playerId)
-                }
             }
         }
 
-        val historyDFailure = checkNotNull(failure)
-        successfulChoices shouldBe 465
-        environment.stepCount shouldBe 466
+        failure shouldBe null
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
-        historyDFailure.failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
-        failingRawEvents.map { it::class.simpleName } shouldBe listOf("AttackersDeclaredEvent")
-
-        val attackersEvent = failingRawEvents.single().shouldBeInstanceOf<AttackersDeclaredEvent>()
-        val before = checkNotNull(beforeFailure)
-        val after = environment.state
-        attackersEvent.attackers.isEmpty() shouldBe true
-        attackersEvent.declaredAttacks.isEmpty() shouldBe true
-
-        fun hasWitness(state: GameState, entityId: EntityId): Boolean =
-            state.hasEntity(entityId) && state.objectIdentityStamps[entityId] != null
-
-        fun hasCardOrRulesWitness(entityId: EntityId): Boolean = listOf(before, after).any { state ->
-            hasWitness(state, entityId) && state.getEntity(entityId)?.get<CardComponent>() != null
-        }
-
-        val attackerBeforeWitnessCount = attackersEvent.attackers.count { hasWitness(before, it) }
-        val attackerAfterWitnessCount = attackersEvent.attackers.count { hasWitness(after, it) }
-        val objectDefenderCount = attackersEvent.declaredAttacks.count {
-            hasCardOrRulesWitness(it.defenderId)
-        }
-        val objectDefenderAfterWitnessCount = attackersEvent.declaredAttacks.count {
-            hasCardOrRulesWitness(it.defenderId) && hasWitness(after, it.defenderId)
-        }
-        val missingDefendingPlayerIdCount = attackersEvent.declaredAttacks.count {
-            it.defendingPlayerId == null
-        }
-        val declaredAttackSourceMatchCount = attackersEvent.declaredAttacks.count {
-            it.attackerId in attackersEvent.attackers
-        }
-
-        val projections = failingProjections.map(::checkNotNull)
-        projections.size shouldBe 2
-        projections.forEach { projection ->
-            projection.isComplete shouldBe true
-            projection.classifications.single().rawEventType shouldBe "AttackersDeclaredEvent"
-            projection.classifications.single().disposition shouldBe PerspectiveEventDisposition.EMITTED
-            projection.batch.entries.single().eventFamily shouldBe PerspectiveEventFamily.ATTACKERS_DECLARED
-        }
-
-        val failingTransition = CommittedRulesTransition(
-            beforeState = before,
-            afterState = after,
-            events = failingRawEvents,
-            sourceStepCount = environment.stepCount,
-        )
-        val fullProducerResult = HistoryCReferenceEnvelopeProducerV1.produce(
-            transition = failingTransition,
-            projection = projections.first(),
-        )
-        fullProducerResult.shouldBeInstanceOf<HistoryCReferenceEnvelopeProducerResult.Rejected>()
-            .failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
-
-        val witnessBackedAttacker = after.objectIdentityStamps.keys.firstOrNull { entityId ->
-            hasWitness(after, entityId) && after.getEntity(entityId)?.get<CardComponent>() != null
-        }
-        val candidateProbeEvent = attackersEvent.copy(
-            attackers = listOf(checkNotNull(witnessBackedAttacker)),
-            attackerNames = listOf("redacted"),
-            declaredAttacks = emptyList(),
-        )
-        val candidateProbeTransition = failingTransition.copy(events = listOf(candidateProbeEvent))
-        val candidateProbeProjection = PerspectiveEventProjector(registry).project(
-            events = candidateProbeTransition.events,
-            perspectivePlayerId = projections.first().batch.perspectivePlayerId,
-            beforeState = before,
-            afterState = after,
-        )
-        val candidateProbeResult = HistoryCReferenceEnvelopeProducerV1.produce(
-            transition = candidateProbeTransition,
-            projection = candidateProbeProjection,
-        )
-        candidateProbeResult.shouldBeInstanceOf<HistoryCReferenceEnvelopeProducerResult.Accepted>()
-
-        attackerBeforeWitnessCount shouldBe attackersEvent.attackers.size
-        attackerAfterWitnessCount shouldBe attackersEvent.attackers.size
-        declaredAttackSourceMatchCount shouldBe attackersEvent.declaredAttacks.size
-        objectDefenderCount shouldBe 0
-        objectDefenderAfterWitnessCount shouldBe 0
-        missingDefendingPlayerIdCount shouldBe attackersEvent.declaredAttacks.size
+        emptyAttackersChoices shouldBe 466
+        emptyAttackersStep shouldBe 466
+        successfulChoices shouldBe 466
+        environment.stepCount shouldBe 466
 
         println(
             "ATTACKERS_DECLARED_CHARACTERIZATION " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "failure=${historyDFailure.failure.code} " +
-                "rawEvent=AttackersDeclaredEvent " +
-                "attackerCount=${attackersEvent.attackers.size} " +
-                "declaredAttackCount=${attackersEvent.declaredAttacks.size} " +
-                "attackerBeforeWitnessCount=$attackerBeforeWitnessCount " +
-                "attackerAfterWitnessCount=$attackerAfterWitnessCount " +
-                "objectDefenderCount=$objectDefenderCount " +
-                "objectDefenderAfterWitnessCount=$objectDefenderAfterWitnessCount " +
-                "missingDefendingPlayerIdCount=$missingDefendingPlayerIdCount " +
-                "declaredAttackSourceMatchCount=$declaredAttackSourceMatchCount " +
-                "witnessBackedCandidateProbe=ACCEPTED " +
-                "fullProducer=BLOCKED_ON_AUTHORITATIVE_METADATA " +
-                "A=COMPLETE B=NOT_REQUIRED C=CANDIDATE_PRODUCTION D=WRAPPER",
+                "emptyAttackersAccepted=true " +
+                "attackerCount=0 declaredAttackCount=0",
         )
     }
 })

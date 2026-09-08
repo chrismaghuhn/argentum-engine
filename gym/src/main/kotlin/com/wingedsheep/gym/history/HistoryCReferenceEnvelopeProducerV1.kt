@@ -1046,7 +1046,6 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is AbilityResolvedEvent,
         is AbilityActivatedEvent,
         is AbilityTriggeredEvent,
-        is AttackersDeclaredEvent,
         is BecomesTargetEvent,
         is BlockersDeclaredEvent,
         is CardCycledEvent,
@@ -1080,6 +1079,8 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is UntappedEvent,
         is ZoneChangeEvent,
         -> true
+
+        is AttackersDeclaredEvent -> event.attackers.isNotEmpty() || event.declaredAttacks.isNotEmpty()
 
         is ManaAddedEvent -> false
 

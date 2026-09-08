@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardCycledEvent
+import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
@@ -95,6 +96,8 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         var cardCycledStep: Int? = null
         var keywordGrantedChoices: Int? = null
         var keywordGrantedStep: Int? = null
+        var emptyAttackersChoices: Int? = null
+        var emptyAttackersStep: Int? = null
         var failure: HistoryDOperationException? = null
         var failingRawEventTypes: List<String> = emptyList()
         var failingProjections: List<PerspectiveEventProjectionResult?> = emptyList()
@@ -136,6 +139,16 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                     keywordGrantedChoices = successfulChoices
                     keywordGrantedStep = environment.stepCount
                 }
+                if (emptyAttackersChoices == null &&
+                    environment.lastStepEvents.any { event ->
+                        event is AttackersDeclaredEvent &&
+                            event.attackers.isEmpty() &&
+                            event.declaredAttacks.isEmpty()
+                    }
+                ) {
+                    emptyAttackersChoices = successfulChoices
+                    emptyAttackersStep = environment.stepCount
+                }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
                 failingRawEventTypes = environment.lastStepEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
@@ -146,14 +159,21 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         }
 
         val historyDFailure = checkNotNull(failure)
-        successfulChoices shouldBe 465
-        environment.stepCount shouldBe 466
+        successfulChoices shouldBe 1999
+        environment.stepCount shouldBe 2000
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
         keywordGrantedChoices shouldBe 457
         keywordGrantedStep shouldBe 457
+        emptyAttackersChoices shouldBe 466
+        emptyAttackersStep shouldBe 466
         historyDFailure.failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
-        failingRawEventTypes shouldBe listOf("AttackersDeclaredEvent")
+        failingRawEventTypes shouldBe listOf(
+            "ZoneChangeEvent",
+            "ZoneChangeEvent",
+            "ResolvedEvent",
+            "AbilityTriggeredEvent",
+        )
 
         val projections = failingProjections.map(::checkNotNull)
         projections.size shouldBe 2
@@ -162,12 +182,21 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
             projection.classifications.map { it.rawEventType } shouldBe failingRawEventTypes
             projection.classifications.map { it.disposition } shouldBe listOf(
                 PerspectiveEventDisposition.EMITTED,
+                PerspectiveEventDisposition.EMITTED,
+                PerspectiveEventDisposition.EMITTED,
+                PerspectiveEventDisposition.EMITTED,
             )
             projection.classifications.map { it.reason } shouldBe listOf(
                 null,
+                null,
+                null,
+                null,
             )
             projection.batch.entries.map { it.eventFamily } shouldBe listOf(
-                PerspectiveEventFamily.ATTACKERS_DECLARED,
+                PerspectiveEventFamily.ZONE_CHANGED,
+                PerspectiveEventFamily.ZONE_CHANGED,
+                PerspectiveEventFamily.RESOLVED,
+                PerspectiveEventFamily.ABILITY_TRIGGERED,
             )
         }
 
@@ -179,6 +208,8 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                 "rawEvents=$failingRawEventTypes " +
                 "keywordGrantedChoices=$keywordGrantedChoices " +
                 "keywordGrantedStep=$keywordGrantedStep " +
+                "emptyAttackersChoices=$emptyAttackersChoices " +
+                "emptyAttackersStep=$emptyAttackersStep " +
                 "perspectives=" + projections.map { projection ->
                     projection.classifications.map { classification ->
                         "${classification.rawEventType}:${classification.disposition}:${classification.reason}"
