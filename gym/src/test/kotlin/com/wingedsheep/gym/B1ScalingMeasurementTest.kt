@@ -969,7 +969,11 @@ private fun runB1StructuredLatencyMeasurement() {
     val service = MultiEnvService(registry, workerPool = EnvWorkerPool(1))
     val assignments = arrayOf(b1ScalingCorpus)
     val spec = b1ScalingCorpus.first()
-    val created = service.create(spec.config())
+    val created = service.create(
+        spec.config(
+            semanticEpisodeId = preC1HistoryEpisodeId(spec, "latency-initial"),
+        ),
+    )
     val slots = listOf(ScalingSlot(created.envId, trainingObservation(created.observation)))
     try {
         warmup(service, slots, assignments, warmupSteps)
@@ -1028,7 +1032,11 @@ private fun runB1ResetHeavyMeasurement() {
     val registry = b1ScalingRegistry()
     val service = MultiEnvService(registry, workerPool = EnvWorkerPool(1))
     val spec = b1ScalingCorpus.first()
-    val created = service.create(spec.config())
+    val created = service.create(
+        spec.config(
+            semanticEpisodeId = preC1HistoryEpisodeId(spec, "reset-heavy-initial"),
+        ),
+    )
     try {
         val latencies = ArrayList<Long>(resets)
         val heapSamples = ArrayList<Long>(resets)
@@ -1036,12 +1044,20 @@ private fun runB1ResetHeavyMeasurement() {
         var firstStateDigest: String? = null
         val before = ScalingJvmSnapshot.capture(includeProcessRss = true)
         val wallStart = System.nanoTime()
-        repeat(resets) {
+        repeat(resets) { resetIndex ->
             val start = System.nanoTime()
             val observation = isolationObservation(
                 service,
                 created.envId,
-                service.reset(created.envId, spec.config()),
+                service.reset(
+                    created.envId,
+                    spec.config(
+                        semanticEpisodeId = preC1HistoryEpisodeId(
+                            spec,
+                            "reset-heavy-$resetIndex",
+                        ),
+                    ),
+                ),
             )
             latencies += System.nanoTime() - start
             heapSamples += currentHeapUsed()
@@ -1049,7 +1065,7 @@ private fun runB1ResetHeavyMeasurement() {
                 firstStateDigest = observation.stateDigest
             } else {
                 check(firstStateDigest == observation.stateDigest) {
-                    "Reset-heavy deterministic reset digest changed at reset=$it"
+                    "Reset-heavy deterministic reset digest changed at reset=$resetIndex"
                 }
             }
             digest.update(observation.stateDigest.toByteArray(StandardCharsets.UTF_8))
@@ -1129,9 +1145,17 @@ private fun measureScalingCondition(
     )
     stabilizeHeapForMemorySnapshot()
     val beforeEnvironmentSetup = ScalingJvmSnapshot.capture(includeProcessRss = true)
-    val slots = assignments.map { specs ->
+    val slots = assignments.mapIndexed { slotIndex, specs ->
         require(specs.isNotEmpty()) { "Every scaling environment needs at least one episode" }
-        val created = service.create(specs.first().config())
+        val firstSpec = specs.first()
+        val created = service.create(
+            firstSpec.config(
+                semanticEpisodeId = preC1HistoryEpisodeId(
+                    firstSpec,
+                    "scaling-initial-slot-$slotIndex",
+                ),
+            ),
+        )
         ScalingSlot(created.envId, trainingObservation(created.observation))
     }
     val setupWallNanos = System.nanoTime() - setupStart
@@ -1240,7 +1264,16 @@ private fun measureRepetition(
         val activeSlots = slots.indices.filter { round < assignments[it].size }
         val specs = activeSlots.associateWith { slotIndex -> assignments[slotIndex][round] }
         val resetCalls = timedParallel(service, activeSlots, tracker) { slotIndex ->
-            service.reset(slots[slotIndex].envId, specs.getValue(slotIndex).config())
+            val spec = specs.getValue(slotIndex)
+            service.reset(
+                slots[slotIndex].envId,
+                spec.config(
+                    semanticEpisodeId = preC1HistoryEpisodeId(
+                        spec,
+                        "scaling-repetition-$repetition-round-$round-slot-$slotIndex",
+                    ),
+                ),
+            )
         }
         resetCalls.forEachIndexed { offset, timed ->
             val slotIndex = activeSlots[offset]
@@ -1376,8 +1409,18 @@ private fun resetSlots(
     specs: List<ScalingEpisodeSpec>,
     activeSlots: List<Int>,
     tracker: ConcurrencyTracker,
+    historyPhase: String = "warmup",
 ): List<Timed<ObservationResult>> = timedParallel(service, activeSlots, tracker) { slotIndex ->
-    service.reset(slots[slotIndex].envId, specs[slotIndex].config())
+    val spec = specs[slotIndex]
+    service.reset(
+        slots[slotIndex].envId,
+        spec.config(
+            semanticEpisodeId = preC1HistoryEpisodeId(
+                spec,
+                "$historyPhase-slot-$slotIndex",
+            ),
+        ),
+    )
 }.also { calls ->
     calls.forEachIndexed { offset, timed ->
         slots[activeSlots[offset]].observation = trainingObservation(timed.value)
@@ -1567,7 +1610,7 @@ private fun b1ScalingRegistry(): CardRegistry = CardRegistry().apply {
     }
 }
 
-private fun ScalingEpisodeSpec.config(): EnvConfig {
+private fun ScalingEpisodeSpec.config(semanticEpisodeId: String? = null): EnvConfig {
     val akiri = readScalingLockedDeck("akiri-v0.1.txt")
     val chevill = readScalingLockedDeck("chevill-v0.1.txt")
     val decks = mapOf("Akiri" to akiri, "Chevill" to chevill)
@@ -1592,8 +1635,16 @@ private fun ScalingEpisodeSpec.config(): EnvConfig {
         seed = seed,
         maxSteps = B1_SCALING_MAX_STEPS,
         perspectivePlayerIndex = 0,
+        semanticEpisodeId = semanticEpisodeId,
     )
 }
+
+private fun preC1HistoryEpisodeId(spec: ScalingEpisodeSpec, phase: String): String? =
+    if (System.getProperty("preC1.history") == "true") {
+        "pre-c1-history-$phase-${spec.label}"
+    } else {
+        null
+    }
 
 private fun readScalingLockedDeck(fileName: String): ScalingLockedDeck {
     val root = generateSequence(Path.of(System.getProperty("user.dir"))) { it.parent }

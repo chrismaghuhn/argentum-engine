@@ -71,6 +71,7 @@ tasks.withType<Test>().configureEach {
         "b1.resetHeavy.resets",
         "b1.resetHeavy.outputDir",
         "b1.contract",
+        "preC1.history",
         "a9.episodeLimit",
         "a9.auditDatasetRoot",
     )) {
