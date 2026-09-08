@@ -116,6 +116,7 @@ class PerspectiveHistoryV1Test : FunSpec({
                 skipMulligans = true,
                 startingPlayerIndex = 0,
                 format = Format.Commander(),
+                seed = 0xD15EA5E5L,
             ),
             semanticEpisodeId = "episode-exact-pair",
         )
@@ -123,7 +124,7 @@ class PerspectiveHistoryV1Test : FunSpec({
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var observation = gym.observe().observation as TrainingObservation
-        repeat(16) {
+        repeat(64) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             when (choice) {

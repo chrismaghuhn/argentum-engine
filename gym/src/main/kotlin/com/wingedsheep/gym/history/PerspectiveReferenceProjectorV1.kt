@@ -19,6 +19,16 @@ internal data class PerspectiveReferenceProjectionV1(
     val nextRegistry: PerspectiveAliasRegistryV1,
     val referenceOccurrences: List<PerspectiveAliasAssignment>,
     val incarnationRelations: List<PerspectiveIncarnationRelationV1>,
+    val semanticRelations: List<PerspectiveSemanticRelationAssignment> = emptyList(),
+)
+
+internal data class PerspectiveSemanticRelationAssignment(
+    val eventOrdinal: Int,
+    val kind: HistoryCReferenceRelationKindV1,
+    val sourceAlias: PerspectiveSemanticAlias,
+    val targetAlias: PerspectiveSemanticAlias? = null,
+    val targetPlayerRole: String? = null,
+    val amount: Int? = null,
 )
 
 internal sealed interface PerspectiveReferenceProjectionResult {
@@ -136,14 +146,31 @@ internal class PerspectiveReferenceProjectorV1(
         }
 
         nextRegistry = reconcile(nextRegistry, transition.afterState, perspectivePlayerId)
+        val assignmentsByCandidate = occurrences.associateBy { it.candidateIndex }
+        val semanticRelations = evidence.relations.mapNotNull { relation ->
+            val source = assignmentsByCandidate[relation.sourceCandidateIndex]
+                ?: return@mapNotNull null
+            val target = relation.targetCandidateIndex?.let(assignmentsByCandidate::get)
+                ?: if (relation.targetPlayerRole != null) null else return@mapNotNull null
+            PerspectiveSemanticRelationAssignment(
+                eventOrdinal = relation.eventOrdinal,
+                kind = relation.kind,
+                sourceAlias = source.alias,
+                targetAlias = target?.alias,
+                targetPlayerRole = relation.targetPlayerRole,
+                amount = relation.amount,
+            )
+        }
 
         return PerspectiveReferenceProjectionResult.Accepted(
             PerspectiveReferenceProjectionV1(
                 nextRegistry = nextRegistry,
                 referenceOccurrences = occurrences,
-                // No accepted A+B relation witness currently exists. Alias allocation and
-                // retirement remain useful without asserting a cross-incarnation relationship.
+                // These are within-event semantic facts, not cross-incarnation identity links.
+                // The latter remains deliberately empty until independently typed producer
+                // authority exists.
                 incarnationRelations = emptyList(),
+                semanticRelations = semanticRelations,
             ),
         )
     }
@@ -228,8 +255,7 @@ internal class PerspectiveReferenceProjectorV1(
                 }
                 ordered += candidates.sortedWith(
                     compareBy<IndexedCandidate>({ it.candidate.cardDefinitionId })
-                        .thenBy { it.candidate.slot.role }
-                        .thenBy { it.candidate.slot.roleOrdinal },
+                        .thenBy { it.candidate.slot.role },
                 )
                 continue
             }

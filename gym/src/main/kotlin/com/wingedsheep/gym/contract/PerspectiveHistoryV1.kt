@@ -26,6 +26,53 @@ enum class PerspectiveHistoryIdentityDisclosureV1 {
 }
 
 @Serializable
+enum class PerspectiveHistoryRelationKindV1 {
+    BLOCKS,
+    DAMAGE_ASSIGNED,
+    ATTACKS_DEFENDER,
+}
+
+@Serializable
+data class PerspectiveHistoryRelationV1(
+    val kind: PerspectiveHistoryRelationKindV1,
+    val sourceAlias: String,
+    val targetAlias: String? = null,
+    val targetPlayerRole: String? = null,
+    val amount: Int? = null,
+) {
+    init {
+        require(Regex("o[0-9]+").matches(sourceAlias)) {
+            "Perspective history relation sources require canonical semantic aliases"
+        }
+        require((targetAlias == null) != (targetPlayerRole == null)) {
+            "Perspective history relations require exactly one target form"
+        }
+        targetAlias?.let {
+            require(Regex("o[0-9]+").matches(it)) {
+                "Perspective history relation targets require canonical semantic aliases"
+            }
+        }
+        targetPlayerRole?.let {
+            require(it == "SELF" || it == "OTHER") {
+                "Perspective history relation player roles must be perspective-relative"
+            }
+        }
+        when (kind) {
+            PerspectiveHistoryRelationKindV1.BLOCKS,
+            PerspectiveHistoryRelationKindV1.ATTACKS_DEFENDER,
+            -> require(amount == null) {
+                "Non-damage relations cannot carry an amount"
+            }
+
+            PerspectiveHistoryRelationKindV1.DAMAGE_ASSIGNED ->
+                require(amount != null && amount >= 0) {
+                    "Damage relations require a non-negative amount"
+                }
+        }
+    }
+}
+
+@Serializable
 data class PerspectiveHistoryReferenceV1(
     val semanticRole: PerspectiveHistoryReferenceRoleV1,
     val semanticAlias: String,
@@ -56,6 +103,7 @@ data class PerspectiveHistoryEntryV1(
     val eventFamily: PerspectiveEventFamily,
     val semanticPayload: JsonObject,
     val references: List<PerspectiveHistoryReferenceV1> = emptyList(),
+    val relations: List<PerspectiveHistoryRelationV1> = emptyList(),
 ) {
     init {
         require(perspectiveHistoryOrdinal >= 0L) {

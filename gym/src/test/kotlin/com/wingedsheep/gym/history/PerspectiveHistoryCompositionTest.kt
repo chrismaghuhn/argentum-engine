@@ -2,10 +2,12 @@ package com.wingedsheep.gym.history
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
+import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.DamageAssignedEvent
 import com.wingedsheep.engine.core.CreatureDestroyedEvent
+import com.wingedsheep.engine.core.DeclaredAttack
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
@@ -44,6 +46,7 @@ import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.collections.shouldBeEmpty
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
@@ -356,6 +359,13 @@ class PerspectiveHistoryCompositionTest : FunSpec({
                     AttackersDeclaredEvent(
                         attackers = listOf(attacker),
                         attackingPlayerId = p1,
+                        declaredAttacks = listOf(
+                            DeclaredAttack(
+                                attackerId = attacker,
+                                defenderId = blocker,
+                                defendingPlayerId = p2,
+                            ),
+                        ),
                     ),
                     BlockersDeclaredEvent(
                         blockers = mapOf(blocker to listOf(attacker)),
@@ -381,6 +391,11 @@ class PerspectiveHistoryCompositionTest : FunSpec({
         ).histories.getValue(p1)
 
         history.entries.filter { it.references.isNotEmpty() }.size shouldBe 5
+        history.entries
+            .single { it.eventFamily == PerspectiveEventFamily.ATTACKERS_DECLARED }
+            .relations
+            .single()
+            .targetAlias shouldNotBe null
 
         fun historyFor(event: GameEvent): String {
             val eventSource = com.wingedsheep.gym.CommittedPerspectiveEventSource(
@@ -430,6 +445,26 @@ class PerspectiveHistoryCompositionTest : FunSpec({
             DamageAssignedEvent(
                 attackerId = attacker,
                 assignments = linkedMapOf(target to 2, blocker to 1),
+            ),
+        )
+        historyFor(
+            BlockersDeclaredEvent(
+                blockers = linkedMapOf(blocker to listOf(attacker), target to listOf(attachment)),
+            ),
+        ) shouldNotBe historyFor(
+            BlockersDeclaredEvent(
+                blockers = linkedMapOf(blocker to listOf(attachment), target to listOf(attacker)),
+            ),
+        )
+        historyFor(
+            DamageAssignedEvent(
+                attackerId = attacker,
+                assignments = linkedMapOf(blocker to 1, target to 4),
+            ),
+        ) shouldNotBe historyFor(
+            DamageAssignedEvent(
+                attackerId = attacker,
+                assignments = linkedMapOf(blocker to 4, target to 1),
             ),
         )
     }
@@ -514,6 +549,59 @@ class PerspectiveHistoryCompositionTest : FunSpec({
         history.entries[0].references.single().semanticAlias shouldBe "o0"
         history.entries[1].references.map { it.semanticAlias } shouldBe listOf("o0", "o1")
         history.entries[2].references.map { it.semanticAlias } shouldBe listOf("o2", "o3")
+    }
+
+    test("HISTD-REVIEW-INC-02 activation binds the pre-cost source incarnation") {
+        val sourceId = EntityId("sacrifice-source")
+        val before = cardState(
+            entities = mapOf(
+                p1 to ComponentContainer.EMPTY,
+                p2 to ComponentContainer.EMPTY,
+                sourceId to cardContainer(p1, "Mountain"),
+            ),
+            zones = mapOf(ZoneKey(p1, Zone.BATTLEFIELD) to listOf(sourceId)),
+            stamps = mapOf(sourceId to 41L),
+        )
+        val after = cardState(
+            entities = mapOf(
+                p1 to ComponentContainer.EMPTY,
+                p2 to ComponentContainer.EMPTY,
+                sourceId to cardContainer(p1, "Mountain"),
+            ),
+            zones = mapOf(ZoneKey(p1, Zone.GRAVEYARD) to listOf(sourceId)),
+            stamps = mapOf(sourceId to 42L),
+        )
+        val source = com.wingedsheep.gym.CommittedPerspectiveEventSource(
+            CardRegistry().apply {
+                register(PortalSet.cards)
+                register(PortalSet.basicLands)
+            },
+        )
+        source.capture(
+            CommittedRulesTransition(
+                beforeState = before,
+                afterState = after,
+                events = listOf(
+                    AbilityActivatedEvent(
+                        sourceId = sourceId,
+                        sourceName = "Mountain",
+                        controllerId = p1,
+                    ),
+                ),
+                sourceStepCount = 1,
+            ),
+        )
+        val projected = source.lastCommittedAutomaticReferenceProjection(
+            semanticEpisodeId = "episode-history",
+            perspectivePlayerId = p1,
+            registry = registry(p1),
+        ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+
+        projected.evidence.candidates.single().beforeWitness shouldBe
+            HistoryCObjectWitness(sourceId, 41L)
+        projected.evidence.candidates.single().afterWitness shouldBe null
+        projected.projection.nextRegistry.activeBindings.keys shouldBe emptySet()
+        projected.projection.incarnationRelations shouldBe emptyList()
     }
 
     test("HISTD reachable history-enabled cast and payment path appends successfully") {

@@ -5,6 +5,8 @@ import com.wingedsheep.gym.contract.PerspectiveHistoryEntryV1
 import com.wingedsheep.gym.contract.PerspectiveHistoryIdentityDisclosureV1
 import com.wingedsheep.gym.contract.PerspectiveHistoryReferenceRoleV1
 import com.wingedsheep.gym.contract.PerspectiveHistoryReferenceV1
+import com.wingedsheep.gym.contract.PerspectiveHistoryRelationKindV1
+import com.wingedsheep.gym.contract.PerspectiveHistoryRelationV1
 import com.wingedsheep.gym.contract.PerspectiveHistoryV1
 import com.wingedsheep.sdk.model.EntityId
 
@@ -87,12 +89,42 @@ internal object PerspectiveHistoryComposerV1 {
             .groupBy({ it.first }, { it.second })
 
         val existing = state.histories.getValue(eventBatch.perspectivePlayerId)
+        val relationsByEvent = projection.semanticRelations
+            .map { relation ->
+                relation.eventOrdinal to PerspectiveHistoryRelationV1(
+                    kind = when (relation.kind) {
+                        HistoryCReferenceRelationKindV1.BLOCKS ->
+                            PerspectiveHistoryRelationKindV1.BLOCKS
+                        HistoryCReferenceRelationKindV1.DAMAGE_ASSIGNED ->
+                            PerspectiveHistoryRelationKindV1.DAMAGE_ASSIGNED
+                        HistoryCReferenceRelationKindV1.ATTACKS_DEFENDER ->
+                            PerspectiveHistoryRelationKindV1.ATTACKS_DEFENDER
+                    },
+                    sourceAlias = relation.sourceAlias.canonical(),
+                    targetAlias = relation.targetAlias?.canonical(),
+                    targetPlayerRole = relation.targetPlayerRole,
+                    amount = relation.amount,
+                )
+            }
+            .groupBy({ it.first }, { it.second })
+            .mapValues { (_, relations) ->
+                relations.sortedWith(
+                    compareBy<PerspectiveHistoryRelationV1>(
+                        { it.kind.ordinal },
+                        { it.sourceAlias },
+                        { it.targetAlias ?: "" },
+                        { it.targetPlayerRole ?: "" },
+                        { it.amount ?: -1 },
+                    ),
+                )
+            }
         val appended = eventBatch.entries.mapIndexed { index, event ->
             PerspectiveHistoryEntryV1(
                 perspectiveHistoryOrdinal = existing.entries.size.toLong() + index,
                 eventFamily = event.eventFamily,
                 semanticPayload = event.semanticPayload,
                 references = referencesByEventOrdinal[event.perspectiveEventOrdinal].orEmpty(),
+                relations = relationsByEvent[event.perspectiveEventOrdinal].orEmpty(),
             )
         }
         return state.withHistory(existing.copy(entries = existing.entries + appended))

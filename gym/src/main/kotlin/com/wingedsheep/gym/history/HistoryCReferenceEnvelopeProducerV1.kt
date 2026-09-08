@@ -107,6 +107,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
 
         val rawEvents = emittedRawEvents(transition.events, projection.classifications)
         val candidates = mutableListOf<HistoryCReferenceCandidateV1>()
+        val relations = mutableListOf<HistoryCReferenceRelationEvidenceV1>()
         for ((eventOrdinal, rawEvent) in rawEvents.withIndex()) {
             val family = projection.batch.entries[eventOrdinal].eventFamily
             val eventCandidates = when (rawEvent) {
@@ -118,6 +119,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         roleOrdinal = 0,
                         rank = 0,
                         entityId = rawEvent.sourceId,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
                     ),
                 )
 
@@ -143,11 +145,10 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                     ),
                 )
 
-                is AttackersDeclaredEvent -> requiredCollection(
+                is AttackersDeclaredEvent -> attackerCandidates(
                     transition = transition,
                     eventOrdinal = eventOrdinal,
-                    entityIds = rawEvent.attackers,
-                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                    event = rawEvent,
                 ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
 
                 is BlockersDeclaredEvent -> blockerCandidates(
@@ -445,12 +446,43 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
             ) {
                 return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
             }
+            val candidateOffset = candidates.size
             candidates += eventCandidates
+            when (rawEvent) {
+                is AttackersDeclaredEvent -> {
+                    val attackRelations = attackerRelations(
+                        eventOrdinal = eventOrdinal,
+                        event = rawEvent,
+                        candidates = eventCandidates,
+                        candidateOffset = candidateOffset,
+                        perspectivePlayerId = projection.batch.perspectivePlayerId,
+                        transition = transition,
+                    ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+                    relations += attackRelations
+                }
+
+                is BlockersDeclaredEvent -> relations += blockerRelations(
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
+                    candidates = eventCandidates,
+                    candidateOffset = candidateOffset,
+                )
+
+                is DamageAssignedEvent -> relations += damageRelations(
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
+                    candidates = eventCandidates,
+                    candidateOffset = candidateOffset,
+                )
+
+                else -> Unit
+            }
         }
         return HistoryCReferenceEnvelopeProducerResult.Accepted(
             HistoryCReferenceEnvelopeV1(
                 perspectivePlayerId = projection.batch.perspectivePlayerId,
                 candidates = candidates,
+                relations = relations,
             ),
         )
     }
@@ -492,6 +524,36 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 role = role,
                 roleOrdinal = roleOrdinal,
                 entityId = entityId,
+            ) ?: return null
+        }
+        return result
+    }
+
+    private fun attackerCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: AttackersDeclaredEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val result = requiredCollection(
+            transition = transition,
+            eventOrdinal = eventOrdinal,
+            entityIds = event.attackers,
+            role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+        )?.toMutableList() ?: return null
+        val defenderIds = event.declaredAttacks
+            .asSequence()
+            .map { it.defenderId }
+            .filter { hasCardOrRulesWitness(transition, it) }
+            .distinct()
+            .toList()
+        defenderIds.forEachIndexed { roleOrdinal, defenderId ->
+            result += opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.TARGET,
+                roleOrdinal = roleOrdinal,
+                rank = event.attackers.size + roleOrdinal,
+                entityId = defenderId,
             ) ?: return null
         }
         return result
@@ -638,6 +700,116 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         }
         return result
     }
+
+    private fun blockerRelations(
+        eventOrdinal: Int,
+        event: BlockersDeclaredEvent,
+        candidates: List<HistoryCReferenceCandidateV1>,
+        candidateOffset: Int,
+    ): List<HistoryCReferenceRelationEvidenceV1> = buildList {
+        event.blockers.forEach { (blockerId, attackerIds) ->
+            val source = candidates.indexOfFirst { candidate ->
+                candidate.slot.role == HistoryCReferenceSlotRole.SOURCE &&
+                    candidateEntityId(candidate) == blockerId
+            }
+            if (source < 0) return@forEach
+            attackerIds.forEach { attackerId ->
+                val target = candidates.indexOfFirst { candidate ->
+                    candidate.slot.role == HistoryCReferenceSlotRole.TARGET &&
+                        candidateEntityId(candidate) == attackerId
+                }
+                if (target >= 0) {
+                    add(
+                        HistoryCReferenceRelationEvidenceV1(
+                            eventOrdinal = eventOrdinal,
+                            kind = HistoryCReferenceRelationKindV1.BLOCKS,
+                            sourceCandidateIndex = candidateOffset + source,
+                            targetCandidateIndex = candidateOffset + target,
+                        ),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun attackerRelations(
+        eventOrdinal: Int,
+        event: AttackersDeclaredEvent,
+        candidates: List<HistoryCReferenceCandidateV1>,
+        candidateOffset: Int,
+        perspectivePlayerId: EntityId,
+        transition: CommittedRulesTransition,
+    ): List<HistoryCReferenceRelationEvidenceV1>? = buildList {
+        for (declaredAttack in event.declaredAttacks) {
+            val source = candidates.indexOfFirst { candidate ->
+                candidate.slot.role == HistoryCReferenceSlotRole.EVENT_SUBJECT &&
+                    candidateEntityId(candidate) == declaredAttack.attackerId
+            }
+            if (source < 0) return null
+
+            if (hasCardOrRulesWitness(transition, declaredAttack.defenderId)) {
+                val target = candidates.indexOfFirst { candidate ->
+                    candidate.slot.role == HistoryCReferenceSlotRole.TARGET &&
+                        candidateEntityId(candidate) == declaredAttack.defenderId
+                }
+                if (target < 0) return null
+                add(
+                    HistoryCReferenceRelationEvidenceV1(
+                        eventOrdinal = eventOrdinal,
+                        kind = HistoryCReferenceRelationKindV1.ATTACKS_DEFENDER,
+                        sourceCandidateIndex = candidateOffset + source,
+                        targetCandidateIndex = candidateOffset + target,
+                    ),
+                )
+            } else {
+                val defendingPlayerId = declaredAttack.defendingPlayerId ?: return null
+                add(
+                    HistoryCReferenceRelationEvidenceV1(
+                        eventOrdinal = eventOrdinal,
+                        kind = HistoryCReferenceRelationKindV1.ATTACKS_DEFENDER,
+                        sourceCandidateIndex = candidateOffset + source,
+                        targetPlayerRole = perspectivePlayerRole(
+                            defendingPlayerId,
+                            perspectivePlayerId,
+                        ),
+                    ),
+                )
+            }
+        }
+    }
+
+    private fun perspectivePlayerRole(playerId: EntityId, perspectivePlayerId: EntityId): String =
+        if (playerId == perspectivePlayerId) "SELF" else "OTHER"
+
+    private fun damageRelations(
+        eventOrdinal: Int,
+        event: DamageAssignedEvent,
+        candidates: List<HistoryCReferenceCandidateV1>,
+        candidateOffset: Int,
+    ): List<HistoryCReferenceRelationEvidenceV1> {
+        val source = candidates.indexOfFirst { candidate ->
+            candidate.slot.role == HistoryCReferenceSlotRole.SOURCE &&
+                candidateEntityId(candidate) == event.attackerId
+        }
+        if (source < 0) return emptyList()
+        return event.assignments.mapNotNull { (targetId, amount) ->
+            val target = candidates.indexOfFirst { candidate ->
+                candidate.slot.role == HistoryCReferenceSlotRole.TARGET &&
+                    candidateEntityId(candidate) == targetId
+            }
+            if (target < 0) return@mapNotNull null
+            HistoryCReferenceRelationEvidenceV1(
+                eventOrdinal = eventOrdinal,
+                kind = HistoryCReferenceRelationKindV1.DAMAGE_ASSIGNED,
+                sourceCandidateIndex = candidateOffset + source,
+                targetCandidateIndex = candidateOffset + target,
+                amount = amount,
+            )
+        }
+    }
+
+    private fun candidateEntityId(candidate: HistoryCReferenceCandidateV1): EntityId? =
+        candidate.afterWitness?.entityId ?: candidate.beforeWitness?.entityId
 
     private fun spellCopyCandidates(
         transition: CommittedRulesTransition,

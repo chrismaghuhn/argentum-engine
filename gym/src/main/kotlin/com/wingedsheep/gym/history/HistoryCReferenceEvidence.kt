@@ -128,12 +128,29 @@ internal data class HistoryCReferenceCandidateV1(
         HistoryCReferenceEndpointAuthority.UNSPECIFIED,
 )
 
+internal enum class HistoryCReferenceRelationKindV1 {
+    BLOCKS,
+    DAMAGE_ASSIGNED,
+    ATTACKS_DEFENDER,
+}
+
+/** Internal relation evidence; candidate indices never cross the History-D seam. */
+internal data class HistoryCReferenceRelationEvidenceV1(
+    val eventOrdinal: Int,
+    val kind: HistoryCReferenceRelationKindV1,
+    val sourceCandidateIndex: Int,
+    val targetCandidateIndex: Int? = null,
+    val targetPlayerRole: String? = null,
+    val amount: Int? = null,
+)
+
 /** Internal envelope supplied by a committed producer; it has no alias field. */
 internal data class HistoryCReferenceEnvelopeV1(
     val version: Int = HISTORY_C_REFERENCE_EVIDENCE_V1_VERSION,
     val schemaIdentity: String = HISTORY_C_REFERENCE_EVIDENCE_V1_SCHEMA_IDENTITY,
     val perspectivePlayerId: EntityId,
     val candidates: List<HistoryCReferenceCandidateV1>,
+    val relations: List<HistoryCReferenceRelationEvidenceV1> = emptyList(),
 )
 
 /** Validated A+B-free evidence output; HISTC-B owns lifetime/allocation later. */
@@ -141,6 +158,7 @@ internal data class HistoryCReferenceEvidenceV1(
     val perspectivePlayerId: EntityId,
     val eventBatch: PerspectiveEventBatchV1,
     val candidates: List<HistoryCReferenceCandidateV1>,
+    val relations: List<HistoryCReferenceRelationEvidenceV1> = emptyList(),
 )
 
 /**
@@ -202,15 +220,117 @@ internal object HistoryCReferenceAuthority {
             if (failure != null) return HistoryCReferenceAuthorityResult.Rejected(failure)
             previousOrder = CandidateOrder.from(candidate)
         }
+        validateRelations(transition, projection, envelope)?.let {
+            return HistoryCReferenceAuthorityResult.Rejected(it)
+        }
 
         return HistoryCReferenceAuthorityResult.Accepted(
             HistoryCReferenceEvidenceV1(
                 perspectivePlayerId = envelope.perspectivePlayerId,
                 eventBatch = projection.batch,
                 candidates = envelope.candidates.toList(),
+                relations = envelope.relations.toList(),
             ),
         )
     }
+
+    private fun validateRelations(
+        transition: CommittedRulesTransition,
+        projection: PerspectiveEventProjectionResult,
+        envelope: HistoryCReferenceEnvelopeV1,
+    ): HistoryCFailure? {
+        for (relation in envelope.relations) {
+            if (relation.eventOrdinal !in projection.batch.entries.indices ||
+                relation.sourceCandidateIndex !in envelope.candidates.indices ||
+                (relation.targetCandidateIndex != null &&
+                    relation.targetCandidateIndex !in envelope.candidates.indices) ||
+                (relation.targetCandidateIndex == null) == relation.targetPlayerRole.isNullOrBlank()
+            ) {
+                return HistoryCFailure(HistoryCFailureCode.INVALID_REFERENCE_SLOT)
+            }
+            val source = envelope.candidates[relation.sourceCandidateIndex]
+            val target = relation.targetCandidateIndex?.let(envelope.candidates::get)
+            val sourceRoleValid = when (relation.kind) {
+                HistoryCReferenceRelationKindV1.ATTACKS_DEFENDER ->
+                    source.slot.role == HistoryCReferenceSlotRole.EVENT_SUBJECT
+
+                else -> source.slot.role == HistoryCReferenceSlotRole.SOURCE
+            }
+            if (source.slot.eventOrdinal != relation.eventOrdinal || !sourceRoleValid) {
+                return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+            }
+            if (target != null &&
+                (target.slot.eventOrdinal != relation.eventOrdinal ||
+                    target.slot.role != HistoryCReferenceSlotRole.TARGET)
+            ) {
+                return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+            }
+            val rawEvent = rawEventForProjectedOrdinal(
+                transition,
+                projection,
+                relation.eventOrdinal,
+            ) ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+            val sourceId = listOfNotNull(source.beforeWitness, source.afterWitness)
+                .firstOrNull()?.entityId
+                ?: return HistoryCFailure(HistoryCFailureCode.MISSING_EVENT_TIME_WITNESS)
+            val targetId = target?.let {
+                listOfNotNull(it.beforeWitness, it.afterWitness).firstOrNull()?.entityId
+            }
+            when (relation.kind) {
+                HistoryCReferenceRelationKindV1.BLOCKS -> {
+                    if (rawEvent !is BlockersDeclaredEvent || targetId == null ||
+                        rawEvent.blockers[sourceId]?.contains(targetId) != true ||
+                        relation.amount != null
+                    ) {
+                        return relationMismatch()
+                    }
+                }
+
+                HistoryCReferenceRelationKindV1.DAMAGE_ASSIGNED -> {
+                    if (rawEvent !is DamageAssignedEvent || targetId == null ||
+                        rawEvent.attackerId != sourceId ||
+                        rawEvent.assignments[targetId] != relation.amount
+                    ) {
+                        return relationMismatch()
+                    }
+                }
+
+                HistoryCReferenceRelationKindV1.ATTACKS_DEFENDER -> {
+                    val declaredAttack = (rawEvent as? AttackersDeclaredEvent)
+                        ?.declaredAttacks
+                        ?.firstOrNull { it.attackerId == sourceId }
+                    if (declaredAttack == null) {
+                        return relationMismatch()
+                    }
+                    val targetIsObject = hasCardOrRulesWitness(transition, declaredAttack.defenderId)
+                    if (targetIsObject) {
+                        if (relation.amount != null ||
+                            targetId != declaredAttack.defenderId ||
+                            relation.targetPlayerRole != null
+                        ) {
+                            return relationMismatch()
+                        }
+                    } else {
+                        val defendingPlayerId = declaredAttack.defendingPlayerId
+                            ?: return relationMismatch()
+                        if (relation.amount != null ||
+                            targetId != null ||
+                            relation.targetPlayerRole != perspectivePlayerRole(
+                                defendingPlayerId,
+                                projection.batch.perspectivePlayerId,
+                            )
+                        ) {
+                            return relationMismatch()
+                        }
+                    }
+                }
+            }
+        }
+        return null
+    }
+
+    private fun relationMismatch(): HistoryCFailure =
+        HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
 
     private fun validateCandidate(
         transition: CommittedRulesTransition,
@@ -281,6 +401,7 @@ internal object HistoryCReferenceAuthority {
         candidate: HistoryCReferenceCandidateV1,
     ): HistoryCFailure? {
         val expected = when (event) {
+            is AbilityActivatedEvent -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
             is CreatureDestroyedEvent,
             is DamageAssignedEvent,
             is DamageDealtEvent,
@@ -379,14 +500,7 @@ internal object HistoryCReferenceAuthority {
 
         is AttackersDeclaredEvent -> validateCollectionCandidate(
             transition = transition,
-            expected = event.attackers.mapIndexed { index, entityId ->
-                ExpectedReference(
-                    entityId = entityId,
-                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
-                    roleOrdinal = index,
-                    rank = index,
-                )
-            },
+            expected = attackerReferences(transition, event),
             candidate = candidate,
         )
 
@@ -806,6 +920,37 @@ internal object HistoryCReferenceAuthority {
         }
     }
 
+    private fun attackerReferences(
+        transition: CommittedRulesTransition,
+        event: AttackersDeclaredEvent,
+    ): List<ExpectedReference> = buildList {
+        event.attackers.forEachIndexed { index, entityId ->
+            add(
+                ExpectedReference(
+                    entityId = entityId,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                    roleOrdinal = index,
+                    rank = index,
+                ),
+            )
+        }
+        event.declaredAttacks
+            .asSequence()
+            .map { it.defenderId }
+            .filter { hasCardOrRulesWitness(transition, it) }
+            .distinct()
+            .forEachIndexed { index, entityId ->
+                add(
+                    ExpectedReference(
+                        entityId = entityId,
+                        role = HistoryCReferenceSlotRole.TARGET,
+                        roleOrdinal = index,
+                        rank = event.attackers.size + index,
+                    ),
+                )
+            }
+    }
+
     private fun validateSingleObjectLookCandidate(
         transition: CommittedRulesTransition,
         perspectivePlayerId: EntityId,
@@ -924,6 +1069,9 @@ internal object HistoryCReferenceAuthority {
         containsWitness(state, HistoryCObjectWitness(entityId, stamp)) &&
             state.getEntity(entityId)?.get<CardComponent>() != null
     }
+
+    private fun perspectivePlayerRole(playerId: EntityId, perspectivePlayerId: EntityId): String =
+        if (playerId == perspectivePlayerId) "SELF" else "OTHER"
 
     private fun validateSemanticDescriptor(descriptor: JsonObject): HistoryCFailure? {
         try {
