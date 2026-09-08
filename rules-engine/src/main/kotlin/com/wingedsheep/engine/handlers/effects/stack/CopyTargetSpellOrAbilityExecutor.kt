@@ -259,7 +259,13 @@ class CopyTargetSpellOrAbilityExecutor(
 
             container.get<TriggeredAbilityOnStackComponent>()?.let { triggered ->
                 val copy = CopyTargetTriggeredAbilityExecutor.cloneAbility(triggered, controllerId)
-                return stackResolver.putTriggeredAbility(state, copy, targets, targetRequirements)
+                return stackResolver.putTriggeredAbility(
+                    state,
+                    copy,
+                    targets,
+                    targetRequirements,
+                    emitTriggeredEvent = false
+                )
             }
 
             val activated = container.get<ActivatedAbilityOnStackComponent>()

@@ -831,7 +831,15 @@ class StackResolver(
          * Firebender Ascension's "attacking causes a triggered ability of that creature to trigger"
          * meta-trigger can key on it.
          */
-        causedByAttack: Boolean = false
+        causedByAttack: Boolean = false,
+        /**
+         * True when this stack object was created because the ability actually triggered. A copy
+         * of a triggered ability is put onto the stack by a copy effect, but does not trigger a
+         * second time (CR 603.2 / 707.10), so copy paths suppress only this event. Crime detection
+         * remains independent because CR 700.13 counts putting a targeted triggered-ability copy
+         * onto the stack.
+         */
+        emitTriggeredEvent: Boolean = true
     ): ExecutionResult {
         // Create a new entity for the ability on the stack
         val (abilityId, stateWithId) = state.newEntity()
@@ -890,16 +898,19 @@ class StackResolver(
         newState = newState.pushToStack(abilityId)
             .copy(priorityPassedBy = emptySet())
 
-        val events = mutableListOf<GameEvent>(
-            AbilityTriggeredEvent(
-                ability.sourceId,
-                ability.sourceName,
-                ability.controllerId,
-                ability.description,
-                abilityEntityId = abilityId,
-                causedByAttack = causedByAttack
+        val events = mutableListOf<GameEvent>()
+        if (emitTriggeredEvent) {
+            events.add(
+                AbilityTriggeredEvent(
+                    ability.sourceId,
+                    ability.sourceName,
+                    ability.controllerId,
+                    ability.description,
+                    abilityEntityId = abilityId,
+                    causedByAttack = causedByAttack
+                )
             )
-        )
+        }
 
         if (CrimeDetector.isCrime(newState, ability.controllerId, targets)) {
             events.add(CommitCrimeEvent(ability.controllerId, abilityId, ability.sourceName))

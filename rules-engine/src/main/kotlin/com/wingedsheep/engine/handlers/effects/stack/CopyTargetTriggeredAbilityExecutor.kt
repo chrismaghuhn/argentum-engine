@@ -59,7 +59,13 @@ class CopyTargetTriggeredAbilityExecutor(
         if (targetRequirements.isEmpty()) {
             val copy = cloneAbility(sourceAbility, context.controllerId)
             val stackResolver = StackResolver(cardRegistry = cardRegistry)
-            return EffectResult.from(stackResolver.putTriggeredAbility(state, copy))
+            return EffectResult.from(
+                stackResolver.putTriggeredAbility(
+                    state,
+                    copy,
+                    emitTriggeredEvent = false
+                )
+            )
         }
 
         // Targets exist — prompt the copy controller to choose new targets.
