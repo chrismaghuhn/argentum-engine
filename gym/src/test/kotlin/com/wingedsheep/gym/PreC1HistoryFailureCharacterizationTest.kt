@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
+import com.wingedsheep.engine.core.CardCycledEvent
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
 import com.wingedsheep.engine.core.DecisionResponse
@@ -17,6 +18,7 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
+import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
@@ -119,6 +121,17 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
 
         val partialHistory = gym.perspectiveHistory(environment.playerIds.first())
         val partialHistoryCanonicalBytes = partialHistory.canonicalJson().toByteArray(Charsets.UTF_8).size
+        val lastProjectionDiagnostics = gym
+            .lastCommittedPerspectiveEventProjection(environment.playerIds.first())
+            ?.diagnostics
+            .orEmpty()
+        choices shouldBe 92
+        environment.stepCount shouldBe 93
+        environment.lastStepEvents.any { it is CardCycledEvent } shouldBe true
+        lastProjectionDiagnostics.any { diagnostic ->
+            diagnostic.rawEventType == CardCycledEvent::class.simpleName &&
+                diagnostic.reason == PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C
+        } shouldBe true
         println(
             "PRE_C1_HISTORY_FAILURE " +
                 "choices=$choices " +
@@ -126,7 +139,7 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
                 "message=${failure.message} " +
                 "lastEventTypes=${environment.lastStepEvents.map { it::class.simpleName }} " +
                 "lastEventCount=${environment.lastStepEvents.size} " +
-                "projectionDiagnostics=${gym.lastCommittedPerspectiveEventProjection(environment.playerIds.first())?.diagnostics} " +
+                "projectionDiagnostics=$lastProjectionDiagnostics " +
                 "partialHistoryEntries=${partialHistory.entries.size} " +
                 "partialHistoryCanonicalBytes=$partialHistoryCanonicalBytes " +
                 "partialHistoryReferences=${partialHistory.entries.sumOf { it.references.size }} " +
