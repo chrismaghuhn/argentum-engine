@@ -18,24 +18,26 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
+import com.wingedsheep.gym.contract.PerspectiveEventFamily
+import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
-import io.kotest.assertions.throwables.shouldThrow
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Temporary diagnostic-only probe for the first full-history failure on the locked seed-0 path.
- * It records only public event class names and counts; it does not expose state or card data.
+ * Regression characterization for the former CardCycledEvent full-history blocker on the locked
+ * seed-0 path. It records only public event class names and counts; it does not expose state or
+ * card data. The bounded path is expected to encounter a later, unrelated full-history failure.
  */
 class PreC1HistoryFailureCharacterizationTest : FunSpec({
-    test("locates the first full-history failure beyond the accepted witness") {
+    test("passes the former CardCycledEvent blocker before a later full-history failure") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -90,11 +92,15 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var choices = 0
+        var cardCycledProjection: PerspectiveEventProjectionResult? = null
+        var cardCycledChoices: Int? = null
+        var cardCycledStep: Int? = null
+        var failure: HistoryDOperationException? = null
 
-        val failure = shouldThrow<HistoryDOperationException> {
-            while (!observation.terminated && !observation.truncated) {
-                val choice = policy.choose(observation, policyState)
-                policyState = policyState.afterChoice()
+        while (!observation.terminated && !observation.truncated && failure == null) {
+            val choice = policy.choose(observation, policyState)
+            policyState = policyState.afterChoice()
+            try {
                 observation = when (choice) {
                     is SemanticChoice.Action -> {
                         if (choice.payload == null) {
@@ -116,27 +122,50 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
                     is SemanticChoice.Gap -> error("Policy gap at choice=$choices: $choice")
                 } as TrainingObservation
                 choices++
+                if (cardCycledProjection == null &&
+                    environment.lastStepEvents.any { it is CardCycledEvent }
+                ) {
+                    cardCycledProjection = gym.lastCommittedPerspectiveEventProjection(
+                        environment.playerIds.first(),
+                    )
+                    cardCycledChoices = choices
+                    cardCycledStep = environment.stepCount
+                }
+            } catch (exception: HistoryDOperationException) {
+                failure = exception
             }
         }
 
+        val formerBlockerProjection = cardCycledProjection
+            ?: error("The locked path did not reach the former CardCycledEvent blocker")
+        val laterFailure = failure
+            ?: error("The bounded locked path unexpectedly completed without a later failure")
         val partialHistory = gym.perspectiveHistory(environment.playerIds.first())
         val partialHistoryCanonicalBytes = partialHistory.canonicalJson().toByteArray(Charsets.UTF_8).size
         val lastProjectionDiagnostics = gym
             .lastCommittedPerspectiveEventProjection(environment.playerIds.first())
             ?.diagnostics
             .orEmpty()
-        choices shouldBe 92
-        environment.stepCount shouldBe 93
-        environment.lastStepEvents.any { it is CardCycledEvent } shouldBe true
-        lastProjectionDiagnostics.any { diagnostic ->
-            diagnostic.rawEventType == CardCycledEvent::class.simpleName &&
-                diagnostic.reason == PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C
+        cardCycledChoices shouldBe 93
+        cardCycledStep shouldBe 93
+        formerBlockerProjection.isComplete shouldBe true
+        formerBlockerProjection.batch.entries.any {
+            it.eventFamily == PerspectiveEventFamily.CARD_CYCLED
         } shouldBe true
+        formerBlockerProjection.diagnostics.any {
+            it.rawEventType == CardCycledEvent::class.simpleName
+        } shouldBe false
+        partialHistory.entries.any {
+            it.eventFamily == PerspectiveEventFamily.CARD_CYCLED
+        } shouldBe true
+        (choices > 92) shouldBe true
+        (environment.stepCount > 93) shouldBe true
+        laterFailure.message shouldNotBe "History-D operation rejected: HISTORY_A_PROJECTION_INCOMPLETE"
         println(
-            "PRE_C1_HISTORY_FAILURE " +
+            "PRE_C1_HISTORY_AFTER_CARDCYCLED " +
                 "choices=$choices " +
                 "stepCount=${environment.stepCount} " +
-                "message=${failure.message} " +
+                "laterFailure=${laterFailure.message} " +
                 "lastEventTypes=${environment.lastStepEvents.map { it::class.simpleName }} " +
                 "lastEventCount=${environment.lastStepEvents.size} " +
                 "projectionDiagnostics=$lastProjectionDiagnostics " +
@@ -145,7 +174,6 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
                 "partialHistoryReferences=${partialHistory.entries.sumOf { it.references.size }} " +
                 "partialHistoryRelations=${partialHistory.entries.sumOf { it.relations.size }}",
         )
-        failure.message shouldBe "History-D operation rejected: HISTORY_A_PROJECTION_INCOMPLETE"
     }
 })
 

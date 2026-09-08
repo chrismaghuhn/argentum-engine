@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.AbilityTriggeredEvent
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BecomesTargetEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
+import com.wingedsheep.engine.core.CardCycledEvent
 import com.wingedsheep.engine.core.CardRevealedFromDrawEvent
 import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
@@ -559,6 +560,15 @@ internal object HistoryCReferenceAuthority {
                 )
             },
             candidate = candidate,
+        )
+
+        is CardCycledEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.cardId,
+            eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+            eventRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+            candidate = candidate,
+            identityMustBeOpaque = false,
         )
 
         is CardsDrawnEvent -> validateCollectionCandidate(
