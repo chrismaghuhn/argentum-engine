@@ -11,11 +11,11 @@ import com.wingedsheep.engine.core.DeclaredAttack
 import com.wingedsheep.engine.core.GameConfig
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
-import com.wingedsheep.engine.core.KeywordGrantedEvent
 import com.wingedsheep.engine.core.PaymentStrategy
 import com.wingedsheep.engine.core.PermanentAttachedEvent
 import com.wingedsheep.engine.core.PermanentUnattachedEvent
 import com.wingedsheep.engine.core.PlayerConfig
+import com.wingedsheep.engine.core.RingTemptedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.registry.CardRegistry
@@ -735,10 +735,10 @@ class PerspectiveHistoryCompositionTest : FunSpec({
                 beforeState = GameState(),
                 afterState = GameState(),
                 events = listOf(
-                    KeywordGrantedEvent(
-                        targetId = com.wingedsheep.sdk.model.EntityId("card"),
-                        targetName = "hidden",
-                        keyword = "hidden",
+                    RingTemptedEvent(
+                        playerId = perspective,
+                        temptCount = 1,
+                        bearerId = null,
                         sourceName = "effect",
                     ),
                 ),

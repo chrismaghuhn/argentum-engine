@@ -20,6 +20,7 @@ import com.wingedsheep.engine.core.CreatureDestroyedEvent
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.HandRevealedEvent
+import com.wingedsheep.engine.core.KeywordGrantedEvent
 import com.wingedsheep.engine.core.LandPlayedEvent
 import com.wingedsheep.engine.core.LandTappedForManaEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
@@ -646,6 +647,15 @@ internal object HistoryCReferenceAuthority {
         )
 
         is StatsModifiedEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.targetId,
+            eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+            eventRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+            candidate = candidate,
+            identityMustBeOpaque = false,
+        )
+
+        is KeywordGrantedEvent -> validateSingleObjectCandidate(
             transition = transition,
             eventEntityId = event.targetId,
             eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
