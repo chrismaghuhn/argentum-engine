@@ -254,6 +254,13 @@ internal class PerspectiveEventProjector(
             put("asCyclingCost", event.asCyclingCost)
         }
 
+        // The cycled card's identity is C-owned by the post-discard object witness. A carries only
+        // the public actor role and the announced scalar X value used by cycling triggers.
+        is CardCycledEvent -> emit(PerspectiveEventFamily.CARD_CYCLED) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+            event.xValue?.let { put("xValue", it) }
+        }
+
         is DiscardRequiredEvent -> emit(PerspectiveEventFamily.DISCARD_REQUIRED) {
             put("playerRole", playerRole(event.playerId, perspectivePlayerId))
             put("count", event.count)

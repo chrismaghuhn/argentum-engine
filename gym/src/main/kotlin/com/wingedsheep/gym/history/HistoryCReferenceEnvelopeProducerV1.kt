@@ -6,6 +6,7 @@ import com.wingedsheep.engine.core.AbilityTriggeredEvent
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BecomesTargetEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
+import com.wingedsheep.engine.core.CardCycledEvent
 import com.wingedsheep.engine.core.CardRevealedFromDrawEvent
 import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
@@ -82,6 +83,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         PerspectiveEventFamily.DAMAGE_TO_OBJECT,
         PerspectiveEventFamily.CARD_REVEALED_FROM_DRAW,
         PerspectiveEventFamily.CARDS_DISCARDED,
+        PerspectiveEventFamily.CARD_CYCLED,
         PerspectiveEventFamily.CARDS_DRAWN,
         PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
         PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
@@ -173,6 +175,18 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                     entityIds = rawEvent.cardIds,
                     role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
                 ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is CardCycledEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.cardId,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+                    ),
+                )
 
                 is CardsDrawnEvent -> requiredCollection(
                     transition = transition,
@@ -994,6 +1008,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is AttackersDeclaredEvent,
         is BecomesTargetEvent,
         is BlockersDeclaredEvent,
+        is CardCycledEvent,
         is CardRevealedFromDrawEvent,
         is CardsDiscardedEvent,
         is CardsDrawnEvent,
