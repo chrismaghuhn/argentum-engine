@@ -29,6 +29,7 @@ import com.wingedsheep.engine.core.PermanentUnattachedEvent
 import com.wingedsheep.engine.core.ResolvedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SpellCopiedEvent
+import com.wingedsheep.engine.core.StatsModifiedEvent
 import com.wingedsheep.engine.core.TurnFaceUpEvent
 import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.TurnedFaceDownEvent
@@ -638,6 +639,15 @@ internal object HistoryCReferenceAuthority {
         is CountersRemovedEvent -> validateSingleObjectCandidate(
             transition = transition,
             eventEntityId = event.entityId,
+            eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+            eventRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+            candidate = candidate,
+            identityMustBeOpaque = false,
+        )
+
+        is StatsModifiedEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.targetId,
             eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
             eventRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
             candidate = candidate,

@@ -185,6 +185,13 @@ internal class PerspectiveEventProjector(
             event.remainingCount?.let { put("remainingCount", it) }
         }
 
+        // The target identity is C-owned. A carries only the stable effect deltas and omits the
+        // raw target/source names, which are not semantic identity authority.
+        is StatsModifiedEvent -> emit(PerspectiveEventFamily.STATS_MODIFIED) {
+            put("powerChange", event.powerChange)
+            put("toughnessChange", event.toughnessChange)
+        }
+
         is ManaAddedEvent -> emit(PerspectiveEventFamily.MANA_ADDED) {
             put("playerRole", playerRole(event.playerId, perspectivePlayerId))
             put("white", event.white)
@@ -425,7 +432,6 @@ internal class PerspectiveEventProjector(
 
         is DamagePreventedEvent,
         is CardPlayedFromPermissionEvent,
-        is StatsModifiedEvent,
         is KeywordGrantedEvent,
         is RingTemptedEvent,
         is EvidenceCollectedEvent,
