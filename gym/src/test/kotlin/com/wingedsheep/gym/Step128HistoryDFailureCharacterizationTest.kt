@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.CardCycledEvent
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
+import com.wingedsheep.engine.core.CommitCrimeEvent
 import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DistributionResponse
@@ -18,11 +19,7 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PerspectiveEventDisposition
-import com.wingedsheep.gym.contract.PerspectiveEventFamily
-import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
@@ -33,11 +30,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * RED characterization for the first History-D failure after the accepted Step-111 crossing.
- * It records only public event class, family, disposition, reason, and bounded counters.
+ * Crossing regression for the former Step-128 History-D failure. It stops at the next independent
+ * failure and records only bounded counters; the later event family remains out of scope.
  */
 class Step128HistoryDFailureCharacterizationTest : FunSpec({
-    test("pins the first post-Step-111 History-D failure") {
+    test("crosses the former Step-128 failure before a later History-D failure") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -96,6 +93,9 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
         var cardCycledChoices: Int? = null
         var cardCycledStep: Int? = null
         var step111Passed = false
+        var commitCrimeChoices: Int? = null
+        var commitCrimeStep: Int? = null
+        var step128Passed = false
         var failure: HistoryDOperationException? = null
 
         while (!observation.terminated && !observation.truncated && failure == null) {
@@ -132,6 +132,15 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
                 if (environment.stepCount >= 111) {
                     step111Passed = true
                 }
+                if (commitCrimeChoices == null &&
+                    environment.lastStepEvents.any { it is CommitCrimeEvent }
+                ) {
+                    commitCrimeChoices = successfulChoices
+                    commitCrimeStep = environment.stepCount
+                }
+                if (environment.stepCount >= 128) {
+                    step128Passed = true
+                }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
             }
@@ -139,68 +148,28 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
 
         val historyDFailure = failure
             ?: error("The bounded locked path unexpectedly completed without a History-D failure")
-        val rawEvents = environment.lastStepEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
-        val expectedRawEvents = listOf(
-            "ManaSpentEvent",
-            "SpellCastEvent",
-            "CommitCrimeEvent",
-            "TargetsChosenEvent",
-            "BecomesTargetEvent",
-        )
-        val expectedDispositions = listOf(
-            PerspectiveEventDisposition.EMITTED,
-            PerspectiveEventDisposition.EMITTED,
-            PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
-            PerspectiveEventDisposition.EMITTED,
-            PerspectiveEventDisposition.EMITTED,
-        )
-        val expectedReasons = listOf(
-            null,
-            null,
-            PerspectiveEventUnsupportedReason.REQUIRES_BOTH_B_AND_C,
-            null,
-            null,
-        )
-        val expectedFamilies = listOf(
-            PerspectiveEventFamily.MANA_SPENT,
-            PerspectiveEventFamily.SPELL_CAST,
-            PerspectiveEventFamily.TARGETS_CHOSEN,
-            PerspectiveEventFamily.BECAME_TARGET,
-        )
 
-        successfulChoices shouldBe 127
-        environment.stepCount shouldBe 128
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
         step111Passed shouldBe true
-        historyDFailure.failure.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
-        rawEvents shouldBe expectedRawEvents
-
-        environment.playerIds.forEach { perspectivePlayerId ->
-            val projection = checkNotNull(gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId))
-            projection.isComplete shouldBe false
-            projection.classifications.map { it.rawEventType } shouldBe expectedRawEvents
-            projection.classifications.map { it.disposition } shouldBe expectedDispositions
-            projection.classifications.map { it.reason } shouldBe expectedReasons
-            projection.batch.entries.map { it.eventFamily } shouldBe expectedFamilies
-            projection.diagnostics.map { it.rawEventType to it.reason } shouldBe listOf(
-                "CommitCrimeEvent" to PerspectiveEventUnsupportedReason.REQUIRES_BOTH_B_AND_C,
-            )
-        }
+        commitCrimeChoices shouldBe 128
+        commitCrimeStep shouldBe 128
+        step128Passed shouldBe true
+        (environment.stepCount > 128) shouldBe true
 
         println(
-            "STEP128_FAILURE " +
+            "STEP128_CROSSING " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "historyDFailure=${historyDFailure.failure.code} " +
-                "rawEvents=${rawEvents.joinToString(",")} " +
-                "historyA=" + environment.playerIds.joinToString("|") { perspectivePlayerId ->
-                    val projection = checkNotNull(gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId))
-                    projection.classifications.joinToString(",") { classification ->
-                        "${classification.rawEventType}:${classification.disposition}:" +
-                            (classification.reason?.name ?: "NONE")
-                    }
-                },
+                "cardCycledChoices=$cardCycledChoices " +
+                "cardCycledStep=$cardCycledStep " +
+                "step111Passed=$step111Passed " +
+                "commitCrimeChoices=$commitCrimeChoices " +
+                "commitCrimeStep=$commitCrimeStep " +
+                "step128Passed=$step128Passed " +
+                "nextFailureChoices=$successfulChoices " +
+                "nextFailureStep=${environment.stepCount} " +
+                "nextFailure=${historyDFailure.failure.code}",
         )
     }
 })

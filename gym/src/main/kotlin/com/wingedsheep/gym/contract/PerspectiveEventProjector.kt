@@ -218,6 +218,10 @@ internal class PerspectiveEventProjector(
             put("targetIsPlayer", event.targetIsPlayer)
         }
 
+        is CommitCrimeEvent -> emit(PerspectiveEventFamily.COMMIT_CRIME) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+        }
+
         is CreatureDestroyedEvent -> emit(PerspectiveEventFamily.CREATURE_DESTROYED) {
             event.controllerId?.let { put("controllerRole", playerRole(it, perspectivePlayerId)) }
             put("reason", event.reason)
