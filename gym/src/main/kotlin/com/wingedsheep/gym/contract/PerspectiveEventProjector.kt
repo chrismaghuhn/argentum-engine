@@ -192,6 +192,12 @@ internal class PerspectiveEventProjector(
             put("toughnessChange", event.toughnessChange)
         }
 
+        // The target identity is C-owned. A carries only the stable keyword effect and omits the
+        // raw target/source names, which are not semantic identity authority.
+        is KeywordGrantedEvent -> emit(PerspectiveEventFamily.KEYWORD_GRANTED) {
+            put("keyword", event.keyword)
+        }
+
         is ManaAddedEvent -> emit(PerspectiveEventFamily.MANA_ADDED) {
             put("playerRole", playerRole(event.playerId, perspectivePlayerId))
             put("white", event.white)
@@ -432,7 +438,6 @@ internal class PerspectiveEventProjector(
 
         is DamagePreventedEvent,
         is CardPlayedFromPermissionEvent,
-        is KeywordGrantedEvent,
         is RingTemptedEvent,
         is EvidenceCollectedEvent,
         is PermanentExploredEvent,

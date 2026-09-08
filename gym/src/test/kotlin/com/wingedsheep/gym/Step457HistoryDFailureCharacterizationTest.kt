@@ -9,6 +9,7 @@ import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.GameConfig
+import com.wingedsheep.engine.core.KeywordGrantedEvent
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -21,7 +22,6 @@ import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.PerspectiveEventDisposition
 import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
-import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
@@ -93,6 +93,8 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         var successfulChoices = 0
         var cardCycledChoices: Int? = null
         var cardCycledStep: Int? = null
+        var keywordGrantedChoices: Int? = null
+        var keywordGrantedStep: Int? = null
         var failure: HistoryDOperationException? = null
         var failingRawEventTypes: List<String> = emptyList()
         var failingProjections: List<PerspectiveEventProjectionResult?> = emptyList()
@@ -128,6 +130,12 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                     cardCycledChoices = successfulChoices
                     cardCycledStep = environment.stepCount
                 }
+                if (keywordGrantedChoices == null &&
+                    environment.lastStepEvents.count { it is KeywordGrantedEvent } == 2
+                ) {
+                    keywordGrantedChoices = successfulChoices
+                    keywordGrantedStep = environment.stepCount
+                }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
                 failingRawEventTypes = environment.lastStepEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
@@ -138,38 +146,28 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         }
 
         val historyDFailure = checkNotNull(failure)
-        successfulChoices shouldBe 456
-        environment.stepCount shouldBe 457
+        successfulChoices shouldBe 465
+        environment.stepCount shouldBe 466
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
-        historyDFailure.failure.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
-        failingRawEventTypes shouldBe listOf(
-            "StatsModifiedEvent",
-            "KeywordGrantedEvent",
-            "KeywordGrantedEvent",
-            "AbilityResolvedEvent",
-        )
+        keywordGrantedChoices shouldBe 457
+        keywordGrantedStep shouldBe 457
+        historyDFailure.failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
+        failingRawEventTypes shouldBe listOf("AttackersDeclaredEvent")
 
         val projections = failingProjections.map(::checkNotNull)
         projections.size shouldBe 2
         projections.forEach { projection ->
-            projection.isComplete shouldBe false
+            projection.isComplete shouldBe true
             projection.classifications.map { it.rawEventType } shouldBe failingRawEventTypes
             projection.classifications.map { it.disposition } shouldBe listOf(
-                PerspectiveEventDisposition.EMITTED,
-                PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
-                PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
                 PerspectiveEventDisposition.EMITTED,
             )
             projection.classifications.map { it.reason } shouldBe listOf(
                 null,
-                PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
-                PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
-                null,
             )
             projection.batch.entries.map { it.eventFamily } shouldBe listOf(
-                PerspectiveEventFamily.STATS_MODIFIED,
-                PerspectiveEventFamily.ABILITY_RESOLVED,
+                PerspectiveEventFamily.ATTACKERS_DECLARED,
             )
         }
 
@@ -179,6 +177,8 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                 "committedStep=${environment.stepCount} " +
                 "failure=${historyDFailure.failure.code} " +
                 "rawEvents=$failingRawEventTypes " +
+                "keywordGrantedChoices=$keywordGrantedChoices " +
+                "keywordGrantedStep=$keywordGrantedStep " +
                 "perspectives=" + projections.map { projection ->
                     projection.classifications.map { classification ->
                         "${classification.rawEventType}:${classification.disposition}:${classification.reason}"

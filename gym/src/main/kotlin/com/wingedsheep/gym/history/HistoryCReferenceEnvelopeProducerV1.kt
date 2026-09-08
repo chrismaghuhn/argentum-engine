@@ -20,6 +20,7 @@ import com.wingedsheep.engine.core.DamageAssignedEvent
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.HandRevealedEvent
+import com.wingedsheep.engine.core.KeywordGrantedEvent
 import com.wingedsheep.engine.core.LandPlayedEvent
 import com.wingedsheep.engine.core.LandTappedForManaEvent
 import com.wingedsheep.engine.core.LookedAtCardsEvent
@@ -80,6 +81,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         PerspectiveEventFamily.COUNTERS_ADDED,
         PerspectiveEventFamily.COUNTERS_REMOVED,
         PerspectiveEventFamily.STATS_MODIFIED,
+        PerspectiveEventFamily.KEYWORD_GRANTED,
         PerspectiveEventFamily.TARGETS_CHOSEN,
         PerspectiveEventFamily.BECAME_TARGET,
         PerspectiveEventFamily.COMMIT_CRIME,
@@ -242,6 +244,17 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                 )
 
                 is StatsModifiedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.targetId,
+                    ),
+                )
+
+                is KeywordGrantedEvent -> required(
                     opaqueCandidate(
                         transition = transition,
                         eventOrdinal = eventOrdinal,
@@ -1047,6 +1060,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is CountersAddedEvent,
         is CountersRemovedEvent,
         is StatsModifiedEvent,
+        is KeywordGrantedEvent,
         is CreatureDestroyedEvent,
         is HandLookedAtEvent,
         is HandRevealedEvent,
