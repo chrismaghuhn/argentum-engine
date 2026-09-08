@@ -119,7 +119,12 @@ internal class PerspectiveEventProjector(
                 put("combatDamage", event.isCombatDamage)
             }
         } else {
-            unsupported(PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C)
+            emit(PerspectiveEventFamily.DAMAGE_TO_OBJECT) {
+                put("amount", event.amount)
+                put("combatDamage", event.isCombatDamage)
+                put("targetWasFaceDown", event.targetWasFaceDown)
+                put("recipientKind", event.effectiveRecipientKind.name)
+            }
         }
 
         // The event itself is public, but this source deliberately omits card name, mana value,
@@ -136,8 +141,95 @@ internal class PerspectiveEventProjector(
             put("isExhaust", event.isExhaust)
         }
 
+        is AbilityTriggeredEvent -> emit(PerspectiveEventFamily.ABILITY_TRIGGERED) {
+            put("controllerRole", playerRole(event.controllerId, perspectivePlayerId))
+            put("causedByAttack", event.causedByAttack)
+        }
+
+        is AbilityResolvedEvent -> emit(PerspectiveEventFamily.ABILITY_RESOLVED) { }
+
         is LandPlayedEvent -> emit(PerspectiveEventFamily.LAND_PLAYED) {
             put("controllerRole", playerRole(event.controllerId, perspectivePlayerId))
+        }
+
+        is TappedEvent -> emit(PerspectiveEventFamily.TAPPED) {
+            put("tapperRole", event.tappedById?.let { playerRole(it, perspectivePlayerId) } ?: "UNKNOWN")
+            put("reason", event.reason.name)
+            put("firstThisTurn", event.firstThisTurn)
+        }
+
+        is UntappedEvent -> emit(PerspectiveEventFamily.UNTAPPED) { }
+
+        is PermanentAttachedEvent -> emit(PerspectiveEventFamily.PERMANENT_ATTACHED) {
+            put("controllerRole", playerRole(event.controllerId, perspectivePlayerId))
+        }
+
+        is PermanentUnattachedEvent -> emit(PerspectiveEventFamily.PERMANENT_UNATTACHED) {
+            put("controllerRole", playerRole(event.controllerId, perspectivePlayerId))
+        }
+
+        is LandTappedForManaEvent -> emit(PerspectiveEventFamily.LAND_TAPPED_FOR_MANA) {
+            put("tapperRole", playerRole(event.tapperId, perspectivePlayerId))
+        }
+
+        is CountersAddedEvent -> emit(PerspectiveEventFamily.COUNTERS_ADDED) {
+            put("counterType", event.counterType)
+            put("amount", event.amount)
+            put("firstThisTurn", event.firstThisTurn)
+            event.placedBy?.let { put("placedByRole", playerRole(it, perspectivePlayerId)) }
+        }
+
+        is CountersRemovedEvent -> emit(PerspectiveEventFamily.COUNTERS_REMOVED) {
+            put("counterType", event.counterType)
+            put("amount", event.amount)
+            event.remainingCount?.let { put("remainingCount", it) }
+        }
+
+        is ManaAddedEvent -> emit(PerspectiveEventFamily.MANA_ADDED) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+            put("white", event.white)
+            put("blue", event.blue)
+            put("black", event.black)
+            put("red", event.red)
+            put("green", event.green)
+            put("colorless", event.colorless)
+        }
+
+        is ManaSpentEvent -> emit(PerspectiveEventFamily.MANA_SPENT) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+            put("reason", event.reason)
+            put("white", event.white)
+            put("blue", event.blue)
+            put("black", event.black)
+            put("red", event.red)
+            put("green", event.green)
+            put("colorless", event.colorless)
+        }
+
+        is TargetsChosenEvent -> emit(PerspectiveEventFamily.TARGETS_CHOSEN) {
+            put("chooserRole", playerRole(event.chooserId, perspectivePlayerId))
+        }
+
+        is BecomesTargetEvent -> emit(PerspectiveEventFamily.BECAME_TARGET) {
+            put("controllerRole", playerRole(event.controllerId, perspectivePlayerId))
+            put("firstTimeByThisController", event.firstTimeByThisController)
+            put("targetIsSpell", event.targetIsSpell)
+            put("sourceIsSpell", event.sourceIsSpell)
+            put("targetIsPlayer", event.targetIsPlayer)
+        }
+
+        is CreatureDestroyedEvent -> emit(PerspectiveEventFamily.CREATURE_DESTROYED) {
+            event.controllerId?.let { put("controllerRole", playerRole(it, perspectivePlayerId)) }
+            put("reason", event.reason)
+        }
+
+        is DecisionRequestedEvent -> emit(PerspectiveEventFamily.DECISION_REQUESTED) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+            put("decisionType", event.decisionType)
+        }
+
+        is DecisionSubmittedEvent -> emit(PerspectiveEventFamily.DECISION_SUBMITTED) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
         }
 
         is ZoneChangeEvent -> projectZoneChange(event, perspectivePlayerId, beforeState, afterState)

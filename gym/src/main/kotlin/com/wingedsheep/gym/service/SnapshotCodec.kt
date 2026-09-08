@@ -59,6 +59,8 @@ class SnapshotCodec {
         val historyCContinuation: ByteArray? = null,
         /** Explicit provenance for [historyCContinuation]; null means no History-C continuation. */
         val historyCContinuationAuthority: HistoryCContinuationAuthorityV1? = null,
+        /** Versioned model-safe PerspectiveHistory continuation bytes. */
+        val perspectiveHistoryContinuation: ByteArray? = null,
     )
 
     fun save(
@@ -71,6 +73,7 @@ class SnapshotCodec {
         failureClosure: EpisodeClosureV1.Failed? = null,
         historyCContinuation: ByteArray? = null,
         historyCContinuationAuthority: HistoryCContinuationAuthorityV1? = null,
+        perspectiveHistoryContinuation: ByteArray? = null,
     ): SnapshotHandle.Slot {
         require(historyCContinuation != null || historyCContinuationAuthority == null) {
             "History-C snapshot authority requires continuation bytes"
@@ -86,6 +89,7 @@ class SnapshotCodec {
             failureClosure,
             historyCContinuation?.copyOf(),
             historyCContinuationAuthority,
+            perspectiveHistoryContinuation?.copyOf(),
         )
         return SnapshotHandle.Slot(id)
     }
@@ -94,7 +98,10 @@ class SnapshotCodec {
         is SnapshotHandle.Slot -> {
             val entry = slots[handle.slotId]
                 ?: throw NoSuchElementException("Snapshot slot ${handle.slotId} not found")
-            entry.copy(historyCContinuation = entry.historyCContinuation?.copyOf())
+            entry.copy(
+                historyCContinuation = entry.historyCContinuation?.copyOf(),
+                perspectiveHistoryContinuation = entry.perspectiveHistoryContinuation?.copyOf(),
+            )
         }
     }
 

@@ -19,6 +19,16 @@ internal data class PerspectiveReferenceProjectionV1(
     val nextRegistry: PerspectiveAliasRegistryV1,
     val referenceOccurrences: List<PerspectiveAliasAssignment>,
     val incarnationRelations: List<PerspectiveIncarnationRelationV1>,
+    val semanticRelations: List<PerspectiveSemanticRelationAssignment> = emptyList(),
+)
+
+internal data class PerspectiveSemanticRelationAssignment(
+    val eventOrdinal: Int,
+    val kind: HistoryCReferenceRelationKindV1,
+    val sourceAlias: PerspectiveSemanticAlias,
+    val targetAlias: PerspectiveSemanticAlias? = null,
+    val targetPlayerRole: String? = null,
+    val amount: Int? = null,
 )
 
 internal sealed interface PerspectiveReferenceProjectionResult {
@@ -81,14 +91,14 @@ internal class PerspectiveReferenceProjectorV1(
             is CandidateOrdering.Rejected ->
                 return PerspectiveReferenceProjectionResult.Rejected(ordering.failure)
         }
-        val orderedEndpoints = mutableListOf<Endpoint>()
+        val authorizedEndpoints = mutableListOf<Endpoint>()
         for (indexedCandidate in orderedCandidates) {
             val candidateIndex = indexedCandidate.originalCandidateIndex
             val candidate = indexedCandidate.candidate
             val endpoints = endpointsFor(candidateIndex, candidate, transition)
             for (endpoint in endpoints) {
                 when (val decision = authorize(endpoint, perspectivePlayerId)) {
-                    is EndpointDecision.Reference -> orderedEndpoints += decision.endpoint
+                    is EndpointDecision.Reference -> authorizedEndpoints += decision.endpoint
 
                     EndpointDecision.Omit -> Unit
                     is EndpointDecision.Reject -> {
@@ -97,6 +107,11 @@ internal class PerspectiveReferenceProjectorV1(
                 }
             }
         }
+
+        val orderedEndpoints = canonicalizeUnorderedCollections(
+            endpoints = authorizedEndpoints,
+            evidence = evidence,
+        )
 
         validateEndpointGroups(
             registry = registryCheck.registry,
@@ -131,14 +146,31 @@ internal class PerspectiveReferenceProjectorV1(
         }
 
         nextRegistry = reconcile(nextRegistry, transition.afterState, perspectivePlayerId)
+        val assignmentsByCandidate = occurrences.associateBy { it.candidateIndex }
+        val semanticRelations = evidence.relations.mapNotNull { relation ->
+            val source = assignmentsByCandidate[relation.sourceCandidateIndex]
+                ?: return@mapNotNull null
+            val target = relation.targetCandidateIndex?.let(assignmentsByCandidate::get)
+                ?: if (relation.targetPlayerRole != null) null else return@mapNotNull null
+            PerspectiveSemanticRelationAssignment(
+                eventOrdinal = relation.eventOrdinal,
+                kind = relation.kind,
+                sourceAlias = source.alias,
+                targetAlias = target?.alias,
+                targetPlayerRole = relation.targetPlayerRole,
+                amount = relation.amount,
+            )
+        }
 
         return PerspectiveReferenceProjectionResult.Accepted(
             PerspectiveReferenceProjectionV1(
                 nextRegistry = nextRegistry,
                 referenceOccurrences = occurrences,
-                // No accepted A+B relation witness currently exists. Alias allocation and
-                // retirement remain useful without asserting a cross-incarnation relationship.
+                // These are within-event semantic facts, not cross-incarnation identity links.
+                // The latter remains deliberately empty until independently typed producer
+                // authority exists.
                 incarnationRelations = emptyList(),
+                semanticRelations = semanticRelations,
             ),
         )
     }
@@ -201,29 +233,90 @@ internal class PerspectiveReferenceProjectorV1(
             val candidates = group.map { index ->
                 IndexedCandidate(index, evidence.candidates[index])
             }
-            if (candidates.size <= 1 || !isPrivateLook(evidence, group.first())) {
+            if (candidates.size <= 1) {
                 ordered += candidates
                 continue
             }
 
-            // A multi-object private look has no public producer-order authority. Only already
-            // authorized printed identities may provide a deterministic semantic sort key. If
-            // any member remains opaque, C fails closed rather than using raw cardIds/hand order.
-            if (candidates.any {
-                    it.candidate.identityDisclosure != HistoryCIdentityDisclosure.DEFINITION_KNOWN ||
-                        it.candidate.cardDefinitionId.isNullOrBlank()
-                }
+            if (isPrivateLook(evidence, group.first()) ||
+                isPublicReveal(evidence, group.first())
             ) {
-                return CandidateOrdering.Rejected(
-                    HistoryCFailure(HistoryCFailureCode.UNORDERED_SYMMETRY),
+                // Neither private hand-look order nor public reveal cardIds order is a safe
+                // semantic tie-breaker. The producer may provide a known printed identity; use
+                // that only, and keep same-definition distinct witnesses fail-closed in B.
+                if (candidates.any {
+                        it.candidate.identityDisclosure != HistoryCIdentityDisclosure.DEFINITION_KNOWN ||
+                            it.candidate.cardDefinitionId.isNullOrBlank()
+                    }
+                ) {
+                    return CandidateOrdering.Rejected(
+                        HistoryCFailure(HistoryCFailureCode.UNORDERED_SYMMETRY),
+                    )
+                }
+                ordered += candidates.sortedWith(
+                    compareBy<IndexedCandidate>({ it.candidate.cardDefinitionId })
+                        .thenBy { it.candidate.slot.role },
                 )
+                continue
             }
-            ordered += candidates.sortedWith(
-                compareBy<IndexedCandidate>({ it.candidate.cardDefinitionId }, { it.candidate.slot.roleOrdinal }),
-            )
+            ordered += candidates
         }
         return CandidateOrdering.Accepted(ordered)
     }
+
+    /**
+     * Canonicalize event-local collections only after Visibility/History-B has authorized each
+     * endpoint. Raw list/map order is not a semantic tie-breaker for these families. A same-key
+     * distinct-witness group is still rejected by B's symmetry validation before allocation.
+     */
+    private fun canonicalizeUnorderedCollections(
+        endpoints: List<Endpoint>,
+        evidence: HistoryCReferenceEvidenceV1,
+    ): List<Endpoint> {
+        val result = mutableListOf<Endpoint>()
+        var index = 0
+        while (index < endpoints.size) {
+            val first = endpoints[index]
+            val key = EndpointGroupKey(first.candidate.slot.eventOrdinal, first.isAfter)
+            val group = mutableListOf<Endpoint>()
+            while (index < endpoints.size) {
+                val endpoint = endpoints[index]
+                if (EndpointGroupKey(endpoint.candidate.slot.eventOrdinal, endpoint.isAfter) != key) {
+                    break
+                }
+                group += endpoint
+                index++
+            }
+            val eventFamily = evidence.eventBatch.entries
+                .getOrNull(key.eventOrdinal)
+                ?.eventFamily
+            if (group.size > 1 && eventFamily in unorderedCollectionFamilies) {
+                result += group.sortedWith(
+                    compareBy<Endpoint>(
+                        { it.candidate.identityDisclosure.ordinal },
+                        { it.candidate.cardDefinitionId ?: "" },
+                        { it.candidate.referenceKind.ordinal },
+                        { it.candidate.slot.role.ordinal },
+                    ),
+                )
+            } else {
+                result += group
+            }
+        }
+        return result
+    }
+
+    private val unorderedCollectionFamilies = setOf(
+        PerspectiveEventFamily.CARDS_DRAWN,
+        PerspectiveEventFamily.CARDS_DISCARDED,
+        PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
+        PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+        PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
+        PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
+        PerspectiveEventFamily.ATTACKERS_DECLARED,
+        PerspectiveEventFamily.BLOCKERS_DECLARED,
+        PerspectiveEventFamily.DAMAGE_ASSIGNED,
+    )
 
     private fun isPrivateLook(
         evidence: HistoryCReferenceEvidenceV1,
@@ -231,6 +324,14 @@ internal class PerspectiveReferenceProjectorV1(
     ): Boolean = evidence.eventBatch.entries.getOrNull(eventOrdinal)?.eventFamily in setOf(
         PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
         PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+    )
+
+    private fun isPublicReveal(
+        evidence: HistoryCReferenceEvidenceV1,
+        eventOrdinal: Int,
+    ): Boolean = evidence.eventBatch.entries.getOrNull(eventOrdinal)?.eventFamily in setOf(
+        PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
+        PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
     )
 
     private fun authorize(
