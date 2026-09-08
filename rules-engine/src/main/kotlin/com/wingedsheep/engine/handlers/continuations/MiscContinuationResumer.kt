@@ -76,7 +76,10 @@ class MiscContinuationResumer(
             state = state,
             ability = copy,
             targets = selectedTargets,
-            targetRequirements = continuation.targetRequirements
+            targetRequirements = continuation.targetRequirements,
+            // CR 707.10: copying does not trigger the ability again. Crime remains evaluated by
+            // putTriggeredAbility because CR 700.13 still covers putting the copy on the stack.
+            emitTriggeredEvent = false
         )
         if (!stackResult.isSuccess) return stackResult
 

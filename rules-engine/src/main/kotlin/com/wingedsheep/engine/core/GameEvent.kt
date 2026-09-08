@@ -917,10 +917,12 @@ data class AbilityAutoAnsweredEvent(
 ) : GameEvent
 
 /**
- * A player committed a crime (CR Outlaws of Thunder Junction). Emitted at the same time
- * as [SpellCastEvent], [AbilityActivatedEvent], or [AbilityTriggeredEvent] when at least
- * one initial target is an opponent, a permanent/spell/ability an opponent controls, or
- * a card in an opponent's graveyard. Emitted at most once per spell or ability.
+ * A player committed a crime (CR Outlaws of Thunder Junction). Emitted when a spell is cast, an
+ * ability is genuinely activated, or a triggered ability (including a copy) is put on the stack
+ * with at least one initial target that is an opponent, a permanent/spell/ability an opponent
+ * controls, or a card in an opponent's graveyard. A triggered-ability copy does not accompany an
+ * [AbilityTriggeredEvent] because copying does not trigger the ability again. Emitted at most once
+ * per spell or ability.
  */
 @Serializable
 @SerialName("CommitCrimeEvent")
