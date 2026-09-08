@@ -372,6 +372,14 @@ internal class PerspectiveReferenceProjectorV1(
             endpoint.witness.entityId,
             perspectivePlayerId,
         )
+        val actualDefinition = endpoint.state.getEntity(endpoint.witness.entityId)
+            ?.get<CardComponent>()
+            ?.cardDefinitionId
+        // Stack addressability is public, but an ability/trigger stack object has no card identity.
+        // Keep that Rules object opaque rather than treating public object visibility as a
+        // CardDefinition authority. Card-like objects outside the stack remain fail-closed below.
+        val isPublicRulesStackObject = endpoint.state.stack.contains(endpoint.witness.entityId) &&
+            actualDefinition == null
 
         if (location != null && location.zone in setOf(Zone.HAND, Zone.LIBRARY)) {
             val zoneVisible = visibility.isZoneVisibleTo(
@@ -386,7 +394,8 @@ internal class PerspectiveReferenceProjectorV1(
             }
         }
 
-        val identityAuthorized = identityVisible || identityFact != null
+        val identityAuthorized = !isPublicRulesStackObject &&
+            (identityVisible || identityFact != null)
         if (endpoint.candidate.identityDisclosure == HistoryCIdentityDisclosure.DEFINITION_KNOWN &&
             !identityAuthorized
         ) {
@@ -395,9 +404,6 @@ internal class PerspectiveReferenceProjectorV1(
             )
         }
 
-        val actualDefinition = endpoint.state.getEntity(endpoint.witness.entityId)
-            ?.get<CardComponent>()
-            ?.cardDefinitionId
         val claimedDefinition = endpoint.candidate.cardDefinitionId
         if (claimedDefinition != null && actualDefinition != claimedDefinition) {
             return EndpointDecision.Reject(

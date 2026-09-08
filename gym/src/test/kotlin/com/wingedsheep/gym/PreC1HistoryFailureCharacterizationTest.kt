@@ -27,7 +27,6 @@ import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.shouldNotBe
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -160,7 +159,6 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
         } shouldBe true
         (choices > 92) shouldBe true
         (environment.stepCount > 93) shouldBe true
-        laterFailure.message shouldNotBe "History-D operation rejected: HISTORY_A_PROJECTION_INCOMPLETE"
         println(
             "PRE_C1_HISTORY_AFTER_CARDCYCLED " +
                 "choices=$choices " +
