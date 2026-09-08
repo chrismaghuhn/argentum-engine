@@ -159,8 +159,8 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         }
 
         val historyDFailure = checkNotNull(failure)
-        successfulChoices shouldBe 1999
-        environment.stepCount shouldBe 2000
+        successfulChoices shouldBe 1140
+        environment.stepCount shouldBe 1141
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
         keywordGrantedChoices shouldBe 457
@@ -170,8 +170,7 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         historyDFailure.failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
         failingRawEventTypes shouldBe listOf(
             "ZoneChangeEvent",
-            "ZoneChangeEvent",
-            "ResolvedEvent",
+            "LandPlayedEvent",
             "AbilityTriggeredEvent",
         )
 
@@ -184,18 +183,15 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                 PerspectiveEventDisposition.EMITTED,
                 PerspectiveEventDisposition.EMITTED,
                 PerspectiveEventDisposition.EMITTED,
-                PerspectiveEventDisposition.EMITTED,
             )
             projection.classifications.map { it.reason } shouldBe listOf(
-                null,
                 null,
                 null,
                 null,
             )
             projection.batch.entries.map { it.eventFamily } shouldBe listOf(
                 PerspectiveEventFamily.ZONE_CHANGED,
-                PerspectiveEventFamily.ZONE_CHANGED,
-                PerspectiveEventFamily.RESOLVED,
+                PerspectiveEventFamily.LAND_PLAYED,
                 PerspectiveEventFamily.ABILITY_TRIGGERED,
             )
         }

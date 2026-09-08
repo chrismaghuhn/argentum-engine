@@ -74,8 +74,6 @@ private data class LockedEndpointFailure(
     val successfulChoices: Int,
     val committedStep: Int,
     val failureCode: HistoryCFailureCode,
-    val before: GameState,
-    val after: GameState,
     val rawEvents: List<GameEvent>,
     val projections: List<PerspectiveEventProjectionResult>,
     val cardCycledChoices: Int?,
@@ -270,12 +268,12 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
             name to producerProbe(committedTransition)
         }
         producerResults.map { it.second.status } shouldBe listOf(
+            "ACCEPTED",
+            "ACCEPTED",
+            "ACCEPTED",
             HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA.name,
-            "ACCEPTED",
-            "ACCEPTED",
-            "ACCEPTED",
         )
-        producerResults.drop(1).forEach { (_, result) ->
+        producerResults.take(3).forEach { (_, result) ->
             result.candidateCount shouldBe 1
             result.relationCount shouldBe 0
         }
@@ -291,9 +289,9 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
             beforeOnly,
             candidate(
                 beforeWitness = beforeWitness,
-                endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
             ),
-        ) shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH.name
+        ) shouldBe "ACCEPTED"
 
         authorityStatus(
             beforeOnly,
@@ -301,13 +299,21 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
                 beforeWitness = beforeWitness,
                 endpointAuthority = HistoryCReferenceEndpointAuthority.UNSPECIFIED,
             ),
-        ) shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH.name
+        ) shouldBe "ACCEPTED"
 
         authorityStatus(
             afterOnly,
             candidate(
                 afterWitness = afterWitness,
                 endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+            ),
+        ) shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH.name
+
+        authorityStatus(
+            afterOnly,
+            candidate(
+                afterWitness = afterWitness,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
             ),
         ) shouldBe "ACCEPTED"
 
@@ -326,22 +332,31 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
                 afterWitness = HistoryCObjectWitness(source, 13L),
                 endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
             ),
-        ) shouldBe "ACCEPTED"
+        ) shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH.name
 
         authorityStatus(
             changed,
             candidate(
                 beforeWitness = HistoryCObjectWitness(source, 14L),
                 afterWitness = HistoryCObjectWitness(source, 15L),
-                endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
             ),
-        ) shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH.name
+        ) shouldBe HistoryCFailureCode.CROSS_INCARNATION_REFERENCE_UNSUPPORTED.name
+
+        projectorStatus(
+            beforeOnly,
+            candidate(
+                beforeWitness = beforeWitness,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
+            ),
+            semanticEpisodeId = "ability-triggered-endpoint-before",
+        ) shouldBe "ACCEPTED"
 
         projectorStatus(
             afterOnly,
             candidate(
                 afterWitness = afterWitness,
-                endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
             ),
             semanticEpisodeId = "ability-triggered-endpoint-after",
         ) shouldBe "ACCEPTED"
@@ -351,7 +366,7 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
             candidate(
                 beforeWitness = HistoryCObjectWitness(source, 13L),
                 afterWitness = HistoryCObjectWitness(source, 13L),
-                endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
             ),
             semanticEpisodeId = "ability-triggered-endpoint-same",
         ) shouldBe "ACCEPTED"
@@ -363,7 +378,7 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
                 afterWitness = HistoryCObjectWitness(source, 13L),
                 endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
             ),
-        ) shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH.name
+        ) shouldBe "ACCEPTED"
 
         val acceptedAfter = HistoryCReferenceAuthority.validate(
             transition = afterOnly,
@@ -373,25 +388,26 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
                 candidates = listOf(
                     candidate(
                         afterWitness = afterWitness,
-                        endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
                     ),
                 ),
             ),
         ).shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
         acceptedAfter.evidence.candidates.single().endpointAuthority shouldBe
-            HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+            HistoryCReferenceEndpointAuthority.SAME_INCARNATION
 
         println(
             "ABILITY_TRIGGERED_ENDPOINT_MATRIX " +
                 "producer=" + producerResults.joinToString(";") { (name, result) ->
                     "$name:${result.status}(candidates=${result.candidateCount},relations=${result.relationCount})"
                 } + " " +
-                "rawAuthority=BEFORE_ONLY:RAW_EVENT_REFERENCE_MISMATCH;" +
-                "AFTER_ONLY:ACCEPTED;" +
+                "rawAuthority=BEFORE_ONLY:ACCEPTED;" +
+                "AFTER_ONLY:AFTER_OBJECT:RAW_EVENT_REFERENCE_MISMATCH;" +
+                "AFTER_ONLY:SAME_INCARNATION:ACCEPTED;" +
                 "BOTH_SAME_INCARNATION:ACCEPTED;" +
-                "CHANGED_INCARNATION:RAW_EVENT_REFERENCE_MISMATCH " +
-                "projector=AFTER_ONLY:ACCEPTED;BOTH_SAME_INCARNATION:ACCEPTED " +
-                "producerEndpoint=AFTER_OBJECT",
+                "CHANGED_INCARNATION:CROSS_INCARNATION_REFERENCE_UNSUPPORTED " +
+                "projector=BEFORE_ONLY:ACCEPTED;AFTER_ONLY:ACCEPTED;BOTH_SAME_INCARNATION:ACCEPTED " +
+                "producerEndpoint=SAME_INCARNATION",
         )
     }
 
@@ -457,14 +473,12 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
         var emptyAttackersChoices: Int? = null
         var emptyAttackersStep: Int? = null
         var failure: HistoryDOperationException? = null
-        var beforeFailure: GameState? = null
         var failingRawEvents: List<GameEvent> = emptyList()
         var failingProjections: List<PerspectiveEventProjectionResult?> = emptyList()
 
         while (!observation.terminated && !observation.truncated && failure == null) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
-            val beforeChoice = environment.state
             try {
                 observation = when (choice) {
                     is SemanticChoice.Action -> {
@@ -502,7 +516,6 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
                 }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
-                beforeFailure = beforeChoice
                 failingRawEvents = environment.lastStepEvents.toList()
                 failingProjections = environment.playerIds.map { playerId ->
                     gym.lastCommittedPerspectiveEventProjection(playerId)
@@ -515,8 +528,6 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
             successfulChoices = successfulChoices,
             committedStep = environment.stepCount,
             failureCode = historyDFailure.failure.code,
-            before = checkNotNull(beforeFailure),
-            after = environment.state,
             rawEvents = failingRawEvents,
             projections = failingProjections.map(::checkNotNull),
             cardCycledChoices = cardCycledChoices,
@@ -526,13 +537,12 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
         )
     }
 
-    test("pins the live Step-2000 source shape without selecting an endpoint") {
+    test("crosses the former Step-2000 endpoint blocker before the next failure") {
         val failure = lockedFailure()
-        val registry = lockedRegistry()
         val rawEventTypes = failure.rawEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
 
-        failure.successfulChoices shouldBe 1_999
-        failure.committedStep shouldBe 2_000
+        failure.successfulChoices shouldBe 1_140
+        failure.committedStep shouldBe 1_141
         failure.failureCode shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
         failure.cardCycledChoices shouldBe 93
         failure.cardCycledStep shouldBe 93
@@ -540,8 +550,7 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
         failure.emptyAttackersStep shouldBe 466
         rawEventTypes shouldBe listOf(
             "ZoneChangeEvent",
-            "ZoneChangeEvent",
-            "ResolvedEvent",
+            "LandPlayedEvent",
             "AbilityTriggeredEvent",
         )
 
@@ -552,55 +561,14 @@ class AbilityTriggeredHistoryCEndpointAuthorityCharacterizationTest : FunSpec({
             projection.classifications.all { it.disposition == PerspectiveEventDisposition.EMITTED } shouldBe true
         }
 
-        val individualResults = failure.rawEvents.map { event ->
-            producerProbe(
-                committedTransition = CommittedRulesTransition(
-                    beforeState = failure.before,
-                    afterState = failure.after,
-                    events = listOf(event),
-                    sourceStepCount = failure.committedStep,
-                ),
-                registry = registry,
-            ).status
-        }
-        individualResults shouldBe listOf(
-            "ACCEPTED",
-            "ACCEPTED",
-            "ACCEPTED",
-            HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA.name,
-        )
-
-        val abilityTriggered = failure.rawEvents[3] as AbilityTriggeredEvent
-        fun hasWitness(state: GameState, entityId: EntityId): Boolean =
-            state.hasEntity(entityId) && state.objectIdentityStamps[entityId] != null
-
-        val sourceWitnessBefore = hasWitness(failure.before, abilityTriggered.sourceId)
-        val sourceWitnessAfter = hasWitness(failure.after, abilityTriggered.sourceId)
-        sourceWitnessBefore shouldBe true
-        sourceWitnessAfter shouldBe false
-
-        val fullProbe = producerProbe(
-            committedTransition = CommittedRulesTransition(
-                beforeState = failure.before,
-                afterState = failure.after,
-                events = failure.rawEvents,
-                sourceStepCount = failure.committedStep,
-            ),
-            registry = registry,
-        )
-        fullProbe.status shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA.name
-
         println(
-            "ABILITY_TRIGGERED_LOCKED_CHARACTERIZATION " +
+            "ABILITY_TRIGGERED_LOCKED_CROSSING " +
                 "maxSteps=4000 " +
                 "successfulChoices=${failure.successfulChoices} " +
                 "committedStep=${failure.committedStep} " +
                 "failure=${failure.failureCode} " +
                 "rawEvents=$rawEventTypes " +
-                "individualC=$individualResults " +
-                "sourceWitnessBefore=$sourceWitnessBefore " +
-                "sourceWitnessAfter=$sourceWitnessAfter " +
-                "A=COMPLETE B=NOT_REQUIRED C=CANDIDATE_PRODUCTION D=WRAPPER",
+                "A=COMPLETE B=NOT_REQUIRED C=NEXT_FAILURE_NOT_IN_SCOPE D=WRAPPER",
         )
     }
 })

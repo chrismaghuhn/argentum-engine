@@ -139,6 +139,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         roleOrdinal = 0,
                         rank = 0,
                         entityId = rawEvent.sourceId,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.SAME_INCARNATION,
                     ),
                 )
 

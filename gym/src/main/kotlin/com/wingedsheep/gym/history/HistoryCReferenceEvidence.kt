@@ -406,6 +406,7 @@ internal object HistoryCReferenceAuthority {
     ): HistoryCFailure? {
         val expected = when (event) {
             is AbilityActivatedEvent -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+            is AbilityTriggeredEvent -> HistoryCReferenceEndpointAuthority.SAME_INCARNATION
             is CreatureDestroyedEvent,
             is DamageAssignedEvent,
             is DamageDealtEvent,
