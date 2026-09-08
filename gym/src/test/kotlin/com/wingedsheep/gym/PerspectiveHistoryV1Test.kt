@@ -124,7 +124,8 @@ class PerspectiveHistoryV1Test : FunSpec({
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var observation = gym.observe().observation as TrainingObservation
-        repeat(64) {
+        var executedChoices = 0
+        while (executedChoices < 64) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             when (choice) {
@@ -137,10 +138,23 @@ class PerspectiveHistoryV1Test : FunSpec({
                     observation = result.observation as TrainingObservation
                 }
 
-                is SemanticChoice.Structured -> return@repeat
+                is SemanticChoice.Structured -> {
+                    val pending = observation.pendingDecision
+                        ?: error("Structured choice without a pending decision")
+                    val decisionId = pending.decisionId
+                        ?: error("Structured characterization decision has no decisionId")
+                    val result = gym.submitDecision(
+                        response = historyDecisionResponse(decisionId, choice.selection),
+                        actorId = observation.agentToAct,
+                    )
+                    observation = result.observation as TrainingObservation
+                }
+
                 is SemanticChoice.Gap -> error("Exact-pair characterization reached ${choice.code}")
             }
+            executedChoices++
         }
+        executedChoices shouldBe 64
         gym.perspectiveHistory(environment.playerIds.first()).entries.shouldNotBeEmpty()
     }
 
@@ -319,3 +333,26 @@ class PerspectiveHistoryV1Test : FunSpec({
             .failure.code shouldBe HistoryCFailureCode.INVALID_HISTORY_D_SNAPSHOT_INTEGRITY
     }
 })
+
+private fun historyDecisionResponse(
+    decisionId: String,
+    selection: SemanticDecision,
+): DecisionResponse = when (selection) {
+    is SemanticDecision.Targets -> TargetsResponse(decisionId, selection.selected)
+    is SemanticDecision.Cards -> CardsSelectedResponse(decisionId, selection.selected)
+    is SemanticDecision.Modes -> ModesChosenResponse(decisionId, selection.selected)
+    is SemanticDecision.Color -> ColorChosenResponse(decisionId, selection.selected)
+    is SemanticDecision.Number -> NumberChosenResponse(decisionId, selection.selected)
+    is SemanticDecision.Distribution -> DistributionResponse(decisionId, selection.selected)
+    is SemanticDecision.Ordered -> OrderedResponse(decisionId, selection.selected)
+    is SemanticDecision.Piles -> PilesSplitResponse(decisionId, selection.selected)
+    is SemanticDecision.Option -> OptionChosenResponse(decisionId, selection.selected)
+    is SemanticDecision.Replacement ->
+        ReplacementChosenResponse(decisionId, selection.from, selection.to)
+    is SemanticDecision.Budget -> BudgetModalResponse(decisionId, selection.selected)
+    is SemanticDecision.Damage -> CombatResolutionResponse(
+        decisionId = decisionId,
+        edges = selection.selected.map { DamageEdgeAmount(it.edgeId, it.amount) },
+    )
+    is SemanticDecision.Payment -> selection.toDecisionResponse(decisionId)
+}
