@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.CardRevealedFromDrawEvent
 import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.CommitCrimeEvent
 import com.wingedsheep.engine.core.DamageDealtEvent
 import com.wingedsheep.engine.core.DamageAssignedEvent
 import com.wingedsheep.engine.core.CountersAddedEvent
@@ -534,6 +535,15 @@ internal object HistoryCReferenceAuthority {
                 }
             },
             candidate = candidate,
+        )
+
+        is CommitCrimeEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.sourceEntityId,
+            eventKind = HistoryCReferenceKind.STACK_OBJECT,
+            eventRole = HistoryCReferenceSlotRole.SOURCE,
+            candidate = candidate,
+            identityMustBeOpaque = false,
         )
 
         is CardRevealedFromDrawEvent -> validateCollectionCandidate(
