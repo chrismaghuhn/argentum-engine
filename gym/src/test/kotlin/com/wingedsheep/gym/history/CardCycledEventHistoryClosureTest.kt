@@ -54,12 +54,14 @@ class CardCycledEventHistoryClosureTest : FunSpec({
         cardId: EntityId,
         eventCardName: String,
         beforeCardName: String,
+        beforeStamp: Long = objectStamp - 1L,
+        afterStamp: Long = objectStamp,
     ): AutomaticHistoryCReferenceProjectionResult.Accepted {
         val source = CommittedPerspectiveEventSource(CardRegistry())
         source.capture(
             CommittedRulesTransition(
-                beforeState = state(cardId, Zone.HAND, beforeCardName),
-                afterState = state(cardId, Zone.GRAVEYARD),
+                beforeState = state(cardId, Zone.HAND, beforeCardName, stamp = beforeStamp),
+                afterState = state(cardId, Zone.GRAVEYARD, stamp = afterStamp),
                 events = listOf(
                     CardCycledEvent(
                         playerId = cyclingPlayer,
