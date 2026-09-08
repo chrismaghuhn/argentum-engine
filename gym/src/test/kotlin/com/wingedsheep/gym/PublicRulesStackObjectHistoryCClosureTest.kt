@@ -4,9 +4,14 @@ import com.wingedsheep.engine.core.AbilityTriggeredEvent
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.TargetsChosenEvent
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryCIdentityDisclosure
@@ -16,6 +21,8 @@ import com.wingedsheep.gym.history.HistoryCReferenceSlotRole
 import com.wingedsheep.gym.history.PerspectiveAliasRegistryV1
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.scripting.AbilityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
@@ -30,11 +37,12 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
         objectId: EntityId,
         zone: Zone,
         stamp: Long = 1L,
+        stackMarker: Component? = null,
     ): GameState = GameState(
         entities = mapOf(
             perspective to ComponentContainer.EMPTY,
             controller to ComponentContainer.EMPTY,
-            objectId to ComponentContainer.EMPTY,
+            objectId to (stackMarker?.let { ComponentContainer.of(it) } ?: ComponentContainer.EMPTY),
         ),
         zones = if (zone == Zone.STACK) {
             emptyMap()
@@ -71,46 +79,114 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
         )
 
     test("public non-card stack object remains an opaque C reference") {
+        val markers = listOf<Component>(
+            TriggeredAbilityOnStackComponent(
+                sourceId = controller,
+                sourceName = "Triggered ability",
+                controllerId = controller,
+                effect = Effects.DrawCards(1),
+                description = "Triggered ability",
+            ),
+            ActivatedAbilityOnStackComponent(
+                sourceId = controller,
+                sourceName = "Activated ability",
+                controllerId = controller,
+                effect = Effects.DrawCards(1),
+            ),
+            AbilityOnStackComponent(
+                sourceId = controller,
+                controllerId = controller,
+                abilityId = AbilityId("legacy-ability"),
+                effect = Effects.DrawCards(1),
+            ),
+        )
+        listOf(perspective, controller).forEach { perspectivePlayerId ->
+            markers.forEach { marker ->
+                val result = project(
+                    event = TargetsChosenEvent(
+                        chooserId = controller,
+                        stackObjectId = objectId,
+                        sourceName = "Triggered ability",
+                    ),
+                    before = state(objectId, Zone.STACK, stackMarker = marker),
+                    after = state(objectId, Zone.STACK, stackMarker = marker),
+                    perspectivePlayerId = perspectivePlayerId,
+                ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+
+                val candidate = result.evidence.candidates.single()
+                candidate.slot.role shouldBe HistoryCReferenceSlotRole.EVENT_SUBJECT
+                candidate.referenceKind shouldBe HistoryCReferenceKind.STACK_OBJECT
+                candidate.endpointAuthority shouldBe HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+                candidate.identityDisclosure shouldBe HistoryCIdentityDisclosure.OPAQUE
+                candidate.afterWitness?.objectIdentityStamp shouldBe 1L
+
+                result.evidence.eventBatch.entries.single().eventFamily shouldBe
+                    PerspectiveEventFamily.TARGETS_CHOSEN
+                result.projection.referenceOccurrences.single().identityDisclosure shouldBe
+                    HistoryCIdentityDisclosure.OPAQUE
+                result.projection.referenceOccurrences.single().cardDefinitionId shouldBe null
+                result.evidence.eventBatch.canonicalJson() shouldNotContain objectId.value
+            }
+        }
+    }
+
+    test("markerless public stack object remains fail-closed") {
         listOf(perspective, controller).forEach { perspectivePlayerId ->
             val result = project(
                 event = TargetsChosenEvent(
                     chooserId = controller,
                     stackObjectId = objectId,
-                    sourceName = "Triggered ability",
+                    sourceName = "Unclassified stack object",
                 ),
                 before = state(objectId, Zone.STACK),
                 after = state(objectId, Zone.STACK),
                 perspectivePlayerId = perspectivePlayerId,
-            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
 
-            val candidate = result.evidence.candidates.single()
-            candidate.slot.role shouldBe HistoryCReferenceSlotRole.EVENT_SUBJECT
-            candidate.referenceKind shouldBe HistoryCReferenceKind.STACK_OBJECT
-            candidate.endpointAuthority shouldBe HistoryCReferenceEndpointAuthority.AFTER_OBJECT
-            candidate.identityDisclosure shouldBe HistoryCIdentityDisclosure.OPAQUE
-            candidate.afterWitness?.objectIdentityStamp shouldBe 1L
-
-            result.evidence.eventBatch.entries.single().eventFamily shouldBe
-                PerspectiveEventFamily.TARGETS_CHOSEN
-            result.projection.referenceOccurrences.single().identityDisclosure shouldBe
-                HistoryCIdentityDisclosure.OPAQUE
-            result.projection.referenceOccurrences.single().cardDefinitionId shouldBe null
-            result.evidence.eventBatch.canonicalJson() shouldNotContain objectId.value
+            result.failure.code shouldBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
         }
     }
 
     test("public card-like object without CardComponent remains fail-closed") {
-        val result = project(
-            event = AbilityTriggeredEvent(
-                sourceId = objectId,
-                sourceName = "Malformed card source",
-                controllerId = controller,
-                description = "A source without card identity",
-            ),
-            before = state(objectId, Zone.BATTLEFIELD),
-            after = state(objectId, Zone.BATTLEFIELD),
-        ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
+        listOf(perspective, controller).forEach { perspectivePlayerId ->
+            val result = project(
+                event = AbilityTriggeredEvent(
+                    sourceId = objectId,
+                    sourceName = "Malformed card source",
+                    controllerId = controller,
+                    description = "A source without card identity",
+                ),
+                before = state(objectId, Zone.BATTLEFIELD),
+                after = state(objectId, Zone.BATTLEFIELD),
+                perspectivePlayerId = perspectivePlayerId,
+            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
 
-        result.failure.code shouldBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
+            result.failure.code shouldBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
+        }
+    }
+
+    test("spell stack marker without CardComponent remains fail-closed") {
+        listOf(perspective, controller).forEach { perspectivePlayerId ->
+            val result = project(
+                event = TargetsChosenEvent(
+                    chooserId = controller,
+                    stackObjectId = objectId,
+                    sourceName = "Damaged spell",
+                ),
+                before = state(
+                    objectId,
+                    Zone.STACK,
+                    stackMarker = SpellOnStackComponent(casterId = controller),
+                ),
+                after = state(
+                    objectId,
+                    Zone.STACK,
+                    stackMarker = SpellOnStackComponent(casterId = controller),
+                ),
+                perspectivePlayerId = perspectivePlayerId,
+            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
+
+            result.failure.code shouldBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
+        }
     }
 })
