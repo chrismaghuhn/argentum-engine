@@ -1163,7 +1163,8 @@ class StackResolver(
             )
         }
 
-        if (CrimeDetector.isCrime(newState, ability.controllerId, targets)) {
+        // CR 700.13 requires a real activation; an activated-ability copy is not activated (CR 707.10).
+        if (emitActivationEvent && CrimeDetector.isCrime(newState, ability.controllerId, targets)) {
             events.add(CommitCrimeEvent(ability.controllerId, abilityId, ability.sourceName))
             newState = recordCrime(newState, ability.controllerId)
         }
