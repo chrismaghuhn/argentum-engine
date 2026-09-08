@@ -11,6 +11,7 @@ import com.wingedsheep.engine.core.CardRevealedFromDrawEvent
 import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.CommitCrimeEvent
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.CountersRemovedEvent
 import com.wingedsheep.engine.core.CreatureDestroyedEvent
@@ -79,6 +80,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         PerspectiveEventFamily.COUNTERS_REMOVED,
         PerspectiveEventFamily.TARGETS_CHOSEN,
         PerspectiveEventFamily.BECAME_TARGET,
+        PerspectiveEventFamily.COMMIT_CRIME,
         PerspectiveEventFamily.CREATURE_DESTROYED,
         PerspectiveEventFamily.DAMAGE_TO_OBJECT,
         PerspectiveEventFamily.CARD_REVEALED_FROM_DRAW,
@@ -133,6 +135,19 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         roleOrdinal = 0,
                         rank = 0,
                         entityId = rawEvent.sourceId,
+                    ),
+                )
+
+                is CommitCrimeEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.SOURCE,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.sourceEntityId,
+                        referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
                     ),
                 )
 
@@ -1009,6 +1024,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is BecomesTargetEvent,
         is BlockersDeclaredEvent,
         is CardCycledEvent,
+        is CommitCrimeEvent,
         is CardRevealedFromDrawEvent,
         is CardsDiscardedEvent,
         is CardsDrawnEvent,
