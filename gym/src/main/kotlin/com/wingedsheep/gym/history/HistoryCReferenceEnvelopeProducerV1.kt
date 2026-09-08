@@ -29,6 +29,7 @@ import com.wingedsheep.engine.core.PermanentAttachedEvent
 import com.wingedsheep.engine.core.PermanentUnattachedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SpellCopiedEvent
+import com.wingedsheep.engine.core.StatsModifiedEvent
 import com.wingedsheep.engine.core.TurnFaceUpEvent
 import com.wingedsheep.engine.core.TappedEvent
 import com.wingedsheep.engine.core.TurnedFaceDownEvent
@@ -78,6 +79,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         PerspectiveEventFamily.LAND_TAPPED_FOR_MANA,
         PerspectiveEventFamily.COUNTERS_ADDED,
         PerspectiveEventFamily.COUNTERS_REMOVED,
+        PerspectiveEventFamily.STATS_MODIFIED,
         PerspectiveEventFamily.TARGETS_CHOSEN,
         PerspectiveEventFamily.BECAME_TARGET,
         PerspectiveEventFamily.COMMIT_CRIME,
@@ -236,6 +238,17 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         roleOrdinal = 0,
                         rank = 0,
                         entityId = rawEvent.entityId,
+                    ),
+                )
+
+                is StatsModifiedEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.targetId,
                     ),
                 )
 
@@ -1033,6 +1046,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is DamageAssignedEvent,
         is CountersAddedEvent,
         is CountersRemovedEvent,
+        is StatsModifiedEvent,
         is CreatureDestroyedEvent,
         is HandLookedAtEvent,
         is HandRevealedEvent,

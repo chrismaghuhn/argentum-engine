@@ -156,18 +156,19 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
             projection.isComplete shouldBe false
             projection.classifications.map { it.rawEventType } shouldBe failingRawEventTypes
             projection.classifications.map { it.disposition } shouldBe listOf(
-                PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
+                PerspectiveEventDisposition.EMITTED,
                 PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
                 PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
                 PerspectiveEventDisposition.EMITTED,
             )
             projection.classifications.map { it.reason } shouldBe listOf(
-                PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
+                null,
                 PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
                 PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
                 null,
             )
             projection.batch.entries.map { it.eventFamily } shouldBe listOf(
+                PerspectiveEventFamily.STATS_MODIFIED,
                 PerspectiveEventFamily.ABILITY_RESOLVED,
             )
         }
