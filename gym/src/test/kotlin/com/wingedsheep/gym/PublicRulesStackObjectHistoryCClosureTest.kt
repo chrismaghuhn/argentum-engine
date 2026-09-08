@@ -37,12 +37,16 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
         objectId: EntityId,
         zone: Zone,
         stamp: Long = 1L,
-        stackMarker: Component? = null,
+        stackMarkers: List<Component> = emptyList(),
     ): GameState = GameState(
         entities = mapOf(
             perspective to ComponentContainer.EMPTY,
             controller to ComponentContainer.EMPTY,
-            objectId to (stackMarker?.let { ComponentContainer.of(it) } ?: ComponentContainer.EMPTY),
+            objectId to if (stackMarkers.isEmpty()) {
+                ComponentContainer.EMPTY
+            } else {
+                ComponentContainer.of(*stackMarkers.toTypedArray())
+            },
         ),
         zones = if (zone == Zone.STACK) {
             emptyMap()
@@ -78,27 +82,52 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
             ),
         )
 
+    fun triggeredAbilityMarker() = TriggeredAbilityOnStackComponent(
+        sourceId = controller,
+        sourceName = "Triggered ability",
+        controllerId = controller,
+        effect = Effects.DrawCards(1),
+        description = "Triggered ability",
+    )
+
+    fun activatedAbilityMarker() = ActivatedAbilityOnStackComponent(
+        sourceId = controller,
+        sourceName = "Activated ability",
+        controllerId = controller,
+        effect = Effects.DrawCards(1),
+    )
+
+    fun legacyAbilityMarker() = AbilityOnStackComponent(
+        sourceId = controller,
+        controllerId = controller,
+        abilityId = AbilityId("legacy-ability"),
+        effect = Effects.DrawCards(1),
+    )
+
+    fun spellMarker() = SpellOnStackComponent(casterId = controller)
+
+    fun assertRejectedForBothPerspectives(sourceName: String, markers: List<Component>) {
+        listOf(perspective, controller).forEach { perspectivePlayerId ->
+            val result = project(
+                event = TargetsChosenEvent(
+                    chooserId = controller,
+                    stackObjectId = objectId,
+                    sourceName = sourceName,
+                ),
+                before = state(objectId, Zone.STACK, stackMarkers = markers),
+                after = state(objectId, Zone.STACK, stackMarkers = markers),
+                perspectivePlayerId = perspectivePlayerId,
+            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
+
+            result.failure.code shouldBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
+        }
+    }
+
     test("public non-card stack object remains an opaque C reference") {
         val markers = listOf<Component>(
-            TriggeredAbilityOnStackComponent(
-                sourceId = controller,
-                sourceName = "Triggered ability",
-                controllerId = controller,
-                effect = Effects.DrawCards(1),
-                description = "Triggered ability",
-            ),
-            ActivatedAbilityOnStackComponent(
-                sourceId = controller,
-                sourceName = "Activated ability",
-                controllerId = controller,
-                effect = Effects.DrawCards(1),
-            ),
-            AbilityOnStackComponent(
-                sourceId = controller,
-                controllerId = controller,
-                abilityId = AbilityId("legacy-ability"),
-                effect = Effects.DrawCards(1),
-            ),
+            triggeredAbilityMarker(),
+            activatedAbilityMarker(),
+            legacyAbilityMarker(),
         )
         listOf(perspective, controller).forEach { perspectivePlayerId ->
             markers.forEach { marker ->
@@ -108,8 +137,8 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
                         stackObjectId = objectId,
                         sourceName = "Triggered ability",
                     ),
-                    before = state(objectId, Zone.STACK, stackMarker = marker),
-                    after = state(objectId, Zone.STACK, stackMarker = marker),
+                    before = state(objectId, Zone.STACK, stackMarkers = listOf(marker)),
+                    after = state(objectId, Zone.STACK, stackMarkers = listOf(marker)),
                     perspectivePlayerId = perspectivePlayerId,
                 ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
 
@@ -176,17 +205,31 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
                 before = state(
                     objectId,
                     Zone.STACK,
-                    stackMarker = SpellOnStackComponent(casterId = controller),
+                    stackMarkers = listOf(spellMarker()),
                 ),
                 after = state(
                     objectId,
                     Zone.STACK,
-                    stackMarker = SpellOnStackComponent(casterId = controller),
+                    stackMarkers = listOf(spellMarker()),
                 ),
                 perspectivePlayerId = perspectivePlayerId,
             ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
 
             result.failure.code shouldBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
         }
+    }
+
+    test("ambiguous non-card stack markers remain fail-closed") {
+        assertRejectedForBothPerspectives(
+            sourceName = "Ambiguous ability",
+            markers = listOf(triggeredAbilityMarker(), activatedAbilityMarker()),
+        )
+    }
+
+    test("spell and non-card stack markers remain fail-closed") {
+        assertRejectedForBothPerspectives(
+            sourceName = "Spell with ability marker",
+            markers = listOf(spellMarker(), triggeredAbilityMarker()),
+        )
     }
 })
