@@ -1,8 +1,8 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardCycledEvent
-import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
@@ -10,7 +10,6 @@ import com.wingedsheep.engine.core.DecisionResponse
 import com.wingedsheep.engine.core.DamageEdgeAmount
 import com.wingedsheep.engine.core.DistributionResponse
 import com.wingedsheep.engine.core.GameConfig
-import com.wingedsheep.engine.core.KeywordGrantedEvent
 import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
@@ -20,11 +19,7 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PerspectiveEventDisposition
-import com.wingedsheep.gym.contract.PerspectiveEventFamily
-import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
@@ -34,9 +29,9 @@ import io.kotest.matchers.shouldBe
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Safe, test-only characterization of the first History-D failure after the accepted closures. */
-class Step457HistoryDFailureCharacterizationTest : FunSpec({
-    test("pins the first post-Step-128 History-D failure") {
+/** Test-only locked-path regression for the now-accepted empty AttackersDeclared event. */
+class AttackersDeclaredHistoryCMetadataCharacterizationTest : FunSpec({
+    test("accepts the legal empty AttackersDeclared event on the locked path") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -87,22 +82,22 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         var observation = gym.reset(
             gameConfig = config,
             maxSteps = 2_000,
-            semanticEpisodeId = "step-457-history-d-failure-seed-0",
+            semanticEpisodeId = "attackers-declared-history-c-characterization-seed-0",
         ).observation as TrainingObservation
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var successfulChoices = 0
         var cardCycledChoices: Int? = null
         var cardCycledStep: Int? = null
-        var keywordGrantedChoices: Int? = null
-        var keywordGrantedStep: Int? = null
         var emptyAttackersChoices: Int? = null
         var emptyAttackersStep: Int? = null
         var failure: HistoryDOperationException? = null
-        var failingRawEventTypes: List<String> = emptyList()
-        var failingProjections: List<PerspectiveEventProjectionResult?> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated &&
+            !observation.truncated &&
+            failure == null &&
+            emptyAttackersStep == null
+        ) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -119,7 +114,7 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                         val pending = checkNotNull(observation.pendingDecision)
                         val decisionId = checkNotNull(pending.decisionId)
                         gym.submitDecision(
-                            response = step457DecisionResponse(decisionId, choice.selection),
+                            response = attackersDecisionResponse(decisionId, choice.selection),
                             actorId = observation.agentToAct,
                         ).observation
                     }
@@ -133,14 +128,7 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                     cardCycledChoices = successfulChoices
                     cardCycledStep = environment.stepCount
                 }
-                if (keywordGrantedChoices == null &&
-                    environment.lastStepEvents.count { it is KeywordGrantedEvent } == 2
-                ) {
-                    keywordGrantedChoices = successfulChoices
-                    keywordGrantedStep = environment.stepCount
-                }
-                if (emptyAttackersChoices == null &&
-                    environment.lastStepEvents.any { event ->
+                if (environment.lastStepEvents.any { event ->
                         event is AttackersDeclaredEvent &&
                             event.attackers.isEmpty() &&
                             event.declaredAttacks.isEmpty()
@@ -151,75 +139,28 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                 }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
-                failingRawEventTypes = environment.lastStepEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
-                failingProjections = environment.playerIds.map { playerId ->
-                    gym.lastCommittedPerspectiveEventProjection(playerId)
-                }
             }
         }
 
-        val historyDFailure = checkNotNull(failure)
-        successfulChoices shouldBe 1999
-        environment.stepCount shouldBe 2000
+        failure shouldBe null
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
-        keywordGrantedChoices shouldBe 457
-        keywordGrantedStep shouldBe 457
         emptyAttackersChoices shouldBe 466
         emptyAttackersStep shouldBe 466
-        historyDFailure.failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
-        failingRawEventTypes shouldBe listOf(
-            "ZoneChangeEvent",
-            "ZoneChangeEvent",
-            "ResolvedEvent",
-            "AbilityTriggeredEvent",
-        )
-
-        val projections = failingProjections.map(::checkNotNull)
-        projections.size shouldBe 2
-        projections.forEach { projection ->
-            projection.isComplete shouldBe true
-            projection.classifications.map { it.rawEventType } shouldBe failingRawEventTypes
-            projection.classifications.map { it.disposition } shouldBe listOf(
-                PerspectiveEventDisposition.EMITTED,
-                PerspectiveEventDisposition.EMITTED,
-                PerspectiveEventDisposition.EMITTED,
-                PerspectiveEventDisposition.EMITTED,
-            )
-            projection.classifications.map { it.reason } shouldBe listOf(
-                null,
-                null,
-                null,
-                null,
-            )
-            projection.batch.entries.map { it.eventFamily } shouldBe listOf(
-                PerspectiveEventFamily.ZONE_CHANGED,
-                PerspectiveEventFamily.ZONE_CHANGED,
-                PerspectiveEventFamily.RESOLVED,
-                PerspectiveEventFamily.ABILITY_TRIGGERED,
-            )
-        }
+        successfulChoices shouldBe 466
+        environment.stepCount shouldBe 466
 
         println(
-            "STEP457_CHARACTERIZATION " +
+            "ATTACKERS_DECLARED_CHARACTERIZATION " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "failure=${historyDFailure.failure.code} " +
-                "rawEvents=$failingRawEventTypes " +
-                "keywordGrantedChoices=$keywordGrantedChoices " +
-                "keywordGrantedStep=$keywordGrantedStep " +
-                "emptyAttackersChoices=$emptyAttackersChoices " +
-                "emptyAttackersStep=$emptyAttackersStep " +
-                "perspectives=" + projections.map { projection ->
-                    projection.classifications.map { classification ->
-                        "${classification.rawEventType}:${classification.disposition}:${classification.reason}"
-                    }
-                },
+                "emptyAttackersAccepted=true " +
+                "attackerCount=0 declaredAttackCount=0",
         )
     }
 })
 
-private fun step457DecisionResponse(
+private fun attackersDecisionResponse(
     decisionId: String,
     selection: SemanticDecision,
 ): DecisionResponse = when (selection) {
