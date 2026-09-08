@@ -5,6 +5,10 @@ import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.stack.AbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
+import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
+import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.player.KnownInformationFactKind
 import com.wingedsheep.engine.state.components.player.KnownInformationFactV1
 import com.wingedsheep.engine.state.components.player.KnownInformationLedgerComponentV1
@@ -372,6 +376,15 @@ internal class PerspectiveReferenceProjectorV1(
             endpoint.witness.entityId,
             perspectivePlayerId,
         )
+        val actualDefinition = endpoint.state.getEntity(endpoint.witness.entityId)
+            ?.get<CardComponent>()
+            ?.cardDefinitionId
+        // Stack addressability is public, but an ability/trigger stack object has no card identity.
+        // Keep that Rules object opaque rather than treating public object visibility as a
+        // CardDefinition authority. Card-like objects outside the stack remain fail-closed below.
+        val isPublicRulesStackObject = endpoint.state.stack.contains(endpoint.witness.entityId) &&
+            actualDefinition == null &&
+            isAuthoritativeNonCardRulesStackObject(endpoint.state, endpoint.witness.entityId)
 
         if (location != null && location.zone in setOf(Zone.HAND, Zone.LIBRARY)) {
             val zoneVisible = visibility.isZoneVisibleTo(
@@ -386,7 +399,8 @@ internal class PerspectiveReferenceProjectorV1(
             }
         }
 
-        val identityAuthorized = identityVisible || identityFact != null
+        val identityAuthorized = !isPublicRulesStackObject &&
+            (identityVisible || identityFact != null)
         if (endpoint.candidate.identityDisclosure == HistoryCIdentityDisclosure.DEFINITION_KNOWN &&
             !identityAuthorized
         ) {
@@ -395,9 +409,6 @@ internal class PerspectiveReferenceProjectorV1(
             )
         }
 
-        val actualDefinition = endpoint.state.getEntity(endpoint.witness.entityId)
-            ?.get<CardComponent>()
-            ?.cardDefinitionId
         val claimedDefinition = endpoint.candidate.cardDefinitionId
         if (claimedDefinition != null && actualDefinition != claimedDefinition) {
             return EndpointDecision.Reject(
@@ -508,6 +519,19 @@ internal class PerspectiveReferenceProjectorV1(
     private fun containsWitness(state: GameState, witness: HistoryCObjectWitness): Boolean =
         state.hasEntity(witness.entityId) &&
             state.objectIdentityStamps[witness.entityId] == witness.objectIdentityStamp
+
+    private fun isAuthoritativeNonCardRulesStackObject(
+        state: GameState,
+        entityId: EntityId,
+    ): Boolean {
+        val entity = state.getEntity(entityId) ?: return false
+        if (entity.has<SpellOnStackComponent>()) return false
+        val nonCardMarkerCount =
+            (if (entity.has<TriggeredAbilityOnStackComponent>()) 1 else 0) +
+                (if (entity.has<ActivatedAbilityOnStackComponent>()) 1 else 0) +
+                (if (entity.has<AbilityOnStackComponent>()) 1 else 0)
+        return nonCardMarkerCount == 1
+    }
 
     private fun locate(state: GameState, entityId: EntityId): Location? {
         val zoneEntry = state.zones.entries
