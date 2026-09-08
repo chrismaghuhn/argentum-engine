@@ -688,6 +688,11 @@ private fun EpisodeSpec.config(): EnvConfig {
         seed = seed,
         maxSteps = B1_MAX_STEPS,
         perspectivePlayerIndex = 0,
+        semanticEpisodeId = if (System.getProperty("preC1.history") == "true") {
+            "pre-c1-b1-${label}"
+        } else {
+            null
+        },
     )
 }
 
