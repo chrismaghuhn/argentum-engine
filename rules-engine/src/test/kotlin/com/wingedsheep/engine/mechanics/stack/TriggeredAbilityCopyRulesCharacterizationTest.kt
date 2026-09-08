@@ -2,8 +2,12 @@ package com.wingedsheep.engine.mechanics.stack
 
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
 import com.wingedsheep.engine.core.BecomesTargetEvent
+import com.wingedsheep.engine.core.ChooseTargetsDecision
 import com.wingedsheep.engine.core.CommitCrimeEvent
 import com.wingedsheep.engine.core.TargetsChosenEvent
+import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.handlers.EffectContext
+import com.wingedsheep.engine.handlers.effects.stack.CopyTargetTriggeredAbilityExecutor
 import com.wingedsheep.engine.handlers.effects.stack.CopyTargetSpellOrAbilityExecutor
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TargetsComponent
@@ -13,6 +17,8 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.Deck
+import com.wingedsheep.sdk.scripting.effects.CopyTargetTriggeredAbilityEffect
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import com.wingedsheep.sdk.scripting.targets.TargetPlayer
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
@@ -31,6 +37,98 @@ class TriggeredAbilityCopyRulesCharacterizationTest : FunSpec({
             skipMulligans = true,
             startingPlayer = 0,
         )
+    }
+
+    test("dedicated no-target triggered copies do not emit a retrigger event") {
+        val driver = newDriver()
+        val genuineController = driver.player1
+        val copyController = driver.player2
+        val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
+        val resolver = StackResolver(driver.cardRegistry)
+        val ability = TriggeredAbilityOnStackComponent(
+            sourceId = sourceId,
+            sourceName = "No-target triggered ability",
+            controllerId = genuineController,
+            effect = Effects.GainLife(1),
+            description = "No-target triggered ability",
+        )
+
+        val genuine = resolver.putTriggeredAbility(
+            state = driver.state,
+            ability = ability,
+        )
+        genuine.error shouldBe null
+
+        val copied = CopyTargetTriggeredAbilityExecutor(driver.cardRegistry).execute(
+            state = genuine.newState,
+            effect = CopyTargetTriggeredAbilityEffect(
+                target = EffectTarget.SpecificEntity(genuine.newState.stack.last()),
+            ),
+            context = EffectContext(sourceId = sourceId, controllerId = copyController),
+        )
+        copied.error shouldBe null
+        copied.pendingDecision shouldBe null
+        copied.events.filterIsInstance<AbilityTriggeredEvent>().size shouldBe 0
+        copied.events.filterIsInstance<CommitCrimeEvent>().size shouldBe 0
+        copied.state.stack.size shouldBe genuine.newState.stack.size + 1
+    }
+
+    test("dedicated targeted triggered copies resume without a retrigger event") {
+        val driver = newDriver()
+        val genuineController = driver.player1
+        val copyController = driver.player2
+        val sourceId = driver.putCreatureOnBattlefield(genuineController, "Grizzly Bears")
+        val resolver = StackResolver(driver.cardRegistry)
+        val targetRequirements = listOf(TargetPlayer())
+        val ability = TriggeredAbilityOnStackComponent(
+            sourceId = sourceId,
+            sourceName = "Targeted triggered ability",
+            controllerId = genuineController,
+            effect = Effects.GainLife(1),
+            description = "Targeted triggered ability",
+        )
+
+        val genuine = resolver.putTriggeredAbility(
+            state = driver.state,
+            ability = ability,
+            targets = listOf(ChosenTarget.Player(copyController)),
+            targetRequirements = targetRequirements,
+        )
+        genuine.error shouldBe null
+
+        val copyRequest = CopyTargetTriggeredAbilityExecutor(driver.cardRegistry).execute(
+            state = genuine.newState,
+            effect = CopyTargetTriggeredAbilityEffect(
+                target = EffectTarget.SpecificEntity(genuine.newState.stack.last()),
+            ),
+            context = EffectContext(sourceId = sourceId, controllerId = copyController),
+        )
+        copyRequest.error shouldBe null
+        copyRequest.isPaused shouldBe true
+        val decision = copyRequest.pendingDecision as ChooseTargetsDecision
+        decision.legalTargets[0]?.contains(genuineController) shouldBe true
+
+        driver.replaceState(copyRequest.state)
+        val resumed = driver.submitDecision(
+            copyController,
+            TargetsResponse(decision.id, mapOf(0 to listOf(genuineController))),
+        )
+        resumed.error shouldBe null
+        resumed.pendingDecision shouldBe null
+
+        val copiedCrimeStateDelta = resumed.state.playersWhoCommittedCrimeThisTurn -
+            genuine.newState.playersWhoCommittedCrimeThisTurn
+        val copiedTargets = resumed.state.getEntity(resumed.state.stack.last())
+            ?.get<TargetsComponent>()?.targets.orEmpty()
+
+        resumed.events.filterIsInstance<AbilityTriggeredEvent>().size shouldBe 0
+        resumed.events.filterIsInstance<CommitCrimeEvent>().size shouldBe 1
+        copiedCrimeStateDelta.size shouldBe 1
+        copiedCrimeStateDelta.contains(copyController) shouldBe true
+        resumed.events.filterIsInstance<TargetsChosenEvent>().size shouldBe 1
+        resumed.events.filterIsInstance<BecomesTargetEvent>().size shouldBe 1
+        copiedTargets.size shouldBe 1
+        ((copiedTargets.single() as? ChosenTarget.Player)?.playerId == genuineController) shouldBe true
     }
 
     test("triggered ability copies do not retrigger but preserve crime and targeting semantics") {
