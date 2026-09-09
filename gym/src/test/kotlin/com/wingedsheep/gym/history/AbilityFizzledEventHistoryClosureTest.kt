@@ -1,7 +1,11 @@
 package com.wingedsheep.gym.history
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.ComponentContainer
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.gym.contract.PerspectiveEventDisposition
 import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.gym.contract.PerspectiveEventProjector
@@ -9,6 +13,7 @@ import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
 import io.kotest.matchers.string.shouldNotContain
+import io.kotest.matchers.types.shouldBeInstanceOf
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 
@@ -25,6 +30,8 @@ class AbilityFizzledEventHistoryClosureTest : FunSpec({
                 sourceId = sourceId,
                 description = description,
                 reason = reason,
+                sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT,
+                sourceObjectIncarnationStamp = 17L,
             ),
         ),
         perspectivePlayerId = perspectivePlayerId,
@@ -49,5 +56,102 @@ class AbilityFizzledEventHistoryClosureTest : FunSpec({
 
         projections.map { it.batch.entries.single().semanticPayload }.distinct().size shouldBe 1
         projection(self).batch.canonicalJson() shouldBe projections.first().batch.canonicalJson()
+    }
+
+    test("AbilityFizzledEvent uses event-owned source authority in History-C") {
+        val before = GameState(
+            entities = mapOf(
+                self to ComponentContainer.EMPTY,
+                opponent to ComponentContainer.EMPTY,
+            ),
+            turnOrder = listOf(self, opponent),
+        )
+        val after = before
+        val event = AbilityFizzledEvent(
+            sourceId = sourceId,
+            description = description,
+            reason = reason,
+            sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+            sourceObjectIncarnationStamp = 17L,
+        )
+        val transition = CommittedRulesTransition(
+            beforeState = before,
+            afterState = after,
+            events = listOf(event),
+            sourceStepCount = 2767,
+        )
+        val projector = PerspectiveEventProjector(CardRegistry())
+
+        listOf(self, opponent).forEach { perspectivePlayerId ->
+            val projection = projector.project(
+                events = transition.events,
+                perspectivePlayerId = perspectivePlayerId,
+                beforeState = before,
+                afterState = after,
+            )
+            val produced = HistoryCReferenceEnvelopeProducerV1.produce(transition, projection)
+                .shouldBeInstanceOf<HistoryCReferenceEnvelopeProducerResult.Accepted>()
+            val candidate = produced.envelope.candidates.single()
+
+            candidate.slot shouldBe HistoryCReferenceSlot(
+                eventOrdinal = 0,
+                role = HistoryCReferenceSlotRole.SOURCE,
+                roleOrdinal = 0,
+            )
+            candidate.referenceKind shouldBe HistoryCReferenceKind.CARD_OR_RULES_OBJECT
+            candidate.endpointAuthority shouldBe HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+            candidate.beforeWitness shouldBe HistoryCObjectWitness(sourceId, 17L)
+            candidate.afterWitness shouldBe null
+            candidate.witnessProvenance shouldBe HistoryCReferenceWitnessProvenance.EVENT_OWNED
+            candidate.identityDisclosure shouldBe HistoryCIdentityDisclosure.OPAQUE
+
+            HistoryCReferenceAuthority.validate(
+                transition = transition,
+                projection = projection,
+                envelope = produced.envelope,
+            ).shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+        }
+    }
+
+    test("AbilityFizzledEvent missing or invalid authority is rejected fail closed") {
+        val state = GameState(
+            entities = mapOf(
+                self to ComponentContainer.EMPTY,
+                opponent to ComponentContainer.EMPTY,
+            ),
+            turnOrder = listOf(self, opponent),
+        )
+        val projector = PerspectiveEventProjector(CardRegistry())
+
+        listOf(
+            AbilityFizzledEvent(
+                sourceId = sourceId,
+                description = description,
+                reason = reason,
+            ),
+            AbilityFizzledEvent(
+                sourceId = sourceId,
+                description = description,
+                reason = reason,
+                sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+                sourceObjectIncarnationStamp = 0L,
+            ),
+        ).forEach { event ->
+            val transition = CommittedRulesTransition(
+                beforeState = state,
+                afterState = state,
+                events = listOf(event),
+                sourceStepCount = 2767,
+            )
+            val projection = projector.project(
+                events = transition.events,
+                perspectivePlayerId = self,
+                beforeState = state,
+                afterState = state,
+            )
+            HistoryCReferenceEnvelopeProducerV1.produce(transition, projection)
+                .shouldBeInstanceOf<HistoryCReferenceEnvelopeProducerResult.Rejected>()
+                .failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
+        }
     }
 })

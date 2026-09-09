@@ -2,6 +2,7 @@ package com.wingedsheep.gym.history
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.AbilityResolvedEvent
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
@@ -51,7 +52,7 @@ private data class AbilityFizzledSourceWitnessMatrix(
     val sameIncarnation: Boolean,
 )
 
-/** Test-only characterization of the missing AbilityFizzledEvent History-C source contract. */
+/** Test-only regression for the AbilityFizzledEvent History-C source contract. */
 class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
     test("compares AbilityFizzledEvent source authority with AbilityResolvedEvent") {
         val registry = CardRegistry().apply {
@@ -178,6 +179,8 @@ class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
         (zoneChange.entityId == fizzled.sourceId) shouldBe true
         zoneChange.fromZone shouldBe null
         zoneChange.toZone shouldBe Zone.BATTLEFIELD
+        fizzled.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT
+        fizzled.sourceObjectIncarnationStamp shouldBe afterStamp
         val observedStep2767Endpoint = if (
             zoneChange.entityId == fizzled.sourceId &&
             witnessMatrix.afterWitnessPresent &&
@@ -209,9 +212,20 @@ class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
             val fizzledEventOrdinal = projection.classifications.indexOfLast {
                 it.rawEventType == "AbilityFizzledEvent"
             }
-            produced.envelope.candidates.filter {
+            val fizzledCandidates = produced.envelope.candidates.filter {
                 it.slot.eventOrdinal == fizzledEventOrdinal
-            } shouldBe emptyList()
+            }
+            fizzledCandidates.size shouldBe 1
+            val fizzledCandidate = fizzledCandidates.single()
+            fizzledCandidate.slot.role shouldBe HistoryCReferenceSlotRole.SOURCE
+            fizzledCandidate.referenceKind shouldBe HistoryCReferenceKind.CARD_OR_RULES_OBJECT
+            fizzledCandidate.endpointAuthority shouldBe HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+            fizzledCandidate.beforeWitness shouldBe null
+            fizzledCandidate.afterWitness shouldBe HistoryCObjectWitness(
+                fizzled.sourceId,
+                checkNotNull(fizzled.sourceObjectIncarnationStamp),
+            )
+            fizzledCandidate.witnessProvenance shouldBe HistoryCReferenceWitnessProvenance.EVENT_OWNED
         }
 
         val resolved = AbilityResolvedEvent(
@@ -250,9 +264,9 @@ class AbilityFizzledHistoryCAuthorityCharacterizationTest : FunSpec({
                 "sourceMatchesZoneChange=true " +
                 "zoneChange=${zoneChange.fromZone?.name ?: "UNKNOWN"}->${zoneChange.toZone.name} " +
                 "observedStep2767Endpoint=$observedStep2767Endpoint " +
-                "genericEndpointMetadataPresent=false " +
-                "rawFields=[sourceId, description, reason] " +
-                "fizzledCandidateCount=0 " +
+                "genericEndpointMetadataPresent=true " +
+                "rawFields=[sourceId, description, reason, sourceEndpointAuthority, sourceObjectIncarnationStamp] " +
+                "fizzledCandidateCount=1 " +
                 "resolvedCandidateAuthority=AFTER_OBJECT",
         )
     }

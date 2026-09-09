@@ -161,7 +161,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         )
     }
 
-    test("activated resolution fizzle has no generic activation source authority") {
+    test("activated resolution fizzle captures generic activation source authority") {
         val driver = driver()
         val sourceId = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
@@ -187,6 +187,8 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         val stackComponent = placement.newState.getEntity(stackId)
             ?.get<ActivatedAbilityOnStackComponent>()
             ?: error("activated ability was not retained on stack")
+        stackComponent.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        stackComponent.sourceObjectIncarnationStamp shouldBe activationSourceStamp
         stackComponent.lastKnownSourceSnapshot shouldBe null
         stackComponent.lastKnownSourceCounters shouldBe emptyMap()
 
@@ -208,6 +210,8 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         val event = result.events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         event.sourceId shouldBe sourceId
         event.reason shouldBe "All targets are invalid"
+        event.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        event.sourceObjectIncarnationStamp shouldBe activationSourceStamp
         sourceWitnessFacts(beforeResolution, result.newState, sourceId) shouldBe ActivatedSourceWitnessFacts(
             beforeWitnessPresent = true,
             afterWitnessPresent = true,
@@ -221,10 +225,10 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         println(
             "ACTIVATED_SOURCE_AUTHORITY activated-resolution " +
                 "source=ActivatedAbilityOnStackComponent.sourceId " +
-                "requiredAuthority=MISSING_AUTHORITATIVE_METADATA " +
-                "metadata=specialized-LKI-only " +
+                "requiredAuthority=BEFORE_OBJECT " +
+                "metadata=endpoint+activationIncarnationStamp " +
                 "activationStampDiffersFromResolutionState=true " +
-                "eventFields=sourceId,description,reason",
+                "eventFields=sourceId,description,reason,sourceEndpointAuthority,sourceObjectIncarnationStamp",
         )
     }
 
@@ -296,7 +300,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         )
     }
 
-    test("self-sacrifice activation cost preserves source LKI but no generic endpoint") {
+    test("self-sacrifice activation cost preserves source LKI and generic endpoint") {
         val driver = driver()
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val sourceId = driver.putCreatureOnBattlefield(driver.player1, "Ghitu Fire-Eater")

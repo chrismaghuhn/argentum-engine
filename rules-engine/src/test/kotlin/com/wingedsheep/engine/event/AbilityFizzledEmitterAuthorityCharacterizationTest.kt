@@ -31,9 +31,9 @@ private data class SourceWitnessFacts(
     val sameIncarnation: Boolean,
 )
 
-/** Test-only matrix for the Rules-owned metadata available at every AbilityFizzledEvent emitter. */
+/** Test-only regression matrix for the Rules-owned metadata at every AbilityFizzledEvent emitter. */
 class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
-    test("pre-stack TriggerProcessor fizzle drops PendingTrigger source authority") {
+    test("pre-stack TriggerProcessor fizzle carries PendingTrigger source authority") {
         val driver = driver()
         val sourceId = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         val sourceStamp = driver.state.objectIdentityStamps[sourceId]
@@ -67,6 +67,8 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         result.newState shouldBe driver.state
         event.sourceId shouldBe sourceId
         event.reason shouldBe "No legal targets available"
+        event.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+        event.sourceObjectIncarnationStamp shouldBe sourceStamp
         sourceWitnessFacts(driver.state, result.newState, sourceId) shouldBe SourceWitnessFacts(
             beforeWitnessPresent = true,
             afterWitnessPresent = true,
@@ -80,12 +82,12 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
                 "source=PendingTrigger.sourceId " +
                 "authority=SAME_INCARNATION " +
                 "metadata=[PendingTrigger.endpoint,PendingTrigger.stamp] " +
-                "eventFields=sourceId,description,reason " +
-                "eventAuthority=false eventStamp=false",
+                "eventFields=sourceId,description,reason,sourceEndpointAuthority,sourceObjectIncarnationStamp " +
+                "eventAuthority=true eventStamp=true",
         )
     }
 
-    test("triggered resolution fizzle has component authority but event drops it") {
+    test("triggered resolution fizzle carries component authority into the event") {
         val driver = driver()
         val sourceId = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
@@ -134,6 +136,8 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         val event = result.events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         event.sourceId shouldBe sourceId
         event.reason shouldBe "All targets are invalid"
+        event.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+        event.sourceObjectIncarnationStamp shouldBe sourceStamp
         sourceWitnessFacts(beforeResolution, result.newState, sourceId) shouldBe SourceWitnessFacts(
             beforeWitnessPresent = true,
             afterWitnessPresent = true,
@@ -151,11 +155,12 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
                 "authority=SAME_INCARNATION " +
                 "metadata=[TriggeredAbilityOnStackComponent.endpoint,TriggeredAbilityOnStackComponent.stamp] " +
                 "capturedStampDiffersFromResolutionState=true " +
-                "eventFields=sourceId,description,reason eventAuthority=false eventStamp=false",
+                "eventFields=sourceId,description,reason,sourceEndpointAuthority,sourceObjectIncarnationStamp " +
+                "eventAuthority=true eventStamp=true",
         )
     }
 
-    test("activated resolution fizzle has no generic source authority metadata") {
+    test("activated resolution fizzle carries captured source authority") {
         val driver = driver()
         val sourceId = driver.putPermanentOnBattlefield(driver.player1, "Sol Ring")
         val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
@@ -181,6 +186,8 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         val stacked = placement.newState.getEntity(stackId)
             ?.get<ActivatedAbilityOnStackComponent>()
             ?: error("activated ability was not retained on stack")
+        stacked.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        stacked.sourceObjectIncarnationStamp shouldBe activationSourceStamp
         stacked.lastKnownSourceSnapshot shouldBe null
         stacked.lastKnownSourceCounters shouldBe emptyMap()
 
@@ -202,6 +209,8 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         val event = result.events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         event.sourceId shouldBe sourceId
         event.reason shouldBe "All targets are invalid"
+        event.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        event.sourceObjectIncarnationStamp shouldBe activationSourceStamp
         sourceWitnessFacts(beforeResolution, result.newState, sourceId) shouldBe SourceWitnessFacts(
             beforeWitnessPresent = true,
             afterWitnessPresent = true,
@@ -215,10 +224,11 @@ class AbilityFizzledEmitterAuthorityCharacterizationTest : FunSpec({
         println(
             "ABILITY_FIZZLED_EMITTER activated-resolution " +
                 "source=ActivatedAbilityOnStackComponent.sourceId " +
-                "authority=MISSING_AUTHORITATIVE_METADATA " +
-                "metadata=[specialized_LKI_only] " +
+                "authority=BEFORE_OBJECT " +
+                "metadata=[ActivatedAbilityOnStackComponent.endpoint,ActivatedAbilityOnStackComponent.stamp] " +
                 "activationStampDiffersFromResolutionState=true " +
-                "eventFields=sourceId,description,reason eventAuthority=false eventStamp=false",
+                "eventFields=sourceId,description,reason,sourceEndpointAuthority,sourceObjectIncarnationStamp " +
+                "eventAuthority=true eventStamp=true",
         )
     }
 })
