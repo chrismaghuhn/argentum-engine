@@ -4,6 +4,7 @@ import com.wingedsheep.engine.core.CardExiledWithMadnessEvent
 import com.wingedsheep.engine.core.CardsDiscardedEvent
 import com.wingedsheep.engine.core.CountersAddedEvent
 import com.wingedsheep.engine.core.EffectResult
+import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.core.GameEvent as EngineGameEvent
 import com.wingedsheep.engine.handlers.EffectContext
@@ -170,6 +171,24 @@ object ZoneTransitionService {
     lateinit var cardRegistry: CardRegistry
     /** Default keeps small standalone effect tests usable; EngineServices replaces it with the game-wide instance. */
     var replacementEffectProcessor: ReplacementEffectProcessor = ReplacementEffectProcessor()
+
+    /**
+     * Build the public sacrifice event while the supplied state still represents the
+     * pre-sacrifice objects. The parallel stamp list is Rules-owned event metadata; a missing
+     * stamp remains null so downstream History-C can fail closed rather than infer identity from a
+     * neighboring ZoneChangeEvent.
+     */
+    internal fun permanentsSacrificedEvent(
+        state: GameState,
+        playerId: EntityId,
+        permanentIds: List<EntityId>,
+        permanentNames: List<String> = emptyList(),
+    ): PermanentsSacrificedEvent = PermanentsSacrificedEvent(
+        playerId = playerId,
+        permanentIds = permanentIds,
+        permanentNames = permanentNames,
+        permanentObjectIncarnationStamps = permanentIds.map { state.objectIdentityStamps[it] },
+    )
 
     /**
      * Route a player-visible zone move through the serializable pending-event

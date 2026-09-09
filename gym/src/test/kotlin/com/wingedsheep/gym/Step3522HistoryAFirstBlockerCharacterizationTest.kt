@@ -1,6 +1,5 @@
 package com.wingedsheep.gym
 
-import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
@@ -13,10 +12,18 @@ import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.gym.contract.PerspectiveEventClassification
+import com.wingedsheep.gym.contract.PerspectiveEventDisposition
+import com.wingedsheep.gym.contract.PerspectiveEventFamily
+import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
+import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.history.HistoryDOperationException
@@ -28,9 +35,16 @@ import io.kotest.matchers.shouldBe
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Regression proving the former Step-2767 AbilityFizzledEvent History-A gap is crossed. */
-class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
-    test("crosses the former AbilityFizzledEvent History-A gap for both perspectives") {
+private data class Step3522ProjectionFact(
+    val rawEventType: String,
+    val family: PerspectiveEventFamily?,
+    val disposition: PerspectiveEventDisposition,
+    val reason: PerspectiveEventUnsupportedReason?,
+)
+
+/** Crossing regression for the former History-A blocker at locked Step 3522. */
+class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
+    test("crosses the former Step-3522 History-A blocker for both perspectives") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -81,16 +95,18 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
         var observation = gym.reset(
             gameConfig = config,
             maxSteps = 4_000,
-            semanticEpisodeId = "step-2767-history-a-projection-seed-0",
+            semanticEpisodeId = "step-3522-history-a-first-blocker-seed-0",
         ).observation as TrainingObservation
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var successfulChoices = 0
-        var abilityFizzledChoices: Int? = null
-        var abilityFizzledStep: Int? = null
-        var abilityFizzledProjectionCompleteForBothPerspectives: Boolean? = null
+        var step3522Reached = false
+        var crossingBeforeState: GameState? = null
+        var crossingAfterState: GameState? = null
+        var crossingEvents: List<GameEvent> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && abilityFizzledChoices == null) {
+        while (!observation.terminated && !observation.truncated && !step3522Reached) {
+            val beforeState = environment.state
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -107,7 +123,7 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
                         val pending = checkNotNull(observation.pendingDecision)
                         val decisionId = checkNotNull(pending.decisionId)
                         gym.submitDecision(
-                            response = step2767DecisionResponse(decisionId, choice.selection),
+                            response = step3522DecisionResponse(decisionId, choice.selection),
                             actorId = observation.agentToAct,
                         ).observation
                     }
@@ -115,41 +131,133 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
                     is SemanticChoice.Gap -> error("Policy gap at choice=$successfulChoices: $choice")
                 } as TrainingObservation
                 successfulChoices++
-                if (environment.lastStepEvents.any { it is AbilityFizzledEvent }) {
-                    abilityFizzledChoices = successfulChoices
-                    abilityFizzledStep = environment.stepCount
-                    abilityFizzledProjectionCompleteForBothPerspectives = environment.playerIds.all {
-                        perspectivePlayerId ->
-                        gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId)?.isComplete == true
-                    }
+                if (environment.stepCount == 3_522 &&
+                    environment.lastStepEvents.any { it is PermanentsSacrificedEvent }
+                ) {
+                    step3522Reached = true
+                    crossingBeforeState = beforeState
+                    crossingAfterState = environment.state
+                    crossingEvents = environment.lastStepEvents.toList()
                 }
             } catch (exception: HistoryDOperationException) {
                 throw AssertionError(
-                    "History-D failed before the former AbilityFizzledEvent crossing",
+                    "History-D failed before the former Step-3522 crossing",
                     exception,
                 )
             }
         }
 
-        successfulChoices shouldBe 2_767
-        environment.stepCount shouldBe 2_767
-        abilityFizzledChoices shouldBe 2_767
-        abilityFizzledStep shouldBe 2_767
-        abilityFizzledProjectionCompleteForBothPerspectives shouldBe true
+        val beforeState = checkNotNull(crossingBeforeState)
+        val afterState = checkNotNull(crossingAfterState)
+        val eventsAtCrossing = crossingEvents
+        step3522Reached shouldBe true
+        successfulChoices shouldBe 3_522
+        environment.stepCount shouldBe 3_522
+        eventsAtCrossing.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
+            "TappedEvent",
+            "TappedEvent",
+            "ManaSpentEvent",
+            "TappedEvent",
+            "PermanentsSacrificedEvent",
+            "ZoneChangeEvent",
+            "AbilityActivatedEvent",
+        )
+
+        val expectedFacts = listOf(
+            Step3522ProjectionFact(
+                rawEventType = "TappedEvent",
+                family = PerspectiveEventFamily.TAPPED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "TappedEvent",
+                family = PerspectiveEventFamily.TAPPED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "ManaSpentEvent",
+                family = PerspectiveEventFamily.MANA_SPENT,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "TappedEvent",
+                family = PerspectiveEventFamily.TAPPED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "PermanentsSacrificedEvent",
+                family = PerspectiveEventFamily.PERMANENTS_SACRIFICED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "ZoneChangeEvent",
+                family = PerspectiveEventFamily.ZONE_CHANGED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+            Step3522ProjectionFact(
+                rawEventType = "AbilityActivatedEvent",
+                family = PerspectiveEventFamily.ABILITY_ACTIVATED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
+            ),
+        )
+
+        val projector = com.wingedsheep.gym.contract.PerspectiveEventProjector(registry)
+        val perspectiveFacts = environment.playerIds.map { perspectivePlayerId ->
+            val projection = projector.project(
+                events = eventsAtCrossing,
+                perspectivePlayerId = perspectivePlayerId,
+                beforeState = beforeState,
+                afterState = afterState,
+            )
+            projection.isComplete shouldBe true
+            projectionFacts(projection)
+        }
+        perspectiveFacts.forEach { it shouldBe expectedFacts }
+        perspectiveFacts.distinct().size shouldBe 1
+
+        expectedFacts.none {
+            it.disposition == PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY
+        } shouldBe true
 
         println(
-            "STEP2767_HISTORY_A_CROSSING " +
+            "STEP3522_HISTORY_A_CHARACTERIZATION " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "abilityFizzledChoices=$abilityFizzledChoices " +
-                "abilityFizzledStep=$abilityFizzledStep " +
-                "abilityFizzledProjectionCompleteForBothPerspectives=" +
-                abilityFizzledProjectionCompleteForBothPerspectives,
+                "rawEvents=${eventsAtCrossing.map { it::class.simpleName ?: "UnknownGameEvent" }} " +
+                "perspectives=${perspectiveFacts.size} " +
+                "firstUnsupportedRawEvent=NONE " +
+                "aReason=NONE",
         )
     }
 })
 
-private fun step2767DecisionResponse(
+private fun projectionFacts(
+    projection: PerspectiveEventProjectionResult,
+): List<Step3522ProjectionFact> {
+    var emittedOrdinal = 0
+    return projection.classifications.map { classification: PerspectiveEventClassification ->
+        val family = if (classification.disposition == PerspectiveEventDisposition.EMITTED) {
+            projection.batch.entries[emittedOrdinal++].eventFamily
+        } else {
+            null
+        }
+        Step3522ProjectionFact(
+            rawEventType = classification.rawEventType,
+            family = family,
+            disposition = classification.disposition,
+            reason = classification.reason,
+        )
+    }
+}
+
+private fun step3522DecisionResponse(
     decisionId: String,
     selection: SemanticDecision,
 ): DecisionResponse = when (selection) {

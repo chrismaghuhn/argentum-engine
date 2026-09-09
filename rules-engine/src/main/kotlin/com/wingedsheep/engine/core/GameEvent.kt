@@ -1506,7 +1506,14 @@ data class LibraryShuffledEvent(
 data class PermanentsSacrificedEvent(
     val playerId: EntityId,
     val permanentIds: List<EntityId>,
-    val permanentNames: List<String> = emptyList()
+    val permanentNames: List<String> = emptyList(),
+    /**
+     * Pre-sacrifice CR 400.7 object-incarnation stamps aligned with [permanentIds]. A missing or
+     * incomplete list is retained for backwards-readable legacy events, but History-C must reject
+     * it instead of reconstructing the witness from a neighboring zone-change event.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val permanentObjectIncarnationStamps: List<Long?> = emptyList(),
 ) : GameEvent
 
 /**

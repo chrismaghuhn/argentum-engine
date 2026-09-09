@@ -877,7 +877,14 @@ class CastSpellHandler(
         val permName = state.getEntity(permId)?.get<CardComponent>()?.name
         val tracked = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
             .trackPermanentSacrifice(state, listOf(permId), sacrificingPlayerId)
-        events.add(PermanentsSacrificedEvent(sacrificingPlayerId, listOf(permId), listOfNotNull(permName)))
+        events.add(
+            com.wingedsheep.engine.handlers.effects.ZoneTransitionService.permanentsSacrificedEvent(
+                state = state,
+                playerId = sacrificingPlayerId,
+                permanentIds = listOf(permId),
+                permanentNames = listOfNotNull(permName),
+            ),
+        )
         val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
             .moveToZone(tracked, permId, Zone.GRAVEYARD)
         events.addAll(transition.events)

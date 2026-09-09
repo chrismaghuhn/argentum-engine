@@ -162,7 +162,14 @@ object ForageCostResolver {
         val tracked = ZoneTransitionService.trackPermanentSacrifice(state, listOf(foodId), foodController)
         val transition = ZoneTransitionService.moveToZone(tracked, foodId, Zone.GRAVEYARD)
         val events = buildList {
-            add(PermanentsSacrificedEvent(foodController, listOf(foodId), listOf(foodName)))
+            add(
+                ZoneTransitionService.permanentsSacrificedEvent(
+                    state = state,
+                    playerId = foodController,
+                    permanentIds = listOf(foodId),
+                    permanentNames = listOf(foodName),
+                ),
+            )
             addAll(transition.events)
         }
         return Result.Success(transition.state, events)

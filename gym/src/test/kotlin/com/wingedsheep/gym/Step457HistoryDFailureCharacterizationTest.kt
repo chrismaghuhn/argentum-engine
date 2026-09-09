@@ -30,9 +30,9 @@ import io.kotest.matchers.shouldBe
 import java.nio.file.Files
 import java.nio.file.Path
 
-/** Safe, test-only characterization of the first History-D failure after the accepted closures. */
+/** Crossing regression for the accepted History-D closures through the empty attack declaration. */
 class Step457HistoryDFailureCharacterizationTest : FunSpec({
-    test("pins the first post-Step-128 History-D failure") {
+    test("crosses the accepted History-D closures through empty attack declaration") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -94,10 +94,8 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
         var keywordGrantedStep: Int? = null
         var emptyAttackersChoices: Int? = null
         var emptyAttackersStep: Int? = null
-        var failure: HistoryDOperationException? = null
-        var failingRawEventTypes: List<String> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && emptyAttackersStep == null) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -145,14 +143,15 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
                     emptyAttackersStep = environment.stepCount
                 }
             } catch (exception: HistoryDOperationException) {
-                failure = exception
-                failingRawEventTypes = environment.lastStepEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
+                throw AssertionError(
+                    "History-D failed before the empty AttackersDeclared crossing",
+                    exception,
+                )
             }
         }
 
-        val historyDFailure = checkNotNull(failure)
-        (successfulChoices > 1999) shouldBe true
-        (environment.stepCount > 2000) shouldBe true
+        successfulChoices shouldBe 466
+        environment.stepCount shouldBe 466
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
         keywordGrantedChoices shouldBe 457
@@ -164,8 +163,6 @@ class Step457HistoryDFailureCharacterizationTest : FunSpec({
             "STEP457_CHARACTERIZATION " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "failure=${historyDFailure.failure.code} " +
-                "rawEvents=$failingRawEventTypes " +
                 "keywordGrantedChoices=$keywordGrantedChoices " +
                 "keywordGrantedStep=$keywordGrantedStep " +
                 "emptyAttackersChoices=$emptyAttackersChoices " +

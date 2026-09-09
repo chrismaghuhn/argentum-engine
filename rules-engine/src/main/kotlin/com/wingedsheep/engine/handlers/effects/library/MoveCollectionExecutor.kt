@@ -6,6 +6,7 @@ import com.wingedsheep.engine.handlers.TargetFinder
 import com.wingedsheep.engine.handlers.effects.EffectExecutor
 import com.wingedsheep.engine.handlers.effects.EntersWithReplacements
 import com.wingedsheep.engine.handlers.effects.TargetResolutionUtils
+import com.wingedsheep.engine.handlers.effects.ZoneTransitionService
 import com.wingedsheep.engine.handlers.effects.ZoneMovementUtils
 import com.wingedsheep.engine.mechanics.targeting.TargetValidator
 import com.wingedsheep.engine.mechanics.targeting.pendingTargetRequirementInfo
@@ -1219,7 +1220,15 @@ class MoveCollectionExecutor(
             if (tracked.getEntity(context.controllerId)?.has<SacrificedFoodThisTurnComponent>() == true) {
                 newState = newState.updateEntity(context.controllerId) { it.with(SacrificedFoodThisTurnComponent) }
             }
-            events.add(0, PermanentsSacrificedEvent(context.controllerId, cards, sacrificeNames))
+            events.add(
+                0,
+                ZoneTransitionService.permanentsSacrificedEvent(
+                    state = state,
+                    playerId = context.controllerId,
+                    permanentIds = cards,
+                    permanentNames = sacrificeNames,
+                ),
+            )
         }
 
         // Emit reveal event if configured

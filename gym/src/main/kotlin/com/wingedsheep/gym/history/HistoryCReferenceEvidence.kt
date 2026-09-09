@@ -29,6 +29,7 @@ import com.wingedsheep.engine.core.LookedAtCardsEvent
 import com.wingedsheep.engine.core.ManaAddedEvent
 import com.wingedsheep.engine.core.PermanentAttachedEvent
 import com.wingedsheep.engine.core.PermanentUnattachedEvent
+import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ResolvedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SpellCopiedEvent
@@ -385,11 +386,12 @@ internal object HistoryCReferenceAuthority {
                 return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
             }
         }
-        val eventOwnedWitness = eventOwnedSourceWitness(rawEvent)
+        val eventOwnedWitness = eventOwnedWitness(rawEvent, candidate)
         val candidateWitnesses = listOfNotNull(candidate.beforeWitness, candidate.afterWitness)
         val eventStampPresent = when (rawEvent) {
             is AbilityTriggeredEvent -> rawEvent.sourceObjectIncarnationStamp != null
             is AbilityFizzledEvent -> rawEvent.sourceObjectIncarnationStamp != null
+            is PermanentsSacrificedEvent -> rawEvent.permanentObjectIncarnationStamps.isNotEmpty()
             else -> false
         }
         if (eventStampPresent &&
@@ -400,7 +402,9 @@ internal object HistoryCReferenceAuthority {
             return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
         }
         if (candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED &&
-            (rawEvent !is AbilityTriggeredEvent && rawEvent !is AbilityFizzledEvent ||
+            (rawEvent !is AbilityTriggeredEvent &&
+                rawEvent !is AbilityFizzledEvent &&
+                rawEvent !is PermanentsSacrificedEvent ||
                 eventOwnedWitness == null ||
                 candidateWitnesses.any { it != eventOwnedWitness })
         ) {
@@ -471,6 +475,7 @@ internal object HistoryCReferenceAuthority {
             is DamageDealtEvent,
             is PermanentUnattachedEvent,
             is ResolvedEvent,
+            is PermanentsSacrificedEvent,
             -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
 
             is ZoneChangeEvent -> HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR
@@ -651,6 +656,12 @@ internal object HistoryCReferenceAuthority {
                     rank = index,
                 )
             },
+            candidate = candidate,
+        )
+
+        is PermanentsSacrificedEvent -> validatePermanentsSacrificedCandidate(
+            transition = transition,
+            event = event,
             candidate = candidate,
         )
 
@@ -1149,6 +1160,39 @@ internal object HistoryCReferenceAuthority {
         return validateDefinitionAgainstWitnessState(transition, candidate)
     }
 
+    private fun validatePermanentsSacrificedCandidate(
+        transition: CommittedRulesTransition,
+        event: PermanentsSacrificedEvent,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCFailure? {
+        val baseFailure = validateCollectionCandidate(
+            transition = transition,
+            expected = event.permanentIds.mapIndexed { index, entityId ->
+                ExpectedReference(
+                    entityId = entityId,
+                    role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                    roleOrdinal = index,
+                    rank = index,
+                )
+            },
+            candidate = candidate,
+        )
+        if (baseFailure != null) return baseFailure
+
+        val expectedWitness = eventOwnedWitness(event, candidate)
+            ?: return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+        return if (
+            candidate.endpointAuthority == HistoryCReferenceEndpointAuthority.BEFORE_OBJECT &&
+                candidate.beforeWitness == expectedWitness &&
+                candidate.afterWitness == null &&
+                candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED
+        ) {
+            null
+        } else {
+            HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+    }
+
     private fun candidateWitnessesEntity(
         candidate: HistoryCReferenceCandidateV1,
         expectedEntityId: EntityId,
@@ -1186,15 +1230,24 @@ internal object HistoryCReferenceAuthority {
             HistoryCObjectWitness(entityId, stamp).takeIf { containsWitness(state, it) }
         }
 
-    private fun eventOwnedSourceWitness(event: GameEvent): HistoryCObjectWitness? {
-        val sourceAndStamp = when (event) {
+    private fun eventOwnedWitness(
+        event: GameEvent,
+        candidate: HistoryCReferenceCandidateV1,
+    ): HistoryCObjectWitness? {
+        val entityAndStamp = when (event) {
             is AbilityTriggeredEvent -> event.sourceId to event.sourceObjectIncarnationStamp
             is AbilityFizzledEvent -> event.sourceId to event.sourceObjectIncarnationStamp
+            is PermanentsSacrificedEvent -> {
+                val index = candidate.slot.roleOrdinal
+                event.permanentIds.getOrNull(index) to
+                    event.permanentObjectIncarnationStamps.getOrNull(index)
+            }
             else -> return null
         }
-        val stamp = sourceAndStamp.second ?: return null
+        val entityId = entityAndStamp.first ?: return null
+        val stamp = entityAndStamp.second ?: return null
         if (stamp <= 0L) return null
-        return HistoryCObjectWitness(sourceAndStamp.first, stamp)
+        return HistoryCObjectWitness(entityId, stamp)
     }
 
     private fun hasCardOrRulesWitness(

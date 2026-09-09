@@ -376,7 +376,13 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 }
 
                 val events = mutableListOf<GameEvent>()
-                events.add(PermanentsSacrificedEvent(sourceController, listOf(sourceId)))
+                events.add(
+                    ZoneTransitionService.permanentsSacrificedEvent(
+                        state = state,
+                        playerId = sourceController,
+                        permanentIds = listOf(sourceId),
+                    ),
+                )
                 events.addAll(transitionResult.events)
 
                 CostPaymentResult.success(newState, manaPool, events)
@@ -461,7 +467,13 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 }
 
                 val events = mutableListOf<GameEvent>()
-                events.add(PermanentsSacrificedEvent(granterController, listOf(granterId)))
+                events.add(
+                    ZoneTransitionService.permanentsSacrificedEvent(
+                        state = state,
+                        playerId = granterController,
+                        permanentIds = listOf(granterId),
+                    ),
+                )
                 events.addAll(transitionResult.events)
 
                 CostPaymentResult.success(newState, manaPool, events)
@@ -981,6 +993,13 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
             // read the enchanted creature from the sacrificed aura at resolution time.
             val attachedTo = sacrificeContainer.get<AttachedToComponent>()
 
+            val sacrificeEvent = ZoneTransitionService.permanentsSacrificedEvent(
+                state = newState,
+                playerId = sacrificeController,
+                permanentIds = listOf(toSacrifice),
+                permanentNames = listOf(sacrificeName),
+            )
+
             // Track Food sacrifice before zone transition
             newState = ZoneTransitionService.trackPermanentSacrifice(newState, listOf(toSacrifice), sacrificeController)
 
@@ -995,7 +1014,7 @@ class CostHandler(private val cardRegistry: CardRegistry? = null) {
                 newState = newState.updateEntity(toSacrifice) { c -> c.with(attachedTo) }
             }
 
-            events.add(PermanentsSacrificedEvent(sacrificeController, listOf(toSacrifice), listOf(sacrificeName)))
+            events.add(sacrificeEvent)
             events.addAll(transitionResult.events)
         }
         return CostPaymentResult.success(newState, manaPool, events)

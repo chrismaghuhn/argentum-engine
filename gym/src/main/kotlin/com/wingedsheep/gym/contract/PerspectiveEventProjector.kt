@@ -275,6 +275,13 @@ internal class PerspectiveEventProjector(
             put("asCyclingCost", event.asCyclingCost)
         }
 
+        // Sacrifice identity is C-owned. A carries only the public actor role and count; the
+        // event-owned pre-sacrifice incarnation witnesses stay in the internal History-C envelope.
+        is PermanentsSacrificedEvent -> emit(PerspectiveEventFamily.PERMANENTS_SACRIFICED) {
+            put("playerRole", playerRole(event.playerId, perspectivePlayerId))
+            put("count", event.permanentIds.size)
+        }
+
         // The cycled card's identity is C-owned by the post-discard object witness. A carries only
         // the public actor role and the announced scalar X value used by cycling triggers.
         is CardCycledEvent -> emit(PerspectiveEventFamily.CARD_CYCLED) {
@@ -467,7 +474,6 @@ internal class PerspectiveEventProjector(
         is CountersAddedEvent,
         is CountersRemovedEvent,
         is LoyaltyChangedEvent,
-        is PermanentsSacrificedEvent,
         is ExploitedEvent,
         is TrainedEvent,
         is ClassLevelChangedEvent,
