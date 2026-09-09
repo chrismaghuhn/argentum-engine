@@ -214,6 +214,7 @@ class ChainSpellContinuationResumer(
             controllerId = continuation.copyControllerId,
             effect = copyEffect,
             description = "Copy of ${effect.spellName}",
+            sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION,
             chosenModes = sourceSpell?.chosenModes ?: emptyList(),
             modeTargetRequirements = sourceSpell?.modeTargetRequirements ?: emptyMap()
         )

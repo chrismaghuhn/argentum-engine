@@ -733,6 +733,20 @@ data class AbilityActivatedEvent(
 ) : GameEvent
 
 /**
+ * Rules-owned endpoint authority for the source object of an [AbilityTriggeredEvent].
+ *
+ * This is semantic event metadata, not a runtime identity. It records which event-time
+ * incarnation the trigger source denotes so downstream history code does not infer that choice
+ * from neighboring events.
+ */
+@Serializable
+enum class AbilityTriggeredSourceEndpointAuthority {
+    BEFORE_OBJECT,
+    AFTER_OBJECT,
+    SAME_INCARNATION,
+}
+
+/**
  * An ability triggered.
  */
 @Serializable
@@ -751,7 +765,22 @@ data class AbilityTriggeredEvent(
      * pattern (Firebender Ascension). Defaults false for every other trigger and for ability copies
      * (which don't re-fire the meta-trigger).
      */
-    val causedByAttack: Boolean = false
+    val causedByAttack: Boolean = false,
+    /**
+     * Rules-owned lifecycle authority for [sourceId]. New trigger-emission paths populate this
+     * field explicitly. Null is retained only so older serialized events remain readable; a
+     * History-C consumer must reject such an event rather than choose an endpoint implicitly.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /**
+     * Rules-owned source object incarnation captured when this trigger occurrence was detected.
+     * This is only an identity stamp; it deliberately carries no card characteristics or private
+     * information. A nullable default keeps older serialized events readable, while History-C
+     * falls back to the ordinary transition witness only when the source is still present.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
 ) : GameEvent
 
 /**

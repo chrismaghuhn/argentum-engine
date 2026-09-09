@@ -3,6 +3,7 @@ package com.wingedsheep.gym.history
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.AbilityResolvedEvent
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BecomesTargetEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
@@ -92,6 +93,16 @@ internal enum class HistoryCReferenceEndpointAuthority {
     ZONE_TRANSITION_PAIR,
 }
 
+internal fun AbilityTriggeredSourceEndpointAuthority.toHistoryCReferenceEndpointAuthority():
+    HistoryCReferenceEndpointAuthority = when (this) {
+        AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT ->
+            HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+        AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT ->
+            HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+        AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION ->
+            HistoryCReferenceEndpointAuthority.SAME_INCARNATION
+    }
+
 /** Typed semantic slot; runtime/source coordinates remain internal to the envelope. */
 internal enum class HistoryCReferenceSlotRole {
     EVENT_SUBJECT,
@@ -130,7 +141,16 @@ internal data class HistoryCReferenceCandidateV1(
     val semanticDescriptor: JsonObject,
     val endpointAuthority: HistoryCReferenceEndpointAuthority =
         HistoryCReferenceEndpointAuthority.UNSPECIFIED,
+    /** Whether the witness was captured by the Rules event rather than reconstructed from this transition. */
+    val witnessProvenance: HistoryCReferenceWitnessProvenance =
+        HistoryCReferenceWitnessProvenance.TRANSITION_STATE,
 )
+
+/** Internal provenance for a candidate's object witness. */
+internal enum class HistoryCReferenceWitnessProvenance {
+    TRANSITION_STATE,
+    EVENT_OWNED,
+}
 
 internal enum class HistoryCReferenceRelationKindV1 {
     BLOCKS,
@@ -357,7 +377,25 @@ internal object HistoryCReferenceAuthority {
 
         val rawEvent = rawEventForProjectedOrdinal(transition, projection, candidate.slot.eventOrdinal)
             ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
-        validateEndpointAuthority(rawEvent, candidate)?.let { return it }
+        val eventOwnedWitness = eventOwnedSourceWitness(rawEvent)
+        val candidateWitnesses = listOfNotNull(candidate.beforeWitness, candidate.afterWitness)
+        val eventStampPresent = (rawEvent as? AbilityTriggeredEvent)
+            ?.sourceObjectIncarnationStamp != null
+        if (eventStampPresent &&
+            (eventOwnedWitness == null ||
+                candidate.witnessProvenance != HistoryCReferenceWitnessProvenance.EVENT_OWNED ||
+                candidateWitnesses.any { it != eventOwnedWitness })
+        ) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        if (candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED &&
+            (rawEvent !is AbilityTriggeredEvent ||
+                eventOwnedWitness == null ||
+                candidateWitnesses.any { it != eventOwnedWitness })
+        ) {
+            return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH)
+        }
+        validateEndpointAuthority(transition, rawEvent, candidate)?.let { return it }
         validateCandidateAgainstRawEvent(
             transition = transition,
             event = rawEvent,
@@ -366,13 +404,17 @@ internal object HistoryCReferenceAuthority {
         )?.let { return it }
 
         if (candidate.beforeWitness != null &&
-            !containsWitness(transition.beforeState, candidate.beforeWitness)
+            !containsWitness(transition.beforeState, candidate.beforeWitness) &&
+            !(candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED &&
+                candidate.beforeWitness == eventOwnedWitness)
         ) {
             return HistoryCFailure(HistoryCFailureCode.STALE_BEFORE_WITNESS)
         }
 
         if (candidate.afterWitness != null &&
-            !containsWitness(transition.afterState, candidate.afterWitness)
+            !containsWitness(transition.afterState, candidate.afterWitness) &&
+            !(candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED &&
+                candidate.afterWitness == eventOwnedWitness)
         ) {
             return HistoryCFailure(HistoryCFailureCode.STALE_AFTER_WITNESS)
         }
@@ -401,11 +443,15 @@ internal object HistoryCReferenceAuthority {
     }
 
     private fun validateEndpointAuthority(
+        transition: CommittedRulesTransition,
         event: GameEvent,
         candidate: HistoryCReferenceCandidateV1,
     ): HistoryCFailure? {
         val expected = when (event) {
             is AbilityActivatedEvent -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+            is AbilityTriggeredEvent -> event.sourceEndpointAuthority
+                ?.toHistoryCReferenceEndpointAuthority()
+                ?: return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
             is CreatureDestroyedEvent,
             is DamageAssignedEvent,
             is DamageDealtEvent,
@@ -440,6 +486,13 @@ internal object HistoryCReferenceAuthority {
             }
 
             HistoryCReferenceEndpointAuthority.SAME_INCARNATION -> {
+                if (event is AbilityTriggeredEvent) {
+                    val before = witness(transition.beforeState, event.sourceId)
+                    val after = witness(transition.afterState, event.sourceId)
+                    if (before != null && after != null && before != after) {
+                        return HistoryCFailure(HistoryCFailureCode.CROSS_INCARNATION_REFERENCE_UNSUPPORTED)
+                    }
+                }
                 if (candidate.beforeWitness != null && candidate.afterWitness != null &&
                     candidate.beforeWitness != candidate.afterWitness
                 ) {
@@ -1100,6 +1153,18 @@ internal object HistoryCReferenceAuthority {
     private fun containsWitness(state: GameState, witness: HistoryCObjectWitness): Boolean =
         state.hasEntity(witness.entityId) &&
             state.objectIdentityStamps[witness.entityId] == witness.objectIdentityStamp
+
+    private fun witness(state: GameState, entityId: EntityId): HistoryCObjectWitness? =
+        state.objectIdentityStamps[entityId]?.let { stamp ->
+            HistoryCObjectWitness(entityId, stamp).takeIf { containsWitness(state, it) }
+        }
+
+    private fun eventOwnedSourceWitness(event: GameEvent): HistoryCObjectWitness? {
+        val triggered = event as? AbilityTriggeredEvent ?: return null
+        val stamp = triggered.sourceObjectIncarnationStamp ?: return null
+        if (stamp <= 0L) return null
+        return HistoryCObjectWitness(triggered.sourceId, stamp)
+    }
 
     private fun hasCardOrRulesWitness(
         transition: CommittedRulesTransition,

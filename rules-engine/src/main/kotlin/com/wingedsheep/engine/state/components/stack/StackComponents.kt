@@ -4,6 +4,7 @@ import com.wingedsheep.engine.state.Component
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.core.DamageRecipientKind
 import com.wingedsheep.engine.core.DamageRecipientKindSet
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.sdk.core.Color
 import com.wingedsheep.sdk.core.Keyword
 import com.wingedsheep.sdk.core.Step
@@ -186,6 +187,8 @@ data class TriggeredAbilityOnStackComponent(
     val controllerId: EntityId,
     val effect: Effect,
     val description: String,
+    /** Rules-owned source lifecycle authority captured when this trigger was emitted. */
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
     /**
      * Definition-scoped identity of the ability that put this object on the stack, shared by every
      * copy of the same card and every future instance of it. Drives batch decisions and persistent
@@ -336,7 +339,13 @@ data class TriggeredAbilityOnStackComponent(
      * [com.wingedsheep.sdk.scripting.TriggeredAbility.triggerRestriction], which CR 603.2 checks
      * only when the trigger would fire.
      */
-    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
+    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null,
+    /**
+     * Rules-owned source object incarnation captured when this triggered ability was detected.
+     * Only the stamp crosses this Rules-internal seam; no card characteristics are carried.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null
 ) : Component {
     /** New plural vocabulary with compatibility for older stack payloads. */
     val effectiveDamageRecipientKinds: DamageRecipientKindSet

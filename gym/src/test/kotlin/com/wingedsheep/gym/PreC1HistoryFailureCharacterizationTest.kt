@@ -85,7 +85,7 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
         )
         var observation = gym.reset(
             gameConfig = config,
-            maxSteps = 2_000,
+            maxSteps = 4_000,
             semanticEpisodeId = "pre-c1-history-failure-seed-0",
         ).observation as TrainingObservation
         val policy = DeterministicExternalPolicy()

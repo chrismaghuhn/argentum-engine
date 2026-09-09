@@ -4210,7 +4210,9 @@ class CastSpellHandler(
                         sourceName = cardComponent.name,
                         controllerId = action.playerId,
                         effect = copyEffect,
-                        description = "Copy ${cardComponent.name} $totalCopies time(s)"
+                        description = "Copy ${cardComponent.name} $totalCopies time(s)",
+                        sourceEndpointAuthority =
+                            com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION,
                     )
                     val copyResult = stackResolver.putTriggeredAbility(currentCastState, copyAbility)
                     if (!copyResult.isSuccess) return copyResult

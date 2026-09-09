@@ -2,6 +2,7 @@ package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BecomesTargetEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
@@ -23,6 +24,7 @@ import com.wingedsheep.engine.core.UntappedEvent
 import com.wingedsheep.engine.core.PhasedInEvent
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.sdk.core.Step
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.state.components.stack.EntitySnapshot
 import com.wingedsheep.engine.state.components.stack.stampedFor
@@ -221,8 +223,12 @@ data class TriggerContext(
      * elsewhere in the same action). Resolves
      * [com.wingedsheep.sdk.scripting.targets.EffectTarget.AttachedToTriggeringPermanent] in that
      * case, and leaves the attach case on its live read (CR 611.2b). `null` otherwise.
-     */
-    val unattachedFromEntityId: EntityId? = null
+    */
+    val unattachedFromEntityId: EntityId? = null,
+    /** Rules-owned lifecycle authority of the triggering entity when it crossed a zone boundary. */
+    val triggeringEntityEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /** Explicit source authority for detectors whose source is not the triggering entity. */
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
 ) {
     /** New plural vocabulary with compatibility for older manually-created contexts. */
     val effectiveDamageRecipientKinds: DamageRecipientKindSet
@@ -259,6 +265,13 @@ data class TriggerContext(
             return when (event) {
                 is ZoneChangeEvent -> TriggerContext(
                     triggeringEntityId = event.entityId,
+                    triggeringEntityEndpointAuthority = when {
+                        event.fromZone == Zone.BATTLEFIELD && event.toZone != Zone.BATTLEFIELD ->
+                            AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+                        event.fromZone != Zone.BATTLEFIELD && event.toZone == Zone.BATTLEFIELD ->
+                            AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT
+                        else -> null
+                    },
                     // The player associated with a zone change is the object's controller as it
                     // changed zones — its last-known controller when leaving the battlefield (CR
                     // 603.10/608.2h last-known information; differs from the owner for stolen
