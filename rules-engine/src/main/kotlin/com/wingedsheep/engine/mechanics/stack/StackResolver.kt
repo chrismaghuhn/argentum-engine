@@ -1141,7 +1141,24 @@ class StackResolver(
         } else {
             targetRequirements
         }
-        var container = ComponentContainer.of(ability)
+        // Capture the source identity from the activation boundary. Genuine activations use the
+        // pre-cost target-lock state; copies retain the original activation metadata instead of
+        // treating copy placement as a new activation.
+        val sourceAuthority = if (emitActivationEvent) {
+            AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        } else {
+            ability.sourceEndpointAuthority
+        }
+        val sourceIncarnationStamp = if (emitActivationEvent) {
+            targetLockState.objectIdentityStamps[ability.sourceId]
+        } else {
+            ability.sourceObjectIncarnationStamp
+        }
+        val lockedAbility = ability.copy(
+            sourceEndpointAuthority = sourceAuthority,
+            sourceObjectIncarnationStamp = sourceIncarnationStamp,
+        )
+        var container = ComponentContainer.of(lockedAbility)
         if (hasTargetPayload(targets, lockedTargetRequirements)) {
             container = container.with(
                 TargetsComponent.capture(targetLockState, targets, lockedTargetRequirements)
@@ -3257,9 +3274,11 @@ class StackResolver(
                     state.removeEntity(abilityId),
                     listOf(
                         AbilityFizzledEvent(
-                            abilityComponent.sourceId,
-                            abilityComponent.description,
-                            "Intervening-if condition is no longer true"
+                            sourceId = abilityComponent.sourceId,
+                            description = abilityComponent.description,
+                            reason = "Intervening-if condition is no longer true",
+                            sourceEndpointAuthority = abilityComponent.sourceEndpointAuthority,
+                            sourceObjectIncarnationStamp = abilityComponent.sourceObjectIncarnationStamp,
                         )
                     )
                 )
@@ -3300,9 +3319,11 @@ class StackResolver(
                     newState,
                     listOf(
                         AbilityFizzledEvent(
-                            abilityComponent.sourceId,
-                            abilityComponent.description,
-                            "All targets are invalid"
+                            sourceId = abilityComponent.sourceId,
+                            description = abilityComponent.description,
+                            reason = "All targets are invalid",
+                            sourceEndpointAuthority = abilityComponent.sourceEndpointAuthority,
+                            sourceObjectIncarnationStamp = abilityComponent.sourceObjectIncarnationStamp,
                         )
                     )
                 )
@@ -3407,9 +3428,11 @@ class StackResolver(
                     newState,
                     listOf(
                         AbilityFizzledEvent(
-                            abilityComponent.sourceId,
-                            abilityComponent.sourceName,
-                            "All targets are invalid"
+                            sourceId = abilityComponent.sourceId,
+                            description = abilityComponent.sourceName,
+                            reason = "All targets are invalid",
+                            sourceEndpointAuthority = abilityComponent.sourceEndpointAuthority,
+                            sourceObjectIncarnationStamp = abilityComponent.sourceObjectIncarnationStamp,
                         )
                     )
                 )

@@ -754,9 +754,11 @@ class TriggerProcessor(
                 state,
                 listOf(
                     AbilityFizzledEvent(
-                        trigger.sourceId,
-                        ability.description,
-                        "No legal targets available"
+                        sourceId = trigger.sourceId,
+                        description = ability.description,
+                        reason = "No legal targets available",
+                        sourceEndpointAuthority = trigger.effectiveSourceEndpointAuthority,
+                        sourceObjectIncarnationStamp = trigger.effectiveSourceObjectIncarnationStamp(state),
                     )
                 )
             )
@@ -877,9 +879,11 @@ class TriggerProcessor(
                 state,
                 listOf(
                     AbilityFizzledEvent(
-                        trigger.sourceId,
-                        ability.description,
-                        "No legal targets available"
+                        sourceId = trigger.sourceId,
+                        description = ability.description,
+                        reason = "No legal targets available",
+                        sourceEndpointAuthority = trigger.effectiveSourceEndpointAuthority,
+                        sourceObjectIncarnationStamp = trigger.effectiveSourceObjectIncarnationStamp(state),
                     )
                 )
             )
@@ -1000,9 +1004,11 @@ class TriggerProcessor(
                     state,
                     listOf(
                         AbilityFizzledEvent(
-                            trigger.sourceId,
-                            ability.description,
-                            "No legal targets available"
+                            sourceId = trigger.sourceId,
+                            description = ability.description,
+                            reason = "No legal targets available",
+                            sourceEndpointAuthority = trigger.effectiveSourceEndpointAuthority,
+                            sourceObjectIncarnationStamp = trigger.effectiveSourceObjectIncarnationStamp(state),
                         )
                     )
                 )
@@ -1376,7 +1382,15 @@ class TriggerProcessor(
         reason: String
     ): ExecutionResult = ExecutionResult.success(
         state,
-        listOf(AbilityFizzledEvent(ability.sourceId, ability.description, reason))
+        listOf(
+            AbilityFizzledEvent(
+                sourceId = ability.sourceId,
+                description = ability.description,
+                reason = reason,
+                sourceEndpointAuthority = ability.sourceEndpointAuthority,
+                sourceObjectIncarnationStamp = ability.sourceObjectIncarnationStamp,
+            ),
+        )
     )
 
     /**

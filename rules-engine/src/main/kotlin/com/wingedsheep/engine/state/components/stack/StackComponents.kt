@@ -422,7 +422,12 @@ data class ActivatedAbilityOnStackComponent(
      * Mirrors [SpellOnStackComponent.damageDistribution]. Null for every other ability, and for a
      * divided-damage ability whose controller left the division to resolution time.
      */
-    val damageDistribution: Map<EntityId, Int>? = null
+    val damageDistribution: Map<EntityId, Int>? = null,
+    /** Rules-owned source lifecycle authority captured at activation time. */
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /** Rules-owned source incarnation captured before activation costs are paid. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
 ) : Component {
     val hasTargets: Boolean = false  // Will be updated based on effect
 }

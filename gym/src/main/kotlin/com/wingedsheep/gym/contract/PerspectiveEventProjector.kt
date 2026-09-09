@@ -146,6 +146,10 @@ internal class PerspectiveEventProjector(
             put("causedByAttack", event.causedByAttack)
         }
 
+        is AbilityFizzledEvent -> emit(PerspectiveEventFamily.ABILITY_FIZZLED) {
+            put("reason", event.reason)
+        }
+
         is AbilityResolvedEvent -> emit(PerspectiveEventFamily.ABILITY_RESOLVED) { }
 
         is LandPlayedEvent -> emit(PerspectiveEventFamily.LAND_PLAYED) {

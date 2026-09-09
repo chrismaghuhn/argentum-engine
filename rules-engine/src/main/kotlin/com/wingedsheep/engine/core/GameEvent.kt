@@ -927,7 +927,13 @@ data class ReflexiveAbilityTriggeredEvent(
 data class AbilityFizzledEvent(
     val sourceId: EntityId,
     val description: String,
-    val reason: String
+    val reason: String,
+    /** Rules-owned lifecycle authority for the source object at fizzle time. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /** Rules-owned source incarnation captured when the ability occurrence was created. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
 ) : GameEvent
 
 /**
