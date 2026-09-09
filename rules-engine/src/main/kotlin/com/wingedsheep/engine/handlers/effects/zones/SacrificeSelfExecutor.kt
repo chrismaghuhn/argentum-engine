@@ -46,7 +46,14 @@ class SacrificeSelfExecutor : EffectExecutor<SacrificeSelfEffect> {
         )
 
         val events = mutableListOf<GameEvent>()
-        events.add(PermanentsSacrificedEvent(controllerId, listOf(sourceId), listOf(sourceName)))
+        events.add(
+            ZoneTransitionService.permanentsSacrificedEvent(
+                state = state,
+                playerId = controllerId,
+                permanentIds = listOf(sourceId),
+                permanentNames = listOf(sourceName),
+            ),
+        )
         events.addAll(transitionResult.events)
 
         return EffectResult.success(transitionResult.state, events)

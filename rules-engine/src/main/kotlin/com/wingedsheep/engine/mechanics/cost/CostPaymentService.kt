@@ -627,7 +627,14 @@ class CostPaymentService(private val services: EngineServices) {
         val events = mutableListOf<GameEvent>()
         if (selected.isNotEmpty()) {
             val names = selected.map { newState.getEntity(it)?.get<CardComponent>()?.name ?: "Unknown" }
-            events.add(PermanentsSacrificedEvent(payerId, selected, names))
+            events.add(
+                ZoneTransitionService.permanentsSacrificedEvent(
+                    state = newState,
+                    playerId = payerId,
+                    permanentIds = selected,
+                    permanentNames = names,
+                ),
+            )
             newState = ZoneTransitionService.trackPermanentSacrifice(newState, selected, payerId)
         }
         for (permanentId in selected) {

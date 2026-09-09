@@ -78,7 +78,14 @@ class SacrificeAndPayContinuationResumer(
             val permanentNames = selectedPermanents.map { id ->
                 newState.getEntity(id)?.get<CardComponent>()?.name ?: "Unknown"
             }
-            events.add(PermanentsSacrificedEvent(playerId, selectedPermanents, permanentNames))
+            events.add(
+                ZoneTransitionService.permanentsSacrificedEvent(
+                    state = newState,
+                    playerId = playerId,
+                    permanentIds = selectedPermanents,
+                    permanentNames = permanentNames,
+                ),
+            )
             newState = ZoneTransitionService.trackPermanentSacrifice(newState, selectedPermanents, playerId)
         }
 
@@ -323,7 +330,14 @@ class SacrificeAndPayContinuationResumer(
         val permanentNames = selectedPermanents.map { id ->
             newState.getEntity(id)?.get<CardComponent>()?.name ?: "Unknown"
         }
-        events.add(PermanentsSacrificedEvent(playerId, selectedPermanents, permanentNames))
+        events.add(
+            ZoneTransitionService.permanentsSacrificedEvent(
+                state = newState,
+                playerId = playerId,
+                permanentIds = selectedPermanents,
+                permanentNames = permanentNames,
+            ),
+        )
         newState = ZoneTransitionService.trackPermanentSacrifice(newState, selectedPermanents, playerId)
 
         for (permanentId in selectedPermanents) {
@@ -666,7 +680,13 @@ class SacrificeAndPayContinuationResumer(
 
                 var newState = state
                 val events = mutableListOf<GameEvent>()
-                events.add(PermanentsSacrificedEvent(playerId, selectedPermanents))
+                events.add(
+                    ZoneTransitionService.permanentsSacrificedEvent(
+                        state = newState,
+                        playerId = playerId,
+                        permanentIds = selectedPermanents,
+                    ),
+                )
                 newState = ZoneTransitionService.trackPermanentSacrifice(newState, selectedPermanents, playerId)
                 for (permanentId in selectedPermanents) {
                     val transitionResult = ZoneTransitionService.moveToZone(newState, permanentId, Zone.GRAVEYARD)

@@ -19,23 +19,21 @@ import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
-import io.kotest.matchers.shouldNotBe
 import java.nio.file.Files
 import java.nio.file.Path
 
 /**
  * Regression characterization for crossing the former Step-111 failure on the locked seed-0 path.
- * It deliberately does not characterize or repair the later failure revealed after this crossing.
+ * It deliberately stops at that crossing and does not characterize later history behavior.
  */
 class Step111HistoryDFailureCharacterizationTest : FunSpec({
-    test("crosses the former Step-111 failure before a later History-D failure") {
+    test("crosses the former Step-111 failure") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -94,9 +92,8 @@ class Step111HistoryDFailureCharacterizationTest : FunSpec({
         var cardCycledChoices: Int? = null
         var cardCycledStep: Int? = null
         var formerStep111Passed = false
-        var failure: HistoryDOperationException? = null
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && !formerStep111Passed) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -131,25 +128,24 @@ class Step111HistoryDFailureCharacterizationTest : FunSpec({
                     formerStep111Passed = true
                 }
             } catch (exception: HistoryDOperationException) {
-                failure = exception
+                throw AssertionError(
+                    "History-D failed before the former Step-111 crossing",
+                    exception,
+                )
             }
         }
 
-        val laterFailure = failure
-            ?: error("The locked path unexpectedly completed without a later History-D failure")
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
         formerStep111Passed shouldBe true
-        (environment.stepCount > 111) shouldBe true
-        laterFailure.failure.code shouldNotBe HistoryCFailureCode.IDENTITY_AUTHORITY_MISMATCH
+        environment.stepCount shouldBe 111
         println(
             "STEP111_CROSSING " +
                 "cardCycledChoices=$cardCycledChoices " +
                 "cardCycledStep=$cardCycledStep " +
                 "step111Passed=$formerStep111Passed " +
-                "laterChoices=$choices " +
-                "laterStep=${environment.stepCount} " +
-                "laterFailure=${laterFailure.failure.code}",
+                "choices=$choices " +
+                "step=${environment.stepCount}",
         )
     }
 })

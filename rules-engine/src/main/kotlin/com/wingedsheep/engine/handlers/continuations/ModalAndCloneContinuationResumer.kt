@@ -1272,9 +1272,12 @@ class ModalAndCloneContinuationResumer(
                 newState.getEntity(id)?.get<CardComponent>()?.name ?: "Unknown"
             }
             events.add(
-                com.wingedsheep.engine.core.PermanentsSacrificedEvent(
-                    controllerId, sacrificed, names
-                )
+                com.wingedsheep.engine.handlers.effects.ZoneTransitionService.permanentsSacrificedEvent(
+                    state = newState,
+                    playerId = controllerId,
+                    permanentIds = sacrificed,
+                    permanentNames = names,
+                ),
             )
             newState = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
                 .trackPermanentSacrifice(newState, sacrificed, controllerId)

@@ -2370,11 +2370,12 @@ object DamageUtils {
                     )
                     newState = transitionResult.state
                     events.add(
-                        PermanentsSacrificedEvent(
-                            sourceControllerId,
-                            listOf(entityId),
-                            listOf(entityName)
-                        )
+                        ZoneTransitionService.permanentsSacrificedEvent(
+                            state = state,
+                            playerId = sourceControllerId,
+                            permanentIds = listOf(entityId),
+                            permanentNames = listOf(entityName),
+                        ),
                     )
                     events.addAll(transitionResult.events)
                 }

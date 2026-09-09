@@ -101,7 +101,14 @@ class SacrificeTargetExecutor : EffectExecutor<SacrificeTargetEffect> {
         )
 
         val events = mutableListOf<GameEvent>()
-        events.add(PermanentsSacrificedEvent(controllerId, listOf(targetId), listOf(cardComponent.name)))
+        events.add(
+            ZoneTransitionService.permanentsSacrificedEvent(
+                state = state,
+                playerId = controllerId,
+                permanentIds = listOf(targetId),
+                permanentNames = listOf(cardComponent.name),
+            ),
+        )
         events.addAll(transitionResult.events)
 
         return EffectResult.success(transitionResult.state, events)

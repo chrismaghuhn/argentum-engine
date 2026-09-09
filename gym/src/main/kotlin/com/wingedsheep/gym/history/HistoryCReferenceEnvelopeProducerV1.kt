@@ -29,6 +29,7 @@ import com.wingedsheep.engine.core.ManaAddedEvent
 import com.wingedsheep.engine.core.ResolvedEvent
 import com.wingedsheep.engine.core.PermanentAttachedEvent
 import com.wingedsheep.engine.core.PermanentUnattachedEvent
+import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SpellCopiedEvent
 import com.wingedsheep.engine.core.StatsModifiedEvent
@@ -97,6 +98,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         PerspectiveEventFamily.PUBLIC_CARDS_REVEALED,
         PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
         PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
+        PerspectiveEventFamily.PERMANENTS_SACRIFICED,
         PerspectiveEventFamily.ATTACKERS_DECLARED,
         PerspectiveEventFamily.BLOCKERS_DECLARED,
         PerspectiveEventFamily.DAMAGE_ASSIGNED,
@@ -232,6 +234,12 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                     eventOrdinal = eventOrdinal,
                     entityIds = rawEvent.cardIds,
                     role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+
+                is PermanentsSacrificedEvent -> sacrificedCandidates(
+                    transition = transition,
+                    eventOrdinal = eventOrdinal,
+                    event = rawEvent,
                 ) ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
 
                 is CardCycledEvent -> required(
@@ -602,6 +610,30 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
             ) ?: return null
         }
         return result
+    }
+
+    /** Produce one opaque, event-owned pre-sacrifice candidate per raw list position. */
+    private fun sacrificedCandidates(
+        transition: CommittedRulesTransition,
+        eventOrdinal: Int,
+        event: PermanentsSacrificedEvent,
+    ): List<HistoryCReferenceCandidateV1>? {
+        val stamps = event.permanentObjectIncarnationStamps
+        if (stamps.size != event.permanentIds.size) return null
+        return event.permanentIds.mapIndexed { roleOrdinal, entityId ->
+            val stamp = stamps[roleOrdinal] ?: return null
+            if (stamp <= 0L) return null
+            opaqueCandidate(
+                transition = transition,
+                eventOrdinal = eventOrdinal,
+                role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                roleOrdinal = roleOrdinal,
+                rank = roleOrdinal,
+                entityId = entityId,
+                endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
+                eventOwnedWitness = HistoryCObjectWitness(entityId, stamp),
+            ) ?: return null
+        }
     }
 
     private fun requiredKnownCollection(
@@ -1129,6 +1161,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is LookedAtCardsEvent,
         is PermanentAttachedEvent,
         is PermanentUnattachedEvent,
+        is PermanentsSacrificedEvent,
         is ResolvedEvent,
         is SpellCastEvent,
         is SpellCopiedEvent,

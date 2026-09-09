@@ -266,7 +266,13 @@ object ManaPaymentWindow {
             .trackPermanentSacrifice(state, listOf(sourceId), controller)
         val transition = com.wingedsheep.engine.handlers.effects.ZoneTransitionService
             .moveToZone(preState, sourceId, com.wingedsheep.sdk.core.Zone.GRAVEYARD)
-        events.add(com.wingedsheep.engine.core.PermanentsSacrificedEvent(controller, listOf(sourceId)))
+        events.add(
+            com.wingedsheep.engine.handlers.effects.ZoneTransitionService.permanentsSacrificedEvent(
+                state = state,
+                playerId = controller,
+                permanentIds = listOf(sourceId),
+            ),
+        )
         events.addAll(transition.events)
         return transition.state to events
     }

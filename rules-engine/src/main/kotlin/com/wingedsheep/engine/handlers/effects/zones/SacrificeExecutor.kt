@@ -176,7 +176,14 @@ class SacrificeExecutor(
             val permanentNames = permanentIds.map { id ->
                 newState.getEntity(id)?.get<CardComponent>()?.name ?: "Unknown"
             }
-            events.add(PermanentsSacrificedEvent(controllerId, permanentIds, permanentNames))
+            events.add(
+                ZoneTransitionService.permanentsSacrificedEvent(
+                    state = newState,
+                    playerId = controllerId,
+                    permanentIds = permanentIds,
+                    permanentNames = permanentNames,
+                ),
+            )
             newState = ZoneTransitionService.trackPermanentSacrifice(newState, permanentIds, controllerId)
         }
 

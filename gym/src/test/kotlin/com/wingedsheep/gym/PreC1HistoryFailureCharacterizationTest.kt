@@ -33,10 +33,11 @@ import java.nio.file.Path
 /**
  * Regression characterization for the former CardCycledEvent full-history blocker on the locked
  * seed-0 path. It records only public event class names and counts; it does not expose state or
- * card data. The bounded path is expected to encounter a later, unrelated full-history failure.
+ * card data. The regression stops at the accepted CardCycled crossing and does not inspect later
+ * history behavior.
  */
 class PreC1HistoryFailureCharacterizationTest : FunSpec({
-    test("passes the former CardCycledEvent blocker before a later full-history failure") {
+    test("crosses the former CardCycledEvent blocker") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -94,9 +95,8 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
         var cardCycledProjection: PerspectiveEventProjectionResult? = null
         var cardCycledChoices: Int? = null
         var cardCycledStep: Int? = null
-        var failure: HistoryDOperationException? = null
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && cardCycledProjection == null) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -121,9 +121,7 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
                     is SemanticChoice.Gap -> error("Policy gap at choice=$choices: $choice")
                 } as TrainingObservation
                 choices++
-                if (cardCycledProjection == null &&
-                    environment.lastStepEvents.any { it is CardCycledEvent }
-                ) {
+                if (environment.lastStepEvents.any { it is CardCycledEvent }) {
                     cardCycledProjection = gym.lastCommittedPerspectiveEventProjection(
                         environment.playerIds.first(),
                     )
@@ -131,14 +129,15 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
                     cardCycledStep = environment.stepCount
                 }
             } catch (exception: HistoryDOperationException) {
-                failure = exception
+                throw AssertionError(
+                    "History-D failed before the former CardCycledEvent crossing",
+                    exception,
+                )
             }
         }
 
         val formerBlockerProjection = cardCycledProjection
             ?: error("The locked path did not reach the former CardCycledEvent blocker")
-        val laterFailure = failure
-            ?: error("The bounded locked path unexpectedly completed without a later failure")
         val partialHistory = gym.perspectiveHistory(environment.playerIds.first())
         val partialHistoryCanonicalBytes = partialHistory.canonicalJson().toByteArray(Charsets.UTF_8).size
         val lastProjectionDiagnostics = gym
@@ -157,13 +156,12 @@ class PreC1HistoryFailureCharacterizationTest : FunSpec({
         partialHistory.entries.any {
             it.eventFamily == PerspectiveEventFamily.CARD_CYCLED
         } shouldBe true
-        (choices > 92) shouldBe true
-        (environment.stepCount > 93) shouldBe true
+        choices shouldBe 93
+        environment.stepCount shouldBe 93
         println(
             "PRE_C1_HISTORY_AFTER_CARDCYCLED " +
                 "choices=$choices " +
                 "stepCount=${environment.stepCount} " +
-                "laterFailure=${laterFailure.message} " +
                 "lastEventTypes=${environment.lastStepEvents.map { it::class.simpleName }} " +
                 "lastEventCount=${environment.lastStepEvents.size} " +
                 "projectionDiagnostics=$lastProjectionDiagnostics " +

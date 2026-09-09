@@ -12,6 +12,7 @@ import com.wingedsheep.engine.core.ModesChosenResponse
 import com.wingedsheep.engine.core.NumberChosenResponse
 import com.wingedsheep.engine.core.OptionChosenResponse
 import com.wingedsheep.engine.core.OrderedResponse
+import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
@@ -25,7 +26,6 @@ import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
@@ -42,9 +42,9 @@ private data class Step3522ProjectionFact(
     val reason: PerspectiveEventUnsupportedReason?,
 )
 
-/** Test-only characterization of the first History-A blocker at locked Step 3522. */
+/** Crossing regression for the former History-A blocker at locked Step 3522. */
 class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
-    test("pins every Step-3522 History-A disposition for both perspectives") {
+    test("crosses the former Step-3522 History-A blocker for both perspectives") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -100,12 +100,12 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var successfulChoices = 0
-        var failure: HistoryDOperationException? = null
-        var failingBeforeState: GameState? = null
-        var failingAfterState: GameState? = null
-        var failingEvents: List<GameEvent> = emptyList()
+        var step3522Reached = false
+        var crossingBeforeState: GameState? = null
+        var crossingAfterState: GameState? = null
+        var crossingEvents: List<GameEvent> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && !step3522Reached) {
             val beforeState = environment.state
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
@@ -131,21 +131,29 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
                     is SemanticChoice.Gap -> error("Policy gap at choice=$successfulChoices: $choice")
                 } as TrainingObservation
                 successfulChoices++
+                if (environment.stepCount == 3_522 &&
+                    environment.lastStepEvents.any { it is PermanentsSacrificedEvent }
+                ) {
+                    step3522Reached = true
+                    crossingBeforeState = beforeState
+                    crossingAfterState = environment.state
+                    crossingEvents = environment.lastStepEvents.toList()
+                }
             } catch (exception: HistoryDOperationException) {
-                failure = exception
-                failingBeforeState = beforeState
-                failingAfterState = environment.state
-                failingEvents = environment.lastStepEvents.toList()
+                throw AssertionError(
+                    "History-D failed before the former Step-3522 crossing",
+                    exception,
+                )
             }
         }
 
-        val historyDFailure = checkNotNull(failure)
-        val beforeState = checkNotNull(failingBeforeState)
-        val afterState = checkNotNull(failingAfterState)
-        successfulChoices shouldBe 3_521
+        val beforeState = checkNotNull(crossingBeforeState)
+        val afterState = checkNotNull(crossingAfterState)
+        val eventsAtCrossing = crossingEvents
+        step3522Reached shouldBe true
+        successfulChoices shouldBe 3_522
         environment.stepCount shouldBe 3_522
-        historyDFailure.failure.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
-        failingEvents.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
+        eventsAtCrossing.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
             "TappedEvent",
             "TappedEvent",
             "ManaSpentEvent",
@@ -182,9 +190,9 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
             ),
             Step3522ProjectionFact(
                 rawEventType = "PermanentsSacrificedEvent",
-                family = null,
-                disposition = PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
-                reason = PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
+                family = PerspectiveEventFamily.PERMANENTS_SACRIFICED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
             ),
             Step3522ProjectionFact(
                 rawEventType = "ZoneChangeEvent",
@@ -203,32 +211,29 @@ class Step3522HistoryAFirstBlockerCharacterizationTest : FunSpec({
         val projector = com.wingedsheep.gym.contract.PerspectiveEventProjector(registry)
         val perspectiveFacts = environment.playerIds.map { perspectivePlayerId ->
             val projection = projector.project(
-                events = failingEvents,
+                events = eventsAtCrossing,
                 perspectivePlayerId = perspectivePlayerId,
                 beforeState = beforeState,
                 afterState = afterState,
             )
-            projection.isComplete shouldBe false
+            projection.isComplete shouldBe true
             projectionFacts(projection)
         }
         perspectiveFacts.forEach { it shouldBe expectedFacts }
         perspectiveFacts.distinct().size shouldBe 1
 
-        val firstUnsupported = expectedFacts.indexOfFirst {
+        expectedFacts.none {
             it.disposition == PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY
-        }
-        firstUnsupported shouldBe 4
-        expectedFacts[firstUnsupported].rawEventType shouldBe "PermanentsSacrificedEvent"
+        } shouldBe true
 
         println(
             "STEP3522_HISTORY_A_CHARACTERIZATION " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "failure=${historyDFailure.failure.code} " +
-                "rawEvents=${failingEvents.map { it::class.simpleName ?: "UnknownGameEvent" }} " +
+                "rawEvents=${eventsAtCrossing.map { it::class.simpleName ?: "UnknownGameEvent" }} " +
                 "perspectives=${perspectiveFacts.size} " +
-                "firstUnsupportedRawEvent=${expectedFacts[firstUnsupported].rawEventType} " +
-                "aReason=${expectedFacts[firstUnsupported].reason}",
+                "firstUnsupportedRawEvent=NONE " +
+                "aReason=NONE",
         )
     }
 })

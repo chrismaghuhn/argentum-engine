@@ -40,9 +40,11 @@ import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryCIdentityDisclosure
+import com.wingedsheep.gym.history.HistoryCObjectWitness
 import com.wingedsheep.gym.history.HistoryCReferenceEndpointAuthority
 import com.wingedsheep.gym.history.HistoryCReferenceKind
 import com.wingedsheep.gym.history.HistoryCReferenceSlotRole
+import com.wingedsheep.gym.history.HistoryCReferenceWitnessProvenance
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
@@ -59,6 +61,7 @@ import io.kotest.matchers.shouldBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 import java.nio.file.Files
 import java.nio.file.Path
+import kotlinx.serialization.json.put
 
 private data class SacrificeProjectionFact(
     val rawEventType: String,
@@ -79,20 +82,20 @@ private data class Step3522SacrificeEvidence(
     val afterState: GameState,
     val events: List<GameEvent>,
     val sacrifice: PermanentsSacrificedEvent,
-    val failure: HistoryDOperationException,
+    val failure: HistoryDOperationException?,
     val successfulChoices: Int,
     val committedStep: Int,
 )
 
-/** Test-only characterization of the A/C contract needed by PermanentsSacrificedEvent. */
+/** Regression evidence for the accepted single-permanent sacrifice History-A/C closure. */
 class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
-    test("pins Step-3522 sacrifice fields, A gap, and per-object C authority facts") {
+    test("crosses Step-3522 with event-owned sacrifice authority") {
         val evidence = runLockedStep3522()
         val eventNames = evidence.events.map { it::class.simpleName ?: "UnknownGameEvent" }
 
-        evidence.successfulChoices shouldBe 3_521
+        evidence.successfulChoices shouldBe 3_522
         evidence.committedStep shouldBe 3_522
-        evidence.failure.failure.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
+        evidence.failure shouldBe null
         eventNames shouldBe listOf(
             "TappedEvent",
             "TappedEvent",
@@ -110,6 +113,9 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
         evidence.sacrifice.permanentIds.isNotEmpty() shouldBe true
         evidence.sacrifice.permanentIds.size shouldBe 1
         evidence.sacrifice.permanentNames shouldBe emptyList()
+        evidence.sacrifice.permanentObjectIncarnationStamps shouldBe listOf(
+            evidence.beforeState.objectIdentityStamps.getValue(evidence.sacrifice.permanentIds.single()),
+        )
 
         val actorRoles = evidence.beforeState.turnOrder.map { playerId ->
             if (evidence.sacrifice.playerId == playerId) "SELF" else "OTHER"
@@ -135,7 +141,8 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
 
         // The event is emitted as the sacrifice operation, before the following per-object zone
         // transition events. Its semantic C contract therefore needs one pre-sacrifice witness
-        // per permanent, in the raw event's explicit list order.
+        // per permanent, paired by raw list position. That position is not a semantic ordering
+        // authority when the originating sacrifice selection was unordered.
         val proposedCandidates = evidence.sacrifice.permanentIds.mapIndexed { index, _ ->
             ProposedSacrificeCandidate(
                 role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
@@ -183,9 +190,9 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
             ),
             SacrificeProjectionFact(
                 rawEventType = "PermanentsSacrificedEvent",
-                family = null,
-                disposition = PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
-                reason = PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
+                family = PerspectiveEventFamily.PERMANENTS_SACRIFICED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
             ),
             SacrificeProjectionFact(
                 rawEventType = "ZoneChangeEvent",
@@ -209,7 +216,7 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 beforeState = evidence.beforeState,
                 afterState = evidence.afterState,
             )
-            projection.isComplete shouldBe false
+            projection.isComplete shouldBe true
             projectionFacts(projection)
         }
         perspectiveFacts.forEach { it shouldBe expectedFacts }
@@ -221,10 +228,9 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
         neighboringZoneChange.toZone shouldBe Zone.GRAVEYARD
         (neighboringZoneChange.lastKnown != null) shouldBe true
 
-        // No model-facing A payload is currently created for this event. The only raw scalar
-        // facts suitable for a future A family are actor role and sacrificed count. A synthetic
-        // named event confirms that the current incomplete projection contains neither names nor
-        // object coordinates; identity and event-time witnesses remain C-owned.
+        // A carries only the public actor role and sacrificed count. A synthetic named event
+        // confirms that neither display names nor object coordinates cross the A seam; identity
+        // and event-time witnesses remain C-owned.
         val privacyProbeNames = listOf("Private Sacrificed Permanent A", "Private Sacrificed Permanent B")
         val privacyProbe = PermanentsSacrificedEvent(
             playerId = evidence.sacrifice.playerId,
@@ -241,16 +247,21 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 beforeState = evidence.beforeState,
                 afterState = evidence.afterState,
             )
-            projected.isComplete shouldBe false
-            projected.batch.entries shouldBe emptyList()
+            projected.isComplete shouldBe true
+            projected.batch.entries.single().eventFamily shouldBe PerspectiveEventFamily.PERMANENTS_SACRIFICED
+            projected.batch.entries.single().semanticPayload shouldBe kotlinx.serialization.json.buildJsonObject {
+                put("type", "permanents_sacrificed")
+                put("playerRole", if (environmentPlayerId(evidence, playerIndex) == evidence.sacrifice.playerId) "SELF" else "OTHER")
+                put("count", 2)
+            }
             val json = projected.batch.canonicalJson()
             json.contains("private-sacrificed-runtime-a") shouldBe false
             json.contains("private-sacrificed-runtime-b") shouldBe false
             privacyProbeNames.forEach { name -> json.contains(name) shouldBe false }
         }
 
-        // Automatic C cannot be reached while A is incomplete; this is the current fail-closed
-        // boundary, not evidence that neighboring ZoneChangeEvents own the sacrifice reference.
+        // The committed-source adapter now reaches C for the single sacrificed object. The
+        // candidate uses the event-owned pre-sacrifice witness, not the neighboring ZoneChangeEvent.
         val source = CommittedPerspectiveEventSource(cardRegistry())
         source.capture(
             CommittedRulesTransition(
@@ -262,15 +273,27 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
         )
         listOf(0, 1).forEach { playerIndex ->
             val perspectivePlayerId = environmentPlayerId(evidence, playerIndex)
-            source.lastCommittedAutomaticReferenceProjection(
+            val accepted = source.lastCommittedAutomaticReferenceProjection(
                 semanticEpisodeId = "permanents-sacrificed-history-authority",
                 perspectivePlayerId = perspectivePlayerId,
                 registry = com.wingedsheep.gym.history.PerspectiveAliasRegistryV1(
                     semanticEpisodeId = "permanents-sacrificed-history-authority",
                     perspectivePlayerId = perspectivePlayerId,
                 ),
-            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
-                .failure.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
+            ).shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+            val sacrificeCandidate = accepted.evidence.candidates.single {
+                it.slot.eventOrdinal == sacrificeOrdinal
+            }
+            sacrificeCandidate.slot.role shouldBe HistoryCReferenceSlotRole.EVENT_SUBJECT
+            sacrificeCandidate.referenceKind shouldBe HistoryCReferenceKind.CARD_OR_RULES_OBJECT
+            sacrificeCandidate.endpointAuthority shouldBe HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+            sacrificeCandidate.beforeWitness shouldBe HistoryCObjectWitness(
+                evidence.sacrifice.permanentIds.single(),
+                evidence.sacrifice.permanentObjectIncarnationStamps.single()!!,
+            )
+            sacrificeCandidate.afterWitness shouldBe null
+            sacrificeCandidate.identityDisclosure shouldBe HistoryCIdentityDisclosure.OPAQUE
+            sacrificeCandidate.witnessProvenance shouldBe HistoryCReferenceWitnessProvenance.EVENT_OWNED
         }
 
         println(
@@ -288,11 +311,11 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 "afterStamps=${witnessFacts.count { it.afterStamp != null }} " +
                 "candidatePositions=${proposedCandidates.map { it.rank }} " +
                 "candidateEndpoint=${proposedCandidates.map { it.endpointAuthority }} " +
-                "rawFields=playerId,permanentIds,permanentNames " +
-                "eventAuthorityMetadata=ABSENT " +
-                "orderingAuthority=NOT_YET_CHARACTERIZED " +
-                "rulesMetadataSufficiency=NO " +
-                "cCurrent=NOT_REACHED",
+                "rawFields=playerId,permanentIds,permanentNames,permanentObjectIncarnationStamps " +
+                "eventAuthorityMetadata=PRESENT " +
+                "orderingAuthority=NOT_SEMANTIC_AUTHORITY " +
+                "rulesMetadataSufficiency=YES " +
+                "cCurrent=ACCEPTED_SINGLE",
         )
     }
 
@@ -343,6 +366,10 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
         val sacrifice = result.events.filterIsInstance<PermanentsSacrificedEvent>().single()
         sacrifice.permanentIds shouldBe listOf(firstPermanent, secondPermanent)
         sacrifice.permanentNames.size shouldBe 2
+        sacrifice.permanentObjectIncarnationStamps shouldBe listOf(
+            before.objectIdentityStamps.getValue(firstPermanent),
+            before.objectIdentityStamps.getValue(secondPermanent),
+        )
         val zoneChanges = result.events.filterIsInstance<com.wingedsheep.engine.core.ZoneChangeEvent>()
         zoneChanges.size shouldBe 2
         zoneChanges.map { it.entityId } shouldBe sacrifice.permanentIds
@@ -396,10 +423,10 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 "candidateRoles=${cShape.map { it.role }} " +
                 "candidateRanks=${cShape.map { it.rank }} " +
                 "candidateEndpoint=${cShape.map { it.endpointAuthority }} " +
-                "rawFields=playerId,permanentIds,permanentNames " +
-                "eventAuthorityMetadata=ABSENT " +
-                "orderingAuthority=NOT_YET_CHARACTERIZED " +
-                "rulesMetadataSufficiency=NO",
+                "rawFields=playerId,permanentIds,permanentNames,permanentObjectIncarnationStamps " +
+                "eventAuthorityMetadata=PRESENT " +
+                "orderingAuthority=NOT_SEMANTIC_AUTHORITY " +
+                "rulesMetadataSufficiency=YES",
         )
     }
 
@@ -574,12 +601,8 @@ private fun runLockedStep3522(): Step3522SacrificeEvidence {
     val policy = DeterministicExternalPolicy()
     var policyState = DeterministicPolicyState(policySeed = 0x41L)
     var successfulChoices = 0
-    var failure: HistoryDOperationException? = null
-    var failingBeforeState: GameState? = null
-    var failingAfterState: GameState? = null
-    var failingEvents: List<GameEvent> = emptyList()
 
-    while (!observation.terminated && !observation.truncated && failure == null) {
+    while (!observation.terminated && !observation.truncated) {
         val beforeState = environment.state
         val choice = policy.choose(observation, policyState)
         policyState = policyState.afterChoice()
@@ -605,27 +628,30 @@ private fun runLockedStep3522(): Step3522SacrificeEvidence {
                 is SemanticChoice.Gap -> error("Policy gap at choice=$successfulChoices: $choice")
             } as TrainingObservation
             successfulChoices++
+
+            if (environment.stepCount == 3_522 &&
+                environment.lastStepEvents.any { it is PermanentsSacrificedEvent }
+            ) {
+                val events = environment.lastStepEvents.toList()
+                return Step3522SacrificeEvidence(
+                    beforeState = beforeState,
+                    afterState = environment.state,
+                    events = events,
+                    sacrifice = events.filterIsInstance<PermanentsSacrificedEvent>().single(),
+                    failure = null,
+                    successfulChoices = successfulChoices,
+                    committedStep = environment.stepCount,
+                )
+            }
         } catch (exception: HistoryDOperationException) {
-            failure = exception
-            failingBeforeState = beforeState
-            failingAfterState = environment.state
-            failingEvents = environment.lastStepEvents.toList()
+            throw AssertionError(
+                "History-D failed before the Step-3522 sacrifice crossing: ${exception.failure.code}",
+                exception,
+            )
         }
     }
 
-    val historyDFailure = checkNotNull(failure)
-    val beforeState = checkNotNull(failingBeforeState)
-    val afterState = checkNotNull(failingAfterState)
-    val sacrifice = failingEvents.filterIsInstance<PermanentsSacrificedEvent>().single()
-    return Step3522SacrificeEvidence(
-        beforeState = beforeState,
-        afterState = afterState,
-        events = failingEvents,
-        sacrifice = sacrifice,
-        failure = historyDFailure,
-        successfulChoices = successfulChoices,
-        committedStep = environment.stepCount,
-    )
+    error("Locked workload terminated before the Step-3522 sacrifice crossing")
 }
 
 private fun environmentPlayerId(

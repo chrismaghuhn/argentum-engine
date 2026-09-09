@@ -89,10 +89,8 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
         var abilityFizzledChoices: Int? = null
         var abilityFizzledStep: Int? = null
         var abilityFizzledProjectionCompleteForBothPerspectives: Boolean? = null
-        var failure: HistoryDOperationException? = null
-        var failingRawEventTypes: List<String> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && abilityFizzledChoices == null) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -117,9 +115,7 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
                     is SemanticChoice.Gap -> error("Policy gap at choice=$successfulChoices: $choice")
                 } as TrainingObservation
                 successfulChoices++
-                if (abilityFizzledChoices == null &&
-                    environment.lastStepEvents.any { it is AbilityFizzledEvent }
-                ) {
+                if (environment.lastStepEvents.any { it is AbilityFizzledEvent }) {
                     abilityFizzledChoices = successfulChoices
                     abilityFizzledStep = environment.stepCount
                     abilityFizzledProjectionCompleteForBothPerspectives = environment.playerIds.all {
@@ -128,16 +124,15 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
                     }
                 }
             } catch (exception: HistoryDOperationException) {
-                failure = exception
-                failingRawEventTypes = environment.lastStepEvents.map {
-                    it::class.simpleName ?: "UnknownGameEvent"
-                }
+                throw AssertionError(
+                    "History-D failed before the former AbilityFizzledEvent crossing",
+                    exception,
+                )
             }
         }
 
-        val historyDFailure = checkNotNull(failure)
-        (successfulChoices > 2_766) shouldBe true
-        (environment.stepCount > 2_767) shouldBe true
+        successfulChoices shouldBe 2_767
+        environment.stepCount shouldBe 2_767
         abilityFizzledChoices shouldBe 2_767
         abilityFizzledStep shouldBe 2_767
         abilityFizzledProjectionCompleteForBothPerspectives shouldBe true
@@ -146,8 +141,6 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
             "STEP2767_HISTORY_A_CROSSING " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "failure=${historyDFailure.failure.code} " +
-                "rawEvents=$failingRawEventTypes " +
                 "abilityFizzledChoices=$abilityFizzledChoices " +
                 "abilityFizzledStep=$abilityFizzledStep " +
                 "abilityFizzledProjectionCompleteForBothPerspectives=" +

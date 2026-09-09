@@ -915,7 +915,12 @@ class PayOrSufferExecutor(
         newState = newState.addToZone(graveyardZone, permanentId)
 
         val events = listOf(
-            PermanentsSacrificedEvent(playerId, listOf(permanentId), listOf(permanentName)),
+            com.wingedsheep.engine.handlers.effects.ZoneTransitionService.permanentsSacrificedEvent(
+                state = state,
+                playerId = playerId,
+                permanentIds = listOf(permanentId),
+                permanentNames = listOf(permanentName),
+            ),
             ZoneChangeEvent(
                 entityId = permanentId,
                 entityName = permanentName,

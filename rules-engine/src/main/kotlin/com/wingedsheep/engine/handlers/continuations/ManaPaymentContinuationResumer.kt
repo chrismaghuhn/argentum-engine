@@ -391,7 +391,14 @@ class ManaPaymentContinuationResumer(
         val permanentNames = selectedPermanents.map { id ->
             newState.getEntity(id)?.get<CardComponent>()?.name ?: "Unknown"
         }
-        events.add(PermanentsSacrificedEvent(continuation.payingPlayerId, selectedPermanents, permanentNames))
+        events.add(
+            ZoneTransitionService.permanentsSacrificedEvent(
+                state = newState,
+                playerId = continuation.payingPlayerId,
+                permanentIds = selectedPermanents,
+                permanentNames = permanentNames,
+            ),
+        )
         newState = ZoneTransitionService.trackPermanentSacrifice(newState, selectedPermanents, continuation.payingPlayerId)
 
         for (permanentId in selectedPermanents) {
@@ -1549,13 +1556,20 @@ class ManaPaymentContinuationResumer(
                         firstThisTurn = isFirstTapThisTurn(currentState, sourceId)
                     )
                 )
+                val sourceState = currentState
                 val preState = ZoneTransitionService
-                    .trackPermanentSacrifice(currentState, listOf(sourceId), sourceController)
+                    .trackPermanentSacrifice(sourceState, listOf(sourceId), sourceController)
                 val transition = ZoneTransitionService.moveToZone(
                     preState, sourceId, Zone.GRAVEYARD
                 )
                 currentState = transition.state
-                events.add(PermanentsSacrificedEvent(sourceController, listOf(sourceId)))
+                events.add(
+                    ZoneTransitionService.permanentsSacrificedEvent(
+                        state = sourceState,
+                        playerId = sourceController,
+                        permanentIds = listOf(sourceId),
+                    ),
+                )
                 events.addAll(transition.events)
             } else {
                 val (tappedState, tapEvent) = tap(currentState, sourceId)

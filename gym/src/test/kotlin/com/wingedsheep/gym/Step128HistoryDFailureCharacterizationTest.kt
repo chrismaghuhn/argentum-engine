@@ -30,11 +30,11 @@ import java.nio.file.Files
 import java.nio.file.Path
 
 /**
- * Crossing regression for the former Step-128 History-D failure. It stops at the next independent
- * failure and records only bounded counters; the later event family remains out of scope.
+ * Crossing regression for the former Step-128 History-D failure. It stops at that accepted
+ * crossing; later event families remain out of scope.
  */
 class Step128HistoryDFailureCharacterizationTest : FunSpec({
-    test("crosses the former Step-128 failure before a later History-D failure") {
+    test("crosses the former Step-128 failure") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -96,9 +96,8 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
         var commitCrimeChoices: Int? = null
         var commitCrimeStep: Int? = null
         var step128Passed = false
-        var failure: HistoryDOperationException? = null
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && !step128Passed) {
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
             try {
@@ -142,12 +141,12 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
                     step128Passed = true
                 }
             } catch (exception: HistoryDOperationException) {
-                failure = exception
+                throw AssertionError(
+                    "History-D failed before the former Step-128 crossing",
+                    exception,
+                )
             }
         }
-
-        val historyDFailure = failure
-            ?: error("The bounded locked path unexpectedly completed without a History-D failure")
 
         cardCycledChoices shouldBe 93
         cardCycledStep shouldBe 93
@@ -155,7 +154,7 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
         commitCrimeChoices shouldBe 128
         commitCrimeStep shouldBe 128
         step128Passed shouldBe true
-        (environment.stepCount > 128) shouldBe true
+        environment.stepCount shouldBe 128
 
         println(
             "STEP128_CROSSING " +
@@ -167,9 +166,8 @@ class Step128HistoryDFailureCharacterizationTest : FunSpec({
                 "commitCrimeChoices=$commitCrimeChoices " +
                 "commitCrimeStep=$commitCrimeStep " +
                 "step128Passed=$step128Passed " +
-                "nextFailureChoices=$successfulChoices " +
-                "nextFailureStep=${environment.stepCount} " +
-                "nextFailure=${historyDFailure.failure.code}",
+                "choices=$successfulChoices " +
+                "step=${environment.stepCount}",
         )
     }
 })
