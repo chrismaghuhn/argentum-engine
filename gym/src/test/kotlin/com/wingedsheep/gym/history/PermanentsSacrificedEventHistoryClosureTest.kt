@@ -219,6 +219,82 @@ class PermanentsSacrificedEventHistoryClosureTest : FunSpec({
             .failure.code shouldBe HistoryCFailureCode.UNORDERED_SYMMETRY
     }
 
+    test("publicly distinguishable unordered sacrifices do not use response order") {
+        fun equivalentTransition(eventOrder: List<EntityId>) = CommittedRulesTransition(
+            beforeState = state(
+                ids = listOf(first, second),
+                zone = Zone.BATTLEFIELD,
+                stamps = mapOf(first to 100L, second to 101L),
+            ),
+            afterState = state(
+                ids = listOf(first, second),
+                zone = Zone.GRAVEYARD,
+                stamps = mapOf(first to 200L, second to 201L),
+            ),
+            events = listOf(
+                event(
+                    ids = eventOrder,
+                    stamps = eventOrder.map { id -> if (id == first) 100L else 101L },
+                ),
+            ),
+            sourceStepCount = 1,
+        )
+
+        fun project(
+            committed: CommittedRulesTransition,
+            episodeId: String,
+        ): Pair<HistoryCReferenceEvidenceV1, PerspectiveReferenceProjectionResult> {
+            val aProjection = PerspectiveEventProjector(CardRegistry()).project(
+                events = committed.events,
+                perspectivePlayerId = self,
+                beforeState = committed.beforeState,
+                afterState = committed.afterState,
+            )
+            val produced = HistoryCReferenceEnvelopeProducerV1.produce(committed, aProjection)
+                .shouldBeInstanceOf<HistoryCReferenceEnvelopeProducerResult.Accepted>()
+            val evidence = HistoryCReferenceAuthority.validate(
+                transition = committed,
+                projection = aProjection,
+                envelope = produced.envelope,
+            ).shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>().evidence
+            val referenceProjection = PerspectiveReferenceProjectorV1(CardRegistry()).project(
+                semanticEpisodeId = episodeId,
+                perspectivePlayerId = self,
+                transition = committed,
+                evidence = evidence,
+                registry = PerspectiveAliasRegistryV1(
+                    semanticEpisodeId = episodeId,
+                    perspectivePlayerId = self,
+                ),
+            )
+            return evidence to referenceProjection
+        }
+
+        fun aliasesByWitness(
+            evidence: HistoryCReferenceEvidenceV1,
+            result: PerspectiveReferenceProjectionResult,
+        ): Map<HistoryCObjectWitness, PerspectiveSemanticAlias> {
+            val accepted = result.shouldBeInstanceOf<PerspectiveReferenceProjectionResult.Accepted>()
+            return accepted.projection.referenceOccurrences.associate { assignment ->
+                val candidate = evidence.candidates[assignment.candidateIndex]
+                val witness = candidate.beforeWitness ?: candidate.afterWitness
+                checkNotNull(witness) to assignment.alias
+            }
+        }
+
+        val firstOrder = project(
+            equivalentTransition(listOf(first, second)),
+            episodeId = "permanents-sacrificed-order-a",
+        )
+        val secondOrder = project(
+            equivalentTransition(listOf(second, first)),
+            episodeId = "permanents-sacrificed-order-b",
+        )
+
+        aliasesByWitness(firstOrder.first, firstOrder.second) shouldBe
+            aliasesByWitness(secondOrder.first, secondOrder.second)
+    }
+
     test("missing event-owned sacrifice metadata fails closed before C allocation") {
         val committed = transition(listOf(first)).copy(
             events = listOf(

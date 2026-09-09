@@ -313,6 +313,7 @@ internal class PerspectiveReferenceProjectorV1(
     private val unorderedCollectionFamilies = setOf(
         PerspectiveEventFamily.CARDS_DRAWN,
         PerspectiveEventFamily.CARDS_DISCARDED,
+        PerspectiveEventFamily.PERMANENTS_SACRIFICED,
         PerspectiveEventFamily.PRIVATE_HAND_LOOKED_AT,
         PerspectiveEventFamily.PRIVATE_CARDS_LOOKED_AT,
         PerspectiveEventFamily.PUBLIC_HAND_REVEALED,
