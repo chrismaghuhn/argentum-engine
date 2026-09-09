@@ -339,7 +339,13 @@ data class TriggeredAbilityOnStackComponent(
      * [com.wingedsheep.sdk.scripting.TriggeredAbility.triggerRestriction], which CR 603.2 checks
      * only when the trigger would fire.
      */
-    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null
+    val interveningIf: com.wingedsheep.sdk.scripting.conditions.Condition? = null,
+    /**
+     * Rules-owned source object incarnation captured when this triggered ability was detected.
+     * Only the stamp crosses this Rules-internal seam; no card characteristics are carried.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null
 ) : Component {
     /** New plural vocabulary with compatibility for older stack payloads. */
     val effectiveDamageRecipientKinds: DamageRecipientKindSet

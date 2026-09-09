@@ -343,6 +343,19 @@ internal class PerspectiveReferenceProjectorV1(
         perspectivePlayerId: EntityId,
     ): EndpointDecision {
         if (!containsWitness(endpoint.state, endpoint.witness)) {
+            if (endpoint.candidate.witnessProvenance == HistoryCReferenceWitnessProvenance.EVENT_OWNED &&
+                endpoint.candidate.identityDisclosure == HistoryCIdentityDisclosure.OPAQUE &&
+                endpoint.candidate.cardDefinitionId == null
+            ) {
+                return EndpointDecision.Reference(
+                    endpoint.copy(
+                        candidate = endpoint.candidate.copy(
+                            identityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
+                            cardDefinitionId = null,
+                        ),
+                    ),
+                )
+            }
             return EndpointDecision.Reject(
                 HistoryCFailure(
                     if (endpoint.isAfter) {

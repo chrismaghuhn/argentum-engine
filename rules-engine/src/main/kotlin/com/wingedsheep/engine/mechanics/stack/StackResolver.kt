@@ -908,7 +908,9 @@ class StackResolver(
                     ability.description,
                     abilityEntityId = abilityId,
                     causedByAttack = causedByAttack,
-                    sourceEndpointAuthority = ability.sourceEndpointAuthority
+                    sourceEndpointAuthority = ability.sourceEndpointAuthority,
+                    sourceObjectIncarnationStamp = ability.sourceObjectIncarnationStamp
+                        ?: state.objectIdentityStamps[ability.sourceId],
                 )
             )
         }

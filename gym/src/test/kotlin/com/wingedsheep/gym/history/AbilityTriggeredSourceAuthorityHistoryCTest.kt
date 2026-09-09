@@ -5,6 +5,7 @@ import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.gym.AutomaticHistoryCReferenceProjectionResult
 import com.wingedsheep.gym.CommittedPerspectiveEventSource
 import com.wingedsheep.gym.CommittedRulesTransition
 import com.wingedsheep.gym.contract.PerspectiveEventDisposition
@@ -45,12 +46,14 @@ class AbilityTriggeredSourceAuthorityHistoryCTest : FunSpec({
     fun event(
         authority: AbilityTriggeredSourceEndpointAuthority? =
             AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT,
+        sourceObjectIncarnationStamp: Long? = null,
     ) = AbilityTriggeredEvent(
         sourceId = source,
         sourceName = "private source name",
         controllerId = perspective,
         description = "private description",
         sourceEndpointAuthority = authority,
+        sourceObjectIncarnationStamp = sourceObjectIncarnationStamp,
     )
 
     fun transition(
@@ -83,6 +86,8 @@ class AbilityTriggeredSourceAuthorityHistoryCTest : FunSpec({
         roleOrdinal: Int = 0,
         eventOrdinal: Int = 0,
         referenceKind: HistoryCReferenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+        witnessProvenance: HistoryCReferenceWitnessProvenance =
+            HistoryCReferenceWitnessProvenance.TRANSITION_STATE,
     ) = HistoryCReferenceCandidateV1(
         slot = HistoryCReferenceSlot(eventOrdinal, role, roleOrdinal),
         referenceKind = referenceKind,
@@ -97,6 +102,7 @@ class AbilityTriggeredSourceAuthorityHistoryCTest : FunSpec({
             put("visibility", "opaque")
         },
         endpointAuthority = endpointAuthority,
+        witnessProvenance = witnessProvenance,
     )
 
     fun validate(
@@ -145,6 +151,83 @@ class AbilityTriggeredSourceAuthorityHistoryCTest : FunSpec({
         afterCandidate.afterWitness shouldBe HistoryCObjectWitness(source, 12L)
         validate(afterTransition, afterCandidate)
             .shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+    }
+
+    test("event-owned source witness survives when the resume transition has no source state") {
+        val transition = transition(
+            event(
+                authority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+                sourceObjectIncarnationStamp = 61L,
+            ),
+            before = state(sourceStamp = 61L, includeSource = false),
+            after = state(sourceStamp = 61L, includeSource = false),
+        )
+        val projected = projection(transition)
+        val produced = HistoryCReferenceEnvelopeProducerV1.produce(transition, projected)
+            .shouldBeInstanceOf<HistoryCReferenceEnvelopeProducerResult.Accepted>()
+        val candidate = produced.envelope.candidates.single()
+        candidate.beforeWitness shouldBe HistoryCObjectWitness(source, 61L)
+        candidate.afterWitness shouldBe null
+        candidate.witnessProvenance shouldBe HistoryCReferenceWitnessProvenance.EVENT_OWNED
+        validate(transition, candidate)
+            .shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Accepted>()
+
+        val automatic = CommittedPerspectiveEventSource(CardRegistry()).also { committedSource ->
+            committedSource.capture(transition)
+        }.lastCommittedAutomaticReferenceProjection(
+            semanticEpisodeId = "event-owned-source-witness",
+            perspectivePlayerId = perspective,
+            registry = PerspectiveAliasRegistryV1(
+                semanticEpisodeId = "event-owned-source-witness",
+                perspectivePlayerId = perspective,
+            ),
+        )
+        automatic.shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+            .projection.referenceOccurrences.single().identityDisclosure shouldBe
+            HistoryCIdentityDisclosure.OPAQUE
+    }
+
+    test("event-owned witness rejects a mismatched incarnation") {
+        val transition = transition(
+            event(
+                authority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+                sourceObjectIncarnationStamp = 62L,
+            ),
+            before = state(sourceStamp = 62L, includeSource = false),
+            after = state(sourceStamp = 62L, includeSource = false),
+        )
+
+        validate(
+            transition,
+            candidate(
+                endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
+                beforeWitness = HistoryCObjectWitness(source, 61L),
+                afterWitness = null,
+                witnessProvenance = HistoryCReferenceWitnessProvenance.EVENT_OWNED,
+            ),
+        ).shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH
+    }
+
+    test("event metadata rejects a transition-state witness from another incarnation") {
+        val transition = transition(
+            event(
+                authority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+                sourceObjectIncarnationStamp = 63L,
+            ),
+            before = state(sourceStamp = 64L),
+            after = state(sourceStamp = 64L),
+        )
+
+        validate(
+            transition,
+            candidate(
+                endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
+                beforeWitness = HistoryCObjectWitness(source, 64L),
+                afterWitness = null,
+            ),
+        ).shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.RAW_EVENT_REFERENCE_MISMATCH
     }
 
     test("SAME_INCARNATION accepts equal witnesses and rejects a changed source incarnation") {

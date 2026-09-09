@@ -187,6 +187,8 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
         emission.event.abilityEntityId shouldBe emission.result.newState.stack.single()
         emission.event.sourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT
+        emission.event.sourceObjectIncarnationStamp shouldBe
+            emission.after.objectIdentityStamps[emission.event.sourceId]
     }
 
     test("LTB emits BEFORE source endpoint authority") {
@@ -198,6 +200,8 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
         emission.after.hasEntity(emission.event.sourceId) shouldBe false
         emission.event.sourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        emission.event.sourceObjectIncarnationStamp shouldBe
+            emission.before.objectIdentityStamps[emission.event.sourceId]
     }
 
     test("persistent trigger emits SAME_INCARNATION source authority") {
@@ -209,6 +213,8 @@ class AbilityTriggeredSourceAuthorityMetadataTest : FunSpec({
             emission.after.objectIdentityStamps[emission.event.sourceId]
         emission.event.sourceEndpointAuthority shouldBe
             AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+        emission.event.sourceObjectIncarnationStamp shouldBe
+            emission.before.objectIdentityStamps[emission.event.sourceId]
     }
 
     test("source endpoint authority survives deterministic event serialization") {

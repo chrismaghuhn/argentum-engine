@@ -14,6 +14,7 @@ import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.gym.AutomaticHistoryCReferenceProjectionResult
 import com.wingedsheep.gym.CommittedPerspectiveEventSource
 import com.wingedsheep.gym.CommittedRulesTransition
+import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Subtype
@@ -159,7 +160,16 @@ class AbilityTriggeredTargetedLtbContinuationCharacterizationTest : FunSpec({
                 perspectivePlayerId = driver.player1,
             ),
         )
-        historyResult.shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Rejected>()
-            .failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
+        val accepted = historyResult
+            .shouldBeInstanceOf<AutomaticHistoryCReferenceProjectionResult.Accepted>()
+        val abilityTriggeredOrdinal = accepted.evidence.eventBatch.entries.indexOfFirst {
+            it.eventFamily == PerspectiveEventFamily.ABILITY_TRIGGERED
+        }
+        val abilityCandidate = accepted.evidence.candidates.single {
+            it.slot.eventOrdinal == abilityTriggeredOrdinal
+        }
+        abilityCandidate.beforeWitness?.objectIdentityStamp shouldBe sourceStamp
+        abilityCandidate.afterWitness shouldBe null
+        abilityCandidate.witnessProvenance shouldBe HistoryCReferenceWitnessProvenance.EVENT_OWNED
     }
 })

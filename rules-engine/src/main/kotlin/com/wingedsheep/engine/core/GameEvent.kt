@@ -773,6 +773,14 @@ data class AbilityTriggeredEvent(
      */
     @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /**
+     * Rules-owned source object incarnation captured when this trigger occurrence was detected.
+     * This is only an identity stamp; it deliberately carries no card characteristics or private
+     * information. A nullable default keeps older serialized events readable, while History-C
+     * falls back to the ordinary transition witness only when the source is still present.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
 ) : GameEvent
 
 /**

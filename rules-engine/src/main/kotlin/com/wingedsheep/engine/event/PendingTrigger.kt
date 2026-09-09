@@ -2,6 +2,9 @@ package com.wingedsheep.engine.event
 
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
+import com.wingedsheep.engine.core.GameEvent
+import com.wingedsheep.engine.core.ZoneChangeEvent
+import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 
@@ -63,6 +66,9 @@ data class DelayedTriggerOccurrenceCandidate(
      */
     @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val observedPlacementStage: TriggerPlacementStage? = null,
+    /** Rules-owned source object incarnation captured at trigger detection time, when available. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
 ) {
     fun toPendingTrigger(): PendingTrigger = PendingTrigger(
         ability = ability,
@@ -76,6 +82,7 @@ data class DelayedTriggerOccurrenceCandidate(
         carriedPipeline = carriedPipeline,
         stage = stage,
         observedPlacementStage = observedPlacementStage,
+        sourceObjectIncarnationStamp = sourceObjectIncarnationStamp,
     )
 }
 
@@ -126,7 +133,10 @@ data class PendingTrigger(
      * [com.wingedsheep.engine.event.TriggerProcessor]. It is intentionally serializable because
      * callers may queue detected triggers below another continuation before processing them.
      */
-    val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList()
+    val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList(),
+    /** Rules-owned source object incarnation captured at trigger detection time, when available. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null
 )
 
 /**
@@ -167,6 +177,23 @@ fun PendingTrigger.withObservedPlacementStage(stage: TriggerPlacementStage): Pen
     observedPlacementStage = stage
 )
 
+/**
+ * Capture the source's event-time incarnation when this pending occurrence was produced directly
+ * by a zone-change event for that same source. Other source shapes either carry their own explicit
+ * stamp or are resolved from the still-live source state at stack placement.
+ */
+fun PendingTrigger.withSourceObjectIncarnationStampFrom(event: GameEvent): PendingTrigger {
+    if (sourceObjectIncarnationStamp != null || event !is ZoneChangeEvent || event.entityId != sourceId) {
+        return this
+    }
+    val stamp = event.lastKnown?.objectIncarnationStamp ?: return this
+    return copy(sourceObjectIncarnationStamp = stamp)
+}
+
+/** Resolve a live-source stamp only when detection did not already capture event-time authority. */
+fun PendingTrigger.effectiveSourceObjectIncarnationStamp(state: GameState): Long? =
+    sourceObjectIncarnationStamp ?: state.objectIdentityStamps[sourceId]
+
 fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
     DelayedTriggerOccurrenceCandidate(
         ability = ability,
@@ -180,6 +207,7 @@ fun PendingTrigger.toOccurrenceCandidate(): DelayedTriggerOccurrenceCandidate =
         carriedPipeline = carriedPipeline,
         stage = stage,
         observedPlacementStage = observedPlacementStage,
+        sourceObjectIncarnationStamp = sourceObjectIncarnationStamp,
     )
 
 /**

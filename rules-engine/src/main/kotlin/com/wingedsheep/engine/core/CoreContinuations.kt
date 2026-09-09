@@ -51,6 +51,9 @@ data class TriggeredAbilityContinuation(
     val description: String,
     /** Rules-owned source lifecycle authority captured before target selection paused. */
     val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /** Rules-owned source object incarnation captured before target selection paused. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
     /** Definition-scoped identity of the triggered ability (see
      *  [com.wingedsheep.sdk.scripting.AbilityIdentity]); preserved across target selection so the
      *  stack object built on resume carries it. Null for sources with no card definition. */
@@ -163,6 +166,9 @@ data class TriggerDamageDistributionContinuation(
     val description: String,
     /** Rules-owned source lifecycle authority captured before damage distribution paused. */
     val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
+    /** Rules-owned source object incarnation captured before damage distribution paused. */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceObjectIncarnationStamp: Long? = null,
     /** Definition-scoped identity of the triggered ability (see
      *  [com.wingedsheep.sdk.scripting.AbilityIdentity]); preserved across damage distribution so
      *  the stack object built on resume carries it. Null for sources with no card definition. */

@@ -135,6 +135,13 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                     val endpointAuthority = rawEvent.sourceEndpointAuthority
                         ?.toHistoryCReferenceEndpointAuthority()
                         ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+                    val sourceStamp = rawEvent.sourceObjectIncarnationStamp
+                    if (sourceStamp != null && sourceStamp <= 0L) {
+                        return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+                    }
+                    val eventOwnedWitness = sourceStamp?.let { stamp ->
+                        HistoryCObjectWitness(rawEvent.sourceId, stamp)
+                    }
                     required(
                         opaqueCandidate(
                             transition = transition,
@@ -144,6 +151,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                             rank = 0,
                             entityId = rawEvent.sourceId,
                             endpointAuthority = endpointAuthority,
+                            eventOwnedWitness = eventOwnedWitness,
                         ),
                     )
                 }
@@ -966,10 +974,20 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         referenceKind: HistoryCReferenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
         endpointAuthority: HistoryCReferenceEndpointAuthority =
             HistoryCReferenceEndpointAuthority.AFTER_OBJECT,
+        eventOwnedWitness: HistoryCObjectWitness? = null,
     ): HistoryCReferenceCandidateV1? {
         val after = witness(transition.afterState, entityId)
         val before = witness(transition.beforeState, entityId)
-        val selected = when (endpointAuthority) {
+        val selected = if (eventOwnedWitness != null) {
+            when (endpointAuthority) {
+                HistoryCReferenceEndpointAuthority.BEFORE_OBJECT -> eventOwnedWitness to null
+                HistoryCReferenceEndpointAuthority.AFTER_OBJECT -> null to eventOwnedWitness
+                HistoryCReferenceEndpointAuthority.SAME_INCARNATION ->
+                    eventOwnedWitness to eventOwnedWitness
+                HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR,
+                HistoryCReferenceEndpointAuthority.UNSPECIFIED -> eventOwnedWitness to null
+            }
+        } else when (endpointAuthority) {
             HistoryCReferenceEndpointAuthority.BEFORE_OBJECT -> {
                 if (before == null) return null
                 before to null
@@ -1013,6 +1031,11 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
             ),
             semanticDescriptor = descriptor(),
             endpointAuthority = endpointAuthority,
+            witnessProvenance = if (eventOwnedWitness != null) {
+                HistoryCReferenceWitnessProvenance.EVENT_OWNED
+            } else {
+                HistoryCReferenceWitnessProvenance.TRANSITION_STATE
+            },
         )
     }
 

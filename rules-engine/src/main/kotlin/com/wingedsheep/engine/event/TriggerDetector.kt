@@ -263,17 +263,19 @@ class TriggerDetector(
             triggers.addAll(
                 detectTriggersForEvent(state, event, index, samePlayerDrawsLaterInBatch)
                     .map { pending ->
-                        pending.withObservedPlacementStage(
-                            matcher.placementStageFor(
-                                trigger = pending.ability.trigger,
-                                binding = pending.ability.binding,
-                                event = event,
-                                sourceId = pending.sourceId,
-                                controllerId = state.projectedState.getController(pending.sourceId)
-                                    ?: pending.controllerId,
-                                state = state,
+                        pending
+                            .withSourceObjectIncarnationStampFrom(event)
+                            .withObservedPlacementStage(
+                                matcher.placementStageFor(
+                                    trigger = pending.ability.trigger,
+                                    binding = pending.ability.binding,
+                                    event = event,
+                                    sourceId = pending.sourceId,
+                                    controllerId = state.projectedState.getController(pending.sourceId)
+                                        ?: pending.controllerId,
+                                    state = state,
+                                )
                             )
-                        )
                     }
             )
         }
