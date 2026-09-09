@@ -1,10 +1,13 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.AbilityFizzledEvent
+import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
+import com.wingedsheep.engine.core.ActivateAbility
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
+import com.wingedsheep.engine.state.components.battlefield.BattlefieldEntryTimestampComponent
 import com.wingedsheep.engine.state.components.stack.ActivatedAbilityOnStackComponent
 import com.wingedsheep.engine.state.components.stack.ChosenTarget
 import com.wingedsheep.engine.state.components.stack.TriggeredAbilityOnStackComponent
@@ -12,7 +15,10 @@ import com.wingedsheep.engine.support.GameTestDriver
 import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.CardDefinition
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.AbilityId
@@ -22,6 +28,7 @@ import com.wingedsheep.sdk.scripting.references.Player
 import com.wingedsheep.sdk.scripting.targets.TargetCreature
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 import io.kotest.matchers.types.shouldBeInstanceOf
 
 private data class ActivatedSourceWitnessFacts(
@@ -220,10 +227,135 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
                 "eventFields=sourceId,description,reason",
         )
     }
+
+    test("persistent activation has the source stamp at the activation boundary") {
+        val driver = driver(persistentActivationSource)
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val sourceId = driver.putPermanentOnBattlefield(driver.player1, persistentActivationSource.name)
+        val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val activationSourceStamp = driver.state.objectIdentityStamps[sourceId]
+            ?: error("persistent source has no activation stamp")
+        val activationEntryStamp = driver.state.getEntity(sourceId)
+            ?.get<BattlefieldEntryTimestampComponent>()?.timestamp
+            ?: error("persistent source has no battlefield-entry stamp")
+        val abilityId = persistentActivationSource.activatedAbilities.single().id
+
+        val activation = driver.submit(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = sourceId,
+                abilityId = abilityId,
+                targets = listOf(ChosenTarget.Permanent(targetId)),
+            ),
+        )
+        activation.isSuccess shouldBe true
+        activation.events.filterIsInstance<AbilityActivatedEvent>().single().sourceId shouldBe sourceId
+
+        val stackId = driver.state.stack.single()
+        val stackComponent = driver.state.getEntity(stackId)
+            ?.get<ActivatedAbilityOnStackComponent>()
+            ?: error("persistent activated ability was not retained on stack")
+        stackComponent.lastKnownSourceSnapshot shouldBe null
+        driver.state.objectIdentityStamps[sourceId] shouldBe activationSourceStamp
+        driver.state.getEntity(sourceId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp shouldBe
+            activationEntryStamp
+
+        val changedBeforeResolution = reenterBattlefield(
+            state = driver.state,
+            entityId = sourceId,
+            ownerId = driver.player1,
+        ).removeFromZone(
+            ZoneKey(driver.player2, Zone.BATTLEFIELD),
+            targetId,
+        ).addToZone(
+            ZoneKey(driver.player2, Zone.GRAVEYARD),
+            targetId,
+        )
+        val resolutionSourceStamp = changedBeforeResolution.objectIdentityStamps[sourceId]
+        (resolutionSourceStamp != activationSourceStamp) shouldBe true
+        val fizzle = StackResolver(driver.cardRegistry).resolveTop(changedBeforeResolution)
+            .events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
+        fizzle.sourceId shouldBe sourceId
+        fizzle.reason shouldBe "All targets are invalid"
+
+        println(
+            "ACTIVATED_SOURCE_AUTHORITY persistent-handler " +
+                "activationBoundaryStamp=present " +
+                "sourceBeforeWitness=present sourceAfterWitness=present " +
+                "sameActivationIncarnation=true " +
+                "requiredEndpointAuthority=SAME_INCARNATION " +
+                "componentGenericStamp=absent componentGenericEndpoint=absent " +
+                "activationEventAuthority=BEFORE_OBJECT",
+        )
+    }
+
+    test("self-sacrifice activation cost preserves source LKI but no generic endpoint") {
+        val driver = driver()
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+        val sourceId = driver.putCreatureOnBattlefield(driver.player1, "Ghitu Fire-Eater")
+        driver.removeSummoningSickness(sourceId)
+        val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val activationSourceStamp = driver.state.objectIdentityStamps[sourceId]
+            ?: error("self-sacrificing source has no activation stamp")
+        val abilityId = driver.cardRegistry.requireCard("Ghitu Fire-Eater").activatedAbilities.single().id
+
+        val activation = driver.submit(
+            ActivateAbility(
+                playerId = driver.player1,
+                sourceId = sourceId,
+                abilityId = abilityId,
+                targets = listOf(ChosenTarget.Permanent(targetId)),
+            ),
+        )
+        activation.isSuccess shouldBe true
+        activation.events.filterIsInstance<AbilityActivatedEvent>().single().sourceId shouldBe sourceId
+
+        val stackId = driver.state.stack.single()
+        val stackComponent = driver.state.getEntity(stackId)
+            ?.get<ActivatedAbilityOnStackComponent>()
+            ?: error("self-sacrificing activated ability was not retained on stack")
+        val sourceSnapshot = stackComponent.lastKnownSourceSnapshot
+            ?: error("self-sacrifice path did not retain source LKI")
+        sourceSnapshot.entityId shouldBe sourceId
+        sourceSnapshot.objectIncarnationStamp shouldBe null
+        sourceSnapshot.battlefieldEntryTimestamp shouldNotBe null
+        (driver.state.objectIdentityStamps[sourceId] != activationSourceStamp) shouldBe true
+
+        val beforeResolution = driver.state.removeFromZone(
+            ZoneKey(driver.player2, Zone.BATTLEFIELD),
+            targetId,
+        ).addToZone(
+            ZoneKey(driver.player2, Zone.GRAVEYARD),
+            targetId,
+        )
+        val fizzle = StackResolver(driver.cardRegistry).resolveTop(beforeResolution)
+            .events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
+        fizzle.sourceId shouldBe sourceId
+        fizzle.reason shouldBe "All targets are invalid"
+
+        println(
+            "ACTIVATED_SOURCE_AUTHORITY self-sacrifice-cost " +
+                "activationBoundaryStamp=present sourceWitnessAfterCost=false " +
+                "sourceLkiBattlefieldEntryStamp=present sourceLkiObjectStamp=absent " +
+                "requiredEndpointAuthority=BEFORE_OBJECT " +
+                "componentGenericStamp=absent componentGenericEndpoint=absent " +
+                "activationEventAuthority=BEFORE_OBJECT",
+        )
+    }
 })
 
-private fun driver(): GameTestDriver = GameTestDriver().also {
-    it.registerCards(TestCards.all)
+private val persistentActivationSource = card("Synthetic Persistent Activation Source") {
+    manaCost = "{0}"
+    typeLine = "Artifact"
+    activatedAbility {
+        cost = Costs.Tap
+        target = TargetCreature()
+        effect = Effects.GainLife(1)
+    }
+}
+
+private fun driver(extraCard: CardDefinition? = null): GameTestDriver = GameTestDriver().also {
+    it.registerCards(TestCards.all + listOfNotNull(extraCard))
     it.initMirrorMatch(deck = Deck.of("Forest" to 40))
 }
 
