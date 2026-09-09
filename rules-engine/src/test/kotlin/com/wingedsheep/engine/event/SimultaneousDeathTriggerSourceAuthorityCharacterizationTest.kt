@@ -44,12 +44,12 @@ private val simultaneousDeathSource = CardDefinition.creature(
 )
 
 /**
- * Characterizes the simultaneous-death trigger path before its source-authority fix.
+ * Regression for the simultaneous-death trigger source-authority fix.
  *
  * A dies at the same time as B. The detector already carries A's event-time source stamp from A's
- * last-known information, but the trigger context is built from B's death event. Consequently
- * the current generic source-authority fallback sees different source/triggering IDs and labels
- * A as SAME_INCARNATION instead of the required BEFORE_OBJECT.
+ * last-known information, but the trigger context is built from B's death event. The source
+ * lifecycle authority must therefore be explicit rather than derived from source/triggering-ID
+ * equality.
  */
 class SimultaneousDeathTriggerSourceAuthorityCharacterizationTest : FunSpec({
     fun driver(): GameTestDriver = GameTestDriver().apply {
@@ -81,7 +81,7 @@ class SimultaneousDeathTriggerSourceAuthorityCharacterizationTest : FunSpec({
         ),
     )
 
-    test("simultaneous self-death trigger currently emits SAME_INCARNATION") {
+    test("simultaneous self-death trigger emits BEFORE_OBJECT") {
         val driver = driver()
         val sourceA = driver.putCreatureOnBattlefield(driver.player1, simultaneousDeathSource.name)
         val otherB = driver.putCreatureOnBattlefield(driver.player1, "Grizzly Bears")
@@ -104,7 +104,7 @@ class SimultaneousDeathTriggerSourceAuthorityCharacterizationTest : FunSpec({
         pending.triggerContext.triggeringEntityId shouldBe otherB
         pending.sourceObjectIncarnationStamp shouldBe sourceStamp
         pending.effectiveSourceEndpointAuthority shouldBe
-            AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+            AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
 
         val result = TriggerProcessor(
             cardRegistry = driver.cardRegistry,
@@ -113,7 +113,7 @@ class SimultaneousDeathTriggerSourceAuthorityCharacterizationTest : FunSpec({
         result.isSuccess shouldBe true
         val emitted = result.events.filterIsInstance<AbilityTriggeredEvent>().single()
         emitted.sourceEndpointAuthority shouldBe
-            AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+            AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
         emitted.sourceObjectIncarnationStamp shouldBe sourceStamp
         result.newState.hasEntity(sourceA) shouldBe false
     }

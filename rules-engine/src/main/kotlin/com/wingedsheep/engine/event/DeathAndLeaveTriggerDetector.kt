@@ -182,7 +182,10 @@ class DeathAndLeaveTriggerDetector(
                                 sourceId = deadEntityId,
                                 sourceName = info.name,
                                 controllerId = controllerId,
-                                triggerContext = TriggerContext.fromEvent(otherDeathEvent),
+                                triggerContext = TriggerContext.fromEvent(otherDeathEvent).copy(
+                                    sourceEndpointAuthority =
+                                        AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+                                ),
                                 sourceObjectIncarnationStamp = deadEvent.lastKnown?.objectIncarnationStamp,
                             )
                         )
