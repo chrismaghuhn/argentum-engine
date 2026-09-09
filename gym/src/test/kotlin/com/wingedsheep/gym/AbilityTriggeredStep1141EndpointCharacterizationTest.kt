@@ -34,6 +34,7 @@ import com.wingedsheep.gym.history.HistoryCReferenceEnvelopeProducerV1
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
+import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import io.kotest.core.spec.style.FunSpec
@@ -269,6 +270,19 @@ class AbilityTriggeredStep1141EndpointCharacterizationTest : FunSpec({
         )
         val sameIncarnationConstraintCausesFailure = changedIncarnation &&
             abilityTriggeredC == HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA.name
+
+        zoneChange.fromZone shouldBe Zone.HAND
+        zoneChange.toZone shouldBe Zone.BATTLEFIELD
+        sourceBeforeWitness shouldBe true
+        sourceAfterWitness shouldBe true
+        sameIncarnation shouldBe false
+        changedIncarnation shouldBe true
+        sourceMatchesZoneChange shouldBe true
+        sourceMatchesLandPlayed shouldBe true
+        zoneChangeC shouldBe "ACCEPTED"
+        landPlayedC shouldBe "ACCEPTED"
+        abilityTriggeredC shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA.name
+        sameIncarnationConstraintCausesFailure shouldBe true
 
         println(
             "ABILITY_TRIGGERED_STEP1141_CHARACTERIZATION " +
