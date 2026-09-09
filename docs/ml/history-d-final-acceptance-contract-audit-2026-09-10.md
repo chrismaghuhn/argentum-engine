@@ -69,10 +69,21 @@ engineSeed=0
 policy=DeterministicExternalPolicy
 policySeed=0x41L
 maxSteps=4000
+semanticEpisodeId=history-d-final-acceptance-v1
 ```
 
 The deck files are authoritative; no manual deck reconstruction or deck change is part of this
 contract.
+
+The perspective mapping is also fixed by the workload:
+
+```text
+P1=Akiri / first initialized player
+P2=Chevill / second initialized player
+```
+
+The same mapping must hold in both runs. The existing `PerspectiveHistoryV1.perspectivePlayerId`
+field is part of the canonical contract; it is not normalized away.
 
 ### Bounded acceptance
 
@@ -97,9 +108,16 @@ No `maxSteps=8000` or other horizon extension is implied or authorized by this c
 
 ### Two-run independence
 
-Run 1 and Run 2 each start a fresh environment/episode and fresh deterministic policy state with
-the exact workload above. They must not share a fork, snapshot continuation, accumulated history,
-or policy state. The comparison is over semantic outputs, never runtime IDs or internal witnesses.
+Run 1 and Run 2 each start a fresh `GameEnvironment`, fresh `GameGymEnv`, fresh `GameState`, fresh
+history state, and fresh deterministic policy state with the exact workload above. They must not
+share a fork, snapshot continuation, accumulated history, or policy state. Reusing the fixed
+`semanticEpisodeId=history-d-final-acceptance-v1` is intentional and does not make the runs the
+same runtime episode.
+
+The verification compares the existing full `PerspectiveHistoryV1.canonicalJson()` and
+`semanticDigest()` values without normalization or ad-hoc projection. Those canonical values
+include the explicitly contracted `semanticEpisodeId` and `perspectivePlayerId`. Raw event/runtime
+object IDs, object stamps, and internal witnesses are not compared as model-facing identity.
 
 ### Per-perspective determinism
 
@@ -111,6 +129,8 @@ Run1.P1.canonicalHistory == Run2.P1.canonicalHistory
 Run1.P2.canonicalHistory == Run2.P2.canonicalHistory
 Run1.P1.semanticDigest   == Run2.P1.semanticDigest
 Run1.P2.semanticDigest   == Run2.P2.semanticDigest
+Run1.P1.perspectivePlayerId == Run2.P1.perspectivePlayerId
+Run1.P2.perspectivePlayerId == Run2.P2.perspectivePlayerId
 Run1.semanticClosure/result == Run2.semanticClosure/result
 ```
 
@@ -216,6 +236,8 @@ additional orientations                = confidence only
 perspectives                           = both, compared within same perspective across runs
 repeat count                           = 2 fresh independent runs
 horizon                                = maxSteps=4000 exactly
+semantic episode identity               = history-d-final-acceptance-v1 in both runs
+perspective mapping                     = P1 Akiri, P2 Chevill in both runs
 B2 terminal/interrupted corpus         = separate B2 requirement
 TRACK_B_HISTORY_COMPLETE                = derived only from this passing matrix + accepted A/B/C/D
 ```
