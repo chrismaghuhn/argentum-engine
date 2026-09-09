@@ -1,6 +1,7 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.BudgetModalResponse
+import com.wingedsheep.engine.core.ActionProcessor
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
@@ -16,6 +17,8 @@ import com.wingedsheep.engine.core.OrderedResponse
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.ReplacementChosenResponse
+import com.wingedsheep.engine.core.SelectCardsDecision
+import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ZoneChangeEvent
@@ -37,7 +40,6 @@ import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
 import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryCIdentityDisclosure
-import com.wingedsheep.gym.history.HistoryCOrderAuthority
 import com.wingedsheep.gym.history.HistoryCReferenceEndpointAuthority
 import com.wingedsheep.gym.history.HistoryCReferenceKind
 import com.wingedsheep.gym.history.HistoryCReferenceSlotRole
@@ -141,7 +143,6 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
                 endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
                 producerDisclosure = HistoryCIdentityDisclosure.OPAQUE,
-                orderAuthority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
                 rank = index,
             )
         }
@@ -151,8 +152,7 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
             it.role == HistoryCReferenceSlotRole.EVENT_SUBJECT &&
                 it.referenceKind == HistoryCReferenceKind.CARD_OR_RULES_OBJECT &&
                 it.endpointAuthority == HistoryCReferenceEndpointAuthority.BEFORE_OBJECT &&
-                it.producerDisclosure == HistoryCIdentityDisclosure.OPAQUE &&
-                it.orderAuthority == HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER
+                it.producerDisclosure == HistoryCIdentityDisclosure.OPAQUE
         } shouldBe true
 
         val projector = PerspectiveEventProjector(cardRegistry())
@@ -286,10 +286,11 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 "afterWitnesses=${witnessFacts.count { it.afterWitness }} " +
                 "beforeStamps=${witnessFacts.count { it.beforeStamp != null }} " +
                 "afterStamps=${witnessFacts.count { it.afterStamp != null }} " +
-                "candidateOrder=${proposedCandidates.map { it.rank }} " +
+                "candidatePositions=${proposedCandidates.map { it.rank }} " +
                 "candidateEndpoint=${proposedCandidates.map { it.endpointAuthority }} " +
                 "rawFields=playerId,permanentIds,permanentNames " +
                 "eventAuthorityMetadata=ABSENT " +
+                "orderingAuthority=NOT_YET_CHARACTERIZED " +
                 "rulesMetadataSufficiency=NO " +
                 "cCurrent=NOT_REACHED",
         )
@@ -372,7 +373,6 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
                 endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
                 producerDisclosure = HistoryCIdentityDisclosure.OPAQUE,
-                orderAuthority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
                 rank = index,
             )
         }
@@ -398,7 +398,35 @@ class PermanentsSacrificedHistoryACAuthorityCharacterizationTest : FunSpec({
                 "candidateEndpoint=${cShape.map { it.endpointAuthority }} " +
                 "rawFields=playerId,permanentIds,permanentNames " +
                 "eventAuthorityMetadata=ABSENT " +
+                "orderingAuthority=NOT_YET_CHARACTERIZED " +
                 "rulesMetadataSufficiency=NO",
+        )
+    }
+
+    test("characterizes the unordered sacrifice-choice response order") {
+        val first = runUnorderedSacrificeSelection(listOf(0, 1))
+        val reversed = runUnorderedSacrificeSelection(listOf(1, 0))
+
+        first.decisionOrdered shouldBe false
+        reversed.decisionOrdered shouldBe false
+        first.selectedOptionIndices.toSet() shouldBe setOf(0, 1)
+        reversed.selectedOptionIndices.toSet() shouldBe setOf(0, 1)
+        first.sacrificeEventOptionIndices shouldBe listOf(0, 1)
+        reversed.sacrificeEventOptionIndices shouldBe listOf(1, 0)
+        (first.sacrificeEventOptionIndices != reversed.sacrificeEventOptionIndices) shouldBe true
+        first.zoneChangeEventOptionIndices shouldBe first.sacrificeEventOptionIndices
+        reversed.zoneChangeEventOptionIndices shouldBe reversed.sacrificeEventOptionIndices
+
+        println(
+            "PERMANENTS_SACRIFICED_UNORDERED_ORDER_CHARACTERIZATION " +
+                "decisionOrdered=false " +
+                "firstResponseOrder=[0,1] " +
+                "firstEventOrder=${first.sacrificeEventOptionIndices} " +
+                "reversedResponseOrder=[1,0] " +
+                "reversedEventOrder=${reversed.sacrificeEventOptionIndices} " +
+                "selectionOrderSemanticAuthority=NONE " +
+                "currentEventOrderBehavior=RESPONSE_ORDER_PRESERVED " +
+                "historyCandidateOrdering=NOT_AUTHORIZED",
         )
     }
 })
@@ -409,9 +437,84 @@ private data class ProposedSacrificeCandidate(
     val referenceKind: HistoryCReferenceKind,
     val endpointAuthority: HistoryCReferenceEndpointAuthority,
     val producerDisclosure: HistoryCIdentityDisclosure,
-    val orderAuthority: HistoryCOrderAuthority,
     val rank: Int,
 )
+
+private data class UnorderedSacrificeSelectionRun(
+    val decisionOrdered: Boolean,
+    val selectedOptionIndices: List<Int>,
+    val sacrificeEventOptionIndices: List<Int>,
+    val zoneChangeEventOptionIndices: List<Int>,
+)
+
+private fun runUnorderedSacrificeSelection(
+    responseOptionIndices: List<Int>,
+): UnorderedSacrificeSelectionRun {
+    val registry = cardRegistry()
+    val player = EntityId("unordered-sacrifice-player")
+    val options = listOf(
+        EntityId("unordered-sacrifice-option-a"),
+        EntityId("unordered-sacrifice-option-b"),
+        EntityId("unordered-sacrifice-option-c"),
+    )
+    val before = GameState(
+        entities = buildMap {
+            put(player, ComponentContainer.EMPTY)
+            options.forEachIndexed { index, entityId ->
+                put(
+                    entityId,
+                    ComponentContainer.of(
+                        CardComponent(
+                            cardDefinitionId = listOf("Mountain", "Forest", "Island")[index],
+                            name = listOf("Mountain", "Forest", "Island")[index],
+                            manaCost = ManaCost.ZERO,
+                            typeLine = TypeLine(cardTypes = setOf(CardType.LAND)),
+                            ownerId = player,
+                        ),
+                        ControllerComponent(player),
+                    ),
+                )
+            }
+        },
+        zones = mapOf(
+            ZoneKey(player, Zone.BATTLEFIELD) to options,
+            ZoneKey(player, Zone.GRAVEYARD) to emptyList(),
+        ),
+        activePlayerId = player,
+        priorityPlayerId = player,
+        turnOrder = listOf(player),
+        objectIdentityStamps = options.mapIndexed { index, entityId -> entityId to (20L + index) }.toMap(),
+        nextObjectIdentityStamp = 23L,
+    )
+    EngineServices(registry)
+    val paused = SacrificeExecutor().execute(
+        state = before,
+        effect = SacrificeEffect(filter = GameObjectFilter.Land, count = 2),
+        context = EffectContext(sourceId = null, controllerId = player),
+    )
+    paused.error shouldBe null
+    val decision = paused.pendingDecision.shouldBeInstanceOf<SelectCardsDecision>()
+    decision.ordered shouldBe false
+    decision.options shouldBe options
+    val selected = responseOptionIndices.map { decision.options[it] }
+    val resumed = ActionProcessor(registry).process(
+        paused.state,
+        SubmitDecision(
+            playerId = player,
+            response = CardsSelectedResponse(decision.id, selected),
+        ),
+    ).result
+    resumed.error shouldBe null
+    val sacrifice = resumed.events.filterIsInstance<PermanentsSacrificedEvent>().single()
+    val zoneChanges = resumed.events.filterIsInstance<ZoneChangeEvent>()
+    zoneChanges.size shouldBe 2
+    return UnorderedSacrificeSelectionRun(
+        decisionOrdered = decision.ordered,
+        selectedOptionIndices = selected.map(options::indexOf),
+        sacrificeEventOptionIndices = sacrifice.permanentIds.map(options::indexOf),
+        zoneChangeEventOptionIndices = zoneChanges.map { options.indexOf(it.entityId) },
+    )
+}
 
 private fun cardRegistry(): CardRegistry = CardRegistry().apply {
     MtgSetCatalog.all.forEach { set ->
