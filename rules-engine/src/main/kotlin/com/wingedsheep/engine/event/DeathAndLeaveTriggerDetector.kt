@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.event
 
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.mechanics.layers.ProjectedState
 import com.wingedsheep.engine.state.GameState
@@ -234,7 +235,11 @@ class DeathAndLeaveTriggerDetector(
                     sourceId = auraEntityId,
                     sourceName = cardComponent.name,
                     controllerId = controllerId,
-                    triggerContext = TriggerContext(triggeringEntityId = attachedEntityId)
+                    triggerContext = TriggerContext(
+                        triggeringEntityId = attachedEntityId,
+                        sourceEndpointAuthority =
+                            AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+                    )
                 )
             )
         }

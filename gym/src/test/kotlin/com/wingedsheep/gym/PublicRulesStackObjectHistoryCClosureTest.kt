@@ -1,6 +1,7 @@
 package com.wingedsheep.gym
 
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.TargetsChosenEvent
 import com.wingedsheep.engine.registry.CardRegistry
@@ -184,6 +185,8 @@ class PublicRulesStackObjectHistoryCClosureTest : FunSpec({
                     sourceName = "Malformed card source",
                     controllerId = controller,
                     description = "A source without card identity",
+                    sourceEndpointAuthority =
+                        AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION,
                 ),
                 before = state(objectId, Zone.BATTLEFIELD),
                 after = state(objectId, Zone.BATTLEFIELD),

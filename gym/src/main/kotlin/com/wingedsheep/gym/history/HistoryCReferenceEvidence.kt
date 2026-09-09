@@ -3,6 +3,7 @@ package com.wingedsheep.gym.history
 import com.wingedsheep.engine.core.AbilityActivatedEvent
 import com.wingedsheep.engine.core.AbilityResolvedEvent
 import com.wingedsheep.engine.core.AbilityTriggeredEvent
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.engine.core.AttackersDeclaredEvent
 import com.wingedsheep.engine.core.BecomesTargetEvent
 import com.wingedsheep.engine.core.BlockersDeclaredEvent
@@ -91,6 +92,16 @@ internal enum class HistoryCReferenceEndpointAuthority {
     SAME_INCARNATION,
     ZONE_TRANSITION_PAIR,
 }
+
+internal fun AbilityTriggeredSourceEndpointAuthority.toHistoryCReferenceEndpointAuthority():
+    HistoryCReferenceEndpointAuthority = when (this) {
+        AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT ->
+            HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+        AbilityTriggeredSourceEndpointAuthority.AFTER_OBJECT ->
+            HistoryCReferenceEndpointAuthority.AFTER_OBJECT
+        AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION ->
+            HistoryCReferenceEndpointAuthority.SAME_INCARNATION
+    }
 
 /** Typed semantic slot; runtime/source coordinates remain internal to the envelope. */
 internal enum class HistoryCReferenceSlotRole {
@@ -357,7 +368,7 @@ internal object HistoryCReferenceAuthority {
 
         val rawEvent = rawEventForProjectedOrdinal(transition, projection, candidate.slot.eventOrdinal)
             ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
-        validateEndpointAuthority(rawEvent, candidate)?.let { return it }
+        validateEndpointAuthority(transition, rawEvent, candidate)?.let { return it }
         validateCandidateAgainstRawEvent(
             transition = transition,
             event = rawEvent,
@@ -401,11 +412,15 @@ internal object HistoryCReferenceAuthority {
     }
 
     private fun validateEndpointAuthority(
+        transition: CommittedRulesTransition,
         event: GameEvent,
         candidate: HistoryCReferenceCandidateV1,
     ): HistoryCFailure? {
         val expected = when (event) {
             is AbilityActivatedEvent -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
+            is AbilityTriggeredEvent -> event.sourceEndpointAuthority
+                ?.toHistoryCReferenceEndpointAuthority()
+                ?: return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
             is CreatureDestroyedEvent,
             is DamageAssignedEvent,
             is DamageDealtEvent,
@@ -440,6 +455,13 @@ internal object HistoryCReferenceAuthority {
             }
 
             HistoryCReferenceEndpointAuthority.SAME_INCARNATION -> {
+                if (event is AbilityTriggeredEvent) {
+                    val before = witness(transition.beforeState, event.sourceId)
+                    val after = witness(transition.afterState, event.sourceId)
+                    if (before != null && after != null && before != after) {
+                        return HistoryCFailure(HistoryCFailureCode.CROSS_INCARNATION_REFERENCE_UNSUPPORTED)
+                    }
+                }
                 if (candidate.beforeWitness != null && candidate.afterWitness != null &&
                     candidate.beforeWitness != candidate.afterWitness
                 ) {
@@ -1100,6 +1122,11 @@ internal object HistoryCReferenceAuthority {
     private fun containsWitness(state: GameState, witness: HistoryCObjectWitness): Boolean =
         state.hasEntity(witness.entityId) &&
             state.objectIdentityStamps[witness.entityId] == witness.objectIdentityStamp
+
+    private fun witness(state: GameState, entityId: EntityId): HistoryCObjectWitness? =
+        state.objectIdentityStamps[entityId]?.let { stamp ->
+            HistoryCObjectWitness(entityId, stamp).takeIf { containsWitness(state, it) }
+        }
 
     private fun hasCardOrRulesWitness(
         transition: CommittedRulesTransition,

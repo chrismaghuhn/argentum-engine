@@ -733,6 +733,20 @@ data class AbilityActivatedEvent(
 ) : GameEvent
 
 /**
+ * Rules-owned endpoint authority for the source object of an [AbilityTriggeredEvent].
+ *
+ * This is semantic event metadata, not a runtime identity. It records which event-time
+ * incarnation the trigger source denotes so downstream history code does not infer that choice
+ * from neighboring events.
+ */
+@Serializable
+enum class AbilityTriggeredSourceEndpointAuthority {
+    BEFORE_OBJECT,
+    AFTER_OBJECT,
+    SAME_INCARNATION,
+}
+
+/**
  * An ability triggered.
  */
 @Serializable
@@ -751,7 +765,14 @@ data class AbilityTriggeredEvent(
      * pattern (Firebender Ascension). Defaults false for every other trigger and for ability copies
      * (which don't re-fire the meta-trigger).
      */
-    val causedByAttack: Boolean = false
+    val causedByAttack: Boolean = false,
+    /**
+     * Rules-owned lifecycle authority for [sourceId]. New trigger-emission paths populate this
+     * field explicitly. Null is retained only so older serialized events remain readable; a
+     * History-C consumer must reject such an event rather than choose an endpoint implicitly.
+     */
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
+    val sourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority? = null,
 ) : GameEvent
 
 /**

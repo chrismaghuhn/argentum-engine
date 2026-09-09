@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.engine.core.AbilityTriggeredSourceEndpointAuthority
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.TriggeredAbility
 
@@ -127,6 +128,20 @@ data class PendingTrigger(
      */
     val occurrenceChoice: List<DelayedTriggerOccurrenceCandidate> = emptyList()
 )
+
+/**
+ * Resolve the Rules-owned source lifecycle authority that must accompany this trigger emission.
+ * A source that is not the event's triggering entity remains the same source object; self-bound
+ * battlefield boundary triggers use the endpoint captured from the exact ZoneChangeEvent.
+ */
+val PendingTrigger.effectiveSourceEndpointAuthority: AbilityTriggeredSourceEndpointAuthority
+    get() = triggerContext.sourceEndpointAuthority
+        ?: if (sourceId == triggerContext.triggeringEntityId) {
+            triggerContext.triggeringEntityEndpointAuthority
+                ?: AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+        } else {
+            AbilityTriggeredSourceEndpointAuthority.SAME_INCARNATION
+        }
 
 /**
  * Resolve the CR 603.3b placement pass for one concrete trigger occurrence. Detectors normally

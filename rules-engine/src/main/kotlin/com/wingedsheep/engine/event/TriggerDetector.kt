@@ -698,7 +698,7 @@ class TriggerDetector(
                     sourceId = event.entityId,
                     sourceName = cardComponent.name,
                     controllerId = controllerId,
-                    triggerContext = TriggerContext(triggeringEntityId = event.entityId)
+                    triggerContext = TriggerContext.fromEvent(event)
                 )
             )
         }

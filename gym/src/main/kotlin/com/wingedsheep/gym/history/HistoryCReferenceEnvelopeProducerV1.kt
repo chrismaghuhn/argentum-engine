@@ -131,16 +131,22 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                     ),
                 )
 
-                is AbilityTriggeredEvent -> required(
-                    opaqueCandidate(
-                        transition = transition,
-                        eventOrdinal = eventOrdinal,
-                        role = HistoryCReferenceSlotRole.SOURCE,
-                        roleOrdinal = 0,
-                        rank = 0,
-                        entityId = rawEvent.sourceId,
-                    ),
-                )
+                is AbilityTriggeredEvent -> {
+                    val endpointAuthority = rawEvent.sourceEndpointAuthority
+                        ?.toHistoryCReferenceEndpointAuthority()
+                        ?: return rejected(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+                    required(
+                        opaqueCandidate(
+                            transition = transition,
+                            eventOrdinal = eventOrdinal,
+                            role = HistoryCReferenceSlotRole.SOURCE,
+                            roleOrdinal = 0,
+                            rank = 0,
+                            entityId = rawEvent.sourceId,
+                            endpointAuthority = endpointAuthority,
+                        ),
+                    )
+                }
 
                 is CommitCrimeEvent -> required(
                     opaqueCandidate(
@@ -975,8 +981,14 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
             }
 
             HistoryCReferenceEndpointAuthority.SAME_INCARNATION -> {
-                if (before != null && after != null && before != after) return null
-                if (after != null) null to after else before to null
+                if (before != null && after != null) {
+                    if (before != after) return null
+                    before to after
+                } else if (after != null) {
+                    null to after
+                } else {
+                    before to null
+                }
             }
 
             HistoryCReferenceEndpointAuthority.ZONE_TRANSITION_PAIR -> {

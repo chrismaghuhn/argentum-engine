@@ -907,7 +907,8 @@ class StackResolver(
                     ability.controllerId,
                     ability.description,
                     abilityEntityId = abilityId,
-                    causedByAttack = causedByAttack
+                    causedByAttack = causedByAttack,
+                    sourceEndpointAuthority = ability.sourceEndpointAuthority
                 )
             )
         }
