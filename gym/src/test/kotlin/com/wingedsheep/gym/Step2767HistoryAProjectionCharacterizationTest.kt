@@ -1,5 +1,6 @@
 package com.wingedsheep.gym
 
+import com.wingedsheep.engine.core.AbilityFizzledEvent
 import com.wingedsheep.engine.core.BudgetModalResponse
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
@@ -17,32 +18,19 @@ import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.gym.contract.ObservationBuilder
-import com.wingedsheep.gym.contract.PerspectiveEventDisposition
-import com.wingedsheep.gym.contract.PerspectiveEventFamily
-import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
-import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.model.Deck
 import io.kotest.core.spec.style.FunSpec
-import io.kotest.matchers.collections.shouldHaveSize
 import io.kotest.matchers.shouldBe
 import java.nio.file.Files
 import java.nio.file.Path
 
-private data class Step2767AClassification(
-    val rawEventType: String,
-    val eventFamily: PerspectiveEventFamily?,
-    val disposition: PerspectiveEventDisposition,
-    val reason: PerspectiveEventUnsupportedReason?,
-)
-
-/** Test-only characterization of the first post-Step-128 History-A projection gap. */
+/** Regression proving the former Step-2767 AbilityFizzledEvent History-A gap is crossed. */
 class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
-    test("pins the first incomplete History-A projection for both perspectives") {
+    test("crosses the former AbilityFizzledEvent History-A gap for both perspectives") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -98,6 +86,9 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
         val policy = DeterministicExternalPolicy()
         var policyState = DeterministicPolicyState(policySeed = 0x41L)
         var successfulChoices = 0
+        var abilityFizzledChoices: Int? = null
+        var abilityFizzledStep: Int? = null
+        var abilityFizzledProjectionCompleteForBothPerspectives: Boolean? = null
         var failure: HistoryDOperationException? = null
         var failingRawEventTypes: List<String> = emptyList()
 
@@ -126,6 +117,16 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
                     is SemanticChoice.Gap -> error("Policy gap at choice=$successfulChoices: $choice")
                 } as TrainingObservation
                 successfulChoices++
+                if (abilityFizzledChoices == null &&
+                    environment.lastStepEvents.any { it is AbilityFizzledEvent }
+                ) {
+                    abilityFizzledChoices = successfulChoices
+                    abilityFizzledStep = environment.stepCount
+                    abilityFizzledProjectionCompleteForBothPerspectives = environment.playerIds.all {
+                        perspectivePlayerId ->
+                        gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId)?.isComplete == true
+                    }
+                }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
                 failingRawEventTypes = environment.lastStepEvents.map {
@@ -135,79 +136,25 @@ class Step2767HistoryAProjectionCharacterizationTest : FunSpec({
         }
 
         val historyDFailure = checkNotNull(failure)
-        successfulChoices shouldBe 2_766
-        environment.stepCount shouldBe 2_767
-        historyDFailure.failure.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
-        failingRawEventTypes shouldBe listOf(
-            "ResolvedEvent",
-            "ZoneChangeEvent",
-            "AbilityFizzledEvent",
-        )
-
-        val expected = listOf(
-            Step2767AClassification(
-                rawEventType = "ResolvedEvent",
-                eventFamily = PerspectiveEventFamily.RESOLVED,
-                disposition = PerspectiveEventDisposition.EMITTED,
-                reason = null,
-            ),
-            Step2767AClassification(
-                rawEventType = "ZoneChangeEvent",
-                eventFamily = PerspectiveEventFamily.ZONE_CHANGED,
-                disposition = PerspectiveEventDisposition.EMITTED,
-                reason = null,
-            ),
-            Step2767AClassification(
-                rawEventType = "AbilityFizzledEvent",
-                eventFamily = null,
-                disposition = PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
-                reason = PerspectiveEventUnsupportedReason.UNCHARACTERIZED,
-            ),
-        )
-
-        val matrices = environment.playerIds.map { perspectivePlayerId ->
-            val projection = checkNotNull(gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId))
-            projection.isComplete shouldBe false
-            projection shouldHaveExpectedClassifications expected
-            projection.classificationSummary()
-        }
-        matrices shouldHaveSize 2
-        matrices[0] shouldBe expected
-        matrices[1] shouldBe expected
+        (successfulChoices > 2_766) shouldBe true
+        (environment.stepCount > 2_767) shouldBe true
+        abilityFizzledChoices shouldBe 2_767
+        abilityFizzledStep shouldBe 2_767
+        abilityFizzledProjectionCompleteForBothPerspectives shouldBe true
 
         println(
-            "STEP2767_HISTORY_A_CHARACTERIZATION " +
+            "STEP2767_HISTORY_A_CROSSING " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
                 "failure=${historyDFailure.failure.code} " +
                 "rawEvents=$failingRawEventTypes " +
-                "perspectives=$matrices",
+                "abilityFizzledChoices=$abilityFizzledChoices " +
+                "abilityFizzledStep=$abilityFizzledStep " +
+                "abilityFizzledProjectionCompleteForBothPerspectives=" +
+                abilityFizzledProjectionCompleteForBothPerspectives,
         )
     }
 })
-
-private fun PerspectiveEventProjectionResult.classificationSummary(): List<Step2767AClassification> {
-    var emittedEntryIndex = 0
-    return classifications.map { classification ->
-        val eventFamily = if (classification.disposition == PerspectiveEventDisposition.EMITTED) {
-            batch.entries[emittedEntryIndex++].eventFamily
-        } else {
-            null
-        }
-        Step2767AClassification(
-            rawEventType = classification.rawEventType,
-            eventFamily = eventFamily,
-            disposition = classification.disposition,
-            reason = classification.reason,
-        )
-    }
-}
-
-private infix fun PerspectiveEventProjectionResult.shouldHaveExpectedClassifications(
-    expected: List<Step2767AClassification>,
-) {
-    classificationSummary() shouldBe expected
-}
 
 private fun step2767DecisionResponse(
     decisionId: String,
