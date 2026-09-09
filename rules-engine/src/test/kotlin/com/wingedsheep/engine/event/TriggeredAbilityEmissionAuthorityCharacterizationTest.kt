@@ -191,6 +191,7 @@ class TriggeredAbilityEmissionAuthorityCharacterizationTest : FunSpec({
         val driver = newDriver()
         val sourceId = driver.putCreatureOnBattlefield(driver.player1, emissionLtbSource.name)
         val before = driver.state
+        val sourceStamp = checkNotNull(before.objectIdentityStamps[sourceId])
         val after = before
             .removeFromZone(ZoneKey(driver.player1, Zone.BATTLEFIELD), sourceId)
             .withoutEntity(sourceId)
@@ -205,9 +206,12 @@ class TriggeredAbilityEmissionAuthorityCharacterizationTest : FunSpec({
                 controllerId = driver.player1,
                 typeLine = TypeLine.parse("Creature"),
                 cardDefinitionId = emissionLtbSource.name,
-                objectIncarnationStamp = before.objectIdentityStamps[sourceId],
+                objectIncarnationStamp = sourceStamp,
             ),
         )
+        val lastKnown = checkNotNull(event.lastKnown)
+        lastKnown.entityId shouldBe sourceId
+        lastKnown.objectIncarnationStamp shouldBe sourceStamp
         val pending = TriggerDetector(driver.cardRegistry)
             .detectTriggers(after, listOf(event))
             .single { it.sourceId == sourceId }
