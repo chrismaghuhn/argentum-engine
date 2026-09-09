@@ -233,6 +233,9 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
         val sourceId = driver.putPermanentOnBattlefield(driver.player1, persistentActivationSource.name)
         val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val sourceWasOnBattlefieldAtActivation =
+            driver.state.getBattlefield(driver.player1).contains(sourceId)
+        sourceWasOnBattlefieldAtActivation shouldBe true
         val activationSourceStamp = driver.state.objectIdentityStamps[sourceId]
             ?: error("persistent source has no activation stamp")
         val activationEntryStamp = driver.state.getEntity(sourceId)
@@ -249,7 +252,11 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             ),
         )
         activation.isSuccess shouldBe true
-        activation.events.filterIsInstance<AbilityActivatedEvent>().single().sourceId shouldBe sourceId
+        val activationEvent = activation.events.filterIsInstance<AbilityActivatedEvent>().single()
+        activationEvent.sourceId shouldBe sourceId
+        // The existing AbilityActivatedEvent History-C contract binds its source at activation time.
+        val existingActivationEventAuthority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        existingActivationEventAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
 
         val stackId = driver.state.stack.single()
         val stackComponent = driver.state.getEntity(stackId)
@@ -283,7 +290,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
                 "activationBoundaryStamp=present " +
                 "sourceBeforeWitness=present sourceAfterWitness=present " +
                 "sameActivationIncarnation=true " +
-                "requiredEndpointAuthority=SAME_INCARNATION " +
+                "requiredEndpointAuthority=BEFORE_OBJECT " +
                 "componentGenericStamp=absent componentGenericEndpoint=absent " +
                 "activationEventAuthority=BEFORE_OBJECT",
         )
@@ -295,6 +302,9 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         val sourceId = driver.putCreatureOnBattlefield(driver.player1, "Ghitu Fire-Eater")
         driver.removeSummoningSickness(sourceId)
         val targetId = driver.putCreatureOnBattlefield(driver.player2, "Grizzly Bears")
+        val sourceWasOnBattlefieldAtActivation =
+            driver.state.getBattlefield(driver.player1).contains(sourceId)
+        sourceWasOnBattlefieldAtActivation shouldBe true
         val activationSourceStamp = driver.state.objectIdentityStamps[sourceId]
             ?: error("self-sacrificing source has no activation stamp")
         val abilityId = driver.cardRegistry.requireCard("Ghitu Fire-Eater").activatedAbilities.single().id
@@ -308,7 +318,14 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             ),
         )
         activation.isSuccess shouldBe true
-        activation.events.filterIsInstance<AbilityActivatedEvent>().single().sourceId shouldBe sourceId
+        val activationEvent = activation.events.filterIsInstance<AbilityActivatedEvent>().single()
+        activationEvent.sourceId shouldBe sourceId
+        // The existing AbilityActivatedEvent History-C contract binds its source at activation time.
+        val existingActivationEventAuthority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        existingActivationEventAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+
+        driver.state.getBattlefield(driver.player1).contains(sourceId) shouldBe false
+        driver.state.getZone(ZoneKey(driver.player1, Zone.GRAVEYARD)).contains(sourceId) shouldBe true
 
         val stackId = driver.state.stack.single()
         val stackComponent = driver.state.getEntity(stackId)
