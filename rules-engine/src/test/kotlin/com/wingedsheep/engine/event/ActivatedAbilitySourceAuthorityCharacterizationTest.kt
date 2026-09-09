@@ -266,6 +266,8 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         val stackComponent = driver.state.getEntity(stackId)
             ?.get<ActivatedAbilityOnStackComponent>()
             ?: error("persistent activated ability was not retained on stack")
+        stackComponent.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        stackComponent.sourceObjectIncarnationStamp shouldBe activationSourceStamp
         stackComponent.lastKnownSourceSnapshot shouldBe null
         driver.state.objectIdentityStamps[sourceId] shouldBe activationSourceStamp
         driver.state.getEntity(sourceId)?.get<BattlefieldEntryTimestampComponent>()?.timestamp shouldBe
@@ -288,6 +290,8 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             .events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         fizzle.sourceId shouldBe sourceId
         fizzle.reason shouldBe "All targets are invalid"
+        fizzle.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        fizzle.sourceObjectIncarnationStamp shouldBe activationSourceStamp
 
         println(
             "ACTIVATED_SOURCE_AUTHORITY persistent-handler " +
@@ -295,7 +299,7 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
                 "sourceBeforeWitness=present sourceAfterWitness=present " +
                 "sameActivationIncarnation=true " +
                 "requiredEndpointAuthority=BEFORE_OBJECT " +
-                "componentGenericStamp=absent componentGenericEndpoint=absent " +
+                "componentGenericStamp=present componentGenericEndpoint=present " +
                 "activationEventAuthority=BEFORE_OBJECT",
         )
     }
@@ -335,6 +339,8 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
         val stackComponent = driver.state.getEntity(stackId)
             ?.get<ActivatedAbilityOnStackComponent>()
             ?: error("self-sacrificing activated ability was not retained on stack")
+        stackComponent.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        stackComponent.sourceObjectIncarnationStamp shouldBe activationSourceStamp
         val sourceSnapshot = stackComponent.lastKnownSourceSnapshot
             ?: error("self-sacrifice path did not retain source LKI")
         sourceSnapshot.entityId shouldBe sourceId
@@ -353,13 +359,15 @@ class ActivatedAbilitySourceAuthorityCharacterizationTest : FunSpec({
             .events.single().shouldBeInstanceOf<AbilityFizzledEvent>()
         fizzle.sourceId shouldBe sourceId
         fizzle.reason shouldBe "All targets are invalid"
+        fizzle.sourceEndpointAuthority shouldBe AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT
+        fizzle.sourceObjectIncarnationStamp shouldBe activationSourceStamp
 
         println(
             "ACTIVATED_SOURCE_AUTHORITY self-sacrifice-cost " +
                 "activationBoundaryStamp=present sourceWitnessAfterCost=false " +
                 "sourceLkiBattlefieldEntryStamp=present sourceLkiObjectStamp=absent " +
                 "requiredEndpointAuthority=BEFORE_OBJECT " +
-                "componentGenericStamp=absent componentGenericEndpoint=absent " +
+                "componentGenericStamp=present componentGenericEndpoint=present " +
                 "activationEventAuthority=BEFORE_OBJECT",
         )
     }
