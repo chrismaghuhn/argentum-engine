@@ -378,6 +378,13 @@ internal object HistoryCReferenceAuthority {
 
         val rawEvent = rawEventForProjectedOrdinal(transition, projection, candidate.slot.eventOrdinal)
             ?: return HistoryCFailure(HistoryCFailureCode.RAW_EVENT_REFERENCE_UNSUPPORTED)
+        if (rawEvent is AbilityFizzledEvent) {
+            val endpointAuthority = rawEvent.sourceEndpointAuthority
+            val sourceStamp = rawEvent.sourceObjectIncarnationStamp
+            if (endpointAuthority == null || sourceStamp == null || sourceStamp <= 0L) {
+                return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+            }
+        }
         val eventOwnedWitness = eventOwnedSourceWitness(rawEvent)
         val candidateWitnesses = listOfNotNull(candidate.beforeWitness, candidate.afterWitness)
         val eventStampPresent = when (rawEvent) {

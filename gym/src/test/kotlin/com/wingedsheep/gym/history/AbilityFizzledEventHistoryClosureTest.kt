@@ -154,4 +154,65 @@ class AbilityFizzledEventHistoryClosureTest : FunSpec({
                 .failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
         }
     }
+
+    test("History-C rejects a fizzle without its authoritative source stamp") {
+        val sourceState = GameState(
+            entities = mapOf(
+                self to ComponentContainer.EMPTY,
+                opponent to ComponentContainer.EMPTY,
+                sourceId to ComponentContainer.EMPTY,
+            ),
+            turnOrder = listOf(self, opponent),
+            objectIdentityStamps = mapOf(sourceId to 17L),
+        )
+        val event = AbilityFizzledEvent(
+            sourceId = sourceId,
+            description = description,
+            reason = reason,
+            sourceEndpointAuthority = AbilityTriggeredSourceEndpointAuthority.BEFORE_OBJECT,
+        )
+        val transition = CommittedRulesTransition(
+            beforeState = sourceState,
+            afterState = sourceState,
+            events = listOf(event),
+            sourceStepCount = 2767,
+        )
+        val projector = PerspectiveEventProjector(CardRegistry())
+        val projection = projector.project(
+            events = transition.events,
+            perspectivePlayerId = self,
+            beforeState = sourceState,
+            afterState = sourceState,
+        )
+        val transitionStateCandidate = HistoryCReferenceCandidateV1(
+            slot = HistoryCReferenceSlot(
+                eventOrdinal = 0,
+                role = HistoryCReferenceSlotRole.SOURCE,
+                roleOrdinal = 0,
+            ),
+            referenceKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
+            beforeWitness = HistoryCObjectWitness(sourceId, 17L),
+            afterWitness = null,
+            identityDisclosure = HistoryCIdentityDisclosure.OPAQUE,
+            orderProof = HistoryCOrderProof(
+                authority = HistoryCOrderAuthority.EXPLICIT_PRODUCER_ORDER,
+                rank = 0,
+            ),
+            semanticDescriptor = kotlinx.serialization.json.buildJsonObject {
+                put("type", "object_reference")
+            },
+            endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
+            witnessProvenance = HistoryCReferenceWitnessProvenance.TRANSITION_STATE,
+        )
+
+        HistoryCReferenceAuthority.validate(
+            transition = transition,
+            projection = projection,
+            envelope = HistoryCReferenceEnvelopeV1(
+                perspectivePlayerId = self,
+                candidates = listOf(transitionStateCandidate),
+            ),
+        ).shouldBeInstanceOf<HistoryCReferenceAuthorityResult.Rejected>()
+            .failure.code shouldBe HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA
+    }
 })
