@@ -281,6 +281,23 @@ data class ResolveSpellContinuation(
 ) : ContinuationFrame
 
 /**
+ * Completes a non-permanent spell's final disposition after its resolution effect has drained.
+ *
+ * This marker sits below the effect-owned continuation frames. It is not a player decision: it
+ * auto-resumes only after those frames have completed, so a resolving spell is not moved to a
+ * destination zone while one of its own resolution decisions is pending.
+ */
+@Serializable
+data class SpellResolutionContinuation(
+    override val decisionId: String,
+    val spellId: EntityId,
+    val continuationBoundaryDepth: Int,
+    val cardName: String,
+    /** True after the final zone transition paused and completed on a later continuation. */
+    val dispositionPending: Boolean = false,
+) : ContinuationFrame
+
+/**
  * Pre-pushed by [com.wingedsheep.engine.handlers.effects.composite.GatedEffectExecutor] for a
  * [com.wingedsheep.sdk.scripting.effects.Gate.DoAction] gate, before executing the gated action.
  * Auto-resumes once the action's own continuation stack has fully resolved; evaluates

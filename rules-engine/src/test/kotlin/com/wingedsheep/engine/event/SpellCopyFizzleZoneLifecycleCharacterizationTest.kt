@@ -43,6 +43,7 @@ import io.kotest.matchers.shouldNotBe
  * These expectations are intentionally RED on the accepted characterization parent: CR 608.2b
  * removes an all-illegal-target spell from the stack and puts it into its owner's graveyard, and
  * CR 704.5e then makes a spell copy cease to exist as a state-based action once it is in that zone.
+ * The paused-resolution case is a regression expectation for the later Fix-06 timing boundary.
  */
 class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
 
@@ -222,7 +223,7 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
         afterSba.state.hasEntity(fixture.spellId) shouldBe false
     }
 
-    test("paused copied spell uses normal disposition before the pending effect resumes") {
+    test("paused copied spell stays on the resolving object before the pending effect resumes") {
         val fixture = fixture(
             copy = true,
             withInvalidTarget = false,
@@ -232,14 +233,11 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
 
         result.error shouldBe null
         result.isPaused shouldBe true
-        result.events.filterIsInstance<ZoneChangeEvent>().single().toZone shouldBe Zone.GRAVEYARD
+        result.events.filterIsInstance<ZoneChangeEvent>() shouldBe emptyList()
         result.state.hasEntity(fixture.spellId) shouldBe true
-        result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe true
-        result.state.objectIdentityStamps[fixture.spellId] shouldBe 102L
-
-        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
-        afterSba.error shouldBe null
-        afterSba.state.hasEntity(fixture.spellId) shouldBe false
+        result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
+        result.state.getEntity(fixture.spellId)?.has<SpellOnStackComponent>() shouldBe true
+        result.state.objectIdentityStamps[fixture.spellId] shouldBe fixture.stamp
     }
 
     test("copy fizzle honors a replacement that redirects stack to graveyard") {

@@ -12,6 +12,7 @@ import com.wingedsheep.engine.handlers.EffectContext
  * - CycleDrawContinuation (draw after cycling triggers)
  * - TypecycleSearchContinuation (search after typecycling triggers)
  * - EffectContinuation (auto-resume remaining effects)
+ * - SpellResolutionContinuation (final spell disposition after resolution drains)
  * - RepeatWhileContinuation (ask condition after body)
  */
 class CoreAutoResumerModule(
@@ -141,6 +142,22 @@ class CoreAutoResumerModule(
                 state = stateWithCollections,
                 events = events + runResult.events,
             )
+        },
+
+        autoResumer(SpellResolutionContinuation::class) { state, continuation, events, checkForMore ->
+            val disposition = services.stackResolver.resumeDeferredNonPermanentSpell(
+                state = state,
+                continuation = continuation,
+                priorEvents = events,
+            )
+            if (disposition.isPaused) {
+                return@autoResumer disposition
+            }
+            if (!disposition.isSuccess) {
+                return@autoResumer disposition
+            }
+            checkForMore(disposition.state, disposition.events)
+                .withDiagnosticsFrom(disposition.diagnostics)
         },
 
         autoResumer(RepeatWhileContinuation::class, canResume = { it.phase == RepeatWhilePhase.AFTER_BODY }) { state, continuation, events, checkForMore ->

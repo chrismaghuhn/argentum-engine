@@ -128,8 +128,8 @@ class ResolvingSpellCopyPayloadTest : FunSpec({
         retargetDecision.legalTargets.values.flatten() shouldContain retargetCandidate
 
         val pausedState = driver.state
-        pausedState.getEntity(spell)?.get<SpellOnStackComponent>() shouldBe null
-        pausedState.getEntity(spell)?.get<TargetsComponent>() shouldBe null
+        pausedState.getEntity(spell)?.get<SpellOnStackComponent>().shouldNotBeNull()
+        pausedState.getEntity(spell)?.get<TargetsComponent>().shouldNotBeNull()
         val copyContinuation = pausedState.continuationStack.last()
             .shouldBeInstanceOf<StormCopyTargetContinuation>()
         val payload = copyContinuation.resolvingSpellCopyPayload.shouldNotBeNull()
