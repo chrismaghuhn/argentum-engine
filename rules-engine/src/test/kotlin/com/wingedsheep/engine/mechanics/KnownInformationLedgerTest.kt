@@ -721,7 +721,15 @@ class KnownInformationLedgerTest : FunSpec({
     test("HISTB-REVIEW-26 public library knowledge follows a named draw incarnation") {
         val cardId = EntityId.of("draw-known-top")
         val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Known Draw Card"))
-        val known = publicReveal(initial, cardId)
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1, p2),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
         val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
             state = known,
             entityId = cardId,
@@ -804,5 +812,155 @@ class KnownInformationLedgerTest : FunSpec({
             KnownInformationAudience.PERSPECTIVE_PRIVATE
         fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
         facts(after, p2).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-29 identity and library membership without position do not follow a draw") {
+        val cardId = EntityId.of("draw-known-without-position")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Known Without Position"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = false,
+        )
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Known Without Position"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-30 position one does not authorize a single-card draw") {
+        val first = EntityId.of("draw-position-zero")
+        val cardId = EntityId.of("draw-position-one")
+        val initial = stateWith(
+            CardSpec(first, p2, Zone.LIBRARY, "First Card"),
+            CardSpec(cardId, p2, Zone.LIBRARY, "Second Card"),
+        )
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 1
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Second Card"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-31 a known top-two draw follows both authorized positions") {
+        val first = EntityId.of("draw-top-two-first")
+        val second = EntityId.of("draw-top-two-second")
+        val initial = stateWith(
+            CardSpec(first, p2, Zone.LIBRARY, "Top Two First"),
+            CardSpec(second, p2, Zone.LIBRARY, "Top Two Second"),
+        )
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(first, second),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        val firstMoved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = first,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val secondMoved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = firstMoved.state,
+            entityId = second,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                secondMoved.state,
+                listOf(
+                    CardsDrawnEvent(
+                        p2,
+                        2,
+                        listOf(first, second),
+                        listOf("Top Two First", "Top Two Second"),
+                    ),
+                ),
+            ),
+        )
+
+        listOf(first, second).forEach { cardId ->
+            fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+            facts(after, p1).none {
+                it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+            } shouldBe true
+        }
+    }
+
+    test("HISTB-REVIEW-32 shuffle-invalidated position does not authorize a draw") {
+        val cardId = EntityId.of("draw-shuffled-known")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Shuffled Known Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        val shuffled = apply(
+            known,
+            ExecutionResult.success(known, listOf(LibraryShuffledEvent(p2))),
+        )
+        facts(shuffled, p1).none {
+            it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        } shouldBe true
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = shuffled,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            shuffled,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Shuffled Known Card"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
     }
 })

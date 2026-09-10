@@ -333,16 +333,22 @@ object KnownInformationLedger {
         val drawnCards = events
             .filterIsInstance<CardsDrawnEvent>()
             .flatMap { event ->
-                event.cardIds.filter { cardId ->
-                    cardId in beforeState.getLibrary(event.playerId) &&
-                        cardId in state.getHand(event.playerId)
+                if (event.count <= 0) {
+                    emptyList()
+                } else {
+                    event.cardIds
+                        .filter { cardId ->
+                            cardId in beforeState.getLibrary(event.playerId) &&
+                                cardId in state.getHand(event.playerId)
+                        }
+                        .map { cardId -> cardId to event.count }
                 }
             }
-            .distinct()
+            .distinctBy { it.first }
         if (drawnCards.isEmpty()) return state
 
         var newState = state
-        for (cardId in drawnCards) {
+        for ((cardId, drawCount) in drawnCards) {
             val beforeStamp = beforeState.objectIdentityStamps[cardId] ?: continue
             val afterStamp = state.objectIdentityStamps[cardId] ?: continue
             if (beforeStamp == afterStamp) continue
@@ -362,6 +368,12 @@ object KnownInformationLedger {
                 val previousZone = previousFacts.firstOrNull {
                     it.factKind == KnownInformationFactKind.ZONE_MEMBERSHIP &&
                         it.knownZone == Zone.LIBRARY
+                } ?: continue
+                previousFacts.firstOrNull {
+                    it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                        it.knownZone == Zone.LIBRARY &&
+                        it.knownPosition != null &&
+                        it.knownPosition in 0 until drawCount
                 } ?: continue
                 val currentLedger = forPlayer(newState, perspectivePlayerId)
                 val acquiredAtEpoch = currentLedger.knowledgeEpoch + 1L
