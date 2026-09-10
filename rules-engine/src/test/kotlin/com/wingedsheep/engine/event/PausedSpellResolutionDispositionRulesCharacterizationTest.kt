@@ -1,8 +1,10 @@
 package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.ActionProcessor
+import com.wingedsheep.engine.core.AlternativeCostType
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ResolvedEvent
+import com.wingedsheep.engine.core.SpellResolutionContinuation
 import com.wingedsheep.engine.core.SubmitDecision
 import com.wingedsheep.engine.core.YesNoDecision
 import com.wingedsheep.engine.core.YesNoResponse
@@ -15,6 +17,7 @@ import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
 import com.wingedsheep.engine.state.components.identity.CardComponent
+import com.wingedsheep.engine.state.components.identity.CommanderComponent
 import com.wingedsheep.engine.state.components.identity.ControllerComponent
 import com.wingedsheep.engine.state.components.identity.CopyOfComponent
 import com.wingedsheep.engine.state.components.identity.LifeTotalComponent
@@ -23,17 +26,21 @@ import com.wingedsheep.engine.state.components.identity.PlayerComponent
 import com.wingedsheep.engine.state.components.battlefield.ReplacementEffectSourceComponent
 import com.wingedsheep.engine.state.components.stack.SpellOnStackComponent
 import com.wingedsheep.sdk.core.CardType
+import com.wingedsheep.sdk.core.Format
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
+import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EventPattern
+import com.wingedsheep.sdk.scripting.GraveyardCardsHaveFlashback
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
 import com.wingedsheep.sdk.scripting.effects.MayEffect
+import com.wingedsheep.sdk.scripting.targets.EffectTarget
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.nulls.shouldNotBeNull
 import io.kotest.matchers.shouldBe
@@ -104,10 +111,10 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         return Fixture(state, playerId, spellId, stamp)
     }
 
-    fun withGraveyardRedirect(fixture: Fixture): GameState {
+    fun withRedirect(fixture: Fixture, destination: Zone): GameState {
         val redirectSourceId = EntityId.generate()
         val redirect = RedirectZoneChange(
-            newDestination = Zone.EXILE,
+            newDestination = destination,
             appliesTo = EventPattern.ZoneChangeEvent(
                 filter = GameObjectFilter.Any,
                 from = Zone.STACK,
@@ -131,6 +138,10 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
             .withEntity(redirectSourceId, redirectSource)
             .addToZone(ZoneKey(fixture.playerId, Zone.BATTLEFIELD), redirectSourceId)
     }
+
+    fun withGraveyardRedirect(fixture: Fixture): GameState = withRedirect(fixture, Zone.EXILE)
+
+    fun withHandRedirect(fixture: Fixture): GameState = withRedirect(fixture, Zone.HAND)
 
     fun resolvePaused(fixture: Fixture) =
         StackResolver(CardRegistry()).resolveTop(fixture.state)
@@ -161,13 +172,20 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         resolvedIndex shouldBe (zoneIndex + 1)
     }
 
-    fun resumeYes(result: com.wingedsheep.engine.core.ExecutionResult): com.wingedsheep.engine.core.ExecutionResult {
+    fun resumeDecision(
+        result: com.wingedsheep.engine.core.ExecutionResult,
+        choice: Boolean,
+    ): com.wingedsheep.engine.core.ExecutionResult {
         val decision = result.pendingDecision.shouldNotBeNull().shouldBeInstanceOf<YesNoDecision>()
         val services = EngineServices(CardRegistry())
         return services.continuationHandler.resume(
             result.state.clearPendingDecision(),
-            YesNoResponse(decision.id, choice = true),
+            YesNoResponse(decision.id, choice),
         )
+    }
+
+    fun resumeYes(result: com.wingedsheep.engine.core.ExecutionResult): com.wingedsheep.engine.core.ExecutionResult {
+        return resumeDecision(result, choice = true)
     }
 
     fun submitYes(
@@ -262,6 +280,97 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         val resumed = resumeYes(paused)
 
         assertFinalDisposition(resumed, destination = Zone.EXILE)
+        resumed.state.getZone(ZoneKey(fixture.playerId, Zone.EXILE)).contains(fixture.spellId) shouldBe true
+        resumed.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
+    }
+
+    test("paused final disposition waits for a replacement decision before moving the spell") {
+        val fixture = fixture(copy = false)
+        val state = withHandRedirect(fixture)
+            .copy(format = Format.Commander())
+            .updateEntity(fixture.spellId) {
+                it.with(CommanderComponent(ownerId = fixture.playerId))
+            }
+        val paused = resolvePaused(fixture.copy(state = state))
+
+        assertPauseEnvelope(paused)
+        val afterEffect = resumeYes(paused)
+
+        afterEffect.error shouldBe null
+        afterEffect.isPaused shouldBe true
+        afterEffect.pendingDecision.shouldNotBeNull().shouldBeInstanceOf<YesNoDecision>()
+        afterEffect.state.continuationStack.filterIsInstance<SpellResolutionContinuation>()
+            .single().dispositionPending shouldBe true
+        afterEffect.state.getEntity(fixture.spellId)?.has<SpellOnStackComponent>() shouldBe true
+        afterEffect.state.getZone(ZoneKey(fixture.playerId, Zone.HAND)).contains(fixture.spellId) shouldBe false
+        afterEffect.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
+        afterEffect.events.filterIsInstance<ZoneChangeEvent>() shouldBe emptyList()
+        afterEffect.events.filterIsInstance<ResolvedEvent>() shouldBe emptyList()
+
+        val final = resumeDecision(afterEffect, choice = false)
+
+        assertFinalDisposition(final, destination = Zone.HAND)
+        final.state.getZone(ZoneKey(fixture.playerId, Zone.HAND)).contains(fixture.spellId) shouldBe true
+        final.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
+    }
+
+    test("cast-time flashback still exiles when its battlefield grant disappears during resolution") {
+        val fixture = fixture(copy = false)
+        val grantSourceId = EntityId.generate()
+        val grantSourceName = "Paused Flashback Grant Source"
+        val grantSourceDefinition = card(grantSourceName) {
+            manaCost = "{2}"
+            typeLine = "Enchantment"
+            staticAbility {
+                ability = GraveyardCardsHaveFlashback(GameObjectFilter.Any)
+            }
+        }
+        val registry = CardRegistry().also { it.register(grantSourceDefinition) }
+        val grantSource = ComponentContainer.of(
+            CardComponent(
+                cardDefinitionId = grantSourceName,
+                name = grantSourceName,
+                manaCost = ManaCost.ZERO,
+                typeLine = TypeLine(cardTypes = setOf(CardType.ENCHANTMENT)),
+                oracleText = "",
+                ownerId = fixture.playerId,
+            ),
+            OwnerComponent(fixture.playerId),
+            ControllerComponent(fixture.playerId),
+        )
+        val spell = fixture.state.getEntity(fixture.spellId)
+            .shouldNotBeNull()
+            .get<SpellOnStackComponent>()
+            .shouldNotBeNull()
+        val state = fixture.state
+            .withEntity(grantSourceId, grantSource)
+            .addToZone(ZoneKey(fixture.playerId, Zone.BATTLEFIELD), grantSourceId)
+            .updateEntity(fixture.spellId) {
+                it.with(
+                    spell.copy(
+                        castFromZone = Zone.GRAVEYARD,
+                        alternativeCost = AlternativeCostType.FLASHBACK,
+                        resolvingSpellEffectOverride = Effects.Composite(
+                            Effects.Destroy(EffectTarget.SpecificEntity(grantSourceId)),
+                            MayEffect(Effects.GainLife(1)),
+                        ),
+                    )
+                )
+            }
+
+        val paused = StackResolver(registry).resolveTop(state)
+        paused.error shouldBe null
+        paused.isPaused shouldBe true
+        paused.pendingDecision.shouldNotBeNull().shouldBeInstanceOf<YesNoDecision>()
+        paused.state.pendingDecision shouldBe paused.pendingDecision
+        paused.state.getBattlefield(fixture.playerId).contains(grantSourceId) shouldBe false
+        paused.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
+        paused.events.filterIsInstance<ZoneChangeEvent>().map { it.entityId } shouldBe listOf(grantSourceId)
+        paused.events.filterIsInstance<ResolvedEvent>() shouldBe emptyList()
+
+        val resumed = resumeYes(paused)
+
+        resumed.error shouldBe null
         resumed.state.getZone(ZoneKey(fixture.playerId, Zone.EXILE)).contains(fixture.spellId) shouldBe true
         resumed.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
     }

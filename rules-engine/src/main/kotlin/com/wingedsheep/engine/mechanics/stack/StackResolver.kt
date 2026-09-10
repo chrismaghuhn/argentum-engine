@@ -2636,11 +2636,12 @@ class StackResolver(
         // Flashback (printed or granted — Archmage's Newt) or Harmonize (printed or granted —
         // Songcrafter Mage): a graveyard cast exiles on resolution instead of returning to the
         // graveyard.
-        val flashbackExile = spellComponent.castFromZone == Zone.GRAVEYARD &&
-            (FlashbackGrants.effectiveFlashback(
-                state, spellId, cardDef, spellComponent.casterId, cardRegistry, predicateEvaluator
-            ) != null ||
-                HarmonizeGrants.effectiveHarmonize(state, spellId, cardDef) != null)
+        val flashbackExile = exilesAfterGraveyardCast(
+            state = state,
+            spellId = spellId,
+            spellComponent = spellComponent,
+            cardDef = cardDef,
+        )
         val exileAfterResolveComp = newState.getEntity(spellId)?.get<ExileAfterResolveComponent>()
         val exileAfterResolve = exileAfterResolveComp != null
         // Adventure face (CR 715.3d): when an Adventure resolves, exile it instead of putting
@@ -2873,6 +2874,32 @@ class StackResolver(
         )
     }
 
+    /**
+     * Whether this graveyard cast must be exiled after resolution (CR 702.34/702.180).
+     *
+     * The chosen alternative cost is cast-time provenance, so it remains authoritative even if
+     * a temporary grant disappears while the spell's effect or a continuation is resolving. The
+     * nullable fallback exists only for legacy hand-built stack states that predate the provenance
+     * field; real cast actions stamp the explicit alternative before the spell reaches the stack.
+     */
+    private fun exilesAfterGraveyardCast(
+        state: GameState,
+        spellId: EntityId,
+        spellComponent: SpellOnStackComponent,
+        cardDef: com.wingedsheep.sdk.model.CardDefinition?,
+    ): Boolean {
+        if (spellComponent.castFromZone != Zone.GRAVEYARD) return false
+
+        return when (spellComponent.alternativeCost) {
+            AlternativeCostType.FLASHBACK,
+            AlternativeCostType.HARMONIZE -> true
+            null -> FlashbackGrants.effectiveFlashback(
+                state, spellId, cardDef, spellComponent.casterId, cardRegistry, predicateEvaluator
+            ) != null || HarmonizeGrants.effectiveHarmonize(state, spellId, cardDef) != null
+            else -> false
+        }
+    }
+
     internal fun resumeDeferredNonPermanentSpell(
         state: GameState,
         continuation: SpellResolutionContinuation,
@@ -3022,11 +3049,12 @@ class StackResolver(
         // Flashback (printed or granted — Archmage's Newt) or Harmonize (printed or granted —
         // Songcrafter Mage): a graveyard cast exiles on resolution instead of returning to the
         // graveyard.
-        val flashbackExile = spellComponent.castFromZone == Zone.GRAVEYARD &&
-            (FlashbackGrants.effectiveFlashback(
-                state, spellId, cardDef, spellComponent.casterId, cardRegistry, predicateEvaluator
-            ) != null ||
-                HarmonizeGrants.effectiveHarmonize(state, spellId, cardDef) != null)
+        val flashbackExile = exilesAfterGraveyardCast(
+            state = state,
+            spellId = spellId,
+            spellComponent = spellComponent,
+            cardDef = cardDef,
+        )
         val exileAfterResolveComp = state.getEntity(spellId)?.get<ExileAfterResolveComponent>()
         // Goliath Daydreamer-style components only exile on actual resolution; if the spell
         // fizzles or is countered they go to graveyard normally.
