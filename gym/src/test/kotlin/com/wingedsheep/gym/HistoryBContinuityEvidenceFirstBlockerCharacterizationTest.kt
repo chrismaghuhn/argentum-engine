@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.engine.mechanics.KnownInformationLedger
 import com.wingedsheep.engine.core.BudgetModalResponse
+import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.CardsSelectedResponse
 import com.wingedsheep.engine.core.ColorChosenResponse
 import com.wingedsheep.engine.core.CombatResolutionResponse
@@ -18,8 +19,12 @@ import com.wingedsheep.engine.core.PilesSplitResponse
 import com.wingedsheep.engine.core.PlayerConfig
 import com.wingedsheep.engine.core.ReplacementChosenResponse
 import com.wingedsheep.engine.core.TargetsResponse
+import com.wingedsheep.engine.core.ZoneChangeEvent
 import com.wingedsheep.engine.registry.CardRegistry
 import com.wingedsheep.engine.state.GameState
+import com.wingedsheep.engine.state.components.player.KnownInformationAcquisitionReason
+import com.wingedsheep.engine.state.components.player.KnownInformationAudience
+import com.wingedsheep.engine.state.components.player.KnownInformationFactKind
 import com.wingedsheep.gym.contract.ObservationBuilder
 import com.wingedsheep.gym.contract.PerspectiveEventClassification
 import com.wingedsheep.gym.contract.PerspectiveEventDisposition
@@ -164,6 +169,12 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
         )
         val eventNames = failingEvents.map { it::class.simpleName ?: "UnknownGameEvent" }
         eventNames shouldBe listOf("StepChangedEvent", "CardsDrawnEvent", "StepChangedEvent")
+        val drawnEvent = failingEvents.filterIsInstance<CardsDrawnEvent>().single()
+        drawnEvent.playerId shouldBe EntityId("e1")
+        drawnEvent.count shouldBe 1
+        drawnEvent.cardIds shouldBe listOf(EntityId("e175"))
+        failingEvents.filterIsInstance<ZoneChangeEvent>().isEmpty() shouldBe true
+        before.getLibrary(EntityId("e1")).first() shouldBe EntityId("e175")
         val perspectives = environment.playerIds.map { perspectivePlayerId ->
             val projection = checkNotNull(gym.lastCommittedPerspectiveEventProjection(perspectivePlayerId))
             val produced = HistoryCReferenceEnvelopeProducerV1.produce(transition, projection)
@@ -244,15 +255,47 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
                     it.subjectEntityId == currentWitness.entityId &&
                         it.objectIdentityStamp == currentWitness.objectIdentityStamp
                 }
+            val beforeFacts = KnownInformationLedger
+                .forPlayer(before, characterization.perspectivePlayerId)
+                .activeFacts
+                .filter {
+                    it.subjectEntityId == currentWitness.entityId &&
+                        it.objectIdentityStamp == beforeStamp
+                }
             if (characterization.perspectivePlayerId == EntityId("e0")) {
-                exactFacts shouldBe emptyList()
+                exactFacts.isEmpty() shouldBe true
+                beforeFacts.isEmpty() shouldBe false
+            }
+            beforeFacts.map { it.factKind } shouldBe listOf(
+                KnownInformationFactKind.IDENTITY,
+                KnownInformationFactKind.ZONE_MEMBERSHIP,
+                KnownInformationFactKind.POSITION_OR_ORDER,
+            )
+            beforeFacts.forEach { fact ->
+                fact.audience shouldBe KnownInformationAudience.PUBLIC
+                when (fact.factKind) {
+                    KnownInformationFactKind.IDENTITY,
+                    KnownInformationFactKind.ZONE_MEMBERSHIP,
+                    -> fact.acquisitionReason shouldBe KnownInformationAcquisitionReason.PUBLIC_REVEAL
+
+                    KnownInformationFactKind.POSITION_OR_ORDER -> {
+                        fact.acquisitionReason shouldBe
+                            KnownInformationAcquisitionReason.CONTINUOUS_IDENTITY_VISIBILITY
+                        fact.knownPosition shouldBe 0
+                    }
+                }
+                fact.knownZone shouldBe com.wingedsheep.sdk.core.Zone.LIBRARY
             }
             println(
                 "HISTORY_B_CONTINUITY_FACTS " +
                     "perspective=${characterization.perspectivePlayerId.value} " +
                     "currentWitness=$currentWitness " +
                     "previousWitnesses=$previousWitnesses " +
-                    "exactFacts=${exactFacts.map { it.factKind.name + ":" + it.knownZone }}",
+                    "beforeFacts=${beforeFacts.map {
+                        it.factKind.name + ":" + it.knownZone + ":" + it.knownPosition + ":" +
+                            it.audience.name + ":" + it.acquisitionReason.name + ":epoch=" + it.acquiredAtEpoch
+                    }} " +
+                    "afterFacts=${exactFacts.map { it.factKind.name + ":" + it.knownZone }}",
             )
             printCharacterization(
                 characterization = characterization,
