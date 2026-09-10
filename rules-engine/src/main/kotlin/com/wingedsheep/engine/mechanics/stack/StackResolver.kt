@@ -2541,18 +2541,6 @@ class StackResolver(
             // to graveyard/exile (it has already resolved from the stack). The decision only
             // determines how the effect completes.
             if (effectResult.isPaused) {
-                val pausedIsCopy = effectResult.state.getEntity(spellId)?.has<CopyOfComponent>() == true
-                if (pausedIsCopy) {
-                    // Rule 112.3b — copies cease to exist when they leave the stack.
-                    val pausedState = effectResult.state.removeEntity(spellId)
-                    return ExecutionResult.paused(
-                        pausedState,
-                        effectResult.pendingDecision!!,
-                        events + effectResult.events,
-                        diagnostics = effectDiagnostics,
-                    )
-                }
-
                 val ownerId = cardComponent?.ownerId ?: spellComponent.casterId
                 val pausedCardDef = cardComponent?.let { cardRegistry.getCard(it.name) }
                 // For a cast face (Adventure / modal DFC), "Exile <name>." lives on the face's script.
@@ -2773,14 +2761,6 @@ class StackResolver(
             // second target missing) should be preserved.
             newState = effectResult.newState
             events.addAll(effectResult.events)
-        }
-
-        // Rule 112.3b: a copy of a spell ceases to exist when it leaves the stack —
-        // it does not go to a graveyard or exile.
-        val isCopy = newState.getEntity(spellId)?.has<CopyOfComponent>() == true
-        if (isCopy) {
-            newState = newState.removeEntity(spellId)
-            return ExecutionResult.success(newState, events, effectDiagnostics)
         }
 
         // Move to graveyard (or exile if selfExileOnResolve, flashback, or ExileAfterResolveComponent)
@@ -3137,18 +3117,6 @@ class StackResolver(
         cardComponent: CardComponent?,
         spellComponent: SpellOnStackComponent
     ): ExecutionResult {
-        // Rule 112.3b — a copy that fizzles ceases to exist rather than moving to graveyard/exile.
-        val isCopy = state.getEntity(spellId)?.has<CopyOfComponent>() == true
-        if (isCopy) {
-            val newState = state.removeEntity(spellId)
-            return ExecutionResult.success(
-                newState,
-                listOf(
-                    SpellFizzledEvent(spellId, cardComponent?.name ?: "Unknown", "All targets are invalid")
-                )
-            )
-        }
-
         val ownerId = cardComponent?.ownerId ?: spellComponent.casterId
         val cardDef = cardComponent?.let { cardRegistry.getCard(it.name) }
         // Flashback (printed or granted — Archmage's Newt) or Harmonize (printed or granted —

@@ -24,23 +24,25 @@ import com.wingedsheep.sdk.core.CardType
 import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GameObjectFilter
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
+import com.wingedsheep.sdk.scripting.effects.Effect
+import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.filters.unified.TargetFilter
 import com.wingedsheep.sdk.scripting.targets.TargetObject
 import io.kotest.core.spec.style.FunSpec
 import io.kotest.matchers.shouldBe
+import io.kotest.matchers.shouldNotBe
 
 /**
- * Rules characterization for an instant/sorcery copy whose targets are all illegal.
+ * Rules regression coverage for the stack disposition of an instant/sorcery copy.
  *
- * The tests intentionally pin the current engine result separately from the Rules-required
- * lifecycle. The current copy branch removes the entity directly after [StackResolver.resolveTop]
- * has popped it, so this characterization is green while documenting a Rules mismatch: CR 608.2b
- * removes a spell from the stack and puts it into its owner's graveyard, and CR 704.5e then makes a
- * spell copy cease to exist as a state-based action once it is in that zone.
+ * These expectations are intentionally RED on the accepted characterization parent: CR 608.2b
+ * removes an all-illegal-target spell from the stack and puts it into its owner's graveyard, and
+ * CR 704.5e then makes a spell copy cease to exist as a state-based action once it is in that zone.
  */
 class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
 
@@ -51,7 +53,11 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
         val stamp: Long,
     )
 
-    fun fixture(copy: Boolean, withInvalidTarget: Boolean = true): Fixture {
+    fun fixture(
+        copy: Boolean,
+        withInvalidTarget: Boolean = true,
+        resolvingEffect: Effect? = null,
+    ): Fixture {
         val playerId = EntityId.generate()
         val opponentId = EntityId.generate()
         val spellId = EntityId.generate()
@@ -69,7 +75,10 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
             card,
             OwnerComponent(playerId),
             ControllerComponent(playerId),
-            SpellOnStackComponent(casterId = playerId),
+            SpellOnStackComponent(
+                casterId = playerId,
+                resolvingSpellEffectOverride = resolvingEffect,
+            ),
         )
         if (copy) {
             spell = spell.with(
@@ -135,23 +144,28 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
             .addToZone(ZoneKey(fixture.playerId, Zone.BATTLEFIELD), redirectSourceId)
     }
 
-    test("current copy fizzle removes the stack copy without a zone transition") {
+    test("copy fizzle uses normal disposition before phantom-copy SBA cleanup") {
         val fixture = fixture(copy = true)
         val result = StackResolver(CardRegistry()).resolveTop(fixture.state)
 
         result.error shouldBe null
-        result.events.map { it::class.simpleName } shouldBe listOf("SpellFizzledEvent")
+        result.events.map { it::class.simpleName } shouldBe
+            listOf("SpellFizzledEvent", "ZoneChangeEvent")
         result.events.filterIsInstance<SpellFizzledEvent>().single().spellEntityId shouldBe fixture.spellId
+        result.events.filterIsInstance<ZoneChangeEvent>().single().toZone shouldBe Zone.GRAVEYARD
 
         result.state.stack shouldBe emptyList()
-        result.state.hasEntity(fixture.spellId) shouldBe false
-        result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
-        result.state.getZone(ZoneKey(fixture.playerId, Zone.EXILE)).contains(fixture.spellId) shouldBe false
-        result.state.objectIdentityStamps[fixture.spellId] shouldBe fixture.stamp
+        result.state.hasEntity(fixture.spellId) shouldBe true
+        result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe true
+        result.state.objectIdentityStamps[fixture.spellId] shouldBe 102L
         result.state.continuationStack shouldBe emptyList()
+
+        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        afterSba.error shouldBe null
+        afterSba.state.hasEntity(fixture.spellId) shouldBe false
     }
 
-    test("StackResolver-produced copy follows the current direct-removal fizzle branch") {
+    test("StackResolver-produced copy uses normal fizzle disposition") {
         val sourceFixture = fixture(copy = false)
         val copyResult = StackResolver(CardRegistry()).putSpellCopy(
             state = sourceFixture.state,
@@ -166,10 +180,15 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
         val result = StackResolver(CardRegistry()).resolveTop(copyResult.state)
 
         result.error shouldBe null
-        result.events.map { it::class.simpleName } shouldBe listOf("SpellFizzledEvent")
-        result.state.hasEntity(copyId) shouldBe false
-        result.state.getZone(ZoneKey(sourceFixture.playerId, Zone.GRAVEYARD)).contains(copyId) shouldBe false
-        result.state.objectIdentityStamps[copyId] shouldBe copyStamp
+        result.events.map { it::class.simpleName } shouldBe
+            listOf("SpellFizzledEvent", "ZoneChangeEvent")
+        result.state.hasEntity(copyId) shouldBe true
+        result.state.getZone(ZoneKey(sourceFixture.playerId, Zone.GRAVEYARD)).contains(copyId) shouldBe true
+        result.state.objectIdentityStamps[copyId] shouldNotBe copyStamp
+
+        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        afterSba.error shouldBe null
+        afterSba.state.hasEntity(copyId) shouldBe false
     }
 
     test("ordinary non-copy fizzle is the zone-transition control") {
@@ -187,18 +206,43 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
         result.state.objectIdentityStamps[fixture.spellId] shouldBe 102L
     }
 
-    test("successful copied spell resolution also uses direct copy removal in the current engine") {
+    test("successful copied spell resolution uses normal disposition before phantom-copy SBA cleanup") {
         val fixture = fixture(copy = true, withInvalidTarget = false)
         val result = StackResolver(CardRegistry()).resolveTop(fixture.state)
 
         result.error shouldBe null
-        result.events.any { it is ZoneChangeEvent } shouldBe false
+        result.events.filterIsInstance<ZoneChangeEvent>().single().toZone shouldBe Zone.GRAVEYARD
         result.state.stack shouldBe emptyList()
-        result.state.hasEntity(fixture.spellId) shouldBe false
-        result.state.objectIdentityStamps[fixture.spellId] shouldBe fixture.stamp
+        result.state.hasEntity(fixture.spellId) shouldBe true
+        result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe true
+        result.state.objectIdentityStamps[fixture.spellId] shouldBe 102L
+
+        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        afterSba.error shouldBe null
+        afterSba.state.hasEntity(fixture.spellId) shouldBe false
     }
 
-    test("copy fizzle bypasses a replacement that would redirect stack to graveyard") {
+    test("paused copied spell uses normal disposition before the pending effect resumes") {
+        val fixture = fixture(
+            copy = true,
+            withInvalidTarget = false,
+            resolvingEffect = MayEffect(Effects.DrawCards(1)),
+        )
+        val result = StackResolver(CardRegistry()).resolveTop(fixture.state)
+
+        result.error shouldBe null
+        result.isPaused shouldBe true
+        result.events.filterIsInstance<ZoneChangeEvent>().single().toZone shouldBe Zone.GRAVEYARD
+        result.state.hasEntity(fixture.spellId) shouldBe true
+        result.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe true
+        result.state.objectIdentityStamps[fixture.spellId] shouldBe 102L
+
+        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        afterSba.error shouldBe null
+        afterSba.state.hasEntity(fixture.spellId) shouldBe false
+    }
+
+    test("copy fizzle honors a replacement that redirects stack to graveyard") {
         val fixture = fixture(copy = true)
         val state = withGraveyardRedirect(fixture)
 
@@ -211,9 +255,14 @@ class SpellCopyFizzleZoneLifecycleCharacterizationTest : FunSpec({
 
         val result = StackResolver(CardRegistry()).resolveTop(state)
         result.error shouldBe null
-        result.events.filterIsInstance<ZoneChangeEvent>() shouldBe emptyList()
-        result.state.hasEntity(fixture.spellId) shouldBe false
-        result.state.getZone(ZoneKey(fixture.playerId, Zone.EXILE)).contains(fixture.spellId) shouldBe false
+        result.events.filterIsInstance<ZoneChangeEvent>().single().toZone shouldBe Zone.EXILE
+        result.state.hasEntity(fixture.spellId) shouldBe true
+        result.state.getZone(ZoneKey(fixture.playerId, Zone.EXILE)).contains(fixture.spellId) shouldBe true
+        result.state.objectIdentityStamps[fixture.spellId] shouldNotBe fixture.stamp
+
+        val afterSba = StateBasedActionChecker(cardRegistry = CardRegistry()).checkAndApply(result.state)
+        afterSba.error shouldBe null
+        afterSba.state.hasEntity(fixture.spellId) shouldBe false
     }
 
     test("generic stack-to-zone transition creates the destination incarnation and event") {
