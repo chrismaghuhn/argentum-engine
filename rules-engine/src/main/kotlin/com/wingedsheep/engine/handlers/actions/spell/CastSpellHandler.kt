@@ -222,6 +222,31 @@ class CastSpellHandler(
         manaSolver, costCalculator, predicateEvaluator, cardRegistry
     )
 
+    /**
+     * Resolve the alternative cost chosen by a legacy action that omits its discriminator.
+     *
+     * The action contract still accepts `useAlternativeCost = true` with a null
+     * [CastSpell.alternativeCostType], so the existing priority chain chooses the first available
+     * graveyard alternative. Capture that result before the card moves to the stack; later spell
+     * resolution must use the frozen stack provenance rather than re-evaluating a temporary grant.
+     */
+    private fun captureLegacyGraveyardAlternativeCost(
+        state: GameState,
+        action: CastSpell,
+        cardDef: com.wingedsheep.sdk.model.CardDefinition?,
+    ): AlternativeCostType? {
+        if (!action.useAlternativeCost || action.alternativeCostType != null || cardDef == null) return null
+        if (stackResolver.findCastFromZone(state, action.cardId, action.playerId) != Zone.GRAVEYARD) return null
+
+        return when {
+            zoneResolver.hasFlashbackPermission(state, action.playerId, action.cardId) ->
+                AlternativeCostType.FLASHBACK
+            zoneResolver.hasHarmonizePermission(state, action.playerId, action.cardId) ->
+                AlternativeCostType.HARMONIZE
+            else -> null
+        }
+    }
+
     override fun validate(state: GameState, action: CastSpell): String? {
         if (
             action.preResolvedZoneChangeIds.isNotEmpty() ||
@@ -3847,9 +3872,12 @@ class CastSpellHandler(
             spentManaProvenance = paymentResult.spentManaProvenance,
             castTimeFlags = castTimeFlags,
             // Every enumerated alternative-cost offer names its mechanic explicitly, so this is the
-            // declared choice rather than a guess. Descriptive only — the rules consequences of each
-            // mechanic ride the `was*` flags above.
+            // declared choice rather than a guess. A legacy null-discriminator action is resolved
+            // once at this cast boundary so its selected graveyard alternative is still available
+            // after a temporary grant disappears during resolution. Descriptive only — the rules
+            // consequences of each mechanic ride the `was*` flags above.
             alternativeCost = action.alternativeCostType?.takeIf { action.useAlternativeCost }
+                ?: captureLegacyGraveyardAlternativeCost(currentState, action, cardDef)
         )
 
         if (!castResult.isSuccess) {

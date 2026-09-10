@@ -2,6 +2,7 @@ package com.wingedsheep.engine.event
 
 import com.wingedsheep.engine.core.ActionProcessor
 import com.wingedsheep.engine.core.AlternativeCostType
+import com.wingedsheep.engine.core.CastSpell
 import com.wingedsheep.engine.core.EngineServices
 import com.wingedsheep.engine.core.ResolvedEvent
 import com.wingedsheep.engine.core.SpellResolutionContinuation
@@ -13,6 +14,8 @@ import com.wingedsheep.engine.handlers.ContinuationHandler
 import com.wingedsheep.engine.mechanics.stack.StackResolver
 import com.wingedsheep.engine.mechanics.sba.zone.PhantomCardCopiesCheck
 import com.wingedsheep.engine.registry.CardRegistry
+import com.wingedsheep.engine.support.GameTestDriver
+import com.wingedsheep.engine.support.TestCards
 import com.wingedsheep.engine.state.ComponentContainer
 import com.wingedsheep.engine.state.GameState
 import com.wingedsheep.engine.state.ZoneKey
@@ -34,10 +37,12 @@ import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
+import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GraveyardCardsHaveFlashback
 import com.wingedsheep.sdk.scripting.GameObjectFilter
+import com.wingedsheep.sdk.scripting.KeywordAbility
 import com.wingedsheep.sdk.scripting.RedirectZoneChange
 import com.wingedsheep.sdk.scripting.effects.MayEffect
 import com.wingedsheep.sdk.scripting.targets.EffectTarget
@@ -373,5 +378,105 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         resumed.error shouldBe null
         resumed.state.getZone(ZoneKey(fixture.playerId, Zone.EXILE)).contains(fixture.spellId) shouldBe true
         resumed.state.getZone(ZoneKey(fixture.playerId, Zone.GRAVEYARD)).contains(fixture.spellId) shouldBe false
+    }
+
+    test("legacy alternative-cost casts freeze the selected flashback provenance on the stack") {
+        val grantSourceName = "Legacy Flashback Grant Source"
+        val spellName = "Legacy Flashback Spell"
+        val grantSource = card(grantSourceName) {
+            manaCost = "{2}"
+            typeLine = "Enchantment"
+            staticAbility {
+                ability = GraveyardCardsHaveFlashback(GameObjectFilter.Any)
+            }
+        }
+        val spell = card(spellName) {
+            manaCost = "{0}"
+            typeLine = "Instant"
+            spell {
+                effect = Effects.Composite(
+                    Effects.DestroyAll(GameObjectFilter.Enchantment),
+                    MayEffect(Effects.GainLife(1)),
+                )
+            }
+        }
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + listOf(grantSource, spell))
+        driver.initMirrorMatch(
+            deck = Deck.of("Mountain" to 40),
+            skipMulligans = true,
+            startingLife = 20,
+        )
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val player = driver.activePlayer!!
+        val grantSourceId = driver.putPermanentOnBattlefield(player, grantSourceName)
+        val spellId = driver.putCardInGraveyard(player, spellName)
+        val cast = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                useAlternativeCost = true,
+            )
+        )
+        cast.error shouldBe null
+        val stackComponent = driver.state.getEntity(spellId)
+            .shouldNotBeNull()
+            .get<SpellOnStackComponent>()
+            .shouldNotBeNull()
+        stackComponent.alternativeCost shouldBe AlternativeCostType.FLASHBACK
+
+        val paused = driver.bothPass()
+        paused.isPaused shouldBe true
+        driver.state.getBattlefield(player).contains(grantSourceId) shouldBe false
+        driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).contains(spellId) shouldBe false
+
+        val resolved = driver.submitYesNo(player, choice = true)
+
+        resolved.error shouldBe null
+        driver.state.getZone(ZoneKey(player, Zone.EXILE)).contains(spellId) shouldBe true
+        driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).contains(spellId) shouldBe false
+    }
+
+    test("legacy alternative-cost casts freeze the selected harmonize provenance on the stack") {
+        val spellName = "Legacy Harmonize Spell"
+        val spell = card(spellName) {
+            manaCost = "{0}"
+            typeLine = "Instant"
+            spell {
+                effect = MayEffect(Effects.GainLife(1))
+            }
+            keywordAbility(KeywordAbility.harmonize("{0}"))
+        }
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + spell)
+        driver.initMirrorMatch(
+            deck = Deck.of("Mountain" to 40),
+            skipMulligans = true,
+            startingLife = 20,
+        )
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val player = driver.activePlayer!!
+        val spellId = driver.putCardInGraveyard(player, spellName)
+        val cast = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                useAlternativeCost = true,
+            )
+        )
+        cast.error shouldBe null
+        driver.state.getEntity(spellId)
+            ?.get<SpellOnStackComponent>()
+            ?.alternativeCost shouldBe AlternativeCostType.HARMONIZE
+
+        val paused = driver.bothPass()
+        paused.isPaused shouldBe true
+        val resolved = driver.submitYesNo(player, choice = true)
+
+        resolved.error shouldBe null
+        driver.state.getZone(ZoneKey(player, Zone.EXILE)).contains(spellId) shouldBe true
+        driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).contains(spellId) shouldBe false
     }
 })
