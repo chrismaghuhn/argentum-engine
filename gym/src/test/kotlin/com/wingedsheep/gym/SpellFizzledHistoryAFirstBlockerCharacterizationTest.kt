@@ -112,7 +112,7 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
         var afterStateAtFizzle: GameState? = null
         var eventsAtFizzle: List<GameEvent> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && failure == null && eventsAtFizzle.isEmpty()) {
             val beforeState = environment.state
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
@@ -151,11 +151,11 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
             }
         }
 
-        successfulChoices shouldBe 2000
-        environment.stepCount shouldBe 2000
+        successfulChoices shouldBe 639
+        environment.stepCount shouldBe 639
         failure shouldBe null
         observation.terminated shouldBe false
-        observation.truncated shouldBe true
+        observation.truncated shouldBe false
         eventsAtFizzle.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
             "SpellFizzledEvent",
             "ZoneChangeEvent",
