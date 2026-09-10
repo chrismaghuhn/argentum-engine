@@ -335,31 +335,36 @@ object KnownInformationLedger {
         // those invalidations to the resulting state, but draw continuity must use the same
         // event-time boundary instead of consulting stale beforeState facts after the mutation.
         val invalidatedLibraryOwners = mutableSetOf<EntityId>()
-        val drawnCards = buildList {
-            for (event in events) {
-                when (event) {
-                    is LibraryShuffledEvent -> invalidatedLibraryOwners += event.playerId
-                    is ZoneChangeEvent -> if (
-                        event.fromZone == Zone.LIBRARY || event.toZone == Zone.LIBRARY
-                    ) {
+        val drawnCards = linkedMapOf<EntityId, Int>()
+        for (event in events) {
+            when (event) {
+                is LibraryShuffledEvent -> invalidatedLibraryOwners += event.playerId
+                is ZoneChangeEvent -> {
+                    // A candidate is tied to the incarnation observed at its draw event. Any
+                    // later move of that same entity means the final state may contain a newer
+                    // incarnation, so never let the earlier authority reach it by EntityId alone.
+                    drawnCards.remove(event.entityId)
+                    if (event.fromZone == Zone.LIBRARY || event.toZone == Zone.LIBRARY) {
                         invalidatedLibraryOwners += event.ownerId
                     }
-
-                    is CardsDrawnEvent -> if (
-                        event.count > 0 && event.playerId !in invalidatedLibraryOwners
-                    ) {
-                        event.cardIds
-                            .filter { cardId ->
-                                cardId in beforeState.getLibrary(event.playerId) &&
-                                    cardId in state.getHand(event.playerId)
-                            }
-                            .forEach { cardId -> add(cardId to event.count) }
-                    }
-
-                    else -> Unit
                 }
+
+                is CardsDrawnEvent -> if (
+                    event.count > 0 && event.playerId !in invalidatedLibraryOwners
+                ) {
+                    event.cardIds
+                        .filter { cardId ->
+                            cardId in beforeState.getLibrary(event.playerId) &&
+                                cardId in state.getHand(event.playerId)
+                        }
+                        .forEach { cardId ->
+                            drawnCards.putIfAbsent(cardId, event.count)
+                        }
+                }
+
+                else -> Unit
             }
-        }.distinctBy { it.first }
+        }
         if (drawnCards.isEmpty()) return state
 
         var newState = state

@@ -1080,4 +1080,65 @@ class KnownInformationLedgerTest : FunSpec({
                 it.knownZone == Zone.HAND
         } shouldBe true
     }
+
+    test("HISTB-REVIEW-36 draw authority cannot cross a later same-object reincarnation") {
+        val cardId = EntityId.of("draw-same-object-reincarnation")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Same Object Reincarnation Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val firstDraw = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val returnedToLibrary = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = firstDraw.state,
+            entityId = cardId,
+            destinationZone = Zone.LIBRARY,
+            fromZoneKey = ZoneKey(p2, Zone.HAND),
+        )
+        val drawnAgain = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = returnedToLibrary.state,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val initialStamp = checkNotNull(known.objectIdentityStamps[cardId])
+        val firstHandStamp = checkNotNull(firstDraw.state.objectIdentityStamps[cardId])
+        val returnedLibraryStamp = checkNotNull(returnedToLibrary.state.objectIdentityStamps[cardId])
+        val finalHandStamp = checkNotNull(drawnAgain.state.objectIdentityStamps[cardId])
+        firstDraw.state.getHand(p2).contains(cardId) shouldBe true
+        returnedToLibrary.state.getLibrary(p2).contains(cardId) shouldBe true
+        drawnAgain.state.getHand(p2).contains(cardId) shouldBe true
+        initialStamp shouldNotBe firstHandStamp
+        firstHandStamp shouldNotBe returnedLibraryStamp
+        returnedLibraryStamp shouldNotBe finalHandStamp
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                drawnAgain.state,
+                listOf(
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Same Object Reincarnation Card")),
+                    returnedToLibrary.events.filterIsInstance<ZoneChangeEvent>().single(),
+                    LibraryShuffledEvent(p2),
+                    drawnAgain.events.filterIsInstance<ZoneChangeEvent>().single(),
+                ),
+            ),
+        )
+
+        facts(after, p1).none {
+            it.subjectEntityId == cardId &&
+                it.factKind == KnownInformationFactKind.IDENTITY &&
+                it.knownZone == Zone.HAND
+        } shouldBe true
+    }
 })
