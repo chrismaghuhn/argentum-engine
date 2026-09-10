@@ -330,21 +330,36 @@ object KnownInformationLedger {
         state: GameState,
         events: List<GameEvent>,
     ): GameState {
-        val drawnCards = events
-            .filterIsInstance<CardsDrawnEvent>()
-            .flatMap { event ->
-                if (event.count <= 0) {
-                    emptyList()
-                } else {
-                    event.cardIds
-                        .filter { cardId ->
-                            cardId in beforeState.getLibrary(event.playerId) &&
-                                cardId in state.getHand(event.playerId)
-                        }
-                        .map { cardId -> cardId to event.count }
+        // Position authority is valid only until the first event in this committed batch that
+        // can change that library's order or membership. The post-pass below has already applied
+        // those invalidations to the resulting state, but draw continuity must use the same
+        // event-time boundary instead of consulting stale beforeState facts after the mutation.
+        val invalidatedLibraryOwners = mutableSetOf<EntityId>()
+        val drawnCards = buildList {
+            for (event in events) {
+                when (event) {
+                    is LibraryShuffledEvent -> invalidatedLibraryOwners += event.playerId
+                    is ZoneChangeEvent -> if (
+                        event.fromZone == Zone.LIBRARY || event.toZone == Zone.LIBRARY
+                    ) {
+                        invalidatedLibraryOwners += event.ownerId
+                    }
+
+                    is CardsDrawnEvent -> if (
+                        event.count > 0 && event.playerId !in invalidatedLibraryOwners
+                    ) {
+                        event.cardIds
+                            .filter { cardId ->
+                                cardId in beforeState.getLibrary(event.playerId) &&
+                                    cardId in state.getHand(event.playerId)
+                            }
+                            .forEach { cardId -> add(cardId to event.count) }
+                    }
+
+                    else -> Unit
                 }
             }
-            .distinctBy { it.first }
+        }.distinctBy { it.first }
         if (drawnCards.isEmpty()) return state
 
         var newState = state

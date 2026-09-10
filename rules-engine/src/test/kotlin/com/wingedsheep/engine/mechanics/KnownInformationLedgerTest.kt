@@ -963,4 +963,121 @@ class KnownInformationLedgerTest : FunSpec({
 
         facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
     }
+
+    test("HISTB-REVIEW-33 same-batch shuffle invalidates draw authority before the draw") {
+        val cardId = EntityId.of("draw-same-batch-shuffle")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Same Batch Shuffle Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(
+                    LibraryShuffledEvent(p2),
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Same Batch Shuffle Card")),
+                ),
+            ),
+        )
+
+        facts(after, p1).none {
+            it.subjectEntityId == cardId &&
+                it.factKind == KnownInformationFactKind.IDENTITY &&
+                it.knownZone == Zone.HAND
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-34 draw authority is evaluated before a later same-batch shuffle") {
+        val cardId = EntityId.of("draw-before-same-batch-shuffle")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Draw Before Shuffle Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Draw Before Shuffle Card")),
+                    LibraryShuffledEvent(p2),
+                ),
+            ),
+        )
+
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+    }
+
+    test("HISTB-REVIEW-35 same-batch library membership change invalidates draw authority") {
+        val cardId = EntityId.of("draw-same-batch-membership")
+        val enteringId = EntityId.of("draw-same-batch-entering")
+        val initial = stateWith(
+            CardSpec(cardId, p2, Zone.LIBRARY, "Same Batch Membership Card"),
+            CardSpec(enteringId, p2, Zone.HAND, "Same Batch Entering Card"),
+        )
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val movedCard = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val movedEntering = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = movedCard.state,
+            entityId = enteringId,
+            destinationZone = Zone.LIBRARY,
+            fromZoneKey = ZoneKey(p2, Zone.HAND),
+        )
+        val membershipEvent = movedEntering.events.filterIsInstance<ZoneChangeEvent>().single()
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                movedEntering.state,
+                listOf(
+                    membershipEvent,
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Same Batch Membership Card")),
+                ),
+            ),
+        )
+
+        facts(after, p1).none {
+            it.subjectEntityId == cardId &&
+                it.factKind == KnownInformationFactKind.IDENTITY &&
+                it.knownZone == Zone.HAND
+        } shouldBe true
+    }
 })
