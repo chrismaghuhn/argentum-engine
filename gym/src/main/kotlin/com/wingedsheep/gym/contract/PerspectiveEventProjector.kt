@@ -150,6 +150,12 @@ internal class PerspectiveEventProjector(
             put("reason", event.reason)
         }
 
+        is SpellFizzledEvent -> spellFizzleReason(event.reason)?.let { reason ->
+            emit(PerspectiveEventFamily.SPELL_FIZZLED) {
+                put("reason", reason)
+            }
+        } ?: unsupported(PerspectiveEventUnsupportedReason.UNCHARACTERIZED)
+
         is AbilityResolvedEvent -> emit(PerspectiveEventFamily.ABILITY_RESOLVED) { }
 
         is LandPlayedEvent -> emit(PerspectiveEventFamily.LAND_PLAYED) {
@@ -456,7 +462,6 @@ internal class PerspectiveEventProjector(
         is CreatureTypeChangedEvent,
         is SpellCounteredEvent,
         is AbilityCounteredEvent,
-        is SpellFizzledEvent,
         is AbilityResolvedEvent,
         is SagaChapterResolvedEvent,
         is ReflexiveAbilityTriggeredEvent,
@@ -518,6 +523,12 @@ internal class PerspectiveEventProjector(
 
     private fun playerRole(playerId: EntityId, perspectivePlayerId: EntityId): String =
         if (playerId == perspectivePlayerId) "SELF" else "OTHER"
+
+    /** Map only the current Rules reason vocabulary into a stable model-facing value. */
+    private fun spellFizzleReason(rawReason: String): String? = when (rawReason) {
+        "All targets are invalid" -> "ALL_TARGETS_INVALID"
+        else -> null
+    }
 
     private fun emit(
         family: PerspectiveEventFamily,

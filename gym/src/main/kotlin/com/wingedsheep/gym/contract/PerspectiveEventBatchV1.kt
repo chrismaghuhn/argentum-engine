@@ -37,6 +37,7 @@ enum class PerspectiveEventFamily {
     ABILITY_ACTIVATED,
     ABILITY_TRIGGERED,
     ABILITY_FIZZLED,
+    SPELL_FIZZLED,
     ABILITY_RESOLVED,
     LAND_PLAYED,
     TAPPED,
