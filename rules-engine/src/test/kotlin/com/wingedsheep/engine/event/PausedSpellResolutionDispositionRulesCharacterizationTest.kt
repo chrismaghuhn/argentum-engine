@@ -35,10 +35,12 @@ import com.wingedsheep.sdk.core.Phase
 import com.wingedsheep.sdk.core.Step
 import com.wingedsheep.sdk.core.TypeLine
 import com.wingedsheep.sdk.core.Zone
+import com.wingedsheep.sdk.dsl.Costs
 import com.wingedsheep.sdk.dsl.Effects
 import com.wingedsheep.sdk.dsl.card
 import com.wingedsheep.sdk.model.Deck
 import com.wingedsheep.sdk.model.EntityId
+import com.wingedsheep.sdk.scripting.AdditionalCostPayment
 import com.wingedsheep.sdk.scripting.EventPattern
 import com.wingedsheep.sdk.scripting.GraveyardCardsHaveFlashback
 import com.wingedsheep.sdk.scripting.GameObjectFilter
@@ -470,6 +472,61 @@ class PausedSpellResolutionDispositionRulesCharacterizationTest : FunSpec({
         driver.state.getEntity(spellId)
             ?.get<SpellOnStackComponent>()
             ?.alternativeCost shouldBe AlternativeCostType.HARMONIZE
+
+        val paused = driver.bothPass()
+        paused.isPaused shouldBe true
+        val resolved = driver.submitYesNo(player, choice = true)
+
+        resolved.error shouldBe null
+        driver.state.getZone(ZoneKey(player, Zone.EXILE)).contains(spellId) shouldBe true
+        driver.state.getZone(ZoneKey(player, Zone.GRAVEYARD)).contains(spellId) shouldBe false
+    }
+
+    test("legacy flashback provenance is captured before its additional sacrifice cost") {
+        val grantSourceName = "Pre-Payment Flashback Grant Source"
+        val spellName = "Pre-Payment Flashback Spell"
+        val grantSource = card(grantSourceName) {
+            manaCost = "{2}"
+            typeLine = "Enchantment"
+            staticAbility {
+                ability = GraveyardCardsHaveFlashback(GameObjectFilter.Any)
+            }
+        }
+        val spell = card(spellName) {
+            manaCost = "{0}"
+            typeLine = "Instant"
+            spell {
+                effect = MayEffect(Effects.GainLife(1))
+            }
+            additionalCost(Costs.additional.SacrificePermanent(GameObjectFilter.Enchantment))
+        }
+        val driver = GameTestDriver()
+        driver.registerCards(TestCards.all + listOf(grantSource, spell))
+        driver.initMirrorMatch(
+            deck = Deck.of("Mountain" to 40),
+            skipMulligans = true,
+            startingLife = 20,
+        )
+        driver.passPriorityUntil(Step.PRECOMBAT_MAIN)
+
+        val player = driver.activePlayer!!
+        val grantSourceId = driver.putPermanentOnBattlefield(player, grantSourceName)
+        val spellId = driver.putCardInGraveyard(player, spellName)
+        val cast = driver.submit(
+            CastSpell(
+                playerId = player,
+                cardId = spellId,
+                useAlternativeCost = true,
+                additionalCostPayment = AdditionalCostPayment(
+                    sacrificedPermanents = listOf(grantSourceId),
+                ),
+            )
+        )
+        cast.error shouldBe null
+        driver.state.getEntity(spellId)
+            ?.get<SpellOnStackComponent>()
+            ?.alternativeCost shouldBe AlternativeCostType.FLASHBACK
+        driver.state.getBattlefield(player).contains(grantSourceId) shouldBe false
 
         val paused = driver.bothPass()
         paused.isPaused shouldBe true

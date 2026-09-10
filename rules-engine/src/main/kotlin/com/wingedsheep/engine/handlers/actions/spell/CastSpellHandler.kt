@@ -2477,6 +2477,10 @@ class CastSpellHandler(
 
         val xValue = action.xValue ?: 0
         val cardDef = cardRegistry.getCard(cardComponent.cardDefinitionId)
+        // Capture the legacy null-discriminator choice before any payment mutation. Additional
+        // costs may remove the battlefield grant that authorized the graveyard cast, but that
+        // later state must not rewrite which alternative was actually announced and paid.
+        val legacyAlternativeCost = captureLegacyGraveyardAlternativeCost(state, action, cardDef)
 
         // CR 903.9b is a replacement of the hand move that pays an additional casting cost
         // (including Sneak and web-slinging). Those costs are otherwise paid in this handler's
@@ -3877,7 +3881,7 @@ class CastSpellHandler(
             // after a temporary grant disappears during resolution. Descriptive only — the rules
             // consequences of each mechanic ride the `was*` flags above.
             alternativeCost = action.alternativeCostType?.takeIf { action.useAlternativeCost }
-                ?: captureLegacyGraveyardAlternativeCost(currentState, action, cardDef)
+                ?: legacyAlternativeCost
         )
 
         if (!castResult.isSuccess) {
