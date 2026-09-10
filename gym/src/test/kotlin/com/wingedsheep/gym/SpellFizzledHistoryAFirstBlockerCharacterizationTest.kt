@@ -27,7 +27,6 @@ import com.wingedsheep.gym.contract.PerspectiveEventFamily
 import com.wingedsheep.gym.contract.PerspectiveEventProjectionResult
 import com.wingedsheep.gym.contract.PerspectiveEventUnsupportedReason
 import com.wingedsheep.gym.contract.TrainingObservation
-import com.wingedsheep.gym.history.HistoryCFailureCode
 import com.wingedsheep.gym.history.HistoryDOperationException
 import com.wingedsheep.mtg.sets.MtgSetCatalog
 import com.wingedsheep.sdk.core.Format
@@ -45,9 +44,9 @@ private data class SpellFizzledProjectionFact(
     val reason: PerspectiveEventUnsupportedReason?,
 )
 
-/** Test-only characterization of the first broadened B1 History-A blocker. */
+/** Regression proving the former SpellFizzledEvent History-A blocker remains closed. */
 class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
-    test("characterizes the first SpellFizzledEvent History-A blocker") {
+    test("crosses the former SpellFizzledEvent History-A blocker") {
         val registry = CardRegistry().apply {
             MtgSetCatalog.all.forEach { set ->
                 register(set.cards)
@@ -109,11 +108,11 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
         )
         var successfulChoices = 0
         var failure: HistoryDOperationException? = null
-        var beforeStateAtFailure: GameState? = null
-        var afterStateAtFailure: GameState? = null
-        var eventsAtFailure: List<GameEvent> = emptyList()
+        var beforeStateAtFizzle: GameState? = null
+        var afterStateAtFizzle: GameState? = null
+        var eventsAtFizzle: List<GameEvent> = emptyList()
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && failure == null && eventsAtFizzle.isEmpty()) {
             val beforeState = environment.state
             val choice = policy.choose(observation, policyState)
             policyState = policyState.afterChoice()
@@ -141,25 +140,29 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
                             "family=${choice.family} code=${choice.code}",
                     )
                 } as TrainingObservation
+                if (eventsAtFizzle.isEmpty() && environment.lastStepEvents.any { it is SpellFizzledEvent }) {
+                    beforeStateAtFizzle = beforeState
+                    afterStateAtFizzle = environment.state
+                    eventsAtFizzle = environment.lastStepEvents.toList()
+                }
                 successfulChoices++
             } catch (exception: HistoryDOperationException) {
                 failure = exception
-                beforeStateAtFailure = beforeState
-                afterStateAtFailure = environment.state
-                eventsAtFailure = environment.lastStepEvents.toList()
             }
         }
 
-        successfulChoices shouldBe 638
+        successfulChoices shouldBe 639
         environment.stepCount shouldBe 639
-        failure?.failure?.code shouldBe HistoryCFailureCode.HISTORY_A_PROJECTION_INCOMPLETE
-        eventsAtFailure.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
+        failure shouldBe null
+        observation.terminated shouldBe false
+        observation.truncated shouldBe false
+        eventsAtFizzle.map { it::class.simpleName ?: "UnknownGameEvent" } shouldBe listOf(
             "SpellFizzledEvent",
             "ZoneChangeEvent",
         )
 
-        val spellFizzled = eventsAtFailure.filterIsInstance<SpellFizzledEvent>().single()
-        val zoneChange = eventsAtFailure.filterIsInstance<ZoneChangeEvent>().single()
+        val spellFizzled = eventsAtFizzle.filterIsInstance<SpellFizzledEvent>().single()
+        val zoneChange = eventsAtFizzle.filterIsInstance<ZoneChangeEvent>().single()
         spellFizzled.spellEntityId.value.isNotBlank() shouldBe true
         spellFizzled.cardName.isNotBlank() shouldBe true
         spellFizzled.reason shouldBe "All targets are invalid"
@@ -167,8 +170,8 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
         zoneChange.fromZone shouldBe null
         zoneChange.toZone shouldBe Zone.GRAVEYARD
 
-        val beforeState = checkNotNull(beforeStateAtFailure)
-        val afterState = checkNotNull(afterStateAtFailure)
+        val beforeState = checkNotNull(beforeStateAtFizzle)
+        val afterState = checkNotNull(afterStateAtFizzle)
         val beforeStamp = beforeState.objectIdentityStamps[spellFizzled.spellEntityId]
         val afterStamp = afterState.objectIdentityStamps[spellFizzled.spellEntityId]
         beforeState.hasEntity(spellFizzled.spellEntityId) shouldBe true
@@ -184,20 +187,20 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
         val projector = com.wingedsheep.gym.contract.PerspectiveEventProjector(registry)
         val perspectiveFacts = environment.playerIds.map { perspectivePlayerId ->
             val projection = projector.project(
-                events = eventsAtFailure,
+                events = eventsAtFizzle,
                 perspectivePlayerId = perspectivePlayerId,
                 beforeState = beforeState,
                 afterState = afterState,
             )
-            projection.isComplete shouldBe false
+            projection.isComplete shouldBe true
             projectionFacts(projection)
         }
         val expectedFacts = listOf(
             SpellFizzledProjectionFact(
                 rawEventType = "SpellFizzledEvent",
-                family = null,
-                disposition = PerspectiveEventDisposition.UNSUPPORTED_FOR_PERSPECTIVE_HISTORY,
-                reason = PerspectiveEventUnsupportedReason.REQUIRES_SEMANTIC_REFERENCE_C,
+                family = PerspectiveEventFamily.SPELL_FIZZLED,
+                disposition = PerspectiveEventDisposition.EMITTED,
+                reason = null,
             ),
             SpellFizzledProjectionFact(
                 rawEventType = "ZoneChangeEvent",
@@ -209,18 +212,15 @@ class SpellFizzledHistoryAFirstBlockerCharacterizationTest : FunSpec({
         perspectiveFacts shouldBe listOf(expectedFacts, expectedFacts)
 
         println(
-            "SPELL_FIZZLED_HISTORY_A_CHARACTERIZATION " +
+            "SPELL_FIZZLED_HISTORY_A_CLOSURE " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
                 "failure=${failure?.failure?.code} " +
-                "rawEvents=${eventsAtFailure.map { it::class.simpleName ?: "UnknownGameEvent" }} " +
+                "rawEvents=${eventsAtFizzle.map { it::class.simpleName ?: "UnknownGameEvent" }} " +
                 "perspectives=${perspectiveFacts.size} " +
-                "firstUnsupportedRawEvent=SpellFizzledEvent " +
-                "aReason=REQUIRES_SEMANTIC_REFERENCE_C " +
-                "proposedAFamily=SPELL_FIZZLED " +
-                "proposedAPayload=reason " +
-                "cDependency=REQUIRED " +
-                "rulesMetadataDependency=REQUIRED " +
+                "historyA=SPELL_FIZZLED/EMITTED " +
+                "cDependency=RESOLVED " +
+                "rulesMetadataDependency=NONE_NEW " +
                 "beforeWitness=true " +
                 "afterWitness=true " +
                 "sameIncarnation=false " +

@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.LibrarySearchedEvent
@@ -715,5 +716,429 @@ class KnownInformationLedgerTest : FunSpec({
         KnownInformationLedger.forPlayer(first, p1) shouldBe KnownInformationLedger.forPlayer(second, p1)
         stateJson().encodeToString(GameState.serializer(), first) shouldBe
             stateJson().encodeToString(GameState.serializer(), second)
+    }
+
+    test("HISTB-REVIEW-26 public library knowledge follows a named draw incarnation") {
+        val cardId = EntityId.of("draw-known-top")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Known Draw Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1, p2),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val beforeStamp = checkNotNull(known.objectIdentityStamps[cardId])
+        val afterStamp = checkNotNull(moved.state.objectIdentityStamps[cardId])
+        afterStamp shouldNotBe beforeStamp
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Known Draw Card"))),
+            ),
+        )
+
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).objectIdentityStamp shouldBe afterStamp
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).audience shouldBe
+            KnownInformationAudience.PUBLIC
+        fact(after, p1, cardId, KnownInformationFactKind.ZONE_MEMBERSHIP).objectIdentityStamp shouldBe
+            afterStamp
+        fact(after, p1, cardId, KnownInformationFactKind.ZONE_MEMBERSHIP).knownZone shouldBe Zone.HAND
+        facts(after, p1).none {
+            it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-27 hidden draw does not invent opponent continuity knowledge") {
+        val cardId = EntityId.of("draw-hidden-card")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Hidden Draw Card"))
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = initial,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            initial,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Hidden Draw Card"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-28 private library knowledge follows a named draw only to its viewer") {
+        val cardId = EntityId.of("draw-private-known")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Private Draw Card"))
+        val known = LibraryRevealUtils.markRevealed(
+            state = initial,
+            cardIds = listOf(cardId),
+            playerIds = listOf(p1),
+            audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
+            acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK,
+        )
+        val revealed = apply(initial, ExecutionResult.success(known))
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = revealed,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val after = apply(
+            revealed,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Private Draw Card"))),
+            ),
+        )
+
+        val afterStamp = checkNotNull(moved.state.objectIdentityStamps[cardId])
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).objectIdentityStamp shouldBe afterStamp
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).audience shouldBe
+            KnownInformationAudience.PERSPECTIVE_PRIVATE
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+        facts(after, p2).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-29 identity and library membership without position do not follow a draw") {
+        val cardId = EntityId.of("draw-known-without-position")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Known Without Position"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = false,
+        )
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Known Without Position"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-30 position one does not authorize a single-card draw") {
+        val first = EntityId.of("draw-position-zero")
+        val cardId = EntityId.of("draw-position-one")
+        val initial = stateWith(
+            CardSpec(first, p2, Zone.LIBRARY, "First Card"),
+            CardSpec(cardId, p2, Zone.LIBRARY, "Second Card"),
+        )
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 1
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Second Card"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-31 a known top-two draw follows both authorized positions") {
+        val first = EntityId.of("draw-top-two-first")
+        val second = EntityId.of("draw-top-two-second")
+        val initial = stateWith(
+            CardSpec(first, p2, Zone.LIBRARY, "Top Two First"),
+            CardSpec(second, p2, Zone.LIBRARY, "Top Two Second"),
+        )
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(first, second),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        val firstMoved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = first,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val secondMoved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = firstMoved.state,
+            entityId = second,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                secondMoved.state,
+                listOf(
+                    CardsDrawnEvent(
+                        p2,
+                        2,
+                        listOf(first, second),
+                        listOf("Top Two First", "Top Two Second"),
+                    ),
+                ),
+            ),
+        )
+
+        listOf(first, second).forEach { cardId ->
+            fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+            facts(after, p1).none {
+                it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+            } shouldBe true
+        }
+    }
+
+    test("HISTB-REVIEW-32 shuffle-invalidated position does not authorize a draw") {
+        val cardId = EntityId.of("draw-shuffled-known")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Shuffled Known Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        val shuffled = apply(
+            known,
+            ExecutionResult.success(known, listOf(LibraryShuffledEvent(p2))),
+        )
+        facts(shuffled, p1).none {
+            it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        } shouldBe true
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = shuffled,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            shuffled,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Shuffled Known Card"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-33 same-batch shuffle invalidates draw authority before the draw") {
+        val cardId = EntityId.of("draw-same-batch-shuffle")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Same Batch Shuffle Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(
+                    LibraryShuffledEvent(p2),
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Same Batch Shuffle Card")),
+                ),
+            ),
+        )
+
+        facts(after, p1).none {
+            it.subjectEntityId == cardId &&
+                it.factKind == KnownInformationFactKind.IDENTITY &&
+                it.knownZone == Zone.HAND
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-34 draw authority is evaluated before a later same-batch shuffle") {
+        val cardId = EntityId.of("draw-before-same-batch-shuffle")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Draw Before Shuffle Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Draw Before Shuffle Card")),
+                    LibraryShuffledEvent(p2),
+                ),
+            ),
+        )
+
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+    }
+
+    test("HISTB-REVIEW-35 same-batch library membership change invalidates draw authority") {
+        val cardId = EntityId.of("draw-same-batch-membership")
+        val enteringId = EntityId.of("draw-same-batch-entering")
+        val initial = stateWith(
+            CardSpec(cardId, p2, Zone.LIBRARY, "Same Batch Membership Card"),
+            CardSpec(enteringId, p2, Zone.HAND, "Same Batch Entering Card"),
+        )
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val movedCard = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val movedEntering = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = movedCard.state,
+            entityId = enteringId,
+            destinationZone = Zone.LIBRARY,
+            fromZoneKey = ZoneKey(p2, Zone.HAND),
+        )
+        val membershipEvent = movedEntering.events.filterIsInstance<ZoneChangeEvent>().single()
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                movedEntering.state,
+                listOf(
+                    membershipEvent,
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Same Batch Membership Card")),
+                ),
+            ),
+        )
+
+        facts(after, p1).none {
+            it.subjectEntityId == cardId &&
+                it.factKind == KnownInformationFactKind.IDENTITY &&
+                it.knownZone == Zone.HAND
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-36 draw authority cannot cross a later same-object reincarnation") {
+        val cardId = EntityId.of("draw-same-object-reincarnation")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Same Object Reincarnation Card"))
+        val known = KnownInformationLedger.recordCards(
+            state = initial,
+            cardIds = listOf(cardId),
+            perspectivePlayerIds = listOf(p1),
+            audience = KnownInformationAudience.PUBLIC,
+            acquisitionReason = KnownInformationAcquisitionReason.PUBLIC_REVEAL,
+            includeLibraryPositions = true,
+        )
+        fact(known, p1, cardId, KnownInformationFactKind.POSITION_OR_ORDER).knownPosition shouldBe 0
+        val firstDraw = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val returnedToLibrary = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = firstDraw.state,
+            entityId = cardId,
+            destinationZone = Zone.LIBRARY,
+            fromZoneKey = ZoneKey(p2, Zone.HAND),
+        )
+        val drawnAgain = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = returnedToLibrary.state,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val initialStamp = checkNotNull(known.objectIdentityStamps[cardId])
+        val firstHandStamp = checkNotNull(firstDraw.state.objectIdentityStamps[cardId])
+        val returnedLibraryStamp = checkNotNull(returnedToLibrary.state.objectIdentityStamps[cardId])
+        val finalHandStamp = checkNotNull(drawnAgain.state.objectIdentityStamps[cardId])
+        firstDraw.state.getHand(p2).contains(cardId) shouldBe true
+        returnedToLibrary.state.getLibrary(p2).contains(cardId) shouldBe true
+        drawnAgain.state.getHand(p2).contains(cardId) shouldBe true
+        initialStamp shouldNotBe firstHandStamp
+        firstHandStamp shouldNotBe returnedLibraryStamp
+        returnedLibraryStamp shouldNotBe finalHandStamp
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                drawnAgain.state,
+                listOf(
+                    CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Same Object Reincarnation Card")),
+                    returnedToLibrary.events.filterIsInstance<ZoneChangeEvent>().single(),
+                    LibraryShuffledEvent(p2),
+                    drawnAgain.events.filterIsInstance<ZoneChangeEvent>().single(),
+                ),
+            ),
+        )
+
+        facts(after, p1).none {
+            it.subjectEntityId == cardId &&
+                it.factKind == KnownInformationFactKind.IDENTITY &&
+                it.knownZone == Zone.HAND
+        } shouldBe true
     }
 })

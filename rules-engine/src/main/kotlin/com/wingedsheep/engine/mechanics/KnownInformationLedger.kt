@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.GameEvent
 import com.wingedsheep.engine.core.HandLookedAtEvent
@@ -296,6 +297,15 @@ object KnownInformationLedger {
             }
         }
 
+        // A draw is an authoritative library-to-hand transition even when the Rules event batch
+        // does not also contain a ZoneChangeEvent. Carry only facts that the perspective already
+        // held for this exact old incarnation; never infer knowledge from the draw itself.
+        state = recordKnownDrawContinuity(
+            beforeState = beforeState,
+            state = state,
+            events = events,
+        )
+
         // A zone change can preserve a fact for a perspective that could identify the old object
         // before the move, or can acquire a fact for a perspective that can identify the new object
         // afterward (for example, a draw into that player's hand). Use the existing visibility
@@ -313,6 +323,105 @@ object KnownInformationLedger {
         state = upgradeNewSearchFacts(beforeState, state, events)
         state = finalizeEpochs(beforeState, state)
         return if (state === result.state) result else result.copy(state = state)
+    }
+
+    private fun recordKnownDrawContinuity(
+        beforeState: GameState,
+        state: GameState,
+        events: List<GameEvent>,
+    ): GameState {
+        // Position authority is valid only until the first event in this committed batch that
+        // can change that library's order or membership. The post-pass below has already applied
+        // those invalidations to the resulting state, but draw continuity must use the same
+        // event-time boundary instead of consulting stale beforeState facts after the mutation.
+        val invalidatedLibraryOwners = mutableSetOf<EntityId>()
+        val drawnCards = linkedMapOf<EntityId, Int>()
+        for (event in events) {
+            when (event) {
+                is LibraryShuffledEvent -> invalidatedLibraryOwners += event.playerId
+                is ZoneChangeEvent -> {
+                    // A candidate is tied to the incarnation observed at its draw event. Any
+                    // later move of that same entity means the final state may contain a newer
+                    // incarnation, so never let the earlier authority reach it by EntityId alone.
+                    drawnCards.remove(event.entityId)
+                    if (event.fromZone == Zone.LIBRARY || event.toZone == Zone.LIBRARY) {
+                        invalidatedLibraryOwners += event.ownerId
+                    }
+                }
+
+                is CardsDrawnEvent -> if (
+                    event.count > 0 && event.playerId !in invalidatedLibraryOwners
+                ) {
+                    event.cardIds
+                        .filter { cardId ->
+                            cardId in beforeState.getLibrary(event.playerId) &&
+                                cardId in state.getHand(event.playerId)
+                        }
+                        .forEach { cardId ->
+                            drawnCards.putIfAbsent(cardId, event.count)
+                        }
+                }
+
+                else -> Unit
+            }
+        }
+        if (drawnCards.isEmpty()) return state
+
+        var newState = state
+        for ((cardId, drawCount) in drawnCards) {
+            val beforeStamp = beforeState.objectIdentityStamps[cardId] ?: continue
+            val afterStamp = state.objectIdentityStamps[cardId] ?: continue
+            if (beforeStamp == afterStamp) continue
+
+            for (perspectivePlayerId in beforeState.turnOrder) {
+                val previousFacts = KnownInformationLedger
+                    .forPlayer(beforeState, perspectivePlayerId)
+                    .activeFacts
+                    .filter {
+                        it.subjectEntityId == cardId &&
+                            it.objectIdentityStamp == beforeStamp
+                    }
+                val previousIdentity = previousFacts.firstOrNull {
+                    it.factKind == KnownInformationFactKind.IDENTITY &&
+                        it.knownZone == Zone.LIBRARY
+                } ?: continue
+                val previousZone = previousFacts.firstOrNull {
+                    it.factKind == KnownInformationFactKind.ZONE_MEMBERSHIP &&
+                        it.knownZone == Zone.LIBRARY
+                } ?: continue
+                previousFacts.firstOrNull {
+                    it.factKind == KnownInformationFactKind.POSITION_OR_ORDER &&
+                        it.knownZone == Zone.LIBRARY &&
+                        it.knownPosition != null &&
+                        it.knownPosition in 0 until drawCount
+                } ?: continue
+                val currentLedger = forPlayer(newState, perspectivePlayerId)
+                val acquiredAtEpoch = currentLedger.knowledgeEpoch + 1L
+                val transferredIdentity = previousIdentity.copy(
+                    objectIdentityStamp = afterStamp,
+                    knownZone = Zone.HAND,
+                    knownPosition = null,
+                    acquisitionReason = KnownInformationAcquisitionReason.VISIBLE_ZONE_TRANSITION,
+                    acquiredAtEpoch = acquiredAtEpoch,
+                )
+                val transferredZone = previousZone.copy(
+                    objectIdentityStamp = afterStamp,
+                    knownZone = Zone.HAND,
+                    knownPosition = null,
+                    acquisitionReason = KnownInformationAcquisitionReason.VISIBLE_ZONE_TRANSITION,
+                    acquiredAtEpoch = acquiredAtEpoch,
+                )
+                val transferred = currentLedger
+                    .withFact(transferredIdentity)
+                    .withFact(transferredZone)
+                newState = if (transferred == currentLedger) {
+                    newState
+                } else {
+                    putLedger(newState, perspectivePlayerId, transferred)
+                }
+            }
+        }
+        return newState
     }
 
     private fun factsFor(

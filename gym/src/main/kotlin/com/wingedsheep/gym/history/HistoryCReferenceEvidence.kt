@@ -33,6 +33,7 @@ import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.ResolvedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SpellCopiedEvent
+import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.StatsModifiedEvent
 import com.wingedsheep.engine.core.TurnFaceUpEvent
 import com.wingedsheep.engine.core.TappedEvent
@@ -470,6 +471,7 @@ internal object HistoryCReferenceAuthority {
             is AbilityFizzledEvent -> event.sourceEndpointAuthority
                 ?.toHistoryCReferenceEndpointAuthority()
                 ?: return HistoryCFailure(HistoryCFailureCode.BLOCKED_ON_AUTHORITATIVE_METADATA)
+            is SpellFizzledEvent -> HistoryCReferenceEndpointAuthority.BEFORE_OBJECT
             is CreatureDestroyedEvent,
             is DamageAssignedEvent,
             is DamageDealtEvent,
@@ -574,6 +576,15 @@ internal object HistoryCReferenceAuthority {
             eventEntityId = event.sourceId,
             eventKind = HistoryCReferenceKind.CARD_OR_RULES_OBJECT,
             eventRole = HistoryCReferenceSlotRole.SOURCE,
+            candidate = candidate,
+            identityMustBeOpaque = false,
+        )
+
+        is SpellFizzledEvent -> validateSingleObjectCandidate(
+            transition = transition,
+            eventEntityId = event.spellEntityId,
+            eventKind = HistoryCReferenceKind.STACK_OBJECT,
+            eventRole = HistoryCReferenceSlotRole.EVENT_SUBJECT,
             candidate = candidate,
             identityMustBeOpaque = false,
         )

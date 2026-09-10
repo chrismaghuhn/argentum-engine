@@ -32,6 +32,7 @@ import com.wingedsheep.engine.core.PermanentUnattachedEvent
 import com.wingedsheep.engine.core.PermanentsSacrificedEvent
 import com.wingedsheep.engine.core.SpellCastEvent
 import com.wingedsheep.engine.core.SpellCopiedEvent
+import com.wingedsheep.engine.core.SpellFizzledEvent
 import com.wingedsheep.engine.core.StatsModifiedEvent
 import com.wingedsheep.engine.core.TurnFaceUpEvent
 import com.wingedsheep.engine.core.TappedEvent
@@ -74,6 +75,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         PerspectiveEventFamily.ABILITY_TRIGGERED,
         PerspectiveEventFamily.ABILITY_RESOLVED,
         PerspectiveEventFamily.ABILITY_FIZZLED,
+        PerspectiveEventFamily.SPELL_FIZZLED,
         PerspectiveEventFamily.LAND_PLAYED,
         PerspectiveEventFamily.ZONE_CHANGED,
         PerspectiveEventFamily.TAPPED,
@@ -206,6 +208,19 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
                         ),
                     )
                 }
+
+                is SpellFizzledEvent -> required(
+                    opaqueCandidate(
+                        transition = transition,
+                        eventOrdinal = eventOrdinal,
+                        role = HistoryCReferenceSlotRole.EVENT_SUBJECT,
+                        roleOrdinal = 0,
+                        rank = 0,
+                        entityId = rawEvent.spellEntityId,
+                        referenceKind = HistoryCReferenceKind.STACK_OBJECT,
+                        endpointAuthority = HistoryCReferenceEndpointAuthority.BEFORE_OBJECT,
+                    ),
+                )
 
                 is AttackersDeclaredEvent -> attackerCandidates(
                     transition = transition,
@@ -1139,6 +1154,7 @@ internal object HistoryCReferenceEnvelopeProducerV1 {
         is AbilityActivatedEvent,
         is AbilityTriggeredEvent,
         is AbilityFizzledEvent,
+        is SpellFizzledEvent,
         is BecomesTargetEvent,
         is BlockersDeclaredEvent,
         is CardCycledEvent,
