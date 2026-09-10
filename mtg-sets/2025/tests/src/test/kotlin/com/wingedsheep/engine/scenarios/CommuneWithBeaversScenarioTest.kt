@@ -1,5 +1,6 @@
 package com.wingedsheep.engine.scenarios
 
+import com.wingedsheep.engine.core.ReorderLibraryDecision
 import com.wingedsheep.engine.core.SelectCardsDecision
 import com.wingedsheep.engine.support.ScenarioTestBase
 import com.wingedsheep.sdk.core.Phase
@@ -61,6 +62,12 @@ class CommuneWithBeaversScenarioTest : ScenarioTestBase() {
                 select.nonSelectableOptions shouldContainExactlyInAnyOrder listOf(bolt)
 
                 game.selectCards(listOf(bear))
+                withClue("The remaining library cards should request an explicit order") {
+                    (game.state.pendingDecision is ReorderLibraryDecision) shouldBe true
+                }
+                // Submit the complete current legal order through the existing decision helper;
+                // the spell remains unresolved until this effect-owned decision is complete.
+                game.keepLibraryOrder()
                 game.resolveStack()
 
                 withClue("The revealed creature ends up in hand") {
@@ -97,6 +104,10 @@ class CommuneWithBeaversScenarioTest : ScenarioTestBase() {
 
                 // Decline the optional reveal.
                 game.selectCards(emptyList())
+                withClue("The remaining library cards should request an explicit order") {
+                    (game.state.pendingDecision is ReorderLibraryDecision) shouldBe true
+                }
+                game.keepLibraryOrder()
                 game.resolveStack()
 
                 withClue("Nothing went to hand from the look") {
