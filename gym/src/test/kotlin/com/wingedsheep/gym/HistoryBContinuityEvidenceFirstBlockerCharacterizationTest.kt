@@ -52,15 +52,9 @@ import io.kotest.matchers.shouldNotBe
 import java.nio.file.Files
 import java.nio.file.Path
 
-/**
- * RED characterization for the first broad-corpus History-B continuity failure after Fix-08.
- *
- * This test intentionally stops at the first failure in only seed=2/start=1. It records the
- * committed event/A/C evidence and the pre-transition B registry without changing production
- * behavior or continuing into any later failure.
- */
+/** Regression proving the first broad-corpus History-B continuity gap is closed by the ledger. */
 class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
-    test("characterizes the first History-B continuity blocker") {
+    test("crosses the first History-B continuity blocker") {
         val registry = bContinuityRegistry()
         val root = bContinuityRepositoryRoot()
         val akiri = bContinuityLockedDeck(root, "akiri-v0.1.txt")
@@ -112,7 +106,9 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
         var failingEvents: List<GameEvent> = emptyList()
         var failingHistory: HistoryCLifecycleStateV1? = null
 
-        while (!observation.terminated && !observation.truncated && failure == null) {
+        while (!observation.terminated && !observation.truncated && failure == null &&
+            successfulChoices < 928
+        ) {
             val before = environment.state
             val historyBefore = gym.historyCLifecycleState()
             val choice = policy.choose(observation, policyState)
@@ -141,6 +137,12 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
                     )
                 } as TrainingObservation
                 successfulChoices++
+                if (successfulChoices == 928) {
+                    failingBefore = before
+                    failingAfter = environment.state
+                    failingEvents = environment.lastStepEvents.toList()
+                    failingHistory = historyBefore
+                }
             } catch (exception: HistoryDOperationException) {
                 failure = exception
                 failingBefore = before
@@ -150,11 +152,10 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
             }
         }
 
-        successfulChoices shouldBe 927
+        successfulChoices shouldBe 928
         environment.stepCount shouldBe 928
         val observedFailure = failure
-        observedFailure shouldNotBe null
-        observedFailure!!.failure.code shouldBe HistoryCFailureCode.MISSING_HISTORY_B_CONTINUITY_EVIDENCE
+        observedFailure shouldBe null
         observation.terminated shouldBe false
         observation.truncated shouldBe false
 
@@ -263,8 +264,17 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
                         it.objectIdentityStamp == beforeStamp
                 }
             if (characterization.perspectivePlayerId == EntityId("e0")) {
-                exactFacts.isEmpty() shouldBe true
                 beforeFacts.isEmpty() shouldBe false
+            }
+            exactFacts.map { it.factKind } shouldBe listOf(
+                KnownInformationFactKind.IDENTITY,
+                KnownInformationFactKind.ZONE_MEMBERSHIP,
+            )
+            exactFacts.forEach { fact ->
+                fact.objectIdentityStamp shouldBe currentWitness.objectIdentityStamp
+                fact.knownZone shouldBe com.wingedsheep.sdk.core.Zone.HAND
+                fact.audience shouldBe KnownInformationAudience.PUBLIC
+                fact.acquisitionReason shouldBe KnownInformationAcquisitionReason.VISIBLE_ZONE_TRANSITION
             }
             beforeFacts.map { it.factKind } shouldBe listOf(
                 KnownInformationFactKind.IDENTITY,
@@ -304,20 +314,21 @@ class HistoryBContinuityEvidenceFirstBlockerCharacterizationTest : FunSpec({
             )
         }
 
-        perspectives.map { it.bProjection.failureCodeOrNull() }.any {
-            it == HistoryCFailureCode.MISSING_HISTORY_B_CONTINUITY_EVIDENCE
-        } shouldBe true
         perspectives.map { it.bProjection.failureCodeOrNull() } shouldBe listOf(
-            HistoryCFailureCode.MISSING_HISTORY_B_CONTINUITY_EVIDENCE,
+            null,
             null,
         )
-        gym.historyCLifecycleState() shouldBe history
+        val committedHistory = checkNotNull(gym.historyCLifecycleState())
+        committedHistory.registries.values.forEach { registryState ->
+            registryState.activeBindings[HistoryCObjectWitness(EntityId("e175"), 313L)] shouldNotBe null
+            registryState.activeBindings[HistoryCObjectWitness(EntityId("e175"), 174L)] shouldBe null
+        }
 
         println(
             "HISTORY_B_CONTINUITY_FIRST_BLOCKER " +
                 "successfulChoices=$successfulChoices " +
                 "committedStep=${environment.stepCount} " +
-                "failure=${observedFailure.failure.code} " +
+                "failure=${observedFailure?.failure?.code} " +
                 "rawEvents=$eventNames " +
                 "perspectives=${perspectives.size} " +
                 "aComplete=${perspectives.map { it.projection.isComplete }} " +

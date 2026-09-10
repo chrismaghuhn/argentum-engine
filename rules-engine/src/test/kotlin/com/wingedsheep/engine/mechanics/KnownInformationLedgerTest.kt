@@ -1,6 +1,7 @@
 package com.wingedsheep.engine.mechanics
 
 import com.wingedsheep.engine.core.CardsRevealedEvent
+import com.wingedsheep.engine.core.CardsDrawnEvent
 import com.wingedsheep.engine.core.ExecutionResult
 import com.wingedsheep.engine.core.HandLookedAtEvent
 import com.wingedsheep.engine.core.LibrarySearchedEvent
@@ -715,5 +716,93 @@ class KnownInformationLedgerTest : FunSpec({
         KnownInformationLedger.forPlayer(first, p1) shouldBe KnownInformationLedger.forPlayer(second, p1)
         stateJson().encodeToString(GameState.serializer(), first) shouldBe
             stateJson().encodeToString(GameState.serializer(), second)
+    }
+
+    test("HISTB-REVIEW-26 public library knowledge follows a named draw incarnation") {
+        val cardId = EntityId.of("draw-known-top")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Known Draw Card"))
+        val known = publicReveal(initial, cardId)
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = known,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val beforeStamp = checkNotNull(known.objectIdentityStamps[cardId])
+        val afterStamp = checkNotNull(moved.state.objectIdentityStamps[cardId])
+        afterStamp shouldNotBe beforeStamp
+
+        val after = apply(
+            known,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Known Draw Card"))),
+            ),
+        )
+
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).objectIdentityStamp shouldBe afterStamp
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).audience shouldBe
+            KnownInformationAudience.PUBLIC
+        fact(after, p1, cardId, KnownInformationFactKind.ZONE_MEMBERSHIP).objectIdentityStamp shouldBe
+            afterStamp
+        fact(after, p1, cardId, KnownInformationFactKind.ZONE_MEMBERSHIP).knownZone shouldBe Zone.HAND
+        facts(after, p1).none {
+            it.subjectEntityId == cardId && it.factKind == KnownInformationFactKind.POSITION_OR_ORDER
+        } shouldBe true
+    }
+
+    test("HISTB-REVIEW-27 hidden draw does not invent opponent continuity knowledge") {
+        val cardId = EntityId.of("draw-hidden-card")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Hidden Draw Card"))
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = initial,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+
+        val after = apply(
+            initial,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Hidden Draw Card"))),
+            ),
+        )
+
+        facts(after, p1).none { it.subjectEntityId == cardId } shouldBe true
+    }
+
+    test("HISTB-REVIEW-28 private library knowledge follows a named draw only to its viewer") {
+        val cardId = EntityId.of("draw-private-known")
+        val initial = stateWith(CardSpec(cardId, p2, Zone.LIBRARY, "Private Draw Card"))
+        val known = LibraryRevealUtils.markRevealed(
+            state = initial,
+            cardIds = listOf(cardId),
+            playerIds = listOf(p1),
+            audience = KnownInformationAudience.PERSPECTIVE_PRIVATE,
+            acquisitionReason = KnownInformationAcquisitionReason.PRIVATE_LIBRARY_LOOK,
+        )
+        val revealed = apply(initial, ExecutionResult.success(known))
+        val moved = com.wingedsheep.engine.handlers.effects.ZoneTransitionService.moveToZone(
+            state = revealed,
+            entityId = cardId,
+            destinationZone = Zone.HAND,
+            fromZoneKey = ZoneKey(p2, Zone.LIBRARY),
+        )
+        val after = apply(
+            revealed,
+            ExecutionResult.success(
+                moved.state,
+                listOf(CardsDrawnEvent(p2, 1, listOf(cardId), listOf("Private Draw Card"))),
+            ),
+        )
+
+        val afterStamp = checkNotNull(moved.state.objectIdentityStamps[cardId])
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).objectIdentityStamp shouldBe afterStamp
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).audience shouldBe
+            KnownInformationAudience.PERSPECTIVE_PRIVATE
+        fact(after, p1, cardId, KnownInformationFactKind.IDENTITY).knownZone shouldBe Zone.HAND
+        facts(after, p2).none { it.subjectEntityId == cardId } shouldBe true
     }
 })
