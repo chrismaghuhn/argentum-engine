@@ -73,6 +73,20 @@ class B1ObservationInstrumentationTest : FunSpec({
         }
         assertExactBytes(paths, originals)
     }
+
+    test("step-cost attribution restores exact original class bytes") {
+        val paths = B1ObservationBytecodeInstrumentation.attributionClassOutputPathsForTest()
+        val originals = paths.map(Files::readAllBytes)
+        val handle = B1ObservationBytecodeInstrumentation.installStepCostAttribution()
+        try {
+            check(paths.zip(originals).any { (path, original) ->
+                !Files.readAllBytes(path).contentEquals(original)
+            }) { "attribution installation did not patch any class output" }
+        } finally {
+            handle.close()
+        }
+        assertExactBytes(paths, originals)
+    }
 })
 
 private fun withTemporaryOutputs(block: (List<Path>, List<ByteArray>) -> Unit) {
