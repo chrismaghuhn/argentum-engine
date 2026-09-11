@@ -40,6 +40,7 @@ import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
+import java.io.File
 import java.lang.management.ManagementFactory
 import java.nio.charset.StandardCharsets
 import java.nio.file.Files
@@ -161,6 +162,18 @@ class B1ScalingContractTest : FunSpec({
             "B1_CONTRACT=PASS engineSeed=${contract.engineSeedCorpusIdentitySha256} " +
                 "policySeed=${contract.policySeedCorpusIdentitySha256}",
         )
+    }
+})
+
+/** Opt-in, test-only corpus counter for the current emblem entity-map scan. */
+class B1EmblemGrantScanCorpusCounterTest : FunSpec({
+    val enabled = System.getProperty("b1.scaling.runMode") == "emblem-counter"
+
+    test("counts emblem scans without timing or changing the trusted corpus").config(
+        enabled = enabled,
+        timeout = 4.hours,
+    ) {
+        runB1EmblemGrantScanCorpusCounter()
     }
 })
 
@@ -995,6 +1008,84 @@ private fun runB1ScalingMeasurement() {
     }
 }
 
+/** Run one un-timed trusted corpus pass with only the coarse emblem scan counter installed. */
+internal fun runB1EmblemGrantScanCorpusCounter() {
+    if (System.getProperty("b1.emblemCounter.grandchild") == "true") {
+        runB1EmblemGrantScanCorpusCounterDirect()
+    } else {
+        runB1EmblemGrantScanCorpusCounterBootstrapJvm()
+    }
+}
+
+internal fun runB1EmblemGrantScanCorpusCounterDirect() {
+    val repetitions = positiveProperty("b1.scaling.repetitions", 1)
+    val warmupSteps = positiveProperty("b1.scaling.warmupSteps", B1_SCALING_DEFAULT_WARMUP_STEPS)
+    val session = B1EmblemGrantScanProbe.start()
+    var snapshot: B1EmblemGrantScanProbe.Snapshot? = null
+    try {
+        val condition = measureScalingCondition(
+            environmentCount = 1,
+            repetitions = repetitions,
+            warmupSteps = warmupSteps,
+            referenceHolder = ReferenceTrajectoryHolder(),
+            beforeMeasuredHook = session::reset,
+        )
+        snapshot = B1EmblemGrantScanProbe.stop(session)
+        check(condition.repetitions.all { it.externalTransitions == B1_SCALING_EPISODES.toLong() * B1_SCALING_MAX_STEPS }) {
+            "Emblem scan counter corpus did not complete the trusted 16,000-transition horizon"
+        }
+        println(
+            "B1_EMBLEM_SCAN_COUNTER=" +
+                " repetitions=$repetitions" +
+                " warmupSteps=$warmupSteps" +
+                " enumerationInvocations=${snapshot.enumerationInvocations}" +
+                " scanInvocations=${snapshot.scanInvocations}" +
+                " entityEntriesVisited=${snapshot.entityEntriesVisited}" +
+                " descriptorCountTotal=${snapshot.descriptorCountTotal}" +
+                " scansWithDescriptors=${snapshot.scansWithDescriptors}" +
+                " maxDescriptorsPerScan=${snapshot.maxDescriptorsPerScan}" +
+                " cells=${condition.repetitions.single().episodes}/8" +
+                " transitions=${condition.repetitions.single().externalTransitions}/16000",
+        )
+    } finally {
+        if (snapshot == null) runCatching { B1EmblemGrantScanProbe.stop(session) }
+    }
+}
+
+private fun runB1EmblemGrantScanCorpusCounterBootstrapJvm() {
+    val tempDirectory = Files.createTempDirectory("b1-emblem-counter-shadow")
+    val shadowJar = tempDirectory.resolve("rules-engine.jar")
+    B1ObservationBytecodeInstrumentation.writeEmblemGrantScanRulesEngineJarForTest(shadowJar)
+    val javaExecutable = Path.of(
+        System.getProperty("java.home"),
+        "bin",
+        if (System.getProperty("os.name").contains("win", ignoreCase = true)) "java.exe" else "java",
+    ).toString()
+    val classpath = shadowJar.toString() + File.pathSeparator + System.getProperty("java.class.path")
+    val command = listOf(
+        javaExecutable,
+        "-cp",
+        classpath,
+        "-Db1.emblemCounter.grandchild=true",
+        "-Db1.scaling.repetitions=${System.getProperty("b1.scaling.repetitions", "1")}",
+        "-Db1.scaling.warmupSteps=${System.getProperty("b1.scaling.warmupSteps", "256")}",
+        "-DpreC1.history=${System.getProperty("preC1.history", "false")}",
+        "com.wingedsheep.gym.B1EmblemGrantScanBootstrapMainKt",
+    )
+    try {
+        val process = ProcessBuilder(command)
+            .directory(File(System.getProperty("user.dir")))
+            .inheritIO()
+            .start()
+        check(process.waitFor() == 0) {
+            "Shadow-jar emblem scan counter bootstrap failed with exit code ${process.exitValue()}"
+        }
+    } finally {
+        Files.deleteIfExists(shadowJar)
+        Files.deleteIfExists(tempDirectory)
+    }
+}
+
 /**
  * Run the one-environment control or deep legal-action/domain characterization. The control and
  * deep modes deliberately use the same existing [measureScalingCondition] loop so that only the
@@ -1438,6 +1529,7 @@ private fun measureScalingCondition(
     repetitions: Int,
     warmupSteps: Int,
     referenceHolder: ReferenceTrajectoryHolder,
+    beforeMeasuredHook: () -> Unit = {},
 ): ScalingConditionReport {
     val assignments = Array(environmentCount) { slotIndex ->
         b1ScalingCorpus.filterIndexed { episodeIndex, _ -> episodeIndex % environmentCount == slotIndex }
@@ -1469,6 +1561,7 @@ private fun measureScalingCondition(
     val afterSetup = ScalingJvmSnapshot.capture(includeProcessRss = true)
     try {
         warmup(service, slots, assignments, warmupSteps)
+        beforeMeasuredHook()
         val beforeMeasured = ScalingJvmSnapshot.capture(includeProcessRss = true)
         val deepSegment = B1LegalActionDomainProbe.beginSegment(
             "environmentCount=$environmentCount,all-repetitions",

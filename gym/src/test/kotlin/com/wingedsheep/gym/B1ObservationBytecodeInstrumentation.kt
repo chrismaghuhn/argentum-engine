@@ -34,6 +34,7 @@ internal object B1ObservationBytecodeInstrumentation {
     private const val PROBE_OWNER = "com/wingedsheep/gym/B1ObservationProbe"
     private const val COST_PROBE_OWNER = "com/wingedsheep/gym/B1StepCostAttributionProbe"
     private const val LEGAL_DOMAIN_PROBE_OWNER = "com/wingedsheep/gym/B1LegalActionDomainProbe"
+    private const val EMBLEM_SCAN_PROBE_OWNER = "com/wingedsheep/gym/B1EmblemGrantScanProbe"
 
     internal fun install(): Handle = installTargets(
         listOf(
@@ -190,6 +191,20 @@ internal object B1ObservationBytecodeInstrumentation {
             classOutputHandle.plus(installRulesEngineJarTargets(locateJar("rules-engine")))
         } catch (failure: Throwable) {
             classOutputHandle.close()
+            throw failure
+        }
+    }
+
+    /** Create a shadow rules-engine jar containing only the Characterization-17 counter probe. */
+    internal fun writeEmblemGrantScanRulesEngineJarForTest(destination: Path) {
+        Files.createDirectories(destination.parent)
+        val source = locateJar("rules-engine")
+        val tempJar = Files.createTempFile(destination.parent, "rules-engine-emblem-shadow-", ".jar.tmp")
+        try {
+            writeEmblemGrantScanRulesEngineJar(source, tempJar)
+            Files.move(tempJar, destination, StandardCopyOption.REPLACE_EXISTING)
+        } catch (failure: Throwable) {
+            Files.deleteIfExists(tempJar)
             throw failure
         }
     }
@@ -357,6 +372,8 @@ internal object B1ObservationBytecodeInstrumentation {
         data class DeepAction(val family: String, val actionSlot: Int) : EntryAction
         data class DeepBuild(val listSlot: Int, val family: String = "OBSERVATION_BUILD") : EntryAction
         data class DeepZoneRegistration(val zoneSlot: Int) : EntryAction
+        data object EmblemEnumerationCounter : EntryAction
+        data object EmblemGrantScanCounter : EntryAction
     }
 
     private fun restoreActions(restorers: List<() -> Unit>) {
@@ -385,6 +402,33 @@ internal object B1ObservationBytecodeInstrumentation {
         } catch (failure: Throwable) {
             Files.deleteIfExists(tempJar)
             throw failure
+        }
+    }
+
+    private fun writeEmblemGrantScanRulesEngineJar(source: Path, destination: Path) {
+        ZipInputStream(Files.newInputStream(source)).use { input ->
+            ZipOutputStream(Files.newOutputStream(destination)).use { output ->
+                var entry = input.nextEntry
+                while (entry != null) {
+                    val bytes = input.readBytes()
+                    val transformed = if (
+                        entry.name ==
+                            "com/wingedsheep/engine/legalactions/enumerators/ActivatedAbilityEnumerator.class"
+                    ) {
+                        transform(bytes, ::emblemGrantScanCounterMethod)
+                    } else {
+                        bytes
+                    }
+                    val outputEntry = ZipEntry(entry.name).also {
+                        if (entry.time >= 0L) it.time = entry.time
+                    }
+                    output.putNextEntry(outputEntry)
+                    output.write(transformed)
+                    output.closeEntry()
+                    input.closeEntry()
+                    entry = input.nextEntry
+                }
+            }
         }
     }
 
@@ -485,6 +529,12 @@ internal object B1ObservationBytecodeInstrumentation {
                 resolveZone = className == "ZoneActivatedAbilityEnumerator",
             ),
         )
+        else -> null
+    }
+
+    private fun emblemGrantScanCounterMethod(name: String): MethodPlan? = when (name) {
+        "enumerate" -> MethodPlan(EntryAction.EmblemEnumerationCounter)
+        "enumerateOwnPermanents" -> MethodPlan(EntryAction.EmblemGrantScanCounter)
         else -> null
     }
 
@@ -759,6 +809,9 @@ internal object B1ObservationBytecodeInstrumentation {
                         plan.entry.let { it is EntryAction.Scalar && it.family == "gameEnvironmentLegalActions" }
                     private val interceptDeepGameEnvironmentEnumeratorCalls =
                         plan.entry is EntryAction.DeepLegalActions
+                    private val interceptEmblemGrantScan =
+                        plan.entry is EntryAction.EmblemEnumerationCounter ||
+                            plan.entry is EntryAction.EmblemGrantScanCounter
                     private val interceptOwnPermanentCallsites =
                         plan.entry is EntryAction.DeepPhase &&
                             plan.entry.family == "ACTIVATED_ABILITY_OWN_PERMANENT_SCAN"
@@ -785,6 +838,22 @@ internal object B1ObservationBytecodeInstrumentation {
                             emitDeepPhaseStart("LEGAL_ACTION_ENUMERATOR")
                             super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
                             emitDeepListEnd("LEGAL_ACTION_ENUMERATOR")
+                            return
+                        }
+                        if (interceptEmblemGrantScan &&
+                            plan.entry is EntryAction.EmblemGrantScanCounter &&
+                            owner == "com/wingedsheep/engine/state/GameState" &&
+                            name == "getEntities"
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            visitInsn(DUP)
+                            visitMethodInsn(
+                                INVOKESTATIC,
+                                EMBLEM_SCAN_PROBE_OWNER,
+                                "recordEntityMap",
+                                "(Ljava/lang/Object;)V",
+                                false,
+                            )
                             return
                         }
                         if (interceptOwnPermanentCallsites &&
@@ -931,6 +1000,14 @@ internal object B1ObservationBytecodeInstrumentation {
                             is EntryAction.Build -> emitBuild(entry.listSlot)
                             is EntryAction.DecisionOptions -> emitDecisionOptions(entry.listSlot)
                             is EntryAction.Timed -> emitPhaseStart(entry.family)
+                            EntryAction.EmblemEnumerationCounter -> visitMethodInsn(
+                                INVOKESTATIC,
+                                EMBLEM_SCAN_PROBE_OWNER,
+                                "recordEnumerationInvocation",
+                                "()V",
+                                false,
+                            )
+                            EntryAction.EmblemGrantScanCounter -> Unit
                             EntryAction.DeepLegalActions -> emitDeepLegalActionsStart()
                             is EntryAction.DeepContext -> emitDeepContextStart(entry.purpose)
                             is EntryAction.DeepPhase -> emitDeepPhaseStart(entry.family)
