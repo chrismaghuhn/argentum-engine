@@ -5,7 +5,9 @@ import org.objectweb.asm.ClassVisitor
 import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes.ALOAD
+import org.objectweb.asm.Opcodes.CHECKCAST
 import org.objectweb.asm.Opcodes.ASM9
+import org.objectweb.asm.Opcodes.DUP
 import org.objectweb.asm.Opcodes.ILOAD
 import org.objectweb.asm.Opcodes.INVOKEINTERFACE
 import org.objectweb.asm.Opcodes.INVOKESTATIC
@@ -15,8 +17,13 @@ import org.objectweb.asm.Opcodes.DRETURN
 import org.objectweb.asm.Opcodes.FRETURN
 import org.objectweb.asm.Opcodes.IRETURN
 import org.objectweb.asm.Opcodes.LRETURN
+import org.objectweb.asm.Opcodes.SWAP
 import java.nio.file.Files
 import java.nio.file.Path
+import java.nio.file.StandardCopyOption
+import java.util.zip.ZipEntry
+import java.util.zip.ZipInputStream
+import java.util.zip.ZipOutputStream
 
 /**
  * Test-only offline bytecode instrumentation. It patches build outputs only for one explicitly
@@ -26,6 +33,7 @@ import java.nio.file.Path
 internal object B1ObservationBytecodeInstrumentation {
     private const val PROBE_OWNER = "com/wingedsheep/gym/B1ObservationProbe"
     private const val COST_PROBE_OWNER = "com/wingedsheep/gym/B1StepCostAttributionProbe"
+    private const val LEGAL_DOMAIN_PROBE_OWNER = "com/wingedsheep/gym/B1LegalActionDomainProbe"
 
     internal fun install(): Handle = installTargets(
         listOf(
@@ -97,6 +105,93 @@ internal object B1ObservationBytecodeInstrumentation {
         ),
     )
 
+    /**
+     * Install the deeper legal-action/domain characterization probes. Every target is a compiled
+     * build output and is restored by the returned handle; no production source or runtime class
+     * remains instrumented after the run.
+     */
+    internal fun installLegalActionDomainDeep(includeRulesEngineJar: Boolean = true): Handle {
+        val targets = mutableListOf(
+            Target(
+                locate("gym", "com/wingedsheep/gym/GameEnvironment.class"),
+                ::gameEnvironmentMethodForDeepAttribution,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/GameGymEnv.class"),
+                ::gameGymEnvMethodForDeepAttribution,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
+                ::observationBuilderMethodForDeepAttribution,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/PaymentDomainBuilder.class"),
+                ::paymentDomainBuilderMethodForDeepAttribution,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/ActionPaymentPlanValidator.class"),
+                ::actionPaymentPlanValidatorMethodForDeepAttribution,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/ManaSolver.class"),
+                ::manaSolverMethodForDeepAttribution,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/PaymentPlanValidator.class"),
+                ::paymentPlanValidatorMethodForDeepAttribution,
+            ),
+        )
+        deepEnumeratorClasses.forEach { (className, family) ->
+            targets += Target(
+                locate(
+                    "rules-engine",
+                    "com/wingedsheep/engine/legalactions/enumerators/$className.class",
+                ),
+                { name ->
+                    if (name == "enumerate") MethodPlan(EntryAction.DeepList(family)) else null
+                },
+            )
+        }
+        val classOutputHandle = installTargets(targets)
+        if (!includeRulesEngineJar) return classOutputHandle
+        return try {
+            classOutputHandle.plus(installRulesEngineJarTargets(locateJar("rules-engine")))
+        } catch (failure: Throwable) {
+            classOutputHandle.close()
+            throw failure
+        }
+    }
+
+    internal fun legalActionDomainDeepClassOutputPathsForTest(): List<Path> = listOf(
+        locate("gym", "com/wingedsheep/gym/GameEnvironment.class"),
+        locate("gym", "com/wingedsheep/gym/GameGymEnv.class"),
+        locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
+        locate("gym", "com/wingedsheep/gym/contract/PaymentDomainBuilder.class"),
+        locate("gym", "com/wingedsheep/gym/ActionPaymentPlanValidator.class"),
+        locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/ManaSolver.class"),
+        locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/PaymentPlanValidator.class"),
+    ) + deepEnumeratorClasses.map { (className, _) ->
+        locate("rules-engine", "com/wingedsheep/engine/legalactions/enumerators/$className.class")
+    }
+
+    internal fun rulesEngineJarPathForTest(): Path = locateJar("rules-engine")
+
+    internal fun installRulesEngineJarTargetsForTest(jarPath: Path): Handle =
+        installRulesEngineJarTargets(jarPath)
+
+    /** Create a patched shadow jar without touching the runtime jar. */
+    internal fun writePatchedRulesEngineJarForTest(destination: Path) {
+        Files.createDirectories(destination.parent)
+        val tempJar = Files.createTempFile(destination.parent, "rules-engine-deep-shadow-", ".jar.tmp")
+        try {
+            writeTransformedRulesEngineJar(locateJar("rules-engine"), tempJar)
+            Files.move(tempJar, destination, StandardCopyOption.REPLACE_EXISTING)
+        } catch (failure: Throwable) {
+            Files.deleteIfExists(tempJar)
+            throw failure
+        }
+    }
+
     /** Test seam for proving the restoration transaction without changing production classes. */
     internal fun installForTest(
         paths: List<Path>,
@@ -154,7 +249,11 @@ internal object B1ObservationBytecodeInstrumentation {
                 val transformed = transformBytes(original, target.methodSelector)
                 writeBytes(target.path, transformed)
             }
-            return Handle(originals.toList())
+            return Handle(
+                originals.map { (path, bytes) ->
+                    { Files.write(path, bytes) }
+                },
+            )
         } catch (failure: Throwable) {
             restoreAll(originals, failure)
             throw failure
@@ -162,11 +261,13 @@ internal object B1ObservationBytecodeInstrumentation {
     }
 
     internal class Handle(
-        private val originals: List<Pair<Path, ByteArray>>,
+        private val restorers: List<() -> Unit>,
     ) : AutoCloseable {
         override fun close() {
-            restoreAll(originals)
+            restoreActions(restorers)
         }
+
+        internal fun plus(other: Handle): Handle = Handle(restorers + other.restorers)
     }
 
     private fun restoreAll(
@@ -209,7 +310,103 @@ internal object B1ObservationBytecodeInstrumentation {
         data class Build(val listSlot: Int) : EntryAction
         data class DecisionOptions(val listSlot: Int) : EntryAction
         data class Timed(val family: String) : EntryAction
+        data object DeepLegalActions : EntryAction
+        data class DeepContext(val purpose: String) : EntryAction
+        data class DeepPhase(val family: String) : EntryAction
+        data class DeepList(val family: String) : EntryAction
+        data class DeepAction(val family: String, val actionSlot: Int) : EntryAction
+        data class DeepBuild(val listSlot: Int, val family: String = "OBSERVATION_BUILD") : EntryAction
     }
+
+    private fun restoreActions(restorers: List<() -> Unit>) {
+        var restorationFailure: Throwable? = null
+        restorers.asReversed().forEach { restore ->
+            try {
+                restore()
+            } catch (failure: Throwable) {
+                if (restorationFailure == null) {
+                    restorationFailure = failure
+                } else {
+                    checkNotNull(restorationFailure).addSuppressed(failure)
+                }
+            }
+        }
+        restorationFailure?.let { throw it }
+    }
+
+    private fun installRulesEngineJarTargets(jarPath: Path): Handle {
+        val originalJar = Files.readAllBytes(jarPath)
+        val tempJar = Files.createTempFile(jarPath.parent, "rules-engine-deep-", ".jar.tmp")
+        try {
+            writeTransformedRulesEngineJar(jarPath, tempJar)
+            Files.move(tempJar, jarPath, StandardCopyOption.REPLACE_EXISTING)
+            return Handle(listOf { Files.write(jarPath, originalJar) })
+        } catch (failure: Throwable) {
+            Files.deleteIfExists(tempJar)
+            throw failure
+        }
+    }
+
+    private fun writeTransformedRulesEngineJar(source: Path, destination: Path) {
+        val entrySelectors = buildMap<String, (String) -> MethodPlan?> {
+            put("com/wingedsheep/engine/mechanics/mana/ManaSolver.class", ::manaSolverMethodForDeepAttribution)
+            put(
+                "com/wingedsheep/engine/mechanics/mana/PaymentPlanValidator.class",
+                ::paymentPlanValidatorMethodForDeepAttribution,
+            )
+            deepEnumeratorClasses.forEach { (className, family) ->
+                put(
+                    "com/wingedsheep/engine/legalactions/enumerators/$className.class",
+                    { name ->
+                        if (name == "enumerate") MethodPlan(EntryAction.DeepList(family)) else null
+                    },
+                )
+            }
+        }
+        ZipInputStream(Files.newInputStream(source)).use { input ->
+            ZipOutputStream(Files.newOutputStream(destination)).use { output ->
+                var entry = input.nextEntry
+                while (entry != null) {
+                    val bytes = input.readBytes()
+                    val transformed = entrySelectors[entry.name]?.let { selector ->
+                        transform(bytes, selector)
+                    } ?: bytes
+                    val outputEntry = ZipEntry(entry.name).also {
+                        if (entry.time >= 0L) it.time = entry.time
+                    }
+                    output.putNextEntry(outputEntry)
+                    output.write(transformed)
+                    output.closeEntry()
+                    input.closeEntry()
+                    entry = input.nextEntry
+                }
+            }
+        }
+    }
+
+    private val deepEnumeratorClasses = listOf(
+        "CombatEnumerator" to "COMBAT_ACTIONS",
+        "PassPriorityEnumerator" to "PRIORITY_SPECIAL_ACTIONS",
+        "PlayLandEnumerator" to "LAND_ACTIONS",
+        "MorphCastEnumerator" to "CAST_SPELL_ACTIONS",
+        "CastSpellEnumerator" to "CAST_SPELL_ACTIONS",
+        "SneakCastEnumerator" to "CAST_SPELL_ACTIONS",
+        "EmergeCastEnumerator" to "CAST_SPELL_ACTIONS",
+        "WebSlingingCastEnumerator" to "CAST_SPELL_ACTIONS",
+        "CyclingEnumerator" to "SPECIAL_ACTIONS",
+        "PlotEnumerator" to "SPECIAL_ACTIONS",
+        "ForetellEnumerator" to "SPECIAL_ACTIONS",
+        "SuspendEnumerator" to "SPECIAL_ACTIONS",
+        "CastFromZoneEnumerator" to "CAST_SPELL_ACTIONS",
+        "ManaAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+        "TurnFaceUpEnumerator" to "SPECIAL_ACTIONS",
+        "UnlockRoomDoorEnumerator" to "SPECIAL_ACTIONS",
+        "ActivatedAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+        "CrewEnumerator" to "SPECIAL_ACTIONS",
+        "SaddleEnumerator" to "SPECIAL_ACTIONS",
+        "ZoneActivatedAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+        "CommandZoneAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+    )
 
     private fun gameEnvironmentMethodForAttribution(name: String): MethodPlan? = when {
         name == "processAndCommit" ->
@@ -315,6 +512,92 @@ internal object B1ObservationBytecodeInstrumentation {
             else -> null
         }
 
+    private fun gameEnvironmentMethodForDeepAttribution(name: String): MethodPlan? = when {
+        name == "legalActions" -> MethodPlan(EntryAction.DeepLegalActions)
+        name.startsWith("isCurrentActionCandidate") ->
+            MethodPlan(EntryAction.DeepPhase("ACTION_CANDIDATE_MATCHING"))
+        name.startsWith("stepFromCandidateStrict") ->
+            MethodPlan(EntryAction.DeepContext("OLD_STATE_SELECTED_ACTION_REVALIDATION"))
+        name.startsWith("stepStrict") ->
+            MethodPlan(EntryAction.DeepContext("OLD_STATE_STRUCTURED_ACTION_REVALIDATION"))
+        else -> null
+    }
+
+    private fun gameGymEnvMethodForDeepAttribution(name: String): MethodPlan? = when {
+        name == "buildObservation" ->
+            MethodPlan(EntryAction.DeepContext("NEXT_OBSERVATION_PUBLICATION"))
+        name == "currentTargetPaymentSnapshot" ->
+            MethodPlan(EntryAction.DeepContext("TARGET_PAYMENT_REFRESH"))
+        else -> null
+    }
+
+    private fun observationBuilderMethodForDeepAttribution(name: String): MethodPlan? = when {
+        name.startsWith("build-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepBuild(listSlot = 3))
+        name == "legalActionToView" ->
+            MethodPlan(EntryAction.DeepAction("ACTION_VIEW_BUILD", actionSlot = 3))
+        name.startsWith("mapPublicTargetDomain-") -> MethodPlan(EntryAction.DeepPhase("TARGET_DOMAIN"))
+        name.startsWith("mapPublicAttackDeclarationDomain-") ->
+            MethodPlan(EntryAction.DeepPhase("ATTACK_DOMAIN"))
+        name.startsWith("mapPublicBlockerDeclarationDomain-") ->
+            MethodPlan(EntryAction.DeepPhase("BLOCKER_DOMAIN"))
+        name == "targetPaymentQualificationFor" ->
+            MethodPlan(EntryAction.DeepPhase("TARGET_PAYMENT_QUALIFICATION"))
+        name == "targetPaymentDomainV1For" ->
+            MethodPlan(EntryAction.DeepPhase("TARGET_PAYMENT_DOMAIN"))
+        name == "targetCostDependencyFor" -> MethodPlan(EntryAction.DeepPhase("TARGET_COST_DEPENDENCY"))
+        name == "paymentDomainRequestFor" -> MethodPlan(EntryAction.DeepPhase("PAYMENT_DOMAIN_REQUEST"))
+        name == "paymentDomainV5For\$argentum_engine_gym" ->
+            MethodPlan(EntryAction.DeepPhase("PAYMENT_DOMAIN_V5"))
+        name == "requiredPayloadFieldsFor\$argentum_engine_gym" ->
+            MethodPlan(EntryAction.DeepPhase("REQUIRED_PAYLOAD_FIELDS"))
+        name == "actionSemantic" -> MethodPlan(EntryAction.DeepPhase("ACTION_SEMANTIC"))
+        name == "resolveActivatedAbility" -> MethodPlan(EntryAction.DeepPhase("RESOLVE_ACTIVATED_ABILITY"))
+        name == "stableAbilityKey" -> MethodPlan(EntryAction.DeepPhase("STABLE_ABILITY_KEY"))
+        name == "stableAbilityOrdinal" -> MethodPlan(EntryAction.DeepPhase("STABLE_ABILITY_ORDINAL"))
+        name == "structuralAbilitySignature" ->
+            MethodPlan(EntryAction.DeepPhase("STRUCTURAL_ABILITY_SIGNATURE"))
+        name == "structuralAbilityJson" -> MethodPlan(EntryAction.DeepPhase("STRUCTURAL_ABILITY_JSON"))
+        name == "buildDecisionOptionViews" ->
+            MethodPlan(EntryAction.DeepList("STRUCTURED_DECISION_DOMAIN"))
+        else -> null
+    }
+
+    private fun paymentDomainBuilderMethodForDeepAttribution(name: String): MethodPlan? = when {
+        name.startsWith("buildV5-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepPhase("PAYMENT_DOMAIN_BUILDER_V5"))
+        name.startsWith("build-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepPhase("PAYMENT_DOMAIN_BUILDER_V4"))
+        else -> null
+    }
+
+    private fun actionPaymentPlanValidatorMethodForDeepAttribution(name: String): MethodPlan? = when {
+        name == "require" || name == "requireOrdinary" || name.startsWith("requireTargetPaymentPlan") ->
+            MethodPlan(EntryAction.DeepPhase("ACTION_PAYMENT_VALIDATION"))
+        else -> null
+    }
+
+    private fun paymentPlanValidatorMethodForDeepAttribution(name: String): MethodPlan? =
+        if (name.startsWith("validate") && !name.contains("\$default")) {
+            MethodPlan(EntryAction.DeepPhase("PAYMENT_PLAN_VALIDATION"))
+        } else {
+            null
+        }
+
+    private fun manaSolverMethodForDeepAttribution(name: String): MethodPlan? = when {
+        name.startsWith("findAvailableManaSourcesInternal-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepList("MANA_SOURCE_DISCOVERY_INTERNAL"))
+        name.startsWith("findAvailableManaSources-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepList("MANA_SOURCE_DISCOVERY"))
+        name.startsWith("solve-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepPhase("MANA_SOLVE"))
+        name.startsWith("canPay-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepPhase("MANA_CAN_PAY"))
+        name.startsWith("getAvailableManaCount-") && !name.contains("\$default") ->
+            MethodPlan(EntryAction.DeepPhase("MANA_AVAILABLE_COUNT"))
+        else -> null
+    }
+
     private fun transform(
         original: ByteArray,
         selector: (String) -> MethodPlan?,
@@ -336,6 +619,8 @@ internal object B1ObservationBytecodeInstrumentation {
                         plan.entry.let { it is EntryAction.Scalar && it.family == "paymentDomainBuilderV5" }
                     private val interceptGameEnvironmentEnumeratorCalls =
                         plan.entry.let { it is EntryAction.Scalar && it.family == "gameEnvironmentLegalActions" }
+                    private val interceptDeepGameEnvironmentEnumeratorCalls =
+                        plan.entry is EntryAction.DeepLegalActions
 
                     override fun visitCode() {
                         super.visitCode()
@@ -349,6 +634,16 @@ internal object B1ObservationBytecodeInstrumentation {
                         descriptor: String,
                         isInterface: Boolean,
                     ) {
+                        if (interceptDeepGameEnvironmentEnumeratorCalls &&
+                            owner == "com/wingedsheep/engine/legalactions/LegalActionEnumerator" &&
+                            name.startsWith("enumerate-") &&
+                            !name.contains("\$default")
+                        ) {
+                            emitDeepPhaseStart("LEGAL_ACTION_ENUMERATOR")
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitDeepListEnd("LEGAL_ACTION_ENUMERATOR")
+                            return
+                        }
                         if (interceptPaymentBuilderManaCalls &&
                             owner == "com/wingedsheep/engine/mechanics/mana/ManaSolver" &&
                             name.startsWith("findAvailableManaSources")
@@ -373,6 +668,17 @@ internal object B1ObservationBytecodeInstrumentation {
                         ) {
                             emitPhaseEnd(plan.entry.family)
                         }
+                        if (opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)) {
+                            when (val entry = plan.entry) {
+                                EntryAction.DeepLegalActions -> emitDeepLegalActionsEnd()
+                                is EntryAction.DeepContext -> emitDeepContextEnd(entry.purpose)
+                                is EntryAction.DeepPhase -> emitDeepPhaseEnd(entry.family)
+                                is EntryAction.DeepList -> emitDeepListEnd(entry.family)
+                                is EntryAction.DeepAction -> emitDeepPhaseEnd(entry.family)
+                                is EntryAction.DeepBuild -> emitDeepPhaseEnd(entry.family)
+                                else -> Unit
+                            }
+                        }
                         super.visitInsn(opcode)
                     }
 
@@ -384,6 +690,12 @@ internal object B1ObservationBytecodeInstrumentation {
                             is EntryAction.Build -> emitBuild(entry.listSlot)
                             is EntryAction.DecisionOptions -> emitDecisionOptions(entry.listSlot)
                             is EntryAction.Timed -> emitPhaseStart(entry.family)
+                            EntryAction.DeepLegalActions -> emitDeepLegalActionsStart()
+                            is EntryAction.DeepContext -> emitDeepContextStart(entry.purpose)
+                            is EntryAction.DeepPhase -> emitDeepPhaseStart(entry.family)
+                            is EntryAction.DeepList -> emitDeepPhaseStart(entry.family)
+                            is EntryAction.DeepAction -> emitDeepActionStart(entry.family, entry.actionSlot)
+                            is EntryAction.DeepBuild -> emitDeepBuildStart(entry.family, entry.listSlot)
                         }
                     }
 
@@ -405,6 +717,112 @@ internal object B1ObservationBytecodeInstrumentation {
                             COST_PROBE_OWNER,
                             "endPhase",
                             "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepLegalActionsStart() {
+                        visitVarInsn(ALOAD, 0)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "beginLegalActions",
+                            "(Ljava/lang/Object;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepLegalActionsEnd() {
+                        visitInsn(DUP)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "endLegalActions",
+                            "(Ljava/lang/Object;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepContextStart(purpose: String) {
+                        visitLdcInsn(purpose)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "pushPurpose",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepContextEnd(purpose: String) {
+                        visitLdcInsn(purpose)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "popPurpose",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepPhaseStart(family: String) {
+                        visitLdcInsn(family)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "startPhase",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepPhaseEnd(family: String) {
+                        visitLdcInsn(family)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "endPhase",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepListEnd(family: String) {
+                        visitInsn(DUP)
+                        visitTypeInsn(CHECKCAST, "java/util/List")
+                        visitMethodInsn(INVOKEINTERFACE, "java/util/List", "size", "()I", true)
+                        visitLdcInsn(family)
+                        visitInsn(SWAP)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "endListPhase",
+                            "(Ljava/lang/String;I)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepActionStart(family: String, actionSlot: Int) {
+                        emitDeepPhaseStart(family)
+                        visitVarInsn(ALOAD, actionSlot)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "recordActionView",
+                            "(Ljava/lang/Object;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepBuildStart(family: String, listSlot: Int) {
+                        emitDeepPhaseStart(family)
+                        visitVarInsn(ALOAD, listSlot)
+                        visitMethodInsn(INVOKEINTERFACE, "java/util/List", "size", "()I", true)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "recordObservationCandidateCount",
+                            "(I)V",
                             false,
                         )
                     }
@@ -473,6 +891,14 @@ internal object B1ObservationBytecodeInstrumentation {
             .filterNotNull()
             .firstOrNull(Files::exists)
             ?: error("B1 characterization class file not found: module=$module suffix=$suffix")
+    }
+
+    private fun locateJar(module: String): Path {
+        val start = Path.of(System.getProperty("user.dir")).toAbsolutePath().normalize()
+        return generateSequence(start) { it.parent }
+            .map { base -> base.resolve(module).resolve("build/libs/$module.jar") }
+            .firstOrNull(Files::exists)
+            ?: error("B1 characterization jar not found: module=$module")
     }
 }
 

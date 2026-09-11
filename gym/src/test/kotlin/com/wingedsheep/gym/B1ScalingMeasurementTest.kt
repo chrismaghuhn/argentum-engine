@@ -995,6 +995,225 @@ private fun runB1ScalingMeasurement() {
     }
 }
 
+/**
+ * Run the one-environment control or deep legal-action/domain characterization. The control and
+ * deep modes deliberately use the same existing [measureScalingCondition] loop so that only the
+ * test-only bytecode probes differ between the two JVM invocations.
+ */
+internal fun runB1LegalActionDomainDeepMeasurement() =
+    runB1LegalActionDomainDeepMeasurementInternal()
+
+/** Entry point used by the fresh-JVM bootstrap when class-load order matters for bytecode probes. */
+internal fun runB1LegalActionDomainDeepMeasurementWithInstalledInstrumentation(
+    session: B1LegalActionDomainProbe.Session,
+    instrumentation: B1ObservationBytecodeInstrumentation.Handle,
+) = runB1LegalActionDomainDeepMeasurementInternal(session, instrumentation)
+
+private fun runB1LegalActionDomainDeepMeasurementInternal(
+    preinstalledSession: B1LegalActionDomainProbe.Session? = null,
+    preinstalledInstrumentation: B1ObservationBytecodeInstrumentation.Handle? = null,
+) {
+    check(System.getProperty("preC1.history") == "true") {
+        "Legal-action/domain characterization requires the trusted History-D path"
+    }
+    val mode = when (System.getProperty("b1.scaling.runMode", "legal-domain-deep")) {
+        "legal-domain-control" -> "control"
+        "legal-domain-deep" -> "deep"
+        else -> error(
+            "b1.scaling.runMode must be legal-domain-control or legal-domain-deep for this test",
+        )
+    }
+    val repetitions = positiveProperty("b1.scaling.repetitions", B1_SCALING_DEFAULT_REPETITIONS)
+    val warmupSteps = positiveProperty("b1.scaling.warmupSteps", B1_SCALING_DEFAULT_WARMUP_STEPS)
+    val rootDir = Path.of(
+        System.getProperty(
+            "b1.scaling.outputDir",
+            Path.of(System.getProperty("user.dir"), "build", "reports", "b1-legal-action-domain").toString(),
+        ),
+    )
+    val outputDir = rootDir.resolve(mode)
+    Files.createDirectories(outputDir)
+    val reportPath = outputDir.resolve("b1-legal-action-domain-$mode.json")
+    val trajectoryPath = outputDir.resolve("b1-legal-action-domain-trajectories.tsv")
+    Files.deleteIfExists(reportPath)
+    Files.deleteIfExists(trajectoryPath)
+
+    val referenceHolder = ReferenceTrajectoryHolder()
+    require(preinstalledSession == null || mode == "deep") {
+        "Preinstalled legal-action instrumentation is only valid for deep mode"
+    }
+    val session = preinstalledSession ?: if (mode == "deep") B1LegalActionDomainProbe.start() else null
+    val instrumentation = try {
+        preinstalledInstrumentation ?: if (mode == "deep") {
+            B1ObservationBytecodeInstrumentation.installLegalActionDomainDeep()
+        } else {
+            null
+        }
+    } catch (failure: Throwable) {
+        if (preinstalledSession == null) session?.let { B1LegalActionDomainProbe.stop(it) }
+        throw failure
+    }
+    var snapshot: B1LegalActionDomainProbe.Snapshot? = null
+    try {
+        val condition = measureScalingCondition(
+            environmentCount = 1,
+            repetitions = repetitions,
+            warmupSteps = warmupSteps,
+            referenceHolder = referenceHolder,
+        )
+        snapshot = session?.let { B1LegalActionDomainProbe.stop(it) }
+        instrumentation?.close()
+
+        val trajectoryText = referenceHolder.snapshots().joinToString("\n", postfix = "\n") { summary ->
+            listOf(
+                summary.label,
+                summary.observationCount,
+                summary.choiceCount,
+                summary.terminal,
+                summary.truncated,
+                summary.trajectoryHash,
+            ).joinToString("\t")
+        }
+        Files.writeString(trajectoryPath, trajectoryText)
+
+        val controlReportPath = Path.of(
+            System.getProperty(
+                "b1.legalDomain.controlReportPath",
+                rootDir.resolve("control").resolve("b1-legal-action-domain-control.json").toString(),
+            ),
+        )
+        val semanticEquivalence = if (mode == "deep") {
+            check(Files.exists(controlReportPath)) {
+                "Deep characterization requires the control report at $controlReportPath"
+            }
+            val controlTrajectoryPath = controlReportPath.parent.resolve("b1-legal-action-domain-trajectories.tsv")
+            check(Files.exists(controlTrajectoryPath)) {
+                "Deep characterization requires the control trajectory at $controlTrajectoryPath"
+            }
+            check(Files.readString(controlTrajectoryPath) == Files.readString(trajectoryPath)) {
+                "Control and deep semantic trajectory hashes diverged"
+            }
+            "PASS"
+        } else {
+            "BASELINE_ONLY"
+        }
+        val report = B1LegalActionDomainRunReport(
+            sourceHead = "3b1a70255d39666608388648e79a96db34aee684",
+            mode = mode,
+            warmupSteps = warmupSteps,
+            measuredRepetitions = repetitions,
+            condition = condition,
+            deepProbe = snapshot,
+            semanticTrajectoryEquivalence = semanticEquivalence,
+            controlReportPath = controlReportPath.toString(),
+        )
+        Files.writeString(reportPath, b1ScalingJson.encodeToString(B1LegalActionDomainRunReport.serializer(), report))
+        println("B1_LEGAL_DOMAIN_REPORT_PATH=$reportPath")
+        println("B1_LEGAL_DOMAIN_TRAJECTORY_PATH=$trajectoryPath")
+        println("B1_LEGAL_DOMAIN_MODE=$mode")
+        condition.repetitions.forEach { repetition ->
+            println(
+                "B1_LEGAL_DOMAIN_RUN_ROW=" + repetition.repetition +
+                    " transitions=" + repetition.externalTransitions +
+                    " wallSeconds=" + formatSeconds(repetition.workloadWallNanos) +
+                    " measuredStepSeconds=" + formatSeconds(repetition.measuredStepWallNanos) +
+                    " transitionsPerSecond=" + formatDouble(repetition.transitionsPerSecond),
+            )
+        }
+        println("B1_LEGAL_DOMAIN_SEMANTIC_TRAJECTORY=$semanticEquivalence")
+        snapshot?.let(::printB1LegalActionDomainSnapshot)
+    } finally {
+        if (session != null && snapshot == null) {
+            runCatching { B1LegalActionDomainProbe.stop(session) }
+        }
+        runCatching { instrumentation?.close() }
+    }
+}
+
+private fun printB1LegalActionDomainSnapshot(snapshot: B1LegalActionDomainProbe.Snapshot) {
+    val segment = snapshot.segments.singleOrNull()
+        ?: error("Expected exactly one deep legal-action segment, got ${snapshot.segments.size}")
+    println(
+        "B1_LEGAL_DOMAIN_DECISIONS=" + segment.decisions +
+            " actionChoices=" + segment.actionChoices +
+            " structuredResponses=" + segment.structuredResponses +
+            " gaps=" + segment.semanticChoiceGaps,
+    )
+    println(
+        "B1_LEGAL_ACTION_CALLS=" + segment.legalActionCallsTotal +
+            " mean=" + formatDouble(segment.legalActionCallsPerDecision.sum.toDouble() / segment.decisions) +
+            " p50=" + segment.legalActionCallsPerDecision.p50 +
+            " p95=" + segment.legalActionCallsPerDecision.p95 +
+            " max=" + segment.legalActionCallsPerDecision.max +
+            " zero=" + segment.decisionsWith0LegalActionCalls +
+            " one=" + segment.decisionsWith1LegalActionCall +
+            " two=" + segment.decisionsWith2LegalActionCalls +
+            " threePlus=" + segment.decisionsWith3PlusLegalActionCalls,
+    )
+    println("B1_LEGAL_ACTION_CALL_PURPOSES=" + segment.legalActionCallsByPurpose)
+    val repeatTotal = segment.sameStateLegalActionRepeatCount + segment.stateChangedLegalActionRepeatCount
+    println(
+        "B1_LEGAL_ACTION_REPEATS=" +
+            " sameState=" + segment.sameStateLegalActionRepeatCount +
+            " sameStatePercent=" + formatPercent(segment.sameStateLegalActionRepeatCount, repeatTotal) +
+            " stateChanged=" + segment.stateChangedLegalActionRepeatCount +
+            " stateChangedPercent=" + formatPercent(segment.stateChangedLegalActionRepeatCount, repeatTotal) +
+            " sameStateEqual=" + segment.sameStateSemanticallyEqualResults +
+            " sameStateDifferent=" + segment.sameStateSemanticallyDifferentResults,
+    )
+    val publishedCandidates = segment.publishedPublicLegalCandidates
+        ?: error("Deep probe recorded no published observations")
+    println(
+        "B1_LEGAL_DOMAIN_CANDIDATES=" +
+            " observations=" + segment.publishedObservations +
+            " total=" + publishedCandidates.sum +
+            " mean=" + formatDouble(publishedCandidates.sum.toDouble() / publishedCandidates.count) +
+            " p50=" + publishedCandidates.p50 +
+            " p95=" + publishedCandidates.p95 +
+            " max=" + publishedCandidates.max +
+            " internalBuilds=" + segment.observationBuilds +
+            " internalCandidates=" + segment.publicLegalCandidates.sum,
+    )
+    println("B1_LEGAL_DOMAIN_ACTION_FAMILIES=" + segment.actionFamilyCandidates)
+    segment.decisionKinds.forEach { (kind, totals) ->
+        val nsPerDecision = totals.legalActionWallNanos.toDouble() / totals.decisions
+        val allocPerDecision = totals.legalActionAllocatedBytes?.toDouble()?.div(totals.decisions)
+        println(
+            "B1_LEGAL_DOMAIN_DECISION_KIND=$kind" +
+                " decisions=${totals.decisions}" +
+                " calls=${totals.legalActionCalls}" +
+                " nsPerDecision=${formatDouble(nsPerDecision)}" +
+                " allocBytesPerDecision=${allocPerDecision?.let(::formatDouble) ?: "NOT_AVAILABLE"}",
+        )
+    }
+    segment.phases.forEach { (family, phase) ->
+        println(
+            "B1_LEGAL_DOMAIN_PHASE=$family" +
+                " invocations=${phase.invocations}" +
+                " inclusiveNs=${phase.inclusiveWallNanos}" +
+                " exclusiveNs=${phase.exclusiveWallNanos}" +
+                " inclusiveAllocBytes=${phase.inclusiveAllocatedBytes ?: "NOT_AVAILABLE"}" +
+                " exclusiveAllocBytes=${phase.exclusiveAllocatedBytes ?: "NOT_AVAILABLE"}" +
+                " returnedItems=${phase.returnedItems?.sum ?: "NOT_APPLICABLE"}",
+        )
+    }
+}
+
+private fun formatPercent(value: Long, denominator: Long): String =
+    if (denominator == 0L) "0.000000" else formatDouble(value.toDouble() * 100.0 / denominator.toDouble())
+
+@Serializable
+private data class B1LegalActionDomainRunReport(
+    val sourceHead: String,
+    val mode: String,
+    val warmupSteps: Int,
+    val measuredRepetitions: Int,
+    val condition: ScalingConditionReport,
+    val deepProbe: B1LegalActionDomainProbe.Snapshot? = null,
+    val semanticTrajectoryEquivalence: String,
+    val controlReportPath: String,
+)
+
 private fun runB1StructuredLatencyMeasurement() {
     val warmupSteps = positiveProperty("b1.latency.warmupSteps", B1_SCALING_DEFAULT_WARMUP_STEPS)
     val outputDir = Path.of(
@@ -1206,22 +1425,29 @@ private fun measureScalingCondition(
     try {
         warmup(service, slots, assignments, warmupSteps)
         val beforeMeasured = ScalingJvmSnapshot.capture(includeProcessRss = true)
-        val repetitionsMeasured = (0 until repetitions).map { repetition ->
-            val attributionSegment = B1StepCostAttributionProbe.beginSegment(
-                "environmentCount=$environmentCount,repetition=$repetition",
-            )
-            try {
-                measureRepetition(
-                    service = service,
-                    slots = slots,
-                    assignments = assignments,
-                    repetition = repetition,
-                    referenceHolder = referenceHolder,
-                    tracker = ConcurrencyTracker(),
+        val deepSegment = B1LegalActionDomainProbe.beginSegment(
+            "environmentCount=$environmentCount,all-repetitions",
+        )
+        val repetitionsMeasured = try {
+            (0 until repetitions).map { repetition ->
+                val attributionSegment = B1StepCostAttributionProbe.beginSegment(
+                    "environmentCount=$environmentCount,repetition=$repetition",
                 )
-            } finally {
-                attributionSegment?.close()
+                try {
+                    measureRepetition(
+                        service = service,
+                        slots = slots,
+                        assignments = assignments,
+                        repetition = repetition,
+                        referenceHolder = referenceHolder,
+                        tracker = ConcurrencyTracker(),
+                    )
+                } finally {
+                    attributionSegment?.close()
+                }
             }
+        } finally {
+            deepSegment?.close()
         }
         val measuredAfter = ScalingJvmSnapshot.capture(includeProcessRss = true)
         return buildConditionReport(
@@ -1303,6 +1529,7 @@ private fun measureRepetition(
     fun recordObservation(observation: TrainingObservation) {
         observations++
         publicLegalCandidates += observation.legalActions.size
+        B1LegalActionDomainProbe.recordPublishedObservationCandidateCount(observation.legalActions.size)
         if (observation.pendingDecision?.requiresStructuredResponse == true) {
             structuredDecisionObservations++
         }
@@ -1427,6 +1654,7 @@ private fun measureRepetition(
         publicLegalCandidates = publicLegalCandidates,
         structuredDecisionObservations = structuredDecisionObservations,
         workloadWallNanos = wallNanos,
+        measuredStepWallNanos = stepLatencies.sum(),
         transitionsPerSecond = transitions.toDouble() / wallNanos.toDouble() * 1_000_000_000.0,
         episodesPerSecond = episodes.toDouble() / wallNanos.toDouble() * 1_000_000_000.0,
         policyNanos = policyNanos,
@@ -1500,6 +1728,13 @@ private fun executeChoice(
     choice: SemanticChoice,
 ): ObservationResult {
     val attributionActive = b1StepCostAttributionEnabled
+    val deepDecision = B1LegalActionDomainProbe.beginDecision(
+        when (choice) {
+            is SemanticChoice.Action -> "ACTION"
+            is SemanticChoice.Structured -> "STRUCTURED"
+            is SemanticChoice.Gap -> "GAP"
+        },
+    )
     if (attributionActive) B1StepCostAttributionProbe.beginTransition()
     return try {
         when (choice) {
@@ -1534,6 +1769,7 @@ private fun executeChoice(
         }
     } finally {
         if (attributionActive) B1StepCostAttributionProbe.endTransition()
+        if (deepDecision) B1LegalActionDomainProbe.endDecision()
     }
 }
 
@@ -2013,6 +2249,7 @@ private data class ScalingRepetitionReport(
     val publicLegalCandidates: Long,
     val structuredDecisionObservations: Long,
     val workloadWallNanos: Long,
+    val measuredStepWallNanos: Long,
     val transitionsPerSecond: Double,
     val episodesPerSecond: Double,
     val policyNanos: Long,
