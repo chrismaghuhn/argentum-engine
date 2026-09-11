@@ -6,6 +6,7 @@ import org.objectweb.asm.ClassWriter
 import org.objectweb.asm.MethodVisitor
 import org.objectweb.asm.Opcodes.ALOAD
 import org.objectweb.asm.Opcodes.ASM9
+import org.objectweb.asm.Opcodes.DUP
 import org.objectweb.asm.Opcodes.ILOAD
 import org.objectweb.asm.Opcodes.INVOKEINTERFACE
 import org.objectweb.asm.Opcodes.INVOKESTATIC
@@ -576,12 +577,28 @@ internal object B1ObservationBytecodeInstrumentation {
                     }
 
                     private fun emitPipelineMethodEnd(entry: EntryAction.PipelineMethod) {
+                        when (entry.kind) {
+                            "SEMANTIC_JSON" -> emitResultProbe("recordSemanticJsonResult")
+                            "STATE_DIGEST_COMPUTE" -> emitResultProbe("recordDigestResult")
+                            else -> Unit
+                        }
                         visitLdcInsn(entry.kind)
                         visitMethodInsn(
                             INVOKESTATIC,
                             PIPELINE_PROBE_OWNER,
                             "exitMethod",
                             "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitResultProbe(method: String) {
+                        visitInsn(DUP)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            PIPELINE_PROBE_OWNER,
+                            method,
+                            "(Ljava/lang/Object;)V",
                             false,
                         )
                     }
@@ -703,6 +720,16 @@ internal object B1ObservationBytecodeInstrumentation {
 
                     private fun emitCallSiteEnd(callSite: CallSite) {
                         if (callSite is CallSite.Operation) {
+                            if (callSite.operation == "UTF8_ENCODING") {
+                                visitInsn(DUP)
+                                visitMethodInsn(
+                                    INVOKESTATIC,
+                                    PIPELINE_PROBE_OWNER,
+                                    "recordByteArrayResult",
+                                    "(Ljava/lang/Object;)V",
+                                    false,
+                                )
+                            }
                             visitLdcInsn(callSite.operation)
                             visitMethodInsn(
                                 INVOKESTATIC,

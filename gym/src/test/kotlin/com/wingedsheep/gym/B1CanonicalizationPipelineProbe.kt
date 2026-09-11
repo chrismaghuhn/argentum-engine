@@ -2,6 +2,7 @@ package com.wingedsheep.gym
 
 import com.wingedsheep.gym.contract.TrainingObservation
 import java.lang.management.ManagementFactory
+import java.nio.charset.StandardCharsets
 import java.util.Collections
 import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
@@ -13,6 +14,7 @@ import java.util.concurrent.atomic.LongAdder
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 
@@ -64,6 +66,25 @@ internal object B1CanonicalizationPipelineProbe {
     }
 
     @Serializable
+    internal data class RootStructureSnapshot(
+        val roots: Long,
+        val objectNodes: DistributionSnapshot,
+        val arrayNodes: DistributionSnapshot,
+        val primitiveNodes: DistributionSnapshot,
+        val totalNodes: DistributionSnapshot,
+        val objectMemberCount: DistributionSnapshot,
+        val arrayElementCount: DistributionSnapshot,
+        val maxDepth: DistributionSnapshot,
+        val stringValueCount: DistributionSnapshot,
+        val numberValueCount: DistributionSnapshot,
+        val booleanValueCount: DistributionSnapshot,
+        val nullValueCount: DistributionSnapshot,
+        val stringLengthChars: DistributionSnapshot,
+        val utf8LengthBytes: DistributionSnapshot,
+        val objectKeysPerSort: DistributionSnapshot,
+    )
+
+    @Serializable
     internal data class SegmentSnapshot(
         val label: String,
         val transitions: Long,
@@ -72,6 +93,8 @@ internal object B1CanonicalizationPipelineProbe {
         val consumerCalls: Map<String, Long>,
         val stages: Map<String, StageSnapshot>,
         val fingerprintCounts: DistributionSnapshot,
+        val canonicalizeNodeVisitsPerRoot: DistributionSnapshot,
+        val rootStructure: RootStructureSnapshot,
         val distinctObservationsCanonicalized: Long,
         val sameObjectRecanonicalizationCount: Long,
         val samePublicObservationRecanonicalizationCount: Long,
@@ -171,6 +194,7 @@ internal object B1CanonicalizationPipelineProbe {
             finishFrame(state, frame)
             if (frame.isSemanticSource) {
                 state.segment.fingerprintCounts += frame.fingerprintCount.toLong()
+                state.segment.canonicalizeNodeVisitsPerRoot += frame.canonicalizeNodeVisits
             }
         }
 
@@ -183,8 +207,15 @@ internal object B1CanonicalizationPipelineProbe {
                 is JsonPrimitive -> increment(state.segment.counters, "CANONICALIZE_PRIMITIVE_CALLS")
                 else -> increment(state.segment.counters, "CANONICALIZE_OTHER_CALLS")
             }
+            state.frames.asReversed().firstOrNull { it.isSemanticSource }?.let {
+                it.canonicalizeNodeVisits++
+            }
             if (state.canonicalizeDepth > 0) {
                 state.canonicalizeDepth++
+                if (state.canonicalizeRootStage == "ROOT_CANONICALIZATION") {
+                    state.rootShape?.observe(element, state.canonicalizeDepth)
+                }
+                recordContextNodeVisit(state, state.canonicalizeRootStage)
                 return
             }
             val parent = state.frames.lastOrNull()?.family
@@ -202,6 +233,18 @@ internal object B1CanonicalizationPipelineProbe {
                 },
             )
             state.canonicalizeDepth = 1
+            state.canonicalizeRootStage = stage
+            state.rootShape = if (stage == "ROOT_CANONICALIZATION") RootShape() else null
+            if (stage == "ROOT_CANONICALIZATION") {
+                state.rootShape?.observe(element, state.canonicalizeDepth)
+                if (element is JsonObject) {
+                    state.frames.lastOrNull { it.family == "SEMANTIC_CORE" }?.apply {
+                        referenceJson = B1CanonicalJsonReferenceWriter.canonicalJson(element)
+                        referenceDigest = B1CanonicalJsonReferenceWriter.canonicalDigest(element)
+                    }
+                }
+            }
+            recordContextNodeVisit(state, stage)
             state.frames.addLast(
                 Frame(
                     rawKind = "CANONICALIZE_ROOT",
@@ -228,6 +271,78 @@ internal object B1CanonicalizationPipelineProbe {
                 return
             }
             finishFrame(state, frame)
+            if (frame.stage == "ROOT_CANONICALIZATION") {
+                state.segment.recordRootShape(state.rootShape ?: run {
+                    markIntegrityError("root-shape-missing")
+                    return
+                })
+                state.rootShape = null
+                state.canonicalizeRootStage = null
+            }
+        }
+
+        internal fun recordSemanticJsonResult(result: Any?) {
+            val state = threadState.get() ?: return
+            val frame = state.frames.lastOrNull()
+            val semantic = result as? String ?: run {
+                markIntegrityError("semantic-result-not-string")
+                return
+            }
+            if (frame?.family == "SEMANTIC_CORE") {
+                val reference = frame.referenceJson ?: run {
+                    markIntegrityError("reference-json-missing")
+                    return
+                }
+                increment(state.segment.counters, "REFERENCE_WRITER_REAL_CASES_CHECKED")
+                if (!semantic.toByteArray(StandardCharsets.UTF_8)
+                        .contentEquals(reference.toByteArray(StandardCharsets.UTF_8))) {
+                    increment(state.segment.counters, "REFERENCE_WRITER_BYTE_MISMATCHES")
+                }
+                state.pendingReferenceDigest = frame.referenceDigest
+                return
+            }
+            if (frame?.isSemanticSource != true) return
+            state.segment.recordRootStringLength(semantic.length.toLong())
+            state.rootUtf8Pending = true
+            val observation = frame.sourceObservation ?: return
+            val category = referenceCategory(observation)
+            if (category == null || !state.segment.referenceCategories.add(category)) return
+            increment(state.segment.counters, "REFERENCE_CASE_$category")
+        }
+
+        internal fun recordDigestResult(result: Any?) {
+            val state = threadState.get() ?: return
+            val actual = result as? String ?: run {
+                markIntegrityError("digest-result-not-string")
+                return
+            }
+            val expected = state.pendingReferenceDigest ?: return
+            increment(state.segment.counters, "DIRECT_DIGEST_REAL_CASES_CHECKED")
+            if (actual != expected) increment(state.segment.counters, "DIRECT_DIGEST_REAL_MISMATCHES")
+            state.pendingReferenceDigest = null
+        }
+
+        internal fun recordByteArrayResult(result: Any?) {
+            val state = threadState.get() ?: return
+            val bytes = result as? ByteArray ?: run {
+                markIntegrityError("utf8-result-not-byte-array")
+                return
+            }
+            if (state.rootUtf8Pending) {
+                state.segment.recordRootUtf8Length(bytes.size.toLong())
+                state.rootUtf8Pending = false
+            }
+        }
+
+        private fun recordContextNodeVisit(state: TransitionState, stage: String?) {
+            increment(
+                state.segment.counters,
+                when (stage) {
+                    "ROOT_CANONICALIZATION" -> "ROOT_CANONICALIZATION_NODE_VISITS"
+                    "ACTION_FINGERPRINT_SORT_KEY" -> "ACTION_SORT_KEY_CANONICALIZATION_NODE_VISITS"
+                    else -> "OTHER_CANONICALIZATION_NODE_VISITS"
+                },
+            )
         }
 
         internal fun startOperation(operation: String) {
@@ -310,6 +425,7 @@ internal object B1CanonicalizationPipelineProbe {
                         INCLUSIVE,
                         isSemanticSource = true,
                         family = "SEMANTIC_JSON_SOURCE",
+                        sourceObservation = argument,
                     )
                 }
                 is com.wingedsheep.gym.contract.PlayerObservationV1 -> {
@@ -323,7 +439,13 @@ internal object B1CanonicalizationPipelineProbe {
                     )
                 }
                 is JsonObject -> {
-                    pushTimed(state, "SEMANTIC_JSON", "SEMANTIC_FIELD_PROJECTION", EXCLUSIVE, family = "SEMANTIC_CORE")
+                    pushTimed(
+                        state,
+                        "SEMANTIC_JSON",
+                        "SEMANTIC_FIELD_PROJECTION",
+                        EXCLUSIVE,
+                        family = "SEMANTIC_CORE",
+                    )
                 }
                 else -> {
                     increment(state.segment.counters, "SEMANTIC_JSON_UNKNOWN_ARGUMENT_CALLS")
@@ -380,6 +502,12 @@ internal object B1CanonicalizationPipelineProbe {
         private fun nearestSemanticSource(state: TransitionState): Frame? =
             state.frames.asReversed().firstOrNull { it.isSemanticSource }
 
+        private fun referenceCategory(observation: TrainingObservation): String? = when {
+            observation.pendingDecision?.requiresStructuredResponse == true -> "STRUCTURED_PENDING"
+            observation.legalActions.size >= 20 -> "LARGE_LEGAL_ACTION"
+            else -> "NORMAL_ACTION"
+        }
+
         private fun pushTimed(
             state: TransitionState,
             rawKind: String,
@@ -387,6 +515,9 @@ internal object B1CanonicalizationPipelineProbe {
             mode: TimingMode,
             isSemanticSource: Boolean = false,
             family: String = rawKind,
+            sourceObservation: TrainingObservation? = null,
+            referenceJson: String? = null,
+            referenceDigest: String? = null,
         ) {
             state.frames.addLast(
                 Frame(
@@ -397,6 +528,9 @@ internal object B1CanonicalizationPipelineProbe {
                     startNanos = System.nanoTime(),
                     startAllocatedBytes = currentThreadAllocatedBytes(),
                     isSemanticSource = isSemanticSource,
+                    sourceObservation = sourceObservation,
+                    referenceJson = referenceJson,
+                    referenceDigest = referenceDigest,
                 ),
             )
         }
@@ -462,12 +596,59 @@ internal object B1CanonicalizationPipelineProbe {
     private val EXCLUSIVE = TimingMode.EXCLUSIVE
     private val INCLUSIVE = TimingMode.INCLUSIVE
 
+    internal class RootShape {
+        var objectNodes: Long = 0
+        var arrayNodes: Long = 0
+        var primitiveNodes: Long = 0
+        var totalNodes: Long = 0
+        var objectMemberCount: Long = 0
+        var arrayElementCount: Long = 0
+        var maxDepth: Long = 0
+        var stringValueCount: Long = 0
+        var numberValueCount: Long = 0
+        var booleanValueCount: Long = 0
+        var nullValueCount: Long = 0
+        val objectKeysPerSort = mutableListOf<Long>()
+
+        fun observe(element: Any?, depth: Int) {
+            totalNodes++
+            maxDepth = maxOf(maxDepth, depth.toLong())
+            when (element) {
+                is JsonObject -> {
+                    objectNodes++
+                    objectMemberCount += element.size.toLong()
+                    objectKeysPerSort += element.size.toLong()
+                }
+                is JsonArray -> {
+                    arrayNodes++
+                    arrayElementCount += element.size.toLong()
+                }
+                is JsonNull -> {
+                    primitiveNodes++
+                    nullValueCount++
+                }
+                is JsonPrimitive -> {
+                    primitiveNodes++
+                    when {
+                        element.isString -> stringValueCount++
+                        element.content == "true" || element.content == "false" -> booleanValueCount++
+                        else -> numberValueCount++
+                    }
+                }
+            }
+        }
+    }
+
     private class TransitionState(
         val segment: Segment,
         val startNanos: Long,
     ) {
         val frames = ArrayDeque<Frame>()
         var canonicalizeDepth: Int = 0
+        var canonicalizeRootStage: String? = null
+        var rootShape: RootShape? = null
+        var rootUtf8Pending: Boolean = false
+        var pendingReferenceDigest: String? = null
         val observationObjects = Collections.newSetFromMap(IdentityHashMap<TrainingObservation, Boolean>())
         val observations = mutableListOf<TrainingObservation>()
     }
@@ -480,10 +661,14 @@ internal object B1CanonicalizationPipelineProbe {
         val startNanos: Long = 0L,
         val startAllocatedBytes: Long? = null,
         val isSemanticSource: Boolean = false,
+        val sourceObservation: TrainingObservation? = null,
+        var referenceJson: String? = null,
+        var referenceDigest: String? = null,
     ) {
         var childWallNanos: Long = 0L
         var childAllocatedBytes: Long = 0L
         var fingerprintCount: Int = 0
+        var canonicalizeNodeVisits: Long = 0L
     }
 
     internal class Segment(internal val label: String) {
@@ -493,11 +678,68 @@ internal object B1CanonicalizationPipelineProbe {
         internal val consumerCalls = ConcurrentHashMap<String, LongAdder>()
         private val stages = ConcurrentHashMap<String, StageTotals>()
         internal val fingerprintCounts = CopyOnWriteArrayList<Long>()
+        internal val canonicalizeNodeVisitsPerRoot = CopyOnWriteArrayList<Long>()
+        private val rootObjectNodes = mutableListOf<Long>()
+        private val rootArrayNodes = mutableListOf<Long>()
+        private val rootPrimitiveNodes = mutableListOf<Long>()
+        private val rootTotalNodes = mutableListOf<Long>()
+        private val rootObjectMemberCounts = mutableListOf<Long>()
+        private val rootArrayElementCounts = mutableListOf<Long>()
+        private val rootMaxDepths = mutableListOf<Long>()
+        private val rootStringValueCounts = mutableListOf<Long>()
+        private val rootNumberValueCounts = mutableListOf<Long>()
+        private val rootBooleanValueCounts = mutableListOf<Long>()
+        private val rootNullValueCounts = mutableListOf<Long>()
+        private val rootObjectKeysPerSort = mutableListOf<Long>()
+        private val rootStringLengthChars = mutableListOf<Long>()
+        private val rootUtf8LengthBytes = mutableListOf<Long>()
+        internal val referenceCategories = mutableSetOf<String>()
         internal var distinctObservationsCanonicalized: Long = 0L
         internal var sameObjectRecanonicalizationCount: Long = 0L
         internal var samePublicObservationRecanonicalizationCount: Long = 0L
 
         internal fun stage(name: String): StageTotals = stages.computeIfAbsent(name) { StageTotals() }
+
+        internal fun recordRootShape(shape: RootShape) {
+            rootObjectNodes += shape.objectNodes
+            rootArrayNodes += shape.arrayNodes
+            rootPrimitiveNodes += shape.primitiveNodes
+            rootTotalNodes += shape.totalNodes
+            rootObjectMemberCounts += shape.objectMemberCount
+            rootArrayElementCounts += shape.arrayElementCount
+            rootMaxDepths += shape.maxDepth
+            rootStringValueCounts += shape.stringValueCount
+            rootNumberValueCounts += shape.numberValueCount
+            rootBooleanValueCounts += shape.booleanValueCount
+            rootNullValueCounts += shape.nullValueCount
+            rootObjectKeysPerSort += shape.objectKeysPerSort
+        }
+
+        internal fun recordRootStringLength(value: Long) {
+            rootStringLengthChars += value
+        }
+
+        internal fun recordRootUtf8Length(value: Long) {
+            rootUtf8LengthBytes += value
+        }
+
+        private fun rootStructureSnapshot(): RootStructureSnapshot = RootStructureSnapshot(
+            roots = rootTotalNodes.size.toLong(),
+            objectNodes = DistributionSnapshot.from(rootObjectNodes),
+            arrayNodes = DistributionSnapshot.from(rootArrayNodes),
+            primitiveNodes = DistributionSnapshot.from(rootPrimitiveNodes),
+            totalNodes = DistributionSnapshot.from(rootTotalNodes),
+            objectMemberCount = DistributionSnapshot.from(rootObjectMemberCounts),
+            arrayElementCount = DistributionSnapshot.from(rootArrayElementCounts),
+            maxDepth = DistributionSnapshot.from(rootMaxDepths),
+            stringValueCount = DistributionSnapshot.from(rootStringValueCounts),
+            numberValueCount = DistributionSnapshot.from(rootNumberValueCounts),
+            booleanValueCount = DistributionSnapshot.from(rootBooleanValueCounts),
+            nullValueCount = DistributionSnapshot.from(rootNullValueCounts),
+            stringLengthChars = DistributionSnapshot.from(rootStringLengthChars),
+            utf8LengthBytes = DistributionSnapshot.from(rootUtf8LengthBytes),
+            objectKeysPerSort = DistributionSnapshot.from(rootObjectKeysPerSort),
+        )
 
         internal fun snapshot(): SegmentSnapshot = SegmentSnapshot(
             label = label,
@@ -507,6 +749,8 @@ internal object B1CanonicalizationPipelineProbe {
             consumerCalls = consumerCalls.toSortedMap().mapValues { it.value.sum() },
             stages = stages.keys.sorted().associateWith { stages.getValue(it).snapshot() },
             fingerprintCounts = DistributionSnapshot.from(fingerprintCounts),
+            canonicalizeNodeVisitsPerRoot = DistributionSnapshot.from(canonicalizeNodeVisitsPerRoot),
+            rootStructure = rootStructureSnapshot(),
             distinctObservationsCanonicalized = distinctObservationsCanonicalized,
             sameObjectRecanonicalizationCount = sameObjectRecanonicalizationCount,
             samePublicObservationRecanonicalizationCount = samePublicObservationRecanonicalizationCount,
@@ -601,6 +845,24 @@ internal object B1CanonicalizationPipelineProbe {
     @JvmName("endOperation")
     internal fun endOperation(operation: String) {
         activeSession.get()?.endOperation(operation)
+    }
+
+    @JvmStatic
+    @JvmName("recordSemanticJsonResult")
+    internal fun recordSemanticJsonResult(result: Any?) {
+        activeSession.get()?.recordSemanticJsonResult(result)
+    }
+
+    @JvmStatic
+    @JvmName("recordDigestResult")
+    internal fun recordDigestResult(result: Any?) {
+        activeSession.get()?.recordDigestResult(result)
+    }
+
+    @JvmStatic
+    @JvmName("recordByteArrayResult")
+    internal fun recordByteArrayResult(result: Any?) {
+        activeSession.get()?.recordByteArrayResult(result)
     }
 
     @JvmStatic
