@@ -140,6 +140,38 @@ internal object B1ObservationBytecodeInstrumentation {
                 locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/PaymentPlanValidator.class"),
                 ::paymentPlanValidatorMethodForDeepAttribution,
             ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/state/GameState.class"),
+                ::gameStateMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/legalactions/EnumerationContext.class"),
+                ::enumerationContextMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/registry/CardRegistry.class"),
+                ::cardRegistryMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/legalactions/utils/CastPermissionUtils.class"),
+                ::castPermissionMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/legalactions/utils/CostEnumerationUtils.class"),
+                ::costEnumerationMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/legalactions/utils/TargetEnumerationUtils.class"),
+                ::targetEnumerationMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/AbilityPaymentContextBuilderKt.class"),
+                ::abilityPaymentContextMethodForDeepNegativeWork,
+            ),
+            Target(
+                locate("rules-engine", "com/wingedsheep/engine/legalactions/LegalAction.class"),
+                ::legalActionMethodForDeepNegativeWork,
+            ),
         )
         deepEnumeratorClasses.forEach { (className, family) ->
             targets += Target(
@@ -170,6 +202,14 @@ internal object B1ObservationBytecodeInstrumentation {
         locate("gym", "com/wingedsheep/gym/ActionPaymentPlanValidator.class"),
         locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/ManaSolver.class"),
         locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/PaymentPlanValidator.class"),
+        locate("rules-engine", "com/wingedsheep/engine/state/GameState.class"),
+        locate("rules-engine", "com/wingedsheep/engine/legalactions/EnumerationContext.class"),
+        locate("rules-engine", "com/wingedsheep/engine/registry/CardRegistry.class"),
+        locate("rules-engine", "com/wingedsheep/engine/legalactions/utils/CastPermissionUtils.class"),
+        locate("rules-engine", "com/wingedsheep/engine/legalactions/utils/CostEnumerationUtils.class"),
+        locate("rules-engine", "com/wingedsheep/engine/legalactions/utils/TargetEnumerationUtils.class"),
+        locate("rules-engine", "com/wingedsheep/engine/mechanics/mana/AbilityPaymentContextBuilderKt.class"),
+        locate("rules-engine", "com/wingedsheep/engine/legalactions/LegalAction.class"),
     ) + deepEnumeratorClasses.map { (className, _) ->
         locate("rules-engine", "com/wingedsheep/engine/legalactions/enumerators/$className.class")
     }
@@ -355,6 +395,29 @@ internal object B1ObservationBytecodeInstrumentation {
                 "com/wingedsheep/engine/mechanics/mana/PaymentPlanValidator.class",
                 ::paymentPlanValidatorMethodForDeepAttribution,
             )
+            put("com/wingedsheep/engine/state/GameState.class", ::gameStateMethodForDeepNegativeWork)
+            put(
+                "com/wingedsheep/engine/legalactions/EnumerationContext.class",
+                ::enumerationContextMethodForDeepNegativeWork,
+            )
+            put("com/wingedsheep/engine/registry/CardRegistry.class", ::cardRegistryMethodForDeepNegativeWork)
+            put(
+                "com/wingedsheep/engine/legalactions/utils/CastPermissionUtils.class",
+                ::castPermissionMethodForDeepNegativeWork,
+            )
+            put(
+                "com/wingedsheep/engine/legalactions/utils/CostEnumerationUtils.class",
+                ::costEnumerationMethodForDeepNegativeWork,
+            )
+            put(
+                "com/wingedsheep/engine/legalactions/utils/TargetEnumerationUtils.class",
+                ::targetEnumerationMethodForDeepNegativeWork,
+            )
+            put(
+                "com/wingedsheep/engine/mechanics/mana/AbilityPaymentContextBuilderKt.class",
+                ::abilityPaymentContextMethodForDeepNegativeWork,
+            )
+            put("com/wingedsheep/engine/legalactions/LegalAction.class", ::legalActionMethodForDeepNegativeWork)
             deepEnumeratorClasses.forEach { (className, family) ->
                 put(
                     "com/wingedsheep/engine/legalactions/enumerators/$className.class",
@@ -414,6 +477,8 @@ internal object B1ObservationBytecodeInstrumentation {
             MethodPlan(EntryAction.DeepPhase("ACTIVATED_ABILITY_OWN_PERMANENT_SCAN"))
         className == "ActivatedAbilityEnumerator" && name == "enumerateAnyPlayerMayAbilities" ->
             MethodPlan(EntryAction.DeepPhase("ACTIVATED_ABILITY_OTHER_SCAN"))
+        className == "ActivatedAbilityEnumerator" && name == "generateClassLevelUpAbilities" ->
+            MethodPlan(EntryAction.DeepList("OWN_CLASS_LEVEL_UP_ABILITIES"))
         name == "enumerate" -> MethodPlan(
             EntryAction.DeepList(
                 family = family,
@@ -422,6 +487,64 @@ internal object B1ObservationBytecodeInstrumentation {
         )
         else -> null
     }
+
+    private fun gameStateMethodForDeepNegativeWork(name: String): MethodPlan? =
+        if (name.startsWith("getEntity")) MethodPlan(EntryAction.DeepPhase("OWN_STATE_GET_ENTITY")) else null
+
+    private fun enumerationContextMethodForDeepNegativeWork(name: String): MethodPlan? =
+        if (name == "getBattlefieldPermanents") {
+            MethodPlan(EntryAction.DeepList("OWN_BATTLEFIELD_PERMANENTS"))
+        } else {
+            null
+        }
+
+    private fun cardRegistryMethodForDeepNegativeWork(name: String): MethodPlan? =
+        if (name == "getCard") MethodPlan(EntryAction.DeepPhase("OWN_CARD_REGISTRY_LOOKUP")) else null
+
+    private fun castPermissionMethodForDeepNegativeWork(name: String): MethodPlan? = when {
+        name.startsWith("isActivationPreventedForPlayer") ->
+            MethodPlan(EntryAction.DeepPhase("OWN_PLAYER_ACTIVATION_PREVENTION"))
+        name.startsWith("isActivationPrevented") ->
+            MethodPlan(EntryAction.DeepPhase("OWN_ACTIVATION_PREVENTION"))
+        name.startsWith("getStaticGrantedAbilitiesWithGranter") ->
+            MethodPlan(EntryAction.DeepList("OWN_STATIC_GRANTED_LOOKUP"))
+        name.startsWith("equipPaymentChoices") ->
+            MethodPlan(EntryAction.DeepList("OWN_EQUIP_PAYMENT_CHOICES"))
+        name.startsWith("applyActivatedAbilityCostReduction") ||
+            name.startsWith("applyEquipCostReduction") ||
+            name.startsWith("applyFreeFirstEquipDiscount") ||
+            name.startsWith("relaxAbilityCostColorsIfAny") ->
+            MethodPlan(EntryAction.DeepPhase("OWN_COST_NORMALIZATION"))
+        else -> null
+    }
+
+    private fun costEnumerationMethodForDeepNegativeWork(name: String): MethodPlan? = when {
+        name.startsWith("resolvePayLifeCostTotal") -> MethodPlan(EntryAction.DeepPhase("OWN_COST_PATH"))
+        name.startsWith("findAbilitySacrificeTargets") ||
+            name.startsWith("findAbilityTapTargets") ||
+            name.startsWith("findAbilityBounceTargets") ->
+            MethodPlan(EntryAction.DeepList("OWN_COST_TARGET_HELPER"))
+        name.startsWith("calculateMaxAffordableX") ->
+            MethodPlan(EntryAction.DeepPhase("OWN_MAX_REPEAT_COST"))
+        else -> null
+    }
+
+    private fun targetEnumerationMethodForDeepNegativeWork(name: String): MethodPlan? =
+        if (name.startsWith("buildTargetInfosForAbility")) {
+            MethodPlan(EntryAction.DeepPhase("OWN_TARGET_PATH"))
+        } else {
+            null
+        }
+
+    private fun abilityPaymentContextMethodForDeepNegativeWork(name: String): MethodPlan? =
+        if (name.startsWith("buildAbilityPaymentContext")) {
+            MethodPlan(EntryAction.DeepPhase("OWN_ABILITY_PAYMENT_CONTEXT"))
+        } else {
+            null
+        }
+
+    private fun legalActionMethodForDeepNegativeWork(name: String): MethodPlan? =
+        if (name == "<init>") MethodPlan(EntryAction.DeepPhase("OWN_ACTION_CONSTRUCTION")) else null
 
     private fun gameEnvironmentMethodForAttribution(name: String): MethodPlan? = when {
         name == "processAndCommit" ->
@@ -636,6 +759,11 @@ internal object B1ObservationBytecodeInstrumentation {
                         plan.entry.let { it is EntryAction.Scalar && it.family == "gameEnvironmentLegalActions" }
                     private val interceptDeepGameEnvironmentEnumeratorCalls =
                         plan.entry is EntryAction.DeepLegalActions
+                    private val interceptOwnPermanentCallsites =
+                        plan.entry is EntryAction.DeepPhase &&
+                            plan.entry.family == "ACTIVATED_ABILITY_OWN_PERMANENT_SCAN"
+                    private var expectingTempGrantedScanEnd = false
+                    private var expectingEmblemFlatten = false
 
                     override fun visitCode() {
                         super.visitCode()
@@ -657,6 +785,95 @@ internal object B1ObservationBytecodeInstrumentation {
                             emitDeepPhaseStart("LEGAL_ACTION_ENUMERATOR")
                             super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
                             emitDeepListEnd("LEGAL_ACTION_ENUMERATOR")
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/engine/state/GameState" &&
+                            name.startsWith("getGrantedActivatedAbilities")
+                        ) {
+                            emitDeepPhaseStart("OWN_TEMP_GRANTED_SCAN")
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitCollectionSizeCallback("recordOwnTempGrantedElements", "java/util/List")
+                            expectingTempGrantedScanEnd = true
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            expectingTempGrantedScanEnd &&
+                            owner == "com/wingedsheep/engine/legalactions/utils/CastPermissionUtils" &&
+                            name.startsWith("getStaticGrantedAbilitiesWithGranter")
+                        ) {
+                            emitDeepPhaseEnd("OWN_TEMP_GRANTED_SCAN")
+                            expectingTempGrantedScanEnd = false
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/engine/state/GameState" &&
+                            name == "getEntities"
+                        ) {
+                            emitDeepPhaseStart("OWN_EMBLEM_SCAN")
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitCollectionSizeCallback("recordOwnEmblemScan", "java/util/Map")
+                            expectingEmblemFlatten = true
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            expectingEmblemFlatten &&
+                            owner.startsWith("kotlin/collections/CollectionsKt") &&
+                            name == "flatten"
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitDeepPhaseEnd("OWN_EMBLEM_SCAN")
+                            expectingEmblemFlatten = false
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/sdk/model/CardScript" &&
+                            name.startsWith("effectiveActivatedAbilities")
+                        ) {
+                            emitDeepPhaseStart("OWN_EFFECTIVE_ACTIVATED_ABILITIES")
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitCollectionSizeCallback("recordOwnEffectiveAbilities", "java/util/List")
+                            emitDeepPhaseEnd("OWN_EFFECTIVE_ACTIVATED_ABILITIES")
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/engine/handlers/PredicateEvaluator" &&
+                            name.startsWith("matches")
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitBooleanCallback("recordOwnEmblemMatch")
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/engine/state/components/identity/EmblemActivatedAbilityComponent" &&
+                            name == "getAbilities"
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitCollectionSizeCallback("recordOwnEmblemAbilitiesFound", "java/util/List")
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/engine/legalactions/utils/CastPermissionUtils" &&
+                            name.startsWith("isActivationPreventedForPlayer")
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitBooleanCallback("recordOwnPlayerActivationPrevented")
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "com/wingedsheep/engine/legalactions/utils/CastPermissionUtils" &&
+                            name.startsWith("isActivationPrevented")
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitBooleanCallback("recordOwnActivationPrevented")
+                            return
+                        }
+                        if (interceptOwnPermanentCallsites &&
+                            owner == "java/util/List" &&
+                            name == "add" &&
+                            descriptor == "(Ljava/lang/Object;)Z"
+                        ) {
+                            super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                            emitRecordOwnActionConstruction()
                             return
                         }
                         if (interceptPaymentBuilderManaCalls &&
@@ -829,6 +1046,41 @@ internal object B1ObservationBytecodeInstrumentation {
                             LEGAL_DOMAIN_PROBE_OWNER,
                             "endListPhase",
                             "(Ljava/lang/String;I)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitCollectionSizeCallback(methodName: String, collectionOwner: String) {
+                        visitInsn(DUP)
+                        visitMethodInsn(INVOKEINTERFACE, collectionOwner, "size", "()I", true)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            methodName,
+                            "(I)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitBooleanCallback(methodName: String) {
+                        visitInsn(DUP)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            methodName,
+                            "(Z)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitRecordOwnActionConstruction() {
+                        visitInsn(DUP)
+                        visitInsn(org.objectweb.asm.Opcodes.POP)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "recordOwnActionConstruction",
+                            "()V",
                             false,
                         )
                     }

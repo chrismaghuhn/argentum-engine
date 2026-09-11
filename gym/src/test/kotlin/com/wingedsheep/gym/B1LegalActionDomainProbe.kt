@@ -56,6 +56,36 @@ internal object B1LegalActionDomainProbe {
     )
 
     @Serializable
+    internal data class OwnPermanentSnapshot(
+        val invocations: Long,
+        val returnedActions: Distribution,
+        val zeroResultInvocations: Long,
+        val nonZeroResultInvocations: Long,
+        val battlefieldPermanentsScanned: Distribution,
+        val zeroResultBattlefieldPermanents: Distribution? = null,
+        val nonZeroResultBattlefieldPermanents: Distribution? = null,
+        val tempGrantedScanInvocations: Long,
+        val tempGrantedElementsVisited: Long,
+        val tempGrantedMatches: Long,
+        val staticGrantedLookupCalls: Long,
+        val staticGrantedResults: Long,
+        val effectiveActivatedAbilities: Long,
+        val classLevelUpAbilities: Long,
+        val activationPreventedSkips: Long,
+        val playerActivationPreventedSkips: Long,
+        val emblemScanInvocations: Long,
+        val emblemEntitiesVisited: Long,
+        val emblemAbilitiesFound: Long,
+        val emblemMatchesFound: Long,
+        val cardRegistryLookups: Long,
+        val costPathInvocations: Long,
+        val targetPathInvocations: Long,
+        val actionConstructionInvocations: Long,
+        val zeroClassifications: Map<String, Long>,
+        val phases: Map<String, PhaseSnapshot>,
+    )
+
+    @Serializable
     internal data class DecisionKindSnapshot(
         val decisions: Long,
         val legalActionCalls: Long,
@@ -91,6 +121,8 @@ internal object B1LegalActionDomainProbe {
         val decisionKinds: Map<String, DecisionKindSnapshot>,
         val phases: Map<String, PhaseSnapshot>,
         val manaSolverByEnumerator: Map<String, NestedPhaseSnapshot> = emptyMap(),
+        val ownPermanent: OwnPermanentSnapshot? = null,
+        val ownPermanentDirectPhases: Map<String, PhaseSnapshot> = emptyMap(),
     )
 
     @Serializable
@@ -206,6 +238,42 @@ internal object B1LegalActionDomainProbe {
             decision.segment.recordLegalActionCall(call.purpose, actions.size)
         }
 
+        internal fun recordOwnTempGrantedElements(count: Int) {
+            decisionState.get()?.segment?.recordOwnTempGrantedElements(count)
+        }
+
+        internal fun recordOwnTempGrantedMatches(count: Int) {
+            decisionState.get()?.segment?.recordOwnTempGrantedMatches(count)
+        }
+
+        internal fun recordOwnEffectiveAbilities(count: Int) {
+            decisionState.get()?.segment?.recordOwnEffectiveAbilities(count)
+        }
+
+        internal fun recordOwnEmblemScan(entitiesVisited: Int) {
+            decisionState.get()?.segment?.recordOwnEmblemScan(entitiesVisited)
+        }
+
+        internal fun recordOwnEmblemAbilitiesFound(count: Int) {
+            decisionState.get()?.segment?.recordOwnEmblemAbilitiesFound(count)
+        }
+
+        internal fun recordOwnEmblemMatch(matches: Boolean) {
+            decisionState.get()?.segment?.recordOwnEmblemMatch(matches)
+        }
+
+        internal fun recordOwnActivationPrevented(prevented: Boolean) {
+            decisionState.get()?.segment?.recordOwnActivationPrevented(prevented)
+        }
+
+        internal fun recordOwnPlayerActivationPrevented(prevented: Boolean) {
+            decisionState.get()?.segment?.recordOwnPlayerActivationPrevented(prevented)
+        }
+
+        internal fun recordOwnActionConstruction() {
+            decisionState.get()?.segment?.recordOwnActionConstruction()
+        }
+
         internal fun registerZoneEnumerator(enumerator: Any?, zone: Any?) {
             if (enumerator == null || zone == null) {
                 markIntegrityError()
@@ -217,7 +285,11 @@ internal object B1LegalActionDomainProbe {
         }
 
         internal fun startPhase(family: String) {
-            decisionState.get()?.frames?.addLast(Frame(family, System.nanoTime(), currentThreadAllocatedBytes()))
+            val decision = decisionState.get() ?: return
+            decision.frames.addLast(Frame(family, System.nanoTime(), currentThreadAllocatedBytes()))
+            if (family == OWN_PERMANENT_SCAN) {
+                decision.segment.beginOwnPermanentInvocation()
+            }
         }
 
         internal fun startEnumerator(enumerator: Any?, family: String) {
@@ -237,6 +309,12 @@ internal object B1LegalActionDomainProbe {
             val decision = decisionState.get() ?: return
             endFrame(decision, family).also { frame ->
                 decision.segment.recordPhase(family, frame.measurement, null)
+                if (frame.ownerFamily == OWN_PERMANENT_SCAN) {
+                    decision.segment.recordOwnPermanentPhase(family, frame.measurement, null, frame.parentFamily)
+                }
+                if (family == OWN_PERMANENT_SCAN) {
+                    decision.segment.endOwnPermanentInvocation()
+                }
             }
         }
 
@@ -244,6 +322,14 @@ internal object B1LegalActionDomainProbe {
             val decision = decisionState.get() ?: return
             endFrame(decision, family).also { frame ->
                 decision.segment.recordPhase(family, frame.measurement, returnedItems.toLong())
+                if (frame.ownerFamily == OWN_PERMANENT_SCAN) {
+                    decision.segment.recordOwnPermanentPhase(
+                        family,
+                        frame.measurement,
+                        returnedItems.toLong(),
+                        frame.parentFamily,
+                    )
+                }
             }
         }
 
@@ -274,7 +360,7 @@ internal object B1LegalActionDomainProbe {
         internal fun snapshot(): Snapshot {
             if (currentSegment.get() != null || decisionState.get() != null) markIntegrityError()
             return Snapshot(
-                schemaVersion = "argentum-b1-legal-action-domain-deep-v2",
+                schemaVersion = "argentum-b1-legal-action-domain-deep-v3",
                 allocationMeasurement = if (allocationBean == null) {
                     "NOT_AVAILABLE"
                 } else {
@@ -319,6 +405,8 @@ internal object B1LegalActionDomainProbe {
             val exclusiveAllocatedBytes = inclusiveAllocatedBytes?.let {
                 (it - frame.childAllocatedBytes).coerceAtLeast(0L)
             }
+            val parentFamily = decision.frames.lastOrNull()?.family
+            val ownerFamily = decision.frames.lastOrNull { it.family == OWN_PERMANENT_SCAN }?.family
             val measurement = FrameMeasurement(
                 inclusiveWallNanos = inclusiveWallNanos,
                 exclusiveWallNanos = exclusiveWallNanos,
@@ -335,7 +423,7 @@ internal object B1LegalActionDomainProbe {
                     decision.segment.recordManaSolver(owner.family, measurement)
                 }
             }
-            return FrameMeasurementWithFamily(frame.family, measurement)
+            return FrameMeasurementWithFamily(frame.family, measurement, ownerFamily, parentFamily)
         }
 
         private fun resolveEnumeratorFamily(enumerator: Any?, family: String): String {
@@ -394,6 +482,33 @@ internal object B1LegalActionDomainProbe {
         private val phases = linkedMapOf<String, PhaseTotals>()
         private val decisionKinds = linkedMapOf<String, DecisionTotals>()
         private val manaSolverByEnumerator = linkedMapOf<String, NestedPhaseTotals>()
+        private val ownPermanentPhases = linkedMapOf<String, PhaseTotals>()
+        private val ownPermanentDirectPhases = linkedMapOf<String, PhaseTotals>()
+        private var ownPermanentInvocations = 0L
+        private var ownPermanentZeroResults = 0L
+        private var ownPermanentNonZeroResults = 0L
+        private val ownPermanentReturnedActions = Samples()
+        private val ownPermanentBattlefieldPermanents = Samples()
+        private val ownZeroResultBattlefieldPermanents = Samples()
+        private val ownNonZeroResultBattlefieldPermanents = Samples()
+        private var ownTempGrantedScanInvocations = 0L
+        private var ownTempGrantedElementsVisited = 0L
+        private var ownTempGrantedMatches = 0L
+        private var ownStaticGrantedLookupCalls = 0L
+        private var ownStaticGrantedResults = 0L
+        private var ownEffectiveActivatedAbilities = 0L
+        private var ownClassLevelUpAbilities = 0L
+        private var ownActivationPreventedSkips = 0L
+        private var ownPlayerActivationPreventedSkips = 0L
+        private var ownEmblemScanInvocations = 0L
+        private var ownEmblemEntitiesVisited = 0L
+        private var ownEmblemAbilitiesFound = 0L
+        private var ownEmblemMatchesFound = 0L
+        private var ownCardRegistryLookups = 0L
+        private var ownCostPathInvocations = 0L
+        private var ownTargetPathInvocations = 0L
+        private var ownActionConstructionInvocations = 0L
+        private val ownZeroClassifications = linkedMapOf<String, Long>()
 
         internal fun recordDecisionStarted(kind: String) {
             when (kind) {
@@ -475,12 +590,152 @@ internal object B1LegalActionDomainProbe {
             manaSolverByEnumerator = synchronized(manaSolverByEnumerator) {
                 manaSolverByEnumerator.toSortedMap().mapValues { (_, value) -> value.snapshot() }
             },
+            ownPermanent = ownPermanentInvocations.takeIf { it > 0L }?.let {
+                OwnPermanentSnapshot(
+                    invocations = ownPermanentInvocations,
+                    returnedActions = ownPermanentReturnedActions.snapshot(),
+                    zeroResultInvocations = ownPermanentZeroResults,
+                    nonZeroResultInvocations = ownPermanentNonZeroResults,
+                    battlefieldPermanentsScanned = ownPermanentBattlefieldPermanents.snapshot(),
+                    zeroResultBattlefieldPermanents = ownZeroResultBattlefieldPermanents.snapshotOrNull(),
+                    nonZeroResultBattlefieldPermanents = ownNonZeroResultBattlefieldPermanents.snapshotOrNull(),
+                    tempGrantedScanInvocations = ownTempGrantedScanInvocations,
+                    tempGrantedElementsVisited = ownTempGrantedElementsVisited,
+                    tempGrantedMatches = ownTempGrantedMatches,
+                    staticGrantedLookupCalls = ownStaticGrantedLookupCalls,
+                    staticGrantedResults = ownStaticGrantedResults,
+                    effectiveActivatedAbilities = ownEffectiveActivatedAbilities,
+                    classLevelUpAbilities = ownClassLevelUpAbilities,
+                    activationPreventedSkips = ownActivationPreventedSkips,
+                    playerActivationPreventedSkips = ownPlayerActivationPreventedSkips,
+                    emblemScanInvocations = ownEmblemScanInvocations,
+                    emblemEntitiesVisited = ownEmblemEntitiesVisited,
+                    emblemAbilitiesFound = ownEmblemAbilitiesFound,
+                    emblemMatchesFound = ownEmblemMatchesFound,
+                    cardRegistryLookups = ownCardRegistryLookups,
+                    costPathInvocations = ownCostPathInvocations,
+                    targetPathInvocations = ownTargetPathInvocations,
+                    actionConstructionInvocations = ownActionConstructionInvocations,
+                    zeroClassifications = ownZeroClassifications.toSortedMap(),
+                    phases = synchronized(ownPermanentPhases) {
+                        ownPermanentPhases.toSortedMap().mapValues { (_, value) -> value.snapshot() }
+                    },
+                )
+            },
+            ownPermanentDirectPhases = synchronized(ownPermanentDirectPhases) {
+                ownPermanentDirectPhases.toSortedMap().mapValues { (_, value) -> value.snapshot() }
+            },
         )
 
         internal fun recordManaSolver(family: String, measurement: FrameMeasurement) {
             synchronized(manaSolverByEnumerator) {
                 manaSolverByEnumerator.getOrPut(family) { NestedPhaseTotals() }.record(measurement)
             }
+        }
+
+        private fun recordOwnPermanentInvocation(invocation: OwnPermanentInvocation) {
+            ownPermanentInvocations++
+            ownPermanentReturnedActions.record(invocation.actionConstructionInvocations)
+            if (invocation.actionConstructionInvocations == 0L) {
+                ownPermanentZeroResults++
+                ownZeroResultBattlefieldPermanents.record(invocation.battlefieldPermanents)
+                val classification = invocation.zeroClassification()
+                ownZeroClassifications[classification] = (ownZeroClassifications[classification] ?: 0L) + 1L
+            } else {
+                ownPermanentNonZeroResults++
+                ownNonZeroResultBattlefieldPermanents.record(invocation.battlefieldPermanents)
+            }
+            ownPermanentBattlefieldPermanents.record(invocation.battlefieldPermanents)
+            ownTempGrantedScanInvocations += invocation.tempGrantedScanInvocations
+            ownTempGrantedElementsVisited += invocation.tempGrantedElementsVisited
+            ownTempGrantedMatches += invocation.tempGrantedMatches
+            ownStaticGrantedLookupCalls += invocation.staticGrantedLookupCalls
+            ownStaticGrantedResults += invocation.staticGrantedResults
+            ownEffectiveActivatedAbilities += invocation.effectiveAbilities
+            ownClassLevelUpAbilities += invocation.classLevelUpAbilities
+            ownActivationPreventedSkips += invocation.activationPreventedSkips
+            ownPlayerActivationPreventedSkips += invocation.playerActivationPreventedSkips
+            ownEmblemScanInvocations += invocation.emblemScanInvocations
+            ownEmblemEntitiesVisited += invocation.emblemEntitiesVisited
+            ownEmblemAbilitiesFound += invocation.emblemAbilitiesFound
+            ownEmblemMatchesFound += invocation.emblemMatchesFound
+            ownCardRegistryLookups += invocation.cardRegistryLookups
+            ownCostPathInvocations += invocation.costPathInvocations
+            ownTargetPathInvocations += invocation.targetPathInvocations
+            ownActionConstructionInvocations += invocation.actionConstructionInvocations
+        }
+
+        internal fun recordOwnPermanentPhase(
+            family: String,
+            measurement: FrameMeasurement,
+            returnedItems: Long?,
+            parentFamily: String?,
+        ) {
+            synchronized(ownPermanentPhases) {
+                ownPermanentPhases.getOrPut(family) { PhaseTotals() }.record(measurement, returnedItems)
+            }
+            if (parentFamily == OWN_PERMANENT_SCAN) {
+                synchronized(ownPermanentDirectPhases) {
+                    ownPermanentDirectPhases.getOrPut(family) { PhaseTotals() }.record(measurement, returnedItems)
+                }
+            }
+            val invocation = currentOwnPermanentInvocation.get() ?: return
+            invocation.recordPhase(family, returnedItems)
+        }
+
+        private val currentOwnPermanentInvocation = ThreadLocal<OwnPermanentInvocation?>()
+
+        internal fun beginOwnPermanentInvocation() {
+            val invocation = OwnPermanentInvocation()
+            currentOwnPermanentInvocation.set(invocation)
+        }
+
+        internal fun endOwnPermanentInvocation() {
+            val invocation = currentOwnPermanentInvocation.get() ?: return
+            currentOwnPermanentInvocation.remove()
+            recordOwnPermanentInvocation(invocation)
+        }
+
+        internal fun recordOwnTempGrantedElements(count: Int) {
+            currentOwnPermanentInvocation.get()?.let {
+                it.tempGrantedScanInvocations++
+                it.tempGrantedElementsVisited += count.toLong()
+            }
+        }
+
+        internal fun recordOwnTempGrantedMatches(count: Int) {
+            currentOwnPermanentInvocation.get()?.let { it.tempGrantedMatches += count.toLong() }
+        }
+
+        internal fun recordOwnEffectiveAbilities(count: Int) {
+            currentOwnPermanentInvocation.get()?.let { it.effectiveAbilities += count.toLong() }
+        }
+
+        internal fun recordOwnEmblemScan(entitiesVisited: Int) {
+            currentOwnPermanentInvocation.get()?.let {
+                it.emblemScanInvocations++
+                it.emblemEntitiesVisited += entitiesVisited.toLong()
+            }
+        }
+
+        internal fun recordOwnEmblemAbilitiesFound(count: Int) {
+            currentOwnPermanentInvocation.get()?.let { it.emblemAbilitiesFound += count.toLong() }
+        }
+
+        internal fun recordOwnEmblemMatch(matches: Boolean) {
+            if (matches) currentOwnPermanentInvocation.get()?.let { it.emblemMatchesFound++ }
+        }
+
+        internal fun recordOwnActivationPrevented(prevented: Boolean) {
+            if (prevented) currentOwnPermanentInvocation.get()?.let { it.activationPreventedSkips++ }
+        }
+
+        internal fun recordOwnPlayerActivationPrevented(prevented: Boolean) {
+            if (prevented) currentOwnPermanentInvocation.get()?.let { it.playerActivationPreventedSkips++ }
+        }
+
+        internal fun recordOwnActionConstruction() {
+            currentOwnPermanentInvocation.get()?.let { it.actionConstructionInvocations++ }
         }
     }
 
@@ -530,7 +785,63 @@ internal object B1LegalActionDomainProbe {
     private data class FrameMeasurementWithFamily(
         val family: String,
         val measurement: FrameMeasurement,
+        val ownerFamily: String? = null,
+        val parentFamily: String? = null,
     )
+
+    private class OwnPermanentInvocation {
+        var battlefieldPermanents = 0L
+        var tempGrantedScanInvocations = 0L
+        var tempGrantedElementsVisited = 0L
+        var tempGrantedMatches = 0L
+        var staticGrantedLookupCalls = 0L
+        var staticGrantedResults = 0L
+        var effectiveAbilities = 0L
+        var classLevelUpAbilities = 0L
+        var emblemScanInvocations = 0L
+        var emblemEntitiesVisited = 0L
+        var emblemAbilitiesFound = 0L
+        var emblemMatchesFound = 0L
+        var cardRegistryLookups = 0L
+        var costPathInvocations = 0L
+        var targetPathInvocations = 0L
+        var actionConstructionInvocations = 0L
+        var activationPreventedSkips = 0L
+        var playerActivationPreventedSkips = 0L
+
+        fun recordPhase(family: String, returnedItems: Long?) {
+            when (family) {
+                "OWN_BATTLEFIELD_PERMANENTS" -> {
+                    battlefieldPermanents = returnedItems ?: battlefieldPermanents
+                }
+                "OWN_STATIC_GRANTED_LOOKUP" -> {
+                    staticGrantedLookupCalls++
+                    staticGrantedResults += returnedItems ?: 0L
+                }
+                "OWN_EFFECTIVE_ACTIVATED_ABILITIES" -> {
+                    effectiveAbilities += returnedItems ?: 0L
+                }
+                "OWN_CLASS_LEVEL_UP_ABILITIES" -> {
+                    classLevelUpAbilities += returnedItems ?: 0L
+                }
+                "OWN_CARD_REGISTRY_LOOKUP" -> cardRegistryLookups++
+                "OWN_COST_PATH" -> costPathInvocations++
+                "OWN_TARGET_PATH" -> targetPathInvocations++
+            }
+        }
+
+        fun zeroClassification(): String = when {
+            battlefieldPermanents == 0L -> "NO_BATTLEFIELD_PERMANENTS"
+            tempGrantedElementsVisited > 0L && tempGrantedMatches == 0L -> "SOURCE_MATCHES_NOT_SEPARATELY_MEASURABLE"
+            sourceAbilityCount() == 0L -> "NO_ACTIVATED_ABILITIES_FOUND"
+            costPathInvocations == 0L -> "ALL_REJECTED_BY_TIMING_OR_RESTRICTIONS"
+            targetPathInvocations == 0L -> "ALL_REJECTED_BY_COST"
+            else -> "ALL_REJECTED_BY_TARGETS"
+        }
+
+        private fun sourceAbilityCount(): Long =
+            effectiveAbilities + classLevelUpAbilities + staticGrantedResults + tempGrantedMatches + emblemAbilitiesFound
+    }
 
     private class PhaseTotals {
         private val invocations = LongAdder()
@@ -654,6 +965,7 @@ internal object B1LegalActionDomainProbe {
     private const val DECISION_STRUCTURED = "STRUCTURED"
     private const val DECISION_GAP = "GAP"
     private const val ACTION_FAMILY_OTHER = "OTHER"
+    private const val OWN_PERMANENT_SCAN = "ACTIVATED_ABILITY_OWN_PERMANENT_SCAN"
 
     @JvmStatic
     @JvmName("start")
@@ -742,6 +1054,60 @@ internal object B1LegalActionDomainProbe {
     @JvmName("endEnumerator")
     internal fun endEnumerator(family: String, returnedItems: Int) {
         activeSession.get()?.endEnumerator(family, returnedItems)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnTempGrantedElements")
+    internal fun recordOwnTempGrantedElements(count: Int) {
+        activeSession.get()?.recordOwnTempGrantedElements(count)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnTempGrantedMatches")
+    internal fun recordOwnTempGrantedMatches(count: Int) {
+        activeSession.get()?.recordOwnTempGrantedMatches(count)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnEffectiveAbilities")
+    internal fun recordOwnEffectiveAbilities(count: Int) {
+        activeSession.get()?.recordOwnEffectiveAbilities(count)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnEmblemScan")
+    internal fun recordOwnEmblemScan(entitiesVisited: Int) {
+        activeSession.get()?.recordOwnEmblemScan(entitiesVisited)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnEmblemAbilitiesFound")
+    internal fun recordOwnEmblemAbilitiesFound(count: Int) {
+        activeSession.get()?.recordOwnEmblemAbilitiesFound(count)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnEmblemMatch")
+    internal fun recordOwnEmblemMatch(matches: Boolean) {
+        activeSession.get()?.recordOwnEmblemMatch(matches)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnActivationPrevented")
+    internal fun recordOwnActivationPrevented(prevented: Boolean) {
+        activeSession.get()?.recordOwnActivationPrevented(prevented)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnPlayerActivationPrevented")
+    internal fun recordOwnPlayerActivationPrevented(prevented: Boolean) {
+        activeSession.get()?.recordOwnPlayerActivationPrevented(prevented)
+    }
+
+    @JvmStatic
+    @JvmName("recordOwnActionConstruction")
+    internal fun recordOwnActionConstruction() {
+        activeSession.get()?.recordOwnActionConstruction()
     }
 
     @JvmStatic

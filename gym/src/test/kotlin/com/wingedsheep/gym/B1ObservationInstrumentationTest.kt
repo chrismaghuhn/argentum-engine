@@ -188,6 +188,61 @@ class B1ObservationInstrumentationTest : FunSpec({
             .getValue("MANA_ABILITY_ENUMERATOR").invocations shouldBe 1L
     }
 
+    test("negative-work probe records the own-permanent funnel without identities") {
+        val session = B1LegalActionDomainProbe.start()
+        val segment = B1LegalActionDomainProbe.beginSegment("synthetic")
+        check(B1LegalActionDomainProbe.beginDecision("ACTION"))
+
+        B1LegalActionDomainProbe.startPhase("ACTIVATED_ABILITY_OWN_PERMANENT_SCAN")
+        B1LegalActionDomainProbe.startPhase("OWN_BATTLEFIELD_PERMANENTS")
+        B1LegalActionDomainProbe.endListPhase("OWN_BATTLEFIELD_PERMANENTS", 2)
+        B1LegalActionDomainProbe.startPhase("OWN_STATIC_GRANTED_LOOKUP")
+        B1LegalActionDomainProbe.endListPhase("OWN_STATIC_GRANTED_LOOKUP", 0)
+        B1LegalActionDomainProbe.recordOwnEffectiveAbilities(3)
+        B1LegalActionDomainProbe.recordOwnEmblemScan(4)
+        B1LegalActionDomainProbe.recordOwnEmblemMatch(false)
+        B1LegalActionDomainProbe.recordOwnActionConstruction()
+        B1LegalActionDomainProbe.recordOwnActionConstruction()
+        B1LegalActionDomainProbe.endPhase("ACTIVATED_ABILITY_OWN_PERMANENT_SCAN")
+
+        B1LegalActionDomainProbe.recordObservationCandidateCount(1)
+        B1LegalActionDomainProbe.endDecision()
+        segment?.close()
+        val own = B1LegalActionDomainProbe.stop(session).segments.single().ownPermanent
+            ?: error("own-permanent snapshot was not recorded")
+
+        own.invocations shouldBe 1L
+        own.zeroResultInvocations shouldBe 0L
+        own.nonZeroResultInvocations shouldBe 1L
+        own.returnedActions.sum shouldBe 2L
+        own.battlefieldPermanentsScanned.sum shouldBe 2L
+        own.emblemEntitiesVisited shouldBe 4L
+        own.emblemMatchesFound shouldBe 0L
+        own.actionConstructionInvocations shouldBe 2L
+        own.phases.getValue("OWN_STATIC_GRANTED_LOOKUP").zeroResultInvocations shouldBe 1L
+    }
+
+    test("negative-work probe classifies an empty controlled-permanent scan") {
+        val session = B1LegalActionDomainProbe.start()
+        val segment = B1LegalActionDomainProbe.beginSegment("synthetic")
+        check(B1LegalActionDomainProbe.beginDecision("ACTION"))
+
+        B1LegalActionDomainProbe.startPhase("ACTIVATED_ABILITY_OWN_PERMANENT_SCAN")
+        B1LegalActionDomainProbe.startPhase("OWN_BATTLEFIELD_PERMANENTS")
+        B1LegalActionDomainProbe.endListPhase("OWN_BATTLEFIELD_PERMANENTS", 0)
+        B1LegalActionDomainProbe.endPhase("ACTIVATED_ABILITY_OWN_PERMANENT_SCAN")
+
+        B1LegalActionDomainProbe.recordObservationCandidateCount(1)
+        B1LegalActionDomainProbe.endDecision()
+        segment?.close()
+        val own = B1LegalActionDomainProbe.stop(session).segments.single().ownPermanent
+            ?: error("own-permanent snapshot was not recorded")
+
+        own.zeroResultInvocations shouldBe 1L
+        own.zeroClassifications["NO_BATTLEFIELD_PERMANENTS"] shouldBe 1L
+        own.battlefieldPermanentsScanned.sum shouldBe 0L
+    }
+
     test("deep legal-action probe records call purpose and state repeat classes") {
         val session = B1LegalActionDomainProbe.start()
         val segment = B1LegalActionDomainProbe.beginSegment("synthetic")

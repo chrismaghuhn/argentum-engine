@@ -1199,6 +1199,48 @@ private fun printB1LegalActionDomainSnapshot(snapshot: B1LegalActionDomainProbe.
                 " nonZeroResults=${phase.nonZeroResultInvocations}",
         )
     }
+    segment.ownPermanent?.let { own ->
+        println(
+            "B1_OWN_PERMANENT=" +
+                " invocations=${own.invocations}" +
+                " zeroResults=${own.zeroResultInvocations}" +
+                " nonZeroResults=${own.nonZeroResultInvocations}" +
+                " actions=${own.returnedActions.sum}" +
+                " battlefieldPermanents=${own.battlefieldPermanentsScanned.sum}" +
+                " tempGrantedElements=${own.tempGrantedElementsVisited}" +
+                " tempGrantedMatches=${own.tempGrantedMatches}" +
+                " staticGrantedResults=${own.staticGrantedResults}" +
+                " effectiveAbilities=${own.effectiveActivatedAbilities}" +
+                " classLevelUpAbilities=${own.classLevelUpAbilities}" +
+                " activationPreventedSkips=${own.activationPreventedSkips}" +
+                " playerActivationPreventedSkips=${own.playerActivationPreventedSkips}" +
+                " emblemEntities=${own.emblemEntitiesVisited}" +
+                " emblemMatches=${own.emblemMatchesFound}" +
+                " cardRegistryLookups=${own.cardRegistryLookups}" +
+                " costPath=${own.costPathInvocations}" +
+                " targetPath=${own.targetPathInvocations}" +
+                " actionConstruction=${own.actionConstructionInvocations}",
+        )
+        println(
+            "B1_OWN_PERMANENT_SCAN_DISTRIBUTION=" +
+                " all=${own.battlefieldPermanentsScanned}" +
+                " zero=${own.zeroResultBattlefieldPermanents}" +
+                " nonzero=${own.nonZeroResultBattlefieldPermanents}",
+        )
+        println("B1_OWN_PERMANENT_ZERO_CLASSIFICATIONS=" + own.zeroClassifications)
+        own.phases.forEach { (family, phase) ->
+            println(
+                "B1_OWN_PERMANENT_PHASE=$family" +
+                    " invocations=${phase.invocations}" +
+                    " inclusiveNs=${phase.inclusiveWallNanos}" +
+                    " exclusiveNs=${phase.exclusiveWallNanos}" +
+                    " inclusiveAllocBytes=${phase.inclusiveAllocatedBytes ?: "NOT_AVAILABLE"}" +
+                    " exclusiveAllocBytes=${phase.exclusiveAllocatedBytes ?: "NOT_AVAILABLE"}" +
+                    " returnedItems=${phase.returnedItems?.sum ?: "NOT_APPLICABLE"}",
+            )
+        }
+        println("B1_OWN_PERMANENT_DIRECT_PHASES=" + segment.ownPermanentDirectPhases)
+    }
     println("B1_LEGAL_DOMAIN_MANA_SOLVER_BY_ENUMERATOR=" + segment.manaSolverByEnumerator)
 }
 
