@@ -148,7 +148,7 @@ internal object B1ObservationBytecodeInstrumentation {
                     "com/wingedsheep/engine/legalactions/enumerators/$className.class",
                 ),
                 { name ->
-                    if (name == "enumerate") MethodPlan(EntryAction.DeepList(family)) else null
+                    deepEnumeratorMethodPlan(className, family, name)
                 },
             )
         }
@@ -313,9 +313,10 @@ internal object B1ObservationBytecodeInstrumentation {
         data object DeepLegalActions : EntryAction
         data class DeepContext(val purpose: String) : EntryAction
         data class DeepPhase(val family: String) : EntryAction
-        data class DeepList(val family: String) : EntryAction
+        data class DeepList(val family: String, val resolveZone: Boolean = false) : EntryAction
         data class DeepAction(val family: String, val actionSlot: Int) : EntryAction
         data class DeepBuild(val listSlot: Int, val family: String = "OBSERVATION_BUILD") : EntryAction
+        data class DeepZoneRegistration(val zoneSlot: Int) : EntryAction
     }
 
     private fun restoreActions(restorers: List<() -> Unit>) {
@@ -357,9 +358,7 @@ internal object B1ObservationBytecodeInstrumentation {
             deepEnumeratorClasses.forEach { (className, family) ->
                 put(
                     "com/wingedsheep/engine/legalactions/enumerators/$className.class",
-                    { name ->
-                        if (name == "enumerate") MethodPlan(EntryAction.DeepList(family)) else null
-                    },
+                    { name -> deepEnumeratorMethodPlan(className, family, name) },
                 )
             }
         }
@@ -398,15 +397,31 @@ internal object B1ObservationBytecodeInstrumentation {
         "ForetellEnumerator" to "SPECIAL_ACTIONS",
         "SuspendEnumerator" to "SPECIAL_ACTIONS",
         "CastFromZoneEnumerator" to "CAST_SPELL_ACTIONS",
-        "ManaAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+        "ManaAbilityEnumerator" to "MANA_ABILITY_ENUMERATOR",
         "TurnFaceUpEnumerator" to "SPECIAL_ACTIONS",
         "UnlockRoomDoorEnumerator" to "SPECIAL_ACTIONS",
-        "ActivatedAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+        "ActivatedAbilityEnumerator" to "ACTIVATED_ABILITY_ENUMERATOR",
         "CrewEnumerator" to "SPECIAL_ACTIONS",
         "SaddleEnumerator" to "SPECIAL_ACTIONS",
-        "ZoneActivatedAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
-        "CommandZoneAbilityEnumerator" to "ACTIVATED_ABILITY_ACTIONS",
+        "ZoneActivatedAbilityEnumerator" to "ZONE_ACTIVATED_ABILITY_ENUMERATOR",
+        "CommandZoneAbilityEnumerator" to "COMMAND_ZONE_ABILITY_ENUMERATOR",
     )
+
+    private fun deepEnumeratorMethodPlan(className: String, family: String, name: String): MethodPlan? = when {
+        className == "ZoneActivatedAbilityEnumerator" && name == "<init>" ->
+            MethodPlan(EntryAction.DeepZoneRegistration(zoneSlot = 1))
+        className == "ActivatedAbilityEnumerator" && name == "enumerateOwnPermanents" ->
+            MethodPlan(EntryAction.DeepPhase("ACTIVATED_ABILITY_OWN_PERMANENT_SCAN"))
+        className == "ActivatedAbilityEnumerator" && name == "enumerateAnyPlayerMayAbilities" ->
+            MethodPlan(EntryAction.DeepPhase("ACTIVATED_ABILITY_OTHER_SCAN"))
+        name == "enumerate" -> MethodPlan(
+            EntryAction.DeepList(
+                family = family,
+                resolveZone = className == "ZoneActivatedAbilityEnumerator",
+            ),
+        )
+        else -> null
+    }
 
     private fun gameEnvironmentMethodForAttribution(name: String): MethodPlan? = when {
         name == "processAndCommit" ->
@@ -660,6 +675,9 @@ internal object B1ObservationBytecodeInstrumentation {
                     }
 
                     override fun visitInsn(opcode: Int) {
+                        if (opcode == RETURN && plan.entry is EntryAction.DeepZoneRegistration) {
+                            emitDeepZoneRegistration(plan.entry.zoneSlot)
+                        }
                         if (plan.endBuildOnReturn && opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)) {
                             visitMethodInsn(INVOKESTATIC, PROBE_OWNER, "endBuild", "()V", false)
                         }
@@ -673,7 +691,13 @@ internal object B1ObservationBytecodeInstrumentation {
                                 EntryAction.DeepLegalActions -> emitDeepLegalActionsEnd()
                                 is EntryAction.DeepContext -> emitDeepContextEnd(entry.purpose)
                                 is EntryAction.DeepPhase -> emitDeepPhaseEnd(entry.family)
-                                is EntryAction.DeepList -> emitDeepListEnd(entry.family)
+                                is EntryAction.DeepList -> {
+                                    if (entry.resolveZone) {
+                                        emitDeepEnumeratorEnd(entry.family)
+                                    } else {
+                                        emitDeepListEnd(entry.family)
+                                    }
+                                }
                                 is EntryAction.DeepAction -> emitDeepPhaseEnd(entry.family)
                                 is EntryAction.DeepBuild -> emitDeepPhaseEnd(entry.family)
                                 else -> Unit
@@ -693,9 +717,16 @@ internal object B1ObservationBytecodeInstrumentation {
                             EntryAction.DeepLegalActions -> emitDeepLegalActionsStart()
                             is EntryAction.DeepContext -> emitDeepContextStart(entry.purpose)
                             is EntryAction.DeepPhase -> emitDeepPhaseStart(entry.family)
-                            is EntryAction.DeepList -> emitDeepPhaseStart(entry.family)
+                            is EntryAction.DeepList -> {
+                                if (entry.resolveZone) {
+                                    emitDeepEnumeratorStart(entry.family)
+                                } else {
+                                    emitDeepPhaseStart(entry.family)
+                                }
+                            }
                             is EntryAction.DeepAction -> emitDeepActionStart(entry.family, entry.actionSlot)
                             is EntryAction.DeepBuild -> emitDeepBuildStart(entry.family, entry.listSlot)
+                            is EntryAction.DeepZoneRegistration -> Unit
                         }
                     }
 
@@ -798,6 +829,45 @@ internal object B1ObservationBytecodeInstrumentation {
                             LEGAL_DOMAIN_PROBE_OWNER,
                             "endListPhase",
                             "(Ljava/lang/String;I)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepEnumeratorStart(family: String) {
+                        visitVarInsn(ALOAD, 0)
+                        visitLdcInsn(family)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "startEnumerator",
+                            "(Ljava/lang/Object;Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepEnumeratorEnd(family: String) {
+                        visitInsn(DUP)
+                        visitTypeInsn(CHECKCAST, "java/util/List")
+                        visitMethodInsn(INVOKEINTERFACE, "java/util/List", "size", "()I", true)
+                        visitLdcInsn(family)
+                        visitInsn(SWAP)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "endEnumerator",
+                            "(Ljava/lang/String;I)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitDeepZoneRegistration(zoneSlot: Int) {
+                        visitVarInsn(ALOAD, 0)
+                        visitVarInsn(ALOAD, zoneSlot)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            LEGAL_DOMAIN_PROBE_OWNER,
+                            "registerZoneEnumerator",
+                            "(Ljava/lang/Object;Ljava/lang/Object;)V",
                             false,
                         )
                     }

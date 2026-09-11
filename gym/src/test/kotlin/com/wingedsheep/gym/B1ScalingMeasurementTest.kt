@@ -1194,9 +1194,12 @@ private fun printB1LegalActionDomainSnapshot(snapshot: B1LegalActionDomainProbe.
                 " exclusiveNs=${phase.exclusiveWallNanos}" +
                 " inclusiveAllocBytes=${phase.inclusiveAllocatedBytes ?: "NOT_AVAILABLE"}" +
                 " exclusiveAllocBytes=${phase.exclusiveAllocatedBytes ?: "NOT_AVAILABLE"}" +
-                " returnedItems=${phase.returnedItems?.sum ?: "NOT_APPLICABLE"}",
+                " returnedItems=${phase.returnedItems?.sum ?: "NOT_APPLICABLE"}" +
+                " zeroResults=${phase.zeroResultInvocations}" +
+                " nonZeroResults=${phase.nonZeroResultInvocations}",
         )
     }
+    println("B1_LEGAL_DOMAIN_MANA_SOLVER_BY_ENUMERATOR=" + segment.manaSolverByEnumerator)
 }
 
 private fun formatPercent(value: Long, denominator: Long): String =

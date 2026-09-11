@@ -3,6 +3,8 @@ package com.wingedsheep.gym
 import com.wingedsheep.engine.legalactions.LegalAction
 import kotlinx.serialization.Serializable
 import java.lang.management.ManagementFactory
+import java.util.IdentityHashMap
+import java.util.Locale
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
@@ -42,6 +44,15 @@ internal object B1LegalActionDomainProbe {
         val exclusiveAllocatedBytes: Long? = null,
         val allocationSamples: Long,
         val returnedItems: Distribution? = null,
+        val zeroResultInvocations: Long = 0L,
+        val nonZeroResultInvocations: Long = 0L,
+    )
+
+    @Serializable
+    internal data class NestedPhaseSnapshot(
+        val invocations: Long,
+        val inclusiveWallNanos: Long,
+        val inclusiveAllocatedBytes: Long? = null,
     )
 
     @Serializable
@@ -79,6 +90,7 @@ internal object B1LegalActionDomainProbe {
         val actionFamilyCandidates: Map<String, Long>,
         val decisionKinds: Map<String, DecisionKindSnapshot>,
         val phases: Map<String, PhaseSnapshot>,
+        val manaSolverByEnumerator: Map<String, NestedPhaseSnapshot> = emptyMap(),
     )
 
     @Serializable
@@ -94,6 +106,7 @@ internal object B1LegalActionDomainProbe {
         private val segments = CopyOnWriteArrayList<Segment>()
         private val decisionState = ThreadLocal<DecisionState?>()
         private val integrityErrors = AtomicLong(0)
+        private val zoneEnumeratorZones = IdentityHashMap<Any, String>()
 
         internal fun beginSegment(label: String): SegmentHandle {
             val segment = Segment(label)
@@ -174,7 +187,7 @@ internal object B1LegalActionDomainProbe {
                 markIntegrityError()
                 return
             }
-            val measurement = endFrame(decision, LEGAL_ACTION_CALL)
+            val measurement = endFrame(decision, LEGAL_ACTION_CALL).measurement
             decision.legalCallWallNanos += measurement.inclusiveWallNanos
             decision.legalCallAllocatedBytes = addNullable(
                 decision.legalCallAllocatedBytes,
@@ -193,22 +206,52 @@ internal object B1LegalActionDomainProbe {
             decision.segment.recordLegalActionCall(call.purpose, actions.size)
         }
 
+        internal fun registerZoneEnumerator(enumerator: Any?, zone: Any?) {
+            if (enumerator == null || zone == null) {
+                markIntegrityError()
+                return
+            }
+            synchronized(zoneEnumeratorZones) {
+                zoneEnumeratorZones[enumerator] = zone.toString().uppercase(Locale.ROOT)
+            }
+        }
+
         internal fun startPhase(family: String) {
             decisionState.get()?.frames?.addLast(Frame(family, System.nanoTime(), currentThreadAllocatedBytes()))
         }
 
+        internal fun startEnumerator(enumerator: Any?, family: String) {
+            val decision = decisionState.get() ?: return
+            val resolvedFamily = resolveEnumeratorFamily(enumerator, family)
+            decision.frames.addLast(
+                Frame(
+                    family = resolvedFamily,
+                    startNanos = System.nanoTime(),
+                    startAllocatedBytes = currentThreadAllocatedBytes(),
+                    baseFamily = family,
+                ),
+            )
+        }
+
         internal fun endPhase(family: String) {
             val decision = decisionState.get() ?: return
-            endFrame(decision, family).also { measurement ->
-                decision.segment.recordPhase(family, measurement, null)
+            endFrame(decision, family).also { frame ->
+                decision.segment.recordPhase(family, frame.measurement, null)
             }
         }
 
         internal fun endListPhase(family: String, returnedItems: Int) {
             val decision = decisionState.get() ?: return
-            endFrame(decision, family).also { measurement ->
-                decision.segment.recordPhase(family, measurement, returnedItems.toLong())
+            endFrame(decision, family).also { frame ->
+                decision.segment.recordPhase(family, frame.measurement, returnedItems.toLong())
             }
+        }
+
+        internal fun endEnumerator(family: String, returnedItems: Int) {
+            val decision = decisionState.get() ?: return
+            val frame = endFrame(decision, family, dynamicBaseFamily = family)
+            val resolvedFamily = frame.family
+            decision.segment.recordPhase(resolvedFamily, frame.measurement, returnedItems.toLong())
         }
 
         internal fun recordObservationCandidateCount(candidateCount: Int) {
@@ -231,7 +274,7 @@ internal object B1LegalActionDomainProbe {
         internal fun snapshot(): Snapshot {
             if (currentSegment.get() != null || decisionState.get() != null) markIntegrityError()
             return Snapshot(
-                schemaVersion = "argentum-b1-legal-action-domain-deep-v1",
+                schemaVersion = "argentum-b1-legal-action-domain-deep-v2",
                 allocationMeasurement = if (allocationBean == null) {
                     "NOT_AVAILABLE"
                 } else {
@@ -246,11 +289,27 @@ internal object B1LegalActionDomainProbe {
             )
         }
 
-        private fun endFrame(decision: DecisionState, family: String): FrameMeasurement {
+        private fun endFrame(decision: DecisionState, family: String): FrameMeasurementWithFamily {
+            return endFrame(decision, family, dynamicBaseFamily = null)
+        }
+
+        private fun endFrame(
+            decision: DecisionState,
+            family: String,
+            dynamicBaseFamily: String?,
+        ): FrameMeasurementWithFamily {
             val frame = decision.frames.removeLastOrNull()
-            if (frame == null || frame.family != family) {
+            val matches = if (dynamicBaseFamily == null) {
+                frame?.family == family
+            } else {
+                frame?.baseFamily == dynamicBaseFamily
+            }
+            if (frame == null || !matches) {
                 markIntegrityError()
-                return FrameMeasurement(0L, 0L, null, null)
+                return FrameMeasurementWithFamily(
+                    family = family,
+                    measurement = FrameMeasurement(0L, 0L, null, null),
+                )
             }
             val inclusiveWallNanos = (System.nanoTime() - frame.startNanos).coerceAtLeast(0L)
             val inclusiveAllocatedBytes = currentThreadAllocatedBytes()?.let { end ->
@@ -271,7 +330,25 @@ internal object B1LegalActionDomainProbe {
                 parent.childWallNanos += inclusiveWallNanos
                 if (inclusiveAllocatedBytes != null) parent.childAllocatedBytes += inclusiveAllocatedBytes
             }
-            return measurement
+            if (frame.family == "MANA_CAN_PAY") {
+                decision.frames.lastOrNull { isActivatedEnumeratorFamily(it.family) }?.let { owner ->
+                    decision.segment.recordManaSolver(owner.family, measurement)
+                }
+            }
+            return FrameMeasurementWithFamily(frame.family, measurement)
+        }
+
+        private fun resolveEnumeratorFamily(enumerator: Any?, family: String): String {
+            if (family != ZONE_ACTIVATED_ABILITY_FAMILY) return family
+            val zone = synchronized(zoneEnumeratorZones) { enumerator?.let(zoneEnumeratorZones::get) }
+            return when (zone) {
+                "GRAVEYARD" -> ZONE_ACTIVATED_ABILITY_GRAVEYARD
+                "HAND" -> ZONE_ACTIVATED_ABILITY_HAND
+                else -> {
+                    markIntegrityError()
+                    ZONE_ACTIVATED_ABILITY_UNRESOLVED
+                }
+            }
         }
 
         private fun markIntegrityError() {
@@ -316,6 +393,7 @@ internal object B1LegalActionDomainProbe {
         private val actionFamilyCandidates = linkedMapOf<String, Long>()
         private val phases = linkedMapOf<String, PhaseTotals>()
         private val decisionKinds = linkedMapOf<String, DecisionTotals>()
+        private val manaSolverByEnumerator = linkedMapOf<String, NestedPhaseTotals>()
 
         internal fun recordDecisionStarted(kind: String) {
             when (kind) {
@@ -394,7 +472,16 @@ internal object B1LegalActionDomainProbe {
             actionFamilyCandidates = actionFamilyCandidates.toSortedMap(),
             decisionKinds = decisionKinds.toSortedMap().mapValues { (_, value) -> value.snapshot() },
             phases = phases.toSortedMap().mapValues { (_, value) -> value.snapshot() },
+            manaSolverByEnumerator = synchronized(manaSolverByEnumerator) {
+                manaSolverByEnumerator.toSortedMap().mapValues { (_, value) -> value.snapshot() }
+            },
         )
+
+        internal fun recordManaSolver(family: String, measurement: FrameMeasurement) {
+            synchronized(manaSolverByEnumerator) {
+                manaSolverByEnumerator.getOrPut(family) { NestedPhaseTotals() }.record(measurement)
+            }
+        }
     }
 
     internal class DecisionState(
@@ -427,6 +514,7 @@ internal object B1LegalActionDomainProbe {
         val family: String,
         val startNanos: Long,
         val startAllocatedBytes: Long?,
+        val baseFamily: String? = null,
     ) {
         var childWallNanos: Long = 0L
         var childAllocatedBytes: Long = 0L
@@ -439,6 +527,11 @@ internal object B1LegalActionDomainProbe {
         val exclusiveAllocatedBytes: Long?,
     )
 
+    private data class FrameMeasurementWithFamily(
+        val family: String,
+        val measurement: FrameMeasurement,
+    )
+
     private class PhaseTotals {
         private val invocations = LongAdder()
         private val inclusiveWallNanos = LongAdder()
@@ -447,6 +540,8 @@ internal object B1LegalActionDomainProbe {
         private val allocatedBytes = LongAdder()
         private val allocationSamples = LongAdder()
         private val returnedItems = Samples()
+        private val zeroResultInvocations = LongAdder()
+        private val nonZeroResultInvocations = LongAdder()
 
         fun record(measurement: FrameMeasurement, resultSize: Long?) {
             invocations.increment()
@@ -459,7 +554,10 @@ internal object B1LegalActionDomainProbe {
                 allocatedBytes.add(it)
                 allocationSamples.increment()
             }
-            resultSize?.let(returnedItems::record)
+            resultSize?.let {
+                returnedItems.record(it)
+                if (it == 0L) zeroResultInvocations.increment() else nonZeroResultInvocations.increment()
+            }
         }
 
         fun snapshot(): PhaseSnapshot = PhaseSnapshot(
@@ -470,6 +568,30 @@ internal object B1LegalActionDomainProbe {
             exclusiveAllocatedBytes = allocatedBytes.sum().takeIf { allocationSamples.sum() > 0L },
             allocationSamples = allocationSamples.sum(),
             returnedItems = returnedItems.snapshotOrNull(),
+            zeroResultInvocations = zeroResultInvocations.sum(),
+            nonZeroResultInvocations = nonZeroResultInvocations.sum(),
+        )
+    }
+
+    private class NestedPhaseTotals {
+        private val invocations = LongAdder()
+        private val inclusiveWallNanos = LongAdder()
+        private val inclusiveAllocatedBytes = LongAdder()
+        private val allocationSamples = LongAdder()
+
+        fun record(measurement: FrameMeasurement) {
+            invocations.increment()
+            inclusiveWallNanos.add(measurement.inclusiveWallNanos)
+            measurement.inclusiveAllocatedBytes?.let {
+                inclusiveAllocatedBytes.add(it)
+                allocationSamples.increment()
+            }
+        }
+
+        fun snapshot(): NestedPhaseSnapshot = NestedPhaseSnapshot(
+            invocations = invocations.sum(),
+            inclusiveWallNanos = inclusiveWallNanos.sum(),
+            inclusiveAllocatedBytes = inclusiveAllocatedBytes.sum().takeIf { allocationSamples.sum() > 0L },
         )
     }
 
@@ -593,6 +715,18 @@ internal object B1LegalActionDomainProbe {
     }
 
     @JvmStatic
+    @JvmName("registerZoneEnumerator")
+    internal fun registerZoneEnumerator(enumerator: Any?, zone: Any?) {
+        activeSession.get()?.registerZoneEnumerator(enumerator, zone)
+    }
+
+    @JvmStatic
+    @JvmName("startEnumerator")
+    internal fun startEnumerator(enumerator: Any?, family: String) {
+        activeSession.get()?.startEnumerator(enumerator, family)
+    }
+
+    @JvmStatic
     @JvmName("endPhase")
     internal fun endPhase(family: String) {
         activeSession.get()?.endPhase(family)
@@ -602,6 +736,12 @@ internal object B1LegalActionDomainProbe {
     @JvmName("endListPhase")
     internal fun endListPhase(family: String, returnedItems: Int) {
         activeSession.get()?.endListPhase(family, returnedItems)
+    }
+
+    @JvmStatic
+    @JvmName("endEnumerator")
+    internal fun endEnumerator(family: String, returnedItems: Int) {
+        activeSession.get()?.endEnumerator(family, returnedItems)
     }
 
     @JvmStatic
@@ -644,4 +784,17 @@ internal object B1LegalActionDomainProbe {
         actionType.startsWith("Declare") || actionType.contains("Combat") -> "COMBAT"
         else -> "SPECIAL"
     }
+
+    private fun isActivatedEnumeratorFamily(family: String): Boolean = family in setOf(
+        "MANA_ABILITY_ENUMERATOR",
+        "ACTIVATED_ABILITY_ENUMERATOR",
+        "ZONE_ACTIVATED_ABILITY_GRAVEYARD",
+        "ZONE_ACTIVATED_ABILITY_HAND",
+        "COMMAND_ZONE_ABILITY_ENUMERATOR",
+    )
+
+    private const val ZONE_ACTIVATED_ABILITY_FAMILY = "ZONE_ACTIVATED_ABILITY_ENUMERATOR"
+    private const val ZONE_ACTIVATED_ABILITY_GRAVEYARD = "ZONE_ACTIVATED_ABILITY_GRAVEYARD"
+    private const val ZONE_ACTIVATED_ABILITY_HAND = "ZONE_ACTIVATED_ABILITY_HAND"
+    private const val ZONE_ACTIVATED_ABILITY_UNRESOLVED = "ZONE_ACTIVATED_ABILITY_UNRESOLVED"
 }

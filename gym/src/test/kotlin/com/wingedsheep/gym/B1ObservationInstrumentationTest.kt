@@ -149,9 +149,43 @@ class B1ObservationInstrumentationTest : FunSpec({
             check(containsProbeInvocation(Files.readAllBytes(abilityPath), "startPhase")) {
                 "ActivatedAbilityEnumerator was not instrumented"
             }
+            val zonePath = paths.first { it.toString().endsWith("ZoneActivatedAbilityEnumerator.class") }
+            check(containsProbeInvocation(Files.readAllBytes(zonePath), "registerZoneEnumerator")) {
+                "ZoneActivatedAbilityEnumerator constructor was not instrumented for zone identity"
+            }
         } finally {
             handle.close()
         }
+    }
+
+    test("deep legal-action probe splits concrete families and tracks zero results") {
+        val session = B1LegalActionDomainProbe.start()
+        val segment = B1LegalActionDomainProbe.beginSegment("synthetic")
+        check(B1LegalActionDomainProbe.beginDecision("ACTION"))
+
+        B1LegalActionDomainProbe.startPhase("MANA_ABILITY_ENUMERATOR")
+        B1LegalActionDomainProbe.startPhase("MANA_CAN_PAY")
+        B1LegalActionDomainProbe.endPhase("MANA_CAN_PAY")
+        B1LegalActionDomainProbe.endListPhase("MANA_ABILITY_ENUMERATOR", 0)
+
+        val zoneEnumerator = Any()
+        B1LegalActionDomainProbe.registerZoneEnumerator(zoneEnumerator, "GRAVEYARD")
+        B1LegalActionDomainProbe.startEnumerator(zoneEnumerator, "ZONE_ACTIVATED_ABILITY_ENUMERATOR")
+        B1LegalActionDomainProbe.endEnumerator("ZONE_ACTIVATED_ABILITY_ENUMERATOR", 2)
+
+        B1LegalActionDomainProbe.recordObservationCandidateCount(1)
+        B1LegalActionDomainProbe.endDecision()
+        segment?.close()
+        val snapshot = B1LegalActionDomainProbe.stop(session)
+        val phases = snapshot.segments.single().phases
+
+        phases.getValue("MANA_ABILITY_ENUMERATOR").zeroResultInvocations shouldBe 1L
+        phases.getValue("MANA_ABILITY_ENUMERATOR").nonZeroResultInvocations shouldBe 0L
+        phases.getValue("ZONE_ACTIVATED_ABILITY_GRAVEYARD").zeroResultInvocations shouldBe 0L
+        phases.getValue("ZONE_ACTIVATED_ABILITY_GRAVEYARD").nonZeroResultInvocations shouldBe 1L
+        phases.getValue("ZONE_ACTIVATED_ABILITY_GRAVEYARD").returnedItems?.sum shouldBe 2L
+        snapshot.segments.single().manaSolverByEnumerator
+            .getValue("MANA_ABILITY_ENUMERATOR").invocations shouldBe 1L
     }
 
     test("deep legal-action probe records call purpose and state repeat classes") {
