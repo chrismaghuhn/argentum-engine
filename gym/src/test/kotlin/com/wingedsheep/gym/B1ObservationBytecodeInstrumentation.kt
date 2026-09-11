@@ -25,6 +25,7 @@ import java.nio.file.Path
  */
 internal object B1ObservationBytecodeInstrumentation {
     private const val PROBE_OWNER = "com/wingedsheep/gym/B1ObservationProbe"
+    private const val COST_PROBE_OWNER = "com/wingedsheep/gym/B1StepCostAttributionProbe"
 
     internal fun install(): Handle = installTargets(
         listOf(
@@ -45,6 +46,65 @@ internal object B1ObservationBytecodeInstrumentation {
                 ::manaSolverMethod,
             ),
         ),
+    )
+
+    /** Install only the large-boundary timing hooks used by the post-Fix-18 coarse attribution. */
+    internal fun installCoarseAttribution(): Handle = installTargets(
+        listOf(
+            Target(
+                locate("gym", "com/wingedsheep/gym/GameEnvironment.class"),
+                ::gameEnvironmentCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/GameGymEnv.class"),
+                ::gameGymEnvCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
+                ::observationBuilderCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/PerspectiveEventProjector.class"),
+                ::historyACoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/history/HistoryCReferenceEnvelopeProducerV1.class"),
+                ::historyCProducerCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/history/HistoryCReferenceAuthority.class"),
+                ::historyCAuthorityCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/history/PerspectiveReferenceProjectorV1.class"),
+                ::historyBCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/history/PerspectiveHistoryComposerV1.class"),
+                ::historyDCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/StateDigest.class"),
+                ::digestCoarseMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/ObservationCanonicalizer.class"),
+                ::canonicalizationCoarseMethod,
+            ),
+        ),
+    )
+
+    internal fun coarseAttributionClassOutputPathsForTest(): List<Path> = listOf(
+        locate("gym", "com/wingedsheep/gym/GameEnvironment.class"),
+        locate("gym", "com/wingedsheep/gym/GameGymEnv.class"),
+        locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
+        locate("gym", "com/wingedsheep/gym/contract/PerspectiveEventProjector.class"),
+        locate("gym", "com/wingedsheep/gym/history/HistoryCReferenceEnvelopeProducerV1.class"),
+        locate("gym", "com/wingedsheep/gym/history/HistoryCReferenceAuthority.class"),
+        locate("gym", "com/wingedsheep/gym/history/PerspectiveReferenceProjectorV1.class"),
+        locate("gym", "com/wingedsheep/gym/history/PerspectiveHistoryComposerV1.class"),
+        locate("gym", "com/wingedsheep/gym/contract/StateDigest.class"),
+        locate("gym", "com/wingedsheep/gym/contract/ObservationCanonicalizer.class"),
     )
 
     /** Test seam for proving the restoration transaction without changing production classes. */
@@ -145,7 +205,48 @@ internal object B1ObservationBytecodeInstrumentation {
         data class ActionView(val indexSlot: Int, val actionSlot: Int) : EntryAction
         data class Build(val listSlot: Int) : EntryAction
         data class DecisionOptions(val listSlot: Int) : EntryAction
+        data class Timed(val family: String) : EntryAction
     }
+
+    private fun gameEnvironmentCoarseMethod(name: String): MethodPlan? = when (name) {
+        "processAndCommit" -> MethodPlan(EntryAction.Timed("RULES_EXECUTION_PLUS_HISTORY_B_KNOWN_INFORMATION"))
+        "legalActions" -> MethodPlan(EntryAction.Timed("LEGAL_ACTION_AND_DOMAIN"))
+        else -> null
+    }
+
+    private fun gameGymEnvCoarseMethod(name: String): MethodPlan? = when (name) {
+        "buildObservation" -> MethodPlan(EntryAction.Timed("OBSERVATION_BOUNDARY"))
+        "appendAutomaticPerspectiveHistory" -> MethodPlan(EntryAction.Timed("HISTORY_D_ORCHESTRATION"))
+        else -> null
+    }
+
+    private fun observationBuilderCoarseMethod(name: String): MethodPlan? =
+        if (name.startsWith("build-") && !name.contains("\$default")) {
+            MethodPlan(EntryAction.Timed("OBSERVATION_BUILDER"))
+        } else {
+            null
+        }
+
+    private fun historyACoarseMethod(name: String): MethodPlan? =
+        if (name.startsWith("project-")) MethodPlan(EntryAction.Timed("HISTORY_A")) else null
+
+    private fun historyCProducerCoarseMethod(name: String): MethodPlan? =
+        if (name == "produce") MethodPlan(EntryAction.Timed("HISTORY_C_PRODUCER")) else null
+
+    private fun historyCAuthorityCoarseMethod(name: String): MethodPlan? =
+        if (name == "validate") MethodPlan(EntryAction.Timed("HISTORY_C_AUTHORITY")) else null
+
+    private fun historyBCoarseMethod(name: String): MethodPlan? =
+        if (name.startsWith("project-")) MethodPlan(EntryAction.Timed("HISTORY_B_REFERENCE")) else null
+
+    private fun historyDCoarseMethod(name: String): MethodPlan? =
+        if (name == "append") MethodPlan(EntryAction.Timed("HISTORY_D_APPEND")) else null
+
+    private fun digestCoarseMethod(name: String): MethodPlan? =
+        if (name == "compute") MethodPlan(EntryAction.Timed("DIGEST")) else null
+
+    private fun canonicalizationCoarseMethod(name: String): MethodPlan? =
+        if (name == "semanticJson") MethodPlan(EntryAction.Timed("CANONICALIZATION")) else null
 
     private fun observationBuilderMethod(name: String): MethodPlan? = when {
         name.startsWith("build-") && !name.contains("\$default") ->
@@ -262,6 +363,11 @@ internal object B1ObservationBytecodeInstrumentation {
                         if (plan.endBuildOnReturn && opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)) {
                             visitMethodInsn(INVOKESTATIC, PROBE_OWNER, "endBuild", "()V", false)
                         }
+                        if (plan.entry is EntryAction.Timed &&
+                            opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)
+                        ) {
+                            emitPhaseEnd(plan.entry.family)
+                        }
                         super.visitInsn(opcode)
                     }
 
@@ -272,7 +378,30 @@ internal object B1ObservationBytecodeInstrumentation {
                             is EntryAction.ActionView -> emitActionView(entry.indexSlot, entry.actionSlot)
                             is EntryAction.Build -> emitBuild(entry.listSlot)
                             is EntryAction.DecisionOptions -> emitDecisionOptions(entry.listSlot)
+                            is EntryAction.Timed -> emitPhaseStart(entry.family)
                         }
+                    }
+
+                    private fun emitPhaseStart(family: String) {
+                        visitLdcInsn(family)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            COST_PROBE_OWNER,
+                            "startPhase",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitPhaseEnd(family: String) {
+                        visitLdcInsn(family)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            COST_PROBE_OWNER,
+                            "endPhase",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
                     }
 
                     private fun emitScalar(family: String) {

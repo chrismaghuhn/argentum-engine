@@ -70,6 +70,11 @@ private const val B1_SCALING_BENCHMARK_SCHEMA_VERSION = "argentum-b1-scaling-v2"
 private const val B1_STRUCTURED_LATENCY_SCHEMA_VERSION = "argentum-b1-structured-latency-v1"
 private const val B1_RESET_HEAVY_SCHEMA_VERSION = "argentum-b1-reset-heavy-v1"
 private const val B1_BENCHMARK_CONTRACT_SCHEMA_VERSION = "argentum-b1-benchmark-contract-v1"
+private val b1CoarseAttributionEnabled = System.getProperty("b1.scaling.runMode") == "coarse-attribution"
+private val b1CoarseSingleEnvironment = System.getProperty("b1.scaling.runMode") in setOf(
+    "coarse-attribution",
+    "coarse-control",
+)
 
 private val b1ScalingJson = Json {
     prettyPrint = true
@@ -894,62 +899,103 @@ private fun runB1ScalingMeasurement() {
     Files.deleteIfExists(jfrPath)
     Files.deleteIfExists(jsonPath)
 
+    val attributionSession = if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.start() else null
+    val attributionInstrumentation = try {
+        if (b1CoarseAttributionEnabled) B1ObservationBytecodeInstrumentation.installCoarseAttribution() else null
+    } catch (failure: Throwable) {
+        attributionSession?.let { B1StepCostAttributionProbe.stop(it) }
+        throw failure
+    }
+    var attributionSnapshot: B1StepCostAttributionProbe.Snapshot? = null
     val recording = openScalingJfrRecording()
     val referenceHolder = ReferenceTrajectoryHolder()
-    val conditions = try {
-        listOf(1, 2, 4, 8).map { environmentCount ->
-            measureScalingCondition(
-                environmentCount = environmentCount,
-                repetitions = repetitions,
-                warmupSteps = warmupSteps,
-                referenceHolder = referenceHolder,
-            )
-        }
-    } finally {
-        recording?.let { current ->
-            runCatching {
-                current.stop()
-                current.dump(jfrPath)
-            }.onFailure { failure ->
-                println("B1_SCALING_JFR=NOT_RUN reason=" + (failure.message ?: failure::class.simpleName))
-            }.also {
-                current.close()
+    try {
+        val conditions = try {
+            val environmentCounts = if (b1CoarseSingleEnvironment) listOf(1) else listOf(1, 2, 4, 8)
+            environmentCounts.map { environmentCount ->
+                measureScalingCondition(
+                    environmentCount = environmentCount,
+                    repetitions = repetitions,
+                    warmupSteps = warmupSteps,
+                    referenceHolder = referenceHolder,
+                )
+            }
+        } finally {
+            recording?.let { current ->
+                runCatching {
+                    current.stop()
+                    current.dump(jfrPath)
+                }.onFailure { failure ->
+                    println("B1_SCALING_JFR=NOT_RUN reason=" + (failure.message ?: failure::class.simpleName))
+                }.also {
+                    current.close()
+                }
             }
         }
-    }
+        attributionSnapshot = attributionSession?.let { B1StepCostAttributionProbe.stop(it) }
+        attributionInstrumentation?.close()
 
-    val report = B1ScalingReport(
-        benchmarkSchemaVersion = B1_SCALING_BENCHMARK_SCHEMA_VERSION,
-        baseOriginMain = B1_SCALING_BASE_ORIGIN_MAIN,
-        acceptedCharacterizationHead = B1_SCALING_ACCEPTED_HEAD,
-        sourceHead = B1_SCALING_ACCEPTED_HEAD,
-        hardware = hardwareMetadata(),
-        benchmarkContract = buildScalingBenchmarkContract(),
-        warmupStepsPerEnvironment = warmupSteps,
-        measuredRepetitions = repetitions,
-        environments = conditions,
-        memoryMeasurement =
-            "retained setup heap/RSS delta uses test-only System.gc() plus sleep stabilization; workload timing is unaffected",
-        observationBuildLatency = "NOT_SEPARATELY_MEASURABLE: returned step latency includes public observation construction",
-        legalDomainPublicationLatency = "NOT_SEPARATELY_MEASURABLE: returned step latency includes legal-domain publication",
-        semanticTrajectoryRegression = "PASS: compact state-digest/action trajectory hashes matched the 1-env reference",
-        replayExactness = "MEASURED_BY_SEPARATE_EXACT_PAIR_GATE",
-        b0TrustInvariants = "PRESERVED_BY_SCOPE: no candidate/order/privacy/RNG/replay production behavior changed",
-        hostedCi = "NOT_ESTABLISHED",
-        dataTrusted = "NO",
-    )
-    Files.writeString(jsonPath, b1ScalingJson.encodeToString(B1ScalingReport.serializer(), report))
-    println("B1_SCALING_METRICS_PATH=" + jsonPath)
-    println("B1_SCALING_JFR_PATH=" + if (Files.exists(jfrPath)) jfrPath else "NOT_RUN")
-    println("B1_SCALING_ENVIRONMENTS=1,2,4,8")
-    conditions.forEach { condition ->
-        println(
-            "B1_SCALING_ROW=" + condition.environmentCount +
-                " medianWallSeconds=" + formatSeconds(condition.medianWorkloadWallNanos) +
-                " medianTransitionsPerSecond=" + formatDouble(condition.medianTransitionsPerSecond) +
-                " medianEpisodesPerSecond=" + formatDouble(condition.medianEpisodesPerSecond) +
-                " maxConcurrency=" + condition.actualConcurrency.maxConcurrentCalls,
+        val report = B1ScalingReport(
+            benchmarkSchemaVersion = B1_SCALING_BENCHMARK_SCHEMA_VERSION,
+            baseOriginMain = B1_SCALING_BASE_ORIGIN_MAIN,
+            acceptedCharacterizationHead = B1_SCALING_ACCEPTED_HEAD,
+            sourceHead = B1_SCALING_ACCEPTED_HEAD,
+            hardware = hardwareMetadata(),
+            benchmarkContract = buildScalingBenchmarkContract(),
+            warmupStepsPerEnvironment = warmupSteps,
+            measuredRepetitions = repetitions,
+            environments = conditions,
+            memoryMeasurement =
+                "retained setup heap/RSS delta uses test-only System.gc() plus sleep stabilization; workload timing is unaffected",
+            observationBuildLatency = "NOT_SEPARATELY_MEASURABLE: returned step latency includes public observation construction",
+            legalDomainPublicationLatency = "NOT_SEPARATELY_MEASURABLE: returned step latency includes legal-domain publication",
+            semanticTrajectoryRegression = "PASS: compact state-digest/action trajectory hashes matched the 1-env reference",
+            replayExactness = "MEASURED_BY_SEPARATE_EXACT_PAIR_GATE",
+            b0TrustInvariants = "PRESERVED_BY_SCOPE: no candidate/order/privacy/RNG/replay production behavior changed",
+            hostedCi = "NOT_ESTABLISHED",
+            dataTrusted = "NO",
         )
+        Files.writeString(jsonPath, b1ScalingJson.encodeToString(B1ScalingReport.serializer(), report))
+        println("B1_SCALING_METRICS_PATH=" + jsonPath)
+        println("B1_SCALING_JFR_PATH=" + if (Files.exists(jfrPath)) jfrPath else "NOT_RUN")
+        println("B1_SCALING_ENVIRONMENTS=" + conditions.joinToString(",") { it.environmentCount.toString() })
+        conditions.forEach { condition ->
+            println(
+                "B1_SCALING_ROW=" + condition.environmentCount +
+                    " medianWallSeconds=" + formatSeconds(condition.medianWorkloadWallNanos) +
+                    " medianTransitionsPerSecond=" + formatDouble(condition.medianTransitionsPerSecond) +
+                    " medianEpisodesPerSecond=" + formatDouble(condition.medianEpisodesPerSecond) +
+                    " maxConcurrency=" + condition.actualConcurrency.maxConcurrentCalls,
+            )
+        }
+        attributionSnapshot?.let { snapshot ->
+            val attributionPath = outputDir.resolve("b1-step-cost-attribution.json")
+            Files.writeString(
+                attributionPath,
+                b1ScalingJson.encodeToString(B1StepCostAttributionProbe.Snapshot.serializer(), snapshot),
+            )
+            println("B1_STEP_COST_ATTRIBUTION_PATH=" + attributionPath)
+        }
+        val trajectoryPath = outputDir.resolve("b1-semantic-trajectory-hashes.tsv")
+        Files.writeString(
+            trajectoryPath,
+            referenceHolder.snapshots().joinToString("\n", postfix = "\n") { summary ->
+                listOf(
+                    summary.label,
+                    summary.observationCount,
+                    summary.choiceCount,
+                    summary.terminal,
+                    summary.truncated,
+                    summary.trajectoryHash,
+                ).joinToString("\t")
+            },
+        )
+        println("B1_SEMANTIC_TRAJECTORY_PATH=" + trajectoryPath)
+    } finally {
+        if (attributionSession != null && attributionSnapshot == null) {
+            runCatching { B1StepCostAttributionProbe.stop(attributionSession) }
+        }
+        runCatching { attributionInstrumentation?.close() }
     }
 }
 
@@ -1165,14 +1211,21 @@ private fun measureScalingCondition(
         warmup(service, slots, assignments, warmupSteps)
         val beforeMeasured = ScalingJvmSnapshot.capture(includeProcessRss = true)
         val repetitionsMeasured = (0 until repetitions).map { repetition ->
-            measureRepetition(
-                service = service,
-                slots = slots,
-                assignments = assignments,
-                repetition = repetition,
-                referenceHolder = referenceHolder,
-                tracker = ConcurrencyTracker(),
+            val attributionSegment = B1StepCostAttributionProbe.beginSegment(
+                "environmentCount=$environmentCount,repetition=$repetition",
             )
+            try {
+                measureRepetition(
+                    service = service,
+                    slots = slots,
+                    assignments = assignments,
+                    repetition = repetition,
+                    referenceHolder = referenceHolder,
+                    tracker = ConcurrencyTracker(),
+                )
+            } finally {
+                attributionSegment?.close()
+            }
         }
         val measuredAfter = ScalingJvmSnapshot.capture(includeProcessRss = true)
         return buildConditionReport(
@@ -1301,7 +1354,16 @@ private fun measureRepetition(
             val choices = liveSlots.map { slotIndex ->
                 val slot = slots[slotIndex]
                 val choiceStart = System.nanoTime()
-                val choice = policy.choose(slot.observation, slot.policyState)
+                val policyMeasurement = if (b1CoarseAttributionEnabled) {
+                    B1StepCostAttributionProbe.beginPolicy()
+                } else {
+                    null
+                }
+                val choice = try {
+                    policy.choose(slot.observation, slot.policyState)
+                } finally {
+                    policyMeasurement?.close()
+                }
                 policyNanos += System.nanoTime() - choiceStart
                 check(choice !is SemanticChoice.Gap) {
                     "B1 scaling policy gap at repetition=$repetition slot=$slotIndex " +
@@ -1449,35 +1511,42 @@ private fun executeChoice(
     slot: ScalingSlot,
     observation: TrainingObservation,
     choice: SemanticChoice,
-): ObservationResult = when (choice) {
-    is SemanticChoice.Action -> {
-        val selected = observation.legalActions.singleOrNull { it.actionId == choice.actionId }
-            ?: error("Scaling policy selected an action outside the current public list")
-        check(selected.affordable || selected.isDecisionOption) {
-            "Scaling policy selected an unaffordable/non-decision action"
+): ObservationResult {
+    if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.beginTransition()
+    return try {
+        when (choice) {
+            is SemanticChoice.Action -> {
+                val selected = observation.legalActions.singleOrNull { it.actionId == choice.actionId }
+                    ?: error("Scaling policy selected an action outside the current public list")
+                check(selected.affordable || selected.isDecisionOption) {
+                    "Scaling policy selected an unaffordable/non-decision action"
+                }
+                service.step(
+                    StepRequest(
+                        envId = slot.envId,
+                        actionId = choice.actionId,
+                        action = choice.payload,
+                    ),
+                )
+            }
+
+            is SemanticChoice.Structured -> {
+                val pending = observation.pendingDecision
+                    ?: error("Structured scaling choice had no pending decision")
+                val decisionId = pending.decisionId
+                    ?: error("Structured scaling choice had no decision ID")
+                service.submitDecision(
+                    envId = slot.envId,
+                    response = toScalingDecisionResponse(decisionId, choice.selection),
+                    actorId = observation.agentToAct,
+                )
+            }
+
+            is SemanticChoice.Gap -> error("Scaling policy gap reached execution")
         }
-        service.step(
-            StepRequest(
-                envId = slot.envId,
-                actionId = choice.actionId,
-                action = choice.payload,
-            ),
-        )
+    } finally {
+        if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.endTransition()
     }
-
-    is SemanticChoice.Structured -> {
-        val pending = observation.pendingDecision
-            ?: error("Structured scaling choice had no pending decision")
-        val decisionId = pending.decisionId
-            ?: error("Structured scaling choice had no decision ID")
-        service.submitDecision(
-            envId = slot.envId,
-            response = toScalingDecisionResponse(decisionId, choice.selection),
-            actorId = observation.agentToAct,
-        )
-    }
-
-    is SemanticChoice.Gap -> error("Scaling policy gap reached execution")
 }
 
 private fun buildConditionReport(
@@ -1749,6 +1818,8 @@ private class ConcurrencyTracker {
 private class ReferenceTrajectoryHolder {
     private val reference = linkedMapOf<String, TrajectorySummary>()
     private var collectingReference = true
+
+    fun snapshots(): List<TrajectorySummary> = reference.values.toList()
 
     fun checkOrSet(summary: TrajectorySummary) {
         if (collectingReference) {
