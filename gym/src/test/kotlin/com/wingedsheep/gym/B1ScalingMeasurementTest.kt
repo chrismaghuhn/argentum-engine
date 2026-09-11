@@ -75,6 +75,11 @@ private val b1CoarseSingleEnvironment = System.getProperty("b1.scaling.runMode")
     "coarse-attribution",
     "coarse-control",
 )
+private val b1PipelineAttributionEnabled = System.getProperty("b1.scaling.runMode") == "pipeline-attribution"
+private val b1PipelineSingleEnvironment = System.getProperty("b1.scaling.runMode") in setOf(
+    "pipeline-attribution",
+    "pipeline-control",
+)
 
 private val b1ScalingJson = Json {
     prettyPrint = true
@@ -900,18 +905,36 @@ private fun runB1ScalingMeasurement() {
     Files.deleteIfExists(jsonPath)
 
     val attributionSession = if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.start() else null
+    val pipelineSession = if (b1PipelineAttributionEnabled) B1CanonicalizationPipelineProbe.start() else null
     val attributionInstrumentation = try {
         if (b1CoarseAttributionEnabled) B1ObservationBytecodeInstrumentation.installCoarseAttribution() else null
     } catch (failure: Throwable) {
         attributionSession?.let { B1StepCostAttributionProbe.stop(it) }
         throw failure
     }
+    val pipelineInstrumentation = try {
+        if (b1PipelineAttributionEnabled) {
+            B1ObservationBytecodeInstrumentation.installCanonicalizationPipeline()
+        } else {
+            null
+        }
+    } catch (failure: Throwable) {
+        pipelineSession?.let { B1CanonicalizationPipelineProbe.stop(it) }
+        attributionInstrumentation?.close()
+        attributionSession?.let { B1StepCostAttributionProbe.stop(it) }
+        throw failure
+    }
     var attributionSnapshot: B1StepCostAttributionProbe.Snapshot? = null
+    var pipelineSnapshot: B1CanonicalizationPipelineProbe.Snapshot? = null
     val recording = openScalingJfrRecording()
     val referenceHolder = ReferenceTrajectoryHolder()
     try {
         val conditions = try {
-            val environmentCounts = if (b1CoarseSingleEnvironment) listOf(1) else listOf(1, 2, 4, 8)
+            val environmentCounts = if (b1CoarseSingleEnvironment || b1PipelineSingleEnvironment) {
+                listOf(1)
+            } else {
+                listOf(1, 2, 4, 8)
+            }
             environmentCounts.map { environmentCount ->
                 measureScalingCondition(
                     environmentCount = environmentCount,
@@ -934,6 +957,8 @@ private fun runB1ScalingMeasurement() {
         }
         attributionSnapshot = attributionSession?.let { B1StepCostAttributionProbe.stop(it) }
         attributionInstrumentation?.close()
+        pipelineSnapshot = pipelineSession?.let { B1CanonicalizationPipelineProbe.stop(it) }
+        pipelineInstrumentation?.close()
 
         val report = B1ScalingReport(
             benchmarkSchemaVersion = B1_SCALING_BENCHMARK_SCHEMA_VERSION,
@@ -976,6 +1001,14 @@ private fun runB1ScalingMeasurement() {
             )
             println("B1_STEP_COST_ATTRIBUTION_PATH=" + attributionPath)
         }
+        pipelineSnapshot?.let { snapshot ->
+            val pipelinePath = outputDir.resolve("b1-canonicalization-pipeline.json")
+            Files.writeString(
+                pipelinePath,
+                b1ScalingJson.encodeToString(B1CanonicalizationPipelineProbe.Snapshot.serializer(), snapshot),
+            )
+            println("B1_CANONICALIZATION_PIPELINE_PATH=" + pipelinePath)
+        }
         val trajectoryPath = outputDir.resolve("b1-semantic-trajectory-hashes.tsv")
         Files.writeString(
             trajectoryPath,
@@ -996,6 +1029,10 @@ private fun runB1ScalingMeasurement() {
             runCatching { B1StepCostAttributionProbe.stop(attributionSession) }
         }
         runCatching { attributionInstrumentation?.close() }
+        if (pipelineSession != null && pipelineSnapshot == null) {
+            runCatching { B1CanonicalizationPipelineProbe.stop(pipelineSession) }
+        }
+        runCatching { pipelineInstrumentation?.close() }
     }
 }
 
@@ -1214,6 +1251,9 @@ private fun measureScalingCondition(
             val attributionSegment = B1StepCostAttributionProbe.beginSegment(
                 "environmentCount=$environmentCount,repetition=$repetition",
             )
+            val pipelineSegment = B1CanonicalizationPipelineProbe.beginSegment(
+                "environmentCount=$environmentCount,repetition=$repetition",
+            )
             try {
                 measureRepetition(
                     service = service,
@@ -1224,6 +1264,7 @@ private fun measureScalingCondition(
                     tracker = ConcurrencyTracker(),
                 )
             } finally {
+                pipelineSegment?.close()
                 attributionSegment?.close()
             }
         }
@@ -1513,6 +1554,7 @@ private fun executeChoice(
     choice: SemanticChoice,
 ): ObservationResult {
     if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.beginTransition()
+    if (b1PipelineAttributionEnabled) B1CanonicalizationPipelineProbe.beginTransition()
     return try {
         when (choice) {
             is SemanticChoice.Action -> {
@@ -1545,6 +1587,7 @@ private fun executeChoice(
             is SemanticChoice.Gap -> error("Scaling policy gap reached execution")
         }
     } finally {
+        if (b1PipelineAttributionEnabled) B1CanonicalizationPipelineProbe.endTransition()
         if (b1CoarseAttributionEnabled) B1StepCostAttributionProbe.endTransition()
     }
 }

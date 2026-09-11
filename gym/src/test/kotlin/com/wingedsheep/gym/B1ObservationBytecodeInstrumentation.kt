@@ -26,6 +26,7 @@ import java.nio.file.Path
 internal object B1ObservationBytecodeInstrumentation {
     private const val PROBE_OWNER = "com/wingedsheep/gym/B1ObservationProbe"
     private const val COST_PROBE_OWNER = "com/wingedsheep/gym/B1StepCostAttributionProbe"
+    private const val PIPELINE_PROBE_OWNER = "com/wingedsheep/gym/B1CanonicalizationPipelineProbe"
 
     internal fun install(): Handle = installTargets(
         listOf(
@@ -92,6 +93,30 @@ internal object B1ObservationBytecodeInstrumentation {
                 ::canonicalizationCoarseMethod,
             ),
         ),
+    )
+
+    /** Install only the test-only call and stage hooks for Characterization-20. */
+    internal fun installCanonicalizationPipeline(): Handle = installTargets(
+        listOf(
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/ObservationCanonicalizer.class"),
+                ::canonicalizationPipelineMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/StateDigest.class"),
+                ::stateDigestPipelineMethod,
+            ),
+            Target(
+                locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
+                ::observationBuilderPipelineMethod,
+            ),
+        ),
+    )
+
+    internal fun canonicalizationPipelineClassOutputPathsForTest(): List<Path> = listOf(
+        locate("gym", "com/wingedsheep/gym/contract/ObservationCanonicalizer.class"),
+        locate("gym", "com/wingedsheep/gym/contract/StateDigest.class"),
+        locate("gym", "com/wingedsheep/gym/contract/ObservationBuilder.class"),
     )
 
     internal fun coarseAttributionClassOutputPathsForTest(): List<Path> = listOf(
@@ -197,15 +222,33 @@ internal object B1ObservationBytecodeInstrumentation {
     private data class MethodPlan(
         val entry: EntryAction,
         val endBuildOnReturn: Boolean = false,
+        val callSites: List<CallSite> = emptyList(),
     )
 
     private sealed interface EntryAction {
+        data object None : EntryAction
         data class Scalar(val family: String) : EntryAction
         data class Action(val family: String, val slot: Int) : EntryAction
         data class ActionView(val indexSlot: Int, val actionSlot: Int) : EntryAction
         data class Build(val listSlot: Int) : EntryAction
         data class DecisionOptions(val listSlot: Int) : EntryAction
         data class Timed(val family: String) : EntryAction
+        data class PipelineMethod(val kind: String, val argumentSlot: Int = 1) : EntryAction
+        data class PipelineCanonicalize(val argumentSlot: Int = 1) : EntryAction
+    }
+
+    private sealed interface CallSite {
+        data class Operation(
+            val owner: String,
+            val name: String,
+            val operation: String,
+        ) : CallSite
+
+        data class Consumer(
+            val owner: String,
+            val name: String,
+            val family: String,
+        ) : CallSite
     }
 
     private fun gameEnvironmentCoarseMethod(name: String): MethodPlan? = when (name) {
@@ -247,6 +290,129 @@ internal object B1ObservationBytecodeInstrumentation {
 
     private fun canonicalizationCoarseMethod(name: String): MethodPlan? =
         if (name == "semanticJson") MethodPlan(EntryAction.Timed("CANONICALIZATION")) else null
+
+    private fun canonicalizationPipelineMethod(name: String): MethodPlan? {
+        val calls = canonicalizationPipelineCallSites()
+        return when {
+            name == "canonicalize" -> MethodPlan(EntryAction.PipelineCanonicalize())
+            name == "semanticJson" -> MethodPlan(
+                EntryAction.PipelineMethod("SEMANTIC_JSON"),
+                callSites = calls,
+            )
+            name == "semanticJson\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("SEMANTIC_JSON"),
+                callSites = calls,
+            )
+            name == "playerObservationJson\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("PLAYER_OBSERVATION_JSON"),
+                callSites = calls,
+            )
+            name == "playerObservationDigest\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("PLAYER_OBSERVATION_DIGEST"),
+                callSites = calls,
+            )
+            name == "canonicalElement\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("CANONICAL_ELEMENT"),
+                callSites = calls,
+            )
+            name == "canonicalJson\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("CANONICAL_JSON"),
+                callSites = calls,
+            )
+            name == "canonicalDomainJson\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("CANONICAL_DOMAIN_JSON"),
+                callSites = calls,
+            )
+            name == "wireJson" -> MethodPlan(
+                EntryAction.PipelineMethod("WIRE_JSON"),
+                callSites = calls,
+            )
+            name.startsWith("semanticStructuredDomain\$") && !name.contains("\$default") -> MethodPlan(
+                EntryAction.PipelineMethod("SEMANTIC_STRUCTURED_DOMAIN"),
+                callSites = calls,
+            )
+            name == "sortSemanticActionFingerprints\$argentum_engine_gym" -> MethodPlan(
+                EntryAction.PipelineMethod("SORT_FINGERPRINTS"),
+                callSites = calls,
+            )
+            name == "semanticActionFingerprint" -> MethodPlan(
+                EntryAction.PipelineMethod("SEMANTIC_ACTION_FINGERPRINT"),
+                callSites = calls,
+            )
+            else -> null
+        }
+    }
+
+    private fun stateDigestPipelineMethod(name: String): MethodPlan? = when (name) {
+        "compute" -> MethodPlan(EntryAction.PipelineMethod("STATE_DIGEST_COMPUTE"))
+        "digest" -> MethodPlan(
+            EntryAction.PipelineMethod("DIGEST_BODY"),
+            callSites = stateDigestPipelineCallSites(),
+        )
+        else -> null
+    }
+
+    private fun observationBuilderPipelineMethod(name: String): MethodPlan? =
+        if (name.startsWith("build-") && !name.contains("\$default")) {
+            MethodPlan(
+                entry = EntryAction.None,
+                callSites = listOf(
+                    CallSite.Consumer(
+                        owner = "com/wingedsheep/gym/contract/StateDigest",
+                        name = "compute",
+                        family = "OBSERVATION_BUILDER_STATE_DIGEST",
+                    ),
+                ),
+            )
+        } else {
+            null
+        }
+
+    private fun canonicalizationPipelineCallSites(): List<CallSite> = listOf(
+        CallSite.Operation(
+            owner = "kotlinx/serialization/json/Json",
+            name = "encodeToJsonElement",
+            operation = "ENCODE_TO_JSON_ELEMENT",
+        ),
+        CallSite.Operation(
+            owner = "kotlinx/serialization/json/JsonElement",
+            name = "toString",
+            operation = "JSON_TO_STRING",
+        ),
+        CallSite.Operation(
+            owner = "kotlinx/serialization/json/JsonObject",
+            name = "toString",
+            operation = "JSON_TO_STRING",
+        ),
+        CallSite.Operation(
+            owner = "kotlinx/serialization/json/JsonArray",
+            name = "toString",
+            operation = "JSON_TO_STRING",
+        ),
+        CallSite.Operation(
+            owner = "java/lang/Object",
+            name = "toString",
+            operation = "JSON_TO_STRING",
+        ),
+    )
+
+    private fun stateDigestPipelineCallSites(): List<CallSite> = listOf(
+        CallSite.Operation(
+            owner = "java/lang/String",
+            name = "getBytes",
+            operation = "UTF8_ENCODING",
+        ),
+        CallSite.Operation(
+            owner = "java/security/MessageDigest",
+            name = "digest",
+            operation = "SHA256_DIGEST",
+        ),
+        CallSite.Operation(
+            owner = "kotlin/collections/ArraysKt",
+            name = "joinToString\$default",
+            operation = "HEX_RENDER",
+        ),
+    )
 
     private fun observationBuilderMethod(name: String): MethodPlan? = when {
         name.startsWith("build-") && !name.contains("\$default") ->
@@ -344,6 +510,9 @@ internal object B1ObservationBytecodeInstrumentation {
                         descriptor: String,
                         isInterface: Boolean,
                     ) {
+                        plan.callSites.forEach { callSite ->
+                            if (callSite.matches(owner, name)) emitCallSiteStart(callSite)
+                        }
                         if (interceptPaymentBuilderManaCalls &&
                             owner == "com/wingedsheep/engine/mechanics/mana/ManaSolver" &&
                             name.startsWith("findAvailableManaSources")
@@ -357,29 +526,85 @@ internal object B1ObservationBytecodeInstrumentation {
                             emitScalar("legalActionEnumerator")
                         }
                         super.visitMethodInsn(opcode, owner, name, descriptor, isInterface)
+                        plan.callSites.forEach { callSite ->
+                            if (callSite.matches(owner, name)) emitCallSiteEnd(callSite)
+                        }
                     }
 
                     override fun visitInsn(opcode: Int) {
-                        if (plan.endBuildOnReturn && opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)) {
+                        val isReturn = opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)
+                        if (plan.endBuildOnReturn && isReturn) {
                             visitMethodInsn(INVOKESTATIC, PROBE_OWNER, "endBuild", "()V", false)
                         }
-                        if (plan.entry is EntryAction.Timed &&
-                            opcode in setOf(IRETURN, LRETURN, FRETURN, DRETURN, ARETURN, RETURN)
-                        ) {
+                        if (plan.entry is EntryAction.Timed && isReturn) {
                             emitPhaseEnd(plan.entry.family)
+                        }
+                        if (isReturn) {
+                            when (val entry = plan.entry) {
+                                is EntryAction.PipelineMethod -> emitPipelineMethodEnd(entry)
+                                is EntryAction.PipelineCanonicalize -> emitPipelineCanonicalizeEnd()
+                                else -> Unit
+                            }
                         }
                         super.visitInsn(opcode)
                     }
 
                     private fun emitEntry(entry: EntryAction) {
                         when (entry) {
+                            EntryAction.None -> Unit
                             is EntryAction.Scalar -> emitScalar(entry.family)
                             is EntryAction.Action -> emitAction(entry.family, entry.slot)
                             is EntryAction.ActionView -> emitActionView(entry.indexSlot, entry.actionSlot)
                             is EntryAction.Build -> emitBuild(entry.listSlot)
                             is EntryAction.DecisionOptions -> emitDecisionOptions(entry.listSlot)
                             is EntryAction.Timed -> emitPhaseStart(entry.family)
+                            is EntryAction.PipelineMethod -> emitPipelineMethodStart(entry)
+                            is EntryAction.PipelineCanonicalize -> emitPipelineCanonicalizeStart(entry)
                         }
+                    }
+
+                    private fun emitPipelineMethodStart(entry: EntryAction.PipelineMethod) {
+                        visitLdcInsn(entry.kind)
+                        visitVarInsn(ALOAD, entry.argumentSlot)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            PIPELINE_PROBE_OWNER,
+                            "enterMethod",
+                            "(Ljava/lang/String;Ljava/lang/Object;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitPipelineMethodEnd(entry: EntryAction.PipelineMethod) {
+                        visitLdcInsn(entry.kind)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            PIPELINE_PROBE_OWNER,
+                            "exitMethod",
+                            "(Ljava/lang/String;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitPipelineCanonicalizeStart(entry: EntryAction.PipelineCanonicalize) {
+                        visitVarInsn(ALOAD, entry.argumentSlot)
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            PIPELINE_PROBE_OWNER,
+                            "enterCanonicalize",
+                            "(Ljava/lang/Object;)V",
+                            false,
+                        )
+                    }
+
+                    private fun emitPipelineCanonicalizeEnd() {
+                        visitMethodInsn(
+                            INVOKESTATIC,
+                            PIPELINE_PROBE_OWNER,
+                            "exitCanonicalize",
+                            "()V",
+                            false,
+                        )
                     }
 
                     private fun emitPhaseStart(family: String) {
@@ -450,10 +675,53 @@ internal object B1ObservationBytecodeInstrumentation {
                         visitMethodInsn(INVOKEINTERFACE, "java/util/List", "size", "()I", true)
                         visitMethodInsn(INVOKESTATIC, PROBE_OWNER, "recordDecisionOptionViews", "(I)V", false)
                     }
+
+                    private fun emitCallSiteStart(callSite: CallSite) {
+                        when (callSite) {
+                            is CallSite.Operation -> {
+                                visitLdcInsn(callSite.operation)
+                                visitMethodInsn(
+                                    INVOKESTATIC,
+                                    PIPELINE_PROBE_OWNER,
+                                    "startOperation",
+                                    "(Ljava/lang/String;)V",
+                                    false,
+                                )
+                            }
+                            is CallSite.Consumer -> {
+                                visitLdcInsn(callSite.family)
+                                visitMethodInsn(
+                                    INVOKESTATIC,
+                                    PIPELINE_PROBE_OWNER,
+                                    "recordConsumer",
+                                    "(Ljava/lang/String;)V",
+                                    false,
+                                )
+                            }
+                        }
+                    }
+
+                    private fun emitCallSiteEnd(callSite: CallSite) {
+                        if (callSite is CallSite.Operation) {
+                            visitLdcInsn(callSite.operation)
+                            visitMethodInsn(
+                                INVOKESTATIC,
+                                PIPELINE_PROBE_OWNER,
+                                "endOperation",
+                                "(Ljava/lang/String;)V",
+                                false,
+                            )
+                        }
+                    }
                 }
             }
         }, 0)
         return writer.toByteArray()
+    }
+
+    private fun CallSite.matches(owner: String, name: String): Boolean = when (this) {
+        is CallSite.Operation -> owner == this.owner && name == this.name
+        is CallSite.Consumer -> owner == this.owner && name == this.name
     }
 
     private fun locate(module: String, suffix: String): Path {
