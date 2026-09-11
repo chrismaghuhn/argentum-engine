@@ -20,6 +20,7 @@ import com.wingedsheep.sdk.core.ManaCost
 import com.wingedsheep.sdk.core.Zone
 import com.wingedsheep.sdk.model.EntityId
 import com.wingedsheep.sdk.scripting.*
+import com.wingedsheep.sdk.scripting.filters.unified.GroupFilter
 import com.wingedsheep.sdk.scripting.costs.CostAtom
 import com.wingedsheep.sdk.scripting.costs.manaCostOrNull
 import com.wingedsheep.sdk.scripting.effects.*
@@ -32,6 +33,13 @@ import com.wingedsheep.sdk.scripting.effects.*
  * 2. Opponent permanents: "any player may activate" abilities
  */
 class ActivatedAbilityEnumerator : ActionEnumerator {
+
+    private data class EmblemGrantDescriptor(
+        val emblemEntityId: EntityId,
+        val controllerId: EntityId,
+        val filter: GroupFilter,
+        val abilities: List<ActivatedAbility>,
+    )
 
     override fun enumerate(context: EnumerationContext): List<LegalAction> {
         val result = mutableListOf<LegalAction>()
@@ -47,6 +55,11 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
         val state = context.state
         val playerId = context.playerId
         val projected = context.projected
+        val emblemGrantDescriptors = state.entities.mapNotNull { (emblemId, emblemContainer) ->
+            val grant = emblemContainer.get<EmblemActivatedAbilityComponent>() ?: return@mapNotNull null
+            val controllerId = emblemContainer.get<ControllerComponent>()?.playerId ?: return@mapNotNull null
+            EmblemGrantDescriptor(emblemId, controllerId, grant.filter, grant.abilities)
+        }
 
         for (entityId in context.battlefieldPermanents) {
             val container = state.getEntity(entityId) ?: continue
@@ -80,18 +93,16 @@ class ActivatedAbilityEnumerator : ActionEnumerator {
                 .map { it.ability }
             val staticGrants = context.castPermissionUtils.getStaticGrantedAbilitiesWithGranter(entityId, state)
             val staticAbilities = staticGrants.map { it.ability }
-            val emblemAbilities = state.entities.mapNotNull { (emblemId, emblemContainer) ->
-                val grant = emblemContainer.get<EmblemActivatedAbilityComponent>() ?: return@mapNotNull null
-                val controllerId = emblemContainer.get<ControllerComponent>()?.playerId ?: return@mapNotNull null
+            val emblemAbilities = emblemGrantDescriptors.flatMap { descriptor ->
                 val matches = context.predicateEvaluator.matches(
                     state,
                     projected,
                     entityId,
-                    grant.filter.baseFilter,
-                    PredicateContext(controllerId = controllerId, sourceId = emblemId),
-                ) && (!grant.filter.excludeSelf || entityId != emblemId)
-                grant.takeIf { matches }?.abilities
-            }.flatten()
+                    descriptor.filter.baseFilter,
+                    PredicateContext(controllerId = descriptor.controllerId, sourceId = descriptor.emblemEntityId),
+                ) && (!descriptor.filter.excludeSelf || entityId != descriptor.emblemEntityId)
+                if (matches) descriptor.abilities else emptyList()
+            }
             // Which permanent granted each statically-granted ability, so a cost that names the
             // granter (AbilityCost.TapGrantingPermanent) can be gated on *its* state, not the host's.
             val granterByAbilityId = staticGrants.associate { it.ability.id to it.granterId }
