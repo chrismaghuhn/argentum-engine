@@ -2,8 +2,9 @@
 
 ## Status and boundary
 
-This design is pending independent spec review. It is not the C1_00
-implementation itself, and it does not authorize an implementation plan yet.
+This design has passed independent spec review. It authorizes the
+implementation plan, but not C1_00 production-code changes before the
+plan-to-code review.
 
 ```text
 TASK=C1_00_LOCAL_LEARNER_FOUNDATION_AND_CONTRACT_IMPLEMENTATION
@@ -12,9 +13,9 @@ BRANCH=chris/c1-00-local-learner-foundation-20260912
 CURRENT_PHASE=C1
 C1_AUTHORIZED=YES
 C1_IMPLEMENTATION_AUTHORIZED=YES
-STATUS=PENDING_INDEPENDENT_SPEC_REVIEW
-SPEC_APPROVED=NO
-IMPLEMENTATION_PLAN_AUTHORIZED=NO
+STATUS=SPEC_APPROVED
+SPEC_APPROVED=YES
+IMPLEMENTATION_PLAN_AUTHORIZED=YES
 C1_00_IMPLEMENTATION_AUTHORIZED=NO
 TRAINING_AUTHORIZED=NO
 SMALL_LEARNER_SMOKE_AUTHORIZED=NO
@@ -374,14 +375,15 @@ P2_7=RESOLVED  # numeric execution profile identity binding
 C0_CONTRACT_REOPEN_REQUIRED=NO
 C1_AUTHORIZED=YES
 C1_IMPLEMENTATION_AUTHORIZED=YES
-SPEC_APPROVED=NO
-IMPLEMENTATION_PLAN_AUTHORIZED=NO
+SPEC_APPROVED=YES
+IMPLEMENTATION_PLAN_AUTHORIZED=YES
 C1_00_IMPLEMENTATION_AUTHORIZED=NO
 TRAINING_AUTHORIZED=NO
 SMALL_LEARNER_SMOKE_AUTHORIZED=NO
 ```
 
-This document is ready for written spec re-review, not for implementation.
+This document is approved for implementation-plan execution. C1_00 production
+implementation remains separately blocked until the plan-to-code review.
 
 ## Determinism and identity
 
