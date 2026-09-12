@@ -52,8 +52,9 @@ The merge parents of the current audit base are:
 
 Several accepted C0 documents retain status blocks from their own pre-review Draft PR. Those
 historical blocks are evidence of the delivery checkpoint at that time, not live current-main
-authority. The live PR merge state and this phase reconciliation are the current acceptance
-authority. No earlier document is rewritten in this task.
+authority. Live merged PR state is the current acceptance authority. This phase reconciliation is
+the proposed phase-level authority pending independent Exact-SHA review and merge. No earlier
+document is rewritten in this task.
 
 The live roadmap/tooling issues were also audited. Issue #124 remains the active C0 tracker with
 C1 and training unauthorized. Issue #119 is OPEN and explicitly treats further characterization as
@@ -271,19 +272,19 @@ No source trajectory, closure, split, policy provenance or chosen action is rewr
         ↓
     TrajectoryV1 factual source
         ↓
-    C0_01 model-facing derived sample
-        ↓
     C0_02 deterministic episode split
         ↓
-    C0_03 recurrent derived history where applicable
+    C0_01 model-facing derived sample
         ↓
-    model scores
+    optional C0_03 recurrent derived context
+        ↓
+    model / C1 learner
         ↓
     C0_04 Selection V2
         ↓
     PolicyTieRng V1 only for unresolved exact symmetry
         ↓
-    exact semantic source choice
+    exact semantic choice bound to the supplied source domain
         ↓
     Argentum validation / transition
 
@@ -518,6 +519,7 @@ merge-SHA/parent/origin-main verification:
     C1_AUTHORIZED=NO
     C1_IMPLEMENTATION_AUTHORIZED=NO
     TRAINING_AUTHORIZED=NO
-    NEXT_REQUIRED=C1_00_LOCAL_LEARNER_FOUNDATION_AND_CONTRACT_IMPLEMENTATION
+    NEXT_REQUIRED=INDEPENDENT_EXACT_SHA_REVIEW_AND_MERGE_VERIFICATION
+    NEXT_RECOMMENDED_TASK_AFTER_ACCEPTANCE=C1_00_LOCAL_LEARNER_FOUNDATION_AND_CONTRACT_IMPLEMENTATION
     NEXT_TASK_STARTED=NO
     STOP_FOR_EXACT_SHA_REVIEW=YES
