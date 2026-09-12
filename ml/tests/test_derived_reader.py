@@ -11,7 +11,12 @@ from argentum_ml.contracts.identities import (
     MODEL_FACING_CONTRACT_IDENTITY,
     SPLIT_CONTRACT_IDENTITY,
 )
-from argentum_ml.data.derived_reader import DerivedArtifactError, DerivedArtifactReader
+from argentum_ml.data.derived_reader import (
+    DerivedArtifactError,
+    DerivedArtifactReader,
+    _count_fixed_sacrifice_nodes,
+    _count_source_bound_tap_nodes,
+)
 
 
 def _sha(char: str) -> str:
@@ -536,6 +541,22 @@ class DerivedReaderTests(unittest.TestCase):
             })
             with self.assertRaises(DerivedArtifactError):
                 DerivedArtifactReader.open(_artifact(Path(directory), sample=sample))
+
+    def test_rejects_malformed_cost_composite_children(self) -> None:
+        for malformed in ({"type": "CostComposite", "costs": {}}, {"type": "CostComposite", "costs": "invalid"}):
+            with self.assertRaises(DerivedArtifactError):
+                _count_source_bound_tap_nodes(malformed)
+            with self.assertRaises(DerivedArtifactError):
+                _count_fixed_sacrifice_nodes(malformed)
+
+    def test_rejects_malformed_atom_sacrifice_counts(self) -> None:
+        for count in (-1, "1"):
+            value = {
+                "type": "CostAtomWrapper",
+                "atom": {"type": "AtomSacrifice", "count": count},
+            }
+            with self.assertRaises(DerivedArtifactError):
+                _count_fixed_sacrifice_nodes(value)
 
     def test_rejects_structured_target_cardinality_outside_domain(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

@@ -803,10 +803,18 @@ def _validate_source_bound_taps(candidate: dict[str, Any], tapped: Any, allow_ta
 def _count_source_bound_tap_nodes(value: Any) -> int:
     if not isinstance(value, dict):
         return 0
-    if value.get("type") == "CostTap":
+    if "type" in value and not isinstance(value["type"], str):
+        raise DerivedArtifactError("malformed cost node type")
+    cost_type = value.get("type")
+    if cost_type == "CostTap":
         return 1
-    if value.get("type") == "CostComposite":
-        return sum(_count_source_bound_tap_nodes(child) for child in value.get("costs", []))
+    if cost_type == "CostComposite":
+        if "costs" not in value:
+            return 0
+        costs = value["costs"]
+        if not isinstance(costs, list):
+            raise DerivedArtifactError("malformed cost composite")
+        return sum(_count_source_bound_tap_nodes(child) for child in costs)
     return 0
 
 
@@ -825,14 +833,20 @@ def _ability_cost_tree(action_semantics: Any) -> Any:
 def _count_fixed_sacrifice_nodes(value: Any) -> int:
     if not isinstance(value, dict):
         return 0
+    if "type" in value and not isinstance(value["type"], str):
+        raise DerivedArtifactError("malformed cost node type")
     cost_type = value.get("type")
     if cost_type == "CostSacrificeSelf":
         return 1
     if cost_type == "CostAtomWrapper":
         atom = value.get("atom")
         if isinstance(atom, dict) and atom.get("type") == "AtomSacrifice":
-            count = atom.get("count")
-            return count if isinstance(count, int) and not isinstance(count, bool) and count >= 0 else 0
+            if "count" not in atom:
+                return 0
+            count = atom["count"]
+            if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+                raise DerivedArtifactError("malformed AtomSacrifice count")
+            return count
         return 0
     if cost_type == "CostComposite":
         costs = value.get("costs", [])
