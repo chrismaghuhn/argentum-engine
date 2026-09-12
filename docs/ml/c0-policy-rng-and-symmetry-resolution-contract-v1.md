@@ -201,9 +201,10 @@ as unsigned decimal values or use provider-specific signed remainder behavior.
 
 ## 8. Per-policy stream derivation
 
-The accepted `EnvironmentIdentityV1` gives the semantic environment identity. Its `semanticEpisodeId`
-is environment-derived and deliberately excludes policy provenance. The accepted `RosterSeatV1`
-gives the source-owned player-instance mapping and contiguous `seatIndex`.
+The accepted `EnvironmentIdentityV1` gives the semantic environment identity, but it is not a
+PolicyTieRng input. In particular, its `actualEngineSeed` is part of the environment identity and
+must not reach policy tie selection through `semanticEpisodeId` or any derived hash. The accepted
+`RosterSeatV1` gives the source-owned player-instance mapping and contiguous `seatIndex`.
 
 Resolve:
 
@@ -227,8 +228,10 @@ PolicyTieRngStateV1 {
 }
 ```
 
-Each new semantic episode derives a new stream and starts at `cursor=0`. Each policy seat gets a
-different stream even when the root seed and checkpoint are equal.
+Each policy instance derives its stream from the exogenous policy seed and seat and starts a fresh
+state at `cursor=0`. A distinct stream across episodes requires a distinct declared exogenous
+`policySeed`; intentionally reusing the same seed intentionally reproduces the same stream. Each
+policy seat gets a different stream even when the root seed and checkpoint are equal.
 
 ## 9. Exact stream-key derivation
 
@@ -238,7 +241,6 @@ The versioned stream preimage is this exact semantic payload:
 {
   "schema": "argentum-ml-policy-tie-stream@v1",
   "policySeedBitsHex": "<16 lowercase hex>",
-  "semanticEpisodeId": "<64 lowercase hex>",
   "seatIndex": 0
 }
 ```
@@ -255,6 +257,8 @@ The result is 32 raw bytes. The preimage excludes:
 
 ```text
 checkpointId
+semanticEpisodeId
+actualEngineSeed
 raw player EntityId
 deck or commander names
 opponent hidden information
@@ -264,8 +268,10 @@ engine RNG state
 ```
 
 Excluding `checkpointId` is intentional: A/B evaluations can start with common random stream
-assignment while changing only checkpoint identity. A fresh independent evaluation still derives a
-new state object at cursor zero.
+assignment while changing only checkpoint identity. Excluding `semanticEpisodeId` and therefore
+`actualEngineSeed` is a privacy boundary: hidden/environment RNG provenance must not influence
+policy tie selection. A fresh independent evaluation derives a new state object at cursor zero;
+the caller must choose a new exogenous `policySeed` when it needs a different stream.
 
 ## 10. Raw-word algorithm
 
@@ -467,18 +473,21 @@ unsupported, or incomplete future domain is not silently promoted; it produces
 
 ## 17. Player / episode isolation
 
-Two players with the same checkpoint, root policy seed, and episode receive independent streams:
+Two players with the same checkpoint and root policy seed receive independent streams:
 
 ```text
-same policySeed + same semanticEpisodeId + different seatIndex
+same policySeed + different seatIndex
     -> different streamKey
 SHARED_POLICY_RNG_STATE_BETWEEN_PLAYERS=NO
 ```
 
-Each new semantic episode derives a new stream and resets its cursor:
+Each evaluation episode creates a fresh state object and resets its cursor. The stream key itself
+changes across episodes only when the evaluation/collection job supplies a different exogenous
+policy seed:
 
 ```text
 POLICY_RNG_CROSS_EPISODE_CARRY=NO
+SAME_POLICY_SEED_REUSES_STREAM=YES
 ```
 
 Batch slots, worker slots, threads, PIDs, processes, and GPU streams do not own or alter state:
@@ -486,6 +495,32 @@ Batch slots, worker slots, threads, PIDs, processes, and GPU streams do not own 
 ```text
 BATCH_SLOT_RNG_LEAKAGE=FORBIDDEN
 ```
+
+### Snapshot, fork, and restore
+
+`ENVIRONMENT_RESTORE != POLICY_RNG_STATE_RESTORE`. Restoring an environment snapshot does not
+implicitly rewind, advance, or replace the policy RNG. A policy snapshot includes the exact
+32-byte `streamKey` and the current cursor; a fork copies those values by value:
+
+```text
+POLICY_RNG_FORK_COPIES_STATE=YES
+POLICY_RNG_FORKS_SHARE_MUTABLE_CURSOR=NO
+```
+
+After a fork, parent and child have independent cursors. A search branch receives the copied state
+at the branch point and advances independently. Restoring policy state requires either:
+
+```text
+POLICY_RNG_RESTORE_REQUIRES=
+EXACT_SAVED_POLICY_RNG_STATE
+or
+EXACT_RECOMPUTATION_FROM_POLICY_INFERENCE_HISTORY
+```
+
+Gameplay replay alone is insufficient to reconstruct the cursor: a rejection-sampling call may
+consume multiple raw words before producing one selected action. The saved state or an exact
+re-execution using the same checkpoint, numeric profile, selection contract, model-inference
+history, and policy provenance is required. A missing or mismatched state fails closed.
 
 If a policy instance moves between batch positions, its state moves with the semantic episode and
 seat. If the stream state is missing or belongs to another episode/seat, fail closed.
@@ -540,7 +575,6 @@ For model-only A/B evaluation, hold constant:
 
 ```text
 evaluation job
-semanticEpisodeId
 seatIndex
 policySeed
 PolicyTieRng contract
@@ -568,8 +602,9 @@ advances and B's cursor does not. Common randomness is initial assignment only:
 COMMON_RANDOMNESS_AFTER_POLICY_DIVERGENCE=NOT_GUARANTEED
 ```
 
-The stream key intentionally excludes checkpoint identity. A fresh independent evaluation of a
-new checkpoint still starts from a newly derived state at cursor zero.
+The stream key intentionally excludes checkpoint identity, semantic episode identity, and engine
+seed provenance. A fresh independent evaluation of a new checkpoint still starts from a newly
+derived state at cursor zero.
 
 ## 21. Replay and inference provenance
 
@@ -578,7 +613,8 @@ exact accepted semantic action/response; it does not need a new trajectory curso
 represent that choice.
 
 Model-inference replay requires the checkpoint, numeric profile, selection contract, policy-RNG
-contract, root seed provenance, semantic episode, seat, and runtime cursor state. Define the
+contract, root seed provenance, seat, and runtime cursor state. `semanticEpisodeId` remains useful
+source provenance, but it is not a PolicyTieRng input. Define the
 documentation-level diagnostic shape:
 
 ```text
@@ -597,8 +633,8 @@ PolicySelectionTraceV1 {
 ```
 
 `streamKeyDigest` is `SHA-256(streamKey)` as lowercase hex for diagnostics; it is not model input
-and is not a replacement for the seed/episode/seat inputs needed to recompute the stream. Scores
-are optional diagnostics. This conceptual trace is not a new wire or Trajectory schema.
+and is not a replacement for the seed/seat inputs needed to recompute the stream. Scores are
+optional diagnostics. This conceptual trace is not a new wire or Trajectory schema.
 
 `PolicyProvenanceV1` remains the existing collection/evaluation provenance container. When its
 `policyRngIdentity` is exactly `argentum-ml-policy-tie-rng@v1`, its existing `policySeed` supplies
@@ -608,12 +644,8 @@ episode or semantic decision identity.
 
 ## 22. Known-answer vectors
 
-The vectors below are fixed contract data, not placeholders. The shared test episode identifier is:
-
-```text
-semanticEpisodeId=
-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-```
+The vectors below are fixed contract data, not placeholders. They intentionally contain no
+`semanticEpisodeId`; the absence of that field is part of the P1 privacy boundary.
 
 ### KAT-1: stream key, accepted fixture seed, seat 0
 
@@ -621,52 +653,52 @@ semanticEpisodeId=
 policySeed=4259905
 policySeedBitsHex=0000000000410041
 seatIndex=0
-canonicalStreamPayload={"policySeedBitsHex":"0000000000410041","schema":"argentum-ml-policy-tie-stream@v1","seatIndex":0,"semanticEpisodeId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
-streamKey=be4cbdb8988303ce92b074302c25bf1ed5c6f6b347c89efa15bbe6705e3e0a04
+canonicalStreamPayload={"policySeedBitsHex":"0000000000410041","schema":"argentum-ml-policy-tie-stream@v1","seatIndex":0}
+streamKey=e524b34e031fbdc4f616f6725de4335c95207edadbcbfbd09bdb91952152e8d1
 ```
 
 ### KAT-2 and KAT-3: raw words
 
 ```text
-streamKey=be4cbdb8988303ce92b074302c25bf1ed5c6f6b347c89efa15bbe6705e3e0a04
+streamKey=e524b34e031fbdc4f616f6725de4335c95207edadbcbfbd09bdb91952152e8d1
 cursor=0
-rawWord=9b27267f24c7687f
-rawWordDecimal=11179946927490295935
-fullDigest=9b27267f24c7687f3585704f65781cbb9cb9908d2b3a50421d2efe37a4350af8
+rawWord=43c8392191b2467a
+rawWordDecimal=4884216612224386682
+fullDigest=43c8392191b2467acc1c9e1bf265a12b549b281c0402981ee1fc7e0e47545a1b
 
 cursor=1
-rawWord=c911ca70fa06c0d9
-rawWordDecimal=14488584062807490777
-fullDigest=c911ca70fa06c0d98e614010210364b6968e3cc21138371b41a4e61b8c3bd747
+rawWord=ca6d38cc6027f7aa
+rawWordDecimal=14586377218560620458
+fullDigest=ca6d38cc6027f7aad43a1d12112795deef2ea0664e99b82f4b8e113e37759432
 ```
 
 ### KAT-4: non-power-of-two uniform sample
 
 ```text
-streamKey=be4cbdb8988303ce92b074302c25bf1ed5c6f6b347c89efa15bbe6705e3e0a04
+streamKey=e524b34e031fbdc4f616f6725de4335c95207edadbcbfbd09bdb91952152e8d1
 n=10
 limit=fffffffffffffffa
-firstRawWord=9b27267f24c7687f
+firstRawWord=43c8392191b2467a
 accepted=true
-uniformBelow=5
+uniformBelow=2
 cursorBefore=0
 cursorAfter=1
 ```
 
-### KAT-5: second seat from the same episode/root seed
+### KAT-5: second seat from the same root seed
 
 ```text
 policySeed=4259905
 policySeedBitsHex=0000000000410041
 seatIndex=1
-canonicalStreamPayload={"policySeedBitsHex":"0000000000410041","schema":"argentum-ml-policy-tie-stream@v1","seatIndex":1,"semanticEpisodeId":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}
-streamKey=b5374c3713af27282b0210355419c4fe7cbffd946cf693e89740a3ea769ef1be
+canonicalStreamPayload={"policySeedBitsHex":"0000000000410041","schema":"argentum-ml-policy-tie-stream@v1","seatIndex":1}
+streamKey=12788fa167a4187b53e81f24c9d6b52a3e171e57195ddb8ece312ae1408284f2
 cursor=0
-rawWord=702b6a121cd6f227
-rawWordDecimal=8082670582272291367
+rawWord=17c97b72e4a765b3
+rawWordDecimal=1714036866583848371
 ```
 
-The seat-0 and seat-1 stream keys differ despite equal root seed and episode. The seat-0 stream
+The seat-0 and seat-1 stream keys differ despite equal root seed. The seat-0 stream
 and raw words were independently reproduced with Python 3.13.15 `hashlib` and Node v24.16.0
 `crypto` using the exact canonical payload and byte preimage.
 
@@ -675,13 +707,13 @@ and raw words were independently reproduced with Python 3.13.15 `hashlib` and No
 ```text
 policySeed=0
 policySeedBitsHex=0000000000000000
-seatIndex=1
-streamKey=236a44183dcb4bc39bfdb90c5540f5d6886fdc5b61c6c813767c791779bd7f7e
+seatIndex=3
+streamKey=cb6aba6ce62b94db20e5a055e8c0a33dfec0c02e70689f764c69d6a9dee8c8e3
 n=9223372036854775809
 limit=8000000000000001
-cursor=0 rawWord=c69421c01a502370 rejected=true
-cursor=1 rawWord=61aa0d797485307c accepted=true
-uniformBelow=7037452183016910972
+cursor=0 rawWord=e0e9c4649d28823b rejected=true
+cursor=1 rawWord=59279a6a1d1881bf accepted=true
+uniformBelow=6424273174012658111
 cursorBefore=0
 cursorAfter=2
 ```
@@ -699,7 +731,7 @@ Plains-A score=0.75, executable=true
 Plains-B score=0.75, executable=true
 semantic deterministic discriminator=none
 T=[Plains-A, Plains-B] in source-binding order
-uniformBelow(2) using KAT-2 raw word -> 1
+uniformBelow(2) using KAT-5 raw word -> 1
 chosen=Plains-B
 ```
 
@@ -764,7 +796,7 @@ The following conditions fail closed:
 unknown policy RNG contract version
 unknown selection contract version
 invalid/ambiguous seed bit representation
-invalid semanticEpisodeId
+invalid policy provenance identity or missing policy seed
 acting player not mapped to exactly one roster seat
 stream derivation mismatch
 cursor exhaustion or wraparound
@@ -780,6 +812,9 @@ missing RNG state for an unresolved tie
 
 No fallback PRNG, row order, raw ID, framework RNG, AutoPay, heuristic completion, or retry is
 allowed.
+
+An invalid `semanticEpisodeId` may still be rejected by the independent Trajectory/episode
+contract, but it is not a PolicyTieRng input and cannot affect stream derivation.
 
 ```text
 POLICY_RNG_ALGORITHM_GAP
@@ -863,13 +898,15 @@ The resulting state is:
 ```text
 ROOT_SEED_SOURCE=PolicyProvenanceV1.policySeed: signed Long, accepted only with the exact policyRngIdentity gate
 POLICY_SEED_BITS=two's-complement 64-bit pattern rendered as 16 lowercase hexadecimal characters
-STREAM_KEY_DERIVATION=SHA-256(UTF-8(A3SemanticJson.canonicalJson(schema, policySeedBitsHex, semanticEpisodeId, seatIndex)))
+STREAM_KEY_DERIVATION=SHA-256(UTF-8(A3SemanticJson.canonicalJson(schema, policySeedBitsHex, seatIndex)))
 RAW_WORD_ALGORITHM=SHA-256(ASCII namespace || 0x00 || 32-byte streamKey || U64_BE(cursor))[0..7]
 UNIFORM_BELOW_ALGORITHM=reject x >= floor(2^64 / n) * n, then return x mod n
 CURSOR_INITIAL=0
 CURSOR_WRAPAROUND=FORBIDDEN
 KAT_COUNT=6
 KAT_GENERATION_METHOD=Python 3.13.15 hashlib reference; seat-0 stream and raw words cross-checked with Node v24.16.0 crypto
+ENGINE_SEED_AS_POLICY_RNG_INPUT=NO
+HIDDEN_WORLD_IDENTITY_AS_POLICY_RNG_INPUT=NO
 RNG_BINDING_AVAILABLE_FAMILIES=ACTION_CANDIDATES, CHOOSE_TARGETS, SELECT_CARDS, DECLARE_ATTACKERS, DECLARE_BLOCKERS, ORDER_OBJECTS, REORDER_LIBRARY, COMBAT_RESOLUTION, SELECT_MANA_SOURCES, folded DECISION
 RNG_BINDING_GAPS=none for the accepted complete source surface; malformed or incomplete future domains fail closed
 POLICY_PROVENANCE_V1_BINDING=SUPPORTED_WITH_EXPLICIT_POLICY_RNG_IDENTITY_GATE
